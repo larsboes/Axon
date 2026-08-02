@@ -1,0 +1,45 @@
+# Agent profile: pi (https://github.com/earendil-works/pi), verdict in upstreams.toml.
+# Public, tracked, instance-free — the box's shape. What varies per machine (model,
+# endpoint, key, resource limits) lives in <overlay>/config/agentbox.toml instead.
+#
+# Bumping the agent = change `version` + every `archive_sha256_*` here, re-run
+# `agentbox build`. The checksum is verified twice: on the host before the build,
+# and again inside it.
+
+name    = "pi"
+version = "0.83.0"
+
+# {version}, {os} and {arch} are substituted by the launcher. arch comes from the
+# host (arm64 | x64), so the same profile serves an Intel Mac unchanged. os is the
+# TARGET's, not the host's: the box is a Linux container whatever it is built on,
+# while a host install of the same pinned release is darwin.
+archive_url    = "https://github.com/earendil-works/pi/releases/download/v{version}/pi-{os}-{arch}.tar.gz"
+archive_root   = "pi"     # top-level directory inside the tarball
+bin_path       = "pi"     # the executable, relative to archive_root
+
+# sha256 per os/arch, copied from the release's published SHA256SUMS and re-verified
+# by downloading each asset. darwin exists here because the host install consumes the
+# same pin as the box (see upstreams.toml), so one version field serves both targets.
+archive_sha256_linux_arm64  = "b84f9016610c738dd9440df62f649880dbe9951db97a7ae936cbf292850e9802"
+archive_sha256_darwin_arm64 = "147fc3c451ec543a15102af251ce316079c8fcadfe8ae4d3ffee202346e9bed9"
+
+# Where the agent's config directory is mounted, and the env var that points it there.
+config_dir     = "/home/agent/config"
+config_dir_env = "PI_CODING_AGENT_DIR"
+
+# Rendered from <name>.tmpl in this directory into the mounted config dir on every
+# run, so Axon stays the source of truth for the contract and the overlay only holds
+# instance values plus the agent's own runtime artifacts (sessions, caches, trust
+# decisions). An `extensions/` directory here, if present, is copied alongside them.
+render = ["AGENTS.md", "models.json"]
+
+# Startup network operations (model-catalog refresh, telemetry, update check) would
+# hang for their full timeout on a host-only network. Off by default, both ways.
+env_offline   = "PI_OFFLINE=1"
+env_telemetry = "PI_TELEMETRY=0"
+
+# Appended to the agent's argv when the caller passes no model of their own.
+# `local` is the provider id models.json.tmpl declares — it names the box's one
+# endpoint, not the server behind it, so swapping one OpenAI-compatible server for
+# another changes the overlay's base URL and nothing here.
+model_args = "--provider local --model {model_id}"

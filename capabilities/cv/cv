@@ -1,0 +1,111 @@
+#!/bin/bash
+# capabilities/cv/cv — build tailored CV PDFs from the master file.
+# Portable shell only (README.md#portable-shell) — no bash-4-only syntax.
+set -euo pipefail
+
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=../../tools/lib/paths.sh
+source "$_dir/../../tools/lib/paths.sh"
+
+MASTER="$AXON_PERSONAL_ROOT/data/cv/master_cv.yaml"
+DIST="$AXON_PERSONAL_ROOT/data/cv/dist"
+TEMPLATE="$_dir/templates/cv.typ"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  cv build --profile <tag> --lang <en|de> [--out <path>]
+  cv build --all [--lang <en|de>]     # every profile in master_cv.yaml x lang (both langs if --lang omitted)
+  cv list-profiles                    # profile tags currently in use, read from master_cv.yaml
+EOF
+}
+
+require_deps() {
+  for bin in typst yq; do
+    if ! command -v "$bin" >/dev/null 2>&1; then
+      case "$(uname -s)" in
+        Darwin) hint="brew install $bin" ;;
+        *)      hint="install '$bin' via your package manager (cargo/snap/apt, etc.)" ;;
+      esac
+      echo "cv: '$bin' not found — $hint" >&2
+      exit 1
+    fi
+  done
+}
+
+require_master() {
+  if [ ! -f "$MASTER" ]; then
+    echo "cv: no master file at $MASTER" >&2
+    echo "cv: copy capabilities/cv/master_cv.schema.yaml there and fill it in" >&2
+    exit 1
+  fi
+}
+
+list_profiles() {
+  require_deps
+  require_master
+  yq eval '
+    ([.experience[].bullets[].profiles[]?] +
+     [.skills[].profiles[]?] +
+     [.education[].profiles[]?] +
+     [.title | keys | .[] | select(. != "default")] +
+     [.summary | keys | .[] | select(. != "default")]
+    ) | unique | sort | .[]
+  ' "$MASTER"
+}
+
+build_one() {
+  profile="$1"; lang="$2"; out="$3"
+  mkdir -p "$(dirname "$out")"
+  typst compile --root / \
+    --input master="$MASTER" \
+    --input profile="$profile" \
+    --input lang="$lang" \
+    "$TEMPLATE" "$out"
+  echo "cv: $out"
+}
+
+cmd_build() {
+  require_deps
+  require_master
+  profile=""
+  lang=""
+  out=""
+  all=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --profile) profile="$2"; shift 2 ;;
+      --lang) lang="$2"; shift 2 ;;
+      --out) out="$2"; shift 2 ;;
+      --all) all=1; shift ;;
+      *) echo "cv: unknown option $1" >&2; usage; exit 1 ;;
+    esac
+  done
+
+  if [ "$all" -eq 1 ]; then
+    langs="$lang"
+    if [ -z "$langs" ]; then langs="en de"; fi
+    profiles="default $(list_profiles | tr '\n' ' ')"
+    for p in $profiles; do
+      for l in $langs; do
+        build_one "$p" "$l" "$DIST/CV_${p}_${l}.pdf"
+      done
+    done
+    return
+  fi
+
+  if [ -z "$profile" ]; then
+    echo "cv: --profile is required (or use --all)" >&2
+    usage
+    exit 1
+  fi
+  if [ -z "$lang" ]; then lang="en"; fi
+  if [ -z "$out" ]; then out="$DIST/CV_${profile}_${lang}.pdf"; fi
+  build_one "$profile" "$lang" "$out"
+}
+
+case "${1:-}" in
+  build) shift; cmd_build "$@" ;;
+  list-profiles) list_profiles ;;
+  *) usage; exit 1 ;;
+esac

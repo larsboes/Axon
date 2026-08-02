@@ -1,0 +1,21 @@
+#!/bin/bash
+# capabilities/punctuality/punctuality — empirical rail punctuality from DB's own
+# published stop history. Named after its capability, which is what puts this directory
+# on PATH (capabilities/shell/init.zsh).
+# Portable shell only (README.md#portable-shell) — no bash-4-only syntax.
+set -euo pipefail
+
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=../../tools/lib/paths.sh
+source "$_dir/../../tools/lib/paths.sh"
+
+BIN="$AXON_ROOT/bazel-bin/capabilities/punctuality/punctuality-cli"
+
+# Build on first use rather than making a clone's first run a confusing "not found".
+# Build output goes to stderr so `punctuality stations bonn | cut -f1` still works.
+if [ ! -x "$BIN" ]; then
+  echo "punctuality: building (first run)…" >&2
+  (cd "$AXON_ROOT" && bazel build //capabilities/punctuality:punctuality-cli) >&2
+fi
+
+exec "$BIN" "$@"

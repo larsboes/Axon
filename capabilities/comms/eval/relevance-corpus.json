@@ -1,0 +1,228 @@
+{
+  "schema_version": 1,
+  "title": "Comms DE/EN relevance baseline",
+  "description": "Synthetic, manually judged cross-language ranking cases for the public Comms relevance contract. They contain no private TELOS or Feed content.",
+  "judgement_scale": {
+    "0": "unrelated",
+    "1": "weak contextual overlap",
+    "2": "useful match",
+    "3": "direct match"
+  },
+  "acceptance": {
+    "min_top1_relevant": 1.0,
+    "min_pairwise_accuracy": 0.75,
+    "min_mean_ndcg": 0.9
+  },
+  "queries": [
+    {
+      "id": "local-ai-resources-de",
+      "language": "de",
+      "text": "Lokale KI auf Apple Silicon ressourcenschonend betreiben, Modelle nur bei Bedarf laden und einen gemeinsamen Inferenzserver verwenden.",
+      "candidates": [
+        {
+          "id": "mlx-memory-en",
+          "language": "en",
+          "text": "Benchmark MLX inference memory, idle model eviction and one shared OpenAI-compatible server on an Apple Silicon Mac.",
+          "relevance": 3,
+          "rationale": "Direct cross-language match on local Apple inference, memory and one server."
+        },
+        {
+          "id": "ollama-cache-de",
+          "language": "de",
+          "text": "Ollama hält ein Embedding-Modell nach dem Request fünf Minuten im Speicher; keep_alive kann es sofort entladen.",
+          "relevance": 2,
+          "rationale": "Useful resource-management detail, but narrower and tied to another runtime."
+        },
+        {
+          "id": "ceramics-en",
+          "language": "en",
+          "text": "A practical guide to glazing stoneware bowls and controlling kiln temperature.",
+          "relevance": 0,
+          "rationale": "No topical connection."
+        },
+        {
+          "id": "travel-map-de",
+          "language": "de",
+          "text": "Eine interaktive Karte zeigt Hotels und Sehenswürdigkeiten für den nächsten Städtetrip.",
+          "relevance": 0,
+          "rationale": "Local software is not enough; the semantic goal is unrelated."
+        }
+      ]
+    },
+    {
+      "id": "architecture-boundaries-en",
+      "language": "en",
+      "text": "Design provider-neutral typed boundaries while keeping private instance data outside the public core.",
+      "candidates": [
+        {
+          "id": "contracts-de",
+          "language": "de",
+          "text": "Die Capability definiert einen typisierten Provider-Vertrag; persönliche Pfade und Secrets bleiben ausschließlich im privaten Overlay.",
+          "relevance": 3,
+          "rationale": "Direct cross-language match on typed contracts and ownership boundaries."
+        },
+        {
+          "id": "config-code-en",
+          "language": "en",
+          "text": "Allow a downloaded provider configuration to execute arbitrary component code at runtime.",
+          "relevance": 1,
+          "rationale": "Shares provider/config vocabulary but contradicts the intended boundary."
+        },
+        {
+          "id": "microservice-de",
+          "language": "de",
+          "text": "Ein Dienst besitzt seine Daten und veröffentlicht eine kleine HTTP-Schnittstelle für andere Capabilities.",
+          "relevance": 2,
+          "rationale": "Useful ownership-boundary pattern without the private/public aspect."
+        },
+        {
+          "id": "weather-en",
+          "language": "en",
+          "text": "Tomorrow will be cloudy with light rain and moderate wind.",
+          "relevance": 0,
+          "rationale": "No topical connection."
+        }
+      ]
+    },
+    {
+      "id": "migration-research-de",
+      "language": "de",
+      "text": "Eine Softwaremigration als Design-Science-Artefakt nachvollziehbar entwickeln und mit dokumentierten Konfigurationsiterationen evaluieren.",
+      "candidates": [
+        {
+          "id": "dsr-migration-en",
+          "language": "en",
+          "text": "A design science study develops a software migration artifact and evaluates documented configuration-level design increments.",
+          "relevance": 3,
+          "rationale": "Direct translation-level match of method, artifact and evaluation unit."
+        },
+        {
+          "id": "release-pipeline-de",
+          "language": "de",
+          "text": "Eine CI-Pipeline baut ein Release-Archiv und veröffentlicht signierte Artefakte.",
+          "relevance": 1,
+          "rationale": "Software-engineering context, but not migration research."
+        },
+        {
+          "id": "ai-news-en",
+          "language": "en",
+          "text": "A weekly roundup lists newly released foundation models and benchmark leaderboards.",
+          "relevance": 1,
+          "rationale": "Research-adjacent but not about migration or DSR."
+        },
+        {
+          "id": "recipe-de",
+          "language": "de",
+          "text": "Das Brot wird mit Sauerteig angesetzt und über Nacht im Kühlschrank geführt.",
+          "relevance": 0,
+          "rationale": "No topical connection."
+        }
+      ]
+    },
+    {
+      "id": "rail-reliability-en",
+      "language": "en",
+      "text": "Assess German rail reliability from historical observations while accounting for coverage changes and missing collection intervals.",
+      "candidates": [
+        {
+          "id": "punctuality-data-de",
+          "language": "de",
+          "text": "Historische Verspätungsdaten der Deutschen Bahn werden nach dem Wechsel von 100 auf 5300 Stationen getrennt ausgewertet; bekannte fehlende Stunden bleiben dokumentiert.",
+          "relevance": 3,
+          "rationale": "Direct cross-language match on rail reliability and both data-quality caveats."
+        },
+        {
+          "id": "journey-planner-en",
+          "language": "en",
+          "text": "A journey planner compares live departure times and suggests the fastest connection for today.",
+          "relevance": 2,
+          "rationale": "Rail domain match, but live routing does not answer historical reliability."
+        },
+        {
+          "id": "city-guide-de",
+          "language": "de",
+          "text": "Der Reiseführer empfiehlt Cafés, Museen und Spaziergänge in Hamburg.",
+          "relevance": 1,
+          "rationale": "Travel overlap only."
+        },
+        {
+          "id": "local-llm-en",
+          "language": "en",
+          "text": "Quantize a multilingual language model for efficient local inference.",
+          "relevance": 0,
+          "rationale": "No rail or data-quality connection."
+        }
+      ]
+    },
+    {
+      "id": "scholarship-eligibility-de",
+      "language": "de",
+      "text": "Nur Stipendien priorisieren, deren Frist, Startzeitpunkt, Beschäftigungskompatibilität und persönliche Förderfähigkeit explizit bestätigt sind.",
+      "candidates": [
+        {
+          "id": "funding-criteria-en",
+          "language": "en",
+          "text": "The funding record confirms applicant eligibility, deadline, required start date and compatibility with continued employment before it is scored.",
+          "relevance": 3,
+          "rationale": "Direct cross-language match on every hard eligibility field."
+        },
+        {
+          "id": "scholarship-announcement-de",
+          "language": "de",
+          "text": "Ein neues Stipendium wurde angekündigt, aber Frist und Teilnahmebedingungen sind noch unbekannt.",
+          "relevance": 2,
+          "rationale": "Correct opportunity type, but explicitly incomplete and therefore not actionable."
+        },
+        {
+          "id": "hackathon-en",
+          "language": "en",
+          "text": "A weekend hackathon invites students to build prototypes and meet sponsors.",
+          "relevance": 1,
+          "rationale": "Opportunity overlap without scholarship eligibility."
+        },
+        {
+          "id": "home-automation-de",
+          "language": "de",
+          "text": "Die Wärmepumpe wird über Home Assistant anhand des Strompreises geregelt.",
+          "relevance": 0,
+          "rationale": "No topical connection."
+        }
+      ]
+    },
+    {
+      "id": "career-visibility-en",
+      "language": "en",
+      "text": "Build professional visibility through substantive conference talks, open-source contributions and evidence-backed technical writing.",
+      "candidates": [
+        {
+          "id": "cfp-open-source-de",
+          "language": "de",
+          "text": "Der Call for Papers sucht praxisnahe Vorträge; ein Beitrag kann die dokumentierte Arbeit an einem Open-Source-Projekt nachvollziehbar vorstellen.",
+          "relevance": 3,
+          "rationale": "Direct cross-language match on talks, open source and substantive evidence."
+        },
+        {
+          "id": "security-patch-en",
+          "language": "en",
+          "text": "A maintainer publishes a carefully documented security fix and upstreams the patch.",
+          "relevance": 2,
+          "rationale": "Strong open-source contribution, but no talk or broader visibility plan."
+        },
+        {
+          "id": "networking-event-de",
+          "language": "de",
+          "text": "Ein lockeres Networking-Event verspricht neue Kontakte ohne fachliches Programm.",
+          "relevance": 1,
+          "rationale": "Visibility overlap, but lacks substantive technical work."
+        },
+        {
+          "id": "pottery-en",
+          "language": "en",
+          "text": "The studio offers a beginner course in wheel-thrown pottery.",
+          "relevance": 0,
+          "rationale": "No topical connection."
+        }
+      ]
+    }
+  ]
+}

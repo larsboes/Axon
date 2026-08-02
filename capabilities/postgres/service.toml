@@ -1,0 +1,41 @@
+# See schemas/service.toml.example for the field reference.
+name     = "postgres"
+image    = "postgres"
+tag      = "17.10-alpine"  # supported 17.x patch reviewed 2026-08-01; digest sha256:742f40ea.
+                           # Only gosu's embedded Go stdlib remains in the expiring Axon#186 policy.
+ports    = ["127.0.0.1:5432:5432"]
+volumes  = ["data/postgres/data:/var/lib/postgresql/data"]
+env_file = "config/postgres.env"
+
+# Six capabilities declare `requires = ["postgres"]`, and `start` does not resolve
+# dependencies — it starts the one capability it was named. So the shared instance has to
+# already be up when the dashboard starts calendar or trips on demand, which makes this
+# the one data capability that is genuinely always-on. It was always-on before this line
+# existed, via a watchdog; the manifest just never said so, and install-persistence now
+# refuses a capability whose manifest does not.
+autostart = "true"
+
+# managed_volume: apple-container's virtiofs bind mounts can't satisfy the official
+# postgres image's startup chown/chmod of its data dir (confirmed: fails even when the
+# host dir's ownership already matches the target UID -- virtiofs just doesn't allow
+# guest-side chown/chmod at all). On apple-container only, service-runner.sh creates and
+# mounts a real `container volume` instead of bind-mounting `volumes`' host path -- see
+# schemas/service.toml.example. Docker/podman are unaffected (their bind mounts have real chown support)
+# and keep using `volumes`' host path as-is.
+managed_volume = "true"
+
+# No backup_paths/backup_sqlite here on purpose -- see README Gotchas. Raw-copying
+# a live Postgres data directory risks a corrupt/inconsistent backup, and on
+# apple-container the data dir lives in a managed volume with no host path at all.
+# (backup_sqlite would not help either: it takes a COLD copy with the capability held
+# down, which for a cluster is a worse deal than a logical dump.) Coverage here can
+# only ever be a logical dump taken from inside the container:
+backup_pg_dumpall = "true"
+backup_target     = "home-automation"   # systems.toml id; private coords in overlay systems.local.toml
+backup_retain     = "14"
+# Every other capability's data is a schema in this one cluster, so this cadence is the
+# whole setup's cadence, not just this container's. Daily is what the human-decision
+# schemas deserve (a saved/dismissed verdict is not re-fetchable); a week is when it
+# starts being a real gap.
+backup_advise_days = "1"
+backup_stale_days  = "7"

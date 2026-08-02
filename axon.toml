@@ -1,0 +1,35 @@
+# Axon platform manifest v1. Facts that are true of Axon itself, on every machine.
+#
+# What is NOT in here, and why: this file is tracked and shared, so anything that
+# differs between two installations cannot live here. Multi-host operation proved that
+# the hard way: node-local capabilities and state mounts cannot share a tracked value,
+# and `git pull` must never depend on hiding local manifest edits. A tracked file
+# that every machine is expected to edit is a design bug, not a workflow.
+#
+# So machine-local configuration lives in two places instead:
+#
+#   axon.local.toml              — `overlay`: where THIS machine's private overlay is.
+#                                  Gitignored, written by tools/install.sh. The one
+#                                  bootstrap fact, because you need it to find the rest.
+#   <overlay>/config/machine.toml — os, container_runtime, `capabilities`, and the
+#                                  [[state_mount]] registry. One overlay is one
+#                                  deployment instance, so that file has exactly one
+#                                  machine to describe.
+#
+# See schemas/machine.toml.example.
+
+[platform]
+name = "axon"
+# Shipped DEFAULT only — a fresh install with no axon.local.toml resolves here.
+# Do not edit this to point at your own overlay; run tools/install.sh, which writes
+# axon.local.toml. tools/lib/paths.sh prefers that file and falls back to this value,
+# which is also what keeps the Bazel gates working: the sandbox materializes this
+# tracked file and never sees a gitignored one.
+overlay = "~/.axon-overlay"
+
+[upstream]
+# Cooldown hold before adopting/bumping an upstream release, enforced by
+# tools/upstream-checker. Single source for these numbers — the checker reads
+# them here, nothing hardcodes 7/14. (Quoted per toml.sh's scalar contract.)
+cooldown_min_days = "7"
+cooldown_max_days = "14"

@@ -1,0 +1,88 @@
+{
+  "_note": "Public template. Copy to axon-overlay/config/comms.json and fill real values there — never here. comms resolves config from $AXON_COMMS_CONFIG > $AXON_PERSONAL_ROOT/config/comms.json > capabilities/comms/comms.config.json at runtime (see src/config.rs Config::load). Every field is optional; the tool runs zero-config against the shared local Postgres with only the built-in classification heuristics.",
+
+  "_comment_database": "Postgres connection string. Leave unset to auto-build one from axon-overlay/config/postgres.env (capabilities/postgres, the shared local instance). Set only to point at a different instance.",
+  "database_url": "",
+
+  "_comment_google_env": "Path to the KEY=value env file holding GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN (mint the refresh token once via auth/get-refresh-token.ts). Defaults to $AXON_PERSONAL_ROOT/config/comms.env. Gmail is READ-ONLY in this build.",
+  "google_env_path": "",
+
+  "_comment_port": "HTTP port for comms-server (default 8083).",
+  "port": 8083,
+
+  "_comment_api_secret": "Shared secret for mutating routes (POST /ingest, POST /feed/:id/status, etc). Path to a file containing the bearer token (or JSON with auth.api_key). Required for write endpoints. Generate a private file with: openssl rand -hex -out path/to/file 32 && chmod 600 path/to/file. The local dashboard's Vite proxy reads this same reference at startup and injects it server-side; browser JavaScript never receives the value. Restart Comms and the dashboard after rotating it. The browser extension and direct CLI calls also use this value.",
+  "api_secret_file": "",
+
+  "_comment_dashboard_origin": "Allowed CORS origin (default http://127.0.0.1:47117).",
+  "dashboard_origin": "http://127.0.0.1:47117",
+
+  "_comment_enrichment_drain_minutes": "How often comms-server drains the summary backlog, in minutes (default 15). Ingest-triggered enrichment only reaches items that arrive while the inference server is up; without this pass, items ingested during an outage stay empty until someone runs `comms summarize --pending` by hand. The retry ledger bounds it: three failed attempts with exponential backoff, each failure recording its error class. Set 0 to disable when something else owns the schedule.",
+  "enrichment_drain_minutes": 15,
+
+  "_comment_summarizer": "Summarizer for media ingest. Any OpenAI-compatible chat-completions server works (oMLX, LM Studio, ollama's /v1). comms POSTs {base_url}/chat/completions. Empty base_url disables summarization (ingest still succeeds, summary stays null). api_key_file: path to a file with the API key — if it parses as JSON the key is read from .auth.api_key, otherwise the trimmed file content is the raw key; unset means no Authorization header. Never put the key value itself in this file.",
+  "summarizer": {
+    "base_url": "http://127.0.0.1:8000/v1",
+    "model": "your-model-id",
+    "api_key_file": ""
+  },
+
+  "_comment_keeper_export_dir": "Optional directory. When set, `comms keep <id>` also writes a distilled markdown note (title, url, date, summary — never the raw transcript). Leave unset to disable export.",
+  "keeper_export_dir": "",
+
+  "_comment_relevance": "General Feed personalization. profile_paths accepts exact Markdown files or non-recursive directories of focus lenses. provider=openai uses the same authenticated oMLX server as the summarizer through /v1/embeddings; provider=ollama keeps compatibility with /api/embed and requests immediate unload after each revision-cached batch. query_prefix/document_prefix are model input roles, not provider behavior; multilingual E5 requires the values shown. If unavailable, Comms stores an explicitly labeled lexical score instead of pretending it is semantic. api_key_file follows the summarizer contract.",
+  "relevance": {
+    "profile_paths": [],
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "model": "multilingual-e5-base-mlx",
+    "query_prefix": "query: ",
+    "document_prefix": "passage: ",
+    "api_key_file": "~/.omlx/settings.json"
+  },
+
+  "_comment_travel_context": "Optional read-only Trips context for Feed ranking. Comms reads the existing Trips HTTP API, retains only a bounded snapshot of upcoming plan title, destinations, dates and interests, and keeps using the last successful snapshot during a temporary outage. Traveler names and itinerary payloads are not copied.",
+  "travel_context": {
+    "enabled": true,
+    "base_url": "http://127.0.0.1:8086",
+    "max_plans": 20,
+    "timeout_ms": 2000
+  },
+
+  "_comment_vault_link_sources": "Explicit Markdown files that may supply Feed links. Never point this at the vault root. heading limits a messy note such as Scratchpad.md to one deliberate section and stops at the next heading of the same or higher level. A missing heading returns zero candidates. Fenced code, frontmatter and credential-looking URLs are ignored.",
+  "vault_link_sources": [
+    {
+      "id": "reading-list",
+      "path": "~/path/to/vault/Links.md",
+      "heading": null,
+      "enabled": false
+    }
+  ],
+
+  "_comment_feed_sources": "General Feed collectors. Omit this field to use the public GitHub Trending daily and recent arXiv AI defaults; set [] to disable all. arxiv.query uses the official arXiv search_query grammar. limit is bounded by each adapter. Personal saved queries belong only in axon-overlay.",
+  "feed_sources": [
+    {
+      "id": "github-trending-daily",
+      "adapter": "github-trending",
+      "enabled": true,
+      "language": null,
+      "since": "daily",
+      "limit": 12
+    },
+    {
+      "id": "arxiv-ai-recent",
+      "adapter": "arxiv",
+      "enabled": true,
+      "query": "cat:cs.AI OR cat:cs.LG OR cat:cs.CL",
+      "limit": 12
+    }
+  ],
+
+  "_comment_rules": "Config-driven classification rules, evaluated first (first match wins) before the built-in heuristics. Each rule: { match: { from_contains?: [..], subject_contains?: [..], has_list_unsubscribe?: bool }, stream: one of aktiv|issue|feed|werbung|belege|steuern|sonstiges, note: '<one-line rationale>' }. Keep anything personal (real sender addresses) in the private overlay, never here.",
+  "rules": [
+    {
+      "match": { "subject_contains": ["invoice", "rechnung"], "from_contains": ["noreply"] },
+      "stream": "belege",
+      "note": "transaktionaler Beleg von einem Noreply-Absender"
+    }
+  ]
+}

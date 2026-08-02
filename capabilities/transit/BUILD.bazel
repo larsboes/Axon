@@ -1,0 +1,99 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# README.md is otherwise private to this package -- exported so the root
+# //:architecture_up_to_date_test can reference it across the package boundary.
+# Visibility only, no effect on the Rust build. See root BUILD.bazel.
+exports_files(["README.md", "service.toml"])
+
+# Deps come from @crate_index (scouting's registry, shared with this crate),
+# not a separate @crate_index_transit -- once scouting started consuming
+# transit's types directly (adapters/transit_fare.rs, Journey -> Opportunity
+# via serde), two independently-resolved crate universes meant two distinct,
+# binary-incompatible `serde::Serialize` impls for the "same" crate version,
+# a real compile error, not a style preference. See MODULE.bazel and
+# MODULE.bazel's crate_index block for the full
+# reasoning; @crate_index_transit is retired, not merely unused.
+#
+# Library target is "transit_lib" (not "transit") with an explicit crate_name
+# override, unlike scouting's BUILD.bazel (which could just name the library
+# target "scouting" directly, since its Cargo binary is named "scout", a
+# different name). Here Cargo.toml's [[bin]] is ALSO named "transit" (same as
+# the [lib] name) -- a same-package Bazel target-name collision if both used
+# the bare name "transit". crate_name keeps `use transit::...` resolving
+# correctly from main.rs while letting the *binary* target (below) claim the
+# name "transit", so `bazel-bin/capabilities/transit/transit` matches what
+# `cargo build` produces at `target/debug/transit`.
+rust_library(
+    name = "transit_lib",
+    crate_name = "transit",
+    crate_root = "src/lib.rs",
+    # Globbed rather than listed — see capabilities/scouting/BUILD.bazel for why the
+    # hand-maintained inventory was the drift risk (Axon#13). Binary roots excluded because
+    # they are their own crates; the //libs source stays explicit because a glob cannot
+    # cross a package boundary.
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]) + [
+        "//libs/axon-config:src/lib.rs",
+    ],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index//:html2text",
+        "@crate_index//:mailparse",
+        "@crate_index//:pdf-extract",
+        "@crate_index//:postgres",
+        "@crate_index//:regex",
+        "@crate_index//:reqwest",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:thiserror",
+    ],
+)
+
+# Runs the same #[cfg(test)] modules `cargo test` already exercises (extractor
+# parsing, HAFAS response parsing + split-ticket DP, config resolution).
+rust_test(
+    name = "transit_test",
+    crate = ":transit_lib",
+    size = "small",
+)
+
+rust_binary(
+    name = "transit",
+    srcs = ["src/main.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":transit_lib",
+        "@crate_index//:serde_json",
+    ],
+)
+
+# main.rs carries its own #[cfg(test)] module -- the session date math: window
+# sampling, and the explicit --dates parsing/thinning added with calendar's
+# feasible windows. `cargo test` has always run it; `bazel test //...` did not,
+# because the rust_test above covers the library crate only and a binary crate
+# needs its own target to be reached at all.
+rust_test(
+    name = "transit_plan_test",
+    crate = ":transit",
+    size = "small",
+)
+
+# transit-server: transit's own HTTP API (axum). See
+# dashboard/README.md — reopens the
+# prior no-server call now that dashboard is a named consumer.
+rust_binary(
+    name = "transit-server",
+    crate_root = "src/server.rs",
+    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs", "//libs/axon-config:src/lib.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":transit_lib",
+        "@crate_index//:axum",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:tokio",
+        "@crate_index//:tower-http",
+    ],
+)

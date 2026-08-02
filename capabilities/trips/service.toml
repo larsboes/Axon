@@ -1,0 +1,16 @@
+# trips — persistent plan/itinerary state for the dashboard's cross-capability view.
+kind        = "process"
+name        = "trips"
+command     = ["bazel-bin/capabilities/trips/trips-server"]
+build       = ["bazel", "build", "//capabilities/trips:trips-server"]
+port        = "8086"
+health_path = "/health"
+# `/trips` is a dashboard route (the redirect stub to `/travel`), so only
+# `/trips/api` is proxied to this process. Without this the uniform rule in
+# vite.config.ts claims the whole `/trips` prefix, the SvelteKit page becomes
+# unreachable, and an old `/trips` bookmark gets the trips server's bare 404
+# instead of the redirect. Every dashboard call already targets `/trips/api/…`
+# (dashboard/src/lib/api.ts), and every server route already lives under `/api`.
+proxy_api_only = "true"
+
+requires = ["postgres"]

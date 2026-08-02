@@ -1,0 +1,142 @@
+#!/bin/bash
+# tools/release — cut a versioned release of Axon. The maintainer companion to tools/update.sh:
+# update.sh is how a checkout CONSUMES releases; this is how one is CUT. It computes the next
+# semver tag, gates on a clean & green tree, generates notes from the manifest-aware delta
+# (tools/lib/delta.sh — the SAME categorized view update.sh shows, so notes never drift from what
+# a consumer sees), and creates an annotated git tag.
+#
+# Outward-facing actions are opt-in. The default creates a LOCAL tag only and prints the notes;
+# pushing the tag and publishing a GitHub release each take an explicit flag, because the repo is
+# not public yet and a push/publish is not something to do on a bare "release".
+#
+#   tools/release --patch|--minor|--major   # bump from the latest tag (first release: --minor -> v0.1.0)
+#   tools/release vX.Y.Z                     # explicit version
+#   tools/release ... --push                 # also push the tag to origin
+#   tools/release ... --gh                   # also publish a gh release (implies --push)
+#   tools/release ... --force                # skip the clean/on-main/not-behind/doctor gate
+#   tools/release --notes-only               # print the notes that WOULD be generated, cut nothing
+#   tools/release -h
+#
+# Exit 0 = tag created (or notes printed), 1 = gate/usage failure. bash 3.2-safe (README.md#portable-shell).
+set -euo pipefail
+
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/lib/paths.sh
+source "$TOOLS_DIR/lib/paths.sh"     # AXON_ROOT, toml_*
+# shellcheck source=tools/lib/delta.sh
+source "$TOOLS_DIR/lib/delta.sh"     # latest_release_ref, print_manifest_delta, ver_gt, norm_ver
+
+LEVEL=""; VERSION=""; PUSH=0; GH=0; FORCE=0; NOTES_ONLY=0
+for a in "$@"; do
+  case "$a" in
+    --patch|--minor|--major) LEVEL="${a#--}" ;;
+    --push)       PUSH=1 ;;
+    --gh)         GH=1 ;;
+    --force)      FORCE=1 ;;
+    --notes-only) NOTES_ONLY=1 ;;
+    -h|--help)    sed -n '2,24p' "$0"; exit 0 ;;
+    v[0-9]*)      VERSION="$a" ;;
+    *) echo "release: unknown arg '$a'" >&2; exit 1 ;;
+  esac
+done
+[ "$GH" -eq 1 ] && PUSH=1   # a gh release must reference the pushed tag
+
+# bump <base vX.Y.Z|empty> <patch|minor|major> — next semver tag. Empty base = first release,
+# bumping from 0.0.0 (so --minor -> v0.1.0, --patch -> v0.0.1, --major -> v1.0.0).
+bump() {
+  local base M m p
+  base="$(norm_ver "${1:-0.0.0}")"
+  M="$(printf '%s' "$base" | cut -d. -f1)"; m="$(printf '%s' "$base" | cut -d. -f2)"; p="$(printf '%s' "$base" | cut -d. -f3)"
+  M="${M:-0}"; m="${m:-0}"; p="${p:-0}"
+  case "$2" in
+    major) M=$((M + 1)); m=0; p=0 ;;
+    minor) m=$((m + 1)); p=0 ;;
+    patch) p=$((p + 1)) ;;
+  esac
+  printf 'v%s.%s.%s' "$M" "$m" "$p"
+}
+
+# The notes baseline: the previous release tag, or the root commit for a first release.
+LATEST_TAG="$(latest_release_ref)"
+if [ -n "$LATEST_TAG" ]; then
+  NOTES_FROM="$LATEST_TAG"; FIRST=0
+else
+  NOTES_FROM="$(git -C "$AXON_ROOT" rev-list --max-parents=0 HEAD | tail -1)"; FIRST=1
+fi
+
+gen_notes() {  # gen_notes <version> > <file>
+  echo "$1"
+  echo
+  [ "$FIRST" -eq 1 ] && { echo "First tagged release."; echo; }
+  print_manifest_delta "$NOTES_FROM" HEAD
+}
+
+if [ "$NOTES_ONLY" -eq 1 ]; then
+  gen_notes "${VERSION:-<next>}"
+  exit 0
+fi
+
+# Resolve the version to cut.
+if [ -z "$VERSION" ]; then
+  [ -n "$LEVEL" ] || { echo "release: give a version (vX.Y.Z) or a bump (--patch/--minor/--major)" >&2; exit 1; }
+  VERSION="$(bump "$LATEST_TAG" "$LEVEL")"
+fi
+printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+  || { echo "release: '$VERSION' is not a vX.Y.Z version" >&2; exit 1; }
+if git -C "$AXON_ROOT" rev-parse --verify --quiet "refs/tags/$VERSION" >/dev/null 2>&1; then
+  echo "release: tag $VERSION already exists" >&2; exit 1
+fi
+if [ -n "$LATEST_TAG" ] && ! ver_gt "$(norm_ver "$VERSION")" "$(norm_ver "$LATEST_TAG")"; then
+  echo "release: $VERSION is not greater than the latest release $LATEST_TAG" >&2; exit 1
+fi
+
+# The gate — a tag is only trustworthy if the tree it points at is clean and green.
+gate() {
+  local fail=0 br behind
+  if [ -n "$(git -C "$AXON_ROOT" status --porcelain)" ]; then
+    echo "release: working tree not clean — commit or stash first." >&2; fail=1
+  fi
+  br="$(git -C "$AXON_ROOT" branch --show-current)"
+  if [ "$br" != "main" ]; then
+    echo "release: on branch '$br', not 'main' — releases are cut from main." >&2; fail=1
+  fi
+  git -C "$AXON_ROOT" fetch --quiet origin main 2>/dev/null || true
+  behind="$(git -C "$AXON_ROOT" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
+  if [ "${behind:-0}" -gt 0 ]; then
+    echo "release: $behind commit(s) behind origin/main — tools/update.sh first." >&2; fail=1
+  fi
+  if ! "$TOOLS_DIR/doctor" >/dev/null 2>&1; then
+    echo "release: tools/doctor reports problems — fix them, or re-run with --force (knowingly)." >&2; fail=1
+  fi
+  return "$fail"
+}
+
+if [ "$FORCE" -eq 0 ]; then
+  if ! gate; then echo "release: gate failed — not cutting $VERSION." >&2; exit 1; fi
+else
+  echo "release: --force — skipping the clean/on-main/not-behind/doctor gate." >&2
+fi
+
+NOTES_FILE="$(mktemp)"
+trap 'rm -f "$NOTES_FILE"' EXIT
+gen_notes "$VERSION" > "$NOTES_FILE"
+
+echo "Release notes for $VERSION (baseline: ${LATEST_TAG:-root}):"
+echo
+sed 's/^/  /' "$NOTES_FILE"
+echo
+
+git -C "$AXON_ROOT" tag -a "$VERSION" -F "$NOTES_FILE"
+echo "release: created local annotated tag $VERSION"
+
+if [ "$PUSH" -eq 1 ]; then
+  git -C "$AXON_ROOT" push origin "$VERSION"
+  echo "release: pushed $VERSION to origin"
+else
+  echo "release: local only — push with: git push origin $VERSION   (or re-run with --push)"
+fi
+
+if [ "$GH" -eq 1 ]; then
+  gh release create "$VERSION" --title "$VERSION" --notes-file "$NOTES_FILE"
+  echo "release: published gh release $VERSION"
+fi

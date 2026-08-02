@@ -1,0 +1,32 @@
+# home-automation pack
+
+Reusable operator workflows for Home Assistant and related private-network services. The Pack
+contains generic mechanisms only; the active overlay supplies every residence fact, endpoint,
+entity ID, automation, device inventory, component pin, and secret reference.
+
+## Skills
+
+- `homectl` materializes overlay-owned automation templates and vendors overlay-owned component
+  pins.
+- `ha-cli` queries and controls Home Assistant and can create a private overlay inventory.
+- `ha-deploy` validates, reloads, and verifies an existing Home Assistant deployment.
+- `ha-dashboard` and `energy-dashboard` operate Home Assistant presentation surfaces.
+- `fritz`, `netmon`, and `pihole` inspect explicitly configured private-network services.
+- `esphome` operates an explicitly configured ESPHome environment without declaring one public
+  deployment.
+
+## Activate
+
+```sh
+"$AXON_ROOT/tools/packs.sh" link home-automation
+"$AXON_ROOT/tools/packs-codex" deploy home-automation
+```
+
+## Ownership boundary
+
+Axon owns these harness-neutral workflows. The active family overlay owns its host, household
+devices, automations, network topology, deployed configuration, and recovery evidence. Another deployment
+can reuse the same Pack with a different overlay without copying family state into Axon.
+
+External dependencies and adopted influences are recorded in `upstreams.toml`; private component
+sets remain in the overlay that runs them.

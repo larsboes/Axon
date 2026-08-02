@@ -1,0 +1,78 @@
+load(":repositories.bzl", "BUN_VERSION")
+load(":toolchain.bzl", "bun_smoke_check", "bun_toolchain")
+
+toolchain_type(name = "toolchain_type")
+
+bun_toolchain(
+    name = "bun_darwin_aarch64_toolchain_impl",
+    bun_binary = "@bun_darwin_aarch64//:bun",
+    version = BUN_VERSION,
+)
+
+toolchain(
+    name = "bun_darwin_aarch64_toolchain",
+    target_compatible_with = [
+        "@platforms//os:macos",
+        "@platforms//cpu:aarch64",
+    ],
+    toolchain = ":bun_darwin_aarch64_toolchain_impl",
+    toolchain_type = ":toolchain_type",
+)
+
+bun_toolchain(
+    name = "bun_darwin_x64_toolchain_impl",
+    bun_binary = "@bun_darwin_x64//:bun",
+    version = BUN_VERSION,
+)
+
+toolchain(
+    name = "bun_darwin_x64_toolchain",
+    target_compatible_with = [
+        "@platforms//os:macos",
+        "@platforms//cpu:x86_64",
+    ],
+    toolchain = ":bun_darwin_x64_toolchain_impl",
+    toolchain_type = ":toolchain_type",
+)
+
+bun_toolchain(
+    name = "bun_linux_aarch64_toolchain_impl",
+    bun_binary = "@bun_linux_aarch64//:bun",
+    version = BUN_VERSION,
+)
+
+toolchain(
+    name = "bun_linux_aarch64_toolchain",
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:aarch64",
+    ],
+    toolchain = ":bun_linux_aarch64_toolchain_impl",
+    toolchain_type = ":toolchain_type",
+)
+
+bun_toolchain(
+    name = "bun_linux_x64_toolchain_impl",
+    bun_binary = "@bun_linux_x64//:bun",
+    version = BUN_VERSION,
+)
+
+toolchain(
+    name = "bun_linux_x64_toolchain",
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    toolchain = ":bun_linux_x64_toolchain_impl",
+    toolchain_type = ":toolchain_type",
+)
+
+# bazel build //tools/bazel/bun:smoke && cat bazel-bin/tools/bazel/bun/smoke.version.txt
+# Proves toolchain resolution + hermetic execution actually work, not just
+# that the targets declare cleanly.
+bun_smoke_check(name = "smoke")
+
+# repositories.bzl is the declared source of truth for the bun version. //:bun_pin_equality_test
+# reads it as a plain file to prove ci.yml and upstreams.toml still agree with it (#40); this is
+# a sibling package, so the root package cannot reach the file without an export.
+exports_files(["repositories.bzl"])

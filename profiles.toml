@@ -1,0 +1,33 @@
+# Axon Pack profiles — named use-cases that deploy a set of Packs together.
+# Run `tools/packs-codex use` to pick one interactively, or
+# `tools/packs-codex use <name>` to activate directly.
+
+[[profile]]
+name = "productive"
+description = "Daily driver — coding, prose, academic writing"
+packs = ["writing", "unslop", "academic-writing"]
+
+[[profile]]
+name = "home"
+description = "Home automation, network, devices, CV, 3D printing"
+packs = ["home-automation", "3d-printing", "cv"]
+
+[[profile]]
+name = "writing"
+description = "Academic writing and prose"
+packs = ["academic-writing", "writing"]
+
+[[profile]]
+name = "coding"
+description = "Code quality and writing tools"
+packs = ["writing", "unslop"]
+
+[[profile]]
+name = "knowledge"
+description = "LLM-maintained Obsidian wiki"
+packs = ["llm-wiki"]
+
+[[profile]]
+name = "full"
+description = "All packs"
+packs = ["*"]

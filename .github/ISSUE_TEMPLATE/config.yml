@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/larsboes/Axon/security/policy
+    about: Use the private reporting route. Do not disclose vulnerability details in an issue.

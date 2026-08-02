@@ -1,0 +1,113 @@
+#!/bin/bash
+# Source this from any Axon/capability script instead of hardcoding paths.
+# Exports AXON_ROOT and AXON_OVERLAY_ROOT, resolved dynamically so nothing
+# breaks if either repo gets moved/renamed — set the overlay once, everything
+# downstream picks it up automatically.
+#
+# The overlay location is read from axon.local.toml (gitignored, one per machine,
+# written by tools/install.sh) and falls back to axon.toml's shipped default. That
+# order is what lets a second machine exist without editing a tracked file, and the
+# fallback is what keeps the Bazel gates working — the sandbox materializes the
+# tracked axon.toml and never sees a gitignored sibling.
+
+# Self-locate this file's dir. Under bash, BASH_SOURCE[0] is the sourced path;
+# under zsh (e.g. sourced from ~/.zshrc) BASH_SOURCE is unset, so fall back to
+# $0, which zsh sets to the sourced file's path. POSIX ${:-} keeps this bash 3.2-safe.
+_lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+AXON_ROOT="$(cd "$_lib/../.." && pwd)"
+export AXON_ROOT
+source "$_lib/toml.sh"
+
+_overlay_raw=""
+if [ -f "$AXON_ROOT/axon.local.toml" ]; then
+  _overlay_raw="$(toml_get overlay "$AXON_ROOT/axon.local.toml")"
+fi
+if [ -z "$_overlay_raw" ]; then
+  _overlay_raw="$(toml_get overlay "$AXON_ROOT/axon.toml")"
+fi
+if [ -z "$_overlay_raw" ]; then
+  echo "paths.sh: no 'overlay' in $AXON_ROOT/axon.local.toml or $AXON_ROOT/axon.toml — run tools/install.sh" >&2
+  return 1 2>/dev/null || exit 1
+fi
+# AXON_OVERLAY_ROOT is the canonical active deployment overlay. Keep the historical
+# AXON_PERSONAL_ROOT export as a compatibility alias for existing private scripts.
+AXON_OVERLAY_ROOT="${_overlay_raw/#\~/$HOME}"
+AXON_PERSONAL_ROOT="$AXON_OVERLAY_ROOT"
+export AXON_OVERLAY_ROOT AXON_PERSONAL_ROOT
+# This machine's own facts (os, container_runtime, capabilities, state mounts) live in
+# one file inside the overlay. An overlay describes a deployment, and a deployment may
+# own several machines, so the file is selected rather than assumed. Three ways in,
+# most specific first:
+#
+#   1. `machine = "<name>"` in axon.local.toml — that file is gitignored and per-machine
+#      already, which makes it the honest place to say which machine this is. It also
+#      lets a host carry a role name ("service-node") instead of whatever DNS calls it.
+#   2. <overlay>/config/machines/<short-hostname>.toml — zero config for the common case.
+#   3. <overlay>/config/machine.toml — the original single-machine layout, still valid.
+#      An overlay that never grows a second machine never has to change.
+#
+# Machine names are private facts: they live in the overlay and in a gitignored file, and
+# no generator that writes a tracked artifact reads them.
+AXON_MACHINES_DIR="$AXON_OVERLAY_ROOT/config/machines"
+_machine_name=""
+if [ -f "$AXON_ROOT/axon.local.toml" ]; then
+  _machine_name="$(toml_get machine "$AXON_ROOT/axon.local.toml")"
+fi
+if [ -n "$_machine_name" ]; then
+  AXON_MACHINE_TOML="$AXON_MACHINES_DIR/$_machine_name.toml"
+  if [ ! -f "$AXON_MACHINE_TOML" ]; then
+    echo "paths.sh: axon.local.toml names machine '$_machine_name', but $AXON_MACHINE_TOML does not exist" >&2
+    return 1 2>/dev/null || exit 1
+  fi
+else
+  _host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "")"
+  if [ -n "$_host" ] && [ -f "$AXON_MACHINES_DIR/$_host.toml" ]; then
+    AXON_MACHINE_TOML="$AXON_MACHINES_DIR/$_host.toml"
+  else
+    AXON_MACHINE_TOML="$AXON_OVERLAY_ROOT/config/machine.toml"
+  fi
+fi
+export AXON_MACHINE_TOML AXON_MACHINES_DIR
+unset _machine_name _host
+
+# Capability manifests resolve from two roots. Public Axon holds reusable capabilities;
+# the active overlay holds deployment-specific ones, which is what keeps private services
+# out of a repository meant for publication. Overlay capabilities are runtime-visible
+# only: generators that write tracked artifacts (tools/self.ts, generate-architecture.sh)
+# deliberately scan AXON_CAPS_DIR alone, because a capability name is itself a fact about
+# a private deployment.
+AXON_CAPS_DIR="$AXON_ROOT/capabilities"
+AXON_OVERLAY_CAPS_DIR="$AXON_OVERLAY_ROOT/capabilities"
+export AXON_CAPS_DIR AXON_OVERLAY_CAPS_DIR
+
+# <name> -> its service.toml path on stdout. Exit 1 when the name has no manifest,
+# exit 2 when both roots declare it. A duplicate is refused rather than resolved by
+# path order: silently starting whichever root sorted first is a worse failure than
+# stopping, because the two manifests are different services wearing one name.
+axon_manifest_for() {
+  local name="$1" root_mf="" overlay_mf=""
+  if [ -f "$AXON_CAPS_DIR/$name/service.toml" ]; then
+    root_mf="$AXON_CAPS_DIR/$name/service.toml"
+  fi
+  if [ -f "$AXON_OVERLAY_CAPS_DIR/$name/service.toml" ]; then
+    overlay_mf="$AXON_OVERLAY_CAPS_DIR/$name/service.toml"
+  fi
+  if [ -n "$root_mf" ] && [ -n "$overlay_mf" ]; then
+    echo "paths.sh: capability '$name' is declared in both roots:" >&2
+    echo "  $root_mf" >&2
+    echo "  $overlay_mf" >&2
+    echo "Rename one — they are two different services sharing a name." >&2
+    return 2
+  fi
+  if [ -n "$root_mf" ]; then echo "$root_mf"; return 0; fi
+  if [ -n "$overlay_mf" ]; then echo "$overlay_mf"; return 0; fi
+  # A spine component carries its manifest at the repo root instead (today: dashboard/),
+  # because it is not a capability and never appears in machine.toml's enabled set.
+  if [ -f "$AXON_ROOT/$name/service.toml" ]; then
+    echo "$AXON_ROOT/$name/service.toml"
+    return 0
+  fi
+  return 1
+}
+
+unset _overlay_raw _lib

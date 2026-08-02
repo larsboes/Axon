@@ -1,0 +1,20 @@
+[package]
+name = "axon-server"
+version = "0.1.0"
+edition = "2021"
+description = "The one way a capability server binds: 127.0.0.1, the runner's port contract, uniform startup logging and bind-failure behavior."
+publish = false
+
+[lib]
+name = "axon_server"
+path = "src/lib.rs"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["net"] }
+
+# Same contract as libs/axon-config: the test mod runs standalone only, never
+# inside a consumer's test binary (see that crate's Cargo.toml for the why).
+[features]
+default = ["standalone-tests"]
+standalone-tests = []

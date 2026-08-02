@@ -1,0 +1,3 @@
+# Local dev fallback config (see config.rs / README) -- never commit real values.
+transit.config.json
+/target

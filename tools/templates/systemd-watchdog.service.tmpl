@@ -1,0 +1,24 @@
+[Unit]
+Description=Axon watchdog for __CAPABILITY__
+# Ordering only: don't hold up boot if the network isn't up yet — the watchdog
+# retries on its own 30s loop anyway.
+After=network-online.target
+
+[Service]
+Type=simple
+# watchdog.sh loops forever calling `service-runner.sh start`, so under normal
+# operation it never exits; Restart=always is the safety net for the case it dies.
+ExecStart=__WATCHDOG_PATH__ __CAPABILITY__
+Restart=always
+RestartSec=5
+# systemd --user hands a minimal environment that omits where container runtimes
+# and interpreters live, exactly like launchd — inject the resolved PATH so the
+# watchdog can find them (the systemd analogue of the launchd plist's PATH key).
+Environment=PATH=__PATH__
+# append: not truncate, so a restart doesn't wipe the prior run's log. Matches the
+# launchd plist's StandardOutPath/StandardErrorPath.
+StandardOutput=append:__LOG_OUT__
+StandardError=append:__LOG_ERR__
+
+[Install]
+WantedBy=default.target

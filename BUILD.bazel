@@ -1,0 +1,307 @@
+# Originally empty (required so rules_rust's crate_universe bzlmod extension can resolve the
+# workspace root directory via a Label at analysis time) -- now also home to the two targets
+# below. They live here, in the root package, rather than in a tools/BUILD.bazel, specifically
+# so glob() can reach every capability's README.md/service.toml and every Pack's pack.toml in
+# one call: those files belong to THIS package (capabilities/ and Packs/ have no BUILD.bazel
+# of their own to cut them into subpackages), so a glob from tools/ couldn't see them at all.
+#
+# capabilities/scouting, capabilities/transit, and libs/ai-client ARE their own
+# Bazel packages (their own BUILD.bazel, Rust crates), so glob() from this package can't
+# reach their README.md -- referenced as explicit cross-package labels below instead.
+# dashboard/ (the spine shell) has no BUILD.bazel (dashboard/README.md/
+# README.md), so it's still part of this package and glob() reaches it fine.
+# See README.md, "Generated architecture" and "Argue Bazel per case", for why these
+# targets exist in Bazel at all.
+
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+_ARCHITECTURE_INPUTS = [
+    "axon.toml",
+    "upstreams.toml",
+    "systems.toml",
+    "tools/lib/paths.sh",
+    "tools/lib/toml.sh",
+    # Every subpackage capability needs BOTH labels. README.md feeds the What column;
+    # service.toml feeds Service, Port and Panel. Only calendar's service.toml was listed
+    # here until 2026-07-30, so the six below were invisible to the generator inside the
+    # sandbox — latent while the generator emitted nothing from a process manifest (an
+    # em dash either way, so no diff), and immediately visible the moment it started
+    # emitting `port` (Axon#39). That is the Axon#30 false-green class, now gated by
+    # tools/check-bazel-package-labels.sh, which scopes its search to THIS list — the
+    # same labels also appear in //:service_toml_schema_test's data below, and satisfying
+    # that target proves nothing about this one.
+    "//capabilities/comms:README.md",
+    "//capabilities/comms:service.toml",
+    "//capabilities/scouting:README.md",
+    "//capabilities/scouting:service.toml",
+    "//capabilities/transit:README.md",
+    "//capabilities/transit:service.toml",
+    "//capabilities/trips:README.md",
+    "//capabilities/trips:service.toml",
+    "//capabilities/axon-status:README.md",
+    "//capabilities/axon-status:service.toml",
+    "//capabilities/punctuality:README.md",
+    "//capabilities/punctuality:service.toml",
+    "//capabilities/calendar:README.md",
+    "//capabilities/calendar:service.toml",
+    "//capabilities/soundscape:README.md",
+    "//capabilities/soundscape:service.toml",
+    "//libs/ai-client:README.md",
+    "//libs/axon-config:README.md",
+    "//libs/axon-server:README.md",
+    "//libs/inference:README.md",
+    "//libs/overlay:README.md",
+    # The generator discovers spine apps via the root-level */service.toml glob; the
+    # sandbox only materializes declared files, so the manifest must be data here or
+    # the sandbox regeneration silently loses the dashboard row (caught by this very
+    # gate the first time the glob landed without it).
+    #
+    # Explicit labels rather than globs since 2026-07-31: dashboard/ got its own
+    # BUILD.bazel when it was wired into the build graph, which makes it a separate
+    # package that a glob from here cannot reach -- the same mechanism spelled out
+    # for libs/ below, and it fails loudly at load time rather than silently.
+    "//dashboard:README.md",
+    "//dashboard:service.toml",
+] + glob([
+    "capabilities/*/README.md",
+    "capabilities/*/service.toml",
+    "Packs/*/pack.toml",
+])
+# libs/*/README.md is NOT globbed: README.md#three-architectural-nouns requires every lib to have its own BUILD.bazel
+# from day one, so each one is always a separate Bazel package glob() from here can't
+# reach -- add an explicit "//libs/<name>:README.md" label above instead, same as
+# capabilities/scouting and capabilities/transit.
+
+sh_binary(
+    name = "generate_architecture",
+    srcs = ["tools/generate-architecture.sh"],
+    data = _ARCHITECTURE_INPUTS,
+)
+
+sh_test(
+    name = "architecture_up_to_date_test",
+    size = "small",
+    srcs = ["tools/check-architecture-fresh.sh"],
+    data = _ARCHITECTURE_INPUTS + [
+        "ARCHITECTURE.md",
+        "tools/generate-architecture.sh",
+    ],
+)
+
+# Rebuilds the local code-dependency graph via graphify (upstreams.toml [graphify]).
+# `bazel run //:graphify`, mirroring generate_architecture above -- but this one's
+# output (graphify-out/) is git-ignored, not committed: see
+# tools/graphify.sh.
+sh_binary(
+    name = "graphify",
+    srcs = ["tools/graphify.sh"],
+    data = [
+        "tools/lib/paths.sh",
+        "tools/lib/toml.sh",
+    ],
+)
+
+# The self-reference class from the decisions/ dissolution's link rewriter:
+# a doc citing its own path as if pointing somewhere else. Scope = the same
+# README/manifest set the architecture gate already materializes, plus the
+# Pack docs where the 2026-07-29 audit found the sibling class.
+sh_test(
+    name = "doc_self_reference_test",
+    size = "small",
+    srcs = ["tools/check-doc-self-references.sh"],
+    data = _ARCHITECTURE_INPUTS + glob([
+        "Packs/*/README.md",
+        "Packs/*/skills/*/SKILL.md",
+    ]),
+)
+
+# The gate above over planted trees rather than real docs, because its `data` is
+# repo docs only: until 2026-08-02 the red path had never run in CI, and it was
+# wrong in both directions -- silently green on a path containing a space, and
+# falsely red on a doc naming a longer path that merely starts with its own.
+sh_test(
+    name = "doc_self_reference_regression_test",
+    size = "small",
+    srcs = ["tools/check-doc-self-references.test.sh"],
+    data = ["tools/check-doc-self-references.sh"],
+)
+
+# Version ordering for tools/upstream-checker. Hermetic on purpose -- the helpers were
+# extracted into tools/lib/version.sh precisely so the comparison can be tested without
+# a network call, after treating "differs from the pin" as "newer than the pin" produced
+# a cooldown warning telling the operator not to adopt a version they were already ahead
+# of (arrow-rs, 2026-07-28).
+sh_test(
+    name = "version_compare_test",
+    size = "small",
+    srcs = ["tools/version.test.sh"],
+    data = ["tools/lib/version.sh"],
+)
+
+# One bun version, three files. repositories.bzl is the declared source of truth and
+# nothing enforced it, so a bump could leave the other two behind with CI green (#40).
+# The workflow is named explicitly because .github/ is outside every glob in this file
+# -- which is exactly why the gate did not already exist.
+sh_test(
+    name = "bun_pin_equality_test",
+    size = "small",
+    srcs = ["tools/check-bun-pin.sh"],
+    data = [
+        ".github/workflows/ci.yml",
+        "upstreams.toml",
+        "//tools/bazel/bun:repositories.bzl",
+    ],
+)
+
+# The gate above over planted trees: its own `data` is the three real homes, which
+# agree, so on its own it can only ever prove the green path.
+sh_test(
+    name = "bun_pin_regression_test",
+    size = "small",
+    srcs = ["tools/check-bun-pin.test.sh"],
+    data = ["tools/check-bun-pin.sh"],
+)
+
+# Copies both libs into a scratch root, so paths.sh self-locates there rather than into
+# the real checkout. Hermetic: a temp dir, no git, no network.
+sh_test(
+    name = "manifest_resolution_test",
+    size = "small",
+    srcs = ["tools/manifest-resolution.test.sh"],
+    data = [
+        "tools/lib/paths.sh",
+        "tools/lib/toml.sh",
+    ],
+)
+
+# Same scratch-root technique, for the other half of resolution: which of an overlay's
+# machines this host is. Reads the real hostname, writes nothing outside the temp dir.
+sh_test(
+    name = "machine_resolution_test",
+    size = "small",
+    srcs = ["tools/machine-resolution.test.sh"],
+    data = [
+        "tools/lib/paths.sh",
+        "tools/lib/toml.sh",
+    ],
+)
+
+sh_test(
+    name = "publication_hygiene_test",
+    size = "small",
+    srcs = ["tools/check-publication-hygiene.test.sh"],
+    data = ["tools/check-publication-hygiene.sh"],
+)
+
+# Trivy itself owns vulnerability matching and expiry semantics. This test keeps the
+# repository-specific contract honest: each service receives only its own reviewed policy,
+# while images with no accepted findings remain unfiltered.
+sh_test(
+    name = "audit_policy_test",
+    size = "small",
+    srcs = ["tools/audit.test.sh"],
+    data = [
+        "axon.toml",
+        "tools/audit",
+        "tools/lib/paths.sh",
+        "tools/lib/toml.sh",
+    ] + glob([
+        "capabilities/*/service.toml",
+        "trivy-ignore/*.txt",
+    ]),
+)
+
+sh_test(
+    name = "backup_test",
+    size = "small",
+    srcs = ["tools/backup.test.sh"],
+    data = [
+        "tools/backup.sh",
+        "tools/lib/toml.sh",
+    ],
+)
+
+sh_test(
+    name = "agent_integrations_test",
+    size = "small",
+    srcs = ["tools/agent-integrations.test.sh"],
+    data = [
+        "axon.toml",
+        "tools/agent-integrations.sh",
+        "tools/lib/paths.sh",
+        "tools/lib/toml.sh",
+        "upstreams.toml",
+    ],
+)
+
+sh_test(
+    name = "restore_test",
+    size = "small",
+    srcs = ["tools/restore.test.sh"],
+    data = [
+        "axon.toml",
+        "capabilities/home-assistant/service.toml",
+        "capabilities/postgres/service.toml",
+        "capabilities/vaultwarden/service.toml",
+        "tools/lib/paths.sh",
+        "tools/lib/toml.sh",
+        "tools/restore.sh",
+    ],
+)
+
+# Capability-manifest schema + referential-integrity gates. Both scripts source
+# tools/lib/paths.sh (which sources toml.sh and reads axon.toml's `overlay`), then read
+# the manifests declared below. They run purely on files/dirs in the runfiles sandbox --
+# no git, no wider checkout -- see each script's header. Shared input set:
+_MANIFEST_INPUTS = [
+    "axon.toml",  # explicit (non-empty anchor); paths.sh reads `overlay` from it, and
+    # manifest_integrity reads its `capabilities = [...]` array.
+    "tools/lib/paths.sh",
+    "tools/lib/toml.sh",
+    # scouting/transit/axon-status are their own Bazel packages (own BUILD.bazel), so the
+    # capabilities/*/README.md glob below can't reach them -- reference their README.md by
+    # explicit cross-package label so those capability dirs still materialize in the sandbox
+    # (manifest_integrity's dir-existence check needs every enabled capability's dir present).
+    # Same reasoning as _ARCHITECTURE_INPUTS above.
+    "//capabilities/comms:README.md",
+    "//capabilities/scouting:README.md",
+    "//capabilities/transit:README.md",
+    "//capabilities/axon-status:README.md",
+    "//capabilities/calendar:README.md",
+    # Their service.toml files need the same treatment for the same reason: a glob in
+    # this package cannot cross a package boundary, and a manifest the sandbox cannot
+    # see is a manifest the gates silently never check.
+    "//capabilities/comms:service.toml",
+    "//capabilities/punctuality:service.toml",
+    "//capabilities/scouting:service.toml",
+    "//capabilities/transit:service.toml",
+    "//capabilities/trips:service.toml",
+    "//capabilities/axon-status:service.toml",
+    "//capabilities/calendar:service.toml",
+    "//capabilities/soundscape:service.toml",
+    # The spine's own shell carries a manifest at the repo root (README.md#three-architectural-nouns). It used
+    # to be a plain path because dashboard/ was part of THIS package; since it was wired
+    # into the build graph it has its own BUILD.bazel, so it is a label like the rest.
+    "//dashboard:service.toml",
+] + glob([
+    "capabilities/*/README.md",  # materializes every in-package capability dir in the sandbox
+    "capabilities/*/service.toml",  # the files both gates actually parse
+])
+# allow_empty stays default-false (Bazel 9 disallows empty globs): >=1 service.toml and
+# many README.md are committed, so neither pattern can be empty -- a future accidental wipe
+# should fail loudly here, not slip through.
+
+sh_test(
+    name = "service_toml_schema_test",
+    size = "small",
+    srcs = ["tools/check-service-tomls.sh"],
+    data = _MANIFEST_INPUTS,
+)
+
+sh_test(
+    name = "manifest_integrity_test",
+    size = "small",
+    srcs = ["tools/check-manifest-integrity.sh"],
+    data = _MANIFEST_INPUTS,
+)

@@ -1,0 +1,209 @@
+# Shape of a capabilities/<name>/service.toml, consumed by
+# tools/service-runner.sh. This file IS the schema (single-line TOML only,
+# see tools/lib/toml.sh) — copy it into a capability dir, fill it in, and
+# that capability is fully OS/runtime-portable with zero new shell code.
+#
+# TWO KINDS, one manifest shape. `kind` selects which half of this file applies:
+#
+#   kind = "container"  (the default when the field is absent) — everything from
+#                       `image` down to `backup_*`. The runtime runs it.
+#   kind = "process"    — a host process this machine runs directly: a compiled
+#                       binary, a dev server. See the "Process kind" section at the
+#                       bottom. Nothing containerised, no image, no tag.
+#
+# A spine component (today only dashboard/, README.md#three-architectural-nouns) may carry a service.toml
+# at the repo root instead of under capabilities/ — same schema, always in the
+# registry because the spine exists on every machine by definition.
+
+# kind   = "process"                      # omit for a container
+
+name     = "example"                      # container name, must be unique on the machine
+image    = "someorg/example"              # image repo, no tag. A registry prefix is ALLOWED and
+                                          # respected — "ghcr.io/org/thing", "localhost/mine".
+                                          # Bare names resolve on Docker Hub. (Before 2026-07-26
+                                          # the runner prefixed docker.io/ unconditionally, so a
+                                          # ghcr reference silently became docker.io/ghcr.io/…;
+                                          # see service-runner.sh's qualified_image.)
+tag      = "1.2.3"                        # ALWAYS pin — never "latest", never "stable" (Axon
+                                          # security doctrine). Pin to the version you verified,
+                                          # and prefer reading it off the running container over
+                                          # trusting a registry listing. Note a version tag is not
+                                          # a byte pin: official images get rebuilt under the same
+                                          # tag, so record the digest in a comment when byte
+                                          # identity matters.
+
+# Optional — runtime dependencies on OTHER capabilities, by directory name.
+# The dependency is on the capability's CONTRACT (HTTP surface + schema), never its
+# code (README.md#schemas-and-dependency-direction). tools/capability.sh resolves this transitively on enable;
+# bazel's manifest_integrity_test proves every target exists. NB: bare array line,
+# no inline comment (toml_array contract).
+# requires = ["postgres"]
+
+# Optional — the capability's dashboard panel (shell model, README.md#three-architectural-nouns).
+# The spine's dashboard/ discovers enabled capabilities via <overlay>/config/machine.toml
+# and mounts
+# each panel from the capability's own HTTP surface: http://127.0.0.1:<panel_port><panel_path>.
+# panel_port is the HOST-published port (the host side of `ports` above), NOT the
+# container-internal one — the dashboard dials the host. One panel per capability
+# (scalar fields — deliberate doctrine, see tools/capability.sh/).
+# A capability without these fields simply has no panel. Flat fields, not a [panel]
+# section — single-line toml.sh contract.
+# panel_port = "8080"
+# panel_path = "/ui"
+ports    = ["127.0.0.1:8080:80"]          # [host-ip:]host-port:container-port, repeatable
+volumes  = ["data/example/data:/data"]    # host side is relative to the overlay root — EXCEPT an
+                                          # absolute path, which is taken verbatim as a system path
+                                          # the machine owns rather than the overlay ("/run/dbus:/run/dbus"
+                                          # for a container needing the host message bus, "/etc/localtime:/etc/localtime").
+                                          # Overlay-relative dirs are created on start; an absolute one
+                                          # never is — if it is missing the host is not what the manifest
+                                          # assumed, and a fabricated empty dir would mount fine and quietly
+                                          # take the feature with it.
+# Track non-secret defaults in `config/example.env.example` (tracked in this repo)
+# and keep real runtime values in the selected overlay's .env file (private by
+# convention). This split keeps capabilities reproducible without storing secrets.
+env_file = "config/example.env"           # relative to the selected overlay; real values live there, never here
+
+# Optional — host networking. When set (e.g. "host") the container joins the host network
+# namespace instead of a bridge, and `ports` are NOT published (host mode binds the
+# container's own ports directly). Required by capabilities needing LAN mDNS/service
+# discovery — e.g. home-assistant finding Hue/Shelly/ESPHome. Omit for normal bridged
+# capabilities. Honored on docker/podman; apple-container host networking differs, verify there.
+# network_mode = "host"
+
+# Optional — Linux capabilities to grant beyond the runtime's default set, for an image
+# that genuinely needs one (pihole's FTLDNS binds :53 and manages its own interface, so it
+# needs NET_ADMIN). Bare names, no CAP_ prefix — docker's canonical form, and
+# apple-container accepts the same spelling. Grant the single capability the image
+# documents; --privileged is not expressible here on purpose. NB: bare array line, no
+# inline comment (toml_array contract).
+# cap_add = ["NET_ADMIN"]
+
+# Optional — only if the image chowns/chmods its data dir on startup (e.g. the official
+# postgres image) AND runs under apple-container, whose virtiofs bind mounts don't support
+# guest-side chown/chmod at all (confirmed on capabilities/postgres — see
+# schemas/service.toml.example).
+# When "true", service-runner.sh creates a real `container volume` and mounts that instead
+# of bind-mounting `volumes`' host path — apple-container only; docker/podman keep the plain
+# bind mount, their filesystem sharing has real chown support. Tradeoff: a managed volume
+# isn't a host directory, so it's invisible to tools/backup.sh's raw-copy/backup_sqlite —
+# only omit this if the image doesn't need real Unix ownership on its data dir. Don't set it
+# for "safety" on a capability that doesn't strictly need it: it trades away backup reachability
+# and host-side debuggability (ls/cat on the real files) for nothing.
+# managed_volume = "true"
+
+# Optional — only if this capability is backed up by tools/backup.sh.
+# Each completed archive embeds `axon-backup.toml` with this historical contract plus
+# the pinned image identity. tools/restore.sh verifies that identity and restores only
+# into an isolated destination; the active overlay is never a valid restore target.
+# NB: no inline comment on the array line (toml_array wants it bare).
+backup_paths  = ["data/example/data"]
+backup_sqlite = "data/example/data/db.sqlite3"  # a SQLite DB owned by the container: backup.sh holds the capability down and copies it COLD.
+                                          # Never opened from the host while the container runs — SQLite's WAL needs every
+                                          # connection on one host, and a virtiofs bind mount is not that (2026-07-25 outage).
+backup_target = "backup-target"           # a generic systems.toml role; host/ssh_user/backup_root live in overlay systems.local.toml
+backup_retain = "14"                      # keep the last N tarballs on the target (default 14)
+# backup_container_paths = ["/config"]    # paths read from INSIDE the container, for data the invoking
+                                          # user cannot read from the host. home-assistant runs as root and
+                                          # owns .storage that way (auth store, user database), so a
+                                          # host-side rsync fails on exactly the files that matter. Staged
+                                          # as a tar rather than extracted, so ownership and modes survive:
+                                          # restoring a root-owned auth store as the invoking user is the
+                                          # kind of damage that only shows up during a restore. Container
+                                          # paths, not overlay-relative ones. NB: bare array line.
+# backup_pg_dumpall = "true"              # Postgres: run pg_dumpall INSIDE the container, stage as pg_dumpall.sql.
+                                          # Use instead of backup_paths for a live cluster (raw-copy risks a torn
+                                          # backup, and a managed_volume has no host path anyway). A capability may
+                                          # declare paths, a pg dump, or both — but at least one, or backup.sh errors.
+backup_advise_days = "1"                  # how often this capability's data SHOULD be backed up.
+backup_stale_days  = "7"                  # past this age the last backup counts as overdue, not merely due.
+                                          # Two numbers because "you could" and "you have a problem" are
+                                          # different answers, and a capability whose data changes hourly and
+                                          # one that changes monthly do not share either. Read from the receipt
+                                          # backup.sh writes (overlay backup/receipts/<cap>.json) to decide what
+                                          # a surface shows. Declared before anything schedules it on purpose:
+                                          # the manual dashboard trigger reads these today and the scheduler
+                                          # reads the same two fields later, so automating is a new consumer
+                                          # rather than a new declaration. No default — a capability that
+                                          # declares a backup but no cadence is only ever reported as "last run
+                                          # <age>", never as overdue, because nothing said what timely means.
+
+# ── Process kind ───────────────────────────────────────────────────────────
+# Everything below applies ONLY to kind = "process". A process manifest declares
+# none of the container fields above — the schema gate rejects a manifest carrying
+# both, because "which half is real" must never be a guess.
+#
+# kind        = "process"
+# command     = ["bazel-bin/capabilities/example/example-server"]
+#                                           # argv ARRAY, never a shell string: the runner execs it
+#                                           # directly, so nothing is word-split, glob-expanded or
+#                                           # eval'd. Same reason comms shells out to yt-dlp with
+#                                           # argument arrays only.
+# build       = ["bazel", "build", "//capabilities/example:example-server"]
+#                                           # optional. Run when the artifact does not exist yet
+#                                           # (first start after a clone), and unconditionally on
+#                                           # `restart`. Runs IN `workdir` when one is declared, at
+#                                           # the repo root otherwise — `bun run build` has to run
+#                                           # where the package.json is. Nothing to compile: omit.
+# build_output = "capabilities/example/ui/dist"
+#                                           # optional, repo-relative — what `build` produces, and
+#                                           # therefore how "already built" is decided. REQUIRED
+#                                           # whenever command[0] is a bare interpreter (bun, uv):
+#                                           # without it the runner tests command[0] for existence,
+#                                           # a bare name on PATH always exists, and the declared
+#                                           # build silently never runs. Omit when command[0] IS the
+#                                           # built artifact (every bazel capability).
+# workdir     = "capabilities/example"      # optional, relative to AXON_ROOT; default the repo root
+# port        = "8085"                      # the host port it listens on — one per process capability.
+#                                           # Exported to the process as AXON_PORT, so a capability that
+#                                           # honours it binds exactly what the registry advertises and
+#                                           # a machine-local override needs no second edit inside the
+#                                           # capability's own config.
+# health_path = "/health"                   # optional; the runner polls http://127.0.0.1:<port><path>
+#                                           # to decide when a start actually succeeded, instead of
+#                                           # trusting that a spawned pid means a listening server
+# autostart   = "true"                      # optional. `service-runner.sh up` starts it; without it
+#                                           # the capability is on-demand — dashboard starts it when
+#                                           # you open its surface. Default: on-demand.
+#
+# Dashboard wiring (read by dashboard/vite.config.ts through the registry, so a port
+# literal lives in exactly one file):
+# proxy_extra = ["/api"]                    # optional. Extra browser-facing prefixes proxied to this
+#                                           # capability UNSTRIPPED, for surfaces whose paths predate
+#                                           # the uniform rule. Every process capability always gets
+#                                           # /<name> proxied with the prefix stripped — that one is
+#                                           # convention, not configuration, and needs no field.
+# proxy_api_only = "true"                   # optional. When the dashboard owns /<name> as a page,
+#                                           # proxy only /<name>/api and still strip /<name>.
+# panel_port  = "4242"                      # a capability that serves its OWN UI (README.md#three-architectural-nouns); the shell
+# panel_path  = "/"                         # mounts it. Omit when the dashboard renders the widget.
+# idle_timeout = "300"                      # optional, seconds. Stop this panel once nobody has looked
+#                                           # at it for that long; axon-status polls
+#                                           # http://127.0.0.1:<panel_port>/__axon/idle and stops it via
+#                                           # `service-runner.sh idle-stop` (no maintenance hold, so
+#                                           # anything may start it again). A panel served by
+#                                           # tools/panel-server.ts answers that endpoint and injects
+#                                           # the visibility heartbeat that feeds it; one served by
+#                                           # anything else never reports idle and is therefore never
+#                                           # stopped — unreadable means in use, never "kill it".
+#                                           # Ignored without panel_port, and on autostart capabilities:
+#                                           # a capability the machine is meant to keep running is not
+#                                           # idle by definition. NB: a window sitting behind another
+#                                           # window reports hidden, so it counts as unread.
+
+# tools/service-runner.sh:
+#   start <name>               -> container: dispatches by machine.toml's container_runtime
+#                                  (apple-container | docker | podman). process: execs `command`
+#                                  and waits for health. Either way a no-op while a maintenance
+#                                  hold is set, which is what stops the watchdog racing a
+#                                  maintenance window
+#   stop <name>                -> stop it AND hold it down (the hold expires, so a
+#                                  crashed holder can't strand a capability offline)
+#   restart <name>             -> stop, rebuild if `build` is declared, start
+#   resume <name>              -> lift the hold and start
+#   status <name>              -> pid/container state + live health, one line
+#   up | down | status         -> no capability argument: the whole enabled set, started in
+#                                  dependency order (`requires =`) and stopped in reverse
+#   install-persistence <name> -> dispatches by machine.toml's os; docker/podman
+#                                  skip this (native --restart), apple-container
+#                                  needs it (no restart policy in that runtime)

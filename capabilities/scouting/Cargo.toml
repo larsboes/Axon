@@ -1,0 +1,51 @@
+[package]
+name = "scouting"
+version = "0.1.0"
+edition = "2021"
+description = "Generic opportunity-discovery pipeline (events/scholarships/etc): scrape, embed, score against an interest profile, rank."
+publish = false
+
+# Inert here, and deliberately so: libs/axon-config is `#[path]`-included, and its
+# env-mutating unit tests hide behind this feature so they never run inside a consumer's
+# test binary. Declaring it is what stops every build printing unexpected_cfgs.
+[features]
+standalone-tests = []
+
+[lib]
+name = "scouting"
+path = "src/lib.rs"
+
+[[bin]]
+name = "scout"
+path = "src/main.rs"
+
+# scout-server: async (tokio + axum), reopens the prior "no HTTP server,
+# zero consumers" call now that dashboard is a named consumer — see
+# dashboard/README.md. The stale
+# "standalone Cargo crate, no Bazel plumbing" note this file used to carry
+# above [lib] predates capabilities/scouting/BUILD.bazel (already has real
+# rust_library/rust_test/rust_binary targets) — dropped rather than left
+# contradicting it.
+[[bin]]
+name = "scout-server"
+path = "src/server.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["json", "gzip", "blocking"] }
+thiserror = "1.0"
+# Sync client (not tokio-postgres directly) -- matches reqwest's "blocking"
+# feature above; scout's own CLI path still carries no async runtime, only
+# scout-server does (tokio below).
+postgres = "0.19"
+# One-directional: scouting depends on transit, never the reverse (no cycle).
+# adapters/transit_fare.rs implements SourceAdapter using transit::hafas +
+# transit::store -- same "implement SourceAdapter, add one match-arm in
+# main.rs" extension pattern every other adapter already follows (see
+# README's "Extending it"), just sourced from a sibling capability's crate
+# instead of a new HTTP client written inline.
+transit = { version = "0.1.0", path = "../transit" }
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }

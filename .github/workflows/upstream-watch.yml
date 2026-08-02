@@ -1,0 +1,83 @@
+name: upstream-watch
+
+# Watch pinned upstreams for newer releases past their cooldown so a bump stays a
+# deliberate, audited act (README.md#dependency-verdicts-and-provenance and README.md#pins-and-cooldown) instead of something noticed by
+# accident. This never bumps anything — it reports drift as a de-duplicated issue.
+# ci.yml has no schedule; this is Axon's only scheduled workflow. The drift check
+# is tools/upstream-checker (the same gate doctor and axon-status use) — one
+# implementation per rule, not a second copy here.
+
+on:
+  schedule:
+    - cron: "23 6 * * 1"   # Mondays ~06:23 UTC (off-peak; weekly matches release cadence)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: upstream drift check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Axon
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # paths.sh resolves the overlay; with no axon.local.toml it falls back to
+      # axon.toml's shipped default (~/.axon-overlay). upstream-checker reads only
+      # repo manifests, but seed the minimal overlay so paths.sh is satisfied —
+      # same approach ci.yml's svelte-check job uses. Shape: schemas/machine.toml.example.
+      - name: Minimal overlay for path resolution
+        run: |
+          mkdir -p "$HOME/.axon-overlay/config"
+          cat > "$HOME/.axon-overlay/config/machine.toml" <<'TOML'
+          os = "linux"
+          container_runtime = "docker"
+          capabilities = []
+          TOML
+
+      # gh is preinstalled on ubuntu runners; GH_TOKEN lets upstream-checker's
+      # gh_latest() query /releases/latest without hitting anonymous rate limits.
+      - name: Check upstreams for drift
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          tools/upstream-checker | tee /tmp/upstream-report.txt || true
+          # A newer release surfaces as a "newer:" note in the --json feed.
+          drift="$(tools/upstream-checker --json 2>/dev/null \
+            | jq -r '[ .entries[]? | select(any(.notes[]?; test("newer:"))) | .name ] | join(", ")' \
+            2>/dev/null || true)"
+          echo "drift=$drift" >> "$GITHUB_OUTPUT"
+
+      - name: Open or refresh drift issue
+        if: steps.check.outputs.drift != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          marker="upstream-watch:drift"
+          title="upstream drift: newer releases available (${{ steps.check.outputs.drift }})"
+          existing="$(gh issue list --state open --search "in:body \"$marker\"" --json number --jq 'length' 2>/dev/null || echo 0)"
+          if [ "${existing:-0}" != "0" ]; then
+            echo "drift issue already open; not duplicating."
+            exit 0
+          fi
+          {
+            echo "New upstream release(s) past cooldown for: **${{ steps.check.outputs.drift }}**"
+            echo
+            echo "Audit the delta (\`tools/audit\`) and bump the pin per README.md#dependency-verdicts-and-provenance and README.md#pins-and-cooldown — never auto-pull."
+            echo
+            echo '```'
+            cat /tmp/upstream-report.txt
+            echo '```'
+            echo
+            echo "<!-- $marker -->"
+          } > /tmp/issue-body.md
+          gh issue create --title "$title" --body-file /tmp/issue-body.md || echo "issue create failed"

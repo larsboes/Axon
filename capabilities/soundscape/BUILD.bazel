@@ -1,0 +1,34 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+# README.md is otherwise private to this package -- exported so the root
+# //:architecture_up_to_date_test can reference it across the package boundary.
+exports_files(["README.md", "Cargo.toml", "Cargo.lock", "service.toml"])
+
+rust_binary(
+    name = "soundscape",
+    srcs = [
+        "src/main.rs",
+        "//libs/axon-config:src/lib.rs",
+        "//libs/axon-server:src/lib.rs",
+    ],
+    crate_root = "src/main.rs",
+    edition = "2021",
+    # rules_rust does not read Cargo.toml, so without this CARGO_PKG_VERSION is
+    # "0.0.0" and /health reports a version that is not the one that shipped.
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index_soundscape//:axum",
+        "@crate_index_soundscape//:serde",
+        "@crate_index_soundscape//:serde_json",
+        "@crate_index_soundscape//:tokio",
+        "@crate_index_soundscape//:tokio-stream",
+        "@crate_index_soundscape//:tower-http",
+    ],
+)
+
+rust_test(
+    name = "soundscape_test",
+    crate = ":soundscape",
+    edition = "2021",
+)

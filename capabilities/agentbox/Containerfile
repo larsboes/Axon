@@ -1,0 +1,55 @@
+# The agentbox image: one agent binary, the handful of CLI tools its bash tool
+# reaches for, a non-root user, nothing else.
+#
+# Agent-neutral by construction — which agent, which version, which archive all
+# arrive as build args from profiles/<agent>/profile.toml. Nothing in here names pi.
+#
+# No network operation happens during this build except apt. The agent archive is
+# fetched and sha256-verified on the HOST by `agentbox build`, then handed in as the
+# build context, so the only thing that enters the image is a file whose checksum was
+# checked where you can see it.
+
+ARG BASE_IMAGE=docker.io/library/debian:trixie-20260713-slim
+
+FROM ${BASE_IMAGE}
+
+# git and ripgrep back the agent's bash tool; ca-certificates is there for the day
+# a task legitimately needs TLS. A small surface is part of the security argument.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      git \
+      ripgrep \
+      ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# UID/GID come from the invoking host user, so files the agent writes into the
+# mounted project are owned by that user instead of landing as a foreign uid 1000.
+# The group may already exist (macOS gid 20 is `dialout` on Debian), hence the guard.
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+RUN if ! getent group "${AGENT_GID}" >/dev/null; then groupadd --gid "${AGENT_GID}" agent; fi \
+ && useradd --uid "${AGENT_UID}" --gid "${AGENT_GID}" --create-home --shell /bin/bash agent
+
+ARG AGENT_NAME
+ARG ARCHIVE
+ARG ARCHIVE_ROOT
+ARG BIN_PATH
+ARG ARCHIVE_SHA256
+COPY ${ARCHIVE} /tmp/agent.tar.gz
+RUN echo "${ARCHIVE_SHA256}  /tmp/agent.tar.gz" | sha256sum -c - \
+ && mkdir -p /opt/agent \
+ && tar xzf /tmp/agent.tar.gz -C /opt/agent --strip-components=1 "${ARCHIVE_ROOT}" \
+ && rm /tmp/agent.tar.gz \
+ && ln -s "/opt/agent/${BIN_PATH}" "/usr/local/bin/${AGENT_NAME}" \
+ && ln -s "/opt/agent/${BIN_PATH}" /usr/local/bin/agent
+
+LABEL org.opencontainers.image.title="agentbox/${AGENT_NAME}"
+LABEL dev.axon.agent="${AGENT_NAME}"
+LABEL dev.axon.archive-sha256="${ARCHIVE_SHA256}"
+
+USER agent
+WORKDIR /workspace
+
+# The container IS the agent: everything appended to `container run` becomes its
+# arguments. The config directory arrives as a mount, never baked in.
+ENTRYPOINT ["/usr/local/bin/agent"]

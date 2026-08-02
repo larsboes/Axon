@@ -1,0 +1,16 @@
+# See schemas/service.toml.example for the field contract.
+name         = "pihole"
+image        = "pihole/pihole"
+tag          = "2026.07.2"
+
+# Pi-hole needs original client addresses and direct DNS binding.
+network_mode = "host"
+cap_add      = ["NET_ADMIN"]
+
+volumes      = ["data/pihole:/etc/pihole"]
+env_file     = "config/pihole.env"
+
+# Runtime state and query history are private overlay data.
+backup_container_paths = ["/etc/pihole"]
+backup_target = "backup-target"
+backup_retain = "14"

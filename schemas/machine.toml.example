@@ -1,0 +1,63 @@
+# Shape of <overlay>/config/machine.toml — everything true of ONE deployment instance.
+# Written by tools/install.sh, then maintained by tools/capability.sh (the capabilities
+# line) and by hand (state mounts). Read by tools/lib/platform.sh, tools/capability.sh,
+# tools/update.sh and tools/doctor.
+#
+# Why it lives in the overlay and not in axon.toml: axon.toml is tracked and shared, so a
+# field that differs between two machines cannot live there — one overlay is one instance,
+# so this file has exactly one machine to describe. See
+# the header above.
+#
+# Parsing contract: the scalars and the capabilities array go through tools/lib/toml.sh,
+# which is single-line only (`key = "value"` / `key = ["a", "b"]`). The [[state_mount]]
+# array-of-tables is beyond that parser on purpose and is read by tools/doctor via Bun.TOML
+# — which is why doctor is TypeScript (README.md#argue-bazel-per-case).
+
+# --- platform (required) --------------------------------------------------
+# tools/lib/platform.sh reads these so capability scripts branch on them instead of
+# assuming macOS.
+os = "linux"                       # "macos" | "linux" | "windows"
+container_runtime = "docker"       # "apple-container" | "docker" | "podman"
+
+# --- enabled capabilities (required, may be empty) -----------------------
+# Managed by tools/capability.sh enable/disable, which resolve each capability's
+# service.toml `requires = [...]` transitively. Hand-editing is legal; tools/doctor
+# re-checks that every name has a capabilities/<name>/ dir and that the set stays
+# dependency-closed. Single line, per the toml.sh contract above.
+capabilities = ["home-assistant", "vaultwarden"]
+
+# Rejected alternative: tagging each [[state_mount]] with an owning machine
+# (machines = ["mac"]) and leaving everything in axon.toml. Smaller diff, but it keeps every
+# machine's facts in one shared file and makes each node's config grow with the node count —
+# accumulating blocks that are inert everywhere except one place. And `capabilities` has no
+# sensible per-machine encoding that way at all.
+
+# --- per-capability overrides (optional) ---------------------------------
+# A capability's service.toml is tracked and shared, so it can only hold fields that are
+# true of the capability everywhere. The ones that are not — where it binds, and where its
+# backups go — are stated here per machine, and only the machine that differs states them.
+# Absent section or absent key = the service.toml value stands.
+#   ports         = [...]   read by tools/service-runner.sh, replaces the manifest array (containers)
+#   port          = "n"     read by tools/service-runner.sh for kind=process, exported as AXON_PORT
+#   backup_target = "id"    read by tools/backup.sh, a systems.toml id
+#
+# [capability.vaultwarden]
+# ports = ["127.0.0.1:8080:80"]   # localhost only; `tailscale serve` terminates TLS
+# backup_target = "some-nas"      # a systems.toml id, and never this machine itself
+
+# --- state mounts (optional, repeatable) ---------------------------------
+# Where a tool on this machine actually persists data. Axon records the tool's own default
+# location, it never relocates it (README.md#state-mounts-record-reality).
+# `tool` must match a systems.toml id, or doctor reports an undeclared system.
+#   data_class = "public" | "personal" | "vault"
+#   sync       = "git" | "restic" | "rsync" | "none"
+#   direction  = "capture" (tool -> overlay backup) | "inject" (overlay -> tool) | "both"
+#   monitor    = true | false
+
+[[state_mount]]
+tool = "some-tool"
+path = "~/some/dir"
+data_class = "personal"
+sync = "none"
+direction = "both"
+monitor = true

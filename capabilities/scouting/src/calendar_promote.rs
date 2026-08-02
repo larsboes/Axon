@@ -1,0 +1,388 @@
+//! Promotes saved Luma events into `capabilities/calendar` entries.
+//!
+//! This is the last leg of calendar's Phase A: discovery (scouting) →
+//! availability annotation (calendar). It reads opportunities the operator
+//! has already triaged to `saved`, and upserts each one through calendar's
+//! `PUT /api/entries/external` with `source = "luma"` and the stable Luma
+//! event id as `external_id`. Calendar's partial unique index on
+//! `(source, external_id)` makes a repeat run update the same row instead of
+//! adding a second one.
+//!
+//! Two boundaries this deliberately keeps:
+//!
+//! * **Scouting does not write calendar's database.** Everything goes through
+//!   the HTTP contract, so calendar keeps ownership of its schema and of what
+//!   a valid entry is (it rejects our payload if we get it wrong).
+//! * **No date is guessed.** Calendar's README makes this a rule; an event
+//!   missing a usable start or end, or carrying a non-UTC instant, is
+//!   reported as skipped and left alone rather than promoted with an invented
+//!   time. The operator sees the reason and can fix the source.
+//!
+//! `status = "saved"` is the promotion trigger because that is already the
+//! operator's explicit "yes, this one" — reusing it avoids inventing a second
+//! decision state alongside the one `store.rs` guarantees survives a refetch.
+
+use serde::Serialize;
+use serde_json::{json, Value};
+
+use crate::localtime::HomeTimezone;
+use crate::store::{RankedRow, Store};
+
+/// Calendar's default loopback address. Overridable via `scouting.json`'s
+/// `calendar_base_url` or `--calendar-url`; the default matches
+/// `capabilities/calendar`'s `AXON_CALENDAR_PORT` default of 8087.
+pub const DEFAULT_CALENDAR_BASE_URL: &str = "http://127.0.0.1:8087";
+
+/// Calendar kind for a promoted event. Calendar treats kinds as open data,
+/// but `event` is the one its correlation layer already understands.
+const ENTRY_KIND: &str = "event";
+const ENTRY_SOURCE: &str = "luma";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Promoted {
+    pub opportunity_id: String,
+    pub external_id: String,
+    pub entry_id: String,
+    pub title: String,
+    pub starts_at: String,
+    pub ends_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Skipped {
+    pub opportunity_id: String,
+    pub title: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct PromotionReport {
+    pub considered: usize,
+    pub promoted: Vec<Promoted>,
+    pub skipped: Vec<Skipped>,
+    pub dry_run: bool,
+}
+
+/// Strips the `evt:luma:` namespace scouting adds, leaving Luma's own stable
+/// event id. That bare id is what `external_id` means to calendar — the
+/// provider's key, not ours — and it is what a second provider path (an ICS
+/// import of the same event) would also produce.
+fn luma_event_id(opportunity_id: &str) -> Option<&str> {
+    opportunity_id
+        .strip_prefix("evt:luma:")
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
+/// Inert evidence snapshot. Deliberately carries no wall-clock "promoted at"
+/// stamp: the payload has to be byte-identical across runs for a repeat
+/// promotion to be a genuine no-op rather than a churning update.
+fn evidence_payload(row: &RankedRow, tz: &HomeTimezone) -> Value {
+    json!({
+        "promoted_from": "scouting",
+        "opportunity_id": row.id,
+        "url": row.url,
+        "city": row.city,
+        "score": row.score,
+        "matched_focus": row.matched_focus,
+        "rationale": row.rationale,
+        "starts_at_utc": row.starts_at,
+        "ends_at_utc": row.ends_at,
+        "home_timezone": tz.name(),
+    })
+}
+
+fn build_entry(row: &RankedRow, tz: &HomeTimezone) -> Result<(String, Value), String> {
+    let external_id = luma_event_id(&row.id)
+        .ok_or_else(|| format!("id '{}' is not a luma opportunity id", row.id))?
+        .to_string();
+
+    if row.starts_at.trim().is_empty() {
+        return Err("no start time on the opportunity".into());
+    }
+    if row.ends_at.trim().is_empty() {
+        return Err("no end time on the opportunity".into());
+    }
+    let starts_at = tz.wall_time(&row.starts_at).map_err(|e| format!("start: {e}"))?;
+    let ends_at = tz.wall_time(&row.ends_at).map_err(|e| format!("end: {e}"))?;
+    if ends_at <= starts_at {
+        return Err(format!(
+            "end {ends_at} is not after start {starts_at} (calendar ends are exclusive)"
+        ));
+    }
+
+    let location = Some(row.location.trim())
+        .filter(|l| !l.is_empty())
+        .or(Some(row.city.trim()).filter(|c| !c.is_empty()))
+        .map(str::to_string);
+
+    let body = json!({
+        "kind": ENTRY_KIND,
+        "title": row.title,
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+        "all_day": false,
+        "location": location,
+        "notes": Value::Null,
+        "source": ENTRY_SOURCE,
+        "external_id": external_id,
+        "payload": evidence_payload(row, tz),
+    });
+    Ok((external_id, body))
+}
+
+/// Reads saved Luma opportunities and upserts each into calendar.
+///
+/// `limit` bounds the store read, not the promotion — the backlog query is
+/// score-ordered, so this is the same window the ranked views show.
+pub fn promote_saved_luma(
+    store: &Store,
+    calendar_base_url: &str,
+    tz: &HomeTimezone,
+    limit: usize,
+    dry_run: bool,
+    geo: Option<&crate::config::GeoPolicy>,
+) -> Result<PromotionReport, Box<dyn std::error::Error>> {
+    let rows = store.list_top(limit, false)?;
+    let candidates: Vec<RankedRow> = rows
+        .into_iter()
+        .filter(|r| r.source == ENTRY_SOURCE && r.status == "saved")
+        .collect();
+
+    let mut report = PromotionReport {
+        considered: candidates.len(),
+        dry_run,
+        ..Default::default()
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("Axon-Scouting/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let url = format!("{}/api/entries/external", calendar_base_url.trim_end_matches('/'));
+
+    for row in candidates {
+        // Reach before shape: an Impact Lab in Atlanta is a fine event and a
+        // pointless calendar entry. Skipped with the reason named rather than
+        // dropped, because a filter you cannot see is indistinguishable from a
+        // bug when something you wanted goes missing.
+        let source_timezone = row
+            .raw
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|value| {
+                value
+                    .get("timezone")
+                    .and_then(|tz| tz.as_str())
+                    .map(str::to_string)
+            });
+        if let Some(reason) = geo.and_then(|policy| {
+            policy.reject(row.country_code.as_deref(), source_timezone.as_deref())
+        }) {
+            report.skipped.push(Skipped {
+                opportunity_id: row.id,
+                title: row.title,
+                reason,
+            });
+            continue;
+        }
+        let (external_id, body) = match build_entry(&row, tz) {
+            Ok(pair) => pair,
+            Err(reason) => {
+                report.skipped.push(Skipped {
+                    opportunity_id: row.id,
+                    title: row.title,
+                    reason,
+                });
+                continue;
+            }
+        };
+
+        if dry_run {
+            report.promoted.push(Promoted {
+                opportunity_id: row.id,
+                external_id,
+                entry_id: "(dry-run)".into(),
+                title: row.title,
+                starts_at: body["starts_at"].as_str().unwrap_or_default().into(),
+                ends_at: body["ends_at"].as_str().unwrap_or_default().into(),
+            });
+            continue;
+        }
+
+        let response = client.put(&url).json(&body).send();
+        match response {
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.text().unwrap_or_default();
+                if !status.is_success() {
+                    let snippet: String = text.chars().take(200).collect();
+                    report.skipped.push(Skipped {
+                        opportunity_id: row.id,
+                        title: row.title,
+                        reason: format!("calendar rejected the entry: HTTP {status}: {snippet}"),
+                    });
+                    continue;
+                }
+                let entry: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                report.promoted.push(Promoted {
+                    opportunity_id: row.id,
+                    external_id,
+                    entry_id: entry["id"].as_str().unwrap_or("(no id in response)").into(),
+                    title: row.title,
+                    starts_at: entry["starts_at"].as_str().unwrap_or_default().into(),
+                    ends_at: entry["ends_at"].as_str().unwrap_or_default().into(),
+                });
+            }
+            Err(error) => {
+                report.skipped.push(Skipped {
+                    opportunity_id: row.id,
+                    title: row.title,
+                    reason: format!("calendar unreachable at {url}: {error}"),
+                });
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+pub fn print_report(report: &PromotionReport, calendar_base_url: &str, tz: &HomeTimezone) {
+    let mode = if report.dry_run { " (dry run — nothing written)" } else { "" };
+    println!(
+        "  calendar   : {calendar_base_url} · home timezone {}{mode}",
+        tz.name()
+    );
+    println!(
+        "  considered : {} saved luma opportunit{}\n",
+        report.considered,
+        if report.considered == 1 { "y" } else { "ies" }
+    );
+
+    if report.promoted.is_empty() && report.skipped.is_empty() {
+        println!("  nothing to promote — save a luma opportunity first (scout --save <id>)");
+        return;
+    }
+
+    for p in &report.promoted {
+        println!("  promoted  {} — {}", p.external_id, p.title);
+        println!("            {} → {}  entry {}", p.starts_at, p.ends_at, p.entry_id);
+    }
+    for s in &report.skipped {
+        println!("  skipped   {} — {}", s.opportunity_id, s.title);
+        println!("            {}", s.reason);
+    }
+    println!(
+        "\n  {} promoted, {} skipped",
+        report.promoted.len(),
+        report.skipped.len()
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: &str, starts_at: &str, ends_at: &str) -> RankedRow {
+        RankedRow {
+            id: id.into(),
+            opportunity_type: "event".into(),
+            source: "luma".into(),
+            title: "Berlin | Claude in the Wild".into(),
+            city: "Berlin".into(),
+            starts_at: starts_at.into(),
+            ends_at: ends_at.into(),
+            location: "Factory Berlin Mitte".into(),
+            score: 0.42,
+            matched_focus: "AI engineering".into(),
+            rationale: "cosine 0.42".into(),
+            url: "https://lu.ma/claude-fq5h".into(),
+            vault_link: None,
+            status: "saved".into(),
+            country_code: Some("Germany".into()),
+            latitude: Some(52.52),
+            longitude: Some(13.405),
+            raw: None,
+        }
+    }
+
+    fn berlin() -> HomeTimezone {
+        HomeTimezone::parse("Europe/Berlin").unwrap()
+    }
+
+    #[test]
+    fn external_id_is_lumas_own_id_not_the_namespaced_one() {
+        assert_eq!(luma_event_id("evt:luma:evt-E8mj424DVKBXFb4"), Some("evt-E8mj424DVKBXFb4"));
+        assert_eq!(luma_event_id("evt:obsidian:something"), None);
+        assert_eq!(luma_event_id("evt:luma:"), None);
+    }
+
+    #[test]
+    fn builds_a_calendar_entry_in_local_wall_time() {
+        let (external_id, body) = build_entry(
+            &row("evt:luma:evt-E8mj424DVKBXFb4", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z"),
+            &berlin(),
+        )
+        .unwrap();
+        assert_eq!(external_id, "evt-E8mj424DVKBXFb4");
+        assert_eq!(body["kind"], "event");
+        assert_eq!(body["source"], "luma");
+        assert_eq!(body["all_day"], false);
+        assert_eq!(body["starts_at"], "2026-07-30T18:00:00");
+        assert_eq!(body["ends_at"], "2026-07-30T21:00:00");
+        assert_eq!(body["location"], "Factory Berlin Mitte");
+        assert_eq!(body["payload"]["starts_at_utc"], "2026-07-30T16:00:00.000Z");
+        assert_eq!(body["payload"]["home_timezone"], "Europe/Berlin");
+    }
+
+    #[test]
+    fn the_request_body_is_byte_stable_across_runs() {
+        // Idempotency is only real if a repeat promotion sends the same bytes;
+        // a timestamp in the payload would make every run an update.
+        let r = row("evt:luma:evt-A", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z");
+        let first = build_entry(&r, &berlin()).unwrap().1;
+        let second = build_entry(&r, &berlin()).unwrap().1;
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn refuses_an_event_with_no_start() {
+        let err = build_entry(&row("evt:luma:evt-A", "", "2026-07-30T19:00:00.000Z"), &berlin())
+            .unwrap_err();
+        assert!(err.contains("no start time"), "got: {err}");
+    }
+
+    #[test]
+    fn refuses_an_event_with_no_end() {
+        let err = build_entry(&row("evt:luma:evt-A", "2026-07-30T16:00:00.000Z", ""), &berlin())
+            .unwrap_err();
+        assert!(err.contains("no end time"), "got: {err}");
+    }
+
+    #[test]
+    fn refuses_a_non_utc_instant_rather_than_assuming_a_zone() {
+        let err = build_entry(
+            &row("evt:luma:evt-A", "2026-07-30T16:00:00", "2026-07-30T19:00:00"),
+            &berlin(),
+        )
+        .unwrap_err();
+        assert!(err.contains("explicit UTC instant"), "got: {err}");
+    }
+
+    #[test]
+    fn refuses_a_zero_length_or_inverted_window() {
+        let err = build_entry(
+            &row("evt:luma:evt-A", "2026-07-30T19:00:00.000Z", "2026-07-30T16:00:00.000Z"),
+            &berlin(),
+        )
+        .unwrap_err();
+        assert!(err.contains("not after"), "got: {err}");
+    }
+
+    #[test]
+    fn falls_back_to_city_when_there_is_no_street_address() {
+        let mut r = row("evt:luma:evt-A", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z");
+        r.location = "  ".into();
+        let (_, body) = build_entry(&r, &berlin()).unwrap();
+        assert_eq!(body["location"], "Berlin");
+    }
+}

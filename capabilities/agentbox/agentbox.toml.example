@@ -1,0 +1,32 @@
+# Shape of <overlay>/config/agentbox.toml — this machine's instance of the box.
+# Single-line TOML only (tools/lib/toml.sh). Copy, fill in, keep out of Axon.
+#
+# What belongs here: which agent, which model, where the model answers, how much of
+# the machine the box may use. What does NOT: the agent's version and checksum (that
+# is capabilities/agentbox/profiles/<agent>/profile.toml, tracked and shared) and the
+# model API key (that is the gitignored env file below, README.md#secrets).
+
+agent = "pi"                     # a directory under capabilities/agentbox/profiles/
+
+# --- the model endpoint on the host ---------------------------------------
+# Left unset, the base URL is derived at run time: http://<network gateway>:<model_port>/v1.
+# The gateway is read from the network itself, so no subnet is ever hardcoded here —
+# which also means a `container` release that renumbers the bridge changes nothing.
+model_port = "8000"
+# model_base_url = "http://<host>:<port>/v1"   # override, for an endpoint off this bridge
+
+model_id             = "<the id your server advertises at /v1/models>"
+model_name           = "<how it should read in the agent's model picker>"
+model_context_window = "262144"
+model_max_tokens     = "32768"
+
+# --- credentials -----------------------------------------------------------
+# Overlay-relative path to a gitignored env file holding the real value, and the
+# variable inside it. Created by you, in your own terminal — never by an agent turn.
+api_key_file = "config/agentbox.env"
+api_key_var  = "AGENTBOX_MODEL_API_KEY"
+
+# --- the box ---------------------------------------------------------------
+network = "agentbox"             # host-only network; created on first build/run
+cpus    = "4"
+memory  = "8G"

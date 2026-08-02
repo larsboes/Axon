@@ -1,0 +1,107 @@
+#!/bin/bash
+# tools/sysmon — system resource overview. Adopted, not built (README.md#upstream-first):
+# a thin launcher over two pinned upstreams
+# (upstreams.toml: bottom, macmon), plus a report mode built from plain macOS commands
+# since neither TUI has a non-interactive one-shot output.
+#
+#   tools/sysmon              interactive TUI (bottom/btm) -- CPU/mem/disk/net/proc, history graphs
+#   tools/sysmon power         Apple Silicon power/thermal TUI (macmon) -- GPU/ANE, package power,
+#                               thermal pressure. arm64 only.
+#   tools/sysmon report        one-shot text snapshot (load, top CPU/mem, memory, swap, disk) --
+#                               for cron, hooks, or piping into a notification
+#   tools/sysmon -h            this help
+#
+# Neither binary is installed by this script. Install per upstreams.toml's pin:
+#   cargo install bottom --version <pin> --locked
+#   cargo install macmon --version <pin> --locked
+# bash 3.2-safe.
+set -u
+
+_here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tools/lib/paths.sh
+. "$_here/lib/paths.sh"   # AXON_ROOT, AXON_PERSONAL_ROOT, toml_*
+
+HELP="tools/sysmon — system resource overview.
+
+  tools/sysmon              interactive TUI (bottom) — CPU/mem/disk/net/proc
+  tools/sysmon power         Apple Silicon power/thermal TUI (macmon), arm64 only
+  tools/sysmon report        one-shot text snapshot — load, top CPU/mem, memory, swap, disk
+  tools/sysmon -h            this help
+"
+
+need_bin() {  # need_bin <bin-on-PATH> <upstream-name-in-upstreams.toml>
+  if ! command -v "$1" >/dev/null 2>&1; then
+    pin="$(toml_get_in "$2" pin "$AXON_ROOT/upstreams.toml")"
+    echo "sysmon: '$1' not installed. Run: cargo install $2 --version ${pin:-<see upstreams.toml>} --locked" >&2
+    exit 1
+  fi
+}
+
+bytes_h() { awk -v b="$1" 'BEGIN { printf "%.1fG", b / 1073741824 }'; }
+
+report() {
+  echo "Axon sysmon report · $(date '+%Y-%m-%d %H:%M:%S %Z')"
+  echo
+
+  echo "Load & uptime"
+  uptime | sed 's/^/  /'
+  echo
+
+  echo "Top CPU"
+  ps aux -r | head -6 | tail -5 | awk '{printf "  %5s%%  %-8s %s\n", $3, $2, $11}'
+  echo
+
+  echo "Top memory"
+  ps aux -m | head -6 | tail -5 | awk '{printf "  %5s%%  %-8s %s\n", $4, $2, $11}'
+  echo
+
+  page_size="$(vm_stat | head -1 | grep -oE '[0-9]+' || echo 4096)"
+  free_pages="$(vm_stat | awk -F'[^0-9]+' '/Pages free/ {print $2}')"
+  total_bytes="$(sysctl -n hw.memsize)"
+  free_bytes=$((free_pages * page_size))
+  used_bytes=$((total_bytes - free_bytes))
+  echo "Memory"
+  printf "  used %s / %s (%d%%)\n" \
+    "$(bytes_h "$used_bytes")" "$(bytes_h "$total_bytes")" \
+    "$((used_bytes * 100 / total_bytes))"
+  echo
+
+  echo "Swap"
+  sysctl vm.swapusage | sed 's/^/  /'
+  echo
+
+  echo "Disk"
+  # macOS Catalina+ APFS volume groups: / is the sealed, read-only System volume
+  # (always small) -- /Users et al. actually live on /System/Volumes/Data. Report
+  # that when present; fall back to / on Linux or pre-volume-group macOS.
+  disk_target="/"
+  [ -d /System/Volumes/Data ] && disk_target="/System/Volumes/Data"
+  df -h "$disk_target" | tail -1 | awk -v t="$disk_target" '{printf "  %s: used %s / %s (%s full)\n", t, $3, $2, $5}'
+}
+
+cmd="${1:-tui}"
+case "$cmd" in
+  -h|--help)
+    printf '%s' "$HELP"
+    ;;
+  tui)
+    need_bin btm bottom
+    exec btm
+    ;;
+  power|gpu)
+    if [ "$(uname -m)" != "arm64" ]; then
+      echo "sysmon power: macmon is Apple Silicon only (this machine is $(uname -m))" >&2
+      exit 1
+    fi
+    need_bin macmon macmon
+    exec macmon
+    ;;
+  report|snapshot)
+    report
+    ;;
+  *)
+    echo "sysmon: unknown command '$cmd'" >&2
+    printf '%s' "$HELP" >&2
+    exit 2
+    ;;
+esac

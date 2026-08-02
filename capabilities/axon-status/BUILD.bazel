@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# README.md is otherwise private to this package -- exported so the root
+# //:architecture_up_to_date_test can reference it across the package boundary.
+exports_files(["README.md", "service.toml"])
+
+rust_binary(
+    name = "axon-status",
+    crate_root = "src/main.rs",
+    srcs = ["src/main.rs", "//libs/axon-server:src/lib.rs", "//libs/axon-config:src/lib.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index_axon_status//:axum",
+        "@crate_index_axon_status//:reqwest",
+        "@crate_index_axon_status//:serde",
+        "@crate_index_axon_status//:serde_json",
+        "@crate_index_axon_status//:tokio",
+    ],
+)

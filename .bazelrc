@@ -1,0 +1,22 @@
+# Axon build/test configuration.
+
+# The store tests in scouting, transit, comms and trips are integration tests against
+# the shared Postgres (capabilities/postgres). They deliberately resolve the same
+# connection the binaries use -- "so a rotated password can't leave the tests behind",
+# as their own comments put it -- which means reading the overlay's config/postgres.env,
+# which means finding the overlay through AXON_PERSONAL_ROOT.
+#
+# Bazel does not propagate the client environment into tests, by design. Without this
+# line those tests fail with "could not open test store (is capabilities/postgres
+# running?)" on a machine where the database is running perfectly well, and
+# `bazel test //...` is permanently red -- which is worse than useless, because a suite
+# that is always red stops being read.
+#
+# Diagnosed rather than assumed: the same target passes inside the sandbox with this
+# variable passed through, and still fails outside the sandbox without it. The sandbox
+# was never the problem.
+#
+# `--test_env=VAR` with no value inherits VAR from the invoking shell. On a machine with
+# no overlay the variable is simply unset and the tests fail loudly the way they should:
+# that is a machine where the database has not been set up, and saying so is correct.
+test --test_env=AXON_PERSONAL_ROOT

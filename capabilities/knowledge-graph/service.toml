@@ -1,0 +1,20 @@
+# knowledge-graph — serves the graphify code-dependency graph as an interactive
+# browser view and a REST API for AI agents. Shape: schemas/service.toml.example.
+#
+# Reads graphify-out/graph.json from the repo root on every API call — the graph
+# is rebuilt by tools/graphify.sh and this always serves the current version.
+# No separate data store: the graph data is the canonical graphify output.
+#
+# Serves through a single Bun server (server.ts) that handles both static UI
+# and API endpoints, following the panel-server.ts pattern with extensions for API.
+kind         = "process"
+name         = "knowledge-graph"
+command      = ["bun", "../server.ts"]
+build        = ["bun", "run", "build"]
+build_output = "capabilities/knowledge-graph/ui/dist"
+workdir      = "capabilities/knowledge-graph/ui"
+port         = "4244"
+health_path  = "/"
+panel_port   = "4244"
+panel_path   = "/"
+idle_timeout = "300"

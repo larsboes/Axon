@@ -1,0 +1,15 @@
+# scouting — host process, not a container. Shape: schemas/service.toml.example.
+kind        = "process"
+name        = "scouting"
+command     = ["bazel-bin/capabilities/scouting/scout-server"]
+build       = ["bazel", "build", "//capabilities/scouting:scout-server"]
+# 8084, not 8080: vaultwarden publishes 8080 on the host, and the runner bringing the
+# whole enabled set up is what turned that latent clash into a bind error. The process
+# reads this number back through AXON_PORT, so this line is the only place it lives.
+port        = "8084"
+health_path = "/health"
+
+# scout-server serves /discover at the root; the dashboard has always called it there.
+proxy_extra = ["/discover"]
+
+requires = ["postgres"]

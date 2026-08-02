@@ -1,0 +1,5 @@
+# See schemas/pack.toml.example for the field reference.
+name        = "unslop"
+description = "Strip AI-generated tells from code and web UI; one skill, two data-grounded CI-gateable scanners. Prose lives in Packs/writing (human-writing)."
+skills      = ["unslop"]
+license     = "MIT"

@@ -1,0 +1,370 @@
+# transit
+
+HAFAS journey search, split-ticket solving, German rail ticket extraction, Postgres-backed trip
+persistence, and fuzzy/triggered trip-search sessions. Ported from a private LifeOS-mono service;
+the source bundled transit + a Gemini CV generator into one 764-line `main.rs` — only the transit
+concern is here, rebuilt clean (see Redactions + Verdict). `transit` and `capabilities/scouting`
+share one Postgres instance and a `crate_index` (see Architecture); the cross-capability
+correlation story that motivates that sharing lives in `capabilities/postgres/README.md`.
+
+## Verdict
+
+**Adopt the architecture, strip what doesn't belong, add the tests that were missing.** The
+HAFAS client + split-ticket solver + ticket extractor are real, working capability — but the
+source service bundled four unrelated concerns into one 764-line `main.rs` (transit search,
+Postgres Trips CRUD, ticket import, and — genuinely out of place — a Gemini-powered CV/resume
+generator reading a personal `master_cv.json`). Only the transit concern is ported here. The CV
+generator is not ported at all, anywhere — it has no business in a transit service and was
+flagged as such the first time this codebase was evaluated.
+
+**The other real gap being fixed, not just carried forward:** `hafas.rs` (a hand-rolled client
+against bahn.de's undocumented internal API) and the split-ticket DP solver had **zero tests**
+in the source despite being the riskiest code here — reverse-engineered private API, hand-rolled
+date math, a real algorithm. This port adds direct test coverage where there was none (`cargo
+test -- --list` for the current count): unit coverage of the split-ticket solver's DP logic (chaining across
+stops, falling back to direct when a split isn't actually cheaper, handling an unreachable
+destination), fixture-based parsing tests for `hafas.rs`'s response handling, and full
+store-layer coverage of trip sessions (stable-session-id determinism, upsert idempotency,
+cheapest-first ranking, status preservation across fare refreshes, session/manual isolation) —
+none of that existed before.
+
+## Architecture
+
+```
+main.rs        -- CLI: suggest / search / split / import / plan subcommands
+  config.rs     -- resolves default_from_eva/default_to_eva/default_time/database_url (overlay config, see below)
+  hafas.rs      -- HAFAS client: station search + journey search against bahn.de's undocumented
+                    API, plus the split-ticket DP solver (cheapest chain of pairwise HAFAS queries)
+  travel.rs     -- shared types (Station/Leg/Journey/SplitResult), folded in as a module --
+                    same call as scouting's opportunity.rs, ~40 lines for one consumer
+  extractor.rs  -- pure-Rust PDF/email/regex parsing of German rail ticket confirmations
+                    (already well-tested in the source; ported close to as-is)
+  store.rs      -- Postgres persistence, own `transit` schema
+                    (transit.trips/trip_legs/trip_sessions) -- see Trip persistence + Fuzzy
+                    trip-search sessions below
+server.rs      -- transit-server: second binary, Axum HTTP API fronting the same lib -- see
+                    HTTP server (transit-server) below
+```
+
+`main.rs`'s `plan` subcommand carries its own small set of pure helpers (date-window sampling
+via proleptic-Gregorian day arithmetic, soft-destination resolution through `suggest_stations`,
+session-summary JSON) rather than splitting them into a new module — same "one focused binary"
+shape the CLI kept through the whole rebuild.
+
+No CV generator (see Redactions). Standalone Cargo crate + `BUILD.bazel`, sharing
+`crate_index` (root `MODULE.bazel`) with `capabilities/scouting` — **not** its own separate
+registry anymore. It started that way (`crate_index_transit`, additive alongside scouting's own
+`crate_index`), which was correct while the two capabilities were fully independent. It broke the
+moment scouting started consuming `Journey` directly across a `serde` boundary
+(`scouting/src/adapters/transit_fare.rs`): two separately-resolved crate universes produce two
+binary-incompatible `Serialize` impls for "the same" crate version — a real compile error
+(`the trait bound Journey: Serialize is not satisfied`), not a style question. See `MODULE.bazel`
+and `MODULE.bazel's crate_index block`.
+
+## Commands
+
+```bash
+cargo build && cargo test                                      # needs capabilities/postgres running
+bazel build //capabilities/transit:transit && bazel test //capabilities/transit/... --test_env=TRANSIT_TEST_DATABASE_URL
+
+transit suggest --query "Bonn"                                  # station name -> EVA candidates
+transit search  --from 8000044 --to 8000207 --time 2026-08-15T09:00:00
+transit split   --from 8000044 --to 8000207 --time 2026-08-15T09:00:00   # cheapest split-ticket chain
+transit import  ticket.pdf                                       # extract booking details from a confirmation
+
+# Fuzzy/triggered trip-search session ("I feel like a trip in September"):
+transit plan --from 8000044 --destinations "Valencia,Copenhagen" \
+  --date-from 2026-09-01 --date-to 2026-09-30 --intent "in Sept, open"   # search + record session
+transit plan --from 8000044 --destinations "Valencia,Copenhagen" \
+  --date-from 2026-09-01 --date-to 2026-09-30 --max-queries 12 --dry-run # resolve + sample, no search
+transit plan --show trip:session:<id>                                   # re-list a session's ranked trips
+
+# Search exactly the days somebody already worked out are possible, instead of
+# sampling a window. capabilities/calendar's feasible windows are the intended
+# producer; transit just honours whatever list it is handed:
+transit plan --from 8000044 --destinations "Muenchen" \
+  --dates 2026-08-14,2026-08-15,2026-08-16
+
+# from capabilities/scouting -- fare-search as a scored, stored opportunity source:
+cargo run --bin scout -- --adapter transit_fare --date-from 2026-08-15T08:00:00
+```
+
+`--from`/`--to`/`--time` fall back to `default_from_eva`/`default_to_eva`/`default_time` in the
+overlay config if set; otherwise they're required and the CLI errors with a clear message rather
+than silently defaulting to someone else's stations.
+
+## HTTP server (transit-server)
+
+A second binary (`server.rs`), Axum-based, fronting the same `hafas`/`store`/`config` lib code
+the CLI uses — added for `dashboard` as a named consumer; see
+`dashboard/README.md` for why this reopened the prior
+"no HTTP server" call. No `/discover` or cross-capability proxy routes — `transit-server` serves
+only transit's own API (see `server.rs`'s own comment on that boundary).
+
+**Port:** `AXON_PORT` (exported by the runner from the manifest) wins, then `TRANSIT_PORT`
+for runs outside the runner, then the shipped default `3000`. Binds loopback only, via
+`libs/axon-server`.
+
+**Endpoints:**
+
+- `GET /health`, `GET /api/health` — liveness + aggregated status (`{status, service, version,
+  postgres}`, where `postgres` is `"ok"`/`"offline"` from a live `TransitStore::open` probe)
+- `GET /api/suggest?q=<query>` — station name -> EVA candidates (wraps `suggest_stations`)
+- `GET /api/search?from=<eva>&to=<eva>&time=<iso>` — journey search (wraps `search_connections`)
+- `GET /api/split?from=<eva>&to=<eva>&time=<iso>` — cheapest split-ticket chain (wraps
+  `search_split_tickets`)
+- `GET /api/trips` — **stub**: returns `{count, trips: []}` only, no actual trip rows yet (see
+  Known gaps)
+
+**Running:**
+
+```bash
+cargo run --bin transit-server
+bazel run //capabilities/transit:transit-server
+```
+
+## Trip persistence
+
+`store.rs`'s `TransitStore` owns `transit.trips`/`transit.trip_legs`/`transit.trip_sessions` on
+the shared local Postgres instance (`capabilities/postgres`, own schema — same convention
+`scouting::store` uses, see that capability's README). A recorded journey can come from three
+places, all tagged via `trigger_reason`:
+
+- **`manual`** — a direct `transit search`/`transit split` CLI call. One-shot, on-demand, no
+  scoring involved.
+- **`auto`** — `capabilities/scouting`'s `transit_fare` adapter (see that capability's
+  `adapters/transit_fare.rs`), invoked via `scout --adapter transit_fare --date-from <ISO
+  datetime>`. Origin/destination come from `default_from_eva`/`default_to_eva` in *this*
+  capability's own overlay config (no separate route config on the scouting side — deliberately,
+  same "no baked-in route" philosophy as `search`/`split`). Every found `Journey` gets recorded
+  here **and** converted into a `scouting.opportunities` row (via a pure `journey_to_opportunity`
+  conversion, no I/O) — the detailed structured record lives here, the scored/ranked/dismissable
+  view lives in scouting, both derived from the same fetch.
+- **`session`** — `transit plan` (see "Fuzzy trip-search sessions" below). A user-intent session
+  ("Valencia or Copenhagen, in September, open") owns a `trip_sessions` row recording the
+  candidate destination set + date window; every journey its fan-out finds is recorded here with
+  `trigger_reason = "session"` and `session_id` pointing back at the owning session row.
+  Different code path from the `auto` background scan (the "triggered" query vs the "constant
+  background scan" — see `capabilities/postgres/README.md`'s driving queries), same underlying
+  `trips`/`trip_legs` store — the two never collide because `transit_fare` only ever fetches the
+  one configured default route, a session fetches many.
+
+`record_journey()` upserts on the journey's own HAFAS-assigned id (trusting the upstream id, same
+pattern `scouting::store` uses for `Opportunity.id`) and replaces the leg set wholesale inside
+one transaction — a re-recorded journey never accumulates stale legs alongside fresh ones, and
+**deliberately does not touch `session_id` on the `ON CONFLICT` path** (a journey re-found by a
+*different* session refreshes its fare/duration but keeps its prior owner — same "don't clobber a
+prior decision on re-fetch" principle `scouting::store`'s status-preserving upsert already uses,
+proven by `replanning_session_refreshes_fares_without_losing_status`).
+
+`trips.status` (`new`/`dismissed`/`saved`) exists in the schema but nothing reads/sets it back
+yet — same honest "scaffolding only" gap `scouting.source_state.cursor` already carries.
+
+## Fuzzy trip-search sessions
+
+`transit plan` is a *triggered* search — "in September I feel like a trip" — deliberately a
+different code path from the constant background scan (`transit_fare` / `scout --adapter
+transit_fare`). The background scan watches one configured route continuously; a session widens
+both axes on demand: *where* (a soft destination set, not one station) and *when* (a date window,
+not one search time). Four shapes layer together:
+
+1. **Soft-destination expansion.** `--destinations Valencia,Copenhagen` is a comma-list of city
+   *names*, not EVA codes; the CLI resolves each via `HafasClient::suggest_stations` (bahn.de's
+   `/reiseloesung/orte` autocomplete) and takes up to `--candidates-per-dest` EVA matches per name
+   (default 1 = the city's main station). A name resolving to nothing is non-fatal — the
+   candidate set just shrinks, with a stderr warning.
+2. **Date-window sampling.** `--date-from 2026-09-01 --date-to 2026-09-30` is a *range*, not one
+   search time. The sampler picks evenly-spaced anchors across the window (stride stretched to fit
+   `--max-queries` / candidates) **and always includes the final day** — the cheap fares a "maybe
+   mid-September" query wants are often near month-end. No `chrono` dependency: proleptic-Gregorian
+   day arithmetic via the classic Hinnant `days_from_civil`/`civil_from_days` pair (~25 lines,
+   covered by unit tests in `main.rs`), matching the crate's deliberately stay-sync-and-minimal
+   stance (see `Cargo.toml`'s header comment).
+3. **Or an explicit day list.** `--dates 2026-08-14,2026-08-15,...` replaces the window and the
+   sampler both: those days get searched, in that set, and nothing else. It exists because
+   sampling a month is guesswork when something else already knows which days are possible —
+   `capabilities/calendar` computes exactly that from the operator's real availability and
+   publishes it as a list of days. Transit does not call calendar and does not know why one day
+   is in the list and another is not; the caller moves the list across (the one-liner is in
+   `capabilities/calendar/README.md`'s why-block). Mutually exclusive with
+   `--date-from`/`--date-to` — a silent precedence rule between a window and a day list would
+   hide which one ran. `--max-queries` still caps the fan-out: a long list is thinned to the
+   budget, keeping the first and last day, the same shrink-to-fit contract the window sampler
+   gives. The session row records the span the given days cover, and `--dry-run` prints
+   `date_source: "explicit"` so a caller can verify the constraint actually took effect.
+4. **Session ownership.** `stable_session_id()` hashes origin + the *sorted* candidate EVA set +
+   date window + (trimmed, lowercased) intent into a deterministic id, so re-running the *same*
+   plan updates the same `trip_sessions` row with fresh fares instead of accumulating duplicate
+   sessions. `trip_sessions.candidates` stores the resolved set as JSON; `date_start`/`date_end`
+   store the window — these describe the *user intent*, not the *journey*, so they live on the
+   session row, not on `trips`. `trips.session_id` is a nullable FK so a manual/auto trip keeps
+   its shape (`NULL`).
+
+The fan-out is plain sequential `search_connections` calls with the same 250ms inter-request
+cadence `split` already uses — no async/`tokio` (see `hafas.rs`'s split-ticket comment for why a
+personal, low-frequency CLI tool doesn't pay for an async runtime here). `--max-queries` caps
+candidates × sampled dates before any search fires, so a wide window never silently hammers
+bahn.de. `--dry-run` resolves candidates + samples dates and prints the planned session shape
+without searching (sanity-check a fuzzy intent for the cost of N light `suggest` calls).
+`--show <session-id>` re-lists an existing session's ranked trips read-only; ranking is
+cheapest-first, NULL prices last, shortest-duration tiebreak.
+
+## Config resolution
+
+Identical shape to `capabilities/scouting/src/config.rs`:
+
+1. `$AXON_TRANSIT_CONFIG` — explicit override, full path to a JSON file
+2. `$AXON_PERSONAL_ROOT/config/transit.json` — the overlay
+3. `capabilities/transit/transit.config.json` — local, gitignored, dev fallback
+
+Unlike scouting, there is **no baked-in station-pair default at all**. The source service
+hardcoded `8000044`/`8098160` (real Bonn/Berlin EVA codes) as CLI argument defaults —
+`default_from_eva`/`default_to_eva`/`default_time` exist purely as an opt-in convenience: set
+your own home route in the overlay if you want `search`/`split`/`plan` runnable with fewer
+flags, or leave them unset and the CLI requires `--from`/`--to`/`--time` explicitly, erroring with
+a clear message rather than silently defaulting to someone else's stations. `scout --adapter
+transit_fare` reuses this same config for its route (see "Trip persistence" above) — it has no
+separate route config of its own.
+
+`database_url` resolves the same way as `scouting::config::Config::database_url`: explicit
+override in `transit.json`, else built from `axon-overlay/config/postgres.env` (the shared
+`capabilities/postgres` instance), else a localhost dev-default guess. **Never `println!`/log it
+directly** — `config::redact_database_url()` masks the password for any display purpose.
+
+## What's not ported
+
+**ONNX delay-risk prediction.** The source service loaded a `tract-onnx` model
+(`infra/data/model.onnx`) to score each `Journey`'s delay risk. Axon has no such model artifact —
+the training pipeline that produced it (`tools/delay-analyzer` in the source monorepo) was rated
+quarry-for-patterns-only in the original evaluation, never adopted. Carrying a heavy ML runtime
+dependency for a field that would only ever return a hardcoded fallback constant is the exact
+"machinery with nothing behind it" pattern this repo already strips elsewhere (scouting's CV
+generator). `Journey.delay_risk_score` stayed in the schema for exactly that reason, and is
+now filled -- not by a model, by a measurement. `transit-server` asks
+`capabilities/punctuality` over HTTP (never by linking it, README.md#schemas-and-dependency-direction) for the
+share of that train type's stops at the destination, in the arrival hour, that ran at
+least six minutes off schedule. See `src/punctuality.rs`.
+
+Two things that number is not. It is not a prediction: it is what happened at that
+station, in that hour, over seven months of DB's own published history. And it is not
+the probability the trip works out -- it says nothing about catching a transfer, and a
+journey that misses one arrives on a different train than the one it describes.
+
+The dependency degrades and never fails. If punctuality is not running, or has no cell
+with enough observations, the score is `null` and the search returns what it always
+returned. Verified by stopping the service mid-session: HTTP 200, five journeys, every
+score null.
+
+## Redactions applied during the port
+
+- Default EVA station codes (`8000044`/`8098160`) — removed entirely, not just moved to config
+  (see Config resolution above: no fallback exists unless you set one yourself).
+- The Gemini CV generator (`handle_generate_cv`, which read the source project's
+  `master_cv.json`; today's `capabilities/cv` keeps its master in the overlay as YAML) — not
+  ported, anywhere.
+- The Postgres-backed Trips/legs/packing CRUD — landed as `store.rs` (see "Trip persistence"
+  above), once `capabilities/postgres` was actually running. "Packing" (whatever bundling logic
+  the source's CRUD layer did beyond trips/legs) was not re-examined — only the shape the store's
+  own schema actually specifies got built.
+- `main.rs`'s four-unrelated-concerns junk-drawer shape — split into `config.rs`/`hafas.rs`/
+  `travel.rs`/`extractor.rs`, 764 lines down to a clean CLI dispatcher (`main.rs`'s suggest/
+  search/split/import/plan core + its date-sampling helpers — 561 lines, still one focused
+  binary, not a four-concern monolith).
+
+## Gotchas
+
+- **`hafas.rs`'s spoofed browser User-Agent is a deliberate exception to the "self-identifying
+  UA" pattern** used elsewhere (`scouting`'s `source.rs`/`cfp_conferences`/`luma` all send
+  `Axon-Transit/0.1 (+...)`-style strings). bahn.de's endpoint here is undocumented and
+  ungated *only because it looks like ordinary browser traffic* — there's no ToS/robots.txt
+  contract being honored by identifying honestly here; a self-identifying UA would plausibly
+  just get blocked outright. Named here rather than hidden, same as `scouting/adapters/meetup.rs`'s
+  own spoofed-UA gotcha.
+- **A real bug found and fixed during this port, not carried forward:** `HafasClient::new()`
+  originally built a bare `reqwest::blocking::Client::new()` with **no request timeout** — a
+  slow or hung response from bahn.de blocks the calling thread forever. This is exactly what
+  happened during the port's own live smoke test (a `search` call stalled past 600 seconds with
+  no recovery). Fixed with an explicit 15s timeout; verified against the real live API afterward
+  (`suggest --query "Bonn"` and `search --from 8000044 --to 8000207 ...` both complete normally
+  in well under a second).
+- **A second real bug, found the same way (live verification, not code review) while wiring
+  `transit_fare` into scouting:** `parse_journeys_from_response` read a journey's id from the
+  `"id"` JSON field — which doesn't exist on the real bahn.de response (the actual field is
+  `"tripId"`). Every journey in a real search silently got `id=""`, which meant every result
+  collapsed into the same row on the scouting-side upsert (`Opportunity.id` built from
+  `journey.id`) — 5 distinct real journeys became 1 stored row, no error, no warning. The
+  fixture `hafas.rs`'s own tests were checked against used `"id"` too, so `cargo test` stayed
+  green through the entire life of this bug — a fixture that encodes the same wrong assumption
+  as the code it's testing won't catch it; only a live call did. Fixed
+  (`hafas.rs`'s `id:` field), fixture corrected to `"tripId"`, and a regression test added
+  (`missing_trip_id_field_yields_empty_id_not_a_wrong_value`) asserting a response shaped with
+  the wrong key produces an empty id, not a silently-accepted wrong value.
+- **The `trigger_reason` CHECK constraint migration:** `trips.trigger_reason`'s CHECK started as
+  the inline `CHECK (trigger_reason IN ('manual','auto'))` from the original `CREATE TABLE`.
+  `trip_sessions` added a third value (`'session'`); `CREATE TABLE IF NOT EXISTS` won't touch an
+  existing table's constraints. `init_schema` migrates with a targeted `DROP CONSTRAINT IF
+  EXISTS trips_trigger_reason_check` + re-`ADD` of the three-value check — idempotent on a fresh
+  install (`IF EXISTS` no-ops) and verified against the live schema. A first attempt catalog-walked
+  `pg_constraint` in a `DO` block to find the constraint by content; that bit back with a real
+  catalog-column bug (`con.namespace` is `con.connamespace`) caught only because the test
+  connected to a real instance — same "fixtures won't catch this" lesson as the `tripId` bug
+  above. The walker was dead weight anyway (Phase 2's inline check auto-names to exactly
+  `trips_trigger_reason_check` via Postgres's deterministic `<table>_<column>_check` convention),
+  so it was dropped rather than debugged.
+- No LICENSE file in the source repo; the split-ticket concept was originally mined from
+  `betterbahn` (AGPL-3.0) and `besser-bahn` (WTFPL) — both are logged as inspiration-only
+  (not vendored) in `upstreams.toml`; the DP algorithm here is an original implementation,
+  not copied.
+- `extractor.rs` was already solid in the source (10 tests) and is ported close to as-is —
+  the redaction/rewrite effort here went into `hafas.rs`/the split-ticket solver, not this file.
+
+## Known gaps, carried forward honestly
+
+- No live-network test exists for `search`/`split`/`plan` in the automated suite, only manual
+  verification during this port and the Postgres-wiring follow-up (both real live calls against
+  bahn.de, not just fixtures — the `tripId` and `connamespace` bugs above were caught exactly
+  because of this) — unlike `scouting`'s `euro_hackathons` adapter, which has a cached-fixture
+  test pattern. `hafas.rs`'s automated tests stay fixture-based against captured response shapes.
+- **No backup coverage for `transit.trips`/`trip_legs`/`trip_sessions` yet**, same gap
+  `capabilities/postgres` already flags for `scouting.opportunities` — raw-copy can't reach a
+  live Postgres data directory safely; needs a `pg_dump`-based mechanism.
+- `trips.status` exists in the schema but nothing reads or sets it back yet — no CLI command
+  consumes it (see "Trip persistence" above).
+- `transit-server`'s `GET /api/trips` is a stub — `TransitStore` has no `list_all_trips` method
+  yet (only `get_trip`/`list_session_trips`/`count`), so the handler returns `{count, trips: []}`
+  rather than actual trip rows (see "HTTP server (transit-server)" above).
+- Session journeys live in `transit.trips` tagged `trigger_reason = "session"` and do **not**
+  currently also surface in `scouting.opportunities` — that would need a scouting-side adapter
+  pulling from transit sessions, which would reverse the established dependency direction
+  (`scouting → transit`, never the reverse — see
+  `MODULE.bazel's crate_index block`). Deferred until the correlation
+  layer's shape is real (see `capabilities/postgres/README.md`'s still-open correlation-layer question), where
+  the join direction is a design decision, not a side effect of "show trip results in the backlog
+  too." Session results are queryable through `transit plan --show` and directly against
+  `transit.trip_sessions`/`transit.trips`.
+- `transit plan`'s "nearby" expansion is intentionally **not** near-radius expansion —
+  `--destinations` resolves each name to its main station(s) only. bahn.de's `/reiseloesung/orte`
+  endpoint has no proximity/radius search; real geo-radius candidate expansion (every station
+  within 50km of Valencia) would need a station-coordinates table + a separate query, not worth
+  the machinery until "or nearby" actually matters enough to warrant it. `--candidates-per-dest
+  N>1` is the cheap partial substitute (take the top-N autocomplete matches, which for a city
+  name tends to surface its major satellite stations too).
+- `transit plan` samples one time-of-day per date (`--time`, default `08:00`). Real fare
+  sensitivity to departure time-of-day (morning vs evening) is not modelled — a fuller fuzzy
+  search would sample a few hours per date. Deferred: each extra time-of-day multiplies the
+  query count, and the date-window sampling already gives genuine price variation across the
+  window's cheapest days; time-of-day-sampling is additive, not a re-architecture, whenever the
+  signal is worth the extra bahn.de calls.
+- Session trips with `total_price = NULL` are common for regional/short-distance journeys
+  (Bonn→Köln, the live-verified example): bahn.de returns no `angebotsPreis` for trains covered
+  by the Deutschland-Ticket / no single-trip pricing. These still rank (NULLs sort last) and the
+  journey legs/times are fully recorded — the cost signal just isn't there to compare, which is
+  bahn.de's reality, not a bug. The cheap-fare ranking matters most for long-distance (ICE/IC)
+  where single-trip prices vary; short-distance sessions find journeys but rarely "deals."
+
+## Upstream reference
+
+`troyriverabusiness/scout` — inspiration for the embeddings+scoring architecture the *scouting*
+side uses (mined for ideas, not vendored; no code copied). See `upstreams.toml`. The split-ticket
+concept is mined from `betterbahn` (AGPL-3.0) and `besser-bahn` (WTFPL) — original DP
+implementation here, not copied. See Gotchas above.

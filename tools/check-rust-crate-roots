@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Thin launcher: the crate-root ambiguity gate is implemented in check-rust-crate-roots.ts
+# because it reads `bazel query --output=streamed_jsonproto`, and one JSON pass answers for
+# every target where the shell equivalent is one query per target. Mirrors the tools/self
+# and tools/packs-codex launcher pattern.
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bun run "$_here/check-rust-crate-roots.ts" "$@"

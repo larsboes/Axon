@@ -1,0 +1,8 @@
+# Local dev fallback config (see config.rs / README) -- never commit real values.
+comms.config.json
+# Local dev fallback for the Google creds env, if ever placed here instead of the
+# overlay -- never commit secrets.
+comms.env
+/target
+
+# Cargo.lock IS committed (binary crate; Axon doctrine pins everything).

@@ -1,0 +1,8 @@
+# Local dev fallback config (see config.rs / README) -- never commit real values.
+scouting.config.json
+# Local dev fallback data when no overlay is configured (no local DB file anymore --
+# Postgres is always a network connection, see store.rs).
+data/interest-profile/*.md
+/target
+
+# Cargo.lock IS committed (binary crate; Axon doctrine pins everything).

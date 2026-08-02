@@ -1,0 +1,36 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# README.md is otherwise private to this package -- exported so the root
+# //:architecture_up_to_date_test can reference it across the package boundary.
+# Visibility only, no effect on the Rust build. See root BUILD.bazel.
+# src/lib.rs is exported because consumers compile it in by `#[path]` include
+# rather than a cargo path dependency -- rules_rust's splicer flattens listed
+# manifests into sibling temp dirs, which breaks any ../../libs path dep, and
+# folding a small shared shape in as a module is this repo's stated preference
+# anyway (README.md here has the full story).
+exports_files(["README.md", "Cargo.toml", "src/lib.rs"])
+
+# libs/axon-config -- a shared library, not a capability (no domain of its own,
+# no upstream verdict, no CLI). See README.md#three-architectural-nouns. Zero external dependencies
+# on purpose (std-only), so it needs no crate universe of its own and never
+# changes a consumer's dependency resolution -- consumers depend on this target
+# directly, the same way scouting depends on //capabilities/transit:transit_lib.
+rust_library(
+    name = "axon-config",
+    crate_name = "axon_config",
+    # Globbed rather than listed — see capabilities/scouting/BUILD.bazel (Axon#13). One
+    # file today, and the point of the glob is that the day it becomes two is not a day
+    # anyone has to remember this file exists.
+    srcs = glob(["src/**/*.rs"]),
+    # The env-mutating test mod is feature-gated (see Cargo.toml); the standalone
+    # build enables it so //libs/axon-config:axon_config_test actually runs them.
+    crate_features = ["standalone-tests"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "axon_config_test",
+    crate = ":axon-config",
+    size = "small",
+)

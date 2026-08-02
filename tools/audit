@@ -1,0 +1,206 @@
+#!/bin/bash
+# tools/audit — the repeatable content-scanning gate (README.md#dependency-verdicts-and-provenance: "run
+# it through the audit tooling first" before adding any new dependency,
+# package, or MCP server). Runs the adopted scanner set (upstreams.toml:
+# semgrep, gitleaks, osv-scanner, trivy) with pinned versions over Axon +
+# the private overlay, human report + optional SARIF, real exit codes.
+#
+#   tools/audit                  # full sweep, human report
+#   tools/audit --sarif <dir>    # also write one SARIF file per scanner to <dir>
+#   tools/audit --skip <name>    # skip a scanner (gitleaks/semgrep/osv/trivy); repeatable
+#   tools/audit -h                # this help
+#
+# gitleaks output is redacted by default (routine/gate usage, not triage) --
+# for full secret detail on a real finding, run gitleaks directly yourself.
+#
+# Exit 0 = clean, 1 = finding(s), 2 = usage/setup error. bash 3.2-safe.
+set -u
+
+_here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tools/lib/paths.sh
+. "$_here/lib/paths.sh"   # AXON_ROOT, AXON_PERSONAL_ROOT, toml_*
+
+SARIF_DIR=""
+SKIP=""
+_want=""
+for a in "$@"; do
+  case "$_want" in
+    sarif) SARIF_DIR="$a"; _want=""; continue ;;
+    skip)  SKIP="$SKIP $a"; _want=""; continue ;;
+  esac
+  case "$a" in
+    --sarif)   _want=sarif ;;
+    --skip)    _want=skip ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    *) echo "audit: unknown arg '$a'" >&2; exit 2 ;;
+  esac
+done
+if [ -n "$SARIF_DIR" ]; then mkdir -p "$SARIF_DIR" || { echo "audit: cannot create $SARIF_DIR" >&2; exit 2; }; fi
+
+skip_has() { case " $SKIP " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+sarif_path() { [ -n "$SARIF_DIR" ] && printf '%s/%s.sarif' "$SARIF_DIR" "$1"; }
+
+fail=0
+echo "Axon audit · $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u)"
+
+# ---- gitleaks: secret scan over Axon + the private overlay's git history ----
+if skip_has gitleaks; then
+  echo; echo "▸ gitleaks — skipped"
+else
+  echo; echo "▸ gitleaks · secret scan (git history)"
+  scan_git_history() {
+    label="$1"
+    report_name="$2"
+    repo="$3"
+
+    if [ -z "$repo" ]; then
+      echo "  · $label — not configured"
+      return
+    fi
+    if [ ! -e "$repo" ]; then
+      echo "  ✗ $label — not reachable"
+      fail=1
+      return
+    fi
+    if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      echo "  ✗ $label — not a Git repository"
+      fail=1
+      return
+    fi
+
+    out="$(sarif_path "gitleaks-$report_name")"
+    args=(detect -s "$repo" --redact --no-banner --exit-code 1)
+    [ -n "$out" ] && args+=(--report-format sarif --report-path "$out")
+    if gitleaks "${args[@]}" >/tmp/axon-audit-gitleaks.$$ 2>&1; then
+      echo "  ✓ $label — clean"
+    else
+      rc=$?
+      if [ "$rc" -eq 1 ]; then
+        echo "  ✗ $label — leak(s) found (details withheld; run gitleaks locally for redacted triage)"
+        fail=1
+      else
+        echo "  ? $label — gitleaks errored (exit $rc; details withheld)"
+        fail=1
+      fi
+    fi
+    rm -f /tmp/axon-audit-gitleaks.$$
+  }
+
+  scan_git_history "Axon" "axon" "$AXON_ROOT"
+  scan_git_history "private overlay" "overlay" "${AXON_PERSONAL_ROOT:-}"
+fi
+
+# Build-artifact dirs to keep out of source scanners -- they're generated,
+# not code, and capabilities/*/target/ alone runs to thousands of files
+# (verified: 6879 in scouting/target). Same set .gitignore now excludes.
+# to-integrate/ joins the list for the same reason .gitignore excludes it
+# (README.md#scratch-is-not-documentation): pre-git scratch holding whole vendored projects
+# (verified: LifeOS-mono alone is 9.7G with its own nested Bazel workspace),
+# not Axon's own code -- scanning it is both wasted time and noise from
+# findings Axon has no business fixing.
+EXCLUDE_DIRS="target bazel-bin bazel-out bazel-testlogs node_modules to-integrate"
+
+# ---- semgrep: SAST over Axon's own code (bash/TS/Rust/Python) ----
+if skip_has semgrep; then
+  echo; echo "▸ semgrep — skipped"
+else
+  echo; echo "▸ semgrep · SAST ($AXON_ROOT)"
+  out="$(sarif_path semgrep)"
+  args="scan --config auto --error $AXON_ROOT"
+  for d in $EXCLUDE_DIRS; do args="$args --exclude $d"; done
+  [ -n "$out" ] && args="$args --sarif --output $out"
+  if semgrep $args; then
+    echo "  ✓ clean"
+  else
+    echo "  ✗ finding(s) above$( [ -n "$out" ] && echo " (also written to $out)")"
+    fail=1
+  fi
+fi
+
+# ---- osv-scanner: dependency CVEs over every lockfile in the repo ----
+if skip_has osv; then
+  echo; echo "▸ osv-scanner — skipped"
+else
+  echo; echo "▸ osv-scanner · dependency CVEs ($AXON_ROOT)"
+  out="$(sarif_path osv-scanner)"
+  base="scan source -r --config $AXON_ROOT/osv-scanner.toml"
+  for d in $EXCLUDE_DIRS; do base="$base --experimental-exclude $d"; done
+  # osv-scanner's --format is single-value (table XOR sarif, never both), so
+  # the SARIF file needs a second pass -- otherwise --format sarif silently
+  # drops the human-readable table this "human report" promises.
+  if osv-scanner $base "$AXON_ROOT"; then
+    rc=0
+  else
+    rc=1
+  fi
+  if [ -n "$out" ]; then
+    osv-scanner $base --format sarif --output-file "$out" "$AXON_ROOT" >/dev/null 2>&1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    echo "  ✓ clean"
+  else
+    echo "  ✗ vulnerabilities found above$( [ -n "$out" ] && echo " (also written to $out)")"
+    fail=1
+  fi
+fi
+
+# ---- trivy: OS and bundled-package CVEs for every pinned capability image ----
+if skip_has trivy; then
+  echo; echo "▸ trivy — skipped"
+else
+  echo; echo "▸ trivy · container image CVEs"
+  any=0
+  for svc in "$AXON_ROOT"/capabilities/*/service.toml; do
+    [ -f "$svc" ] || continue
+    image="$(toml_get image "$svc")"
+    tag="$(toml_get tag "$svc")"
+    [ -z "$image" ] && continue
+    any=1
+    cap="$(basename "$(dirname "$svc")")"
+    ref="$image:${tag:-latest}"
+    ignore="$AXON_ROOT/trivy-ignore/$cap.txt"
+    echo "  · $cap — $ref"
+    if [ -f "$ignore" ]; then
+      ignore_count="$(grep -Ev '^[[:space:]]*(#|$)' "$ignore" | wc -l | tr -d ' ')"
+      echo "    policy: trivy-ignore/$cap.txt ($ignore_count expiring finding ID(s))"
+    fi
+    out="$(sarif_path "trivy-$cap")"
+    # same single-value --format limitation as osv-scanner above: a second
+    # pass for the SARIF file, so the console table isn't silently dropped.
+    if [ -f "$ignore" ]; then
+      if trivy image --scanners vuln --list-all-pkgs=false --table-mode detailed --exit-code 1 --severity CRITICAL,HIGH --ignorefile "$ignore" "$ref"; then
+        rc=0
+      else
+        rc=1
+      fi
+    else
+      if trivy image --scanners vuln --list-all-pkgs=false --table-mode detailed --exit-code 1 --severity CRITICAL,HIGH "$ref"; then
+        rc=0
+      else
+        rc=1
+      fi
+    fi
+    if [ -n "$out" ]; then
+      if [ -f "$ignore" ]; then
+        trivy image --scanners vuln --list-all-pkgs=false --exit-code 1 --severity CRITICAL,HIGH --ignorefile "$ignore" --format sarif --output "$out" "$ref" >/dev/null 2>&1
+      else
+        trivy image --scanners vuln --list-all-pkgs=false --exit-code 1 --severity CRITICAL,HIGH --format sarif --output "$out" "$ref" >/dev/null 2>&1
+      fi
+    fi
+    if [ "$rc" -eq 0 ]; then
+      echo "    ✓ clean (CRITICAL/HIGH)"
+    else
+      echo "    ✗ CRITICAL/HIGH finding(s) above$( [ -n "$out" ] && echo " (also written to $out)")"
+      fail=1
+    fi
+  done
+  [ "$any" -eq 0 ] && echo "  · no capability declares an image in service.toml"
+fi
+
+echo
+if [ "$fail" -eq 0 ]; then
+  echo "── audit: clean ──"
+else
+  echo "── audit: finding(s) — see above ──"
+fi
+exit "$fail"

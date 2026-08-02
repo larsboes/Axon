@@ -1,0 +1,98 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# README.md is otherwise private to this package -- exported so the root
+# //:architecture_up_to_date_test and //:manifest_integrity_test can reference
+# it across the package boundary (same as scouting/transit/axon-status). Adding
+# this BUILD.bazel makes capabilities/comms its own Bazel package, so the root
+# `capabilities/*/README.md` glob can no longer reach it -- hence the explicit
+# labels added to _ARCHITECTURE_INPUTS and _MANIFEST_INPUTS in the root
+# BUILD.bazel.
+exports_files(["README.md", "service.toml"])
+
+# comms shares no types across a trait boundary with scouting/transit (it has NO
+# dependency on any other capability), so per
+# MODULE.bazel's crate_index block it gets its OWN
+# crate_universe repo -- exactly like axon-status (@crate_index_axon_status) and
+# ai-client. The matching MODULE.bazel registration is:
+#
+#     crate_comms = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+#     crate_comms.from_cargo(
+#         name = "crate_index_comms",
+#         cargo_lockfile = "//capabilities/comms:Cargo.lock",
+#         manifests = ["//capabilities/comms:Cargo.toml"],
+#     )
+#     use_repo(crate_comms, "crate_index_comms")
+#
+# Registered in MODULE.bazel (crate_comms block). The store tests additionally
+# need the shared local Postgres (capabilities/postgres) reachable; `cargo test`
+# remains the day-to-day acceptance gate.
+
+rust_library(
+    name = "comms",
+    # Explicit, not inferred: srcs now carries a second file named lib.rs
+    # (//libs/axon-config), and rules_rust's crate-root inference picks by
+    # basename -- it chose axon-config's, and the resulting rlib exposed none of
+    # this crate's modules while still "building successfully". Every sibling
+    # that includes a lib names its crate_root for the same reason.
+    crate_root = "src/lib.rs",
+    # Globbed rather than listed — see capabilities/scouting/BUILD.bazel for why the
+    # hand-maintained inventory was the drift risk (Axon#13). This package is the second
+    # instance: relevance.rs and vault_links.rs were hand-added in 2026-07 after scouting's
+    # list had already gone stale once. Binary roots excluded because they are their own
+    # crates; the //libs source stays explicit because a glob cannot cross a package
+    # boundary.
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]) + [
+        "//libs/axon-config:src/lib.rs",
+    ],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index_comms//:postgres",
+        "@crate_index_comms//:reqwest",
+        "@crate_index_comms//:serde",
+        "@crate_index_comms//:serde_json",
+        "@crate_index_comms//:sha2",
+        "@crate_index_comms//:thiserror",
+    ],
+)
+
+# Runs the same #[cfg(test)] modules `cargo test` exercises (28 tests across
+# config/rules/store/google/media). The store tests need the shared local
+# Postgres (capabilities/postgres) reachable.
+rust_test(
+    name = "comms_test",
+    crate = ":comms",
+    size = "small",
+)
+
+# Bazel forbids a binary and library sharing one target name (cargo allows it),
+# so the CLI target is comms-cli here while the cargo-built binary stays `comms`
+# — same split as scouting (lib `scouting`, bin `scout`).
+rust_binary(
+    name = "comms-cli",
+    srcs = ["src/main.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":comms",
+        "@crate_index_comms//:serde_json",
+    ],
+)
+
+# comms-server: comms's own HTTP API (axum). Same dashboard-consumer rationale
+# as scout-server -- see dashboard/README.md.
+rust_binary(
+    name = "comms-server",
+    crate_root = "src/server.rs",
+    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs", "//libs/axon-config:src/lib.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":comms",
+        "@crate_index_comms//:axum",
+        "@crate_index_comms//:serde",
+        "@crate_index_comms//:serde_json",
+        "@crate_index_comms//:tokio",
+        "@crate_index_comms//:tower-http",
+    ],
+)

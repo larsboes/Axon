@@ -1,0 +1,7 @@
+{
+  "_note": "Private overlay template. Replace <knowledge-base-root> with this deployment's absolute or home-relative knowledge-store path, or set AXON_TRIPS_OBSIDIAN_ROOT instead.",
+  "obsidian": {
+    "root": "<knowledge-base-root>",
+    "trips_dir": "Atlas/Events"
+  }
+}

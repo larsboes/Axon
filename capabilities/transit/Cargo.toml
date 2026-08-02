@@ -1,0 +1,47 @@
+[package]
+name = "transit"
+version = "0.1.0"
+edition = "2021"
+description = "HAFAS journey search, split-ticket solver, rail-ticket confirmation extraction, and Trips/Postgres persistence."
+publish = false
+
+# Inert here, and deliberately so: libs/axon-config is `#[path]`-included, and its
+# env-mutating unit tests hide behind this feature so they never run inside a consumer's
+# test binary. Declaring it is what stops every build printing unexpected_cfgs.
+[features]
+standalone-tests = []
+
+[lib]
+name = "transit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "transit"
+path = "src/main.rs"
+
+# transit-server: async (tokio + axum), the one deliberate exception to
+# hafas.rs's sync reqwest::blocking used everywhere else in this crate --
+# HTTP serving needs an async runtime, the CLI binary and library do not.
+# See dashboard/README.md for why
+# this reopens the prior "no server, zero consumers" call (dashboard is
+# now the named consumer) instead of just re-adding it unrecorded. No
+# tract-onnx -- see hafas.rs's doc comment for why the ONNX delay-prediction
+# machinery was deliberately not ported (no model artifact exists in Axon
+# yet; it would be dead-weight code).
+[[bin]]
+name = "transit-server"
+path = "src/server.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["json", "gzip", "blocking"] }
+thiserror = "1.0"
+regex = "1"
+pdf-extract = "0.12"
+mailparse = "0.15"
+html2text = "0.6"
+postgres = "0.19"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }

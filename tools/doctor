@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Thin launcher: doctor's logic lives in doctor.ts. TypeScript runs through
+# bun (Axon rule 8) — doctor needs real TOML parsing (Bun.TOML, for
+# axon.toml's [[state_mount]] array-of-tables) that tools/lib/toml.sh's
+# grep/sed contract can't handle, so it's TS rather than bash.
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bun run "$_here/doctor.ts" "$@"

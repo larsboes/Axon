@@ -1,0 +1,12 @@
+# axon-status — host process, not a container. Shape: schemas/service.toml.example.
+#
+# autostart, because this is the piece that starts the others: the dashboard asks it
+# to bring a capability up when you open that capability's surface. Something has to
+# be listening for that ask, and it is deliberately the smallest process in the set.
+kind        = "process"
+name        = "axon-status"
+command     = ["bazel-bin/capabilities/axon-status/axon-status"]
+build       = ["bazel", "build", "//capabilities/axon-status:axon-status"]
+port        = "8082"
+health_path = "/health"
+autostart   = "true"

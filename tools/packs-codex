@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Thin launcher: materialized Codex Pack deployment is implemented in
+# packs-codex.ts because safe tree hashing, atomic replacement, and JSON state
+# handling are substantially clearer there than in bash.
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bun run "$_here/packs-codex.ts" "$@"

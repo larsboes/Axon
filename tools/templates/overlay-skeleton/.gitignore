@@ -1,0 +1,72 @@
+# axon-__OVERLAY_NAME__ — DEFAULT-DENY whitelist.
+# This repo holds live secrets, credentials, backups and vaultwarden data.
+# Rule: ignore EVERYTHING, then explicitly allow only safe, shareable scaffolding.
+# Never un-ignore a file that contains a real secret value.
+
+# 1) ignore all top-level entries
+/*
+
+# 2) always-safe repo files
+!/.gitignore
+!/README.md
+
+# 3) config/ — structure + *.example ONLY (never machine.toml, *.env, secrets.zsh, machine.zsh)
+!/config/
+/config/*
+!/config/.gitkeep
+!/config/machine.toml.example
+!/config/shell/
+/config/shell/*
+!/config/shell/.gitkeep
+
+# 3b) config/claude-code/ — the managed-policy fragment IS tracked, deliberately.
+#     It is the one config file here that must survive to a second machine: it carries
+#     this boundary's credential env var NAMES so `claude-code-config --managed` can deny
+#     them, and an untracked copy would silently not exist on the next node. Names and
+#     paths only — never a secret VALUE (Rule 13). The section-5 hard blocks below still
+#     override if anything *secret*/*credential*/*.env ever lands in this directory.
+!/config/claude-code/
+/config/claude-code/*
+!/config/claude-code/managed-settings.fragment.json
+!/config/claude-code/managed-settings.fragment.json.example
+
+# 4) empty skeleton dirs — keep the placeholder, not the contents
+!/memory/
+/memory/*
+!/memory/.gitkeep
+!/plugins/
+/plugins/*
+!/plugins/.gitkeep
+!/skills/
+/skills/*
+!/skills/.gitkeep
+!/secrets/
+/secrets/*
+!/secrets/.gitkeep
+!/documents/
+/documents/*
+!/documents/.gitkeep
+
+# 4b) resources/backups/ — versioned on purpose (identity mirrors, staged artifacts).
+#     No secrets live here; the section-5 hard blocks below still override for any
+#     *.env / *secret* / *credential* / *.token / .DS_Store that ever lands inside.
+!/resources/
+/resources/*
+!/resources/backups/
+!/resources/backups/**
+
+# 5) belt-and-suspenders hard blocks (must NEVER be tracked, anywhere)
+.DS_Store
+**/.DS_Store
+*.env
+**/*.env
+*secret*
+*credential*
+*.token
+*token*.md
+*.tar.gz
+/backup/
+/data/
+config/machine.toml
+config/shell/machine.zsh
+config/shell/secrets.zsh

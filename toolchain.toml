@@ -1,0 +1,153 @@
+# Every host binary Axon assumes is already installed on the machine. No entry, no check.
+#
+# WHY THIS IS NOT upstreams.toml. upstreams.toml is "external CODE Axon builds or consumes,"
+# with an audit verdict + pin + license (README.md#dependency-verdicts-and-provenance). This file is a different concern: "what
+# host tool must be on PATH for Axon's own scripts to run, and how do you install it." Most
+# entries here (git, jq, uv, gh, restic, docker, cargo) are host infrastructure with no
+# upstreams.toml entry at all — Axon doesn't build them, it just calls them. The few that are
+# ALSO adopted code (bun, the scanners, bitwarden-cli, apple-container) carry `upstream = <id>`
+# pointing at their upstreams.toml section; the pin/license/why live THERE, never restated here
+# (README.md#schemas-and-dependency-direction "import, never redefine"; README.md#one-manifest-per-concern no duplication).
+#
+# Read by tools/toolchain-check (the only parser), surfaced by tools/install.sh (bootstrap)
+# and tools/doctor (ongoing). Single-line TOML only (tools/lib/toml.sh contract, bash 3.2-safe).
+#
+# Fields, per [section] (the section name is the tool's id):
+#   required = "yes" | "optional" | "runtime"
+#       yes      — always required, a missing one is a doctor failure.
+#       optional — feature/gate-scoped; absence is a warning, not a failure.
+#       runtime  — a container runtime; the checker resolves this machine's chosen
+#                  container_runtime and checks ONLY that one (the others are alternatives).
+#   why          = one line: what Axon uses it for.
+#   install_macos / install_linux = the copy-paste install hint for that OS.
+#   bin          = the executable name IF it differs from the section name (e.g. bitwarden-cli → bw).
+#   os           = "macos" | "linux" — scope the entry to one OS; the checker skips it elsewhere.
+#   upstream     = the upstreams.toml section id, when this tool is also audited code.
+#   min_version / version_cmd = optional floor; checked only when BOTH are present. version_cmd's
+#                  output is scanned for the first dotted-number token, compared via version.sh.
+
+# ---- always required ------------------------------------------------------------------
+
+[git]
+required = "yes"
+why = "version control; the spine of update.sh, repos.ts, and every repo operation"
+install_macos = "preinstalled with Xcode CLT — or: brew install git"
+install_linux = "apt-get install -y git"
+
+[bash]
+required = "yes"
+why = "every tools/*.sh runs here; Axon targets bash 3.2 (README.md#portable-shell) so the stock macOS shell is enough"
+install_macos = "preinstalled (3.2)"
+install_linux = "preinstalled"
+
+[jq]
+required = "yes"
+why = "JSON in shell — dashboards, service-runner, audit report parsing"
+install_macos = "brew install jq"
+install_linux = "apt-get install -y jq"
+
+[bun]
+required = "yes"
+upstream = "bun"
+why = "the TS runtime (README.md#language-tooling): doctor, packs-codex, dashboard, panel-server all run on it"
+install_macos = "brew install oven-sh/bun/bun"
+install_linux = "curl -fsSL https://bun.sh/install | bash"
+
+[uv]
+required = "yes"
+why = "the Python runtime (README.md#language-tooling): printctl and any uv-run script assume it"
+install_macos = "brew install uv"
+install_linux = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+
+[gh]
+required = "yes"
+why = "GitHub CLI: repos.ts, systems.toml visibility checks, PR workflow"
+install_macos = "brew install gh"
+install_linux = "apt-get install -y gh   # or: https://cli.github.com"
+
+[bitwarden-cli]
+required = "yes"
+bin = "bw"
+upstream = "bitwarden-cli"
+why = "the canonical secret store CLI (README.md#secrets): setup-secret.sh, bw-unlock, backup restore"
+install_macos = "brew install bitwarden-cli"
+install_linux = "npm i -g @bitwarden/cli   # or the pinned release in upstreams.toml"
+
+# ---- optional (feature/gate-scoped; absence warns, never fails) ------------------------
+
+[restic]
+required = "optional"
+why = "encrypted 3-2-1 backups (README.md#backups-before-migrations); backup.sh needs it, nothing else does"
+install_macos = "brew install restic"
+install_linux = "apt-get install -y restic"
+
+[sqlite3]
+required = "optional"
+why = "cold SQLite backup and isolated restore integrity checks; required only for capabilities declaring backup_sqlite"
+install_macos = "preinstalled — or: brew install sqlite"
+install_linux = "apt-get install -y sqlite3"
+
+[bazel]
+required = "optional"
+why = "the build spine (README.md#bazel-as-the-build-spine). Optional on a pure dev box: service-runner.sh falls back to cargo for Rust capabilities when bazel is absent (README.md#argue-bazel-per-case)"
+install_macos = "brew install bazelisk"
+install_linux = "npm i -g @bazel/bazelisk   # or https://bazel.build/install"
+
+[cargo]
+required = "optional"
+why = "Rust toolchain; the bazel-less build path for Rust capabilities (service-runner.sh README.md#argue-bazel-per-case fallback)"
+install_macos = "brew install rustup && rustup default stable   # or: brew install rust"
+install_linux = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+
+# ---- container runtimes (the checker validates only this machine's chosen one) ---------
+
+[apple-container]
+required = "runtime"
+os = "macos"
+bin = "container"
+upstream = "apple-container"
+why = "the container runtime on macOS (machine.toml container_runtime = apple-container)"
+install_macos = "see upstreams.toml pin — Apple's `container` CLI"
+
+[docker]
+required = "runtime"
+why = "container runtime (machine.toml container_runtime = docker)"
+install_macos = "brew install --cask docker"
+install_linux = "apt-get install -y docker.io   # or Docker Engine per docs.docker.com"
+
+[podman]
+required = "runtime"
+why = "rootless container runtime alternative (machine.toml container_runtime = podman)"
+install_macos = "brew install podman"
+install_linux = "apt-get install -y podman"
+
+# ---- audit scanners (needed for tools/audit; absence warns) ----------------------------
+
+[semgrep]
+required = "optional"
+upstream = "semgrep"
+why = "SAST over Axon's own code — tools/audit"
+install_macos = "brew install semgrep"
+install_linux = "uv tool install semgrep   # or pipx install semgrep"
+
+[gitleaks]
+required = "optional"
+upstream = "gitleaks"
+why = "secret scan over git history — tools/audit"
+install_macos = "brew install gitleaks"
+install_linux = "apt-get install -y gitleaks   # or the pinned release in upstreams.toml"
+
+[osv-scanner]
+required = "optional"
+bin = "osv-scanner"
+upstream = "osv-scanner"
+why = "dependency-CVE scan over every lockfile — tools/audit"
+install_macos = "brew install osv-scanner"
+install_linux = "go install github.com/google/osv-scanner/cmd/osv-scanner@<pin>   # see upstreams.toml"
+
+[trivy]
+required = "optional"
+upstream = "trivy"
+why = "container/OS-package CVE scanner — tools/audit (and the future host-audit capability)"
+install_macos = "brew install trivy"
+install_linux = "apt-get install -y trivy   # or the pinned release in upstreams.toml"

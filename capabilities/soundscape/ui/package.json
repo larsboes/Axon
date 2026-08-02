@@ -1,0 +1,27 @@
+{
+  "name": "@axon/soundscape-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The soundscape capability's own surface — the browser half, where Web Audio has to run.",
+  "overrides": {
+    "cookie": "0.7.2"
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "svelte-kit sync && vite build",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --config ./svelte.config.js"
+  },
+  "dependencies": {
+    "@sveltejs/kit": "^2.0.0",
+    "svelte": "^5.0.0"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.0",
+    "@sveltejs/vite-plugin-svelte": "^6.0.0",
+    "@types/node": "^26.1.2",
+    "svelte-check": "^4.0.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.6"
+  }
+}

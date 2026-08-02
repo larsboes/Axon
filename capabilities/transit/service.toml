@@ -1,0 +1,15 @@
+# transit — host process, not a container. Shape: schemas/service.toml.example.
+kind        = "process"
+name        = "transit"
+command     = ["bazel-bin/capabilities/transit/transit-server"]
+build       = ["bazel", "build", "//capabilities/transit:transit-server"]
+port        = "3000"
+health_path = "/health"
+
+# transit-server answers /api/* directly and the dashboard's client has always called
+# it that way, so /api is proxied through unstripped alongside the uniform /transit.
+proxy_extra = ["/api"]
+
+# Trips/legs/sessions live in the shared Postgres (capabilities/postgres) — the
+# contract, not the code (README.md#schemas-and-dependency-direction). Declared so `up` starts the database first.
+requires = ["postgres"]

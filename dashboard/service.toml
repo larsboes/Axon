@@ -1,0 +1,21 @@
+# dashboard — the spine's shell, so this manifest sits at the repo root rather than
+# under capabilities/ and is always in the registry (README.md#three-architectural-nouns: the spine is
+# what exists on a fresh machine after the minimal install). Shape:
+# schemas/service.toml.example.
+#
+# `bun run dev` on purpose, not a built bundle: Vite's dev server IS the hot reload,
+# and supervising it is what makes "always on" and "edit a component, see it change"
+# the same thing rather than two modes. A built artifact becomes the right command
+# the day this runs on the home server, where nobody is editing — that is a machine
+# fact, so it belongs in the overlay's [capability.dashboard] section, not here.
+kind        = "process"
+name        = "dashboard"
+command     = ["bun", "run", "dev"]
+workdir     = "dashboard"
+port        = "47117"
+health_path = "/"
+autostart   = "true"
+
+# The shell asks axon-status what is enabled and what is up, and routes start requests
+# through it. Declared for ordering and for the manifest-integrity gate.
+requires = ["axon-status"]

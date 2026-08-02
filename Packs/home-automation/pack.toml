@@ -1,0 +1,7 @@
+# See schemas/pack.toml.example for the field reference.
+name         = "home-automation"
+description  = "Home Assistant capability tooling — materialize templated automations from an instance var map, fetch pinned custom components, query the Fritz!Box, network/DNS ops."
+skills       = ["homectl", "fritz", "ha-cli", "pihole", "netmon", "esphome", "ha-deploy", "energy-dashboard", "ha-dashboard"]
+license      = "MIT"
+capabilities = ["home-assistant"]
+personal     = ["config/home-assistant.vars"]

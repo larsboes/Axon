@@ -1,0 +1,942 @@
+{
+  "schema": 1,
+  "generator": "tools/self.ts",
+  "units": [
+    {
+      "name": "3d-printing",
+      "kind": "pack",
+      "code": {
+        "files": 5,
+        "nodes": 30
+      }
+    },
+    {
+      "name": "academic-writing",
+      "kind": "pack",
+      "code": {
+        "files": 22,
+        "nodes": 127
+      }
+    },
+    {
+      "name": "agentbox",
+      "kind": "capability",
+      "code": {
+        "files": 3,
+        "nodes": 36
+      }
+    },
+    {
+      "name": "ai-client",
+      "kind": "lib",
+      "code": {
+        "files": 6,
+        "nodes": 27
+      }
+    },
+    {
+      "name": "axon",
+      "kind": "pack",
+      "code": {
+        "files": 17,
+        "nodes": 75
+      }
+    },
+    {
+      "name": "axon-config",
+      "kind": "lib",
+      "code": {
+        "files": 2,
+        "nodes": 25
+      }
+    },
+    {
+      "name": "axon-server",
+      "kind": "lib",
+      "code": {
+        "files": 2,
+        "nodes": 10
+      }
+    },
+    {
+      "name": "axon-status",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [],
+        "port": "8082"
+      },
+      "code": {
+        "files": 2,
+        "nodes": 32
+      }
+    },
+    {
+      "name": "calendar",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "postgres"
+        ],
+        "port": "8087"
+      },
+      "code": {
+        "files": 12,
+        "nodes": 434
+      }
+    },
+    {
+      "name": "comms",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "postgres"
+        ],
+        "port": "8083"
+      },
+      "code": {
+        "files": 30,
+        "nodes": 572
+      }
+    },
+    {
+      "name": "cv",
+      "kind": "pack",
+      "code": {
+        "files": 4,
+        "nodes": 24
+      }
+    },
+    {
+      "name": "dashboard",
+      "kind": "spine",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "axon-status"
+        ],
+        "port": "47117"
+      },
+      "code": {
+        "files": 61,
+        "nodes": 336
+      }
+    },
+    {
+      "name": "home-assistant",
+      "kind": "capability",
+      "code": {
+        "files": 1,
+        "nodes": 6
+      }
+    },
+    {
+      "name": "home-automation",
+      "kind": "pack",
+      "code": {
+        "files": 21,
+        "nodes": 262
+      }
+    },
+    {
+      "name": "host-audit",
+      "kind": "capability",
+      "code": {
+        "files": 2,
+        "nodes": 21
+      }
+    },
+    {
+      "name": "inference",
+      "kind": "lib",
+      "code": {
+        "files": 2,
+        "nodes": 37
+      }
+    },
+    {
+      "name": "knowledge-graph",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [],
+        "port": "4244"
+      },
+      "code": {
+        "files": 11,
+        "nodes": 85
+      }
+    },
+    {
+      "name": "learning",
+      "kind": "capability",
+      "code": {
+        "files": 2,
+        "nodes": 9
+      }
+    },
+    {
+      "name": "lifeos",
+      "kind": "capability",
+      "code": {
+        "files": 2,
+        "nodes": 14
+      }
+    },
+    {
+      "name": "llm-wiki",
+      "kind": "pack",
+      "code": {
+        "files": 2,
+        "nodes": 16
+      }
+    },
+    {
+      "name": "overlay",
+      "kind": "lib",
+      "code": {
+        "files": 2,
+        "nodes": 10
+      }
+    },
+    {
+      "name": "pihole",
+      "kind": "capability",
+      "code": {
+        "files": 1,
+        "nodes": 5
+      }
+    },
+    {
+      "name": "postgres",
+      "kind": "capability",
+      "service": {
+        "kind": "container",
+        "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 9
+      }
+    },
+    {
+      "name": "printing",
+      "kind": "capability",
+      "code": {
+        "files": 2,
+        "nodes": 51
+      }
+    },
+    {
+      "name": "punctuality",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "postgres"
+        ],
+        "port": "8085"
+      },
+      "code": {
+        "files": 10,
+        "nodes": 106
+      }
+    },
+    {
+      "name": "schemas",
+      "kind": "spine",
+      "code": {
+        "files": 1,
+        "nodes": 173
+      }
+    },
+    {
+      "name": "scouting",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "postgres"
+        ],
+        "port": "8084"
+      },
+      "code": {
+        "files": 25,
+        "nodes": 383
+      }
+    },
+    {
+      "name": "security",
+      "kind": "pack",
+      "code": {
+        "files": 3,
+        "nodes": 31
+      }
+    },
+    {
+      "name": "shell",
+      "kind": "capability",
+      "code": {
+        "files": 2,
+        "nodes": 13
+      }
+    },
+    {
+      "name": "soundscape",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [],
+        "port": "8088"
+      },
+      "code": {
+        "files": 18,
+        "nodes": 276
+      }
+    },
+    {
+      "name": "tools",
+      "kind": "spine",
+      "code": {
+        "files": 64,
+        "nodes": 540
+      }
+    },
+    {
+      "name": "transit",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "postgres"
+        ],
+        "port": "3000"
+      },
+      "code": {
+        "files": 10,
+        "nodes": 168
+      }
+    },
+    {
+      "name": "trips",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "postgres"
+        ],
+        "port": "8086"
+      },
+      "code": {
+        "files": 6,
+        "nodes": 90
+      }
+    },
+    {
+      "name": "unslop",
+      "kind": "pack",
+      "code": {
+        "files": 8,
+        "nodes": 85
+      }
+    },
+    {
+      "name": "vaultwarden",
+      "kind": "capability",
+      "service": {
+        "kind": "container",
+        "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 6
+      }
+    },
+    {
+      "name": "writing",
+      "kind": "pack",
+      "code": {
+        "files": 40,
+        "nodes": 377
+      }
+    }
+  ],
+  "coupling": [
+    {
+      "from": "axon-server",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "libs/axon-server/BUILD.bazel",
+        "libs/axon-server/src/lib.rs"
+      ]
+    },
+    {
+      "from": "axon-status",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/axon-status/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "axon-status",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/axon-status/BUILD.bazel",
+        "capabilities/axon-status/src/main.rs"
+      ]
+    },
+    {
+      "from": "calendar",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/calendar/BUILD.bazel",
+        "capabilities/calendar/src/lib.rs"
+      ]
+    },
+    {
+      "from": "calendar",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/calendar/BUILD.bazel",
+        "capabilities/calendar/src/server.rs"
+      ]
+    },
+    {
+      "from": "comms",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/comms/BUILD.bazel",
+        "capabilities/comms/src/lib.rs"
+      ]
+    },
+    {
+      "from": "comms",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/comms/BUILD.bazel",
+        "capabilities/comms/src/server.rs"
+      ]
+    },
+    {
+      "from": "punctuality",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/punctuality/BUILD.bazel",
+        "capabilities/punctuality/src/lib.rs"
+      ]
+    },
+    {
+      "from": "punctuality",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/punctuality/BUILD.bazel",
+        "capabilities/punctuality/src/server.rs"
+      ]
+    },
+    {
+      "from": "scouting",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/scouting/BUILD.bazel",
+        "capabilities/scouting/src/lib.rs"
+      ]
+    },
+    {
+      "from": "scouting",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/scouting/BUILD.bazel",
+        "capabilities/scouting/src/server.rs"
+      ]
+    },
+    {
+      "from": "scouting",
+      "to": "inference",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/scouting/BUILD.bazel",
+        "capabilities/scouting/src/lib.rs"
+      ]
+    },
+    {
+      "from": "scouting",
+      "to": "transit",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/scouting/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "soundscape",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/soundscape/BUILD.bazel",
+        "capabilities/soundscape/src/main.rs"
+      ]
+    },
+    {
+      "from": "soundscape",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/soundscape/BUILD.bazel",
+        "capabilities/soundscape/src/main.rs"
+      ]
+    },
+    {
+      "from": "transit",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/transit/BUILD.bazel",
+        "capabilities/transit/src/lib.rs"
+      ]
+    },
+    {
+      "from": "transit",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/transit/BUILD.bazel",
+        "capabilities/transit/src/server.rs"
+      ]
+    },
+    {
+      "from": "trips",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/trips/BUILD.bazel",
+        "capabilities/trips/src/lib.rs"
+      ]
+    },
+    {
+      "from": "trips",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/trips/BUILD.bazel",
+        "capabilities/trips/src/server.rs"
+      ]
+    }
+  ],
+  "upstreams": [
+    {
+      "name": "academic-researcher",
+      "verdict": "overlay",
+      "pin": "e75d70d"
+    },
+    {
+      "name": "academic-writing-agents",
+      "verdict": "quarry",
+      "pin": ""
+    },
+    {
+      "name": "apple-container",
+      "verdict": "adopt",
+      "pin": "1.0.0"
+    },
+    {
+      "name": "arrow-rs",
+      "verdict": "adopt",
+      "pin": "59.1.0"
+    },
+    {
+      "name": "awesome-selfhosted",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "besser-bahn",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "betterbahn",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "bitwarden-cli",
+      "verdict": "adopt",
+      "pin": "cli-v2026.6.0"
+    },
+    {
+      "name": "bottom",
+      "verdict": "adopt",
+      "pin": "0.14.3"
+    },
+    {
+      "name": "bun",
+      "verdict": "adopt",
+      "pin": "1.3.14"
+    },
+    {
+      "name": "colibri",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "debian",
+      "verdict": "adopt",
+      "pin": "trixie-20260713-slim"
+    },
+    {
+      "name": "deutsche-bahn-data",
+      "verdict": "adopt",
+      "pin": "monthly_processed_data/data-2025-11 .. data-2026-06"
+    },
+    {
+      "name": "esphome",
+      "verdict": "reject",
+      "pin": "2026.5.3"
+    },
+    {
+      "name": "exo",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "gitleaks",
+      "verdict": "adopt",
+      "pin": "v8.30.1"
+    },
+    {
+      "name": "grafana",
+      "verdict": "reject",
+      "pin": "13.0.2"
+    },
+    {
+      "name": "graphify",
+      "verdict": "adopt",
+      "pin": "0.9.19"
+    },
+    {
+      "name": "home-assistant",
+      "verdict": "adopt",
+      "pin": "2026.7.4"
+    },
+    {
+      "name": "human-voice",
+      "verdict": "adopt",
+      "pin": "9bcba2f"
+    },
+    {
+      "name": "iai-personal-memory-engine",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "influxdb",
+      "verdict": "reject",
+      "pin": "2.7.12"
+    },
+    {
+      "name": "lifeos",
+      "verdict": "overlay",
+      "pin": "v7.1.1"
+    },
+    {
+      "name": "llama-cpp-rpc",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "local-llm",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "macmon",
+      "verdict": "adopt",
+      "pin": "0.7.0"
+    },
+    {
+      "name": "maplibre-gl-js",
+      "verdict": "adopt",
+      "pin": "v5.21.1"
+    },
+    {
+      "name": "mcp-audit",
+      "verdict": "adopt",
+      "pin": "v1.0.0"
+    },
+    {
+      "name": "mcpserver-audit",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "mlx",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "mosquitto",
+      "verdict": "reject",
+      "pin": "2.1.2-alpine"
+    },
+    {
+      "name": "multilingual-e5-base-mlx",
+      "verdict": "adopt",
+      "pin": "576fdf3eab52a419f6d126a0c4d7c59b3882ffde"
+    },
+    {
+      "name": "multilingual-e5-small-mlx",
+      "verdict": "reject",
+      "pin": "5030c7625865046d350eeea28f427d80353d0ac0"
+    },
+    {
+      "name": "netbird",
+      "verdict": "reject",
+      "pin": ""
+    },
+    {
+      "name": "nvidia-skills",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "oberskills",
+      "verdict": "quarry",
+      "pin": "5050537"
+    },
+    {
+      "name": "openfreemap",
+      "verdict": "adopt",
+      "pin": "hosted-style-api"
+    },
+    {
+      "name": "osv-scanner",
+      "verdict": "adopt",
+      "pin": "v2.4.0"
+    },
+    {
+      "name": "paperless-ngx",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "pengsida-research-notes",
+      "verdict": "quarry",
+      "pin": ""
+    },
+    {
+      "name": "pi-coding-agent",
+      "verdict": "adopt",
+      "pin": "v0.83.0"
+    },
+    {
+      "name": "pihole",
+      "verdict": "adopt",
+      "pin": "2026.07.2"
+    },
+    {
+      "name": "plan-bahn",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "platforms",
+      "verdict": "adopt",
+      "pin": "1.1.0"
+    },
+    {
+      "name": "postgres",
+      "verdict": "adopt",
+      "pin": "17.10-alpine"
+    },
+    {
+      "name": "research-paper-writing-skills",
+      "verdict": "quarry",
+      "pin": ""
+    },
+    {
+      "name": "rules_rust",
+      "verdict": "adopt",
+      "pin": "0.71.1"
+    },
+    {
+      "name": "rules_shell",
+      "verdict": "adopt",
+      "pin": "0.8.0"
+    },
+    {
+      "name": "scout",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "semgrep",
+      "verdict": "adopt",
+      "pin": "1.168.0"
+    },
+    {
+      "name": "stevenblack-hosts",
+      "verdict": "adopt",
+      "pin": "master (INTENTIONALLY UNPINNED — data, not code)"
+    },
+    {
+      "name": "stop-slop",
+      "verdict": "reject",
+      "pin": "8da1f03"
+    },
+    {
+      "name": "svelte-ai-tools",
+      "verdict": "adopt",
+      "pin": "6468954"
+    },
+    {
+      "name": "svelte-language-server",
+      "verdict": "adopt",
+      "pin": "0.18.3"
+    },
+    {
+      "name": "sveltejs-mcp",
+      "verdict": "adopt",
+      "pin": "0.1.25"
+    },
+    {
+      "name": "tailscale",
+      "verdict": "adopt",
+      "pin": "1.98.9"
+    },
+    {
+      "name": "telekom-mcp-security",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "trek-travel",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "tripit",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
+      "name": "trivy",
+      "verdict": "adopt",
+      "pin": "v0.72.0"
+    },
+    {
+      "name": "typst",
+      "verdict": "adopt",
+      "pin": "0.15.0"
+    },
+    {
+      "name": "vaultwarden",
+      "verdict": "adopt",
+      "pin": "1.37.0-alpine"
+    },
+    {
+      "name": "vibecoded-design-tells",
+      "verdict": "adopt",
+      "pin": "f7c4aef"
+    },
+    {
+      "name": "wikimedia-api",
+      "verdict": "adopt",
+      "pin": "action-api-pageimages"
+    },
+    {
+      "name": "xberg",
+      "verdict": "adopt",
+      "pin": "1.0.5"
+    },
+    {
+      "name": "yq",
+      "verdict": "adopt",
+      "pin": "4.53.3"
+    }
+  ],
+  "graph": {
+    "present": true,
+    "nodes": 5177,
+    "external": 5,
+    "stale": [],
+    "unmatched": [
+      ".github/ISSUE_TEMPLATE/bug_report.md",
+      ".github/ISSUE_TEMPLATE/feature_request.md",
+      ".github/pull_request_template.md",
+      "AGENTS.md",
+      "ARCHITECTURE.md",
+      "CLAUDE.md",
+      "CODE_OF_CONDUCT.md",
+      "CONTRIBUTING.md",
+      "README.md",
+      "SECURITY.md"
+    ]
+  }
+}

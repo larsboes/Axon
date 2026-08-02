@@ -1,0 +1,53 @@
+# Shape of $AXON_PERSONAL_ROOT/data/cv/master_cv.yaml, consumed by templates/cv.typ.
+# This file is documentation + a fillable skeleton — copy it into the overlay and replace
+# every placeholder. Real content never lands in Axon.
+#
+# Conventions:
+#   - Any free-text field is bilingual: {en: "...", de: "..."}.
+#   - `profiles: [...]` tags an item as belonging to those build profiles only.
+#     Omit `profiles` entirely (or leave it empty) to include the item in every profile.
+#   - `profiles` lives on: experience entries, individual bullets, skill categories.
+#     Text variants (title/summary) key off `default` plus one override key per profile —
+#     `cv build --profile swe` uses `swe` if present, else `default`.
+#   - The profile vocabulary below (swe/quant/consulting/general/cheftreff/sdw/hackathon)
+#     is a starting point carried over from the old LaTeX targets — add/drop freely, it's
+#     just data read at build time, nothing else references this list.
+
+name: "Firstname Lastname"
+
+contact:
+  email: "you@example.com"
+  phone: "+00 000 0000000"       # optional
+  location: "City, Country"
+  linkedin: "linkedin.com/in/yourhandle"
+  github: "github.com/yourhandle"
+
+title:
+  default: {en: "Default Job Title", de: "Standard-Berufsbezeichnung"}
+  swe: {en: "Software Engineer", de: "Software-Entwickler"}
+
+summary:
+  default: {en: "One or two sentences describing you, used when no profile-specific summary exists.", de: "..."}
+  swe: {en: "A summary variant tuned for SWE applications.", de: "..."}
+
+experience:
+  - company: "Employer Name"
+    location: "City, Country"
+    date: "Mon. YYYY - Present"
+    # profiles: [swe, general]   # omit to include this experience entry in every build
+    bullets:
+      - text: {en: "Achievement or responsibility, specific and metric-driven where possible.", de: "..."}
+        # profiles: [swe]        # omit to include this bullet whenever the entry above is included
+
+education:
+  - institution: "University Name"
+    degree: {en: "Degree Name", de: "..."}
+    date: "Mon. YYYY - Mon. YYYY"
+    location: "City, Country"     # optional
+    details:
+      - {en: "Relevant coursework, thesis title, honors, etc.", de: "..."}
+
+skills:
+  - category: {en: "Languages & Frameworks", de: "Sprachen & Frameworks"}
+    # profiles: [swe]            # omit to include this category in every build
+    items: ["Item A", "Item B"]

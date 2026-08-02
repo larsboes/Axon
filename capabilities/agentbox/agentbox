@@ -1,0 +1,371 @@
+#!/bin/bash
+# capabilities/agentbox/agentbox — run a coding agent inside a disposable micro-VM.
+# Portable shell only (README.md#portable-shell) — no bash-4-only syntax.
+set -euo pipefail
+
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=../../tools/lib/paths.sh
+source "$_dir/../../tools/lib/paths.sh"
+# shellcheck source=../../tools/lib/platform.sh
+source "$_dir/../../tools/lib/platform.sh"
+
+CONFIG="$AXON_PERSONAL_ROOT/config/agentbox.toml"
+DATA="$AXON_PERSONAL_ROOT/data/agentbox"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  agentbox run [--project <dir>] [--online] [-- <agent args>...]
+  agentbox build [--no-cache]        # fetch + verify the agent archive, build the image
+  agentbox doctor                    # runtime, network, image, config, model endpoint
+  agentbox shell [--project <dir>]   # a bash prompt in the same box, no agent
+
+Without --project the current directory is mounted. That is the only host path the
+box can see; --online swaps the host-only network for one with internet.
+EOF
+}
+
+die() { echo "agentbox: $*" >&2; exit 1; }
+
+# --- config ----------------------------------------------------------------
+
+require_config() {
+  [ -f "$CONFIG" ] || die "no config at $CONFIG — copy capabilities/agentbox/agentbox.toml.example there and fill it in"
+  AGENT="$(toml_get agent "$CONFIG")"
+  [ -n "$AGENT" ] || die "$CONFIG has no 'agent'"
+  PROFILE_DIR="$_dir/profiles/$AGENT"
+  PROFILE="$PROFILE_DIR/profile.toml"
+  [ -f "$PROFILE" ] || die "unknown agent '$AGENT' — no $PROFILE"
+
+  VERSION="$(toml_get version "$PROFILE")"
+  IMAGE="agentbox-$AGENT:$VERSION"
+  NETWORK="$(toml_get network "$CONFIG")"; NETWORK="${NETWORK:-agentbox}"
+  AGENT_DIR="$DATA/$AGENT"
+  CACHE="$DATA/cache"
+
+  case "$(uname -m)" in
+    arm64|aarch64) ARCH="arm64" ;;
+    x86_64)        ARCH="x64" ;;
+    *)             die "unsupported host arch $(uname -m)" ;;
+  esac
+  # The box is a Linux container regardless of what builds it, so its target OS is a
+  # constant, not `uname -s`. It is a variable anyway because the same pinned release
+  # is also installed on the host, where the target is darwin — one profile, one pin,
+  # two targets. Callers that want the host build set OS before calling.
+  OS="${OS:-linux}"
+  ARCHIVE_SHA="$(toml_get "archive_sha256_${OS}_${ARCH}" "$PROFILE")"
+  [ -n "$ARCHIVE_SHA" ] || die "$PROFILE has no archive_sha256_${OS}_${ARCH} — add the checksum for this os/arch from the release's SHA256SUMS"
+  ARCHIVE_URL="$(toml_get archive_url "$PROFILE")"
+  ARCHIVE_URL="${ARCHIVE_URL//\{version\}/$VERSION}"
+  ARCHIVE_URL="${ARCHIVE_URL//\{os\}/$OS}"
+  ARCHIVE_URL="${ARCHIVE_URL//\{arch\}/$ARCH}"
+  ARCHIVE_NAME="$AGENT-$VERSION-$OS-$ARCH.tar.gz"
+}
+
+require_runtime() {
+  [ "$AXON_CONTAINER_RUNTIME" = "apple-container" ] \
+    || die "container_runtime is '$AXON_CONTAINER_RUNTIME'; agentbox needs apple-container (its host-only network and per-container VM are the boundary)"
+  command -v container >/dev/null 2>&1 || die "'container' not found — install the signed .pkg from github.com/apple/container/releases"
+  container system status >/dev/null 2>&1 || die "container runtime is not running — 'container system start'"
+}
+
+# The model API key never reaches a command line or this script's environment as a
+# literal; it is read from the overlay's gitignored env file at render time only.
+read_api_key() {
+  key_file="$(toml_get api_key_file "$CONFIG")"
+  key_file="${key_file:-config/agentbox.env}"
+  key_var="$(toml_get api_key_var "$CONFIG")"
+  key_var="${key_var:-AGENTBOX_MODEL_API_KEY}"
+  key_path="$AXON_PERSONAL_ROOT/$key_file"
+  if [ ! -f "$key_path" ]; then
+    die "no $key_path — create it with '$key_var=<your model server key>' (chmod 600). Never generated here (README.md#secrets)"
+  fi
+  # \042 = ", \047 = ' — strip either style of quoting around the value.
+  API_KEY="$(grep -E "^$key_var=" "$key_path" | head -n1 | cut -d= -f2- | tr -d '\042\047')"
+  [ -n "$API_KEY" ] || die "$key_path has no $key_var"
+}
+
+# --- network ---------------------------------------------------------------
+
+ensure_network() {
+  if ! container network ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$NETWORK"; then
+    echo "agentbox: creating host-only network '$NETWORK'"
+    container network create --internal "$NETWORK" >/dev/null
+  fi
+}
+
+gateway_ip() {  # the host, as seen from inside that network
+  container network inspect "$NETWORK" 2>/dev/null \
+    | sed -n 's/.*"ipv4Gateway"[^"]*"\([^"]*\)".*/\1/p' | head -n1
+}
+
+# Ask the endpoint for a status line from inside a throwaway box. Done this way, and
+# not with a curl from the host, because a host-only network's bridge interface only
+# exists while a container is attached to it: the host cannot reach that gateway when
+# nothing is running, however healthy the server is. Empty output means no answer.
+probe_model() {
+  url="$1"
+  hostport="${url#http://}"; hostport="${hostport%%/*}"
+  host="${hostport%%:*}"; port="${hostport##*:}"
+  container run --rm --network "$NETWORK" --dns 127.0.0.1 \
+    --entrypoint /bin/bash "$IMAGE" -c "
+      exec 3<>/dev/tcp/$host/$port 2>/dev/null || exit 1
+      printf 'GET /v1/models HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n' '$hostport' >&3
+      head -n1 <&3
+    " 2>/dev/null | tr -d '\r' | grep '^HTTP/' | head -n1
+}
+
+model_base_url() {
+  override="$(toml_get model_base_url "$CONFIG")"
+  if [ -n "$override" ]; then echo "$override"; return; fi
+  port="$(toml_get model_port "$CONFIG")"; port="${port:-8000}"
+  gw="$(gateway_ip)"
+  [ -n "$gw" ] || die "could not read the gateway of network '$NETWORK'"
+  echo "http://$gw:$port/v1"
+}
+
+# --- build -----------------------------------------------------------------
+
+fetch_archive() {
+  mkdir -p "$CACHE"
+  archive="$CACHE/$ARCHIVE_NAME"
+  if [ ! -f "$archive" ]; then
+    echo "agentbox: fetching $ARCHIVE_URL"
+    curl -fsSL --proto '=https' --tlsv1.2 -o "$archive.part" "$ARCHIVE_URL" || die "download failed"
+    mv "$archive.part" "$archive"
+  fi
+  actual="$(shasum -a 256 "$archive" | cut -d' ' -f1)"
+  if [ "$actual" != "$ARCHIVE_SHA" ]; then
+    rm -f "$archive"
+    die "checksum mismatch for $ARCHIVE_NAME
+  expected $ARCHIVE_SHA (profiles/$AGENT/profile.toml)
+  got      $actual
+The cached copy was deleted. If this repeats, the release was re-cut or the download is not what upstream published."
+  fi
+  echo "agentbox: sha256 ok — $ARCHIVE_NAME"
+}
+
+cmd_build() {
+  require_config; require_runtime
+  no_cache=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-cache) no_cache="--no-cache"; shift ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  fetch_archive
+  ensure_network
+  # The build context is the archive cache, so the 100 MB agent tarball is the only
+  # thing shipped to the builder — not the whole repo.
+  # shellcheck disable=SC2086
+  container build $no_cache \
+    --tag "$IMAGE" \
+    --file "$_dir/Containerfile" \
+    --build-arg "AGENT_NAME=$AGENT" \
+    --build-arg "ARCHIVE=$ARCHIVE_NAME" \
+    --build-arg "ARCHIVE_ROOT=$(toml_get archive_root "$PROFILE")" \
+    --build-arg "BIN_PATH=$(toml_get bin_path "$PROFILE")" \
+    --build-arg "ARCHIVE_SHA256=$ARCHIVE_SHA" \
+    --build-arg "AGENT_UID=$(id -u)" \
+    --build-arg "AGENT_GID=$(id -g)" \
+    "$CACHE"
+  echo "agentbox: built $IMAGE"
+}
+
+# --- config rendering ------------------------------------------------------
+
+# Rendered fresh on every run: Axon owns the contract, the overlay owns the instance
+# values and whatever the agent itself writes next to them (sessions, caches, trust).
+render_config_dir() {
+  mkdir -p "$AGENT_DIR"
+  chmod 700 "$AGENT_DIR"
+
+  base_url="$(model_base_url)"
+  read_api_key
+  network_statement="$1"
+
+  for target in $(toml_array render "$PROFILE"); do
+    tmpl="$PROFILE_DIR/$target.tmpl"
+    [ -f "$tmpl" ] || die "profile declares render=$target but $tmpl is missing"
+    out="$AGENT_DIR/$target"
+    sed \
+      -e "s|{{MODEL_BASE_URL}}|$base_url|g" \
+      -e "s|{{MODEL_ID}}|$(toml_get model_id "$CONFIG")|g" \
+      -e "s|{{MODEL_NAME}}|$(toml_get model_name "$CONFIG")|g" \
+      -e "s|{{MODEL_CONTEXT_WINDOW}}|$(toml_get model_context_window "$CONFIG")|g" \
+      -e "s|{{MODEL_MAX_TOKENS}}|$(toml_get model_max_tokens "$CONFIG")|g" \
+      -e "s|{{NETWORK_STATEMENT}}|$network_statement|g" \
+      "$tmpl" > "$out.part"
+    # The key lands last and via a separate pass, so it never appears in an error
+    # message from the substitutions above. `&` and `|` would otherwise be read as
+    # sed syntax rather than as key material.
+    esc_key="$(printf '%s' "$API_KEY" | sed -e 's/[&|\\]/\\&/g')"
+    sed -e "s|{{MODEL_API_KEY}}|$esc_key|g" "$out.part" > "$out"
+    rm -f "$out.part"
+    chmod 600 "$out"
+  done
+
+  if [ -d "$PROFILE_DIR/extensions" ]; then
+    rm -rf "$AGENT_DIR/extensions"
+    cp -R "$PROFILE_DIR/extensions" "$AGENT_DIR/extensions"
+  fi
+}
+
+# --- run -------------------------------------------------------------------
+
+cmd_run() {
+  require_config; require_runtime
+  project="$PWD"
+  online=0
+  entry_shell=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="$2"; shift 2 ;;
+      --online) online=1; shift ;;
+      --shell) entry_shell=1; shift ;;
+      --) shift; break ;;
+      -h|--help) usage; exit 0 ;;
+      *) break ;;
+    esac
+  done
+
+  [ -d "$project" ] || die "no such project directory: $project"
+  project="$(cd "$project" && pwd)"
+  case "$project" in
+    "$HOME"|/) die "refusing to mount '$project' — point --project at one project, not your home" ;;
+  esac
+
+  container image inspect "$IMAGE" >/dev/null 2>&1 || die "no image $IMAGE — run 'agentbox build'"
+
+  if [ "$online" -eq 1 ]; then
+    net_args="--network default"
+    statement="this box has internet access (--online). Treat every outbound call as something you must be able to justify."
+  else
+    ensure_network
+    # Not --no-dns: that makes the runtime fall back to its built-in 1.1.1.1, which is
+    # unreachable here, so every lookup burns its full timeout. Pointing the resolver at
+    # the box's own loopback fails in ~1 ms instead (measured 2026-07-28).
+    net_args="--network $NETWORK --dns 127.0.0.1"
+    statement="none, except the model endpoint on the host. There is no DNS and no route off this machine — git push, package installs and web fetches will fail, and that is intended."
+  fi
+
+  render_config_dir "$statement"
+
+  config_dir="$(toml_get config_dir "$PROFILE")"
+  cpus="$(toml_get cpus "$CONFIG")"; cpus="${cpus:-4}"
+  memory="$(toml_get memory "$CONFIG")"; memory="${memory:-4G}"
+
+  # The profile's model selection is a default, not a fixture: it is prepended unless the
+  # caller named a model or provider themselves, so `run -- -p "..."` still lands on the
+  # configured model while `run -- --model other` still wins.
+  caller_picked_model=0
+  for arg in ${1+"$@"}; do
+    case "$arg" in --model|-m|--provider|--models) caller_picked_model=1 ;; esac
+  done
+  if [ "$entry_shell" -eq 0 ] && [ "$caller_picked_model" -eq 0 ]; then
+    model_args="$(toml_get model_args "$PROFILE")"
+    model_args="${model_args//\{model_id\}/$(toml_get model_id "$CONFIG")}"
+    # shellcheck disable=SC2086
+    set -- $model_args ${1+"$@"}
+  fi
+
+  entrypoint_args=""
+  [ "$entry_shell" -eq 1 ] && entrypoint_args="--entrypoint /bin/bash"
+
+  # A tty is only allocatable when there is one to attach to; asking for one from a
+  # script or a pipe fails the run outright (ENODEV), which would rule out `-p` prompts
+  # and any non-interactive use.
+  tty_args="--interactive"
+  [ -t 0 ] && tty_args="--interactive --tty"
+
+  # shellcheck disable=SC2086
+  exec container run --rm $tty_args \
+    $net_args $entrypoint_args \
+    --cpus "$cpus" --memory "$memory" \
+    --volume "$AGENT_DIR:$config_dir" \
+    --volume "$project:/workspace" \
+    --workdir /workspace \
+    --env "$(toml_get config_dir_env "$PROFILE")=$config_dir" \
+    --env "$(toml_get env_offline "$PROFILE")" \
+    --env "$(toml_get env_telemetry "$PROFILE")" \
+    "$IMAGE" ${1+"$@"}
+}
+
+# --- doctor ----------------------------------------------------------------
+
+ok()   { echo "  ✓ $*"; }
+bad()  { echo "  ✗ $*"; DOCTOR_FAILED=1; }
+
+cmd_doctor() {
+  DOCTOR_FAILED=0
+  echo "agentbox"
+  require_config
+  ok "agent: $AGENT $VERSION (profiles/$AGENT/profile.toml)"
+
+  if [ "$AXON_CONTAINER_RUNTIME" = "apple-container" ] && command -v container >/dev/null 2>&1 \
+     && container system status >/dev/null 2>&1; then
+    ok "runtime: apple-container $(container --version 2>/dev/null | sed -n 's/.*version \([^ ]*\).*/\1/p') running"
+  else
+    bad "runtime: apple-container not available or not started"
+  fi
+
+  if container network ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$NETWORK"; then
+    gw="$(gateway_ip)"
+    mode="$(container network inspect "$NETWORK" | sed -n 's/.*"mode"[^"]*"\([^"]*\)".*/\1/p' | head -n1)"
+    if [ "$mode" = "hostOnly" ]; then
+      ok "network: $NETWORK ($mode, gateway $gw)"
+    else
+      bad "network: $NETWORK is '$mode', expected hostOnly — delete it and let agentbox recreate it"
+    fi
+  else
+    bad "network: $NETWORK missing — created on the next build/run"
+  fi
+
+  if container image inspect "$IMAGE" >/dev/null 2>&1; then
+    ok "image: $IMAGE"
+  else
+    bad "image: $IMAGE missing — 'agentbox build'"
+  fi
+
+  url="$(model_base_url 2>/dev/null || true)"
+  if [ -z "$url" ]; then
+    bad "model: cannot derive a base URL (no gateway, no model_base_url override)"
+  elif ! container image inspect "$IMAGE" >/dev/null 2>&1; then
+    bad "model: not probed — needs the image to probe from"
+  else
+    status="$(probe_model "$url" || true)"
+    host="${url#http://}"; host="${host%%:*}"
+    if [ -n "$status" ]; then
+      # Any status line is a pass: doctor asks whether the endpoint is reachable, and
+      # a 401 answers that as well as a 200 does.
+      ok "model: $url answers from inside the box ($status)"
+    else
+      bad "model: silence at $url from inside the box.
+      A separate VM cannot reach the host's 127.0.0.1 — the server has to bind 0.0.0.0,
+      and $host has to be among the Host headers it accepts."
+    fi
+  fi
+
+  key_file="$(toml_get api_key_file "$CONFIG")"; key_file="${key_file:-config/agentbox.env}"
+  if [ -f "$AXON_PERSONAL_ROOT/$key_file" ]; then
+    ok "key: $key_file present"
+  else
+    bad "key: $key_file missing — see the README's Setup section"
+  fi
+
+  [ "$DOCTOR_FAILED" -eq 0 ] || exit 1
+}
+
+# --- dispatch --------------------------------------------------------------
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift || true
+case "$cmd" in
+  build)  cmd_build "$@" ;;
+  run)    cmd_run "$@" ;;
+  shell)  cmd_run --shell "$@" ;;
+  doctor) cmd_doctor ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command '$cmd'" ;;
+esac

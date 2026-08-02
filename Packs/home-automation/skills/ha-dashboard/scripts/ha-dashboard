@@ -1,0 +1,417 @@
+#!/usr/bin/env python3
+"""ha-dashboard — deploy & back up Home Assistant Lovelace dashboards (pure Python 3 stdlib, no deps).
+
+Lovelace dashboard config lives behind Home Assistant's WebSocket API, not its REST
+API, so this tool speaks WebSocket over a minimal stdlib client (socket + ssl +
+base64 + hashlib) — no `websockets` package, no pip install.
+
+Split source of truth: the non-secret HA_URL (the WebSocket URL is derived from it)
+comes from the committed overlay config (<overlay>/config/home-assistant.vars). The
+secret HA_TOKEN (a long-lived access token) comes from Bitwarden at runtime — never
+hardcoded, never printed. Requires an unlocked Bitwarden session in $BW_SESSION (the
+user unlocks interactively; this tool never sees the master password). See SKILL.md.
+
+Commands:
+  list                          existing dashboards (url_path / title / mode)
+  backup [--url-path SLUG]      dump a dashboard's config to a file (-o, default timestamped .json)
+  deploy FILE [--url-path SLUG] push a config file (.json, or .yaml/.yml if PyYAML is present) to a dashboard
+  create SLUG --title T         create a new storage-mode dashboard (sidebar entry)
+
+Omit --url-path to target the default (Overview) dashboard; pass a slug for a named one.
+"""
+import argparse
+import base64
+import json
+import os
+import socket
+import ssl
+import struct
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse
+
+BW_ITEM = os.environ.get("HA_BW_ITEM", "home-assistant/ha")
+def _home_overlay_root() -> Path:
+    raw = os.environ.get("AXON_HOME_ROOT") or os.environ.get("AXON_OVERLAY_ROOT") or os.environ.get("AXON_PERSONAL_ROOT")
+    if not raw:
+        raise SystemExit("home-automation overlay is unresolved; source tools/lib/paths.sh or set AXON_HOME_ROOT")
+    return Path(raw).expanduser()
+
+
+VARS_FILE = _home_overlay_root() / "config/home-assistant.vars"
+
+
+def _scalar(v: str) -> str:
+    """Parse one vars-file value. A quoted value ends at its closing quote; an unquoted one
+    ends at an inline ` #` comment. Naive quote-stripping swallows the comment into the value,
+    which surfaces much later as an unexplained failure far from this line."""
+    v = v.strip()
+    if v[:1] in ('"', "'"):
+        end = v.find(v[0], 1)
+        return v[1:end] if end != -1 else v[1:]
+    return v.split(" #", 1)[0].strip()
+
+
+def die(msg: str) -> None:
+    print(f"ha-dashboard: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+# --- Split credential fetch: non-secret from overlay config, secret from Bitwarden ---
+
+def cfg(*keys):
+    """Read non-secret scalar values from the committed overlay vars file."""
+    if not VARS_FILE.exists():
+        die(f"config not found: {VARS_FILE} (the axon-overlay overlay's home-assistant.vars)")
+    vals = {}
+    for line in VARS_FILE.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.startswith("-") or ":" not in s:
+            continue
+        k, _, v = s.partition(":")
+        vals[k.strip()] = _scalar(v)
+    missing = [k for k in keys if not vals.get(k) or vals[k].startswith("TODO-")]
+    if missing:
+        die(f"config missing/placeholder in {VARS_FILE}: {', '.join(missing)}")
+    return [vals[k] for k in keys]
+
+
+def bw_secret(field: str) -> str:
+    """Fetch a single secret field from the Bitwarden item. Never prints the value."""
+    session = os.environ.get("BW_SESSION")
+    if not session:
+        die("BW_SESSION not set — unlock Bitwarden first, e.g. "
+            "`export BW_SESSION=$(bw unlock --raw)` (master password prompted by bw, not by this tool).")
+    r = subprocess.run(["bw", "get", "item", BW_ITEM, "--session", session],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"`bw get item {BW_ITEM}` failed: {r.stderr.strip() or 'unknown error'} "
+            f"(is the item name right and the session unlocked?)")
+    fields = {f.get("name"): f.get("value") for f in json.loads(r.stdout).get("fields", [])}
+    if not fields.get(field):
+        die(f"bw item '{BW_ITEM}' is missing secret field: {field}")
+    return fields[field]
+
+
+# --- Minimal WebSocket client (stdlib only) -----------------------------------
+
+class WSError(Exception):
+    pass
+
+
+class HAWebSocket:
+    """Just enough of RFC 6455 to drive Home Assistant's WS API: masked client
+    frames, 7/16/64-bit lengths, fragmentation reassembly, ping/pong handling."""
+
+    def __init__(self, url: str, token: str, timeout: int = 20):
+        self.token = token
+        self.timeout = timeout
+        u = urlparse(url)
+        if (u.scheme not in ("http", "https", "ws", "wss") or not u.hostname
+                or u.username is not None or u.password is not None):
+            raise WSError("HA_URL must be an http(s) or ws(s) URL with a host and no embedded credentials")
+        self.secure = u.scheme in ("https", "wss")
+        self.host = u.hostname
+        self.port = u.port or (443 if self.secure else 80)
+        self.path = (u.path or "").rstrip("/") + "/api/websocket"
+        self.sock = None
+        self._buf = b""
+        self._id = 0
+        self.ha_version = None
+
+    def _connect(self) -> None:
+        raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        if self.secure:
+            ctx = ssl.create_default_context()
+            raw = ctx.wrap_socket(raw, server_hostname=self.host)
+        raw.settimeout(self.timeout)
+        self.sock = raw
+
+        key = base64.b64encode(os.urandom(16)).decode()
+        req = (
+            f"GET {self.path} HTTP/1.1\r\n"
+            f"Host: {self.host}:{self.port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "\r\n"
+        )
+        self.sock.sendall(req.encode())
+
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise WSError("connection closed during WebSocket handshake")
+            resp += chunk
+        head, _, rest = resp.partition(b"\r\n\r\n")
+        status = head.split(b"\r\n", 1)[0].decode(errors="replace")
+        if "101" not in status:
+            raise WSError(f"WebSocket upgrade rejected: {status}")
+        self._buf = rest  # any bytes past the handshake are the first frame(s)
+
+    def _read(self, n: int) -> bytes:
+        while len(self._buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise WSError("connection closed by server")
+            self._buf += chunk
+        data, self._buf = self._buf[:n], self._buf[n:]
+        return data
+
+    def _recv_frame(self):
+        b1, b2 = self._read(2)
+        fin = b1 & 0x80
+        opcode = b1 & 0x0F
+        masked = b2 & 0x80
+        length = b2 & 0x7F
+        if length == 126:
+            length = struct.unpack(">H", self._read(2))[0]
+        elif length == 127:
+            length = struct.unpack(">Q", self._read(8))[0]
+        mask = self._read(4) if masked else b""
+        payload = self._read(length)
+        if masked:
+            payload = bytes(payload[i] ^ mask[i % 4] for i in range(length))
+        return fin, opcode, payload
+
+    def _send_frame(self, opcode: int, payload: bytes) -> None:
+        length = len(payload)
+        header = bytearray([0x80 | opcode])  # FIN + opcode
+        if length < 126:
+            header.append(0x80 | length)     # MASK bit + len
+        elif length < 65536:
+            header.append(0x80 | 126)
+            header += struct.pack(">H", length)
+        else:
+            header.append(0x80 | 127)
+            header += struct.pack(">Q", length)
+        mask = os.urandom(4)
+        header += mask
+        masked = bytes(payload[i] ^ mask[i % 4] for i in range(length))
+        self.sock.sendall(bytes(header) + masked)
+
+    def _recv_message(self) -> str:
+        chunks = []
+        while True:
+            fin, opcode, payload = self._recv_frame()
+            if opcode == 0x8:            # close
+                raise WSError("server closed the connection")
+            if opcode == 0x9:            # ping -> pong
+                self._send_frame(0xA, payload)
+                continue
+            if opcode == 0xA:            # pong
+                continue
+            chunks.append(payload)
+            if fin:
+                break
+        return b"".join(chunks).decode("utf-8")
+
+    def _send_json(self, obj) -> None:
+        self._send_frame(0x1, json.dumps(obj).encode("utf-8"))
+
+    def connect_and_auth(self) -> None:
+        self._connect()
+        banner = json.loads(self._recv_message())
+        if banner.get("type") != "auth_required":
+            raise WSError(f"unexpected banner: {banner.get('type')!r}")
+        self._send_json({"type": "auth", "access_token": self.token})
+        msg = json.loads(self._recv_message())
+        if msg.get("type") != "auth_ok":
+            raise WSError("authentication failed (check the HA_TOKEN field on the bw item)")
+        self.ha_version = msg.get("ha_version")
+
+    def command(self, payload: dict) -> dict:
+        self._id += 1
+        self._send_json({"id": self._id, **payload})
+        while True:
+            msg = json.loads(self._recv_message())
+            if msg.get("id") == self._id and msg.get("type") == "result":
+                return msg
+
+    def close(self) -> None:
+        try:
+            if self.sock:
+                self._send_frame(0x8, b"")
+                self.sock.close()
+        except OSError:
+            pass
+
+
+def ws_client() -> HAWebSocket:
+    (url,) = cfg("HA_URL")            # non-secret; the WS URL is derived from it
+    token = bw_secret("HA_TOKEN")    # secret; from Bitwarden
+    ws = HAWebSocket(url, token)
+    try:
+        ws.connect_and_auth()
+    except WSError as e:
+        die(str(e))
+    except (socket.gaierror, socket.timeout, ConnectionError, ssl.SSLError, OSError) as e:
+        die(f"cannot reach HA over WebSocket: {e} (is HA_URL right and the host reachable?)")
+    return ws
+
+
+def require_result(msg: dict, what: str) -> dict:
+    if not msg.get("success"):
+        err = msg.get("error", msg)
+        die(f"{what} failed: {json.dumps(err, ensure_ascii=False)}")
+    return msg.get("result")
+
+
+# --- Config file I/O (JSON native; YAML only if PyYAML is importable) ---------
+
+def _yaml():
+    try:
+        import yaml
+        return yaml
+    except ImportError:
+        return None
+
+
+def load_config(path: str):
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError as e:
+        die(f"cannot read {path}: {e}")
+    if path.endswith((".yaml", ".yml")):
+        y = _yaml()
+        if y is None:
+            die(f"{path} is YAML but PyYAML isn't installed — convert it to JSON, "
+                "or `pip install pyyaml` (this tool needs no deps for JSON).")
+        return y.safe_load(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        die(f"{path} is not valid JSON: {e}")
+
+
+def write_config(config, path: str) -> None:
+    if path.endswith((".yaml", ".yml")):
+        y = _yaml()
+        if y is None:
+            die("YAML output needs PyYAML — pass a .json output path instead (`-o file.json`).")
+        with open(path, "w", encoding="utf-8") as f:
+            y.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    else:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+# --- Commands -----------------------------------------------------------------
+
+def cmd_list(args) -> int:
+    ws = ws_client()
+    try:
+        rows = require_result(ws.command({"type": "lovelace/dashboards/list"}), "list") or []
+    finally:
+        ws.close()
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    print("  (default)            Overview / default dashboard (no url_path)")
+    for d in sorted(rows, key=lambda x: x.get("url_path") or ""):
+        print(f"  {d.get('url_path',''):20} {d.get('title','')}  [{d.get('mode','?')}]")
+    print(f"  ---- {len(rows)} named dashboard(s) + default")
+    return 0
+
+
+def cmd_backup(args) -> int:
+    ws = ws_client()
+    try:
+        payload = {"type": "lovelace/config/get"}
+        if args.url_path:
+            payload["url_path"] = args.url_path
+        config = require_result(ws.command(payload), "config/get")
+    finally:
+        ws.close()
+    out = args.output
+    if not out:
+        tag = args.url_path or "default"
+        out = f"{tag}_dashboard_{datetime.now():%Y%m%d_%H%M%S}.json"
+    write_config(config, out)
+    print(f"Saved {args.url_path or '(default)'} -> {out}")
+    return 0
+
+
+def cmd_deploy(args) -> int:
+    config = load_config(args.file)
+    ws = ws_client()
+    try:
+        payload = {"type": "lovelace/config/save", "config": config}
+        if args.url_path:
+            payload["url_path"] = args.url_path
+        msg = ws.command(payload)
+    finally:
+        ws.close()
+    if not msg.get("success"):
+        err = msg.get("error", msg)
+        hint = ""
+        if args.url_path:
+            hint = (f"\n  If '{args.url_path}' doesn't exist yet, create it first: "
+                    f"`ha-dashboard create {args.url_path} --title <Title>`.")
+        die(f"deploy failed: {json.dumps(err, ensure_ascii=False)}{hint}")
+    print(f"Deployed {args.file} -> {args.url_path or '(default)'}")
+    return 0
+
+
+def cmd_create(args) -> int:
+    ws = ws_client()
+    try:
+        payload = {
+            "type": "lovelace/dashboards/create",
+            "mode": "storage",
+            "url_path": args.slug,
+            "title": args.title,
+            "require_admin": False,
+            "show_in_sidebar": not args.no_sidebar,
+        }
+        if args.icon:
+            payload["icon"] = args.icon
+        require_result(ws.command(payload), "dashboards/create")
+    finally:
+        ws.close()
+    print(f"Created dashboard '{args.slug}' (title: {args.title})")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog="ha-dashboard",
+        description="Deploy and back up Home Assistant Lovelace dashboards over the WebSocket API.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    ls = sub.add_parser("list", help="existing dashboards (url_path / title / mode)")
+    ls.add_argument("--json", "-j", action="store_true")
+    ls.set_defaults(fn=cmd_list)
+
+    bk = sub.add_parser("backup", help="dump a dashboard's config to a file")
+    bk.add_argument("--url-path", help="dashboard slug; omit for the default dashboard")
+    bk.add_argument("--output", "-o", help="output path (default: <slug>_dashboard_<ts>.json)")
+    bk.set_defaults(fn=cmd_backup)
+
+    dp = sub.add_parser("deploy", help="push a config file to a dashboard")
+    dp.add_argument("file", help="config file (.json, or .yaml/.yml if PyYAML is present)")
+    dp.add_argument("--url-path", help="dashboard slug; omit for the default dashboard")
+    dp.set_defaults(fn=cmd_deploy)
+
+    cr = sub.add_parser("create", help="create a new storage-mode dashboard")
+    cr.add_argument("slug", help="url_path slug for the new dashboard")
+    cr.add_argument("--title", required=True, help="sidebar title")
+    cr.add_argument("--icon", help="mdi icon, e.g. mdi:home")
+    cr.add_argument("--no-sidebar", action="store_true", help="don't show in the sidebar")
+    cr.set_defaults(fn=cmd_create)
+
+    args = p.parse_args()
+    try:
+        return args.fn(args)
+    except SystemExit:
+        raise
+    except Exception as e:
+        die(f"{type(e).__name__}: {e}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

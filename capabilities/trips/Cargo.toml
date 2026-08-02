@@ -1,0 +1,28 @@
+[package]
+name = "trips"
+version = "0.1.0"
+edition = "2021"
+description = "Persistent cross-capability trip plans and itinerary item references."
+publish = false
+
+# Inert here, and deliberately so: libs/axon-config is `#[path]`-included, and its
+# env-mutating unit tests hide behind this feature so they never run inside a consumer's
+# test binary. Declaring it is what stops every build printing unexpected_cfgs.
+[features]
+standalone-tests = []
+
+[lib]
+name = "trips"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trips-server"
+path = "src/server.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+postgres = "0.19"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }

@@ -1,0 +1,22 @@
+# Image-scoped policy for postgres:17.10-alpine only.
+# Reviewed 2026-08-01 at manifest digest sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193.
+# The stable patch removed all three Alpine OS findings. The remaining 15 HIGH/CRITICAL IDs are
+# Go stdlib records found only in /usr/local/bin/gosu, the local entrypoint privilege-drop helper.
+# gosu does not expose the flagged TLS, URL, certificate, mail or HTTP parsing paths to database
+# clients; PostgreSQL is loopback-bound. Recheck on a digest change or next supported 17.x patch.
+# Axon#186 owns removal; every entry expires 2026-09-01.
+CVE-2025-61726 exp:2026-09-01
+CVE-2025-61729 exp:2026-09-01
+CVE-2025-68121 exp:2026-09-01
+CVE-2026-25679 exp:2026-09-01
+CVE-2026-27145 exp:2026-09-01
+CVE-2026-32280 exp:2026-09-01
+CVE-2026-32281 exp:2026-09-01
+CVE-2026-32283 exp:2026-09-01
+CVE-2026-33811 exp:2026-09-01
+CVE-2026-33814 exp:2026-09-01
+CVE-2026-39820 exp:2026-09-01
+CVE-2026-39822 exp:2026-09-01
+CVE-2026-39836 exp:2026-09-01
+CVE-2026-42499 exp:2026-09-01
+CVE-2026-42504 exp:2026-09-01

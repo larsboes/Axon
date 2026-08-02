@@ -1,0 +1,5 @@
+# See schemas/pack.toml.example for the field reference.
+name        = "academic-writing"
+description = "Draft, critique, and cite-check academic writing across empirical-CS and DSR/qualitative-thesis genre profiles, with an adversarial multi-skeptic review pass."
+skills      = ["academic-writing"]
+license     = "MIT"

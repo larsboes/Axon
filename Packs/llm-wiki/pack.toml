@@ -1,0 +1,8 @@
+# See schemas/pack.toml.example for the field reference.
+# WIP — salvaged from LifeOS-mono; open TODO in README before activation.
+name        = "llm-wiki"
+description  = "LLM-maintained wiki inside an Obsidian vault — ingest, query, lint."
+skills      = ["llm-wiki"]
+license     = "MIT"
+personal    = ["config/knowledge.toml"]
+links       = ["knowledge-base"]

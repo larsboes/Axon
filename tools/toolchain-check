@@ -1,0 +1,160 @@
+#!/bin/bash
+# tools/toolchain-check — is every host tool Axon needs actually installed?
+#
+# Reads toolchain.toml (the manifest of host binaries Axon's own scripts assume) and, for
+# each entry that applies to THIS machine, checks it's on PATH at a new-enough version.
+# The single parser of that manifest; surfaced by tools/install.sh (bootstrap) and
+# tools/doctor (ongoing). This is NOT the upstreams audit — see toolchain.toml's header for
+# why the two manifests are separate concerns.
+#
+#   tools/toolchain-check                 # check this machine, human report
+#   tools/toolchain-check --os macos      # check as if on <os> (bootstrap, no machine.toml yet)
+#   tools/toolchain-check --runtime docker# resolve the container-runtime entry to <r>
+#   tools/toolchain-check --json          # machine-readable; exits 0 (verdict is data)
+#   tools/toolchain-check -h              # this help
+#
+# OS resolves from --os, else `uname`. Container runtime resolves from --runtime, else
+# machine.toml, else unknown (runtime entries skipped with a note). Exit 0 = every required
+# tool present & new enough, 1 = a required/runtime tool missing or outdated, 2 = usage error.
+# --json is the exception: a miss is data in the payload, never a non-zero exit — its one
+# caller is doctor, which wants the feed regardless. bash 3.2-safe (README.md#portable-shell).
+
+set -u
+
+_here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tools/lib/paths.sh
+. "$_here/lib/paths.sh"       # AXON_ROOT, AXON_MACHINE_TOML, toml_*
+# shellcheck source=tools/lib/version.sh
+. "$_here/lib/version.sh"     # norm_ver, ver_numeric, ver_gt
+MANIFEST="$AXON_ROOT/toolchain.toml"
+
+OS=""; RUNTIME=""; JSON=0; _want=""
+for a in "$@"; do
+  case "$_want" in
+    os)      OS="$a"; _want=""; continue ;;
+    runtime) RUNTIME="$a"; _want=""; continue ;;
+  esac
+  case "$a" in
+    --os)      _want=os ;;
+    --runtime) _want=runtime ;;
+    --json)    JSON=1 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    *) echo "toolchain-check: unknown arg '$a'" >&2; exit 2 ;;
+  esac
+done
+
+# OS: flag wins; else map uname. Runtime: flag wins; else machine.toml if present.
+if [ -z "$OS" ]; then
+  case "$(uname -s)" in
+    Darwin) OS="macos" ;;
+    Linux)  OS="linux" ;;
+    *)      OS="" ;;
+  esac
+fi
+if [ -z "$RUNTIME" ] && [ -f "$AXON_MACHINE_TOML" ]; then
+  RUNTIME="$(toml_get container_runtime "$AXON_MACHINE_TOML")"
+fi
+
+# The install hint for the current OS, falling back to whichever the entry declares.
+install_hint() {  # install_hint <section>
+  local h
+  case "$OS" in
+    macos) h="$(toml_get_in "$1" install_macos "$MANIFEST")" ;;
+    linux) h="$(toml_get_in "$1" install_linux "$MANIFEST")" ;;
+  esac
+  [ -z "$h" ] && h="$(toml_get_in "$1" install_linux "$MANIFEST")"
+  [ -z "$h" ] && h="$(toml_get_in "$1" install_macos "$MANIFEST")"
+  printf '%s' "$h"
+}
+
+# First dotted-number token of a version command's output (e.g. "git version 2.39.0" -> 2.39.0).
+detect_version() {  # detect_version <version_cmd>
+  eval "$1" 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1
+}
+
+json_escape() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"; }
+
+count=0; ok=0; miss_req=0; miss_opt=0; outdated=0; outdated_req=0; skipped=0
+JSON_ENTRIES=""
+
+if [ "$JSON" -eq 0 ]; then
+  echo "toolchain-check · $MANIFEST"
+  echo "  os=${OS:-?}  runtime=${RUNTIME:-?}"
+  echo
+fi
+
+for name in $(toml_sections "$MANIFEST"); do
+  required="$(toml_get_in "$name" required "$MANIFEST")"
+  entry_os="$(toml_get_in "$name" os "$MANIFEST")"
+  bin="$(toml_get_in "$name" bin "$MANIFEST")"; bin="${bin:-$name}"
+
+  # OS scoping: an entry pinned to another OS doesn't apply here.
+  if [ -n "$entry_os" ] && [ "$entry_os" != "$OS" ]; then
+    skipped=$((skipped + 1)); continue
+  fi
+  # Runtime entries: only the machine's chosen runtime is checked; the others are
+  # alternatives, not missing tools. Unknown runtime -> can't judge, skip with a note.
+  if [ "$required" = "runtime" ]; then
+    if [ -z "$RUNTIME" ]; then
+      [ "$JSON" -eq 0 ] && printf '▸ %-16s · runtime unknown (no --runtime / machine.toml) — not checked\n' "$name"
+      skipped=$((skipped + 1)); continue
+    fi
+    if [ "$name" != "$RUNTIME" ]; then skipped=$((skipped + 1)); continue; fi
+  fi
+
+  count=$((count + 1))
+  min_version="$(toml_get_in "$name" min_version "$MANIFEST")"
+  version_cmd="$(toml_get_in "$name" version_cmd "$MANIFEST")"
+
+  present=false; version=""; status=""; note=""
+  if command -v "$bin" >/dev/null 2>&1; then
+    present=true
+    if [ -n "$min_version" ] && [ -n "$version_cmd" ]; then
+      version="$(detect_version "$version_cmd")"
+      if [ -n "$version" ] && ver_numeric "$(norm_ver "$version")" && ver_numeric "$(norm_ver "$min_version")" \
+         && ver_gt "$(norm_ver "$min_version")" "$(norm_ver "$version")"; then
+        status="outdated"; note="have $version, need >= $min_version"
+      else
+        status="ok"
+      fi
+    else
+      status="ok"
+    fi
+  else
+    # required "yes" and a matched "runtime" are hard requirements; "optional" is a warning.
+    case "$required" in
+      optional) status="absent" ;;
+      *)        status="missing" ;;
+    esac
+  fi
+
+  case "$status" in
+    ok)       ok=$((ok + 1)) ;;
+    outdated) outdated=$((outdated + 1))
+              [ "$required" != "optional" ] && outdated_req=$((outdated_req + 1)) ;;
+    missing)  miss_req=$((miss_req + 1)) ;;
+    absent)   miss_opt=$((miss_opt + 1)) ;;
+  esac
+
+  if [ "$JSON" -eq 0 ]; then
+    case "$status" in
+      ok)       printf '▸ %-16s ✓ %s%s\n' "$name" "$bin" "$( [ -n "$version" ] && echo " ($version)" )" ;;
+      outdated) printf '▸ %-16s ⚠ %s — %s\n     install: %s\n' "$name" "$bin" "$note" "$(install_hint "$name")" ;;
+      missing)  printf '▸ %-16s ✗ %s MISSING (required)\n     install: %s\n' "$name" "$bin" "$(install_hint "$name")" ;;
+      absent)   printf '▸ %-16s · %s absent (optional) — %s\n     install: %s\n' "$name" "$bin" "$(toml_get_in "$name" why "$MANIFEST")" "$(install_hint "$name")" ;;
+    esac
+  else
+    JSON_ENTRIES="$JSON_ENTRIES,{\"tool\":\"$(json_escape "$name")\",\"bin\":\"$(json_escape "$bin")\",\"class\":\"$(json_escape "${required:-yes}")\",\"present\":$present,\"status\":\"$status\",\"version\":\"$(json_escape "$version")\",\"note\":\"$(json_escape "$note")\",\"install\":\"$(json_escape "$(install_hint "$name")")\"}"
+  fi
+done
+
+if [ "$JSON" -eq 1 ]; then
+  printf '{"os":"%s","runtime":"%s","totals":{"count":%d,"ok":%d,"missing_required":%d,"missing_optional":%d,"outdated":%d,"skipped":%d},"entries":[%s]}\n' \
+    "$(json_escape "$OS")" "$(json_escape "$RUNTIME")" "$count" "$ok" "$miss_req" "$miss_opt" "$outdated" "$skipped" "${JSON_ENTRIES#,}"
+  exit 0
+fi
+
+echo
+echo "── $count checked · $ok ok · $miss_req missing · $outdated outdated · $miss_opt optional absent · $skipped n/a ──"
+[ $((miss_req + outdated_req)) -gt 0 ] && exit 1
+exit 0

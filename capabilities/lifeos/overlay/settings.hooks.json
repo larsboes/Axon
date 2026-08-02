@@ -1,0 +1,35 @@
+{
+  "_note": "Axon's hook-wiring delta over what LifeOS ships. Merged into <configRoot>/settings.json by tools/lifeos-sync, matched on the command string so a re-run is a no-op. <configRoot> in the command strings is substituted by lifeos-sync at deploy time (CLAUDE_CONFIG_DIR, or the literal $HOME/.claude on a default install) — never hardcode the harness root here. LifeOS' own installer only ever ADDS absent keys, so it will never place these itself and never remove them either — this file is the record of why they are there.",
+
+  "hooks": {
+    "PostToolUse": [
+      {
+        "_why": "LifeOS ships PostToolObserver but wires nothing to it, so LoopDetector (exact-repeat / oscillation / hammering detection) never ran. AlgorithmNudge was registered on PostToolUseFailure only, though its own header declares three events. Matcher-less = catchall, same shape as the EventLogger entry LifeOS ships. Sync, not async: it emits additionalContext.",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<configRoot>/hooks/PostToolObserver.hook.ts",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "_why": "AlgorithmNudge's routing match + mid-run principal nudge, and DriftReminder's voice-drift nudge. DriftReminder reads the Stop-hook LastResponseCache, so it must run after MemoryTurnStart, which LifeOS already registers first.",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<configRoot>/hooks/AlgorithmNudge.hook.ts",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "<configRoot>/hooks/DriftReminder.hook.ts",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

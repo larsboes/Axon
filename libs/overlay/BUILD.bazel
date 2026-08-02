@@ -1,0 +1,3 @@
+# Exported across the package boundary for the generated architecture and
+# direct TypeScript consumers. See the root BUILD.bazel architecture inputs.
+exports_files(["README.md", "overlay.ts"])

@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "harnesses": ["claude", "codex", "opencode", "pi"],
+  "cases": [
+    {
+      "id": "with-discover",
+      "kind": "triggering",
+      "prompt": "Which Axon capabilities are running and how do I reach comms?",
+      "should_trigger": true,
+      "mode": "with",
+      "references": ["with-discovery.md"]
+    },
+    {
+      "id": "with-write",
+      "kind": "functional",
+      "prompt": "Add this article to my Axon feed and verify the resulting entry.",
+      "should_trigger": true,
+      "mode": "with",
+      "references": ["with-discovery.md", "with-operations.md", "shared-data-boundaries.md"]
+    },
+    {
+      "id": "on-placement",
+      "kind": "functional",
+      "prompt": "Implement Axon issue 140 and decide where the agent workflow belongs.",
+      "should_trigger": true,
+      "mode": "on",
+      "references": ["on-orientation.md", "on-placement.md", "on-issues.md", "on-verification.md"]
+    },
+    {
+      "id": "on-review",
+      "kind": "cross-harness",
+      "prompt": "Review this Axon capability change against repository boundaries and current issue acceptance.",
+      "should_trigger": true,
+      "mode": "on",
+      "references": ["on-orientation.md", "shared-architecture.md", "on-issues.md", "on-verification.md"]
+    },
+    {
+      "id": "negative-home-assistant",
+      "kind": "negative-trigger",
+      "prompt": "Turn off the kitchen lights in Home Assistant.",
+      "should_trigger": false,
+      "mode": null,
+      "references": []
+    },
+    {
+      "id": "negative-other-repo",
+      "kind": "negative-trigger",
+      "prompt": "Fix the build in my unrelated mobile application repository.",
+      "should_trigger": false,
+      "mode": null,
+      "references": []
+    }
+  ]
+}

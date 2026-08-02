@@ -1,0 +1,219 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Three jobs set Bun up, and this file used to carry the pin literal once per job. One
+# home per file instead: a bump touches this line, not however many jobs happen to exist.
+# The pin itself lives in tools/bazel/bun/repositories.bzl BUN_VERSION (record:
+# upstreams.toml [bun]); workflows cannot read .bzl, so bumping it must touch this too —
+# nothing enforces that yet (Axon#40).
+env:
+  BUN_VERSION: "1.3.14"
+
+jobs:
+  bazel:
+    name: bazel test //...
+    runs-on: ubuntu-latest
+
+    # Three targets (scouting/transit/comms) carry store integration tests that
+    # resolve the same connection the binaries use, on purpose -- "so a rotated
+    # password can't leave the tests behind". They panic rather than skip when
+    # the database is absent, so CI brings a real one instead of excluding them.
+    # Tag pinned to capabilities/postgres/service.toml, never :latest (README.md#pins-and-cooldown).
+    services:
+      postgres:
+        image: postgres:17.10-alpine
+        env:
+          POSTGRES_USER: axon
+          POSTGRES_PASSWORD: axon
+          POSTGRES_DB: axon
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U axon -d axon"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out Axon
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # Fetched artifacts: crates.io for seven crate universes, the rules_rust
+      # toolchain, and all four bun platform archives (//... builds every
+      # bun_toolchain target, not just the host's). Keyed on the lockfiles that
+      # determine them, so it is saved exactly when they change.
+      - name: Cache Bazel repository cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/bazel-repo
+          key: bazel-repo-${{ runner.os }}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', '**/Cargo.lock') }}
+          restore-keys: |
+            bazel-repo-${{ runner.os }}-
+
+      # Action outputs (Rust compilation). Keyed per-commit with a rolling
+      # restore-key: actions/cache only writes on an exact-key miss, so a
+      # lockfile-based key here would leave the cache frozen at the last
+      # dependency bump and never pick up day-to-day compilation.
+      - name: Cache Bazel disk cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-
+
+      # bazel is bazelisk on GitHub's ubuntu image; it reads .bazelversion (9.1.1).
+      # The three *_TEST_DATABASE_URL vars are set explicitly rather than left to
+      # each crate's config fallback chain, so the tests never depend on how
+      # Config::load() resolves inside a sandbox with no overlay present.
+      - name: bazel test //...
+        run: |
+          bazel test //... \
+            --repository_cache="$HOME/.cache/bazel-repo" \
+            --disk_cache="$HOME/.cache/bazel-disk" \
+            --test_env=SCOUTING_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+            --test_env=TRANSIT_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+            --test_env=COMMS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+            --test_output=errors
+
+      # Crate-root ambiguity (Axon#46). Here rather than in the repo-gates job because it
+      # reads resolved srcs through `bazel query`: this job already has Bazel, its caches,
+      # and a loaded graph, so the query is nearly free — and a Bazel test cannot run
+      # Bazel, which is why the rule is a script at all. Bun is set up only for this step;
+      # the launcher runs the check through it.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Rust crate roots are explicit where srcs are ambiguous
+        run: tools/check-rust-crate-roots
+
+  # tools/doctor.test.ts + tools/packs-codex.test.ts and the Axon skill/bootstrap evals are deliberately NOT Bazel
+  # targets (README.md#argue-bazel-per-case argues doctor out of Bazel), but "not a Bazel
+  # target" must not mean "not gated" -- this closes that gap.
+  #
+  # One rootward `bun test`, not a list of directories. The list said ./tools/ and
+  # Packs/axon/evals/, which is how dashboard/vite/comms-proxy-auth.test.ts and
+  # libs/overlay/overlay.test.ts came to run nowhere: neither is a Bazel target either, so
+  # both were written, committed, and never once executed by CI. bun discovers *.test.ts
+  # itself and skips node_modules, so a test file added anywhere is gated by existing
+  # (Axon#116). No install step: every one of these imports bun:test, node builtins and
+  # local sources only, which is what keeps a dependency-free runner honest.
+  bun-tests:
+    name: bun test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Axon
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: bun test
+        run: bun test
+
+  # Svelte type checks, local-only until 2026-07 and dashboard-only until now: a type
+  # regression could land on main unseen (Axon#41), and a capability that grows its own UI
+  # was unchecked from the day it landed (Axon#139 — the knowledge-graph UI carried six
+  # errors while this workflow reported green).
+  #
+  # The set is discovered, never listed: `tools/discover-ui-packages` reads committed
+  # package metadata, so a capability that grows a UI tomorrow enters this job without
+  # anyone editing this file. A hand-list of capability names would close today's instance
+  # and reopen the class, which is the false-green shape tools/check-bazel-package-labels.sh
+  # exists to prevent.
+  ui-check:
+    name: bun run check (every discovered UI)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Axon
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # vitePreprocess() resolves the package's Vite config to run the style preprocessors,
+      # and the dashboard's derives its dev proxy table from `tools/capability.sh registry`,
+      # which hard-fails without <overlay>/config/machine.toml. Every <style> block then
+      # reports that failure, so the first run of this job came back with 31 errors in 31
+      # files — one per file, none of them type errors.
+      #
+      # A runner IS a machine, and Axon's contract is that a machine has an overlay, so the
+      # honest fix is to give it the minimal one rather than to make the config tolerate its
+      # absence. No axon.local.toml is written: with none present, paths.sh falls back to
+      # axon.toml's shipped default (~/.axon-overlay), which is what this creates.
+      # `capabilities = []` is deliberate — the registry then returns just the spine, which
+      # is all a type check needs. Shape: schemas/machine.toml.example.
+      - name: Minimal overlay for the config read
+        run: |
+          mkdir -p "$HOME/.axon-overlay/config"
+          cat > "$HOME/.axon-overlay/config/machine.toml" <<'TOML'
+          os = "linux"
+          container_runtime = "docker"
+          capabilities = []
+          TOML
+
+      # Two calls on purpose: the first prints every package and its verdict into the log,
+      # including the skipped ones, so "not checked" is visible rather than absent. The
+      # second is the machine-readable set, and it emits nothing when the first found a
+      # violation — a refused package must not leave a loop reporting success over reduced
+      # coverage.
+      - name: Discover checkable UI packages
+        run: tools/discover-ui-packages
+
+      # Every package runs even after one fails: stopping at the first would hide how much
+      # of the repository is actually broken behind whichever directory sorted first.
+      - name: bun run check
+        run: |
+          set -uo pipefail
+          failed=""
+          for dir in $(tools/discover-ui-packages --dirs); do
+            echo "::group::$dir"
+            if (cd "$dir" && bun install --frozen-lockfile && bun run check); then
+              echo "$dir: ok"
+            else
+              failed="$failed $dir"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "ui-check FAILED:$failed" >&2
+            exit 1
+          fi
+
+  # Repo-level gates that cannot be Bazel targets, run directly rather than through
+  # tools/doctor (Axon#41).
+  #
+  # Why the scripts and not `doctor`: most of doctor's checks are machine-level — overlay
+  # reachability, machine.toml, declared state mounts, upstream network — and a fresh clone
+  # has none of them. Invoking the gate scripts is the same source of truth without that
+  # baggage; doctor delegates to these identical scripts locally, so there is still one
+  # implementation per rule.
+  #
+  # tools/self check is deliberately NOT here. It reads `tools/capability.sh registry`,
+  # which merges this machine's machine.toml overrides and hard-fails without one, so its
+  # answer is machine-specific by construction (Axon#67). It stays a doctor check until
+  # that is resolved.
+  repo-gates:
+    name: repo gates (labels, tracked inputs)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Axon
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Bazel-package labels + generator-input trackedness
+        run: tools/check-bazel-package-labels.sh
+      - name: Publication hygiene
+        run: tools/check-publication-hygiene.sh

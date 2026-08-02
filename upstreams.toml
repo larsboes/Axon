@@ -1,0 +1,498 @@
+# Every external project Axon touches. No entry, no entry.
+# verdict = "adopt" | "contribute" | "overlay" | "fork" | "build" | "inspiration" | "quarry" | "reject"
+#   Preference order: adopt > contribute > overlay > fork (last resort). fork is a PR vehicle only.
+# pin = exact ref/commit consumed (empty until first consumption)
+# cooldown: new upstream releases wait out a hold window (axon.toml [upstream]) before adoption unless fixing an exposed vuln.
+# No adopt/overlay/fork verdict lands without an audit (checked by tools/upstream-checker, M2).
+
+[lifeos]
+url = "https://github.com/danielmiessler/LifeOS"
+verdict = "overlay"
+license = "MIT"
+pin = "v7.1.1"
+why = "the harness substrate Axon extends rather than forks. Axon holds a reviewed delta in capabilities/lifeos/overlay/, while deployment-specific PULSE state lives under the selected overlay; tools/lifeos-sync projects that delta and reports drift. Upstream installation is non-destructive, so the operational risk is divergence and reinstall loss rather than clobbering"
+
+[iai-personal-memory-engine]
+url = "https://github.com/CodeAbra/iai-personal-memory-engine"
+verdict = "inspiration"
+license = "MIT"
+pin = ""
+why = "conflicts with LifeOS memory (both hook the session lifecycle); its patterns (engine vs always-readable store, fail-safe hooks, doctor, encryption at rest) define the memory contract; swap candidate if LifeOS memory disappoints"
+
+[mcp-audit]
+url = "https://github.com/apisec-inc/mcp-audit"
+verdict = "adopt"
+license = "MIT"
+pin = "v1.0.0"          # includes the v0.1.2 fix for SECURITY-ADVISORY-2025-001 (registry-file integrity)
+why = "automated audit layer: secret/config inventory, prompt-in-shell-out source scan, SARIF + exit codes; adapt, do not rebuild"
+
+[local-llm]
+url = "https://github.com/jamesob/local-llm"
+verdict = "inspiration"
+license = "n/a (docs)"
+pin = ""
+why = "the style bar for capability READMEs and an operations quarry for local inference: budget/decision-tree framing, mirrored model storage, read-only weight mounts, separation of inference and agent sandboxes, power limiting and measured interconnect tuning. Its 2x3090 route is a CUDA lab alternative, not Axon's low-energy 128GB production target"
+
+[paperless-ngx]
+url = "https://github.com/paperless-ngx/paperless-ngx"
+verdict = "inspiration"
+license = "GPL-3.0"
+pin = ""
+why = "leading document-management candidate for a future documents capability: watched-folder and scanner ingestion, OCR, full-text search, metadata workflows, permissions, and an exporter-based restore path match Axon's planned document inbox. It is not adopted yet: documents are stored in clear text, multiple user trust scopes need an explicit instance/dataset decision, and backup/restore must pass before scanning originals"
+
+[awesome-selfhosted]
+url = "https://github.com/awesome-selfhosted/awesome-selfhosted"
+verdict = "inspiration"
+license = "CC-BY-SA-3.0"
+pin = ""
+why = "curated discovery index for the server plan's document, IoT, GenAI, inventory, knowledge, media, finance, network, self-hosting, travel, VPN, wiki, and ebook landscape. It is a quarry, not an adoption catalogue: each shortlisted service still needs its own primary-source, license, lifecycle, trust-boundary, backup, and Axon-ownership verdict"
+
+[colibri]
+url = "https://github.com/JustVugg/colibri"
+verdict = "inspiration"
+license = "Apache-2.0"
+pin = ""
+why = "experimental MoE tiering candidate, not an adopted Axon runtime: it demonstrates that routed experts can be streamed from a roughly 372GB NVMe container while dense weights stay resident. Its honest 0.05-0.1 tok/s low-end result and model-specific format make it a deep-analysis research lane, not an interactive default or a reason to substitute SSD capacity for model memory"
+
+[exo]
+url = "https://github.com/exo-explore/exo"
+verdict = "inspiration"
+license = "Apache-2.0"
+pin = ""
+why = "current distributed-inference candidate for a homogeneous Apple Silicon TB5 cluster. Its MLX/JACCL path can shard models across separate Mac memory pools and claims topology-aware tensor parallel scaling, correcting the server plan's earlier blanket dismissal of multi-Mac model fit. It is research evidence, not adopted runtime: macOS/RDMA, full-mesh cabling, stability, security and single-node fallback still need a measured Axon verdict"
+
+[mlx]
+url = "https://github.com/ml-explore/mlx"
+verdict = "inspiration"
+license = "MIT"
+pin = ""
+why = "primary framework evidence behind EXO's Apple Silicon distributed path: MLX distributed and the JACCL backend provide RDMA over Thunderbolt 5 on current macOS. Axon consumes none of its source here; the server plan uses its documented transport capability and constraints to keep the hardware comparison current"
+
+[llama-cpp-rpc]
+url = "https://github.com/ggml-org/llama.cpp"
+verdict = "inspiration"
+license = "MIT"
+pin = ""
+why = "cross-platform comparison path for partitioning model weights and KV cache across local Metal and remote CPU/CUDA backends. Upstream explicitly calls RPC proof-of-concept, fragile and insecure, so the server plan treats it as an isolated lab benchmark rather than a production endpoint"
+
+[mcpserver-audit]
+url = "https://github.com/modelcontextprotocol-security/mcpserver-audit"
+verdict = "inspiration"
+license = "open methodology"
+pin = ""
+why = "AIVSS methodology, CWE check library, semgrep rulesets for the manual/agentic audit pass"
+
+# ---- security audit toolchain (the content-scanning layer upstream-checker can't do) ----
+
+[semgrep]
+url = "https://github.com/semgrep/semgrep"
+verdict = "adopt"
+license = "LGPL-2.1"
+pin = "1.168.0"         # 2026-06-24, past 7-14d cooldown as of 2026-07-10; installed via `uv tool` (rule 8, Python)
+why = "static code/injection SAST over skills+hooks+TS/sh via tools/audit's `semgrep scan --config auto`; SARIF + exit codes. The semgrep/ai-best-practices ruleset for agentic/LLM tool-calling patterns is not wired in yet"
+
+[gitleaks]
+url = "https://github.com/gitleaks/gitleaks"
+verdict = "adopt"
+license = "MIT"
+pin = "v8.30.1"         # 2026-03-21, well past cooldown; brew formula
+why = "signature-based secret-sprawl scan over Axon and selected private-overlay history (tools/audit); SARIF plus a failing exit code on leaks. External harness conversation archives require a separate explicitly selected scan root"
+
+[osv-scanner]
+url = "https://github.com/google/osv-scanner"
+verdict = "adopt"
+license = "Apache-2.0"
+pin = "v2.4.0"          # 2026-06-18, 22d old = past cooldown; brew formula
+why = "dependency CVE scan (Google OSV DB) over bun/uv/npm/Cargo lockfiles; lean, SARIF, --fail-on-vuln exit code. Complements trivy: osv = lockfiles, trivy = images/OS — not redundant"
+
+[trivy]
+url = "https://github.com/aquasecurity/trivy"
+verdict = "adopt"
+license = "Apache-2.0"
+pin = "v0.72.0"         # brew stable; 10d old at adoption (2026-07-10) = amber cooldown, but a deliberate first adoption of an established scanner, not an auto-bump — accepted with eyes open
+why = "container-image + OS-package + IaC CVE scan — the layer osv-scanner (lockfiles only) can't reach; covers the vaultwarden image + any container capability. Closes the audit coverage gap on images"
+
+[telekom-mcp-security]
+url = "https://github.com/telekom/mcp-security"
+verdict = "inspiration"
+license = "MIT"
+pin = ""
+why = "Deutsche Telekom's MCP-security demos + slide deck (not a scanner) — methodology reference for tool-poisoning/exfil/prompt-injection attack shapes; mine for YARA/semgrep rule ideas, do not install"
+
+[vaultwarden]
+url = "https://github.com/dani-garcia/vaultwarden"
+verdict = "adopt"
+license = "AGPL-3.0"
+pin = "1.37.0-alpine"   # 2026-07-25, 1d old — INSIDE the 7d cooldown, adopted under the active-vulnerability carve-out in README.md#pins-and-cooldown: trivy scored the running 1.36.0-alpine at 8 HIGH across CVE-2026-{33630,45447,5773,6276} (libcurl cookie leak, OpenSSL PKCS7_verify UAF) and 1.37.0-alpine at 0. Upstream also states 1.37.0 is REQUIRED for clients >= 2026.7.0, which is what broke the browser extension.
+why = "single-user secrets store, replaces the two-container HashiCorp Vault experiment (unnecessary Raft/unseal machinery for one user); Bitwarden-protocol compatible so real client apps/browser extensions work against it unmodified, and it's the self-hosted sibling to Proton Pass for eventual import"
+
+[bitwarden-cli]
+url = "https://github.com/bitwarden/clients"
+verdict = "adopt"
+license = "GPL-3.0-only"
+pin = "cli-v2026.6.0"   # 2026-06-25, 15d old = past cooldown; brew formula `bitwarden-cli`, already on-machine (SSH agent use), now also consumed programmatically by tools/setup-secret.sh
+why = "official CLI for the vaultwarden-protocol-compatible vault; setup-secret.sh scripts item create/read against self-hosted vaultwarden (bw config server) so Vaultwarden, not per-machine Keychain, is the canonical capability-secret store"
+
+[scout]
+url = "https://github.com/troyriverabusiness/scout"
+verdict = "inspiration"
+license = "none (no LICENSE file on GitHub -- all rights reserved by default; verified via GitHub API 2026-07-10)"
+pin = ""
+why = "architecture reference for capabilities/scouting's embeddings+scoring design (mined for ideas -- adapter trait, generic opportunity pipeline, cosine-similarity scoring -- not vendored, no code copied)"
+
+[trek-travel]
+url = "https://github.com/liketrek/TREK"
+verdict = "inspiration"
+license = "AGPL-3.0"
+pin = ""
+why = "serious whole-product alternative to capabilities/trips when a self-hosted collaborative planner is the actual need: real-time multi-user editing, invitations, reservations, shared costs, packing lists, documents, PWA and neutral exports already exist. Axon's remaining delta is its cross-capability composition with personal Scouting, Transit and vault context, not rebuilding TREK's mature group-planning surface"
+
+[tripit]
+url = "https://www.tripit.com/web/free"
+verdict = "inspiration"
+license = "proprietary cloud service"
+pin = ""
+why = "the reference for confirmation-email-to-itinerary UX: forwarding booking messages produces one ordered trip without manual entry. It stays a contextual cloud alternative rather than an Axon dependency because the convenience requires sending itinerary and booking data to an external service"
+
+[betterbahn]
+url = "https://github.com/BetterBahn/betterbahn"
+verdict = "inspiration"
+license = "AGPL-3.0"
+pin = ""
+why = "split-ticketing product and interaction reference for capabilities/transit. The concept was mined, while Axon's dynamic-programming implementation is original and no code is vendored. Upstream currently offers local/self-hosted use but explicitly no official hosted split-ticket calculator because of DB API blocking, rate limits and legal concerns"
+
+[besser-bahn]
+url = "https://github.com/chuk-development/Besser-Bahn"
+verdict = "inspiration"
+license = "WTFPL"
+pin = ""
+why = "privacy-first Android rail companion and a concrete alternative to Axon's connection view when live trip monitoring matters: connection-risk prediction, disruption alerts, DB-account tickets and split-ticket booking links run in a dedicated mobile workflow. Axon keeps the broader trip plan; it does not need to absorb every on-train interaction"
+
+[plan-bahn]
+url = "https://github.com/troyriverabusiness/msg-code-create"
+verdict = "inspiration"
+license = "unknown (repository unavailable during re-check 2026-07-29)"
+pin = ""
+why = "historical Plan Bahn implementation reference from the msg hackathon (Vue, FastAPI and LangGraph), retained to explain the route from the earlier Event Horizon transit agent to today's typed Transit capability. The repository was unavailable during the 2026-07-29 re-check, so it is lineage documentation, not a user-facing handoff or adoption candidate"
+
+[rules_rust]
+url = "https://github.com/bazelbuild/rules_rust"
+verdict = "adopt"
+license = "Apache-2.0"
+pin = "0.71.1"          # 2026-06-26, 14d old as of 2026-07-10 -- exactly cleared the cooldown; 0.71.2 (2026-06-28) and 0.71.3 (2026-07-02, 8d old) are still inside/at the edge of the 7-14d window, not adopted yet
+why = "Rust build spine, adopted now (not deferred) because more Rust capabilities are coming (transit next, likely ai-client after) and will share this dependency graph. Uses crate.from_cargo (bzlmod crate_universe) pointed at each capability's own Cargo.toml/Cargo.lock as the single source of truth -- README.md#one-manifest-per-concern forbids duplicating that dependency list into MODULE.bazel via manual crate.spec() calls, which is what LifeOS-mono's own (unaudited) MODULE.bazel did"
+
+[postgres]
+url = "https://github.com/docker-library/postgres"
+verdict = "adopt"
+license = "PostgreSQL License (permissive) -- official image"
+pin = "17.10-alpine"    # 2026-07-08; adopted 2026-08-01 after cooldown. Trivy removed the Alpine OS findings; 15 gosu-only Go stdlib entries expire 2026-09-01 under Axon#186.
+why = "shared correlation data layer across scouting + transit (+ future capabilities): cross-domain correlation is the actual product thesis, not a hypothetical -- see capabilities/postgres/README.md's correlation section. One instance, per-capability Postgres schema (scouting.*, transit.*) so migrations/ownership stay per-capability, thin correlation layer on top for cross-schema joins. Reopened scouting's earlier Postgres-to-SQLite swap: scouting has since migrated back onto this shared instance (own scouting schema, see capabilities/scouting/README.md's Verdict) and is no longer on SQLite"
+
+[bun]
+url = "https://github.com/oven-sh/bun"
+verdict = "adopt"
+license = "MIT"
+pin = "1.3.14"          # 2026-05-13, 58d old as of 2026-07-10 -- well past cooldown
+why = "the TS/JS runtime README.md#language-tooling already mandates (bun, never npm/node); now also consumed as a hermetic Bazel toolchain (tools/bazel/bun/) so bun-invoked build actions don't depend on whatever `bun` happens to be on PATH. Per-platform release zips (darwin-aarch64, darwin-x64, linux-aarch64, linux-x64), sha256-pinned against oven-sh's published SHASUMS256.txt and cross-checked by direct download in this session, not just trusted from the file. No published Bazel ruleset wraps bun (rules_js/rules_ts require a pnpm lockfile, contradicting README.md#language-tooling) -- hand-rolled per the adopt>contribute>overlay>fork>build preference order, build being the sanctioned last resort here"
+
+[maplibre-gl-js]
+url = "https://github.com/maplibre/maplibre-gl-js"
+verdict = "adopt"
+license = "BSD-3-Clause"
+pin = "v5.21.1"         # March 2026, more than four months old at adoption on 2026-07-28; v6.0.0 is six days old and deliberately remains inside cooldown
+why = "interactive map renderer for the dashboard's cross-capability Trips workspace. Consumed directly from Svelte through one lifecycle wrapper, matching dashboard/README.md; no React binding and no second UI architecture"
+
+[openfreemap]
+url = "https://github.com/hyperknot/openfreemap"
+verdict = "adopt"
+license = "MIT (server); OpenMapTiles/OSM attribution applies to rendered data"
+pin = "hosted-style-api"
+why = "keyless vector basemap for the first Trips vertical slice, using the documented hosted style URL behind one constant. The map keeps provider attribution visible and the seam can later point at a self-hosted OpenFreeMap/PMTiles deployment without changing Trip contracts"
+
+[wikimedia-api]
+url = "https://www.mediawiki.org/wiki/Extension:PageImages"
+verdict = "adopt"
+license = "API output is source-specific; the Trips client requests freely licensed page images and preserves source attribution"
+pin = "action-api-pageimages"
+why = "provider-neutral destination orientation images for Trips. The dashboard validates the small PageImages response into an inert PlaceImage record (dashboard/src/lib/travel/place-image.ts); it never evaluates provider HTML or component code"
+
+[platforms]
+url = "https://github.com/bazelbuild/platforms"
+verdict = "adopt"
+license = "Apache-2.0"
+pin = "1.1.0"           # already present transitively via rules_rust; pinned explicitly now that tools/bazel/bun/ references @platforms labels directly
+why = "bazelbuild's canonical os/cpu constraint_value definitions -- needed directly (not just transitively) once tools/bazel/bun/BUILD.bazel declares per-platform toolchain() targets with target_compatible_with"
+
+[rules_shell]
+url = "https://github.com/bazelbuild/rules_shell"
+verdict = "adopt"
+license = "Apache-2.0"
+pin = "0.8.0"           # 2026-04-15, ~3 months old as of 2026-07-10 -- well past cooldown
+why = "sh_binary/sh_test/sh_library moved out of Bazel-native into this module in recent Bazel releases; needed for //:generate_architecture and //:architecture_up_to_date_test (see README.md#generated-architecture, README.md#argue-bazel-per-case). Official bazelbuild module, no alternative -- this is what replaced the native rules, not a choice among competitors"
+
+[graphify]
+url = "https://github.com/safishamsi/graphify"
+verdict = "adopt"
+license = "MIT"
+pin = "0.9.19"          # graphifyy on PyPI, bumped from 0.8.44 (2026-06-19) per issue #66 -- matches installed skill version
+why = "code-dependency-graph extraction for tools/graphify.sh, consumed via `uv tool run --from graphifyy==0.8.44` (README.md#language-tooling) -- deliberately NOT the bare `graphify` on PATH, which is a separate global install the interactive graphify skill auto-upgrades for its own purposes (was 0.9.11 at adoption time, 1 day old) and would silently drag Axon's build onto whatever version that happens to be. See tools/graphify.sh for the version-selection story: 0.8.44 was chosen over the tempting single-maintainer-fast-moving-project shortcut of 'just use latest' specifically because it's the oldest cooldown-clearing version confirmed (by hand, bisecting release-by-release) to still have working `update <path>` behavior for this repo's mixed code+doc corpus"
+
+[nvidia-skills]
+url = "https://github.com/NVIDIA/skills"
+verdict = "inspiration"
+license = "dual: CC-BY-4.0 (skills/docs) + Apache-2.0 (code) -- confirmed by reading the repo's own LICENSE file"
+pin = ""
+why = "~230 published agent skills, referenced from Packs/writing/README.md. Mined for skill-authoring structure/scoping patterns only, not adopted wholesale -- the large majority is GPU/datacenter ML infra (NeMo training, DeepStream, CUDA, medical imaging) with no match in any current Axon Pack. The one real intersection: rag-blueprint/rag-eval/nemo-retriever, worth a closer look if/when Axon builds a RAG-shaped capability."
+
+[bottom]
+url = "https://github.com/ClementTsang/bottom"
+verdict = "adopt"
+license = "MIT"
+pin = "0.14.3"          # 2026-07-02, 8d old as of 2026-07-10 -- clears the 7d min cooldown by a day. Latest (0.14.4) shipped 2026-07-09, one day old -- deliberately NOT that one; installed via `cargo install bottom --version 0.14.3 --locked`, not brew (brew's bottle always tracks latest, no clean way to pin an older formula version)
+why = "tools/sysmon TUI backend -- cross-platform system monitor (CPU/mem/disk/net/proc, history graphs), Rust, matches the language bias in README.md#implementation-languages-and-intelligence. Adopt over build: README.md#upstream-first requires checking for prior art before writing a system-usage overview from scratch"
+
+[macmon]
+url = "https://github.com/vladkens/macmon"
+verdict = "adopt"
+license = "MIT"
+pin = "0.7.0"           # crates.io lags GitHub (latest tag there is v0.7.2, 2026-05-02); 0.7.0 is what `cargo install macmon` resolves and is well past cooldown either way. Installed via `cargo install macmon --version 0.7.0 --locked`
+why = "tools/sysmon power/thermal backend -- sudoless powermetrics wrapper for Apple Silicon (GPU/ANE utilization, package power draw, thermal pressure) that bottom and Activity Monitor don't surface. arm64-only; tools/sysmon gates the `power` subcommand on `uname -m`"
+
+[typst]
+url = "https://github.com/typst/typst"
+verdict = "adopt"
+license = "Apache-2.0"
+pin = "0.15.0"          # 2026-06-15, 25d old as of 2026-07-10 -- well past cooldown; installed via `brew install typst`
+why = "capabilities/cv rendering -- LaTeX replacement for CV typesetting. Plain-text templates with real scripting (array filter/map) instead of awesome-cv.cls's `\\ifx\\cvtarget` macro chains; single Rust-built binary, no TeX Live install, git-diffable output. Adopt over build: a typesetting engine is exactly the kind of thing not to hand-roll"
+
+[yq]
+url = "https://github.com/mikefarah/yq"
+verdict = "adopt"
+license = "MIT"
+pin = "4.53.3"          # 2026-06-06, 34d old as of 2026-07-10 -- well past cooldown; installed via `brew install yq`
+why = "capabilities/cv/cv's `list-profiles` (and any future bash-side master_cv.yaml introspection) -- master_cv.yaml has real nesting (profiles arrays inside list items), past what tools/lib/toml.sh's single-line grep/sed contract or a hand-rolled grep scan can parse reliably. Typst reads the YAML directly, so yq never touches rendering -- but `cv build` still hard-requires it (require_deps), and `cv build --all` enumerates profiles through it"
+
+[vibecoded-design-tells]
+url = "https://github.com/JCarterJohnson/vibecoded-design-tells"
+verdict = "adopt"
+license = "MIT (code/skills; the harvested Reddit dataset under a separate, unvendored data note -- not consumed)"
+pin = "f7c4aef"         # 2026-06-23, well past cooldown as of 2026-07-10
+why = "Packs/unslop/skills/unslop vendored near-verbatim (references/, scripts/; the two source skills unslop-code + unslop-ui were merged into one 2026-07-28 and their shared body prose rewritten) -- data-grounded (11.9k-73k Reddit posts per study) AI-tell scanners for code and web design, stdlib-only Python. Both halves came from the same commit; the merged SKILL.md's Provenance section documents the second-person-clause rewordings and the merge. See Packs/unslop/README.md for full attribution. The former unslop-text prose skill moved to Packs/writing/skills/human-writing 2026-07-25 and was merged with human-voice + oberskills; its references/tells.md and references/writing-with-intent.md are still this upstream's text, so this entry covers that pack too."
+
+[human-voice]
+url = "https://github.com/stephenoffer/human-voice"
+verdict = "adopt"
+license = "MIT"
+pin = "9bcba2f"         # 2026-06-23, evaluated + vendored 2026-07-25
+why = "Packs/writing/skills/human-writing vendors this skill's linter wholesale (scripts/human_voice_linter/, detect_ai_prose.py, ai_prose_patterns.json) plus references/{over-correction,structural-craft,cited-vs-matched,discourse-and-structure}.md verbatim with an attribution header; references/{registers,anti-hallucination}.md are extracted+condensed from its SKILL.md. Chosen as the substrate because it is the only one of the four prose-tell projects with real structural computation (32 checks: burstiness, lexical diversity, n-gram repetition, SVO monotony, over-correction, dialect drift) rather than a pure lexical regex list -- measured: it scores the over-corrected corpus at 63.5 strong-tell where the old unslop-text scanner returned clean. Two local deltas, both documented in that SKILL.md's Gotchas + Provenance: (1) check_em_dash fires on presence instead of upstream's `per_1k > threshold and count >= 2`, since a lone em dash is an absolute tell -- verified 0/24 human and 0/10 ESL-formal false positives on the bundled corpus; (2) additive entries in ai_prose_patterns.json meta_commentary/hedging. NOTE its eval corpus is hand-authored to exhibit the tells the linter looks for (ablation reports AUC 1.0 with zero drop for every category) -- calibration only, never cite as a benchmark."
+
+[oberskills]
+url = "https://github.com/ryanthedev/oberskills"
+verdict = "quarry"
+license = "MIT declared in .claude-plugin/plugin.json only -- NO LICENSE file at repo root"
+pin = "5050537"         # v2.8.1, 2026-07-25
+why = "Packs/writing/skills/human-writing takes the architecture of this repo's `write` skill: the mode router, the reader-job type taxonomy (references/types.md), voice profiles + template (references/voice-template.md), and the phased review protocol. Quarry not overlay -- because the MIT grant exists only as a plugin.json field with no root LICENSE text, everything taken is paraphrased and rewritten rather than copied verbatim, and both derived reference files carry an explicit note saying so. Revisit if upstream adds a proper LICENSE file."
+
+[stop-slop]
+url = "https://github.com/hardikpandya/stop-slop"
+verdict = "reject"
+license = "MIT"
+pin = "8da1f03"         # 2026-03-18, evaluated 2026-07-10, re-evaluated + re-declined 2026-07-25
+why = "same job as human-writing (prose AI-tell removal) with a smaller hand-written phrase/structure list, no data grounding. Declined twice. Re-evaluated 2026-07-25 during the human-writing merge: its distinctive contributions (false_agency, narrator_distance, negative_listing, dramatic_fragmentation, vague_declarative) are ALREADY present as pattern categories in the vendored human-voice linter, so it adds nothing new; and its absolutist framing ('kill all adverbs', 'no em dashes ever', 'two items beat three', 'no Wh- starters') manufactures exactly the fresh uniform signature that skill exists to prevent -- human-voice's own SKILL.md names it as the anti-pattern. Recorded here, not just in a pack README, so the pin/license survive if the comparison is ever revisited."
+
+[academic-researcher]
+url = "https://github.com/SiluPanda/academic-researcher"
+verdict = "overlay"
+license = "MIT"
+pin = "e75d70d"         # 2026-02-16, retroactive entry -- see why
+why = "Packs/academic-writing/skills/academic-writing/scripts/{resolve-papers,validate-bib,check-citations}.js adapted+generalized from this skill's citation-workflow scripts (check-citations.js given Quarto @citekey support beyond the original's LaTeX-only \\cite{} handling, hardcoded path removed). Retroactive entry -- the pack shipped 2026-07-11 with this source recorded only as 'unknown license' in its README; resolved 2026-07-14. Real code adapted (not just ideas), so verdict is overlay not quarry -- tools/upstream-checker and tools/audit should still be run against these three files to close the M2/content-scan gate properly. See Packs/academic-writing/README.md Attribution."
+
+[academic-writing-agents]
+url = "https://github.com/andrehuang/academic-writing-agents"
+verdict = "quarry"
+license = "MIT"
+pin = ""
+why = "Packs/academic-writing/references/house-style.md (30-principle house style) and references/critic-briefs.md's five critique lenses + the matching agents/academic-writing-*.md files are condensed, rewritten adaptations of this Claude Code plugin's principles doc and 10-agent roster -- ideas/structure mined, no verbatim text or code retained, hardcoded author-specific path removed. See Packs/academic-writing/README.md Attribution."
+
+[research-paper-writing-skills]
+url = "https://github.com/Master-cai/Research-Paper-Writing-Skills"
+verdict = "quarry"
+license = "MIT"
+pin = ""
+why = "Packs/academic-writing/references/genre-empirical-cs.md condenses this repo's Claude-skill repackaging of Prof. Peng Sida's paper-writing notes -- rewritten, not copied. This repo is itself adapted from [pengsida-research-notes]; see that entry for the primary source. See Packs/academic-writing/README.md Attribution."
+
+[pengsida-research-notes]
+url = "https://github.com/pengsida/learning_research"
+verdict = "quarry"
+license = "none declared (all rights reserved by default) -- ideas mined only via a third party's MIT-licensed repackaging (research-paper-writing-skills), no text copied verbatim from here directly"
+pin = ""
+why = "Prof. Peng Sida's (彭思达) publicly shared research/paper-writing notes -- GitHub repo plus companion notes at https://pengsida.notion.site/c1a22465a0fa4b15a12985223916048e. Packs/academic-writing/references/genre-empirical-cs.md draws from this via Master-cai/Research-Paper-Writing-Skills's repackaging, not directly. See Packs/academic-writing/README.md Attribution."
+
+# --- home-server container dependencies ------------------------------------
+# Earlier deployment evidence used floating tags (:stable, :latest, :2, :2.7) with no entry here,
+# so nothing watched them and nothing recorded what was running — while scripts/update.sh
+# called `docker compose pull` on every deploy. Every pin below is the version read out of the
+# LIVE container on 2026-07-26, not a registry guess, and digest-confirmed where the registry
+# allowed it. They enter as entries first so upstream-checker watches them; the capability
+# migration that takes the containers over is separate work.
+#
+# One caveat that applies to all of them: an official-image version tag is not a byte pin.
+# Docker Hub rebuilds under the same tag — proven here on mosquitto, where the running
+# sha256:a908c65c and the current 2.1.2-alpine sha256:6f8d8a94 both report 2.1.2. The digest
+# comments are what make byte identity recoverable.
+
+[home-assistant]
+url = "https://github.com/home-assistant/core"
+verdict = "adopt"
+license = "Apache-2.0"
+pin = "2026.7.4"        # latest stable 2026-07-24; adopted 2026-08-01 after cooldown. Trivy reduced 156 findings to 111; the image-scoped remainder expires 2026-08-15 under Axon#184.
+why = "home-automation core for capabilities/home-assistant. Adopt rather than hand-roll; Axon's value is the pinned, reproducible and host-portable deployment around it"
+
+[esphome]
+url = "https://github.com/esphome/esphome"
+verdict = "reject"
+license = "MIT + GPL-3.0 (dual)"
+pin = "2026.5.3"        # ghcr.io/esphome/esphome, read from `esphome version` in the running container. Pinned rather than removed so it cannot drift while running
+why = "REJECTED and removed 2026-07-26: the container ran with ZERO device configs — /opt/homeautomation/esphome holds only an empty .esphome cache and the repo dir only a .gitkeep. A container, a port and an update path for no devices. Re-adopt honestly if ESPHome hardware actually arrives"
+
+[pihole]
+url = "https://github.com/pi-hole/docker-pi-hole"
+verdict = "adopt"
+license = "EUPL-1.2"
+pin = "2026.07.2"       # latest stable 2026-07-07; adopted 2026-08-01 after cooldown. Trivy reduced 23 findings to 15; the image-scoped remainder expires 2026-08-15 under Axon#185.
+why = "DNS, local-name resolution and per-client query logging for a private network; FTLDNS adds logging and allow/deny lists over plain dnsmasq. Host networking preserves client source IPs"
+
+[grafana]
+url = "https://github.com/grafana/grafana"
+verdict = "reject"
+license = "AGPL-3.0"
+pin = "13.0.2"          # digest-confirmed == the running sha256:5dad0df1. Was :latest
+why = "REJECTED and removed 2026-07-26. It had ZERO dashboards — not stale ones, none had ever been created — so the metrics stack had no reader, which is exactly why nobody noticed its data source dying 69 days earlier. Home Assistant already keeps 315k hourly long-term statistics rows across 180 sensors indefinitely and puts the Energy dashboard on top of them. Re-adopt only against a dashboard somebody actually wants"
+
+[influxdb]
+url = "https://github.com/influxdata/influxdb"
+verdict = "reject"
+license = "MIT (v2 OSS)"
+pin = "2.7.12"          # digest-confirmed == the running sha256:b8d940ca; the floating :2.7 currently aliases the same image, which is exactly why it looked safe. 52w retention, bucket "homeassistant"
+why = "REJECTED and removed 2026-07-26 after 69 days as a dead pipe. Last engine write 2026-05-18, the same day a compose commit rebound its port to the LAN IP only while HA — host-network — kept calling localhost:8086, which has no route. The premise was that HA's recorder does not keep long series; it does, as 315k hourly statistics rows over 180 sensors, kept indefinitely. Re-adopt only for a series HA's statistics genuinely cannot express"
+
+[mosquitto]
+url = "https://github.com/eclipse-mosquitto/mosquitto"
+verdict = "reject"
+license = "EPL-2.0"
+pin = "2.1.2-alpine"    # the running container reports 2.1.2 but its digest (sha256:a908c65c) matches NO current tag: the tag `2` it was pulled by has since been rebuilt to sha256:6f8d8a94, now also carrying 2.1.2-alpine and 2.1-alpine. Adopting this tag means taking the newer 2.1.2 build on next restart — a base-layer change, deliberate instead of silent. No bare 2.1.2 tag exists; 2.1.x ships -alpine only
+why = "REJECTED and removed 2026-07-26: nothing had ever used it. No mqtt config entry in HA, zero established connections, and 'Restored 0 clients / 0 subscriptions / 0 retained messages' on every restart in its own log. The devices that speak MQTT on that deployment talk to their vendor clouds, and those were the MQTT lines in HA's log, not a local broker. Re-adopt the moment a local broker has a client: the commented zigbee2mqtt service needs one"
+
+# --- vendored Home Assistant custom components -----------------------------
+# Moved out on 2026-08-02. Which integrations a Home Assistant runs is a
+# fact about one installation, and the set of them describes the hardware in a building even
+# though every pin points at a public repository. Their verdict, license, pin and why now live
+# in the selected overlay's own upstreams.toml, beside the components.toml lockfile the
+# materializer reads. The two-halves rule is unchanged, both halves just moved together.
+
+[stevenblack-hosts]
+url = "https://github.com/StevenBlack/hosts"
+verdict = "adopt"
+license = "MIT"
+pin = "master (INTENTIONALLY UNPINNED — data, not code)"
+why = "Pi-hole's blocklist, pulled at runtime by gravity. The one entry here that SHOULD float: for a blocklist the failure mode is staleness, not supply chain — a pinned list stops blocking new domains, and it is consumed as hostname data, never executed. Recorded so it is a decision instead of an accident, which is the distinction the old setup did not make anywhere"
+
+# --- private remote-access layer --------------------------------------------
+
+[tailscale]
+url = "https://github.com/tailscale/tailscale"
+verdict = "adopt"
+license = "BSD-3-Clause (clients); coordination server is proprietary and hosted"
+pin = "1.98.9"          # pinned package version; installation and bump ownership remain deployment concerns
+why = "private remote access plus `tailscale cert` for trusted HTTPS without distributing a private CA to every client. Chosen over NetBird for that capability; Tailnet Lock reduces coordination-server trust for key distribution but not its metadata visibility"
+
+[netbird]
+url = "https://github.com/netbirdio/netbird"
+verdict = "reject"
+license = "BSD-3-Clause (whole stack, control plane included)"
+pin = ""                # nothing consumed
+why = "REJECTED 2026-07-26 on capability, not merit — and it wins the licensing axis outright: the entire stack including the coordination server is BSD-3 and self-hostable as a single container since 0.65, where Tailscale's control plane is proprietary and self-hosting means the Headscale reimplementation. It loses on the one requirement that produced this design: there is no per-peer TLS certificate. netbirdio/netbird#5479 has been open since May 2024 with no maintainer response and no roadmap, both candidate paths (internal CA, Let's Encrypt DNS-PERSIST-01) are unshipped, and the only workaround today is their reverse proxy, which exposes the service publicly. Adopting it now would mean reintroducing the private CA that mkcert was rejected for. RE-ADOPT TRIGGER: `netbird cert` (or DNS-PERSIST-01) in a release — at which point self-hosting the control plane would also close the metadata exposure Tailnet Lock deliberately leaves open"
+
+# --- the Svelte frontend toolchain (dashboard/README.md) ------
+
+[svelte-ai-tools]
+url = "https://github.com/sveltejs/ai-tools"
+verdict = "adopt"
+license = "MIT"
+pin = "6468954"         # plugin v1.0.8, 2026-07-27 — see cooldown note in `why`
+why = "the Svelte org's own agent toolchain, adopted as a Claude Code plugin (`/plugin marketplace add sveltejs/ai-tools`) rather than vendored into a Pack. Three of its four parts are things a Pack structurally cannot carry — an HTTP MCP server (https://mcp.svelte.dev/mcp, which means every doc lookup and autofixer call sends code context to Svelte's server: public-class work only), an LSP wiring for svelteserver, and a subagent. The fourth, the two skills, is a generated artifact synced from svelte.dev and tools/skills — vendoring it would fork a moving target (runes, async Svelte, {@attach}) with no upstream path. INSIDE COOLDOWN AT ADOPTION: installed 2026-07-28 on a 1-day-old ref, accepted because the installed tree is 13 markdown files plus 2 json and contains no executable code (verified against the cache). The residual vector is plugin.json's lspServers.command, which Claude Code spawns — re-verify that field on every `/plugin marketplace update`, and treat an update as a fresh cooldown decision, not a routine bump"
+
+[sveltejs-mcp]
+url = "https://www.npmjs.com/package/@sveltejs/mcp"
+verdict = "adopt"
+license = "MIT"
+pin = "0.1.25"          # 2026-06-26, ~4 weeks old = well past cooldown. NOT ENFORCED — see `why`
+why = "the CLI half of svelte-ai-tools (list-sections, get-documentation, svelte-autofixer), published from that repo's packages/mcp-server. Registered separately because it is the only part that fetches and executes code at call time, and its risk profile is therefore nothing like the plugin's markdown. The pin above is the audited version, NOT what actually runs: the upstream skill hardcodes an unpinned `npx @sveltejs/mcp`, i.e. :latest on every invocation, which is a live README.md#pins-and-cooldown breach Axon cannot fix from its own side. Enforcement path is sveltejs/ai-tools#248 (opened 2026-07-28), which stamps the released version into the skill and subagent via the existing update-version.ts release hook; until it lands, this entry documents exposure rather than control"
+
+[svelte-language-server]
+url = "https://github.com/sveltejs/language-tools"
+verdict = "adopt"
+license = "MIT"
+pin = "0.18.3"          # npm, 2026-06-23 — ~5 weeks old, well past cooldown. Installed globally via `bun add -g`
+why = "the `svelteserver` binary that svelte-ai-tools declares but does not ship. Without it the plugin has no Svelte diagnostics, definition lookup or rename support. Registered separately because it is a distinct package and repository; upstream-checker watches version drift"
+
+# --- agentbox: the sandboxed coding agent (capabilities/agentbox) -----------
+
+[pi-coding-agent]
+url = "https://github.com/earendil-works/pi"
+verdict = "adopt"
+license = "MIT"
+pin = "v0.83.0"         # 2026-07-29. Pinned 2026-07-31 at 2d old, INSIDE the 7d cooldown, and that is recorded rather than excused: the host had already self-updated to it via `pi update` roughly 15h after release, on a path no gate was watching. This pin documents an adoption that had already happened; it did not authorise one. Two targets consume it now — pi-linux-arm64.tar.gz for the box (sha256 b84f9016610c738dd9440df62f649880dbe9951db97a7ae936cbf292850e9802) and pi-darwin-arm64.tar.gz for the host install (sha256 147fc3c451ec543a15102af251ce316079c8fcadfe8ae4d3ffee202346e9bed9), both read from the release's SHA256SUMS and re-verified by downloading each asset. #126 is the gate that makes the NEXT bump go through a check instead of past one
+why = "the coding agent capabilities/agentbox puts in a micro-VM. Adopted from the GitHub release TARBALL, not npm: releases ship a self-contained aarch64 ELF, so the image needs no Node and no npm and README.md#language-tooling is satisfied rather than excepted -- which the Medium writeup this was built from could not do, because it predates the rename (badlogic/pi-mono -> earendil-works/pi, package @mariozechner/pi-coding-agent -> @earendil-works/pi-coding-agent) and pins an npm install of a package that stopped at 0.73.1 while the project moved to 0.82.x. Upstream's own docs/security.md states pi has no built-in sandbox by design and that isolation must come from the OS or a virtualization boundary -- so this follows the tool's security model instead of bolting one on. See capabilities/agentbox/README.md for the three upstream-sanctioned patterns and why whole-process containment won here"
+
+[apple-container]
+url = "https://github.com/apple/container"
+verdict = "adopt"
+license = "Apache-2.0"
+pin = "1.0.0"           # what is INSTALLED and running (`container --version`, 2026-07-28), read off the machine rather than a registry listing. 1.1.0 (2026-07-06) is out of cooldown and is the next deliberate bump -- a signed .pkg the operator installs by hand, so upstream-checker watches drift here, it does not own the update
+why = "the container runtime <overlay>/config/machine.toml already names (container_runtime = \"apple-container\"), registered here now that a capability depends on more than `run`: each container is its own VM rather than a shared kernel, which is the isolation claim agentbox actually rests on, and `container network create --internal` gives a host-only network with no external route -- the egress control the writeup left explicitly out of scope. Apple-signed component, no third-party daemon, which is the install story a sovereignty review asks about"
+
+[debian]
+url = "https://github.com/debuerreotype/docker-debian-artifacts"
+verdict = "adopt"
+license = "various (Debian main; base image is DFSG-free)"
+pin = "trixie-20260713-slim"   # 2026-07-14, 14d old on 2026-07-28 = the far edge of the cooldown window. arm64 digest sha256:8b5033c95ca60cdffb0e0f4c446e5f714e82d8960a9ef4153c0eaf13e988b0ea. Dated tag, not the rolling `trixie-slim`, so a rebuild is a decision
+why = "base image for the agentbox image. Debian rather than Alpine because the pi release binary is a dynamically-linked glibc ELF (`ELF 64-bit LSB executable, ARM aarch64, interpreter /lib/ld-linux-aarch64.so.1`) -- musl is not an option here. trixie (glibc 2.41) over bookworm because the binary is built on a newer toolchain than bookworm ships"
+
+[deutsche-bahn-data]
+url = "https://github.com/piebro/deutsche-bahn-data"
+verdict = "adopt"
+license = "CC-BY-4.0 (data, licensed by Deutsche Bahn; attribution required)"
+pin = "monthly_processed_data/data-2025-11 .. data-2026-06"   # the monthly releases consumed, not a git ref: the code that produces them is irrelevant here, the published parquet files are the artifact. Files are immutable once published; a new month is a new file, never a rewrite of an old one
+why = "historical German rail punctuality, the empirical baseline capabilities/punctuality is built on. Collected 4x/day from DB's own Station Data + Timetables APIs and republished monthly as parquet, so it is DB's data under DB's licence rather than a scrape. Chosen over calling the Timetables API directly because that answers 'what is delayed right now' and cannot be asked about last March -- history is the whole point here. Two properties the README states and the ingest must respect: coverage changes on 2025-11-02 (before it, only the ~100 largest stations; after, all ~5300), so mixing the two eras makes station coverage a confounder; and collection is 98.92% complete with 196 named missing hours, so an absent train never means 'did not run'. Schema broke once (2026-05: train_name split into train_number + line_number, all historical files reprocessed), which is why the pin names files rather than tracking a moving 'latest'"
+
+[arrow-rs]
+url = "https://github.com/apache/arrow-rs"
+verdict = "adopt"
+license = "Apache-2.0"
+pin = "59.1.0"          # arrow + parquet crates, released 2026-07-07, 20d old on 2026-07-28 -- past cooldown
+why = "the parquet reader capabilities/punctuality ingests with. Pure Rust, so it resolves through a normal crate.from_cargo block; the obvious alternative (DuckDB via duckdb-rs) would have pulled a bundled C++ embedded database into the Bazel graph to run one GROUP BY, and its own CLI would have put the aggregation in SQL outside the type system. DuckDB stays a fine ad-hoc exploration tool, it is just not a dependency Axon has to carry. See capabilities/punctuality/README.md"
+
+[xberg]
+url = "https://github.com/xberg-io/xberg"
+verdict = "adopt"
+license = "MIT"
+pin = "1.0.5"           # NOT YET CONSUMED. Published 2026-07-30, so the cooldown clears 2026-08-06; nothing in capabilities/comms depends on this crate until then.
+why = "the document extraction layer capabilities/comms is meant to sit on (#77), audited 2026-07-31 and adopted in direction only -- the Cargo dependency is deliberately absent until cooldown clears. Benchmarked out-of-tree against the 15 stored article URLs with the same fetched bytes going to both sides: xberg returns more text than the built-in tag stripper on all 15, and rescues the cases the strip returns nothing usable for (a client-rendered arXiv HTML page 0 -> 129k chars, a GitHub tree view 15 -> 12k, blog.rust-lang.org 75 -> 40k). It is an extractor and NOT a readability cleaner, exactly as #77 suspected: the short-line share of its output runs 0.03-1.00 with a median near 0.36, so navigation and share widgets survive. That is acceptable here only because #86 landed first -- extraction produces raw, capabilities/comms/src/normalize.rs produces clean -- and the benchmark is what proved that split is required rather than merely tidy. Three findings shaped the pin: 1.0.0's `pdf` feature does not resolve at all (its pdf_oxide 0.3.76 wants fax ^0.3 and crates.io tops out at 0.2.7), which is why the pin is 1.0.5 rather than the older, sooner-eligible release; the crate is pure Rust as claimed, with no tesseract/openssl-sys/candle in the tree, although the Homebrew formula pulls tesseract and installs an EMPTY keg (two 0-byte files, no binary), so the CLI is not a usable install path; and the surface is large at 320 unique crates with html+pdf enabled versus 158 on default features. MSRV 1.91 sits under the 1.96 that rules_rust 0.71.1 pins, so the Bazel side is clear. Six releases in five days plus a yanked 5.0.0-rc.32 predating 1.0.0 is why this waits out the full window instead of being bumped on sight."
+
+# --- local semantic relevance (capabilities/comms) --------------------------
+
+[multilingual-e5-small-mlx]
+url = "https://huggingface.co/mlx-community/multilingual-e5-small-mlx"
+verdict = "reject"
+license = "MIT"
+pin = "5030c7625865046d350eeea28f427d80353d0ac0"
+why = "rejected as the Comms quality default after serving as the first operational oMLX baseline: the 253 MB, 94-language XLM-RoBERTa model FAILS the frozen DE/EN gate at 4/6 useful top-1, 0.765 pairwise accuracy and 0.865 mean nDCG, including wrong architecture-negation and rail rankings. The pinned tree was inspected before use (tokenizer/config JSON plus one safetensors weight shard, no executable model code). Keep its append-only result as evidence; multilingual-e5-base-mlx clears the same corpus for a bounded additional resource cost."
+
+[multilingual-e5-base-mlx]
+url = "https://huggingface.co/mlx-community/multilingual-e5-base-mlx"
+verdict = "adopt"
+license = "MIT"
+pin = "576fdf3eab52a419f6d126a0c4d7c59b3882ffde"
+why = "adopted Comms relevance model after clearing the unchanged DE/EN gate at 6/6 useful top-1, 0.882 pairwise accuracy and 0.986 mean nDCG. It uses the same 94-language E5/XLM-RoBERTa contract as the rejected small baseline, but 12 layers and 768-dimensional output; the exact January 2024 tree is 573 MB and contains config/tokenizer data plus one 556 MB safetensors shard, with no executable model code. The measured local cost was 547 MiB on disk, about 1.16 GB oMLX RSS immediately after the batch and 1.14 s end-to-end for 30 vectors; a 60-second per-model TTL returns that memory after bursty revision-cached work."

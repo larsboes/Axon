@@ -1,0 +1,62 @@
+# Shape of a Packs/<name>/pack.toml. A Pack is a togglable bundle of agent
+# open agent skills (SKILL.md units) that Axon deploys into an active harness.
+# This file IS the schema (single-line TOML only, see tools/lib/toml.sh):
+# copy it into a pack dir, fill it in, drop the skills under skills/.
+#
+# Doctrine: skills are PUBLIC and stay in Axon. No personal value (host, path,
+# key) is ever inlined in a skill — it is redacted to a placeholder, and the
+# skill reads the real value at runtime from the overlay
+# ($AXON_PERSONAL_ROOT/config/<pack>.*). Harness adapters activate the same
+# source: tools/packs.sh links into Claude Code; tools/packs-codex materializes
+# copies into Codex.
+
+name         = "example"                 # pack id, must match the dir name
+description  = "One line: what this pack lets an agent do."
+skills       = ["example-skill"]         # dir names under this pack's skills/, repeatable
+retired_skills = ["old-example-skill"]  # optional: prior names an adapter may remove only when it owns the installation
+license      = "MIT"                      # SPDX id; add a LICENSE file in the pack only if it vendors third-party code under a different license
+capabilities = ["printing"]              # optional: capabilities/<name> this pack drives
+personal     = ["config/example.json"]   # optional: files relative to the selected overlay that skills read at runtime
+links        = ["moonraker"]             # optional: systems.toml ids this pack relates to
+deployer     = "packs-axon"              # optional: a dedicated tool owns this pack's destinations
+
+
+# `deployer` names the one tool that owns this pack's destination directories.
+# Set it and the generic adapters stop claiming the pack: tools/packs.sh will not
+# link it, and tools/packs-codex leaves it out of every sweep and out of a `*`
+# profile. The named tool still deploys it by asking for it explicitly.
+# Without this field, one skill can be claimed by three mechanisms at once — a
+# packs.sh symlink, a packs-codex copy, and a dedicated deployer's ledger, all
+# pointed at the same path, each reporting a different verdict for it.
+
+# Every pack carries a short README.md: what it does, how to activate it, and —
+# if any skill was adapted from an external source — an Attribution line naming
+# it (respect its license). A separate LICENSE file only when vendored code
+# demands one; otherwise the `license` field above is the whole story.
+
+# Optional, convention-based (no TOML field): a pack MAY also carry an
+# agents/ directory of Claude-Code-native subagent .md files
+# (https://code.claude.com/docs/en/sub-agents). packs.sh links it as one
+# directory symlink if present -- deliberately not named here, since a
+# Claude-Code-only concept doesn't belong in the neutral manifest shape
+# (see README.md#harness-neutral-packs). See Packs/academic-writing/ for a
+# worked example (5 review-lens agents + 3 adversarial-skeptic agents).
+#
+# A pack MAY likewise carry Codex-only deployment fields under
+# codex/<skill>/, matching their final paths inside the skill. The common case
+# is codex/<skill>/agents/openai.yaml plus any Codex-only assets it references.
+# tools/packs-codex merges this overlay over the shared skill while staging,
+# but refuses a Codex-specific SKILL.md so the shared workflow stays canonical.
+
+# tools/packs.sh:
+#   list                 -> every pack, its skills/agents, and link state
+#   link <name>          -> symlink this pack's skills into ~/.claude/skills/
+#                           (and agents/ into ~/.claude/agents/<name>/, if present)
+#                           then remove symlinked retired_skills owned by that Pack
+#   unlink <name>        -> remove those symlinks (never touches real skill/agent dirs)
+#
+# tools/packs-codex:
+#   status [name|--all]  -> source/install/drift state for materialized Codex skills
+#   deploy <name>        -> copy a Pack into ~/.agents/skills with ownership state
+#   sync <name>|--all    -> update clean owned copies; refuse destination drift
+#   remove <name>        -> remove only clean copies owned by that Pack

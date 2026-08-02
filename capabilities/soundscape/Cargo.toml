@@ -1,0 +1,24 @@
+[package]
+name = "soundscape"
+version = "0.1.0"
+edition = "2021"
+description = "The conductor: what should be playing, and the state that survives a reload. The synth itself runs in the browser -- see capabilities/soundscape/README.md."
+publish = false
+
+# Inert here, and deliberately so: libs/axon-server is `#[path]`-included, and the
+# env-mutating unit tests it re-exports hide behind this feature so they never run inside a
+# consumer's test binary. Declaring it is what stops every build printing unexpected_cfgs.
+[features]
+standalone-tests = []
+
+[[bin]]
+name = "soundscape"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower-http = { version = "0.5", features = ["fs"] }

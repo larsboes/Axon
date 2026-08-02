@@ -1,0 +1,28 @@
+{
+  "_note": "Template. Copy to <overlay>/config/inference.json and edit. Machine-local backend choice belongs in machine.toml ([inference] backend), not here -- this file is shared across machines via the overlay repo.",
+  "_comment_backends": "Declared once, referenced by id. oMLX needs Metal and exists only on Apple Silicon; ollama runs anywhere. A machine that cannot run the configured backend overrides it in machine.toml ([inference] backend = ...), which service-runner exports as AXON_INFERENCE_BACKEND.",
+  "backends": {
+    "omlx": {
+      "api": "openai",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "api_key_file": "~/.omlx/settings.json"
+    },
+    "ollama": {
+      "api": "ollama",
+      "base_url": "http://127.0.0.1:11434"
+    }
+  },
+  "_comment_roles": "A role names the backend, the model on it, and that model's input conventions. The prefixes are not decoration: multilingual-e5 expects 'query: ' and 'passage: ', nomic-embed-text expects 'search_query: ' and 'search_document: ', and sending the wrong ones costs retrieval quality without raising anything.",
+  "roles": {
+    "embedding": {
+      "backend": "omlx",
+      "model": "multilingual-e5-base-mlx",
+      "query_prefix": "query: ",
+      "document_prefix": "passage: "
+    },
+    "summarization": {
+      "backend": "omlx",
+      "model": "mlx-community/gemma-4-26b-a4b-it-4bit"
+    }
+  }
+}

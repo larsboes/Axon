@@ -1,0 +1,28 @@
+# Operating contract
+
+Rendered by `agentbox run` and loaded into every session. Edit the template in
+`capabilities/agentbox/profiles/pi/AGENTS.md.tmpl`, not the copy in the overlay —
+the copy is overwritten on the next run.
+
+## Where you are
+
+You run inside an Apple `container` micro-VM, not on the host. The host's filesystem,
+credentials, SSH agent and browser profiles are not mounted and cannot be reached.
+`/workspace` is a single project directory bind-mounted from the host: writes there
+land on real files the user keeps, everything else in this VM is discarded on exit.
+
+Network: {{NETWORK_STATEMENT}}
+
+## Rules
+
+- File operations stay inside `/workspace`. Nothing outside it is yours to touch,
+  including paths that look writable.
+- Read before you edit. `write` is for new files; use `edit` on files that exist.
+- No package installs without being asked for one explicitly. That includes `npm`,
+  `pip`, `cargo add`, and anything that mutates a lockfile as a side effect.
+- No outbound calls and no telemetry unless the task the user gave you needs one and
+  says so.
+- Say when something is blocked by the sandbox instead of working around it. "I can't
+  reach the network from here" is a useful answer; a silent fallback is not.
+- Report what you actually ran and what it actually printed. A command you did not run
+  is not evidence.

@@ -1,0 +1,50 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["README.md", "service.toml"])
+
+rust_library(
+    name = "calendar_lib",
+    crate_name = "calendar",
+    crate_root = "src/lib.rs",
+    # Globbed rather than listed — see capabilities/scouting/BUILD.bazel for why the
+    # hand-maintained inventory was the drift risk (Axon#13). src/server.rs is excluded
+    # because it is the server binary's own crate root; the //libs source stays explicit
+    # because a glob cannot cross a package boundary.
+    srcs = glob(["src/**/*.rs"], exclude = ["src/server.rs"]) + [
+        "//libs/axon-config:src/lib.rs",
+    ],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index_calendar//:postgres",
+        # Phase E's Google Calendar transport. Blocking client, matching the
+        # synchronous `postgres` client the rest of this crate uses; only the
+        # server binary carries a tokio runtime.
+        "@crate_index_calendar//:reqwest",
+        "@crate_index_calendar//:serde",
+        "@crate_index_calendar//:serde_json",
+    ],
+)
+
+rust_test(
+    name = "calendar_test",
+    crate = ":calendar_lib",
+    size = "small",
+)
+
+rust_binary(
+    name = "calendar-server",
+    crate_root = "src/server.rs",
+    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs", "//libs/axon-config:src/lib.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":calendar_lib",
+        "@crate_index_calendar//:axum",
+        "@crate_index_calendar//:reqwest",
+        "@crate_index_calendar//:serde",
+        "@crate_index_calendar//:serde_json",
+        "@crate_index_calendar//:tokio",
+        "@crate_index_calendar//:tower-http",
+    ],
+)

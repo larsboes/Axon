@@ -1,0 +1,3 @@
+# The installer now uses overlay-skeleton. Leave state from the retired template name
+# local and invisible to Git so a template upgrade never exposes backup/data/secrets.
+/axon-*-skeleton/

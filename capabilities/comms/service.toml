@@ -1,0 +1,13 @@
+# comms — host process, not a container. Shape: schemas/service.toml.example.
+kind        = "process"
+name        = "comms"
+command     = ["bazel-bin/capabilities/comms/comms-server"]
+build       = ["bazel", "build", "//capabilities/comms:comms-server"]
+port        = "8083"
+health_path = "/health"
+
+# No proxy_extra: comms-server serves bare paths (/feed, /triage) precisely so its
+# contract stays dashboard-independent, and the uniform stripped /comms prefix is
+# what the dashboard client already calls.
+
+requires = ["postgres"]

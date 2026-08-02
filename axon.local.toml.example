@@ -1,0 +1,25 @@
+# Copy to axon.local.toml (gitignored) — or just run tools/install.sh, which writes it.
+#
+# This machine's bootstrap facts: where its private overlay lives, and — when that
+# overlay holds more than one machine — which of them this is. Everything else that
+# differs per machine (os, container_runtime, capabilities, state mounts) lives in the
+# overlay's own manifest. See schemas/machine.toml.example.
+#
+# tools/lib/paths.sh reads this file first and falls back to axon.toml's shipped default.
+# Single-line scalars, quoted — tools/lib/toml.sh's parsing contract.
+
+overlay = "~/.axon-overlay"
+
+# Optional. An overlay describes a deployment, and a deployment may own several machines
+# — a cheap always-on service node and a separate compute node, say. Resolution order:
+#
+#   1. this key            -> <overlay>/config/machines/<machine>.toml
+#   2. the short hostname  -> <overlay>/config/machines/<hostname>.toml, if it exists
+#   3. otherwise           -> <overlay>/config/machine.toml
+#
+# Set it when a host should carry a role name rather than whatever DNS calls it, or when
+# the hostname changes more often than the role does. Naming a machine whose manifest is
+# missing is an error, never a fallback: falling back would quietly operate on a
+# different machine's enabled set.
+#
+# machine = "service-node"

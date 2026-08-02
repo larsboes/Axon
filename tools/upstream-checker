@@ -1,0 +1,208 @@
+#!/bin/bash
+# upstream-checker — the M2 gate for upstreams.toml.
+#
+# Enforces Axon's dependency doctrine (README.md#dependency-verdicts-and-provenance, upstreams.toml header):
+# every entry is complete with a valid verdict, everything consumed is pinned,
+# and no pinned dep gets silently bumped inside its 7-14 day cooldown window.
+# Run it BEFORE adding or bumping any dependency, package, or MCP server —
+# that's the gate that stops a LiteLLM-class same-day compromise from landing.
+#
+#   tools/upstream-checker            # audit the manifest, human report
+#   tools/upstream-checker --strict   # also fail on warnings + in-cooldown bumps
+#   tools/upstream-checker --offline  # skip the GitHub release/cooldown checks
+#   tools/upstream-checker --json     # machine-readable report (dashboard feed); exits 0
+#
+# Exit 0 = clean, 1 = violation(s), 2 = usage error. bash 3.2-safe.
+# --json is the exception: the report IS the result, so a manifest fail is data in the
+# payload (totals.fail), not a non-zero exit — the one caller is axon-status, which wants
+# the feed regardless of verdict counts.
+
+set -u
+
+_here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tools/lib/paths.sh
+. "$_here/lib/paths.sh"   # exports AXON_ROOT (+ AXON_PERSONAL_ROOT) and sources toml.sh
+MANIFEST="$AXON_ROOT/upstreams.toml"
+
+STRICT=0; OFFLINE=0; JSON=0
+for a in "$@"; do
+  case "$a" in
+    --strict)  STRICT=1 ;;
+    --offline) OFFLINE=1 ;;
+    --json)    JSON=1 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    *) echo "upstream-checker: unknown flag '$a'" >&2; exit 2 ;;
+  esac
+done
+
+[ -f "$MANIFEST" ] || { echo "upstream-checker: no manifest at $MANIFEST" >&2; exit 2; }
+
+# Verdict vocabulary is derived from the manifest's own header comment
+# (`# verdict = "adopt" | "contribute" | ...`) — one source of truth, not a
+# second copy the checker can drift from. Fail loud if it can't be read.
+VALID_VERDICTS="$(grep -E '^#[[:space:]]*verdict[[:space:]]*=' "$MANIFEST" | head -1 | grep -oE '"[a-z]+"' | tr -d '"' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+[ -n "$VALID_VERDICTS" ] || { echo "upstream-checker: could not derive verdict vocabulary from $MANIFEST header comment" >&2; exit 2; }
+# "consumed" = integrated into Axon, therefore must be pinned. This is policy,
+# stated nowhere else as a list, so it lives here as the single definition.
+CONSUMED_VERDICTS="adopt contribute overlay fork"
+# Cooldown window is machine/policy config, not a magic number in the gate.
+COOLDOWN_MIN="$(toml_get_in upstream cooldown_min_days "$AXON_ROOT/axon.toml")"
+COOLDOWN_MAX="$(toml_get_in upstream cooldown_max_days "$AXON_ROOT/axon.toml")"
+{ [ -n "$COOLDOWN_MIN" ] && [ -n "$COOLDOWN_MAX" ]; } || { echo "upstream-checker: cooldown window missing from axon.toml [upstream]" >&2; exit 2; }
+
+in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# shellcheck source=lib/version.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/version.sh"
+
+# epoch_of <ISO8601 e.g. 2026-07-09T22:00:00Z> — GNU date first, BSD/macOS fallback.
+epoch_of() {
+  if date --version >/dev/null 2>&1; then
+    date -u -d "$1" +%s 2>/dev/null
+  else
+    date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null
+  fi
+}
+
+# gh_latest <owner/repo> — prints "tag<TAB>published_at"; non-zero if unavailable.
+gh_latest() {
+  local repo="$1" json
+  if command -v gh >/dev/null 2>&1; then
+    json="$(gh api "repos/$repo/releases/latest" 2>/dev/null)"
+  else
+    json="$(curl -fsS "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null)"
+  fi
+  [ -z "$json" ] && return 1
+  local tag pub
+  tag="$(printf '%s' "$json" | grep -E '"tag_name"'     | head -1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]*)".*/\1/')"
+  pub="$(printf '%s' "$json" | grep -E '"published_at"' | head -1 | sed -E 's/.*"published_at":[[:space:]]*"([^"]*)".*/\1/')"
+  [ -z "$tag" ] && return 1
+  printf '%s\t%s\n' "$tag" "$pub"
+}
+
+fail=0; warn=0; ok=0; count=0
+
+# --json accumulates the same per-entry notes the human report prints, so the two views
+# never drift: every status line goes through emit(), which either prints it (human) or
+# buffers it for the entry's JSON `notes` array. One code path, two renderings.
+ENTRY_NOTES=(); JSON_ENTRIES=""
+emit() {  # a per-entry status note
+  if [ "$JSON" -eq 1 ]; then ENTRY_NOTES+=("$1"); else echo "    $1"; fi
+}
+json_escape() {  # minimal JSON string escaping; notes are single-line
+  local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"
+}
+
+if [ "$JSON" -eq 0 ]; then
+  echo "upstream-checker · $MANIFEST"
+  [ "$OFFLINE" -eq 1 ] && echo "  (offline — skipping release/cooldown checks)"
+  echo
+fi
+
+for name in $(toml_sections "$MANIFEST"); do
+  count=$((count + 1))
+  url="$(toml_get_in "$name" url "$MANIFEST")"
+  verdict="$(toml_get_in "$name" verdict "$MANIFEST")"
+  license="$(toml_get_in "$name" license "$MANIFEST")"
+  why="$(toml_get_in "$name" why "$MANIFEST")"
+  pin="$(toml_get_in "$name" pin "$MANIFEST")"
+
+  entry_fail=0; entry_warn=0; ENTRY_NOTES=()
+  [ "$JSON" -eq 0 ] && printf '▸ %-28s %-11s pin %s\n' "$name" "${verdict:-—}" "${pin:-—}"
+
+  # 1. completeness
+  missing=""
+  [ -z "$url" ]     && missing="$missing url"
+  [ -z "$verdict" ] && missing="$missing verdict"
+  [ -z "$license" ] && missing="$missing license"
+  [ -z "$why" ]     && missing="$missing why"
+  if [ -n "$missing" ]; then
+    emit "✗ missing required field(s):$missing"
+    entry_fail=1
+  fi
+
+  # 2. verdict enum
+  if [ -n "$verdict" ] && ! in_list "$verdict" "$VALID_VERDICTS"; then
+    emit "✗ invalid verdict '$verdict' (allowed: $VALID_VERDICTS)"
+    entry_fail=1
+  fi
+
+  # 3. consumed → must be pinned
+  if in_list "$verdict" "$CONSUMED_VERDICTS" && [ -z "$pin" ]; then
+    emit "⚠ '$verdict' verdict without pin — pin the exact ref before consuming"
+    entry_warn=1
+  fi
+
+  # 4. drift / cooldown — only for pinned GitHub upstreams
+  if [ "$OFFLINE" -eq 0 ] && [ -n "$pin" ] && printf '%s' "$url" | grep -q 'github.com'; then
+    repo="$(printf '%s' "$url" | sed -E 's#.*github.com/([^/]+/[^/]+).*#\1#; s#\.git$##')"
+    latest_line="$(gh_latest "$repo")"
+    if [ -z "$latest_line" ]; then
+      emit "· latest release not resolvable (no releases / rate-limited) — drift unverified"
+    else
+      latest_tag="${latest_line%%	*}"
+      latest_pub="${latest_line#*	}"
+      latest_norm="$(norm_ver "$latest_tag")"
+      pin_norm="$(norm_ver "$pin")"
+      if [ "$latest_norm" = "$pin_norm" ]; then
+        emit "✓ pinned to latest release ($latest_tag)"
+      elif ver_numeric "$latest_norm" && ver_numeric "$pin_norm" && ! ver_gt "$latest_norm" "$pin_norm"; then
+        # GitHub's /releases/latest is the most recently PUBLISHED non-prerelease, not
+        # the highest version. A project with maintenance branches publishes 58.4.0 after
+        # 59.1.0, and comparing only for inequality reported that as a cooldown-violating
+        # "newer" release that must not be adopted -- advice to downgrade, dressed as a
+        # security warning. arrow-rs did exactly this on 2026-07-28.
+        emit "✓ pin ($pin) is ahead of upstream's newest release ($latest_tag) — maintenance branch, nothing to bump"
+      else
+        age_days="?"
+        pub_epoch="$(epoch_of "$latest_pub")"
+        if [ -n "$pub_epoch" ]; then
+          now_epoch="$(date -u +%s)"
+          age_days=$(( (now_epoch - pub_epoch) / 86400 ))
+        fi
+        if [ "$age_days" != "?" ] && [ "$age_days" -lt "$COOLDOWN_MIN" ]; then
+          emit "🔴 newer: $latest_tag (${age_days}d old) — IN COOLDOWN, do NOT bump yet (LiteLLM class)"
+          entry_warn=1
+        elif [ "$age_days" != "?" ] && [ "$age_days" -le "$COOLDOWN_MAX" ]; then
+          emit "🟡 newer: $latest_tag (${age_days}d old) — cooldown window (${COOLDOWN_MIN}-${COOLDOWN_MAX}d), bump only after audit"
+        else
+          emit "🟢 newer: $latest_tag (${age_days}d old) — cooldown passed, audit the delta then bump pin + tag together"
+        fi
+      fi
+    fi
+  fi
+
+  if [ "$entry_fail" -eq 1 ]; then
+    fail=$((fail + 1)); entry_status="fail"
+  elif [ "$entry_warn" -eq 1 ]; then
+    warn=$((warn + 1)); entry_status="warn"
+  else
+    ok=$((ok + 1)); entry_status="ok"
+  fi
+
+  if [ "$JSON" -eq 1 ]; then
+    notes_json=""
+    if [ ${#ENTRY_NOTES[@]} -gt 0 ]; then
+      for _n in "${ENTRY_NOTES[@]}"; do notes_json="$notes_json,\"$(json_escape "$_n")\""; done
+      notes_json="${notes_json#,}"
+    fi
+    JSON_ENTRIES="$JSON_ENTRIES,{\"name\":\"$(json_escape "$name")\",\"verdict\":\"$(json_escape "$verdict")\",\"pin\":\"$(json_escape "$pin")\",\"url\":\"$(json_escape "$url")\",\"status\":\"$entry_status\",\"notes\":[$notes_json]}"
+  fi
+done
+
+if [ "$JSON" -eq 1 ]; then
+  offline_bool=false; [ "$OFFLINE" -eq 1 ] && offline_bool=true
+  printf '{"manifest":"%s","offline":%s,"totals":{"count":%d,"ok":%d,"warn":%d,"fail":%d},"entries":[%s]}\n' \
+    "$(json_escape "$MANIFEST")" "$offline_bool" "$count" "$ok" "$warn" "$fail" "${JSON_ENTRIES#,}"
+  exit 0
+fi
+
+echo
+echo "── $count entries · $ok ok · $warn warn · $fail fail ──"
+
+exit_code=0
+[ "$fail" -gt 0 ] && exit_code=1
+if [ "$STRICT" -eq 1 ] && [ "$warn" -gt 0 ]; then
+  echo "(--strict: warnings promoted to failures)"
+  exit_code=1
+fi
+exit "$exit_code"

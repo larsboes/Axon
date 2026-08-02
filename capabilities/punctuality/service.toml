@@ -1,0 +1,14 @@
+# punctuality — host process, not a container. Shape: schemas/service.toml.example.
+kind        = "process"
+name        = "punctuality"
+command     = ["bazel-bin/capabilities/punctuality/punctuality-server"]
+build       = ["bazel", "build", "//capabilities/punctuality:punctuality-server"]
+port        = "8085"
+health_path = "/health"
+
+# The aggregate lives in the shared instance (capabilities/postgres) — the contract, not
+# the code (README.md#schemas-and-dependency-direction). Declared so `up` starts the database first.
+requires = ["postgres"]
+
+# No autostart: this answers lookups for transit and the dashboard, both of which are
+# themselves on-demand. The shell starts it when something asks.

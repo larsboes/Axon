@@ -1,0 +1,361 @@
+//! Axon doctrine: this crate is public. No personal value (interest-profile
+//! content, events-directory path, DB location) lives here -- those come
+//! from the private overlay at runtime. Mirrors
+//! `capabilities/printing/printctl.py`'s `_cfg_path()`/`load_cfg()` exactly.
+//! Config is resolved in order:
+//!   1. `$AXON_SCOUTING_CONFIG` (explicit override, full path to a JSON file)
+//!   2. `$AXON_PERSONAL_ROOT/config/scouting.json` (the overlay; exported by
+//!      `tools/lib/paths.sh` / `~/.zshrc`)
+//!   3. `capabilities/scouting/scouting.config.json` next to this crate's
+//!      source (local, gitignored -- dev fallback)
+//! See `scouting.config.example.json` for the shape.
+//!
+//! CLI args always win over whatever this module resolves -- `Config::load()`
+//! only supplies defaults; `main.rs`/`server_main.rs` override individual
+//! fields from `--flag` values where a flag exists for that field.
+
+use crate::axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
+use serde::Deserialize;
+use std::path::PathBuf;
+
+use crate::sources::SourceEntry;
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct FileConfig {
+    interest_profile_dir: Option<String>,
+    events_dir: Option<String>,
+    database_url: Option<String>,
+    opp_embeddings_path: Option<String>,
+    port: Option<u16>,
+    calendar_base_url: Option<String>,
+    home_timezone: Option<String>,
+    #[serde(default)]
+    geo: Option<GeoPolicy>,
+
+    /// Declared opportunity sources (supersedes events_dir/interest_profile_dir).
+    /// Each entry declares an adapter type, location, and what data it provides.
+    #[serde(default)]
+    sources: Vec<SourceEntry>,
+}
+
+/// Where the operator can actually get to.
+///
+/// Country knowledge lives here rather than in Rust: the sources disagree on
+/// spelling (Luma says `"Germany"`, meetup says `"de"`), so the tokens listed
+/// here are matched case-insensitively against whatever the source stored.
+/// Normalising to ISO-2 at ingest would be better and is a separate change --
+/// the field is called `country_code` and holds names, which is its own bug.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct GeoPolicy {
+    /// Country tokens worth travelling to. Empty means the policy is off.
+    #[serde(default)]
+    pub allow_countries: Vec<String>,
+    /// What to do with an opportunity whose country nobody recorded. Defaults
+    /// to letting it through: a third of the store has no country at all, and
+    /// dropping those silently would lose real local meetups to a missing
+    /// field. Being shown something too far away costs a glance; never being
+    /// shown something nearby costs the thing itself.
+    #[serde(default = "default_allow_unknown")]
+    pub allow_unknown: bool,
+    /// IANA timezone prefixes to accept when no country was recorded. Luma
+    /// leaves `geo_address_info` null for some events but still stamps
+    /// `America/New_York`, which answers the only question this policy asks.
+    /// Checked before `allow_unknown` gets to be generous.
+    #[serde(default)]
+    pub allow_timezone_prefixes: Vec<String>,
+}
+
+fn default_allow_unknown() -> bool {
+    true
+}
+
+impl GeoPolicy {
+    /// `None` means allowed; `Some(reason)` is what to tell the operator.
+    ///
+    /// `timezone` is the fallback for the events whose country nobody
+    /// recorded. It is checked *before* `allow_unknown`, so a generous default
+    /// never overrides a signal we actually have.
+    pub fn reject(&self, country: Option<&str>, timezone: Option<&str>) -> Option<String> {
+        if self.allow_countries.is_empty() && self.allow_timezone_prefixes.is_empty() {
+            return None;
+        }
+        let country = country.map(str::trim).filter(|c| !c.is_empty());
+        match country {
+            None => {
+                let zone = timezone.map(str::trim).filter(|z| !z.is_empty());
+                if let Some(zone) = zone {
+                    if !self.allow_timezone_prefixes.is_empty() {
+                        let near = self
+                            .allow_timezone_prefixes
+                            .iter()
+                            .any(|prefix| zone.starts_with(prefix.as_str()));
+                        return if near {
+                            None
+                        } else {
+                            Some(format!("no country recorded, and {zone} is outside the configured reach"))
+                        };
+                    }
+                }
+                if self.allow_unknown {
+                    None
+                } else {
+                    Some("no country recorded".into())
+                }
+            }
+            Some(country) => {
+                let hit = self
+                    .allow_countries
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(country));
+                if hit {
+                    None
+                } else {
+                    Some(format!("{country} is outside the configured reach"))
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// Directory of markdown interest-profile files (was hardcoded
+    /// `{vault_root}/TELOS/Focus`). Created if missing so the tool runs with
+    /// zero config against an empty profile (score.rs degrades gracefully to
+    /// "uncategorized" when no profiles are found).
+    pub interest_profile_dir: PathBuf,
+    /// Directory of existing markdown event notes for the vault-linker to
+    /// cross-reference against (was hardcoded `{vault_root}/Atlas/Events`).
+    /// `None` silently skips vault-linking -- this already works, matching
+    /// `pipeline::run`'s `Option<&Path>` parameter.
+    ///
+    /// Superseded by `sources` entries with `profiles_glob`/`events_glob`
+    /// when the `sources` array is non-empty. Kept for backwards compat
+    /// and zero-config single-source runs.
+    pub events_dir: Option<PathBuf>,
+    /// Postgres connection string in libpq keyword/value form (see
+    /// `axon_config::postgres_conn_from_shared_env` for why never the URL
+    /// form) -- see store.rs. Resolution order: explicit `database_url` in
+    /// `scouting.json` > built from `axon-overlay/config/postgres.env`
+    /// (the shared instance's real values -- `capabilities/postgres`) > a
+    /// localhost dev-default guess.
+    pub database_url: String,
+    /// Optional pre-computed opportunity-embeddings JSON path. Left CLI-arg-only
+    /// (`--opp-embeddings`) per the original design -- hash-fallback embedding
+    /// already works with zero config, so this isn't worth a second config knob.
+    pub opp_embeddings_path: Option<PathBuf>,
+    /// HTTP port for `scout-server` (was the `SCOUTING_PORT` env var).
+    pub port: u16,
+    /// Base URL of `capabilities/calendar` for the Luma → calendar promotion
+    /// (`calendar_promote`). Loopback by default and expected to stay that
+    /// way — calendar binds through `libs/axon-server`'s `serve_local`.
+    pub calendar_base_url: String,
+    /// The operator's home timezone, used to turn Luma's UTC instants into
+    /// the naive local wall time calendar stores. Intentionally has **no
+    /// default**: a wrong-by-an-hour entry is worse than a refused
+    /// promotion, and a timezone is a personal value that belongs in the
+    /// overlay, not in this public crate. See `localtime.rs`.
+    pub home_timezone: Option<String>,
+    /// Which places are close enough to be worth putting in the calendar.
+    /// Absent means no filtering at all, which is the honest default for a
+    /// machine that has not said where it lives.
+    pub geo: Option<GeoPolicy>,
+    /// Declared opportunity sources (resolved manifests from `sources[]` in config).
+    /// When non-empty, supersedes `events_dir`/`interest_profile_dir`.
+    /// Populated by `Config::load()`; empty = legacy single-source mode.
+    pub sources: Vec<crate::sources::SourceManifest>,
+}
+
+fn config_path() -> PathBuf {
+    if let Ok(p) = std::env::var("AXON_SCOUTING_CONFIG") {
+        return expand_tilde(&p);
+    }
+    if let Ok(overlay) = std::env::var("AXON_PERSONAL_ROOT") {
+        return expand_tilde(&overlay).join("config").join("scouting.json");
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scouting.config.json")
+}
+
+/// Redacts the password portion of a connection string for safe display
+/// (error messages, `println!`). Never print `Config::database_url` (or a
+/// `--database-url` value) directly -- unlike the old SQLite file path this
+/// replaced, it's a live credential. Thin wrapper so existing callers keep
+/// their name; the one implementation lives in `axon_config`.
+pub fn redact_database_url(url: &str) -> String {
+    crate::axon_config::redact_dsn(url)
+}
+
+fn load_file_config() -> FileConfig {
+    let path = config_path();
+    if !path.is_file() {
+        return FileConfig::default();
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(body) => serde_json::from_str(&body).unwrap_or_else(|e| {
+            eprintln!("warning: could not parse {path:?}: {e} -- using defaults");
+            FileConfig::default()
+        }),
+        Err(_) => FileConfig::default(),
+    }
+}
+
+impl Config {
+    pub fn load() -> Self {
+        let file = load_file_config();
+
+        let interest_profile_dir = file
+            .interest_profile_dir
+            .map(|p| expand_tilde(&p))
+            .unwrap_or_else(|| {
+                crate::axon_config::overlay_data_dir("scouting")
+                    .map(|d| d.join("interest-profile"))
+                    .unwrap_or_else(|| PathBuf::from("data/interest-profile"))
+            });
+        std::fs::create_dir_all(&interest_profile_dir).ok();
+
+        let events_dir = file
+            .events_dir
+            .map(|p| expand_tilde(&p))
+            .filter(|p| p.exists());
+
+        let database_url = file.database_url.unwrap_or_else(|| {
+            postgres_conn_from_shared_env()
+                .unwrap_or_else(|| "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into())
+        });
+
+        let opp_embeddings_path = file.opp_embeddings_path.map(|p| expand_tilde(&p));
+        // Port contract lives in axon_config::resolve_port. The default is 8084,
+        // not 8080: vaultwarden's manifest publishes 8080 on the host, and two
+        // capabilities shipping the same default port is a collision waiting on
+        // whoever starts both — which is exactly what happened the first time
+        // the runner brought the whole enabled set up.
+        let port = resolve_port(None, file.port, 8084);
+
+        let sources: Vec<crate::sources::SourceManifest> = file.sources.iter()
+            .map(|s| s.resolve())
+            .collect();
+
+        Self {
+            interest_profile_dir,
+            events_dir,
+            database_url,
+            opp_embeddings_path,
+            port,
+            calendar_base_url: file
+                .calendar_base_url
+                .unwrap_or_else(|| crate::calendar_promote::DEFAULT_CALENDAR_BASE_URL.to_string()),
+            home_timezone: file.home_timezone.filter(|tz| !tz.trim().is_empty()),
+            geo: file.geo,
+            sources,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GeoPolicy;
+
+    fn policy() -> GeoPolicy {
+        GeoPolicy {
+            allow_countries: vec!["Germany".into(), "de".into(), "Netherlands".into()],
+            allow_unknown: true,
+            allow_timezone_prefixes: vec!["Europe/".into()],
+        }
+    }
+
+    #[test]
+    fn a_country_the_sources_spell_differently_still_matches() {
+        // Luma writes "Germany", meetup writes "de", and neither is wrong.
+        assert!(policy().reject(Some("Germany"), None).is_none());
+        assert!(policy().reject(Some("de"), None).is_none());
+        assert!(policy().reject(Some("DE"), None).is_none());
+    }
+
+    #[test]
+    fn somewhere_you_cannot_get_to_is_rejected_with_a_reason() {
+        let reason = policy().reject(Some("Canada"), None).expect("rejected");
+        assert!(reason.contains("Canada"), "the operator has to be told which country: {reason}");
+    }
+
+    /// The Atlanta case: Luma left geo_address_info null, so the country is
+    /// missing, but the event still carries America/New_York.
+    #[test]
+    fn a_timezone_answers_when_the_country_is_missing() {
+        let reason = policy()
+            .reject(None, Some("America/New_York"))
+            .expect("rejected on the zone");
+        assert!(reason.contains("America/New_York"));
+        assert!(policy().reject(None, Some("Europe/Berlin")).is_none());
+    }
+
+    /// Generosity must not override a signal we actually have.
+    #[test]
+    fn allow_unknown_does_not_rescue_a_far_away_timezone() {
+        let mut generous = policy();
+        generous.allow_unknown = true;
+        assert!(generous.reject(None, Some("Asia/Taipei")).is_some());
+    }
+
+    #[test]
+    fn nothing_recorded_at_all_is_let_through_by_default() {
+        assert!(policy().reject(None, None).is_none());
+    }
+
+    #[test]
+    fn an_empty_policy_filters_nothing() {
+        let off = GeoPolicy {
+            allow_countries: vec![],
+            allow_unknown: false,
+            allow_timezone_prefixes: vec![],
+        };
+        assert!(off.reject(Some("Canada"), Some("America/New_York")).is_none());
+    }
+
+    use super::*;
+
+    #[test]
+    fn redact_database_url_hides_password_only() {
+        assert_eq!(
+            redact_database_url("postgresql://axon:s3cr3t@127.0.0.1:5432/axon"),
+            "postgresql://axon:***@127.0.0.1:5432/axon"
+        );
+        // No '@'/no recognizable creds segment -- returned as-is rather than mangled.
+        assert_eq!(redact_database_url("not-a-url"), "not-a-url");
+    }
+
+    /// Restores an env var on drop. Rust runs a crate's tests as threads of ONE
+    /// process, so `remove_var` here is not local to this test: unrestored, it
+    /// left every later store test resolving the fallback connection string
+    /// instead of the overlay's real one, and they failed against a perfectly
+    /// healthy Postgres.
+    struct EnvGuard(&'static str, Option<String>);
+
+    impl EnvGuard {
+        fn take(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self(key, previous)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.1.take() {
+                Some(v) => std::env::set_var(self.0, v),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+
+    #[test]
+    fn load_with_no_env_and_no_file_uses_defaults() {
+        // Clear the overlay/override env vars so this test exercises the
+        // "zero config" path deterministically regardless of the host's env.
+        let _config = EnvGuard::take("AXON_SCOUTING_CONFIG");
+        let _overlay = EnvGuard::take("AXON_PERSONAL_ROOT");
+        let _port = EnvGuard::take("AXON_PORT");
+        let cfg = Config::load();
+        assert_eq!(cfg.port, 8084);
+        assert!(cfg.events_dir.is_none());
+    }
+}

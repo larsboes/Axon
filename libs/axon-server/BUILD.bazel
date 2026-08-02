@@ -1,0 +1,39 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# README.md is otherwise private to this package -- exported so the root
+# //:architecture_up_to_date_test can reference it across the package boundary.
+# src/lib.rs is exported because consumers compile it in by `#[path]` include
+# (see the file's own header: the splicer flattens listed manifests, which
+# breaks ../../libs path dependencies -- and the include also gives every
+# consumer an axon_server compiled against its own crate universe's axum,
+# which is what keeps the Router type compatible per consumer).
+exports_files(["README.md", "Cargo.toml", "src/lib.rs"])
+
+# Standalone build of the shared source, compiled against scouting+transit's
+# universe purely so the crate's own test target has an axum to link -- the
+# real consumers never depend on this target, they include the source file.
+rust_library(
+    name = "axon-server",
+    crate_name = "axon_server",
+    crate_root = "src/lib.rs",
+    # Globbed rather than listed — see capabilities/scouting/BUILD.bazel (Axon#13). The
+    # //libs/axon-config source stays explicit: a glob cannot cross a package boundary, and
+    # its presence is exactly why crate_root above is not optional.
+    srcs = glob(["src/**/*.rs"]) + [
+        "//libs/axon-config:src/lib.rs",
+    ],
+    # See Cargo.toml: the test mod runs standalone only.
+    crate_features = ["standalone-tests"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index//:axum",
+        "@crate_index//:tokio",
+    ],
+)
+
+rust_test(
+    name = "axon_server_test",
+    crate = ":axon-server",
+    size = "small",
+)

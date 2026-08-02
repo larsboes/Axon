@@ -1,0 +1,5 @@
+# See schemas/pack.toml.example for the field reference.
+name        = "writing"
+description = "Write for readers and for agents: human-voiced prose with a CI-gateable tell linter, and Claude agent skills authored to Anthropic + agentskills.io spec."
+skills      = ["writing-skills", "human-writing"]
+license     = "MIT"

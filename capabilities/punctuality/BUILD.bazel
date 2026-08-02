@@ -1,0 +1,71 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# README.md is otherwise private to this package -- exported so the root
+# //:architecture_up_to_date_test can reference it across the package boundary.
+exports_files(["README.md", "Cargo.toml", "Cargo.lock", "service.toml"])
+
+rust_library(
+    name = "punctuality_lib",
+    crate_name = "punctuality",
+    crate_root = "src/lib.rs",
+    # Globbed rather than listed — see capabilities/scouting/BUILD.bazel for why the
+    # hand-maintained inventory was the drift risk (Axon#13). Binary roots excluded because
+    # they are their own crates; the //libs source stays explicit because a glob cannot
+    # cross a package boundary.
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]) + [
+        "//libs/axon-config:src/lib.rs",
+    ],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index_punctuality//:arrow",
+        "@crate_index_punctuality//:parquet",
+        "@crate_index_punctuality//:postgres",
+        "@crate_index_punctuality//:reqwest",
+        "@crate_index_punctuality//:serde",
+        "@crate_index_punctuality//:thiserror",
+    ],
+)
+
+# The same #[cfg(test)] modules `cargo test` runs: histogram arithmetic, the local-clock
+# derivation, release-name parsing, DSN redaction, EVA normalization. All pure -- nothing
+# here needs Postgres or the network, which is what keeps it runnable in Bazel's sandbox
+# (unlike scouting/transit/comms, whose store tests need the live database).
+rust_test(
+    name = "punctuality_test",
+    crate = ":punctuality_lib",
+    size = "small",
+)
+
+# punctuality-cli, not punctuality: capabilities/punctuality/punctuality is the shell
+# entry point on PATH, and a target with that name would collide with the file inside
+# this package. Same reason capabilities/comms names its binary comms-cli.
+rust_binary(
+    name = "punctuality-cli",
+    srcs = ["src/main.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":punctuality_lib",
+        "@crate_index_punctuality//:reqwest",
+    ],
+)
+
+# punctuality-server: the contract capabilities/transit reads this through (README.md#schemas-and-dependency-direction --
+# a capability depends on another's HTTP surface, never its code). Async only here; the
+# library and CLI stay sync, same split transit makes.
+rust_binary(
+    name = "punctuality-server",
+    crate_root = "src/server.rs",
+    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs", "//libs/axon-config:src/lib.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":punctuality_lib",
+        "@crate_index_punctuality//:axum",
+        "@crate_index_punctuality//:serde",
+        "@crate_index_punctuality//:serde_json",
+        "@crate_index_punctuality//:tokio",
+        "@crate_index_punctuality//:tower-http",
+    ],
+)
