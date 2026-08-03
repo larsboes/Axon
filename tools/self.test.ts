@@ -13,6 +13,7 @@ import {
   classifyPath,
   couplingFromBazel,
   couplingFromRustPath,
+  generateWouldDropCode,
   mergeCoupling,
   rollUp,
   unitForPath,
@@ -264,5 +265,28 @@ describe("mergeCoupling", () => {
       "comms->axon-server",
       "trips->axon-server",
     ]);
+  });
+});
+
+describe("generateWouldDropCode — the artifact must not be regenerated blind", () => {
+  const withCode = [{ name: "comms", code: { files: 3, nodes: 40 } }, { name: "pihole" }];
+  const withoutCode = [{ name: "comms" }, { name: "pihole" }];
+
+  test("no graph, but the committed file has a code layer — refuse", () => {
+    expect(generateWouldDropCode(false, withCode)).toBe(true);
+  });
+
+  test("a graph is present — nothing is at risk", () => {
+    expect(generateWouldDropCode(true, withCode)).toBe(false);
+  });
+
+  // A first generate on a machine that has never built the graph must still work; there is no
+  // layer to lose. Without this the guard would make the artifact impossible to create.
+  test("no graph and nothing committed yet — allow", () => {
+    expect(generateWouldDropCode(false, null)).toBe(false);
+  });
+
+  test("no graph and a committed file that never had counts — allow", () => {
+    expect(generateWouldDropCode(false, withoutCode)).toBe(false);
   });
 });

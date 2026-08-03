@@ -37,6 +37,7 @@ import { resolve } from "node:path";
 import {
   couplingFromBazel,
   couplingFromRustPath,
+  generateWouldDropCode,
   mergeCoupling,
   rollUp,
   type SourceCoupling,
@@ -332,7 +333,24 @@ if (args.includes("-h") || args.includes("--help")) {
 }
 
 if (cmd === "generate") {
-  const out = serialize(build());
+  const fresh = build();
+  // Refuse rather than write a gutted artifact. The `code` layer is derived from
+  // graphify-out/graph.json, which is git-ignored and machine-local; on a fresh clone or any
+  // machine that has not run the graph, every unit's counts are simply absent. Writing that out
+  // silently removed 181 lines from the committed file, and `tools/self check` would then pass on
+  // the result for exactly the same reason it narrows its claim -- so nothing downstream objects
+  // (#35). Carrying the committed numbers forward instead is not an option: they would describe a
+  // tree that no longer exists, which is a different lie.
+  const committed = loadCommitted();
+  if (generateWouldDropCode(fresh.graph.present, committed?.units ?? null)) {
+    console.error(
+      "self.json carries per-unit code counts, and there is no code graph here to reproduce them.",
+    );
+    console.error("Writing now would drop that layer for everyone. Build the graph first:");
+    console.error("  tools/graphify.sh        (or: bazel run //:graphify)");
+    process.exit(1);
+  }
+  const out = serialize(fresh);
   await Bun.write(SELF_JSON, out);
   console.log(`wrote ${SELF_JSON} (${out.length} bytes)`);
   process.exit(0);
