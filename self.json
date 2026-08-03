@@ -640,7 +640,7 @@
     {
       "name": "bitwarden-cli",
       "verdict": "adopt",
-      "pin": "cli-v2026.6.0"
+      "pin": "cli-v2026.7.0"
     },
     {
       "name": "bottom",
@@ -895,7 +895,7 @@
     {
       "name": "typst",
       "verdict": "adopt",
-      "pin": "0.15.0"
+      "pin": "0.15.1"
     },
     {
       "name": "vaultwarden",
