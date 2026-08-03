@@ -486,9 +486,14 @@ fn enrich_many_in_background(ids: Vec<String>) {
             .filter_map(|id| store.get_feed(id).ok().flatten())
             .collect::<Vec<_>>();
         let profiles = relevance::load_profiles(&cfg.relevance);
+        let embedding_role = cfg.embedding_role();
+        let embedding_producer = embedding_role.as_ref().map(|role| role.cache_key());
         let travel_context = travel::load(&store, &cfg.travel_context);
-        let context_revision =
-            evaluation::context_revision(&profiles, &cfg.relevance, &travel_context.revision);
+        let context_revision = evaluation::context_revision(
+            &profiles,
+            embedding_producer.as_deref(),
+            &travel_context.revision,
+        );
         items.retain(|item| {
             let item_revision = evaluation::item_revision(item);
             let stored = store.feed_evaluation(&item.id).ok().flatten();
@@ -497,7 +502,7 @@ fn enrich_many_in_background(ids: Vec<String>) {
         if items.is_empty() {
             return;
         }
-        let scored = relevance::score_items(&items, &profiles, &cfg.relevance);
+        let scored = relevance::score_items(&items, &profiles, embedding_role.as_ref());
         for (item, result) in items.iter().zip(scored) {
             if let Err(error) = store.replace_feed_relevance(&item.id, &result.matches) {
                 eprintln!("ingest: relevance failed for {}: {error}", item.id);
@@ -595,9 +600,14 @@ async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> (StatusCode
             items.retain(|item| ids.contains(&item.id));
         }
         let profiles = relevance::load_profiles(&cfg.relevance);
+        let embedding_role = cfg.embedding_role();
+        let embedding_producer = embedding_role.as_ref().map(|role| role.cache_key());
         let travel_context = travel::load(&store, &cfg.travel_context);
-        let context_revision =
-            evaluation::context_revision(&profiles, &cfg.relevance, &travel_context.revision);
+        let context_revision = evaluation::context_revision(
+            &profiles,
+            embedding_producer.as_deref(),
+            &travel_context.revision,
+        );
         let considered = items.len();
         if !body.force.unwrap_or(false) {
             items.retain(|item| {
@@ -610,7 +620,7 @@ async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> (StatusCode
                 )
             });
         }
-        let scored = relevance::score_items(&items, &profiles, &cfg.relevance);
+        let scored = relevance::score_items(&items, &profiles, embedding_role.as_ref());
         for (source, item) in items.iter().zip(&scored) {
             store
                 .replace_feed_relevance(&item.feed_id, &item.matches)
@@ -668,6 +678,9 @@ async fn evaluation_status_handler() -> (StatusCode, Json<Value>) {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
         let profiles = relevance::load_profiles(&cfg.relevance);
+        let embedding_role = cfg.embedding_role();
+        let embedding_producer = embedding_role.as_ref().map(|role| role.cache_key());
+        let summarization_role = cfg.summarization_role();
         let travel_context = travel::cached(&store);
         let travel_revision = travel_context
             .as_ref()
@@ -683,10 +696,15 @@ async fn evaluation_status_handler() -> (StatusCode, Json<Value>) {
             .feed_content_status_counts()
             .map_err(|error| error.to_string())?;
         let summarizer_reachable = media::summarizer_reachable(&cfg);
-        let relevance_reachable = relevance::embedding_backend_reachable(&cfg.relevance);
+        let relevance_reachable =
+            relevance::embedding_backend_reachable(embedding_role.as_ref());
         Ok(json!({
             "evaluator_revision": evaluation::EVALUATOR_REVISION,
-            "context_revision": evaluation::context_revision(&profiles, &cfg.relevance, travel_revision),
+            "context_revision": evaluation::context_revision(
+                &profiles,
+                embedding_producer.as_deref(),
+                travel_revision,
+            ),
             "ledger": {
                 "evaluated": summary.evaluated,
                 "semantic": summary.semantic,
@@ -694,9 +712,15 @@ async fn evaluation_status_handler() -> (StatusCode, Json<Value>) {
                 "unscored": summary.unscored,
             },
             "summarizer": {
-                "provider": "OpenAI-compatible local endpoint",
-                "model": cfg.summarizer.model,
-                "configured": !cfg.summarizer.base_url.trim().is_empty(),
+                "provider": summarization_role
+                    .as_ref()
+                    .map(|role| role.provider_label())
+                    .unwrap_or("No summarization role configured"),
+                "model": summarization_role
+                    .as_ref()
+                    .map(|role| role.model.as_str())
+                    .unwrap_or(""),
+                "configured": summarization_role.is_some(),
                 "reachable": summarizer_reachable,
             },
             "enrichment": {
@@ -710,9 +734,12 @@ async fn evaluation_status_handler() -> (StatusCode, Json<Value>) {
                 },
             },
             "relevance": {
-                "provider": relevance::embedding_provider_label(&cfg.relevance),
-                "model": cfg.relevance.model,
-                "configured": relevance::embedding_backend_configured(&cfg.relevance),
+                "provider": relevance::embedding_provider_label(embedding_role.as_ref()),
+                "model": embedding_role
+                    .as_ref()
+                    .map(|role| role.model.as_str())
+                    .unwrap_or(""),
+                "configured": relevance::embedding_backend_configured(embedding_role.as_ref()),
                 "reachable": relevance_reachable,
                 "profile_count": profiles.len(),
                 "active_mode": if relevance_reachable { "semantic" } else { "lexical" },
@@ -1068,7 +1095,7 @@ fn spawn_enrichment_drain(every_minutes: u64) {
                     // is about. Staying quiet here would rebuild the silence
                     // the ledger was supposed to end.
                     Ok(_) if before.pending_summaries > 0 => eprintln!(
-                        "enrichment drain: {} pending, {} failed, none summarized — summarizer unreachable or unconfigured (see summarizer.base_url)",
+                        "enrichment drain: {} pending, {} failed, none summarized — the 'summarization' inference role is unreachable or unconfigured",
                         before.pending_summaries, before.failed_summaries
                     ),
                     Ok(_) => {}

@@ -39,9 +39,11 @@ anywhere, and moving between them is a config edit rather than a code change.
 
 ## Implementation
 
-`src/lib.rs` serves the Rust capabilities that need model roles (scouting today). It reads
+`src/lib.rs` serves the Rust capabilities that need model roles (Scouting and Comms today). It reads
 `inference.json`, honours the backend override, and resolves bearer keys from the referenced
-private file. Consumers receive a resolved role without hardcoding a URL or model.
+private file. Consumers receive a resolved role without hardcoding a URL or model. Comms also
+uses the resolved role for model readiness, mixed query/document embedding batches and
+OpenAI-compatible chat completion routing.
 
 ## Config
 

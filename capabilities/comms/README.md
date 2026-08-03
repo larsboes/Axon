@@ -93,11 +93,14 @@ one safetensors weight shard. It replaced the 253 MB E5-small baseline only afte
 model passed the same frozen DE/EN corpus that small failed; both decisions and exact pins are
 recorded in `upstreams.toml`.
 
-`relevance.provider` makes that protocol choice explicit:
+The shared `inference.json` makes that protocol choice explicit. Comms asks for
+the `embedding` and `summarization` roles; backend URLs, model IDs, role prefixes
+and key-file references are declared once there rather than repeated in
+`comms.json`:
 
 - `openai` is the preferred path. It posts one revision-cached batch to
   `{base_url}/embeddings`, restores the response by its declared indexes and may use the same
-  `api_key_file` as the summarizer. Optional `query_prefix` and `document_prefix` fields express
+  backend key reference as the summarizer. The role's `query_prefix` and `document_prefix` express
   retrieval-model roles without coupling Comms to E5; the documented candidate uses `query: `
   for TELOS lenses and `passage: ` for feed items.
 - `ollama` remains a migration and compatibility path for installations that already have an
@@ -108,10 +111,9 @@ recorded in `upstreams.toml`.
 - An unknown, unavailable or incomplete provider fails to the labeled lexical path. It never
   silently presents a heuristic score as semantic.
 
-Provider and model ID are part of the evaluation context revision. Changing vector spaces or
-either input-role prefix therefore invalidates the right ledger rows on the next normal
-refresh. Endpoint location and secret-file location are deployment details and do not affect
-the semantic revision. Relevance input is capped at 1,800 characters, and a stored summary
+The resolved embedding role's cache key is part of the evaluation context revision. Changing
+the producing backend or model therefore invalidates the right ledger rows on the next normal
+refresh. Relevance input is capped at 1,800 characters, and a stored summary
 replaces rather than duplicates the raw transcript; this fits the selected model's 512-token
 window without spending local compute on text it would truncate.
 
@@ -206,9 +208,9 @@ configured, refusing to overwrite an existing file.
 
 Media ingest shells out to `yt-dlp` (metadata + subtitles) via argument arrays
 only, downloads subtitles into a temp dir that is always removed, and never
-persists raw audio/video. Summaries come from an OpenAI-compatible
-chat-completions server (oMLX / LM Studio / ollama's `/v1`); if the summarizer is
-unreachable the ingest still succeeds with `summary` left null (fill it later
+persists raw audio/video. Summaries come from the shared `summarization`
+inference role through an OpenAI-compatible chat-completions endpoint; if the
+role is absent or unreachable the ingest still succeeds with `summary` left null (fill it later
 with `comms summarize --pending`).
 
 ## Extractors
@@ -302,12 +304,8 @@ Every field is optional; the tool runs zero-config against the shared local
 Postgres with only the built-in classification heuristics. Fields:
 `database_url` (unset → built from `axon-overlay/config/postgres.env`),
 `google_env_path` (default `$AXON_PERSONAL_ROOT/config/comms.env`), `port`,
-`summarizer {base_url, model, api_key_file}` (OpenAI-compatible; `api_key_file`
-is a path whose content is read at call time — `.auth.api_key` if it's JSON, else
-the raw trimmed key — and never logged),
-`relevance {profile_paths, provider, base_url, model, query_prefix, document_prefix,
-api_key_file}` (`openai` for the preferred oMLX `/v1/embeddings`; `ollama` for the
-compatibility `/api/embed` path). A profile note may define a single-line `relevance_query` in
+`relevance {profile_paths}`. Model roles come from the overlay's shared
+`inference.json`; see `libs/inference/inference.config.example.json`. A profile note may define a single-line `relevance_query` in
 its frontmatter; this is the inspectable embedding input and changes that profile's revision,
 while `summary`, `current_focus` and `category_affinity` remain reader-facing metadata,
 `vault_link_sources[] {id, path, heading?, enabled}`,

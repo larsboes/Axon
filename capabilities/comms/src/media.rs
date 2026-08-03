@@ -1005,11 +1005,6 @@ pub fn ingest(url: &str, cfg: &Config) -> Result<FeedItem> {
     Ok(item)
 }
 
-/// Resolve the summarizer's secret reference through the shared config helper.
-fn resolve_api_key(cfg: &crate::config::SummarizerConfig) -> Option<String> {
-    crate::config::api_key_from_file(cfg.api_key_file.as_deref())
-}
-
 /// Cap the text handed to the summarizer (a 1h transcript is 100k+ chars; the
 /// local model's context is finite). Appends a `…[gekürzt]` marker when cut.
 /// The full transcript is still stored in the DB unchanged.
@@ -1027,9 +1022,10 @@ fn truncate_for_summary(text: &str, cap: usize) -> String {
 /// distinguish "not configured" from "server down" from "empty response" and
 /// record the failure class for bounded retry.
 pub fn summarize(text: &str, cfg: &Config) -> SummarizeOutcome {
-    if cfg.summarizer.base_url.trim().is_empty() {
-        return SummarizeOutcome::Unconfigured;
-    }
+    let role = match cfg.summarization_role() {
+        Some(role) => role,
+        None => return SummarizeOutcome::Unconfigured,
+    };
     let input = truncate_for_summary(text, SUMMARY_INPUT_CAP);
     let prompt = format!(
         "Fasse den folgenden Inhalt als kompaktes Destillat zusammen. Gib zuerst die \
@@ -1045,14 +1041,14 @@ pub fn summarize(text: &str, cfg: &Config) -> SummarizeOutcome {
         Err(e) => return SummarizeOutcome::HttpError(e.to_string()),
     };
     let mut req = http
-        .post(format!("{}/chat/completions", cfg.summarizer.base_url))
+        .post(role.chat_completions_endpoint())
         .json(&serde_json::json!({
-            "model": cfg.summarizer.model,
+            "model": role.model,
             "messages": [{ "role": "user", "content": prompt }],
             "max_tokens": 800,
             "stream": false,
         }));
-    if let Some(key) = resolve_api_key(&cfg.summarizer) {
+    if let Some(key) = role.bearer_key() {
         req = req.bearer_auth(key);
     }
     let resp = match req.send() {
@@ -1085,24 +1081,9 @@ pub fn summarize(text: &str, cfg: &Config) -> SummarizeOutcome {
 /// Cheap readiness probe for the configured OpenAI-compatible summarizer.
 /// `/models` does not trigger a generation or load a model into memory.
 pub fn summarizer_reachable(cfg: &Config) -> bool {
-    if cfg.summarizer.base_url.trim().is_empty() {
-        return false;
-    }
-    let http = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return false,
-    };
-    let mut request = http.get(format!(
-        "{}/models",
-        cfg.summarizer.base_url.trim_end_matches('/')
-    ));
-    if let Some(key) = resolve_api_key(&cfg.summarizer) {
-        request = request.bearer_auth(key);
-    }
-    request.send().is_ok_and(|response| response.status().is_success())
+    cfg.summarization_role()
+        .as_ref()
+        .is_some_and(crate::inference::ResolvedRole::model_reachable)
 }
 
 /// Summarize one stored item, if it has a transcript and no summary yet.
@@ -1346,49 +1327,6 @@ mod tests {
         let text = extract_visible_text(html);
         assert!(text.contains("Hello world"), "got: {text}");
         assert!(!text.contains("bad()"), "script body must be dropped");
-    }
-
-    fn write_temp(name: &str, content: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("comms-apikey-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("key");
-        std::fs::write(&p, content).unwrap();
-        p
-    }
-
-    fn cfg_with_key_file(path: &std::path::Path) -> crate::config::SummarizerConfig {
-        crate::config::SummarizerConfig {
-            api_key_file: Some(path.to_string_lossy().into_owned()),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn resolve_api_key_from_json_auth_field() {
-        let p = write_temp("json", "{\"auth\": {\"api_key\": \"sk-secret-123\"}, \"other\": 1}");
-        assert_eq!(resolve_api_key(&cfg_with_key_file(&p)).as_deref(), Some("sk-secret-123"));
-        let _ = std::fs::remove_file(&p);
-    }
-
-    #[test]
-    fn resolve_api_key_from_raw_content() {
-        let p = write_temp("raw", "  sk-raw-key-abc\n");
-        assert_eq!(resolve_api_key(&cfg_with_key_file(&p)).as_deref(), Some("sk-raw-key-abc"));
-        let _ = std::fs::remove_file(&p);
-    }
-
-    #[test]
-    fn resolve_api_key_none_when_unset_or_empty() {
-        // No file configured.
-        assert!(resolve_api_key(&crate::config::SummarizerConfig::default()).is_none());
-        // Empty file.
-        let p = write_temp("empty", "   \n");
-        assert!(resolve_api_key(&cfg_with_key_file(&p)).is_none());
-        // JSON without auth.api_key -> None (no raw fallback for JSON).
-        let p2 = write_temp("json-no-key", "{\"auth\": {}}");
-        assert!(resolve_api_key(&cfg_with_key_file(&p2)).is_none());
-        let _ = std::fs::remove_file(&p);
-        let _ = std::fs::remove_file(&p2);
     }
 
     #[test]

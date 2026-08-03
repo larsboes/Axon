@@ -19,25 +19,13 @@
   "_comment_enrichment_drain_minutes": "How often comms-server drains the summary backlog, in minutes (default 15). Ingest-triggered enrichment only reaches items that arrive while the inference server is up; without this pass, items ingested during an outage stay empty until someone runs `comms summarize --pending` by hand. The retry ledger bounds it: three failed attempts with exponential backoff, each failure recording its error class. Set 0 to disable when something else owns the schedule.",
   "enrichment_drain_minutes": 15,
 
-  "_comment_summarizer": "Summarizer for media ingest. Any OpenAI-compatible chat-completions server works (oMLX, LM Studio, ollama's /v1). comms POSTs {base_url}/chat/completions. Empty base_url disables summarization (ingest still succeeds, summary stays null). api_key_file: path to a file with the API key — if it parses as JSON the key is read from .auth.api_key, otherwise the trimmed file content is the raw key; unset means no Authorization header. Never put the key value itself in this file.",
-  "summarizer": {
-    "base_url": "http://127.0.0.1:8000/v1",
-    "model": "your-model-id",
-    "api_key_file": ""
-  },
-
   "_comment_keeper_export_dir": "Optional directory. When set, `comms keep <id>` also writes a distilled markdown note (title, url, date, summary — never the raw transcript). Leave unset to disable export.",
   "keeper_export_dir": "",
 
-  "_comment_relevance": "General Feed personalization. profile_paths accepts exact Markdown files or non-recursive directories of focus lenses. provider=openai uses the same authenticated oMLX server as the summarizer through /v1/embeddings; provider=ollama keeps compatibility with /api/embed and requests immediate unload after each revision-cached batch. query_prefix/document_prefix are model input roles, not provider behavior; multilingual E5 requires the values shown. If unavailable, Comms stores an explicitly labeled lexical score instead of pretending it is semantic. api_key_file follows the summarizer contract.",
+  "_comment_inference": "Comms asks the shared inference.json for the 'summarization' and 'embedding' roles. Backend URLs, model ids, prefixes and key-file references belong in <overlay>/config/inference.json, never here. Missing roles degrade to pending summaries and explicitly labelled lexical relevance.",
+  "_comment_relevance": "General Feed personalization. profile_paths accepts exact Markdown files or non-recursive directories of focus lenses. The embedding backend comes from the shared 'embedding' inference role.",
   "relevance": {
-    "profile_paths": [],
-    "provider": "openai",
-    "base_url": "http://127.0.0.1:8000/v1",
-    "model": "multilingual-e5-base-mlx",
-    "query_prefix": "query: ",
-    "document_prefix": "passage: ",
-    "api_key_file": "~/.omlx/settings.json"
+    "profile_paths": []
   },
 
   "_comment_travel_context": "Optional read-only Trips context for Feed ranking. Comms reads the existing Trips HTTP API, retains only a bounded snapshot of upcoming plan title, destinations, dates and interests, and keeps using the last successful snapshot during a temporary outage. Traveler names and itinerary payloads are not copied.",

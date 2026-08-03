@@ -16,6 +16,12 @@
 #[allow(dead_code)]
 pub(crate) mod axon_config;
 
+// Shared model-role resolution. Comms owns Feed behavior; libs/inference owns
+// which backend and model perform embedding or summarization on this machine.
+#[path = "../../../libs/inference/src/lib.rs"]
+#[allow(dead_code)]
+pub(crate) mod inference;
+
 pub mod config;
 pub mod evaluation;
 pub mod google;

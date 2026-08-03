@@ -43,6 +43,7 @@ rust_library(
     # boundary.
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]) + [
         "//libs/axon-config:src/lib.rs",
+        "//libs/inference:src/lib.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],

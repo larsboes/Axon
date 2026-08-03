@@ -12,31 +12,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use crate::rules::Rule;
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct SummarizerConfig {
-    /// Base URL of an OpenAI-compatible server (oMLX, LM Studio, ollama's /v1,
-    /// etc). media.rs POSTs `{base_url}/chat/completions`. Empty disables
-    /// summarization (ingest still succeeds, summary stays None).
-    pub base_url: String,
-    pub model: String,
-    /// Path to a file holding the API key (tilde-expanded). If its content
-    /// parses as JSON, `.auth.api_key` is used; otherwise the trimmed content is
-    /// the raw key. Unset -> no Authorization header. The key value itself is
-    /// never stored in config nor logged.
-    pub api_key_file: Option<String>,
-}
-
-impl Default for SummarizerConfig {
-    fn default() -> Self {
-        Self {
-            base_url: "http://127.0.0.1:8000/v1".into(),
-            model: "mlx-community/gemma-4-26b-a4b-it-4bit".into(),
-            api_key_file: None,
-        }
-    }
-}
+use crate::inference::{InferenceConfig, ResolvedRole};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -44,36 +20,12 @@ pub struct RelevanceConfig {
     /// Exact Markdown files or non-recursive directories containing TELOS
     /// focus lenses. Personal paths belong in the private overlay.
     pub profile_paths: Vec<String>,
-    /// Embedding API shape: `openai` for oMLX `/v1/embeddings`, or `ollama`
-    /// for Ollama `/api/embed`. The latter remains a compatibility path.
-    pub provider: String,
-    /// Base URL for the selected provider. Both profiles and feed items are
-    /// embedded in one request; an unavailable endpoint uses the labeled
-    /// lexical fallback in relevance.rs.
-    pub base_url: String,
-    pub model: String,
-    /// Optional model input roles. Retrieval models such as multilingual E5
-    /// require different prefixes for the focus lens and candidate document;
-    /// keeping them in config avoids baking one model family into Comms.
-    pub query_prefix: String,
-    pub document_prefix: String,
-    /// Same secret-reference contract as the summarizer. oMLX can reuse its
-    /// settings JSON because api_key_from_file reads `.auth.api_key`.
-    pub api_key_file: Option<String>,
 }
 
 impl Default for RelevanceConfig {
     fn default() -> Self {
         Self {
             profile_paths: Vec::new(),
-            // Preserve existing overlays that predate `provider`; the public
-            // template recommends the unified oMLX path for new deployments.
-            provider: "ollama".into(),
-            base_url: "http://127.0.0.1:11434".into(),
-            model: "nomic-embed-text".into(),
-            query_prefix: String::new(),
-            document_prefix: String::new(),
-            api_key_file: None,
         }
     }
 }
@@ -188,7 +140,6 @@ struct FileConfig {
     api_secret_file: Option<String>,
     dashboard_origin: Option<String>,
     enrichment_drain_minutes: Option<u64>,
-    summarizer: Option<SummarizerConfig>,
     #[serde(default)]
     rules: Vec<Rule>,
     keeper_export_dir: Option<String>,
@@ -221,7 +172,9 @@ pub struct Config {
     /// ingested while the inference server was unreachable stay empty forever —
     /// that is how 36 of 39 items ended up without a summary (#74).
     pub enrichment_drain_minutes: u64,
-    pub summarizer: SummarizerConfig,
+    /// Shared, machine-resolved inference roles. Backend URLs, models and key
+    /// references never belong to Comms configuration.
+    pub inference: InferenceConfig,
     /// Config-driven classification rules (first match wins, before built-in
     /// heuristics). Empty = built-in heuristics only.
     pub rules: Vec<Rule>,
@@ -330,7 +283,7 @@ impl Config {
             .dashboard_origin
             .unwrap_or_else(|| "http://127.0.0.1:47117".into());
         let enrichment_drain_minutes = file.enrichment_drain_minutes.unwrap_or(15);
-        let summarizer = file.summarizer.unwrap_or_default();
+        let inference = InferenceConfig::load(crate::axon_config::overlay_config);
         let keeper_export_dir = file.keeper_export_dir.map(|p| expand_tilde(&p));
         let mut relevance = file.relevance.unwrap_or_default();
         relevance.profile_paths = relevance
@@ -356,7 +309,7 @@ impl Config {
             api_secret,
             dashboard_origin,
             enrichment_drain_minutes,
-            summarizer,
+            inference,
             rules: file.rules,
             keeper_export_dir,
             relevance,
@@ -364,6 +317,14 @@ impl Config {
             vault_link_sources,
             feed_sources,
         }
+    }
+
+    pub fn embedding_role(&self) -> Option<ResolvedRole> {
+        self.inference.role("embedding")
+    }
+
+    pub fn summarization_role(&self) -> Option<ResolvedRole> {
+        self.inference.role("summarization")
     }
 }
 
@@ -402,22 +363,9 @@ mod tests {
     }
 
     #[test]
-    fn summarizer_defaults_are_openai_compatible() {
-        let s = SummarizerConfig::default();
-        assert_eq!(s.base_url, "http://127.0.0.1:8000/v1");
-        assert_eq!(s.model, "mlx-community/gemma-4-26b-a4b-it-4bit");
-        assert!(s.api_key_file.is_none());
-    }
-
-    #[test]
-    fn relevance_defaults_preserve_ollama_compatibility() {
+    fn relevance_config_only_owns_profile_paths() {
         let relevance = RelevanceConfig::default();
-        assert_eq!(relevance.provider, "ollama");
-        assert_eq!(relevance.base_url, "http://127.0.0.1:11434");
-        assert_eq!(relevance.model, "nomic-embed-text");
-        assert!(relevance.query_prefix.is_empty());
-        assert!(relevance.document_prefix.is_empty());
-        assert!(relevance.api_key_file.is_none());
+        assert!(relevance.profile_paths.is_empty());
     }
 
     /// Restores an env var on drop. Rust runs a crate's tests as threads of ONE
@@ -451,7 +399,7 @@ mod tests {
         let cfg = Config::load();
         assert_eq!(cfg.port, 8083);
         assert!(cfg.rules.is_empty());
-        assert_eq!(cfg.summarizer.base_url, "http://127.0.0.1:8000/v1");
+        assert!(cfg.inference.roles.is_empty());
         assert!(cfg.relevance.profile_paths.is_empty());
         assert!(cfg.vault_link_sources.is_empty());
         assert_eq!(cfg.feed_sources.len(), 2);
