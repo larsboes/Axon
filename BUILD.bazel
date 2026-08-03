@@ -259,6 +259,21 @@ sh_test(
     ],
 )
 
+# The one-line installer against a scratch remote it clones for real. Two of its properties
+# cannot be checked by reading the script: that no truncated prefix executes anything (it
+# runs every prefix with a git that records being called), and that the two profiles produce
+# the two clone shapes, which is git refspec behaviour rather than anything this file states.
+sh_test(
+    name = "bootstrap_test",
+    size = "medium",
+    srcs = ["tools/bootstrap.test.sh"],
+    data = [
+        "bootstrap.sh",
+        "tools/install.sh",
+        "tools/lib/toml.sh",
+    ],
+)
+
 # Trivy itself owns vulnerability matching and expiry semantics. This test keeps the
 # repository-specific contract honest: each service receives only its own reviewed policy,
 # while images with no accepted findings remain unfiltered.
