@@ -1,6 +1,7 @@
 #!/bin/bash
-# Test for tools/service-runner.sh's stop path — specifically that `stop` cannot report success
-# while the capability's declared port is still held.
+# Tests for tools/service-runner.sh's stop/start contract:
+#   * `stop` cannot report success while the capability's declared port is still held
+#   * `down` followed by `up` brings services back, while an explicit `stop` still keeps one down
 #
 # The case is real and was hit by hand on 2026-07-30: a panel capability's dev server survived
 # `stop`. `bun run dev` supervises its own child; when the supervisor exits first the child is
@@ -39,7 +40,7 @@ done
 [ -n "$SRC_TOOLS" ] || { echo "service-runner: cannot find service-runner.sh next to $_dir" >&2; exit 1; }
 
 mkdir -p "$ROOT/tools/lib" "$OVERLAY/config"
-cp "$SRC_TOOLS/service-runner.sh" "$ROOT/tools/"
+cp "$SRC_TOOLS/service-runner.sh" "$SRC_TOOLS/capability.sh" "$ROOT/tools/"
 # The whole lib directory, not a named subset: service-runner sources paths.sh, toml.sh and
 # platform.sh today, and a list here would silently rot into a "No such file" the next time it
 # picks up a fourth.
@@ -57,6 +58,7 @@ cat > "$ROOT/capabilities/porthog/service.toml" <<TOML
 kind = "process"
 name = "porthog"
 port = "$PORT"
+autostart = true
 command = ["true"]
 TOML
 
@@ -98,6 +100,54 @@ done
 echo 4194304 > /tmp/axon-porthog.pid
 out2="$("$ROOT/tools/service-runner.sh" stop porthog 2>&1)"; rc2=$?
 [ "$rc2" -eq 0 ] || fail "stop failed on a free port; rc=$rc2, said: $out2"
+
+# --- down then up must not be a dead end ----------------------------------
+# `stop <cap>` takes a maintenance hold on purpose: it exists so a tool can work on a capability's
+# data while nothing has it open, and tools/backup.sh depends on it. `down` used to fan out that
+# same holding stop, so every service answered the following `up` with "is held for maintenance,
+# not starting" and the advertised pair no-opped on its second half.
+SR="$ROOT/tools/service-runner.sh"
+rm -f /tmp/axon-porthog.pid /tmp/axon-porthog.maintenance
+
+"$SR" stop porthog >/dev/null 2>&1
+[ -f /tmp/axon-porthog.maintenance ] \
+  || fail "stop did not take the maintenance hold — the backup path depends on it"
+out_held="$("$SR" start porthog 2>&1)"
+case "$out_held" in
+  *"held for maintenance"*) ;;
+  *) fail "start ignored an explicit maintenance hold; said: $out_held" ;;
+esac
+
+# The hold survives a --no-hold stop: only `resume` lifts a window someone deliberately opened.
+"$SR" stop porthog --no-hold >/dev/null 2>&1
+[ -f /tmp/axon-porthog.maintenance ] \
+  || fail "--no-hold cleared a hold it did not take"
+
+rm -f /tmp/axon-porthog.maintenance
+"$SR" stop porthog --no-hold >/dev/null 2>&1
+[ ! -f /tmp/axon-porthog.maintenance ] \
+  || fail "stop --no-hold took a hold anyway — this is what down fans out"
+out_free="$("$SR" start porthog 2>&1)"
+case "$out_free" in
+  *"held for maintenance"*) fail "start refused although no hold was set; said: $out_free" ;;
+esac
+
+# The real fan-out, not just the per-capability mechanism: `down` must leave nothing held, and
+# the `up` that follows must not answer "held for maintenance".
+rm -f /tmp/axon-porthog.pid /tmp/axon-porthog.maintenance
+"$SR" down >/dev/null 2>&1
+[ ! -f /tmp/axon-porthog.maintenance ] \
+  || fail "down took a maintenance hold — the following up is a no-op"
+out_up="$("$SR" up 2>&1)"
+case "$out_up" in
+  *"held for maintenance"*) fail "up refused after down — the pair is still a dead end: $out_up" ;;
+esac
+
+# An unknown flag is rejected rather than silently ignored: `stop cap --nohold` must not read as
+# a hold-taking stop because of a missing dash.
+if "$SR" stop porthog --nohold >/dev/null 2>&1; then
+  fail "an unknown flag was accepted"
+fi
 
 if [ "$fails" -gt 0 ]; then
   echo "service-runner: $fails check(s) failed"
