@@ -93,7 +93,11 @@ json_escape() {  # minimal JSON string escaping; notes are single-line
 }
 
 if [ "$JSON" -eq 0 ]; then
-  echo "upstream-checker · $MANIFEST"
+  # Repo-relative, not absolute: this report gets pasted into public GitHub issues by
+  # .github/workflows/upstream-watch.yml, and an absolute path there leaks the writer's
+  # filesystem layout for no reader benefit. The --json payload keeps the full path; its
+  # consumers are local (dashboard, axon-status) and some of them need to open the file.
+  echo "upstream-checker · ${MANIFEST#"$AXON_ROOT"/}"
   [ "$OFFLINE" -eq 1 ] && echo "  (offline — skipping release/cooldown checks)"
   echo
 fi
