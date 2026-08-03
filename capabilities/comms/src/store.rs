@@ -11,8 +11,8 @@
 
 use postgres::types::ToSql;
 use postgres::{Client, NoTls};
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
 use crate::evaluation::{EvaluationFactor, EvaluationFactorContext, FeedEvaluation};
@@ -136,6 +136,7 @@ pub struct SourceState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvaluationSummary {
     pub evaluated: i64,
+    pub reranked: i64,
     pub semantic: i64,
     pub lexical: i64,
     pub unscored: i64,
@@ -158,10 +159,7 @@ pub fn canonical_url(url: &str) -> String {
     }
     if let Some(scheme_end) = s.find("://") {
         let host_start = scheme_end + 3;
-        let host_end = s[host_start..]
-            .find('/')
-            .map(|i| host_start + i)
-            .unwrap_or(s.len());
+        let host_end = s[host_start..].find('/').map(|i| host_start + i).unwrap_or(s.len());
         let lowered = s[..host_end].to_lowercase();
         s = format!("{}{}", lowered, &s[host_end..]);
     }
@@ -192,7 +190,10 @@ impl Store {
     fn open_with_schema(database_url: &str, schema: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let mut client = Client::connect(database_url, NoTls)?;
         Self::init_schema(&mut client, schema)?;
-        Ok(Self { conn: Mutex::new(client), schema: schema.to_string() })
+        Ok(Self {
+            conn: Mutex::new(client),
+            schema: schema.to_string(),
+        })
     }
 
     fn init_schema(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -239,7 +240,7 @@ impl Store {
                 profile_label TEXT NOT NULL,
                 score DOUBLE PRECISION NOT NULL,
                 rationale TEXT NOT NULL,
-                mode TEXT NOT NULL CHECK (mode IN ('semantic','lexical')),
+                mode TEXT NOT NULL CHECK (mode IN ('reranked','semantic','lexical')),
                 profile_revision TEXT NOT NULL,
                 scored_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 PRIMARY KEY (feed_id, profile_key)
@@ -269,7 +270,7 @@ impl Store {
                 feed_id TEXT PRIMARY KEY REFERENCES {schema}.feed_items(id) ON DELETE CASCADE,
                 overall_score DOUBLE PRECISION NOT NULL CHECK (overall_score BETWEEN 0 AND 1),
                 explanation TEXT NOT NULL,
-                mode TEXT NOT NULL CHECK (mode IN ('semantic','lexical','unscored')),
+                mode TEXT NOT NULL CHECK (mode IN ('reranked','semantic','lexical','unscored')),
                 item_revision TEXT NOT NULL,
                 context_revision TEXT NOT NULL,
                 evaluator_revision TEXT NOT NULL,
@@ -332,6 +333,20 @@ impl Store {
             -- would need a migration every time one is added.
             ALTER TABLE {schema}.feed_items
                 ADD COLUMN IF NOT EXISTS captured_via TEXT;
+
+            -- #71: cross-encoder scores are distinct from bi-encoder cosine
+            -- scores. Widen both persisted mode ledgers so an existing database
+            -- can record that distinction instead of mislabelling it semantic.
+            ALTER TABLE {schema}.feed_relevance
+                DROP CONSTRAINT IF EXISTS feed_relevance_mode_check;
+            ALTER TABLE {schema}.feed_relevance
+                ADD CONSTRAINT feed_relevance_mode_check
+                CHECK (mode IN ('reranked','semantic','lexical'));
+            ALTER TABLE {schema}.feed_evaluations
+                DROP CONSTRAINT IF EXISTS feed_evaluations_mode_check;
+            ALTER TABLE {schema}.feed_evaluations
+                ADD CONSTRAINT feed_evaluations_mode_check
+                CHECK (mode IN ('reranked','semantic','lexical','unscored'));
 
             -- Backfill content_status for existing rows (idempotent: only touches 'unknown').
             UPDATE {schema}.feed_items SET content_status = 'full'
@@ -529,10 +544,7 @@ impl Store {
     pub fn get_raw_content(&self, id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let row = conn.query_opt(
-            &format!(
-                "SELECT raw FROM {}.feed_raw_content WHERE feed_id = $1",
-                self.schema
-            ),
+            &format!("SELECT raw FROM {}.feed_raw_content WHERE feed_id = $1", self.schema),
             &[&id],
         )?;
         Ok(row.map(|r| r.get(0)))
@@ -612,11 +624,7 @@ impl Store {
     /// Increment the attempt counter, record the error class, and set the next
     /// retry time with exponential backoff (5 min × 2^attempts, capped at 3
     /// attempts). After 3 failures `feed_pending_summaries` stops returning it.
-    pub fn record_summary_attempt(
-        &self,
-        id: &str,
-        error_class: &str,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    pub fn record_summary_attempt(&self, id: &str, error_class: &str) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let affected = conn.execute(
             &format!(
@@ -759,11 +767,7 @@ impl Store {
     /// Full feed items for a bounded relevance refresh. This intentionally
     /// includes dismissed items: a later filter change can make an old item
     /// useful again, while the human status remains untouched.
-    pub fn feed_for_relevance(
-        &self,
-        days: i32,
-        limit: usize,
-    ) -> Result<Vec<FeedItem>, Box<dyn std::error::Error>> {
+    pub fn feed_for_relevance(&self, days: i32, limit: usize) -> Result<Vec<FeedItem>, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let rows = conn.query(
             &format!(
@@ -816,10 +820,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn feed_relevance(
-        &self,
-        feed_id: &str,
-    ) -> Result<Vec<RelevanceMatch>, Box<dyn std::error::Error>> {
+    pub fn feed_relevance(&self, feed_id: &str) -> Result<Vec<RelevanceMatch>, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let rows = conn.query(
             &format!(
@@ -845,10 +846,7 @@ impl Store {
     /// Store the complete evaluation and its factors atomically. The factor
     /// table is normalized so future trip/deadline factors can be added without
     /// a schema migration or an opaque JSON payload.
-    pub fn replace_feed_evaluation(
-        &self,
-        evaluation: &FeedEvaluation,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn replace_feed_evaluation(&self, evaluation: &FeedEvaluation) -> Result<(), Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let mut transaction = conn.transaction()?;
         transaction.execute(
@@ -878,18 +876,11 @@ impl Store {
             ],
         )?;
         transaction.execute(
-            &format!(
-                "DELETE FROM {}.feed_evaluation_factors WHERE feed_id = $1",
-                self.schema
-            ),
+            &format!("DELETE FROM {}.feed_evaluation_factors WHERE feed_id = $1", self.schema),
             &[&evaluation.feed_id],
         )?;
         for (position, factor) in evaluation.factors.iter().enumerate() {
-            let context_json = factor
-                .context
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?;
+            let context_json = factor.context.as_ref().map(serde_json::to_string).transpose()?;
             transaction.execute(
                 &format!(
                     "INSERT INTO {schema}.feed_evaluation_factors
@@ -913,10 +904,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn feed_evaluation(
-        &self,
-        feed_id: &str,
-    ) -> Result<Option<FeedEvaluation>, Box<dyn std::error::Error>> {
+    pub fn feed_evaluation(&self, feed_id: &str) -> Result<Option<FeedEvaluation>, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let evaluation = conn.query_opt(
             &format!(
@@ -970,6 +958,7 @@ impl Store {
         let row = conn.query_one(
             &format!(
                 "SELECT COUNT(*)::bigint,
+                        COUNT(*) FILTER (WHERE mode = 'reranked')::bigint,
                         COUNT(*) FILTER (WHERE mode = 'semantic')::bigint,
                         COUNT(*) FILTER (WHERE mode = 'lexical')::bigint,
                         COUNT(*) FILTER (WHERE mode = 'unscored')::bigint
@@ -980,9 +969,10 @@ impl Store {
         )?;
         Ok(EvaluationSummary {
             evaluated: row.get(0),
-            semantic: row.get(1),
-            lexical: row.get(2),
-            unscored: row.get(3),
+            reranked: row.get(1),
+            semantic: row.get(2),
+            lexical: row.get(3),
+            unscored: row.get(4),
         })
     }
 
@@ -1008,9 +998,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn travel_context_snapshot(
-        &self,
-    ) -> Result<Option<TravelContextSnapshot>, Box<dyn std::error::Error>> {
+    pub fn travel_context_snapshot(&self) -> Result<Option<TravelContextSnapshot>, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let row = conn.query_opt(
             &format!(
@@ -1050,10 +1038,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn feed_origins(
-        &self,
-        feed_id: &str,
-    ) -> Result<Vec<FeedOrigin>, Box<dyn std::error::Error>> {
+    pub fn feed_origins(&self, feed_id: &str) -> Result<Vec<FeedOrigin>, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let rows = conn.query(
             &format!(
@@ -1314,19 +1299,19 @@ mod tests {
         // Resolved once: the config tests mutate process-global env while these
         // run alongside them, and every store test must agree on one database.
         URL.get_or_init(|| {
-            std::env::var("COMMS_TEST_DATABASE_URL")
-                .unwrap_or_else(|_| crate::config::Config::load().database_url)
+            std::env::var("COMMS_TEST_DATABASE_URL").unwrap_or_else(|_| crate::config::Config::load().database_url)
         })
         .clone()
     }
 
     fn open_test_store(name: &str) -> (Store, TestSchema) {
         let schema = format!("comms_test_{name}_{}", std::process::id());
-        let store = Store::open_with_schema(&test_database_url(), &schema)
-            .unwrap_or_else(|e| panic!(
+        let store = Store::open_with_schema(&test_database_url(), &schema).unwrap_or_else(|e| {
+            panic!(
                 "could not open test store: {e} — needs capabilities/postgres running and \
                  AXON_PERSONAL_ROOT exported (or COMMS_TEST_DATABASE_URL set); see README"
-            ));
+            )
+        });
         (store, TestSchema(schema))
     }
 
@@ -1411,9 +1396,18 @@ mod tests {
         let (store, _schema) = open_test_store("triage_status");
         store.upsert_triage(&mk_triage("thread:s", "aktiv")).unwrap();
         assert!(store.set_triage_status("thread:s", "approved").unwrap());
-        assert_eq!(store.get_triage_status("thread:s").unwrap().as_deref(), Some("approved"));
-        assert!(store.set_triage_status("thread:s", "bogus").is_err(), "invalid status must error");
-        assert!(!store.set_triage_status("thread:missing", "dismissed").unwrap(), "unknown id -> false");
+        assert_eq!(
+            store.get_triage_status("thread:s").unwrap().as_deref(),
+            Some("approved")
+        );
+        assert!(
+            store.set_triage_status("thread:s", "bogus").is_err(),
+            "invalid status must error"
+        );
+        assert!(
+            !store.set_triage_status("thread:missing", "dismissed").unwrap(),
+            "unknown id -> false"
+        );
     }
 
     /// Critical: a human's triage decision must survive a re-sweep of the same
@@ -1456,7 +1450,11 @@ mod tests {
         assert!(!store.upsert_feed(&item).unwrap(), "second is not new");
 
         let stored = store.get_feed(&item.id).unwrap().unwrap();
-        assert_eq!(stored.summary.as_deref(), Some("distilled"), "summary preserved via COALESCE");
+        assert_eq!(
+            stored.summary.as_deref(),
+            Some("distilled"),
+            "summary preserved via COALESCE"
+        );
         assert_eq!(stored.title.as_deref(), Some("Better Title"), "title updated");
     }
 
@@ -1472,7 +1470,7 @@ mod tests {
                 profile_label: "Polymath".into(),
                 score: 0.8,
                 rationale: "match".into(),
-                mode: "lexical".into(),
+                mode: "reranked".into(),
                 profile_revision: "one".into(),
             },
             RelevanceMatch {
@@ -1480,7 +1478,7 @@ mod tests {
                 profile_label: "Career".into(),
                 score: 0.4,
                 rationale: "match".into(),
-                mode: "lexical".into(),
+                mode: "reranked".into(),
                 profile_revision: "one".into(),
             },
         ];
@@ -1489,10 +1487,8 @@ mod tests {
         let stored = store.feed_relevance(&item.id).unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].profile_label, "Polymath");
-        assert_eq!(
-            store.get_feed_status(&item.id).unwrap().as_deref(),
-            Some("keeper")
-        );
+        assert_eq!(stored[0].mode, "reranked");
+        assert_eq!(store.get_feed_status(&item.id).unwrap().as_deref(), Some("keeper"));
     }
 
     #[test]
@@ -1504,10 +1500,10 @@ mod tests {
             feed_id: item.id.clone(),
             overall_score: 0.72,
             explanation: "transparent".into(),
-            mode: "lexical".into(),
+            mode: "reranked".into(),
             item_revision: "item-one".into(),
             context_revision: "context-one".into(),
-            evaluator_revision: "feed-evaluator-v2-travel".into(),
+            evaluator_revision: "feed-evaluator-v3-reranking".into(),
             evaluated_at: String::new(),
             factors: vec![EvaluationFactor {
                 key: "interest".into(),
@@ -1533,13 +1529,14 @@ mod tests {
 
         let stored = store.feed_evaluation(&item.id).unwrap().unwrap();
         assert_eq!(stored.item_revision, "item-two");
+        assert_eq!(stored.mode, "reranked");
         assert_eq!(stored.factors.len(), 1);
         assert_eq!(stored.factors[0].score, 0.3);
         assert_eq!(
             stored.factors[0].context.as_ref().map(|context| context.id.as_str()),
             Some("trip:one")
         );
-        assert_eq!(store.evaluation_summary().unwrap().lexical, 1);
+        assert_eq!(store.evaluation_summary().unwrap().reranked, 1);
     }
 
     #[test]
@@ -1595,8 +1592,12 @@ mod tests {
     #[test]
     fn feed_list_filters_stream_and_dismissed() {
         let (store, _schema) = open_test_store("feed_list");
-        store.upsert_feed(&mk_feed("https://youtu.be/a", "youtube", "media")).unwrap();
-        store.upsert_feed(&mk_feed("https://example.com/post", "article", "news")).unwrap();
+        store
+            .upsert_feed(&mk_feed("https://youtu.be/a", "youtube", "media"))
+            .unwrap();
+        store
+            .upsert_feed(&mk_feed("https://example.com/post", "article", "news"))
+            .unwrap();
         let dismissed = mk_feed("https://youtu.be/b", "youtube", "media");
         store.upsert_feed(&dismissed).unwrap();
         store.set_feed_status(&dismissed.id, "dismissed").unwrap();
@@ -1620,9 +1621,25 @@ mod tests {
         store.upsert_feed(&item1).unwrap();
         store.upsert_feed(&item2).unwrap();
 
-        store.record_feed_origin(&item1.id, "github-trending", "https://github.com/trending", Some("Trending Repo 1")).unwrap();
-        store.record_feed_origin(&item2.id, "github-trending", "https://github.com/trending", Some("Trending Repo 2")).unwrap();
-        store.record_feed_origin(&item1.id, "vault-scan", "/notes/ai.md", Some("Obsidian Link")).unwrap();
+        store
+            .record_feed_origin(
+                &item1.id,
+                "github-trending",
+                "https://github.com/trending",
+                Some("Trending Repo 1"),
+            )
+            .unwrap();
+        store
+            .record_feed_origin(
+                &item2.id,
+                "github-trending",
+                "https://github.com/trending",
+                Some("Trending Repo 2"),
+            )
+            .unwrap();
+        store
+            .record_feed_origin(&item1.id, "vault-scan", "/notes/ai.md", Some("Obsidian Link"))
+            .unwrap();
 
         let origins1 = store.feed_origins(&item1.id).unwrap();
         assert_eq!(origins1.len(), 2);
@@ -1673,7 +1690,12 @@ mod tests {
 
         for item in [&together_a, &together_b, &later] {
             store
-                .record_feed_origin(&item.id, "gh-trending", "https://github.com/trending", Some("GitHub Trending (daily)"))
+                .record_feed_origin(
+                    &item.id,
+                    "gh-trending",
+                    "https://github.com/trending",
+                    Some("GitHub Trending (daily)"),
+                )
                 .unwrap();
         }
 
@@ -1691,11 +1713,7 @@ mod tests {
             .unwrap();
 
         let runs = store.list_feed_runs(7).unwrap();
-        let key_of = |id: &str| {
-            runs.iter()
-                .find(|r| r.feed_id == id)
-                .map(|r| r.run_key.clone())
-        };
+        let key_of = |id: &str| runs.iter().find(|r| r.feed_id == id).map(|r| r.run_key.clone());
 
         assert_eq!(
             key_of(&together_a.id),
@@ -1708,7 +1726,9 @@ mod tests {
             "an arrival two hours later is a different run"
         );
         assert_eq!(key_of(&manual.id), None, "an item with no origin is ungrouped");
-        assert!(runs.iter().all(|r| r.label.as_deref() == Some("GitHub Trending (daily)")));
+        assert!(runs
+            .iter()
+            .all(|r| r.label.as_deref() == Some("GitHub Trending (daily)")));
     }
 
     #[test]

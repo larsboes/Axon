@@ -11,8 +11,8 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-use crate::rules::Rule;
 use crate::inference::{InferenceConfig, ResolvedRole};
+use crate::rules::Rule;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -266,8 +266,9 @@ impl Config {
         // build: the URL userinfo form mangles a base64 password containing `/`, and
         // the sibling capabilities all fall back the same way.
         let database_url = file.database_url.unwrap_or_else(|| {
-            crate::axon_config::postgres_conn_from_shared_env()
-                .unwrap_or_else(|| "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into())
+            crate::axon_config::postgres_conn_from_shared_env().unwrap_or_else(|| {
+                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
+            })
         });
 
         let google_env_path = file
@@ -321,6 +322,10 @@ impl Config {
 
     pub fn embedding_role(&self) -> Option<ResolvedRole> {
         self.inference.role("embedding")
+    }
+
+    pub fn reranking_role(&self) -> Option<ResolvedRole> {
+        self.inference.role("reranking")
     }
 
     pub fn summarization_role(&self) -> Option<ResolvedRole> {

@@ -14,7 +14,7 @@
 //!
 //! * A **backend** is a server: an API shape, a base URL, optionally a file to
 //!   read a bearer key out of. Declared once.
-//! * A **role** is a job: `embedding`, `summarization`. It names a backend, the
+//! * A **role** is a job: `embedding`, `reranking`, `summarization`. It names a backend, the
 //!   model on it, and that model's input conventions.
 //!
 //! A capability asks for a role. It never learns whether it just talked to
@@ -192,6 +192,14 @@ impl ResolvedRole {
         }
     }
 
+    fn rerank_endpoint(&self) -> Result<String, String> {
+        let base = self.backend.base_url.trim_end_matches('/');
+        match self.backend.api {
+            Api::OpenAi => Ok(format!("{base}/rerank")),
+            Api::Ollama => Err("the Ollama-native API does not expose /v1/rerank".into()),
+        }
+    }
+
     /// OpenAI-compatible chat-completions endpoint for generative roles.
     /// Ollama exposes the same wire shape under its `/v1` compatibility path.
     pub fn chat_completions_endpoint(&self) -> String {
@@ -296,6 +304,46 @@ impl ResolvedRole {
         payload
     }
 
+    pub fn rerank_request_body(&self, query: &str, documents: &[String]) -> serde_json::Value {
+        serde_json::json!({
+            "model": self.model,
+            "query": query,
+            "documents": documents,
+            "top_n": documents.len(),
+            "return_documents": false,
+        })
+    }
+
+    /// Scores documents jointly with one query through the Cohere/Jina-style
+    /// `/v1/rerank` contract. Results are restored to input order even though
+    /// the server returns them sorted by relevance.
+    pub fn rerank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>, String> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+        let endpoint = self.rerank_endpoint()?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|error| format!("client build: {error}"))?;
+        let mut request = client
+            .post(&endpoint)
+            .json(&self.rerank_request_body(query, documents));
+        if let Some(key) = self.bearer_key() {
+            request = request.bearer_auth(key);
+        }
+        let response = request
+            .send()
+            .map_err(|error| format!("POST {endpoint}: {error}"))?;
+        if !response.status().is_success() {
+            return Err(format!("{endpoint} returned HTTP {}", response.status()));
+        }
+        let body = response
+            .json::<RerankResponse>()
+            .map_err(|error| format!("parse rerank response: {error}"))?;
+        rerank_scores_in_input_order(body.results, documents.len())
+    }
+
     /// Embeds a batch. `Err` carries a reason worth printing; callers are
     /// expected to degrade rather than abort.
     pub fn embed(&self, texts: &[String], text_role: TextRole) -> Result<Vec<Vec<f32>>, String> {
@@ -377,6 +425,55 @@ struct OpenAiEmbedDatum {
     embedding: Vec<f32>,
 }
 
+#[derive(Deserialize)]
+struct RerankResponse {
+    results: Vec<RerankResult>,
+}
+
+#[derive(Deserialize)]
+struct RerankResult {
+    index: usize,
+    relevance_score: f32,
+}
+
+fn rerank_scores_in_input_order(
+    results: Vec<RerankResult>,
+    document_count: usize,
+) -> Result<Vec<f32>, String> {
+    if results.len() != document_count {
+        return Err(format!(
+            "expected {document_count} rerank results, got {}",
+            results.len()
+        ));
+    }
+    let mut scores = vec![None; document_count];
+    for result in results {
+        if result.index >= document_count {
+            return Err(format!(
+                "rerank result index {} is out of range",
+                result.index
+            ));
+        }
+        if !result.relevance_score.is_finite() || !(0.0..=1.0).contains(&result.relevance_score) {
+            return Err(format!(
+                "rerank score for index {} is outside 0..=1",
+                result.index
+            ));
+        }
+        if scores[result.index]
+            .replace(result.relevance_score)
+            .is_some()
+        {
+            return Err(format!("duplicate rerank result index {}", result.index));
+        }
+    }
+    scores
+        .into_iter()
+        .enumerate()
+        .map(|(index, score)| score.ok_or_else(|| format!("missing rerank result index {index}")))
+        .collect()
+}
+
 /// Reads a bearer key out of a file. JSON content yields `.auth.api_key` so
 /// this can point straight at `~/.omlx/settings.json`; anything else is taken
 /// as the trimmed key itself. Same contract comms established.
@@ -416,7 +513,8 @@ mod tests {
       },
       "roles": {
         "embedding": { "backend": "omlx", "model": "multilingual-e5-base-mlx",
-                       "query_prefix": "query: ", "document_prefix": "passage: " }
+                       "query_prefix": "query: ", "document_prefix": "passage: " },
+        "reranking": { "backend": "omlx", "model": "bge-reranker-v2-m3-mlx" }
       }
     }"#;
 
@@ -482,6 +580,54 @@ mod tests {
         ]);
         assert_eq!(body["input"][0], "query: lens");
         assert_eq!(body["input"][1], "passage: item");
+    }
+
+    #[test]
+    fn rerank_request_uses_the_cohere_jina_wire_shape() {
+        let role = config().role("reranking").unwrap();
+        assert_eq!(
+            role.rerank_endpoint().unwrap(),
+            "http://127.0.0.1:8000/v1/rerank"
+        );
+        let body = role.rerank_request_body("lens", &["first".into(), "second".into()]);
+        assert_eq!(body["model"], "bge-reranker-v2-m3-mlx");
+        assert_eq!(body["query"], "lens");
+        assert_eq!(body["documents"][1], "second");
+        assert_eq!(body["top_n"], 2);
+        assert_eq!(body["return_documents"], false);
+    }
+
+    #[test]
+    fn rerank_results_are_restored_to_document_order_and_validated() {
+        let scores = rerank_scores_in_input_order(
+            vec![
+                RerankResult {
+                    index: 1,
+                    relevance_score: 0.9,
+                },
+                RerankResult {
+                    index: 0,
+                    relevance_score: 0.2,
+                },
+            ],
+            2,
+        )
+        .unwrap();
+        assert_eq!(scores, vec![0.2, 0.9]);
+        assert!(rerank_scores_in_input_order(
+            vec![
+                RerankResult {
+                    index: 0,
+                    relevance_score: 0.2
+                },
+                RerankResult {
+                    index: 0,
+                    relevance_score: 0.9
+                },
+            ],
+            2,
+        )
+        .is_err());
     }
 
     #[test]

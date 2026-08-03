@@ -22,8 +22,8 @@
   "_comment_keeper_export_dir": "Optional directory. When set, `comms keep <id>` also writes a distilled markdown note (title, url, date, summary — never the raw transcript). Leave unset to disable export.",
   "keeper_export_dir": "",
 
-  "_comment_inference": "Comms asks the shared inference.json for the 'summarization' and 'embedding' roles. Backend URLs, model ids, prefixes and key-file references belong in <overlay>/config/inference.json, never here. Missing roles degrade to pending summaries and explicitly labelled lexical relevance.",
-  "_comment_relevance": "General Feed personalization. profile_paths accepts exact Markdown files or non-recursive directories of focus lenses. The embedding backend comes from the shared 'embedding' inference role.",
+  "_comment_inference": "Comms asks the shared inference.json for the 'summarization', 'embedding' and 'reranking' roles. Backend URLs, model ids, prefixes and key-file references belong in <overlay>/config/inference.json, never here. A missing reranker preserves semantic scores; a missing embedding role degrades to explicitly labelled lexical relevance.",
+  "_comment_relevance": "General Feed personalization. profile_paths accepts exact Markdown files or non-recursive directories of focus lenses. Embedding selects lens candidates; reranking scores those query-document pairs.",
   "relevance": {
     "profile_paths": []
   },

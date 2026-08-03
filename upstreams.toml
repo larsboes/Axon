@@ -525,3 +525,10 @@ verdict = "adopt"
 license = "MIT"
 pin = "576fdf3eab52a419f6d126a0c4d7c59b3882ffde"
 why = "adopted Comms relevance model after clearing the unchanged DE/EN gate at 6/6 useful top-1, 0.882 pairwise accuracy and 0.986 mean nDCG. It uses the same 94-language E5/XLM-RoBERTa contract as the rejected small baseline, but 12 layers and 768-dimensional output; the exact January 2024 tree is 573 MB and contains config/tokenizer data plus one 556 MB safetensors shard, with no executable model code. The measured local cost was 547 MiB on disk, about 1.16 GB oMLX RSS immediately after the batch and 1.14 s end-to-end for 30 vectors; a 60-second per-model TTL returns that memory after bursty revision-cached work."
+
+[bge-reranker-v2-m3-mlx]
+url = "https://huggingface.co/soichisumi/bge-reranker-v2-m3-mlx"
+verdict = "adopt"
+license = "Apache-2.0"
+pin = "b4577f49e18adb53ed9e557192094f69f3dc2c1c"
+why = "adopted multilingual cross-encoder for Comms' second relevance stage after clearing the unchanged public DE/EN gate at 6/6 useful top-1, 0.912 pairwise accuracy and 0.993 mean nDCG. The exact tree was inspected before execution: XLMRobertaForSequenceClassification config, tokenizer data, one 1,135,556,833-byte safetensors shard and its index, with no loader.py or other executable model code; the downloaded shard matched its published SHA-256. It is a BF16 MLX conversion of Apache-2.0 BAAI/bge-reranker-v2-m3. The first six-query run, including cold load, took about 2.6 seconds and left the disposable oMLX process at about 1.68 GiB RSS on this host."
