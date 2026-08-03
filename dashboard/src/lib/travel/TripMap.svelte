@@ -89,6 +89,23 @@
   onMount(() => {
     let disposed = false;
     let observer: IntersectionObserver | undefined;
+    let resizeObserver: ResizeObserver | undefined;
+    let resizeFrame: number | undefined;
+
+    // MapLibre reads the host dimensions when its canvas is created. Travel
+    // maps also mount inside conditional/detail layouts, so that first read can
+    // legitimately be 0x0 even though the card becomes visible a frame later.
+    // Controls are ordinary DOM and still appear in that state, while the
+    // WebGL canvas never receives the resize that lets the first render finish.
+    function resizeMap(): void {
+      if (!map || disposed || resizeFrame !== undefined) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = undefined;
+        if (!disposed && host.clientWidth > 0 && host.clientHeight > 0) {
+          map?.resize();
+        }
+      });
+    }
 
     function loadMap(): void {
       if (loadRequested || disposed) return;
@@ -109,6 +126,7 @@
           cooperativeGestures: true,
           attributionControl: { compact: true },
         });
+        resizeMap();
         map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
         map.on("load", () => {
           map?.addSource("trip-route", { type: "geojson", data: routeCollection() });
@@ -177,6 +195,7 @@
             if (map) map.getCanvas().style.cursor = "";
           });
           ready = true;
+          resizeMap();
           updateMap();
         });
       }).catch(() => {
@@ -184,6 +203,15 @@
       });
     }
     requestLoad = loadMap;
+
+    if ("ResizeObserver" in window) {
+      resizeObserver = new ResizeObserver(([entry]) => {
+        if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+          resizeMap();
+        }
+      });
+      resizeObserver.observe(host);
+    }
 
     if ("IntersectionObserver" in window) {
       observer = new IntersectionObserver(
@@ -201,6 +229,8 @@
       disposed = true;
       requestLoad = () => {};
       observer?.disconnect();
+      resizeObserver?.disconnect();
+      if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
       map?.remove();
     };
   });
