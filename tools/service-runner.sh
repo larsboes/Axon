@@ -16,6 +16,8 @@ source "$TOOLS_DIR/lib/toml.sh"
 # Canonical publish-set form, so a declaration and a running container can be compared
 # at all (each runtime reports its bindings in its own shape).
 source "$TOOLS_DIR/lib/runargs.sh"
+# `does this stream contain X` without the answer depending on where the match sits (#42).
+source "$TOOLS_DIR/lib/pipe.sh"
 
 usage() {
   echo "usage: service-runner.sh <start|stop|idle-stop|restart|resume|recreate|status> <capability>" >&2
@@ -536,7 +538,7 @@ ensure_runtime() {
   [ "$AXON_CONTAINER_RUNTIME" = "apple-container" ] || return 0
   # Match on the status field, not the exit code: `container system status` exits 0 in
   # both states and only differs in what it prints.
-  "$RUNTIME_BIN" system status 2>/dev/null | grep -qE '^status[[:space:]]+running' && return 0
+  "$RUNTIME_BIN" system status 2>/dev/null | stream_matches -E '^status[[:space:]]+running' && return 0
   "$RUNTIME_BIN" system start
 }
 
@@ -590,9 +592,9 @@ start_service() {
   ensure_runtime
   case "$AXON_CONTAINER_RUNTIME" in
     apple-container)
-      if "$RUNTIME_BIN" list --format json 2>/dev/null | grep -q "\"id\":\"$NAME\""; then
+      if "$RUNTIME_BIN" list --format json 2>/dev/null | stream_matches "\"id\":\"$NAME\""; then
         :  # already running
-      elif "$RUNTIME_BIN" list -a --format json 2>/dev/null | grep -q "\"id\":\"$NAME\""; then
+      elif "$RUNTIME_BIN" list -a --format json 2>/dev/null | stream_matches "\"id\":\"$NAME\""; then
         report_arg_drift >&2 || true
         "$RUNTIME_BIN" start "$NAME"
       else
@@ -600,9 +602,9 @@ start_service() {
       fi
       ;;
     docker|podman)
-      if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | grep -qx "$NAME"; then
+      if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | stream_matches -x "$NAME"; then
         :  # already running
-      elif "$RUNTIME_BIN" ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$NAME"; then
+      elif "$RUNTIME_BIN" ps -a --format '{{.Names}}' 2>/dev/null | stream_matches -x "$NAME"; then
         report_arg_drift >&2 || true
         "$RUNTIME_BIN" start "$NAME"
       else
@@ -719,8 +721,8 @@ report_arg_drift() {
 status_service() {
   container_prepare
   local state="stopped" report="" classes=""
-  if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | grep -qx "$NAME" \
-     || "$RUNTIME_BIN" list --format json 2>/dev/null | grep -q "\"id\":\"$NAME\""; then
+  if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | stream_matches -x "$NAME" \
+     || "$RUNTIME_BIN" list --format json 2>/dev/null | stream_matches "\"id\":\"$NAME\""; then
     state="running"
   fi
   if maintenance_hold_active 2>/dev/null; then state="$state, held"; fi
@@ -1043,7 +1045,7 @@ install_persistence() {
       echo "installed $unit (systemctl --user)"
       # A --user unit only runs while the user has a session unless lingering is enabled.
       # For a capability meant to survive logout / start at boot, enable it once.
-      if ! loginctl show-user "$(id -un)" 2>/dev/null | grep -q '^Linger=yes'; then
+      if ! loginctl show-user "$(id -un)" 2>/dev/null | stream_matches '^Linger=yes'; then
         echo "  note: run 'loginctl enable-linger $(id -un)' so this survives logout / reboot." >&2
       fi
       ;;
