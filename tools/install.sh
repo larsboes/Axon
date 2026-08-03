@@ -34,6 +34,23 @@ SKELETON="$TOOLS_DIR/templates/overlay-skeleton"
 echo "Axon installer"
 echo "==============="
 
+# Which profile this checkout IS, read off the checkout rather than passed in — bootstrap.sh
+# is one way to arrive here and `git clone` by hand is the other, so a flag would be right
+# only half the time. A usage install behaves differently in ways the operator will meet
+# later (tools/update.sh cannot compute a delta against a ref a tag-pinned clone does not
+# have, #58), so say it once, here, instead of letting it be discovered as a malfunction.
+if [ "$(git -C "$AXON_ROOT" rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+  echo "Profile: usage — shallow clone pinned to $(git -C "$AXON_ROOT" describe --tags 2>/dev/null || echo 'a tag')."
+  echo "  To change Axon rather than run it, promote this checkout:"
+  echo "    git -C \"$AXON_ROOT\" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+  echo "    git -C \"$AXON_ROOT\" fetch --unshallow origin"
+elif git -C "$AXON_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  echo "Profile: development — full history."
+else
+  echo "Profile: not a git checkout — tools/update.sh and the version line will not work."
+fi
+echo
+
 # 1) OS detection — platform.sh can't run yet (needs machine.toml, which
 # doesn't exist until this script writes it), so detect directly.
 case "$(uname -s)" in
