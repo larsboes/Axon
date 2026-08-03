@@ -645,7 +645,7 @@
     {
       "name": "bottom",
       "verdict": "adopt",
-      "pin": "0.14.3"
+      "pin": "0.14.7"
     },
     {
       "name": "bun",
