@@ -16,12 +16,14 @@ source "$TOOLS_DIR/lib/toml.sh"
 
 usage() {
   echo "usage: service-runner.sh <start|stop|idle-stop|restart|resume|status|install-persistence> <capability>" >&2
+  echo "       service-runner.sh stop <capability> [--no-hold]   # --no-hold: do not keep it down" >&2
   echo "       service-runner.sh up [--all]     # start the autostart set (--all: everything enabled)" >&2
-  echo "       service-runner.sh down           # stop everything enabled, dependents first" >&2
+  echo "       service-runner.sh down           # stop everything enabled, dependents first; no hold" >&2
   echo "       service-runner.sh status         # one line per enabled service" >&2
   exit 1
 }
-CMD="${1:-}"; CAP="${2:-}"
+CMD="${1:-}"; CAP="${2:-}"; FLAG="${3:-}"
+case "$FLAG" in ''|--no-hold) ;; *) echo "service-runner.sh: unknown flag '$FLAG'" >&2; usage ;; esac
 [ -n "$CMD" ] || usage
 
 # AXON_CONTAINER_RUNTIME is manifest vocabulary, not always the command name
@@ -56,8 +58,8 @@ resolve_runtime() {
 # something that requires it is still up.
 registry_lines() { "$TOOLS_DIR/capability.sh" registry --lines; }
 
-fan_out() {  # <start|stop|status> [--all]
-  local op="$1" all="${2:-}" names="" name kind scope autostart
+fan_out() {  # <start|stop|status> [--all] [flag passed to each invocation]
+  local op="$1" all="${2:-}" extra="${3:-}" names="" name kind scope autostart
   while read -r name kind scope autostart _; do
     [ -n "$name" ] || continue
     if [ "$op" = start ] && [ "$all" != "--all" ] && [ "$autostart" != "true" ]; then
@@ -76,7 +78,10 @@ EOF
   fi
   local rc=0
   for name in $names; do
-    "$0" "$op" "$name" || rc=1
+    # `|| rc=1` on purpose: one capability refusing to stop must not hide the state of the
+    # rest. The failure is part of an || list, so `set -e` does not fire here and the walk
+    # completes before the non-zero status is returned.
+    "$0" "$op" "$name" ${extra:+"$extra"} || rc=1
   done
   return $rc
 }
@@ -88,7 +93,13 @@ case "$CMD" in
     ;;
   down)
     if [ -n "$CAP" ]; then usage; fi
-    fan_out stop; exit $?
+    # --no-hold, so `down` then `up` is not a dead end. `stop <cap>` keeps a capability down on
+    # purpose -- it exists so a tool can work on that capability's data while nothing has it open,
+    # and tools/backup.sh relies on exactly that, taking the hold through `stop <cap>` and lifting
+    # it through `resume <cap>`. `down` is the operator's "take it all down" verb and has no such
+    # window to protect: holding there made every service answer the following `up` with "is held
+    # for maintenance, not starting", so the pair the usage advertises no-opped on its second half.
+    fan_out stop "" --no-hold; exit $?
     ;;
   status)
     if [ -z "$CAP" ]; then fan_out status; exit $?; fi
@@ -709,7 +720,10 @@ case "$CMD" in
     if [ "$KIND" = process ]; then start_process; else start_service; fi
     ;;
   stop)
-    if [ "$KIND" = process ]; then stop_process hold; else stop_service hold; fi
+    # Default holds: `stop <cap>` means "down, and stay down", which is what a maintenance window
+    # needs. --no-hold is the same stop without that promise.
+    _mode=hold; [ "$FLAG" = --no-hold ] && _mode=nohold
+    if [ "$KIND" = process ]; then stop_process "$_mode"; else stop_service "$_mode"; fi
     ;;
   restart)
     # nohold on the way down: a restart is not a maintenance window, and leaving the
@@ -721,12 +735,10 @@ case "$CMD" in
     fi
     ;;
   idle-stop)
-    # Stop WITHOUT holding it down. `stop` exists so a tool can work on a capability's
-    # data while nothing has it open, and it sets a hold to keep the watchdog from
-    # racing that window. An unread page is not a maintenance window: holding it would
-    # mean the next thing to ask for the panel gets a silent no-op until the lock aged
-    # out. Used by axon-status's idle reaper; a capability with no idle_timeout in its
-    # manifest is never a target.
+    # axon-status's idle reaper spells `stop --no-hold` this way, and keeps its own verb because
+    # it is a distinct decision with a distinct owner: an unread page is not a maintenance window,
+    # so holding it would mean the next thing to ask for the panel gets a silent no-op until the
+    # lock aged out. A capability with no idle_timeout in its manifest is never a target.
     if [ "$KIND" = process ]; then stop_process nohold; else stop_service nohold; fi
     ;;
   resume)
