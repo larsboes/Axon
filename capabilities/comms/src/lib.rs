@@ -24,6 +24,7 @@ pub(crate) mod inference;
 
 pub mod config;
 pub mod evaluation;
+pub mod extraction_eval;
 pub mod google;
 pub mod media;
 pub mod normalize;
