@@ -97,6 +97,11 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: none
+          # MEASUREMENT ONLY (#46) — not a decision. The default suite reports zero findings on
+          # this tree while demonstrably not firing on eval-from-argv or verify=False, so the
+          # question "does extended produce signal or noise here" needs a number rather than an
+          # argument. Revert or merge deliberately; do not let this sit half-decided.
+          queries: security-extended
 
       - name: Analyze
         uses: github/codeql-action/analyze@18420e3271f74589575af831a523c833acda327f # codeql-bundle-v2.26.2
