@@ -155,7 +155,7 @@ for name in $(toml_sections "$MANIFEST"); do
       fi
       # The classification itself lives in tools/lib/version.sh so it can be tested without a
       # network call; here it is only rendered and counted.
-      if note="$(drift_note "$pin" "$latest_tag" "$age_days" "$COOLDOWN_MIN" "$COOLDOWN_MAX")"; then
+      if note="$(drift_note "$name" "$pin" "$latest_tag" "$age_days" "$COOLDOWN_MIN" "$COOLDOWN_MAX")"; then
         emit "$note"
       else
         emit "$note"
