@@ -232,11 +232,11 @@ pin = "0.8.0"           # 2026-04-15, ~3 months old as of 2026-07-10 -- well pas
 why = "sh_binary/sh_test/sh_library moved out of Bazel-native into this module in recent Bazel releases; needed for //:generate_architecture and //:architecture_up_to_date_test (see README.md#generated-architecture, README.md#argue-bazel-per-case). Official bazelbuild module, no alternative -- this is what replaced the native rules, not a choice among competitors"
 
 [graphify]
-url = "https://github.com/safishamsi/graphify"
+url = "https://github.com/Graphify-Labs/graphify"
 verdict = "adopt"
-license = "MIT"
-pin = "0.9.19"          # graphifyy on PyPI, bumped from 0.8.44 (2026-06-19) per issue #66 -- matches installed skill version
-why = "code-dependency-graph extraction for tools/graphify.sh, consumed via `uv tool run --from graphifyy==0.8.44` (README.md#language-tooling) -- deliberately NOT the bare `graphify` on PATH, which is a separate global install the interactive graphify skill auto-upgrades for its own purposes (was 0.9.11 at adoption time, 1 day old) and would silently drag Axon's build onto whatever version that happens to be. See tools/graphify.sh for the version-selection story: 0.8.44 was chosen over the tempting single-maintainer-fast-moving-project shortcut of 'just use latest' specifically because it's the oldest cooldown-clearing version confirmed (by hand, bisecting release-by-release) to still have working `update <path>` behavior for this repo's mixed code+doc corpus"
+license = "MIT for the pinned 0.9.19 -- upstream relicensed to Apache-2.0 at 0.9.25, keeping LICENSE-MIT and a NOTICE covering contributions made before it. Recorded as two facts because they diverge: any bump past 0.9.24 changes the terms Axon consumes, and one field naming only the project's current license would hide that. Neither license raises a compatibility question here -- graphify runs as a separate process under `uv tool run` and is never vendored, so Axon's own MIT licensing is untouched either way"
+pin = "0.9.19"          # graphifyy on PyPI, bumped from 0.8.44 (2026-06-19) -- matches the installed skill version
+why = "code-dependency-graph extraction for tools/graphify.sh, and the source of the agent integrations tools/agent-integrations.sh installs. Consumed via `uv tool run --from graphifyy==0.9.19` (README.md#language-tooling) -- deliberately NOT the bare `graphify` on PATH, which is a separate global install the interactive graphify skill auto-upgrades for its own purposes and would silently drag Axon onto whatever version that happens to be. Version selection is never 'just use latest': this is a single-maintainer, fast-moving project (200 PyPI releases; 0.8.44 in June, 0.9.19 in July, 0.9.32 by August), so each candidate is confirmed by hand to keep `update <path>` working for this repo's mixed code+doc corpus before it is adopted"
 
 [nvidia-skills]
 url = "https://github.com/NVIDIA/skills"
