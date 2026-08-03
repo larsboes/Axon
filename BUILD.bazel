@@ -219,6 +219,26 @@ sh_test(
     data = ["tools/check-publication-hygiene.sh"],
 )
 
+# Both install profiles of update.sh --check against clones the test makes itself. The
+# usage profile's breakage lived in `git clone --depth 1 --branch <tag>` producing a
+# tag-only refspec and therefore no origin/main, which is a property of real cloning that
+# no fixture reproduces — so this one runs git rather than asserting against a directory.
+# It builds its own scratch remote from these sources, touches no network, and never reads
+# the developer's own worktree state.
+sh_test(
+    name = "update_profiles_test",
+    size = "medium",
+    srcs = ["tools/update-profiles.test.sh"],
+    data = [
+        "axon.toml",
+        "tools/lib/delta.sh",
+        "tools/lib/paths.sh",
+        "tools/lib/toml.sh",
+        "tools/lib/version.sh",
+        "tools/update.sh",
+    ],
+)
+
 # Trivy itself owns vulnerability matching and expiry semantics. This test keeps the
 # repository-specific contract honest: each service receives only its own reviewed policy,
 # while images with no accepted findings remain unfiltered.

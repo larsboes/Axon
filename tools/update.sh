@@ -59,13 +59,51 @@ done
 # fast-forwards to; the newest RELEASE tag is shown separately as a version-identity line (a tag
 # is a label to stand next to, not what the pull merges). Shown by --check and the interactive
 # confirm.
+# Every delta below is computed against origin/main, so resolve it ONCE. A usage install
+# --- `git clone --depth 1 --branch <tag>`, which is what tools/install.sh's usage profile
+# and the one-line installer produce --- has no origin/main ref at all: its refspec is
+# `+refs/tags/<tag>:refs/tags/<tag>`, so no branch was ever fetched. Without this gate the
+# absence surfaces as four separate raw `fatal:` lines plus two summary lines with their
+# numbers missing, which is a poor first thing for a new install to print.
+have_origin_main() { git rev-parse --verify --quiet origin/main >/dev/null 2>&1; }
+
+# The honest promotion path, verified rather than assumed. `git fetch --unshallow` ALONE
+# does not help here: it deepens history along a refspec that names no branch, so
+# origin/main is still absent afterwards. Widening the refspec is the part that matters.
+print_promotion_hint() {
+  echo "  This is a usage install pinned to a tag, so there is no origin/main to compare"
+  echo "  against — version identity still works, the delta does not. Promote it to a"
+  echo "  development checkout that can compute one:"
+  echo
+  echo "    git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+  echo "    git fetch --unshallow origin"
+}
+
+# The overlay is absent between cloning and running tools/install.sh, which is the normal
+# state for a fresh checkout — not an error, but toml_array's grep says so on stderr. Report
+# the state the way tools/doctor already does for the same absence.
+enabled_capabilities() {
+  [ -f "$AXON_MACHINE_TOML" ] || return 0
+  toml_array capabilities "$AXON_MACHINE_TOML"
+}
+
+have_overlay() { [ -f "$AXON_MACHINE_TOML" ]; }
+
 print_incoming() {
   echo
   echo "What the update brings (HEAD..origin/main):"
   echo
+  if ! have_origin_main; then
+    print_promotion_hint
+    return 0
+  fi
   print_manifest_delta HEAD origin/main
   echo
   echo "Enabled capabilities with incoming changes:"
+  if ! have_overlay; then
+    echo "  (no overlay configured yet — run tools/install.sh)"
+    return 0
+  fi
   CAP_INCOMING=0
   while IFS= read -r cap; do
     [ -n "$cap" ] || continue
@@ -77,7 +115,7 @@ print_incoming() {
       CAP_INCOMING=1
     fi
   done <<EOF
-$(toml_array capabilities "$AXON_MACHINE_TOML")
+$(enabled_capabilities)
 EOF
   if [ "$CAP_INCOMING" -eq 0 ]; then
     echo "  (no enabled capability affected)"
@@ -98,15 +136,27 @@ if [ "$CHECK" -eq 0 ] && [ -n "$(git status --porcelain)" ]; then
 fi
 
 echo "Fetching origin/main..."
-git fetch --quiet origin main
+# A tag-pinned clone has no branch in its refspec, so this fetch cannot create origin/main
+# and must not be treated as a failure. `|| true` under `set -e`, and the gate below decides.
+git fetch --quiet origin main 2>/dev/null || true
 
-read -r AHEAD BEHIND <<<"$(git rev-list --left-right --count HEAD...origin/main)"
-echo "  $AHEAD ahead, $BEHIND behind origin/main"
+if have_origin_main; then
+  read -r AHEAD BEHIND <<<"$(git rev-list --left-right --count HEAD...origin/main)"
+  echo "  $AHEAD ahead, $BEHIND behind origin/main"
+else
+  # Deliberately NOT "0 ahead, 0 behind": unknown is not the same as in sync, and printing
+  # the latter would tell a pinned usage install it is current when nothing was compared.
+  echo "  (delta unavailable — no origin/main in this checkout)"
+fi
 
 if [ "$CHECK" -eq 1 ]; then
   echo
+  # Version identity survives a shallow tag clone — `git describe` reads the tag that is
+  # present — so these lines stay useful even when nothing can be compared.
   echo "  installed: $(describe_release) ($(git log -1 --format=%cs))"
-  echo "  latest:    $(describe_release origin/main) ($(git log -1 --format=%cs origin/main)) — origin/main"
+  if have_origin_main; then
+    echo "  latest:    $(describe_release origin/main) ($(git log -1 --format=%cs origin/main)) — origin/main"
+  fi
   # Release-aware identity: once tags exist, say where this checkout sits relative to the newest
   # release, not only relative to the moving main branch. Silent when no release has been cut yet.
   LATEST_TAG="$(latest_release_ref)"
@@ -115,6 +165,14 @@ if [ "$CHECK" -eq 1 ]; then
   echo
   echo "Check only (--check) — not pulling."
   exit 0
+fi
+
+# Past this point every path needs a ref to fast-forward TO, so stop with the promotion
+# instructions rather than failing four commands deep.
+if ! have_origin_main; then
+  echo
+  print_promotion_hint
+  exit 1
 fi
 
 if [ "$BEHIND" -eq 0 ]; then
@@ -170,20 +228,24 @@ git merge --ff-only origin/main
 # the loop in this shell so CHANGED survives.
 echo
 echo "Enabled capabilities changed in this update:"
-CHANGED=0
-while IFS= read -r cap; do
-  [ -n "$cap" ] || continue
-  changed_files="$(git diff --name-only "$OLD_HEAD"..HEAD -- "capabilities/$cap/")"
-  if [ -n "$changed_files" ]; then
-    echo "  $cap:"
-    echo "$changed_files" | head | sed 's/^/    /'
-    CHANGED=1
-  fi
-done <<EOF
-$(toml_array capabilities "$AXON_MACHINE_TOML")
+if ! have_overlay; then
+  echo "  (no overlay configured yet — run tools/install.sh)"
+else
+  CHANGED=0
+  while IFS= read -r cap; do
+    [ -n "$cap" ] || continue
+    changed_files="$(git diff --name-only "$OLD_HEAD"..HEAD -- "capabilities/$cap/")"
+    if [ -n "$changed_files" ]; then
+      echo "  $cap:"
+      echo "$changed_files" | head | sed 's/^/    /'
+      CHANGED=1
+    fi
+  done <<EOF
+$(enabled_capabilities)
 EOF
-if [ "$CHANGED" -eq 0 ]; then
-  echo "  (no enabled capability changed)"
+  if [ "$CHANGED" -eq 0 ]; then
+    echo "  (no enabled capability changed)"
+  fi
 fi
 
 echo
