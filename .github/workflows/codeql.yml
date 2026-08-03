@@ -97,6 +97,17 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: none
+          # Extended rather than the default suite (#46). The default one reports zero findings
+          # across this tree while demonstrably not firing on `eval(sys.argv[1])` or on
+          # `requests.get(..., verify=False)` — both planted and both missed — so "zero" was never
+          # a clean bill of health, it was a quiet suite.
+          #
+          # The trade is a higher false-positive rate for a repository that is pushed in bursts
+          # rather than daily, which makes runtime the cheap side of the ledger. The expensive
+          # side would be findings nobody triages: a permanently-noisy gate is the failure #38
+          # removed from upstream-checker, and if this becomes that, the honest move is to revert
+          # these two lines rather than to start ignoring the tab.
+          queries: security-extended
 
       - name: Analyze
         uses: github/codeql-action/analyze@18420e3271f74589575af831a523c833acda327f # codeql-bundle-v2.26.2
