@@ -150,6 +150,26 @@ pinned and audited — while the selected overlay keeps the inventory of what a 
 installation actually has. `tools/check-publication-hygiene.sh` catches repository names and
 workstation paths; it cannot see aggregation, which is why this is a rule rather than a gate.
 
+### What the installer owns in an agent harness
+
+`~/.claude` belongs to its operator, not to Axon, and the installer's authority over it stops at an
+additive merge of a baseline Axon owns, plus offers. Stated here because the discipline was already
+implemented in three separate tools and written down in none, which is the shape a boundary erodes
+in.
+
+`tools/claude-code-config` is the one write that happens without being asked, on every install
+including a non-interactive one. It merges the USER layer into `settings.json` with existing keys
+winning, so it can add a default and can never remove or overwrite one the operator set, and it
+refuses to touch a `settings.json` it cannot parse rather than replacing it. The MANAGED layer at
+`/etc/claude-code` *is* a full replace — and the installer never deploys it, only prints the sudo
+command, because a security policy that arrives unasked is not one anybody chose.
+
+Nothing else writes unasked. The installer lists Packs and prints the activation command; it never
+links one. Agent-harness integrations are read for status, then installed only behind a TTY and an
+explicit prompt that defaults to no. Every destination is a default rather than an assumption:
+`CLAUDE_CONFIG_DIR`, `CLAUDE_SKILLS_DIR` and `CLAUDE_AGENTS_DIR` move them, and a harness that is
+not present is reported and skipped.
+
 ### Integrate-first topology
 
 A personal or self-authored project folds into Axon by default. It stays separate only when it has
@@ -392,6 +412,40 @@ and the incoming preview cannot drift apart.
 A checkout moves along the line with `tools/update.sh`: fetch, fast-forward, re-run `tools/doctor`.
 It never resets, rebases or force-pushes; a checkout that is both ahead and behind is left alone
 with instructions rather than silently repaired.
+
+### Getting onto the line
+
+The decided shape is one command that fetches a bootstrap script, which clones and then hands off
+to the unchanged `tools/install.sh`. A usage install takes `--depth 1 --branch <tag>`; a
+development install takes a full clone. The operator never types `git clone`. That bootstrap is not
+written yet — `## Start here` shows the clone that works today — so what follows is the decision,
+recorded because the two alternatives were rejected on evidence and should not be reopened without
+new evidence.
+
+A shallow usage install is not a dead end: `git fetch --unshallow` promotes it to a development one
+without reinstalling. The tree exists either way, because it has to — every tool resolves
+`AXON_ROOT` from its own location, and no shape of Axon runs without a directory tree.
+
+**A release tarball instead of a clone was rejected.** Measured at decision time, a `--depth 1`
+clone transfers 3.12 MiB and lands 11.4 MB in 586 files, of which `MODULE.bazel.lock` alone is
+5.7 MB — a Bazel artifact a usage install never reads. A tarball saves nothing measurable and costs
+the update path: `tools/update.sh` is fetch plus fast-forward, so a tarball install would need a
+second update mechanism for the same job.
+
+**An install without git at all was rejected.** `git` is already a declared host requirement in
+`toolchain.toml`, so skipping it removes no dependency and only removes capability. The run path
+would survive — `capability.sh`, `service-runner.sh`, `watchdog.sh` and `packs.sh` make zero git
+calls — but `tools/doctor` makes thirteen that carry weight, and `tools/update.sh` and `tools/self`
+lose the update path and version truth entirely. Axon's version identity *is* the release tag, so a
+git-free install would need a stamped version file, a second source for one fact, plus a second
+update mechanism: extracting over an existing tree leaves behind files upstream deleted. New
+evidence would be git ceasing to be a host requirement, or the run path growing a consumer that
+cannot assume it.
+
+The agent-readable install page is the primary route and the one-liner is the terminal alternative.
+Axon's install contains real decisions — overlay location, container runtime, capability selection,
+secrets — and an agent walking those with a permission gate per step beats a script asking the same
+questions blind. Both land in the same `tools/install.sh` prompts.
 
 ## Packs and agent harnesses
 
