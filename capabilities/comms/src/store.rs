@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
 use crate::evaluation::{EvaluationFactor, EvaluationFactorContext, FeedEvaluation};
+use crate::provenance::{self, StageProvenance};
 use crate::relevance::RelevanceMatch;
 
 pub struct Store {
@@ -60,6 +61,7 @@ pub struct FeedItem {
     /// for it via `get_raw_content`. Retaining it is what lets a normalization
     /// rule change re-run over stored content instead of re-fetching the web.
     pub raw_content: Option<String>,
+    pub summary_provenance: Option<StageProvenance>,
 }
 
 impl FeedItem {
@@ -83,6 +85,7 @@ impl FeedItem {
             summary_next_attempt: None,
             captured_via: None,
             raw_content: None,
+            summary_provenance: None,
         }
     }
 }
@@ -263,6 +266,8 @@ impl Store {
             CREATE TABLE IF NOT EXISTS {schema}.feed_raw_content (
                 feed_id TEXT PRIMARY KEY REFERENCES {schema}.feed_items(id) ON DELETE CASCADE,
                 raw TEXT NOT NULL,
+                tier TEXT NOT NULL DEFAULT 'legacy',
+                revision TEXT NOT NULL DEFAULT 'legacy-unknown',
                 extracted_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
 
@@ -274,6 +279,7 @@ impl Store {
                 item_revision TEXT NOT NULL,
                 context_revision TEXT NOT NULL,
                 evaluator_revision TEXT NOT NULL,
+                tier TEXT NOT NULL DEFAULT 'legacy',
                 evaluated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
 
@@ -333,6 +339,50 @@ impl Store {
             -- would need a migration every time one is added.
             ALTER TABLE {schema}.feed_items
                 ADD COLUMN IF NOT EXISTS captured_via TEXT;
+
+            -- #77: producer provenance lives beside each stage value. Legacy
+            -- rows are labelled unknown rather than assigned a guessed model.
+            ALTER TABLE {schema}.feed_raw_content
+                ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'legacy';
+            ALTER TABLE {schema}.feed_raw_content
+                ADD COLUMN IF NOT EXISTS revision TEXT NOT NULL DEFAULT 'legacy-unknown';
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS normalization_tier TEXT;
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS normalization_revision TEXT;
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS normalization_completed_at TIMESTAMPTZ;
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS summary_tier TEXT;
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS summary_revision TEXT;
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS summary_completed_at TIMESTAMPTZ;
+            ALTER TABLE {schema}.feed_evaluations
+                ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'legacy';
+            ALTER TABLE {schema}.feed_raw_content DROP CONSTRAINT IF EXISTS feed_raw_content_tier_check;
+            ALTER TABLE {schema}.feed_raw_content ADD CONSTRAINT feed_raw_content_tier_check
+                CHECK (tier IN ('legacy','deterministic','model','human'));
+            ALTER TABLE {schema}.feed_items DROP CONSTRAINT IF EXISTS feed_items_normalization_tier_check;
+            ALTER TABLE {schema}.feed_items ADD CONSTRAINT feed_items_normalization_tier_check
+                CHECK (normalization_tier IS NULL OR normalization_tier IN ('legacy','deterministic','model','human'));
+            ALTER TABLE {schema}.feed_items DROP CONSTRAINT IF EXISTS feed_items_summary_tier_check;
+            ALTER TABLE {schema}.feed_items ADD CONSTRAINT feed_items_summary_tier_check
+                CHECK (summary_tier IS NULL OR summary_tier IN ('legacy','deterministic','model','human'));
+            ALTER TABLE {schema}.feed_evaluations DROP CONSTRAINT IF EXISTS feed_evaluations_tier_check;
+            ALTER TABLE {schema}.feed_evaluations ADD CONSTRAINT feed_evaluations_tier_check
+                CHECK (tier IN ('legacy','deterministic','model','human'));
+            UPDATE {schema}.feed_items SET
+                normalization_tier = 'legacy', normalization_revision = 'legacy-unknown',
+                normalization_completed_at = created_at
+            WHERE transcript IS NOT NULL AND normalization_tier IS NULL;
+            UPDATE {schema}.feed_items SET
+                summary_tier = 'legacy', summary_revision = 'legacy-unknown',
+                summary_completed_at = created_at
+            WHERE summary IS NOT NULL AND summary_tier IS NULL;
+            UPDATE {schema}.feed_evaluations SET tier =
+                CASE WHEN mode IN ('reranked','semantic') THEN 'model' ELSE 'deterministic' END
+            WHERE tier = 'legacy';
 
             -- #71: cross-encoder scores are distinct from bi-encoder cosine
             -- scores. Widen both persisted mode ledgers so an existing database
@@ -473,6 +523,18 @@ impl Store {
     /// stored value. Returns `is_new`.
     pub fn upsert_feed(&self, item: &FeedItem) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
+        let summary_provenance = item.summary.as_ref().map(|_| {
+            item.summary_provenance
+                .clone()
+                .unwrap_or_else(|| StageProvenance::legacy("inline-summary-unknown"))
+        });
+        let summary_tier = summary_provenance.as_ref().map(|value| value.tier.as_str());
+        let summary_revision = summary_provenance.as_ref().map(|value| value.revision.as_str());
+        let normalization_tier = item.transcript.as_ref().map(|_| "deterministic");
+        let normalization_revision = item
+            .transcript
+            .as_ref()
+            .map(|_| provenance::NORMALIZATION_REVISION);
         let existing = conn.query_opt(
             &format!("SELECT id FROM {}.feed_items WHERE id = $1", self.schema),
             &[&item.id],
@@ -482,25 +544,66 @@ impl Store {
         conn.execute(
             &format!(
                 "INSERT INTO {schema}.feed_items AS f
-                    (id, stream, kind, title, url, author, summary, transcript, day, created_at, status, content_status, captured_via)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8, CURRENT_DATE, now(), 'new', $9, $10)
+                    (id, stream, kind, title, url, author, summary, transcript, day, created_at,
+                     status, content_status, captured_via, normalization_tier,
+                     normalization_revision, normalization_completed_at,
+                     summary_tier, summary_revision, summary_completed_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8, CURRENT_DATE, now(), 'new',
+                         $9,$10,$11,$12, CASE WHEN $8::text IS NOT NULL THEN now() END,
+                         $13,$14, CASE WHEN $7::text IS NOT NULL THEN now() END)
                  ON CONFLICT (id) DO UPDATE SET
                      stream = excluded.stream,
                      kind = excluded.kind,
                      title = COALESCE(excluded.title, f.title),
                      url = excluded.url,
                      author = COALESCE(excluded.author, f.author),
-                     summary = COALESCE(excluded.summary, f.summary),
-                     transcript = COALESCE(excluded.transcript, f.transcript),
+                     summary = CASE WHEN excluded.summary IS NOT NULL AND
+                         CASE excluded.summary_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                         CASE f.summary_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN excluded.summary ELSE f.summary END,
+                     summary_tier = CASE WHEN excluded.summary IS NOT NULL AND
+                         CASE excluded.summary_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                         CASE f.summary_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN excluded.summary_tier ELSE f.summary_tier END,
+                     summary_revision = CASE WHEN excluded.summary IS NOT NULL AND
+                         CASE excluded.summary_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                         CASE f.summary_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN excluded.summary_revision ELSE f.summary_revision END,
+                     summary_completed_at = CASE WHEN excluded.summary IS NOT NULL AND
+                         CASE excluded.summary_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                         CASE f.summary_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN now() ELSE f.summary_completed_at END,
+                     transcript = CASE WHEN excluded.transcript IS NOT NULL AND
+                         CASE excluded.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                         CASE f.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN excluded.transcript ELSE f.transcript END,
+                     normalization_tier = CASE WHEN excluded.transcript IS NOT NULL AND
+                         CASE excluded.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                         CASE f.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN excluded.normalization_tier ELSE f.normalization_tier END,
+                     normalization_revision = CASE WHEN excluded.transcript IS NOT NULL AND
+                         CASE excluded.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                         CASE f.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN excluded.normalization_revision ELSE f.normalization_revision END,
+                     normalization_completed_at = CASE WHEN excluded.transcript IS NOT NULL AND
+                         CASE excluded.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                         CASE f.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN now() ELSE f.normalization_completed_at END,
                      -- Follows the transcript: provenance describes the content
                      -- actually stored, so a re-fetch that yields nothing must
                      -- not relabel a captured body as server-fetched.
                      captured_via = CASE
-                         WHEN excluded.transcript IS NOT NULL THEN excluded.captured_via
+                         WHEN excluded.transcript IS NOT NULL AND
+                           CASE excluded.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                           CASE f.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN excluded.captured_via
                          ELSE f.captured_via
                      END,
                      content_status = CASE
-                         WHEN f.content_status = 'unknown' THEN excluded.content_status
+                         WHEN excluded.transcript IS NOT NULL AND
+                           CASE excluded.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                           CASE f.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN excluded.content_status
                          ELSE f.content_status
                      END",
                 schema = self.schema
@@ -516,6 +619,10 @@ impl Store {
                 &item.transcript,
                 &item.content_status,
                 &item.captured_via,
+                &normalization_tier,
+                &normalization_revision,
+                &summary_tier,
+                &summary_revision,
             ],
         )?;
 
@@ -524,14 +631,18 @@ impl Store {
         if let Some(raw) = &item.raw_content {
             conn.execute(
                 &format!(
-                    "INSERT INTO {schema}.feed_raw_content (feed_id, raw)
-                     VALUES ($1, $2)
+                    "INSERT INTO {schema}.feed_raw_content AS current (feed_id, raw, tier, revision)
+                     VALUES ($1, $2, 'deterministic', $3)
                      ON CONFLICT (feed_id) DO UPDATE SET
                          raw = excluded.raw,
-                         extracted_at = now()",
+                         tier = excluded.tier,
+                         revision = excluded.revision,
+                         extracted_at = now()
+                     WHERE CASE excluded.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                           CASE current.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END",
                     schema = self.schema
                 ),
-                &[&item.id, raw],
+                &[&item.id, raw, &provenance::EXTRACTION_REVISION],
             )?;
         }
 
@@ -572,16 +683,21 @@ impl Store {
         id: &str,
         transcript: Option<&str>,
         content_status: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
-        conn.execute(
+        let affected = conn.execute(
             &format!(
-                "UPDATE {}.feed_items SET transcript = $1, content_status = $2 WHERE id = $3",
+                "UPDATE {}.feed_items SET transcript = $1, content_status = $2,
+                    normalization_tier = 'deterministic', normalization_revision = $4,
+                    normalization_completed_at = now()
+                 WHERE id = $3 AND 10 >= CASE normalization_tier
+                    WHEN 'human' THEN 30 WHEN 'model' THEN 20
+                    WHEN 'deterministic' THEN 10 ELSE 0 END",
                 self.schema
             ),
-            &[&transcript, &content_status, &id],
+            &[&transcript, &content_status, &id, &provenance::NORMALIZATION_REVISION],
         )?;
-        Ok(())
+        Ok(affected > 0)
     }
 
     pub fn set_feed_status(&self, id: &str, status: &str) -> Result<bool, Box<dyn std::error::Error>> {
@@ -609,16 +725,70 @@ impl Store {
         Ok(row.map(|r| r.get::<_, String>(0)))
     }
 
-    pub fn update_feed_summary(&self, id: &str, summary: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    pub fn update_feed_summary(
+        &self,
+        id: &str,
+        summary: &str,
+        producer_revision: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let affected = conn.execute(
             &format!(
-                "UPDATE {}.feed_items SET summary = $1, summary_attempts = 0, summary_last_error = NULL, summary_next_attempt = NULL WHERE id = $2",
+                "UPDATE {}.feed_items SET summary = $1, summary_tier = 'model',
+                    summary_revision = $3, summary_completed_at = now(), summary_attempts = 0,
+                    summary_last_error = NULL, summary_next_attempt = NULL
+                 WHERE id = $2 AND 20 >= CASE summary_tier
+                    WHEN 'human' THEN 30 WHEN 'model' THEN 20
+                    WHEN 'deterministic' THEN 10 ELSE 0 END",
                 self.schema
             ),
-            &[&summary, &id],
+            &[&summary, &id, &producer_revision],
         )?;
         Ok(affected > 0)
+    }
+
+    /// Read producer provenance from the same rows that own each stage value.
+    pub fn feed_stage_results(
+        &self,
+        id: &str,
+    ) -> Result<Vec<StageProvenance>, Box<dyn std::error::Error>> {
+        let mut conn = self.conn.lock().unwrap();
+        let row = conn.query_opt(
+            &format!(
+                "SELECT r.tier, r.revision, r.extracted_at::text,
+                        f.normalization_tier, f.normalization_revision, f.normalization_completed_at::text,
+                        f.summary_tier, f.summary_revision, f.summary_completed_at::text,
+                        e.tier, e.evaluator_revision, e.evaluated_at::text
+                 FROM {schema}.feed_items f
+                 LEFT JOIN {schema}.feed_raw_content r ON r.feed_id = f.id
+                 LEFT JOIN {schema}.feed_evaluations e ON e.feed_id = f.id
+                 WHERE f.id = $1",
+                schema = self.schema
+            ),
+            &[&id],
+        )?;
+        let Some(row) = row else { return Ok(Vec::new()) };
+        let mut stages = Vec::new();
+        for (stage, tier_index, revision_index, time_index) in [
+            ("extraction", 0, 1, 2),
+            ("normalization", 3, 4, 5),
+            ("summary", 6, 7, 8),
+            ("ranking", 9, 10, 11),
+        ] {
+            if let Some(tier) = row.get::<_, Option<String>>(tier_index) {
+                stages.push(StageProvenance {
+                    stage: stage.to_string(),
+                    tier,
+                    revision: row
+                        .get::<_, Option<String>>(revision_index)
+                        .unwrap_or_else(|| "legacy-unknown".into()),
+                    completed_at: row
+                        .get::<_, Option<String>>(time_index)
+                        .unwrap_or_default(),
+                });
+            }
+        }
+        Ok(stages)
     }
 
     /// Increment the attempt counter, record the error class, and set the next
@@ -790,9 +960,23 @@ impl Store {
         &self,
         feed_id: &str,
         matches: &[RelevanceMatch],
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let mut transaction = conn.transaction()?;
+        let incoming_tier = matches
+            .first()
+            .map(|matched| provenance::ranking_tier(&matched.mode))
+            .unwrap_or("deterministic");
+        let current = transaction.query_opt(
+            &format!("SELECT tier FROM {}.feed_evaluations WHERE feed_id = $1", self.schema),
+            &[&feed_id],
+        )?;
+        if current.is_some_and(|row| {
+            provenance::tier_rank(incoming_tier)
+                < provenance::tier_rank(row.get::<_, String>(0).as_str())
+        }) {
+            return Ok(false);
+        }
         transaction.execute(
             &format!("DELETE FROM {}.feed_relevance WHERE feed_id = $1", self.schema),
             &[&feed_id],
@@ -817,7 +1001,7 @@ impl Store {
             )?;
         }
         transaction.commit()?;
-        Ok(())
+        Ok(true)
     }
 
     pub fn feed_relevance(&self, feed_id: &str) -> Result<Vec<RelevanceMatch>, Box<dyn std::error::Error>> {
@@ -846,15 +1030,16 @@ impl Store {
     /// Store the complete evaluation and its factors atomically. The factor
     /// table is normalized so future trip/deadline factors can be added without
     /// a schema migration or an opaque JSON payload.
-    pub fn replace_feed_evaluation(&self, evaluation: &FeedEvaluation) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn replace_feed_evaluation(&self, evaluation: &FeedEvaluation) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let mut transaction = conn.transaction()?;
-        transaction.execute(
+        let tier = provenance::ranking_tier(&evaluation.mode);
+        let affected = transaction.execute(
             &format!(
                 "INSERT INTO {schema}.feed_evaluations
                     (feed_id, overall_score, explanation, mode, item_revision,
-                     context_revision, evaluator_revision, evaluated_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,now())
+                     context_revision, evaluator_revision, tier, evaluated_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())
                  ON CONFLICT (feed_id) DO UPDATE SET
                     overall_score = excluded.overall_score,
                     explanation = excluded.explanation,
@@ -862,7 +1047,10 @@ impl Store {
                     item_revision = excluded.item_revision,
                     context_revision = excluded.context_revision,
                     evaluator_revision = excluded.evaluator_revision,
-                    evaluated_at = now()",
+                    tier = excluded.tier,
+                    evaluated_at = now()
+                 WHERE CASE excluded.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                       CASE feed_evaluations.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END",
                 schema = self.schema
             ),
             &[
@@ -873,8 +1061,12 @@ impl Store {
                 &evaluation.item_revision,
                 &evaluation.context_revision,
                 &evaluation.evaluator_revision,
+                &tier,
             ],
         )?;
+        if affected == 0 {
+            return Ok(false);
+        }
         transaction.execute(
             &format!("DELETE FROM {}.feed_evaluation_factors WHERE feed_id = $1", self.schema),
             &[&evaluation.feed_id],
@@ -901,7 +1093,7 @@ impl Store {
             )?;
         }
         transaction.commit()?;
-        Ok(())
+        Ok(true)
     }
 
     pub fn feed_evaluation(&self, feed_id: &str) -> Result<Option<FeedEvaluation>, Box<dyn std::error::Error>> {
@@ -1249,6 +1441,7 @@ fn row_to_feed_list(r: &postgres::Row) -> FeedItem {
         // Raw extraction output lives in its own table; `get_raw_content` is
         // the only reader, and only the renormalize path asks for it.
         raw_content: None,
+        summary_provenance: None,
     }
 }
 
@@ -1273,6 +1466,7 @@ fn row_to_feed_full(r: &postgres::Row) -> FeedItem {
         // Raw extraction output lives in its own table; `get_raw_content` is
         // the only reader, and only the renormalize path asks for it.
         raw_content: None,
+        summary_provenance: None,
     }
 }
 
@@ -1442,7 +1636,7 @@ mod tests {
         assert!(store.upsert_feed(&item).unwrap(), "first insert is new");
 
         // Give it a summary out of band (as summarize would).
-        store.update_feed_summary(&item.id, "distilled").unwrap();
+        store.update_feed_summary(&item.id, "distilled", "test-summarizer-v1").unwrap();
 
         // Re-ingest with summary=None must NOT wipe the stored summary.
         item.summary = None;
@@ -1456,6 +1650,20 @@ mod tests {
             "summary preserved via COALESCE"
         );
         assert_eq!(stored.title.as_deref(), Some("Better Title"), "title updated");
+
+        item.summary = Some("older imported summary".into());
+        item.summary_provenance = Some(StageProvenance::legacy("old-import"));
+        store.upsert_feed(&item).unwrap();
+        assert_eq!(
+            store.get_feed(&item.id).unwrap().unwrap().summary.as_deref(),
+            Some("distilled"),
+            "a legacy summary cannot replace a model-tier result"
+        );
+        let stages = store.feed_stage_results(&item.id).unwrap();
+        assert_eq!(
+            stages.iter().find(|stage| stage.stage == "summary").unwrap().tier,
+            "model"
+        );
     }
 
     #[test]
@@ -1537,6 +1745,21 @@ mod tests {
             Some("trip:one")
         );
         assert_eq!(store.evaluation_summary().unwrap().reranked, 1);
+
+        let mut lower = evaluation.clone();
+        lower.mode = "lexical".into();
+        lower.overall_score = 0.1;
+        lower.evaluator_revision = "fallback-v2".into();
+        assert!(!store.replace_feed_evaluation(&lower).unwrap());
+        assert_eq!(
+            store.feed_evaluation(&item.id).unwrap().unwrap().overall_score,
+            0.4,
+            "a deterministic ranking cannot replace a model-tier result"
+        );
+        let stages = store.feed_stage_results(&item.id).unwrap();
+        let ranking = stages.iter().find(|stage| stage.stage == "ranking").unwrap();
+        assert_eq!(ranking.tier, "model");
+        assert_eq!(ranking.revision, "feed-evaluator-v3-reranking");
     }
 
     #[test]
@@ -1581,7 +1804,7 @@ mod tests {
         assert_eq!(counts_after.failed_summaries, 1);
 
         // Updating summary resets attempt counters.
-        store.update_feed_summary(&item.id, "Summary fixed").unwrap();
+        store.update_feed_summary(&item.id, "Summary fixed", "test-summarizer-v1").unwrap();
         let fetched = store.get_feed(&item.id).unwrap().unwrap();
         assert_eq!(fetched.summary.as_deref(), Some("Summary fixed"));
         assert_eq!(fetched.summary_attempts, 0);

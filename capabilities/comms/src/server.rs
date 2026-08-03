@@ -22,6 +22,7 @@ use tower_http::cors::CorsLayer;
 use comms::config::Config;
 use comms::evaluation::{self, EvaluationFactor, FeedEvaluation};
 use comms::media;
+use comms::provenance::StageProvenance;
 use comms::relevance::{self, RelevanceMatch};
 use comms::sources;
 use comms::store::{FeedItem, FeedOrigin, FeedRun, OriginSummary, Store, TriageItem};
@@ -186,6 +187,25 @@ impl From<FeedOrigin> for OriginOut {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct StageProvenanceOut {
+    stage: String,
+    tier: String,
+    revision: String,
+    completed_at: String,
+}
+
+impl From<StageProvenance> for StageProvenanceOut {
+    fn from(value: StageProvenance) -> Self {
+        Self {
+            stage: value.stage,
+            tier: value.tier,
+            revision: value.revision,
+            completed_at: value.completed_at,
+        }
+    }
+}
+
 /// List payload omits the transcript and carries only the strongest TELOS
 /// match. The reader endpoint returns every stored match.
 #[derive(Debug, Serialize)]
@@ -245,6 +265,7 @@ struct FeedFullItem {
     captured_via: Option<String>,
     relevance: Vec<RelevanceOut>,
     evaluation: Option<EvaluationOut>,
+    processing: Vec<StageProvenanceOut>,
     origins: Vec<OriginOut>,
 }
 
@@ -253,6 +274,7 @@ impl FeedFullItem {
         item: FeedItem,
         relevance: Vec<RelevanceMatch>,
         evaluation: Option<FeedEvaluation>,
+        processing: Vec<StageProvenance>,
         origins: Vec<FeedOrigin>,
     ) -> Self {
         Self {
@@ -271,6 +293,7 @@ impl FeedFullItem {
             captured_via: item.captured_via,
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
             evaluation: evaluation.map(EvaluationOut::from),
+            processing: processing.into_iter().map(StageProvenanceOut::from).collect(),
             origins: origins.into_iter().map(OriginOut::from).collect(),
         }
     }
@@ -395,8 +418,11 @@ fn full_item(store: &Store, item: FeedItem) -> Result<FeedFullItem, String> {
     let evaluation = store
         .feed_evaluation(&item.id)
         .map_err(|error| error.to_string())?;
+    let processing = store
+        .feed_stage_results(&item.id)
+        .map_err(|error| error.to_string())?;
     Ok(FeedFullItem::from_store(
-        item, relevance, evaluation, origins,
+        item, relevance, evaluation, processing, origins,
     ))
 }
 

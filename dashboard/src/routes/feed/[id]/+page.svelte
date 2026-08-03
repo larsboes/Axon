@@ -47,6 +47,12 @@
         entry?.kind === "podcast" ||
         entry?.kind === "instagram"),
   );
+  const STAGE_LABEL: Record<string, string> = {
+    extraction: "Extraction",
+    normalization: "Normalization",
+    summary: "Summary",
+    ranking: "Ranking",
+  };
 
   onMount(() => {
     void (async () => {
@@ -170,6 +176,7 @@
               <dd>{new Date(entry.created_at).toLocaleDateString("en-GB")}</dd>
             </div>
             <div><dt>Reading time</dt><dd>{readMinutes} min</dd></div>
+            <div><dt>Feed status</dt><dd>{entry.status}</dd></div>
             <div>
               <dt>Processing</dt>
               <dd>{entry.summary ? "Summary + source" : "Formatted source"}</dd>
@@ -202,6 +209,23 @@
                 </details>
               </div>
             {/each}
+          </section>
+        {/if}
+
+        {#if entry.processing.length > 0}
+          <section aria-labelledby="processing-title">
+            <p class="section-label" id="processing-title">Processing provenance</p>
+            <dl class="processing-ledger">
+              {#each entry.processing as stage (stage.stage)}
+                <div>
+                  <dt>{STAGE_LABEL[stage.stage] ?? stage.stage}</dt>
+                  <dd>
+                    <span>{stage.tier}</span>
+                    <span class="mono" title={stage.revision}>{stage.revision}</span>
+                  </dd>
+                </div>
+              {/each}
+            </dl>
           </section>
         {/if}
 
@@ -441,6 +465,26 @@
     margin: 0;
     color: var(--text-secondary);
     text-align: right;
+  }
+
+  .processing-ledger div {
+    align-items: flex-start;
+  }
+
+  .processing-ledger dd {
+    display: flex;
+    min-width: 0;
+    max-width: 12rem;
+    flex-direction: column;
+    gap: 0.08rem;
+  }
+
+  .processing-ledger .mono {
+    overflow: hidden;
+    color: var(--text-tertiary);
+    font-size: 0.5625rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .aside-title,
