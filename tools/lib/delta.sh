@@ -18,8 +18,9 @@ command -v toml_sections >/dev/null 2>&1 || . "$_delta_dir/toml.sh"   # defensiv
 # number (norm_ver strips the leading v) wins, so a stray `v1.0.0-rc1` or a non-version tag is
 # skipped rather than mistaken for the latest release.
 latest_release_ref() {
-  local t
-  for t in $(git -C "$AXON_ROOT" tag -l 'v*' --sort=-v:refname 2>/dev/null); do
+  local t glob
+  glob="$(release_tag_glob)" || return 1
+  for t in $(git -C "$AXON_ROOT" tag -l "$glob" --sort=-v:refname 2>/dev/null); do
     if ver_numeric "$(norm_ver "$t")"; then printf '%s\n' "$t"; return 0; fi
   done
   return 0

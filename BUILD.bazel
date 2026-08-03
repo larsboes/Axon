@@ -136,7 +136,13 @@ sh_test(
     name = "version_compare_test",
     size = "small",
     srcs = ["tools/version.test.sh"],
-    data = ["tools/lib/version.sh"],
+    # toml.sh too: version.sh reads the release-tag glob from axon.toml, so its one
+    # dependency travels with it into the sandbox. The test builds its own axon.toml
+    # fixture rather than reading the tracked one, so that file is deliberately absent.
+    data = [
+        "tools/lib/toml.sh",
+        "tools/lib/version.sh",
+    ],
 )
 
 # One bun version, three files. repositories.bzl is the declared source of truth and

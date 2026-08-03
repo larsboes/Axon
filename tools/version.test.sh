@@ -53,6 +53,39 @@ check "v-prefix stripped"                yes [ "$(norm_ver v8.30.1)" = "8.30.1" 
 check "bare version untouched"           yes [ "$(norm_ver 8.30.1)" = "8.30.1" ]
 check "v inside a tag untouched"         yes [ "$(norm_ver cli-v2026.6.0)" = "cli-v2026.6.0" ]
 
+# --- release-line identity ------------------------------------------------
+# The falsifier for the hijack this guards against: a tag that is not on the release line must
+# not become the reported version. A synthetic repo rather than this checkout, so the assertion
+# holds on a machine that happens to carry no tags, or the wrong ones.
+_fixture="$(mktemp -d)"
+trap 'rm -rf "$_fixture"' EXIT
+_g() { git -C "$_fixture" -c user.email=t@example.invalid -c user.name=t -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
+
+_g init -q
+printf '[release]\ntag_glob = "v[0-9]*"\n' > "$_fixture/axon.toml"
+_g add axon.toml
+_g commit -m "release fixture"
+_g tag v0.1.0
+printf 'second\n' > "$_fixture/later.txt"
+_g add later.txt
+_g commit -m "after the release"
+# The kind of tag that caused this: a marker parked on the same line, not a release.
+_g tag archive/dev-pre-public
+
+AXON_ROOT="$_fixture"; export AXON_ROOT
+
+# `check` runs a command, and `case` is a keyword — so the pattern tests get real predicates.
+starts_with() { case "$2" in "$1"*) return 0 ;; *) return 1 ;; esac; }
+contains()    { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+
+check "glob comes from axon.toml"        yes [ "$(release_tag_glob)" = "v[0-9]*" ]
+check "describe_release finds v0.1.0"    yes starts_with v0.1.0 "$(describe_release)"
+check "a non-release tag never wins"     no  contains archive "$(describe_release)"
+# The control: an unrestricted describe DOES pick the marker up, which is the whole point.
+check "bare describe is hijacked"        yes starts_with archive/ "$(git -C "$_fixture" describe --tags)"
+# Explicit revision: --dirty is illegal with a rev, so this exercises the other branch.
+check "describe_release takes a rev"     yes [ "$(describe_release v0.1.0)" = "v0.1.0" ]
+
 if [ "$fails" -gt 0 ]; then
   echo "version.sh: $fails check(s) failed"
   exit 1

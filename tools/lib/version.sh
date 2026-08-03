@@ -23,3 +23,34 @@ ver_numeric() { printf '%s' "$1" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; }
 ver_gt() {
   [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
 }
+
+# --- release-line identity ------------------------------------------------
+# Defensive source: normally toml.sh arrives via paths.sh, but version.sh is also sourced
+# directly by tests that never went through it. Same idiom as delta.sh.
+command -v toml_get_in >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/toml.sh"
+
+# release_tag_glob — the pattern that decides which tags are release tags, from axon.toml
+# [release] tag_glob. Read rather than hardcoded because six call sites in two languages ask
+# the same question; a literal in each is how a non-release tag takes over version identity.
+# Fails loudly rather than guessing: a missing key means the manifest is wrong, and a silent
+# default would restore exactly the one-home problem this exists to remove.
+release_tag_glob() {
+  local g
+  g="$(toml_get_in release tag_glob "${AXON_ROOT:?AXON_ROOT unset}/axon.toml")"
+  [ -n "$g" ] || { echo "version.sh: axon.toml has no [release] tag_glob" >&2; return 1; }
+  printf '%s' "$g"
+}
+
+# describe_release [<rev>] — `git describe` restricted to the release line. Degrades to a short
+# sha when no release tag is reachable, which is the honest answer for an untagged checkout and
+# the reason --always is kept. Marks a dirty tree only when describing the working copy: git
+# rejects --dirty together with an explicit revision.
+describe_release() {
+  local rev="${1:-}" glob
+  glob="$(release_tag_glob)" || return 1
+  if [ -n "$rev" ]; then
+    git -C "$AXON_ROOT" describe --tags --always --match "$glob" "$rev" 2>/dev/null
+  else
+    git -C "$AXON_ROOT" describe --tags --always --dirty --match "$glob" 2>/dev/null
+  fi
+}
