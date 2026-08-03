@@ -833,6 +833,87 @@ const CHECKS: Check[] = [
     },
   },
 
+  // Boot persistence for the autostart set. A capability could declare autostart = true, be
+  // enabled, run fine all day, and simply be gone after the next reboot — because nothing ever
+  // called install-persistence and nothing ever checked (#9). Delegated to service-runner.sh,
+  // which owns the rule; doctor reports. Same shape as the upstream-checker delegation.
+  //
+  // The second half is the inverse and is not cosmetic: watchdog.sh calls
+  // `service-runner.sh start <cap>` every 30s and consults nothing about the enabled set, so a
+  // unit left behind by `capability.sh disable` walks a disabled capability back up.
+  {
+    name: "Boot persistence (autostart set)",
+    run(ctx) {
+      const runner = join(ctx.root, "tools", "service-runner.sh");
+      if (!existsSync(runner)) {
+        ctx.warn(`missing ${runner}`);
+        return;
+      }
+      const proc = Bun.spawnSync({ cmd: [runner, "persistence"], stdout: "pipe", stderr: "pipe" });
+      const lines = proc.stdout.toString().trim().split("\n").filter(Boolean);
+      if (lines.length === 0) {
+        ctx.warn("service-runner.sh persistence returned nothing — persistence state unverified");
+      }
+      let owed = 0;
+      for (const line of lines) {
+        const [name, state, detail] = line.split("\t");
+        switch (state) {
+          case "installed":
+          case "n/a":
+            break;
+          case "missing":
+            ctx.bad(`'${name}' declares autostart but has no persistence installed — it will not come back after a reboot (tools/service-runner.sh install-persistence ${name})`);
+            owed++;
+            break;
+          case "stale":
+            ctx.warn(`'${name}': ${detail}`);
+            owed++;
+            break;
+          case "installed-not-loaded":
+            ctx.warn(`'${name}': ${detail}`);
+            owed++;
+            break;
+          case "unsupported":
+            ctx.warn(`'${name}': ${detail}`);
+            break;
+          default:
+            ctx.warn(`'${name}': unexpected persistence state '${state}'`);
+            break;
+        }
+      }
+
+      // Units for capabilities this machine does not enable. Names come from the unit filenames,
+      // which are Axon's own (com.axon.<cap> / axon-<cap>.service), never from listing the
+      // overlay — an overlay capability's name is a fact about a private deployment.
+      const enabled = new Set<string>(Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : []);
+      const os = ctx.machineToml?.os;
+      const home = process.env.HOME ?? "";
+      const unitDir =
+        os === "macos" ? join(home, "Library", "LaunchAgents")
+        : os === "linux" ? join(process.env.XDG_CONFIG_HOME ?? join(home, ".config"), "systemd", "user")
+        : "";
+      const orphans: string[] = [];
+      if (unitDir && existsSync(unitDir)) {
+        for (const f of readdirSync(unitDir)) {
+          const cap =
+            os === "macos" ? (f.startsWith("com.axon.") && f.endsWith(".plist") ? f.slice("com.axon.".length, -".plist".length) : null)
+            : (f.startsWith("axon-") && f.endsWith(".service") ? f.slice("axon-".length, -".service".length) : null);
+          // `dashboard` is a spine component rather than a capability, so it is legitimately
+          // absent from the enabled set while owning a unit (tools/lib/paths.sh's
+          // axon_manifest_for reads it from the repo root).
+          if (cap && cap !== "dashboard" && !enabled.has(cap)) orphans.push(cap);
+        }
+      }
+      for (const cap of orphans.sort()) {
+        ctx.warn(`persistence is installed for '${cap}', which this machine does not enable — its watchdog will start it anyway (tools/service-runner.sh remove-persistence ${cap})`);
+      }
+
+      if (owed === 0 && orphans.length === 0 && lines.length > 0) {
+        ctx.ok(`${lines.length} enabled capabilities checked, persistence matches the declaration`);
+      }
+    },
+  },
+
   {
     name: "State mounts",
     run(ctx) {

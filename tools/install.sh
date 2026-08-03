@@ -302,5 +302,42 @@ case "$CAP_INPUT" in
     ;;
 esac
 
+# 8) Boot persistence for the autostart set. Nothing reconciled this before (#9): a capability
+# could declare autostart = true, be enabled here, start fine, and be gone after the next reboot,
+# with no warning at any point. Asked rather than assumed — installing persistence loads a launchd
+# or systemd unit, which is a machine-level change an installer should not make silently. Declining
+# is fine and leaves the state doctor already reports.
+echo
+PERSIST_OWED=""
+while IFS=$'\t' read -r p_name p_state _; do
+  [ -n "$p_name" ] || continue
+  case "$p_state" in
+    missing|stale) PERSIST_OWED="$PERSIST_OWED $p_name" ;;
+  esac
+done <<EOF
+$("$TOOLS_DIR/service-runner.sh" persistence 2>/dev/null || true)
+EOF
+
+if [ -n "$PERSIST_OWED" ]; then
+  echo "These enabled capabilities declare autostart but have no matching boot persistence:"
+  for cap in $PERSIST_OWED; do echo "  $cap"; done
+  echo "Without it they do not come back after a reboot."
+  read -r -p "Install boot persistence for them now? [y/N]: " PERSIST_INPUT
+  case "$PERSIST_INPUT" in
+    y|Y|yes|Yes|YES)
+      for cap in $PERSIST_OWED; do
+        "$TOOLS_DIR/service-runner.sh" install-persistence "$cap" \
+          || echo "install.sh: install-persistence '$cap' failed — continuing." >&2
+      done
+      ;;
+    *)
+      echo "Skipped — install later with: tools/service-runner.sh install-persistence <name>"
+      echo "tools/doctor reports this for as long as it is outstanding."
+      ;;
+  esac
+else
+  echo "Boot persistence: nothing outstanding for the enabled autostart set."
+fi
+
 echo
 echo "Setup done."

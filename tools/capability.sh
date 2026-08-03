@@ -57,6 +57,13 @@ _has_service() {  # <name> -> exit 0 if either root declares it
   axon_manifest_for "$1" >/dev/null 2>&1
 }
 
+_is_autostart() {  # <name> -> exit 0 when the manifest declares autostart = "true"
+  local mf
+  mf="$(axon_manifest_for "$1" 2>/dev/null)" || return 1
+  [ -n "$mf" ] || return 1
+  [ "$(toml_get autostart "$mf")" = "true" ]
+}
+
 # A capability directory, from whichever root holds it. Separate from _manifest_for
 # because a capability is allowed to exist before it declares a service: `enable` and
 # dependency resolution ask "is this a real capability", not "does it run".
@@ -230,6 +237,14 @@ cmd_enable() {  # <name>
     echo "Next step (not run automatically — start each when ready):"
     for n in $suggested; do
       echo "  tools/service-runner.sh start $n"
+      # A capability that declares autostart is claiming it should always be running, and
+      # `start` alone does not survive a reboot. Nothing used to say so, which is how a
+      # capability could run all day and be gone the next morning (#9). Named here rather than
+      # done here: installing persistence loads a launchd/systemd unit, and this tool starts
+      # nothing. tools/doctor reports whichever of these were never run.
+      if _is_autostart "$n"; then
+        echo "  tools/service-runner.sh install-persistence $n   # declares autostart — survives a reboot only with this"
+      fi
     done
   fi
 }
@@ -367,6 +382,22 @@ cmd_disable() {  # <name>
   done
   _write_capabilities "$kept"
   echo "Disabled '$name'. machine.toml: capabilities updated."
+
+  # Persistence disposition, stated rather than assumed (#9). A leftover unit is NOT inert:
+  # watchdog.sh calls `service-runner.sh start <cap>` every 30s and consults nothing about the
+  # enabled set, so persistence left behind here walks the capability straight back up — a
+  # disable that silently does not disable. Reported, not performed: unloading a launchd or
+  # systemd unit is a machine-level side effect, and this tool starts and stops nothing.
+  # tools/doctor repeats it for as long as it is true, so ignoring this line does not bury it.
+  local state
+  state="$("$TOOLS_DIR/service-runner.sh" persistence-status "$name" 2>/dev/null | cut -f2)" || state=""
+  case "$state" in
+    installed|installed-not-loaded|stale)
+      echo
+      echo "Persistence is still installed for '$name'. Its watchdog will keep starting it every 30s."
+      echo "  tools/service-runner.sh remove-persistence $name"
+      ;;
+  esac
 }
 
 case "${1:-list}" in

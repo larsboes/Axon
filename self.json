@@ -311,8 +311,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 81,
-        "nodes": 678
+        "files": 79,
+        "nodes": 667
       }
     },
     {
@@ -937,7 +937,10 @@
     "present": true,
     "nodes": 5355,
     "external": 5,
-    "stale": [],
+    "stale": [
+      "tools/lib/publish.sh",
+      "tools/publish.test.sh"
+    ],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",
