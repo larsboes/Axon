@@ -129,7 +129,20 @@ MAINT_MAX_AGE=1800
 maintenance_hold_active() {
   [ -f "$MAINT_LOCK" ] || return 1
   local mtime now age
-  mtime="$(stat -f %m "$MAINT_LOCK" 2>/dev/null || stat -c %Y "$MAINT_LOCK" 2>/dev/null || echo 0)"
+  # GNU first, BSD second, and the order is load-bearing. `stat -f` on Linux means "display FILE
+  # SYSTEM status" and SUCCEEDS, printing a multi-line report starting with `File: "..."` -- so
+  # the old chain (-f then -c) never reached the Linux branch, fed that report to the arithmetic
+  # below, and died with `File: unbound variable` under set -u. Every hold-consulting command was
+  # therefore broken on Linux, including the resume tools/backup.sh depends on (#31).
+  mtime="$(stat -c %Y "$MAINT_LOCK" 2>/dev/null || stat -f %m "$MAINT_LOCK" 2>/dev/null || true)"
+  # A hold that cannot be dated is not a hold that has expired. Keep it and say so: dropping it
+  # would let the watchdog race whatever opened the window.
+  case "$mtime" in
+    ''|*[!0-9]*)
+      echo "service-runner.sh: cannot read the age of '$MAINT_LOCK' — treating the hold as active" >&2
+      return 0
+      ;;
+  esac
   now="$(date +%s)"
   age=$(( now - mtime ))
   if [ "$age" -gt "$MAINT_MAX_AGE" ]; then
