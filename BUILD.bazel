@@ -274,6 +274,22 @@ sh_test(
     ],
 )
 
+# doctor's orphan-unit report, both directions. A unit a spine manifest declares must not be
+# flagged, and a disabled capability's leftover unit must still be — without the second half
+# the check could be deleted and the test would still pass.
+sh_test(
+    name = "persistence_orphans_test",
+    size = "medium",
+    srcs = ["tools/persistence-orphans.test.sh"],
+    data = [
+        "//dashboard:service.toml",
+        "tools/doctor",
+        "tools/doctor.ts",
+        "tools/lib/paths.sh",
+        "tools/lib/toml.sh",
+    ],
+)
+
 # Trivy itself owns vulnerability matching and expiry semantics. This test keeps the
 # repository-specific contract honest: each service receives only its own reviewed policy,
 # while images with no accepted findings remain unfiltered.
