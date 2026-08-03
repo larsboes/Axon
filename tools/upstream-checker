@@ -138,35 +138,24 @@ for name in $(toml_sections "$MANIFEST"); do
     latest_line="$(gh_latest "$repo")"
     if [ -z "$latest_line" ]; then
       emit "· latest release not resolvable (no releases / rate-limited) — drift unverified"
+      # A drift check that could not run is not a drift check that passed.
+      entry_warn=1
     else
       latest_tag="${latest_line%%	*}"
       latest_pub="${latest_line#*	}"
-      latest_norm="$(norm_ver "$latest_tag")"
-      pin_norm="$(norm_ver "$pin")"
-      if [ "$latest_norm" = "$pin_norm" ]; then
-        emit "✓ pinned to latest release ($latest_tag)"
-      elif ver_numeric "$latest_norm" && ver_numeric "$pin_norm" && ! ver_gt "$latest_norm" "$pin_norm"; then
-        # GitHub's /releases/latest is the most recently PUBLISHED non-prerelease, not
-        # the highest version. A project with maintenance branches publishes 58.4.0 after
-        # 59.1.0, and comparing only for inequality reported that as a cooldown-violating
-        # "newer" release that must not be adopted -- advice to downgrade, dressed as a
-        # security warning. arrow-rs did exactly this on 2026-07-28.
-        emit "✓ pin ($pin) is ahead of upstream's newest release ($latest_tag) — maintenance branch, nothing to bump"
+      age_days="?"
+      pub_epoch="$(epoch_of "$latest_pub")"
+      if [ -n "$pub_epoch" ]; then
+        now_epoch="$(date -u +%s)"
+        age_days=$(( (now_epoch - pub_epoch) / 86400 ))
+      fi
+      # The classification itself lives in tools/lib/version.sh so it can be tested without a
+      # network call; here it is only rendered and counted.
+      if note="$(drift_note "$pin" "$latest_tag" "$age_days" "$COOLDOWN_MIN" "$COOLDOWN_MAX")"; then
+        emit "$note"
       else
-        age_days="?"
-        pub_epoch="$(epoch_of "$latest_pub")"
-        if [ -n "$pub_epoch" ]; then
-          now_epoch="$(date -u +%s)"
-          age_days=$(( (now_epoch - pub_epoch) / 86400 ))
-        fi
-        if [ "$age_days" != "?" ] && [ "$age_days" -lt "$COOLDOWN_MIN" ]; then
-          emit "🔴 newer: $latest_tag (${age_days}d old) — IN COOLDOWN, do NOT bump yet (LiteLLM class)"
-          entry_warn=1
-        elif [ "$age_days" != "?" ] && [ "$age_days" -le "$COOLDOWN_MAX" ]; then
-          emit "🟡 newer: $latest_tag (${age_days}d old) — cooldown window (${COOLDOWN_MIN}-${COOLDOWN_MAX}d), bump only after audit"
-        else
-          emit "🟢 newer: $latest_tag (${age_days}d old) — cooldown passed, audit the delta then bump pin + tag together"
-        fi
+        emit "$note"
+        entry_warn=1
       fi
     fi
   fi
@@ -197,7 +186,16 @@ if [ "$JSON" -eq 1 ]; then
 fi
 
 echo
-echo "── $count entries · $ok ok · $warn warn · $fail fail ──"
+# Say which question the totals answer. Offline runs never touch the drift block, so an offline
+# "all ok" means the manifest is well-formed and nothing at all is known about staleness. That
+# distinction was invisible, and tools/doctor spawns this with --offline — so its supply-chain
+# line was reporting a format check under a supply-chain heading.
+if [ "$OFFLINE" -eq 1 ]; then
+  scope="manifest format only — drift and cooldown NOT checked (run without --offline)"
+else
+  scope="manifest format + upstream drift"
+fi
+echo "── $count entries · $ok ok · $warn warn · $fail fail ── $scope"
 
 exit_code=0
 [ "$fail" -gt 0 ] && exit_code=1

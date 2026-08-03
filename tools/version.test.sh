@@ -86,6 +86,33 @@ check "bare describe is hijacked"        yes starts_with archive/ "$(git -C "$_f
 # Explicit revision: --dirty is illegal with a rev, so this exercises the other branch.
 check "describe_release takes a rev"     yes [ "$(describe_release v0.1.0)" = "v0.1.0" ]
 
+# --- upstream drift classification ----------------------------------------
+# The two inversions this encodes, both observed live on 2026-08-03:
+#   * a pin whose cooldown had passed counted as ok, so the summary read green over exactly
+#     the entries that needed work;
+#   * bun pinned at 1.3.14 against upstream tag bun-v1.3.14 -- the same version -- was reported
+#     as 82 days overdue, because an unorderable tag still reached the age arithmetic.
+# `yes` here means drift_note exited 0, i.e. nothing is owed.
+dn() { drift_note "$@" >/dev/null 2>&1; }
+note_of() { drift_note "$@" 2>/dev/null; }
+
+check "pinned to latest owes nothing"    yes dn 1.2.3 v1.2.3 0 7 14
+check "maintenance branch owes nothing"  yes dn 59.1.0 v58.4.0 90 7 14
+check "inside cooldown owes nothing"     yes dn 1.0.0 v1.1.0 1 7 14
+check "cooldown window is owed"          no  dn 1.0.0 v1.1.0 10 7 14
+check "past cooldown is owed"            no  dn 1.0.0 v1.1.0 82 7 14
+check "unorderable pair is owed"         no  dn 1.3.14 bun-v1.3.14 82 7 14
+check "unresolvable age is owed"         no  dn 1.0.0 v1.1.0 "?" 7 14
+
+# The bun case again, on the note itself: an unorderable pair must not be dressed up as drift.
+check "unorderable says so"              yes contains "not comparable" "$(note_of 1.3.14 bun-v1.3.14 82 7 14)"
+check "unorderable claims no age"        no  contains "82d old" "$(note_of 1.3.14 bun-v1.3.14 82 7 14)"
+# And the boundaries, because off-by-one here decides whether a bump is allowed.
+check "exactly cooldown_min is a window" no  dn 1.0.0 v1.1.0 7 7 14
+check "exactly cooldown_max is a window" no  dn 1.0.0 v1.1.0 14 7 14
+check "one past the window is stale"     no  dn 1.0.0 v1.1.0 15 7 14
+check "window note names the window"     yes contains "cooldown window (7-14d)" "$(note_of 1.0.0 v1.1.0 10 7 14)"
+
 if [ "$fails" -gt 0 ]; then
   echo "version.sh: $fails check(s) failed"
   exit 1

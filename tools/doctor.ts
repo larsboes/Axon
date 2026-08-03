@@ -1372,6 +1372,10 @@ const CHECKS: Check[] = [
         if (out) console.log(out.split("\n").map((l) => `  ${l}`).join("\n"));
         if (proc.exitCode !== 0) {
           ctx.bad("upstream-checker reported failure(s) — see above");
+        } else if (!ctx.online) {
+          // Offline skips the drift block entirely, so this heading was promising a
+          // supply-chain audit and delivering a manifest-format check. Say which one ran.
+          ctx.warn("offline: manifest format only — drift and cooldown unchecked (tools/doctor --online)");
         }
       }
     },
