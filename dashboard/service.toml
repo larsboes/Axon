@@ -19,3 +19,22 @@ autostart   = "true"
 # The shell asks axon-status what is enabled and what is up, and routes start requests
 # through it. Declared for ordering and for the manifest-integrity gate.
 requires = ["axon-status"]
+
+# Units this component owns that are NOT capabilities and have no manifest of their own.
+#
+# macmon is a third-party binary (upstreams.toml, systems.toml) that the Systems page polls
+# over `/macmon` -> localhost:9911, proxied in dashboard/vite.config.ts. It cannot go in
+# `requires`, which resolves through tools/lib/paths.sh's axon_manifest_for and would find
+# nothing — Axon does not own the binary, so inventing a capability directory for it would be
+# a manifest describing someone else's program.
+#
+# It is declared here because it still owns a `com.axon.macmon` unit, and tools/doctor's
+# orphan check works from unit filenames. Without this line the gate reports the unit as
+# belonging to a capability this machine does not enable and tells the operator to remove
+# it — advice that breaks the Systems page. The exemption used to be the literal string
+# "dashboard" inside tools/doctor.ts; this is the same fact, kept next to the component that
+# owns it.
+#
+# Install: `cargo install macmon --version <upstreams.toml pin> --locked`, then
+# `macmon serve --port 9911` under a launchd agent. See dashboard/README.md.
+sidecars = ["macmon"]

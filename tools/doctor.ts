@@ -843,7 +843,7 @@ const CHECKS: Check[] = [
   // unit left behind by `capability.sh disable` walks a disabled capability back up.
   {
     name: "Boot persistence (autostart set)",
-    run(ctx) {
+    async run(ctx) {
       const runner = join(ctx.root, "tools", "service-runner.sh");
       if (!existsSync(runner)) {
         ctx.warn(`missing ${runner}`);
@@ -892,16 +892,35 @@ const CHECKS: Check[] = [
         os === "macos" ? join(home, "Library", "LaunchAgents")
         : os === "linux" ? join(process.env.XDG_CONFIG_HOME ?? join(home, ".config"), "systemd", "user")
         : "";
+      // Names that legitimately own a unit while being absent from the enabled set. A spine
+      // component is one (tools/lib/paths.sh's axon_manifest_for reads its manifest from the
+      // repo root rather than capabilities/), and so is anything that component declares as a
+      // `sidecars` entry — a unit it owns that has no manifest of its own because Axon does
+      // not own the program.
+      //
+      // Derived from the manifests rather than from a literal. This used to be `cap !==
+      // "dashboard"`, which flagged the dashboard's own macmon sidecar and told the operator
+      // to remove the unit its Systems page polls (#65). A second hardcoded name would have
+      // fixed that instance and left the next one.
+      const exempt = new Set<string>();
+      for (const entry of readdirSync(ctx.root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const svc = join(ctx.root, entry.name, "service.toml");
+        if (!existsSync(svc)) continue;
+        exempt.add(entry.name);
+        const parsed = await readToml(svc);
+        if (Array.isArray(parsed?.sidecars)) {
+          for (const s of parsed.sidecars) if (typeof s === "string" && s) exempt.add(s);
+        }
+      }
+
       const orphans: string[] = [];
       if (unitDir && existsSync(unitDir)) {
         for (const f of readdirSync(unitDir)) {
           const cap =
             os === "macos" ? (f.startsWith("com.axon.") && f.endsWith(".plist") ? f.slice("com.axon.".length, -".plist".length) : null)
             : (f.startsWith("axon-") && f.endsWith(".service") ? f.slice("axon-".length, -".service".length) : null);
-          // `dashboard` is a spine component rather than a capability, so it is legitimately
-          // absent from the enabled set while owning a unit (tools/lib/paths.sh's
-          // axon_manifest_for reads it from the repo root).
-          if (cap && cap !== "dashboard" && !enabled.has(cap)) orphans.push(cap);
+          if (cap && !exempt.has(cap) && !enabled.has(cap)) orphans.push(cap);
         }
       }
       for (const cap of orphans.sort()) {
