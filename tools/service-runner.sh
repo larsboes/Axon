@@ -18,7 +18,9 @@ source "$TOOLS_DIR/lib/toml.sh"
 source "$TOOLS_DIR/lib/runargs.sh"
 
 usage() {
-  echo "usage: service-runner.sh <start|stop|idle-stop|restart|resume|recreate|status|install-persistence> <capability>" >&2
+  echo "usage: service-runner.sh <start|stop|idle-stop|restart|resume|recreate|status> <capability>" >&2
+  echo "       service-runner.sh <install-persistence|remove-persistence|persistence-status> <capability>" >&2
+  echo "       service-runner.sh persistence                     # persistence state for the whole enabled set" >&2
   echo "       service-runner.sh recreate <capability>          # rebuild the container from the current declaration" >&2
   echo "       service-runner.sh stop <capability> [--no-hold]   # --no-hold: do not keep it down" >&2
   echo "       service-runner.sh up [--all]     # start the autostart set (--all: everything enabled)" >&2
@@ -107,6 +109,13 @@ case "$CMD" in
     ;;
   status)
     if [ -z "$CAP" ]; then fan_out status; exit $?; fi
+    ;;
+  persistence)
+    # The whole enabled set at once, because "which capabilities will not come back after a
+    # reboot" is a question about the machine, not about one capability (#9). Per-capability
+    # detail stays available as `persistence-status <cap>`.
+    if [ -n "$CAP" ]; then usage; fi
+    fan_out persistence-status; exit $?
     ;;
 esac
 [ -n "$CAP" ] || usage
@@ -729,37 +738,73 @@ status_service() {
   [ -z "$report" ] || printf '%s\n' "$report" >&2
 }
 
-install_persistence() {
-  # A watchdog and an on-demand capability are opposite claims about the same process.
-  # The watchdog calls `start` every 30s and knows nothing about `autostart`, so
-  # installing one on a capability the manifest declares on-demand keeps it up forever,
-  # while the Projects page tells the operator the opposite. The manifest is the
-  # authority; persistence is only meaningful for what is supposed to be running.
+# --- boot persistence -----------------------------------------------------
+#
+# Rendering is separated from installing (#9) for one reason: nothing could ask whether a
+# capability's persistence was actually in place. `install-persistence` existed, install.sh never
+# called it, and neither did `capability.sh enable` — so a capability could declare autostart, be
+# enabled, run all day, and simply be gone after the next reboot with no warning at any point.
+# Answering "is it installed, and does it still match the declaration" means being able to render
+# the unit WITHOUT loading it, which is what these three functions separate out.
+
+# persistence_applicable — 0 when this capability should have a watchdog, 1 when it should not.
+# Prints the reason on stdout either way, because "not applicable" is an answer a caller reports,
+# not an error it swallows.
+#
+# A watchdog and an on-demand capability are opposite claims about the same process. The watchdog
+# calls `start` every 30s and knows nothing about `autostart`, so installing one on a capability
+# the manifest declares on-demand keeps it up forever while the Projects page says the opposite.
+# The manifest is the authority; persistence is only meaningful for what is supposed to run.
+persistence_applicable() {
   if [ "$AUTOSTART" != "true" ]; then
-    echo "service-runner.sh: '$CAP' declares no autostart — it is on-demand, and a watchdog would defeat that. Not installing persistence." >&2
-    echo "  (set autostart = \"true\" in $MANIFEST if this capability is meant to always run)" >&2
+    echo "on-demand (no autostart in the manifest) — a watchdog would defeat that"
     return 1
   fi
   if [ "$KIND" = container ]; then
     case "$AXON_CONTAINER_RUNTIME" in
       docker|podman)
-        echo "service-runner.sh: $AXON_CONTAINER_RUNTIME already runs with --restart unless-stopped — no watchdog needed, skipping"
-        return 0
+        echo "$AXON_CONTAINER_RUNTIME restarts it natively (--restart unless-stopped) — no watchdog needed"
+        return 1
         ;;
     esac
   fi
-  # Both launchd and systemd --user hand a supervised process a MINIMAL environment that
-  # does NOT inherit the login shell's PATH. Every container runtime installs outside the
-  # bare set (/usr/local/bin, /opt/homebrew/bin on macOS; the runtime can sit outside
-  # /usr/bin on Linux too), so without an injected PATH the watchdog loops on exit 127
-  # forever — which is exactly what launchd did from 2026-07-09 until 2026-07-25. Resolved
-  # from the real binary rather than a hardcoded candidate list: this machine's real answer
-  # lands in this machine's own unit, and Axon stays free of per-machine paths. Moving the
-  # runtime binary means re-running install-persistence.
-  #
-  # Same defect, same fix, for a process capability: what it needs on PATH is its own
-  # interpreter (bun, uv) and its builder (bazel), resolved here rather than hardcoded.
-  # Shared by both OS branches below (README.md#documentation-stays-owned-and-current — resolve once, render per-OS).
+  echo "autostart declared"
+  return 0
+}
+
+# persistence_unit_path — where this OS keeps the unit. Non-zero, with the reason on stdout, for
+# an OS with no backend. One home for the path so status, install and remove cannot disagree
+# about which file they are talking about.
+persistence_unit_path() {
+  case "$AXON_OS" in
+    macos) printf '%s\n' "$HOME/Library/LaunchAgents/com.axon.$CAP.plist" ;;
+    linux) printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/axon-$CAP.service" ;;
+    windows)
+      echo "no windows persistence backend yet"
+      return 1
+      ;;
+    *)
+      echo "unknown os '$AXON_OS' (machine.toml)"
+      return 1
+      ;;
+  esac
+}
+
+# persistence_path_dirs — the PATH the supervisor must inject.
+#
+# Both launchd and systemd --user hand a supervised process a MINIMAL environment that does NOT
+# inherit the login shell's PATH. Every container runtime installs outside the bare set
+# (/usr/local/bin, /opt/homebrew/bin on macOS; the runtime can sit outside /usr/bin on Linux too),
+# so without an injected PATH the watchdog loops on exit 127 forever — which is exactly what
+# launchd did from 2026-07-09 until 2026-07-25. Resolved from the real binary rather than a
+# hardcoded candidate list: this machine's real answer lands in this machine's own unit, and Axon
+# stays free of per-machine paths. Moving the runtime binary means re-rendering, which is now
+# something `persistence-status` reports as stale rather than something nobody notices.
+#
+# Same defect, same fix, for a process capability: what it needs on PATH is its own interpreter
+# (bun, uv) and its builder (bazel), resolved here rather than hardcoded.
+persistence_path_dirs() {
+  local runtime_dir cmd_bin build_bin
   if [ "$KIND" = container ]; then
     resolve_runtime
     runtime_dir="$(dirname "$RUNTIME_PATH")"
@@ -775,62 +820,198 @@ install_persistence() {
       if [ -n "$build_bin" ]; then runtime_dir="$runtime_dir:$(dirname "$build_bin")"; fi
     fi
   fi
-  WATCHDOG_PATH="$TOOLS_DIR/watchdog.sh"
-  LOG_OUT="/tmp/axon-$CAP-watchdog.log"
-  LOG_ERR="/tmp/axon-$CAP-watchdog.err"
+  printf '%s\n' "$runtime_dir"
+}
 
+# render_persistence_unit <dst> — write the unit this machine's declaration currently implies.
+# Pure: no launchctl, no systemctl, no daemon-reload. That is what lets persistence_state render
+# to a temp file and diff, and what lets the tests cover both OS branches on one host.
+render_persistence_unit() {
+  local dst="$1" runtime_dir watchdog log_out log_err
+  runtime_dir="$(persistence_path_dirs)"
+  watchdog="$TOOLS_DIR/watchdog.sh"
+  log_out="/tmp/axon-$CAP-watchdog.log"
+  log_err="/tmp/axon-$CAP-watchdog.err"
   case "$AXON_OS" in
     macos)
-      plist_dst="$HOME/Library/LaunchAgents/com.axon.$CAP.plist"
       sed -e "s|__LABEL__|com.axon.$CAP|" \
-          -e "s|__WATCHDOG_PATH__|$WATCHDOG_PATH|" \
+          -e "s|__WATCHDOG_PATH__|$watchdog|" \
           -e "s|__PATH__|$runtime_dir:/usr/bin:/bin:/usr/sbin:/sbin|" \
           -e "s|__CAPABILITY__|$CAP|" \
-          -e "s|__LOG_OUT__|$LOG_OUT|" \
-          -e "s|__LOG_ERR__|$LOG_ERR|" \
-          "$TOOLS_DIR/templates/launchd-watchdog.plist.tmpl" > "$plist_dst"
-      launchctl unload "$plist_dst" 2>/dev/null || true
-      launchctl load "$plist_dst"
-      echo "installed $plist_dst"
+          -e "s|__LOG_OUT__|$log_out|" \
+          -e "s|__LOG_ERR__|$log_err|" \
+          "$TOOLS_DIR/templates/launchd-watchdog.plist.tmpl" > "$dst"
       ;;
     linux)
-      # systemd --user is the per-user analogue of a LaunchAgent. It needs a running
-      # systemd (PID 1, or WSL2 with `systemd=true` in /etc/wsl.conf) and the user bus;
-      # fail with the fix rather than a cryptic systemctl error where it's absent.
-      if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
-        echo "service-runner.sh: systemd not available (no systemctl, or systemd isn't PID 1)." >&2
-        echo "  On WSL, add 'systemd=true' under [boot] in /etc/wsl.conf, then 'wsl --shutdown' and reopen." >&2
-        echo "  Until then run '$WATCHDOG_PATH $CAP' manually (e.g. inside tmux/screen)." >&2
-        exit 1
-      fi
-      unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-      mkdir -p "$unit_dir"
-      unit_dst="$unit_dir/axon-$CAP.service"
-      sed -e "s|__WATCHDOG_PATH__|$WATCHDOG_PATH|" \
+      sed -e "s|__WATCHDOG_PATH__|$watchdog|" \
           -e "s|__PATH__|$runtime_dir:/usr/local/bin:/usr/bin:/bin|" \
           -e "s|__CAPABILITY__|$CAP|" \
-          -e "s|__LOG_OUT__|$LOG_OUT|" \
-          -e "s|__LOG_ERR__|$LOG_ERR|" \
-          "$TOOLS_DIR/templates/systemd-watchdog.service.tmpl" > "$unit_dst"
+          -e "s|__LOG_OUT__|$log_out|" \
+          -e "s|__LOG_ERR__|$log_err|" \
+          "$TOOLS_DIR/templates/systemd-watchdog.service.tmpl" > "$dst"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# persistence_state — one line: `<state>\t<detail>`. States:
+#
+#   n/a          persistence does not apply here (on-demand, or a natively-restarting runtime)
+#   unsupported  this OS has no backend
+#   missing      it applies, and the unit is not there — the capability is down after a reboot
+#   stale        the unit is there but no longer matches what the declaration renders to
+#   installed    the unit matches
+#
+# File-level on purpose, and named as such: this compares what is written against what the
+# declaration implies. Whether the supervisor has actually LOADED it is a second question, asked
+# separately below, because a check that cannot be run must not be reported as one that passed.
+persistence_state() {
+  local why unit tmp
+  if ! why="$(persistence_applicable)"; then
+    printf 'n/a\t%s\n' "$why"
+    return 0
+  fi
+  if ! unit="$(persistence_unit_path)"; then
+    printf 'unsupported\t%s\n' "$unit"
+    return 0
+  fi
+  if [ ! -f "$unit" ]; then
+    printf 'missing\t%s\n' "$unit"
+    return 0
+  fi
+  tmp="$(mktemp)"
+  if ! render_persistence_unit "$tmp"; then
+    rm -f "$tmp"
+    printf 'unsupported\tcannot render a unit for os %s\n' "$AXON_OS"
+    return 0
+  fi
+  if cmp -s "$tmp" "$unit"; then
+    rm -f "$tmp"
+    printf 'installed\t%s\n' "$unit"
+  else
+    rm -f "$tmp"
+    printf 'stale\t%s no longer matches the declaration — re-run install-persistence\n' "$unit"
+  fi
+}
+
+# persistence_loaded — is the supervisor actually running it? Best-effort and honest: prints
+# `yes`, `no`, or `unknown` when the supervisor cannot be asked on this host. An installed unit
+# file that was never loaded is exactly the false green this whole issue is about, so "unknown"
+# is never rendered as "yes".
+persistence_loaded() {
+  local hits
+  case "$AXON_OS" in
+    macos)
+      command -v launchctl >/dev/null 2>&1 || { echo unknown; return 0; }
+      # `grep -c`, not `grep -q`, and the reason is this script's `set -o pipefail`: -q exits at
+      # the first match, `launchctl list` then dies of SIGPIPE, and pipefail turns a FOUND label
+      # into a failed pipeline. It reported the loaded axon-status agent as not loaded, and
+      # whether it did so depended on where in the output the label happened to sit. -c consumes
+      # the whole stream, so the producer always finishes.
+      hits="$(launchctl list 2>/dev/null | grep -cE "com\.axon\.${CAP}\$" || true)"
+      if [ "${hits:-0}" -gt 0 ]; then echo yes; else echo no; fi
+      ;;
+    linux)
+      command -v systemctl >/dev/null 2>&1 || { echo unknown; return 0; }
+      [ -d /run/systemd/system ] || { echo unknown; return 0; }
+      if systemctl --user is-active --quiet "axon-$CAP.service" 2>/dev/null; then echo yes; else echo no; fi
+      ;;
+    *) echo unknown ;;
+  esac
+}
+
+# persistence-status — the reporting verb. One line, machine-readable first field, so doctor and
+# capability.sh read the same answer this prints.
+status_persistence() {
+  local line state detail loaded
+  line="$(persistence_state)"
+  state="${line%%	*}"; detail="${line#*	}"
+  case "$state" in
+    installed)
+      loaded="$(persistence_loaded)"
+      case "$loaded" in
+        yes)     printf '%s\tinstalled\t%s\n' "$CAP" "$detail" ;;
+        no)      printf '%s\tinstalled-not-loaded\tthe unit exists but the supervisor is not running it: %s\n' "$CAP" "$detail" ;;
+        unknown) printf '%s\tinstalled\t%s (supervisor could not be asked — load state unverified)\n' "$CAP" "$detail" ;;
+      esac
+      ;;
+    *) printf '%s\t%s\t%s\n' "$CAP" "$state" "$detail" ;;
+  esac
+}
+
+install_persistence() {
+  local why unit
+  if ! why="$(persistence_applicable)"; then
+    echo "service-runner.sh: '$CAP' — $why. Not installing persistence." >&2
+    case "$AUTOSTART" in
+      true) return 0 ;;   # a natively-restarting runtime: nothing owed, so this is not a failure
+      *)
+        echo "  (set autostart = \"true\" in $MANIFEST if this capability is meant to always run)" >&2
+        return 1
+        ;;
+    esac
+  fi
+  if ! unit="$(persistence_unit_path)"; then
+    echo "service-runner.sh: $unit" >&2
+    echo "For now: run '$TOOLS_DIR/watchdog.sh $CAP' manually, or add a scheduler entry here." >&2
+    exit 1
+  fi
+  # systemd --user is the per-user analogue of a LaunchAgent. It needs a running systemd (PID 1,
+  # or WSL2 with `systemd=true` in /etc/wsl.conf) and the user bus; fail with the fix rather than
+  # a cryptic systemctl error where it's absent.
+  if [ "$AXON_OS" = linux ] && { ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; }; then
+    echo "service-runner.sh: systemd not available (no systemctl, or systemd isn't PID 1)." >&2
+    echo "  On WSL, add 'systemd=true' under [boot] in /etc/wsl.conf, then 'wsl --shutdown' and reopen." >&2
+    echo "  Until then run '$TOOLS_DIR/watchdog.sh $CAP' manually (e.g. inside tmux/screen)." >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$unit")"
+  render_persistence_unit "$unit"
+  case "$AXON_OS" in
+    macos)
+      launchctl unload "$unit" 2>/dev/null || true
+      launchctl load "$unit"
+      echo "installed $unit"
+      ;;
+    linux)
       systemctl --user daemon-reload
       systemctl --user enable --now "axon-$CAP.service"
-      echo "installed $unit_dst (systemctl --user)"
+      echo "installed $unit (systemctl --user)"
       # A --user unit only runs while the user has a session unless lingering is enabled.
       # For a capability meant to survive logout / start at boot, enable it once.
       if ! loginctl show-user "$(id -un)" 2>/dev/null | grep -q '^Linger=yes'; then
         echo "  note: run 'loginctl enable-linger $(id -un)' so this survives logout / reboot." >&2
       fi
       ;;
-    windows)
-      echo "service-runner.sh: no windows persistence backend yet." >&2
-      echo "For now: run '$WATCHDOG_PATH $CAP' manually, or add a Windows Task Scheduler entry here." >&2
-      exit 1
-      ;;
-    *)
-      echo "service-runner.sh: unknown os '$AXON_OS' (axon-overlay/config/machine.toml)" >&2
-      exit 1
+  esac
+}
+
+# remove-persistence — the disposition verb `disable` needs.
+#
+# A leftover unit is not inert: the watchdog calls `service-runner.sh start <cap>` every 30s and
+# consults nothing about the enabled set, so persistence left behind by a `capability.sh disable`
+# brings the capability straight back up. Removal is therefore a real operation with a real verb —
+# and it is deliberately NOT something disable performs on its own, because unloading a supervisor
+# unit is a machine-level side effect and capability.sh starts nothing.
+remove_persistence() {
+  local unit
+  if ! unit="$(persistence_unit_path)"; then
+    echo "service-runner.sh: $unit — nothing to remove" >&2
+    return 0
+  fi
+  if [ ! -f "$unit" ]; then
+    echo "service-runner.sh: no persistence installed for '$CAP' ($unit)"
+    return 0
+  fi
+  case "$AXON_OS" in
+    macos) launchctl unload "$unit" 2>/dev/null || true ;;
+    linux)
+      systemctl --user disable --now "axon-$CAP.service" 2>/dev/null || true
       ;;
   esac
+  rm -f "$unit"
+  [ "$AXON_OS" = linux ] && { systemctl --user daemon-reload 2>/dev/null || true; }
+  echo "removed $unit"
 }
 
 if [ "$KIND" = process ]; then process_init; fi
@@ -875,5 +1056,7 @@ case "$CMD" in
     recreate_service
     ;;
   install-persistence) install_persistence ;;
+  remove-persistence)  remove_persistence ;;
+  persistence-status)  status_persistence ;;
   *) usage ;;
 esac
