@@ -50,34 +50,66 @@ jobs:
         run: |
           set -u
           tools/upstream-checker | tee /tmp/upstream-report.txt || true
-          # A newer release surfaces as a "newer:" note in the --json feed.
-          drift="$(tools/upstream-checker --json 2>/dev/null \
-            | jq -r '[ .entries[]? | select(any(.notes[]?; test("newer:"))) | .name ] | join(", ")' \
-            2>/dev/null || true)"
-          echo "drift=$drift" >> "$GITHUB_OUTPUT"
+          tools/upstream-checker --json > /tmp/upstream.json 2>/dev/null || true
+          # `warn` is the checker's "this entry is owed something" status: cooldown passed, the
+          # audit window, a pair it cannot order, or a release it could not resolve. Selecting on
+          # any "newer:" note instead matched entries the same report marks
+          # `🔴 IN COOLDOWN, do NOT bump yet`, and then titled them past cooldown — seventeen of
+          # twenty on the first real run. Entries inside cooldown are `ok` and stay out: waiting
+          # is the correct action there, and paging someone for it teaches them to ignore this.
+          jq -r '[ .entries[]? | select(.status == "warn") | .name ]' /tmp/upstream.json > /tmp/names.json 2>/dev/null || echo '[]' > /tmp/names.json
+          {
+            echo "count=$(jq -r 'length' /tmp/names.json)"
+            echo "names=$(jq -r 'join(", ")' /tmp/names.json)"
+            echo "short=$(jq -r 'if length > 3 then (.[0:3] | join(", ")) + ", +\(length - 3) more" else join(", ") end' /tmp/names.json)"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Open or refresh drift issue
-        if: steps.check.outputs.drift != ''
+      # Values cross into the shell as environment variables rather than ${{ }} interpolation.
+      # An expression pasted straight into a `run:` block is executed by the shell, so a manifest
+      # section name is enough to inject with; env is the form that cannot.
+      - name: Open or refresh the drift issue
+        if: steps.check.outputs.count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
+          DRIFT_COUNT: ${{ steps.check.outputs.count }}
+          DRIFT_NAMES: ${{ steps.check.outputs.names }}
+          DRIFT_SHORT: ${{ steps.check.outputs.short }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -u
-          marker="upstream-watch:drift"
-          title="upstream drift: newer releases available (${{ steps.check.outputs.drift }})"
-          existing="$(gh issue list --state open --search "in:body \"$marker\"" --json number --jq 'length' 2>/dev/null || echo 0)"
-          if [ "${existing:-0}" != "0" ]; then
-            echo "drift issue already open; not duplicating."
-            exit 0
-          fi
+          # Deduplicate on a label, not on a string in the body. The previous key was
+          # `gh issue list --search "in:body \"upstream-watch:drift\""`, which is a full-text
+          # search: any issue that merely QUOTES the marker matches. Axon#18 did exactly that
+          # while describing this workflow, and the first run of the refresh below overwrote its
+          # title and body with a drift report while the real drift issue sat untouched. A label
+          # is something a document cannot accidentally contain.
+          key_label="upstream-watch"
+          title="upstream drift: $DRIFT_COUNT pin(s) need attention ($DRIFT_SHORT)"
           {
-            echo "New upstream release(s) past cooldown for: **${{ steps.check.outputs.drift }}**"
+            echo "\`tools/upstream-checker\` reports **$DRIFT_COUNT** entr(ies) that are owed something:"
             echo
-            echo "Audit the delta (\`tools/audit\`) and bump the pin per README.md#dependency-verdicts-and-provenance and README.md#pins-and-cooldown — never auto-pull."
+            echo "**$DRIFT_NAMES**"
+            echo
+            echo "Audit the delta (\`tools/audit\`) and bump the pin per README.md#dependency-verdicts-and-provenance"
+            echo "and README.md#pins-and-cooldown — never auto-pull. A pin still inside its cooldown is not"
+            echo "listed here: waiting is the correct action, so it is \`ok\`, not a finding."
             echo
             echo '```'
             cat /tmp/upstream-report.txt
             echo '```'
             echo
-            echo "<!-- $marker -->"
+            echo "_Written by [this run]($RUN_URL) at $(date -u '+%Y-%m-%d %H:%M UTC'). Refreshed weekly while open._"
           } > /tmp/issue-body.md
-          gh issue create --title "$title" --body-file /tmp/issue-body.md || echo "issue create failed"
+          # Refresh, not skip. The step has always been named "open or refresh" and only ever
+          # opened: with an issue already open it printed "not duplicating" and exited, so every
+          # later week's drift was dropped and the open issue silently froze at whatever it said
+          # the day it was created.
+          existing="$(gh issue list --state open --label "$key_label" --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body-file /tmp/issue-body.md \
+              && echo "refreshed #$existing"
+          else
+            gh issue create --title "$title" --body-file /tmp/issue-body.md \
+              --label "$key_label" --label type:chore --label area:tooling \
+              || echo "issue create failed"
+          fi
