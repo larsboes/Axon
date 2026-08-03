@@ -52,7 +52,10 @@ jobs:
           tools/upstream-checker | tee /tmp/upstream-report.txt || true
           tools/upstream-checker --json > /tmp/upstream.json 2>/dev/null || true
           # `warn` is the checker's "this entry is owed something" status: cooldown passed, the
-          # audit window, a pair it cannot order, or a release it could not resolve. Selecting on
+          # audit window, a pair it cannot order, or a release it could not resolve. Entries whose
+          # pin a release cannot describe at all are `na`, not `warn` (upstreams.toml `pin_kind`),
+          # so they stay out of this selection — they were ten of the seventeen warnings this
+          # workflow reported weekly, and none of them was ever actionable (#38). Selecting on
           # any "newer:" note instead matched entries the same report marks
           # `🔴 IN COOLDOWN, do NOT bump yet`, and then titled them past cooldown — seventeen of
           # twenty on the first real run. Entries inside cooldown are `ok` and stay out: waiting

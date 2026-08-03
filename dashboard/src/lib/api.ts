@@ -479,23 +479,27 @@ export interface RepoStatus {
 /**
  * The upstream-dependency audit, as `tools/upstream-checker --json` renders it.
  *
- * `status` mirrors the checker's own per-entry verdict: `ok` clean, `warn` a pin/cooldown
- * caution, `fail` a completeness/verdict violation. `notes` are the checker's own lines,
- * emoji and all — the one source, shared with the human report. `offline` is true when
+ * `status` mirrors the checker's own per-entry verdict: `ok` clean, `na` release-drift
+ * checking declared inapplicable, `warn` a pin/cooldown caution, `fail` a
+ * completeness/verdict violation. `na` is its own group rather than a kind of `ok`: it marks
+ * an entry nothing checks, which stays worth seeing (`pin_kind` names the shape, and the
+ * entry's `tracked_by` note says what governs it instead). `notes` are the checker's own
+ * lines, emoji and all — the one source, shared with the human report. `offline` is true when
  * drift/cooldown were skipped (the dashboard poll always is; see the endpoint's README).
  */
 export interface UpstreamEntry {
   name: string;
   verdict: string;
   pin: string;
+  pin_kind: string;
   url: string;
-  status: 'ok' | 'warn' | 'fail';
+  status: 'ok' | 'na' | 'warn' | 'fail';
   notes: string[];
 }
 export interface UpstreamAudit {
   manifest: string;
   offline: boolean;
-  totals: { count: number; ok: number; warn: number; fail: number };
+  totals: { count: number; ok: number; na: number; warn: number; fail: number };
   entries: UpstreamEntry[];
 }
 

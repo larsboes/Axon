@@ -855,7 +855,7 @@
     {
       "name": "stevenblack-hosts",
       "verdict": "adopt",
-      "pin": "master (INTENTIONALLY UNPINNED — data, not code)"
+      "pin": "master"
     },
     {
       "name": "stop-slop",

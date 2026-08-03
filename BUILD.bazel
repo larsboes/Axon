@@ -169,6 +169,25 @@ sh_test(
     data = ["tools/check-bun-pin.sh"],
 )
 
+# The release-drift declaration in upstreams.toml (#38). The tracked manifest can only ever
+# show the states it happens to be in, so this plants its own via AXON_UPSTREAMS_MANIFEST and
+# stubs `gh` on PATH -- which makes the drift block itself hermetic, not merely skipped.
+sh_test(
+    name = "upstream_declaration_test",
+    size = "small",
+    srcs = ["tools/upstream-checker.test.sh"],
+    data = [
+        # axon.toml because paths.sh reads the overlay from it and the checker reads the
+        # cooldown window; the sandbox has no gitignored axon.local.toml, which is the
+        # fallback path that keeps every Bazel gate here working.
+        "axon.toml",
+        "tools/lib/paths.sh",
+        "tools/lib/toml.sh",
+        "tools/lib/version.sh",
+        "tools/upstream-checker",
+    ],
+)
+
 # Copies both libs into a scratch root, so paths.sh self-locates there rather than into
 # the real checkout. Hermetic: a temp dir, no git, no network.
 sh_test(
