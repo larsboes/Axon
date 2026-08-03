@@ -248,6 +248,10 @@ sh_test(
     size = "small",
     srcs = ["tools/installed-probe.test.sh"],
     data = [
+        # upstream-checker sources paths.sh, which reads axon.toml — absent from the sandbox
+        # unless declared, and the test passed locally without it purely because the real
+        # checkout was there. The Axon#30 false-green class, caught by CI.
+        "axon.toml",
         "tools/lib/paths.sh",
         "tools/lib/toml.sh",
         "tools/lib/version.sh",
