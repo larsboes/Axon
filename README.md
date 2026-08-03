@@ -353,6 +353,36 @@ Ports, enabled capabilities, health, issue state, test counts, graph size and ma
 from manifests and tools at runtime. Prose may keep historical measurements and constants that are
 part of an argument, but it must not claim a changing count that no gate verifies.
 
+## Releases
+
+### The release line
+
+The public spine versions with SemVer, not CalVer. A tag is `vMAJOR.MINOR.PATCH` with all three
+components present — `tools/release` refuses any other shape — and `tools/lib/version.sh` orders
+tags with `sort -V`.
+
+- **major** — a public contract or architectural shape changes such that an existing overlay needs
+  edits to keep working.
+- **minor** — a capability or operator-visible feature lands.
+- **patch** — fixes only.
+
+Judge a change against those three before opening a pull request. A contract change that ships as a
+patch is what breaks an overlay on an update it was told was safe.
+
+Deployment overlays stay untagged. An overlay is deployment state rather than a public release
+line, and its commit identity stays independent of the Axon version it runs against.
+
+### Cutting and consuming a release
+
+Tags are created through `tools/release`, never by hand. It gates on a clean tree, on `main`, not
+behind `origin/main`, and a passing `tools/doctor`, then generates notes from the manifest-aware
+delta in `tools/lib/delta.sh` — the same view `tools/update.sh` shows a consumer, so release notes
+and the incoming preview cannot drift apart.
+
+A checkout moves along the line with `tools/update.sh`: fetch, fast-forward, re-run `tools/doctor`.
+It never resets, rebases or force-pushes; a checkout that is both ahead and behind is left alone
+with instructions rather than silently repaired.
+
 ## Packs and agent harnesses
 
 ### Harness-neutral Packs
