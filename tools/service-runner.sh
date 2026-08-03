@@ -333,6 +333,18 @@ process_healthy() {
   curl -sf -o /dev/null --max-time 2 "$url"
 }
 
+# port_answers <port> — true when something accepts a TCP connection on 127.0.0.1:<port>.
+#
+# bash's /dev/tcp rather than lsof or ss: neither is declared in toolchain.toml, and a stop path
+# that silently skips its own safety check on a host without lsof is the failure this exists to
+# prevent. It answers "is the port held", not "by whom" — which is all the stop path needs, and
+# deliberately not enough to justify killing an unidentified process.
+port_answers() {
+  local p="${1:-}"
+  [ -n "$p" ] || return 1
+  (: < "/dev/tcp/127.0.0.1/$p") 2>/dev/null
+}
+
 running_pid() {  # echo the live pid, or nothing
   [ -f "$PID_FILE" ] || return 0
   local pid
@@ -441,6 +453,28 @@ stop_process() {  # [hold|nohold]
     kill -KILL "$pid" 2>/dev/null || true
   fi
   rm -f "$PID_FILE"
+
+  # The recorded pid being gone does not mean the service is. `bun run dev` supervises vite; when
+  # the supervisor exits first its child is reparented, keeps the port, and running_pid() returns
+  # nothing -- so kill_tree above never ran and this function used to remove the pid file and
+  # report success over a service that is demonstrably still up. The next `start` then reached the
+  # "already answers on port N but is not managed here" branch, which is accurate but leaves the
+  # operator to clean up something `stop` claimed to have done.
+  #
+  # Give the tree a moment to release the socket first: a listener in TIME_WAIT-adjacent teardown
+  # would otherwise make a successful stop look like a failure.
+  if [ -n "$PORT" ]; then
+    local waited=0
+    while [ "$waited" -lt 12 ] && port_answers "$PORT"; do sleep 0.25; waited=$((waited + 1)); done
+    if port_answers "$PORT"; then
+      echo "service-runner.sh: '$CAP' still answers on port $PORT after stop — refusing to report success." >&2
+      echo "  Something outside this pid file holds it (a reparented child, or an unrelated process)." >&2
+      echo "  Identify and stop it, then re-run: lsof -ti tcp:$PORT   (or: ss -ltnp 'sport = :$PORT')" >&2
+      # Deliberately not killing it. This check knows the port is held, not by what; killing an
+      # unidentified listener on the operator's machine is a worse failure than refusing.
+      return 1
+    fi
+  fi
 }
 
 status_process() {

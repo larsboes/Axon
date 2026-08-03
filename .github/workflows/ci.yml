@@ -124,6 +124,14 @@ jobs:
       - name: bun test
         run: bun test
 
+      # Shell tests that are deliberately not Bazel targets, run here rather than in repo-gates
+      # because they need bun on PATH and this is the job that has it. service-runner's stop path
+      # binds a real localhost port and drives the real script against a throwaway Axon root --
+      # a sandbox that forbids either would report a pass it did not earn, which is the whole
+      # failure class this test exists to catch.
+      - name: shell tests needing bun
+        run: bash tools/service-runner.test.sh
+
   # Svelte type checks, local-only until 2026-07 and dashboard-only until now: a type
   # regression could land on main unseen (Axon#41), and a capability that grows its own UI
   # was unchecked from the day it landed (Axon#139 — the knowledge-graph UI carried six
