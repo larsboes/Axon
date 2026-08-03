@@ -402,13 +402,41 @@ sha256_file() {
 }
 LOCAL_SHA256="$(sha256_file "$TARBALL")"
 
+# `tar czf` exiting 0 is not the same as a complete archive. //:backup_test once observed a
+# streamed archive arriving without its manifest member on a Linux runner -- same workflow, same
+# runner image, same tree, green on a re-run -- and the producer exited 0 both times. A backup
+# that is silently short is the one outcome a backup tool must never have, so completeness is the
+# producer's own claim from here rather than something a consumer discovers later.
+verify_archive() {  # <path>
+  local members
+  if ! members="$(tar -tzf "$1" 2>/dev/null)"; then
+    echo "backup.sh: $1 is not a readable gzip archive — refusing to ship it" >&2
+    return 1
+  fi
+  case "$members" in
+    *./axon-backup.toml*) ;;
+    *)
+      echo "backup.sh: $1 is missing ./axon-backup.toml — incomplete, refusing to ship it" >&2
+      return 1
+      ;;
+  esac
+}
+verify_archive "$TARBALL"
+
 # Pull mode stops here. The source capability has already resumed, the archive is
 # complete, and the EXIT trap removes all staging state after the caller consumes it.
 # The caller must pipe stdout directly into an encrypted repository; redirecting it to
 # a file would create the plaintext intermediate this mode exists to avoid.
 if [ "$STREAM" -eq 1 ]; then
   echo "→ stream $CAP archive ($LOCAL_SHA256)"
-  cat "$TARBALL" >&3
+  # cat's status is checked explicitly rather than left to `set -e`, so the failure carries a
+  # sentence. A consumer that goes away mid-stream, or a far end that runs out of room, leaves
+  # the caller holding a truncated archive; exiting 0 there is how a short backup becomes one
+  # nobody notices until a restore.
+  if ! cat "$TARBALL" >&3; then
+    echo "backup.sh: streaming the $CAP archive failed part-way — the consumer's copy is incomplete" >&2
+    exit 1
+  fi
   exit 0
 fi
 

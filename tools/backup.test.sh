@@ -220,6 +220,28 @@ assert_order 'sqlite:integrity' 'service:resume'
 [ "$(grep -c '^service:resume$' "$MOCK_LOG")" = 1 ] \
   || fail "stream mode did not resume exactly once"
 
+# A write that cannot complete must make the producer fail, not exit 0 over an archive the
+# consumer only partly received. /dev/full accepts opens and fails every write with ENOSPC, which
+# is the short-write path forced deterministically -- the case that reached this suite once as a
+# flake, where the archive arrived without its manifest member and the producer still exited 0.
+#
+# A closing pipe (`| head -c 32`) was tried first and does not work: the fixture archive fits in
+# the pipe buffer, so cat completes before the reader goes away and there is no error to see. That
+# it looked like a valid test is exactly why it is written down here rather than left out.
+if [ -c /dev/full ]; then
+  reset_remote
+  reset_run
+  export MOCK_TIMESTAMP=20251231T020202Z
+  short_log="$SCRATCH/vaultwarden-short.log"
+  if "$BACKUP" --stream vaultwarden > /dev/full 2> "$short_log"; then
+    fail "stream exited 0 although every write to the consumer failed"
+  fi
+  grep -q 'failed part-way' "$short_log" \
+    || fail "an unwritable stream did not say so; log: $(cat "$short_log")"
+else
+  echo "NOTE: short-write assertion skipped — no /dev/full on this host (it runs in CI, which is Linux)"
+fi
+
 # Recovery mode is additive and the stopped-state order spans every host path plus
 # SQLite verification. Resume precedes all SSH work.
 reset_remote
