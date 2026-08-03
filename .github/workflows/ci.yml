@@ -136,6 +136,7 @@ jobs:
           bash tools/service-runner.test.sh
           bash tools/runargs.test.sh
           bash tools/persistence.test.sh
+          bash tools/pipe.test.sh
 
   # Svelte type checks, local-only until 2026-07 and dashboard-only until now: a type
   # regression could land on main unseen (Axon#41), and a capability that grows its own UI

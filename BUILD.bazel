@@ -271,6 +271,9 @@ sh_test(
         "capabilities/postgres/service.toml",
         "capabilities/vaultwarden/service.toml",
         "tools/lib/paths.sh",
+        # restore.sh sources this for its runtime-status check (#42); without it the sandbox
+        # fails at the source line, which is how this list is kept honest.
+        "tools/lib/pipe.sh",
         "tools/lib/toml.sh",
         "tools/restore.sh",
     ],

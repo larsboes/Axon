@@ -6,6 +6,8 @@ set -euo pipefail
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$TOOLS_DIR/lib/paths.sh"
+# `does this stream contain X` without the answer depending on where the match sits (#42).
+source "$TOOLS_DIR/lib/pipe.sh"
 
 usage() {
   echo "usage: restore.sh <capability> <archive.tar.gz> [--receipt <receipt.json>] [--destination <empty-dir>] [--runtime <apple-container|docker|podman>] [--allow-legacy]" >&2
@@ -292,7 +294,7 @@ verify_postgres() {
   esac
   command -v "$RUNTIME_BIN" >/dev/null 2>&1 || fail "container runtime command not found: $RUNTIME_BIN"
   if [ "$RUNTIME" = "apple-container" ] \
-    && ! "$RUNTIME_BIN" system status 2>/dev/null | grep -qE '^status[[:space:]]+running'; then
+    && ! "$RUNTIME_BIN" system status 2>/dev/null | stream_matches -E '^status[[:space:]]+running'; then
     "$RUNTIME_BIN" system start >/dev/null
   fi
 
