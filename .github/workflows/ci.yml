@@ -130,7 +130,9 @@ jobs:
       # a sandbox that forbids either would report a pass it did not earn, which is the whole
       # failure class this test exists to catch.
       - name: shell tests needing bun
-        run: bash tools/service-runner.test.sh
+        run: |
+          bash tools/service-runner.test.sh
+          bash tools/publish.test.sh
 
   # Svelte type checks, local-only until 2026-07 and dashboard-only until now: a type
   # regression could land on main unseen (Axon#41), and a capability that grows its own UI
