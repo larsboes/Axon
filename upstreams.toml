@@ -136,7 +136,7 @@ why = "single-user secrets store, replaces the two-container HashiCorp Vault exp
 url = "https://github.com/bitwarden/clients"
 verdict = "adopt"
 license = "GPL-3.0-only"
-pin = "cli-v2026.6.0"   # 2026-06-25, 15d old = past cooldown; brew formula `bitwarden-cli`, already on-machine (SSH agent use), now also consumed programmatically by tools/setup-secret.sh
+pin = "cli-v2026.7.0"   # 2026-07-24, audited + pinned 2026-08-03. Same case as typst: brew had already upgraded, so the previous pin described an install that no longer existed. Delta is importers (KeePass/Keeper), tray settings and an org-invite refactor -- nothing touching `bw config server` or the item create/read tools/setup-secret.sh drives. Watch item: PM-37875 automatic V2 cipher migration, already live on the pinned machine without incident
 why = "official CLI for the vaultwarden-protocol-compatible vault; setup-secret.sh scripts item create/read against self-hosted vaultwarden (bw config server) so Vaultwarden, not per-machine Keychain, is the canonical capability-secret store"
 
 [scout]
@@ -273,7 +273,7 @@ why = "tools/sysmon power/thermal backend -- sudoless powermetrics wrapper for A
 url = "https://github.com/typst/typst"
 verdict = "adopt"
 license = "Apache-2.0"
-pin = "0.15.0"          # 2026-06-15, 25d old as of 2026-07-10 -- well past cooldown; installed via `brew install typst`
+pin = "0.15.1"          # 2026-07-17, audited + pinned 2026-08-03. NOTE the pin was behind the MACHINE, not the other way round: brew had already upgraded to 0.15.1, so 0.15.0 described an install that no longer existed. Delta is bugfix-only (NCM font 8.1.1, two math-alignment regressions, layout fixes)
 why = "capabilities/cv rendering -- LaTeX replacement for CV typesetting. Plain-text templates with real scripting (array filter/map) instead of awesome-cv.cls's `\\ifx\\cvtarget` macro chains; single Rust-built binary, no TeX Live install, git-diffable output. Adopt over build: a typesetting engine is exactly the kind of thing not to hand-roll"
 
 [yq]
