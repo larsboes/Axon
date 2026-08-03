@@ -124,7 +124,12 @@ class HAWebSocket:
     def _connect(self) -> None:
         raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
         if self.secure:
+            # create_default_context() verifies certs and hostnames but does not floor the
+            # protocol version: TLS 1.0 and 1.1 stay permitted unless the OpenSSL build or a
+            # system policy forbids them, which is not something a skill can assume about the
+            # machine it lands on. Set the floor here so the guarantee travels with the script.
             ctx = ssl.create_default_context()
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
             raw = ctx.wrap_socket(raw, server_hostname=self.host)
         raw.settimeout(self.timeout)
         self.sock = raw
