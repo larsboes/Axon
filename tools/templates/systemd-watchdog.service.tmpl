@@ -15,6 +15,9 @@ RestartSec=5
 # and interpreters live, exactly like launchd — inject the resolved PATH so the
 # watchdog can find them (the systemd analogue of the launchd plist's PATH key).
 Environment=PATH=__PATH__
+# Machine-local values the capability declares in the overlay's machine.toml
+# ([capability.<name>] env). Empty on a machine that declares none.
+__EXTRA_ENV__
 # append: not truncate, so a restart doesn't wipe the prior run's log. Matches the
 # launchd plist's StandardOutPath/StandardErrorPath.
 StandardOutput=append:__LOG_OUT__

@@ -40,10 +40,26 @@ capabilities = ["home-assistant", "vaultwarden"]
 #   ports         = [...]   read by tools/service-runner.sh, replaces the manifest array (containers)
 #   port          = "n"     read by tools/service-runner.sh for kind=process, exported as AXON_PORT
 #   backup_target = "id"    read by tools/backup.sh, a systems.toml id
+#   env           = [...]   read by tools/service-runner.sh, injected into this capability's
+#                           boot-persistence unit (launchd plist / systemd unit) alongside PATH
 #
 # [capability.vaultwarden]
 # ports = ["127.0.0.1:8080:80"]   # localhost only; `tailscale serve` terminates TLS
 # backup_target = "some-nas"      # a systems.toml id, and never this machine itself
+#
+# `env` exists because a supervisor unit could carry exactly one variable, PATH, so the only way
+# to give a capability another was to hand-edit the GENERATED unit — which `service-runner.sh
+# persistence-status` then reports as `stale` forever and `install-persistence` silently deletes.
+# Declaring it here makes the value part of the declaration, so re-installing is lossless.
+#
+# NOT for secrets. A unit file sits unencrypted in the operator's home and is read by a supervisor
+# that logs; a credential belongs in the capability's env_file, which comes from Vaultwarden
+# (README.md#secrets).
+#
+# [capability.dashboard]
+# env = ["__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=this-host.example.ts.net"]
+#   # Vite rejects a request whose Host header it does not know, and a tailnet name is exactly
+#   # such a host — machine-local by nature, so it cannot live in the tracked service.toml.
 
 # --- state mounts (optional, repeatable) ---------------------------------
 # Where a tool on this machine actually persists data. Axon records the tool's own default

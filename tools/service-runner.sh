@@ -825,35 +825,99 @@ persistence_path_dirs() {
   printf '%s\n' "$runtime_dir"
 }
 
+# persistence_env_block — the supervisor environment this machine declares for this capability,
+# rendered in the unit's own syntax. Empty when nothing is declared.
+#
+# Why this exists (#44): the templates could carry exactly one variable, PATH. A capability that
+# needs another had nowhere to put it, so the only way to get one in was to hand-edit the
+# GENERATED unit — which `persistence-status` then correctly reports as `stale` forever, and which
+# `install-persistence` silently deletes on the next run. The real case was the dashboard needing
+# __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS so its dev server accepts the machine's tailnet name.
+#
+# Home: `[capability.<name>] env = ["KEY=VALUE", ...]` in the overlay's machine.toml — the same
+# section and the same single-line array contract `ports` already uses, because it is the same
+# shape of fact: true for one machine, and unable to live in a tracked, shared service.toml.
+#
+# NOT for secrets. A unit file sits unencrypted in the operator's home and is read by a supervisor
+# that logs; a credential belongs in the capability's env_file, which comes from Vaultwarden
+# (README.md#secrets). Nothing here enforces that — it is a contract, stated where it is violated.
+persistence_env_block() {
+  local line key val out=""
+  [ -f "$AXON_MACHINE_TOML" ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [ "${line#*=}" = "$line" ]; then
+      echo "service-runner.sh: [capability.$CAP] env entry '$line' has no '=' — expected KEY=VALUE" >&2
+      return 1
+    fi
+    key="${line%%=*}"; val="${line#*=}"
+    case "$AXON_OS" in
+      macos)
+        # A plist value is XML text: an unescaped & or < makes the whole file unparseable, and
+        # launchd's failure for that is silent.
+        val="$(printf '%s' "$val" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
+        key="$(printf '%s' "$key" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
+        out="$out    <key>$key</key>
+    <string>$val</string>
+"
+        ;;
+      linux)
+        # Quoted form: systemd otherwise stops a value at the first space.
+        out="$out"'Environment="'"$key=$val"'"'"
+"
+        ;;
+    esac
+  done < <(toml_array_in "capability.$CAP" env "$AXON_MACHINE_TOML")
+  # Trailing newline trimmed: the placeholder occupies its own line, and awk re-adds one.
+  printf '%s' "${out%
+}"
+}
+
 # render_persistence_unit <dst> — write the unit this machine's declaration currently implies.
 # Pure: no launchctl, no systemctl, no daemon-reload. That is what lets persistence_state render
 # to a temp file and diff, and what lets the tests cover both OS branches on one host.
 render_persistence_unit() {
-  local dst="$1" runtime_dir watchdog log_out log_err
+  local dst="$1" runtime_dir watchdog log_out log_err env_block tmpl tline
   runtime_dir="$(persistence_path_dirs)"
   watchdog="$TOOLS_DIR/watchdog.sh"
   log_out="/tmp/axon-$CAP-watchdog.log"
   log_err="/tmp/axon-$CAP-watchdog.err"
+  env_block="$(persistence_env_block)" || return 1
   case "$AXON_OS" in
     macos)
+      tmpl="$TOOLS_DIR/templates/launchd-watchdog.plist.tmpl"
       sed -e "s|__LABEL__|com.axon.$CAP|" \
           -e "s|__WATCHDOG_PATH__|$watchdog|" \
           -e "s|__PATH__|$runtime_dir:/usr/bin:/bin:/usr/sbin:/sbin|" \
           -e "s|__CAPABILITY__|$CAP|" \
           -e "s|__LOG_OUT__|$log_out|" \
           -e "s|__LOG_ERR__|$log_err|" \
-          "$TOOLS_DIR/templates/launchd-watchdog.plist.tmpl" > "$dst"
+          "$tmpl"
       ;;
     linux)
+      tmpl="$TOOLS_DIR/templates/systemd-watchdog.service.tmpl"
       sed -e "s|__WATCHDOG_PATH__|$watchdog|" \
           -e "s|__PATH__|$runtime_dir:/usr/local/bin:/usr/bin:/bin|" \
           -e "s|__CAPABILITY__|$CAP|" \
           -e "s|__LOG_OUT__|$log_out|" \
           -e "s|__LOG_ERR__|$log_err|" \
-          "$TOOLS_DIR/templates/systemd-watchdog.service.tmpl" > "$dst"
+          "$tmpl"
       ;;
     *) return 1 ;;
-  esac
+  esac |
+    # Swap the placeholder line for the block, or drop the line when nothing is declared — so a
+    # machine declaring no env renders byte-for-byte what it rendered before this existed.
+    #
+    # Done in bash rather than sed or awk, and that is not a style choice: sed cannot substitute a
+    # multi-line replacement portably (GNU accepts \n there, BSD does not), and BSD awk rejects a
+    # -v value containing a newline outright — `awk: newline in string`, which is exactly how the
+    # first cut of this failed on macOS while it would have passed on the Linux runner.
+    while IFS= read -r tline || [ -n "$tline" ]; do
+      case "$tline" in
+        *__EXTRA_ENV__*) [ -n "$env_block" ] && printf '%s\n' "$env_block" ;;
+        *)               printf '%s\n' "$tline" ;;
+      esac
+    done > "$dst"
 }
 
 # persistence_state — one line: `<state>\t<detail>`. States:
