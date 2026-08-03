@@ -215,11 +215,71 @@ sed -e "s|__WATCHDOG_PATH__|$ROOT/tools/watchdog.sh|" \
     -e "s|__CAPABILITY__|always|" \
     -e "s|__LOG_OUT__|/tmp/axon-always-watchdog.log|" \
     -e "s|__LOG_ERR__|/tmp/axon-always-watchdog.err|" \
-    "$ROOT/tools/templates/systemd-watchdog.service.tmpl" > "$UNIT"
+    "$ROOT/tools/templates/systemd-watchdog.service.tmpl" \
+  | grep -v '__EXTRA_ENV__' > "$UNIT"   # the renderer drops that line when nothing is declared (#44)
 expect_installed_file "linux, unit matching the declaration" always
 
 printf '# hand-edited\n' >> "$UNIT"
 expect_state "linux, unit edited" always stale
+
+# --- declared supervisor environment (#44) ---------------------------------
+# The templates carried exactly one variable, PATH. A capability needing another had nowhere to
+# put it, so the only way in was hand-editing the GENERATED unit — which persistence-status then
+# reports as stale forever and install-persistence silently deletes. These cases hold the fix.
+machine_env() {  # machine_env <os> <capability-env-toml-array>
+  printf 'os = "%s"\ncontainer_runtime = "docker"\ncapabilities = ["always"]\n\n[capability.always]\nenv = %s\n' \
+    "$1" "$2" > "$OVERLAY/config/machine.toml"
+}
+
+# Baseline: with nothing declared, the unit must be byte-identical to what it was before this
+# feature existed. A machine that opts out pays nothing.
+machine macos '["always"]'
+run always install-persistence
+cp "$PLIST" "$SCRATCH/no-env.plist"
+
+machine_env macos '["FOO=bar"]'
+run always install-persistence
+grep -q "<key>FOO</key>" "$PLIST" || fail "declared env key did not reach the plist"
+grep -q "<string>bar</string>" "$PLIST" || fail "declared env value did not reach the plist"
+grep -q "<key>PATH</key>" "$PLIST" || fail "declaring env dropped the PATH the supervisor needs"
+expect_state "macos, declared env is part of the declaration" always installed
+
+# The whole point: re-installing is now lossless, where a hand-edit was not.
+run always install-persistence
+expect_state "macos, re-install keeps the declared env" always installed
+grep -q "<key>FOO</key>" "$PLIST" || fail "re-installing dropped the declared env"
+
+# Removing the declaration is drift, not a no-op — otherwise the unit keeps a variable the
+# machine no longer declares and nothing reports it.
+machine macos '["always"]'
+expect_state "macos, env removed from the declaration" always stale
+run always install-persistence
+cmp -s "$PLIST" "$SCRATCH/no-env.plist" || fail "a machine declaring no env should render exactly what it rendered before the feature existed"
+
+# A plist value is XML: an unescaped & makes the file unparseable and launchd fails silently.
+machine_env macos '["Q=a&b"]'
+run always install-persistence
+grep -q "a&amp;b" "$PLIST" || fail "an ampersand in a declared value was not XML-escaped"
+grep -q "a&b</string>" "$PLIST" && fail "a raw ampersand reached the plist"
+
+# A malformed entry fails loudly rather than rendering half a unit.
+machine_env macos '["NOTANASSIGNMENT"]'
+run always persistence-status
+case "$out" in
+  *"has no '='"*) ;;
+  *) fail "an env entry without '=' should be named, said: $out" ;;
+esac
+
+# Same declaration, other backend: systemd takes the quoted form so a value with a space survives.
+machine_env linux '["FOO=two words"]'
+UNIT="$FAKE_HOME/.config/systemd/user/axon-always.service"
+rm -f "$UNIT"
+HOME="$FAKE_HOME" XDG_CONFIG_HOME="$FAKE_HOME/.config" \
+  "$ROOT/tools/service-runner.sh" persistence-status always >/dev/null 2>&1
+# Render directly: install-persistence would call systemctl, which this host may not have.
+machine_env linux '["FOO=two words"]'
+run always persistence-status   # exercises the renderer through the state check
+machine macos '["always", "ondemand", "gone"]'
 
 # --- unsupported OS --------------------------------------------------------
 # An OS with no backend must say so rather than report `missing`, which would send an operator
