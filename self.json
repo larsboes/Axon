@@ -683,11 +683,6 @@
       "pin": "v8.30.1"
     },
     {
-      "name": "grafana",
-      "verdict": "reject",
-      "pin": "13.0.2"
-    },
-    {
       "name": "graphify",
       "verdict": "adopt",
       "pin": "0.9.19"
@@ -706,11 +701,6 @@
       "name": "iai-personal-memory-engine",
       "verdict": "inspiration",
       "pin": ""
-    },
-    {
-      "name": "influxdb",
-      "verdict": "reject",
-      "pin": "2.7.12"
     },
     {
       "name": "lifeos",
