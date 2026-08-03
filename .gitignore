@@ -48,3 +48,6 @@ to-integrate/
 **/dist/
 # SvelteKit generated output
 **/.svelte-kit/
+
+# Generated landing page (tools/generate-site) — built in CI and published, never committed.
+site/
