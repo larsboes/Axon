@@ -83,19 +83,65 @@ function readText(path: string): string | null {
   }
 }
 
-/** The registry is the one TOML reader for service manifests (README.md#one-manifest-per-concern). */
-function readRegistry(): Array<Record<string, unknown>> {
-  const proc = Bun.spawnSync({
-    cmd: [`${AXON_ROOT}/tools/capability.sh`, "registry"],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (proc.exitCode !== 0) return [];
-  try {
-    return JSON.parse(proc.stdout.toString());
-  } catch {
-    return [];
+/** What a capability's own manifest declares about its service, before any machine touches it. */
+interface DeclaredService {
+  kind: string;
+  requires: string[];
+  port?: string;
+  image?: string;
+}
+
+/**
+ * Declared service facts, read from `capabilities/<name>/service.toml` in this checkout.
+ *
+ * NOT from `tools/capability.sh registry`, which is what this used to do. That registry merges the
+ * running machine's `machine.toml` overrides -- `[capability.<name>] ports` among them -- and hard
+ * fails without one. self.json is a tracked artifact, so both consequences were defects: a port in
+ * it was whatever the generating machine resolved rather than what the repository declares, so two
+ * machines produced different files from the same commit; and `tools/self check` could not run
+ * anywhere without an overlay, which kept it out of CI's repo-gates job and left it a doctor-only
+ * check. Worse quietly: readRegistry() returned [] when the registry failed, so a checkout without
+ * an overlay dropped every service block and `check` reported the artifact stale.
+ *
+ * `tools/generate-architecture.sh` never had this problem because it reads each service.toml
+ * directly, which is why ARCHITECTURE.md has always been reproducible from a fresh clone. This is
+ * the same choice, in the language self.ts is written in: Bun.TOML under the documented exception
+ * tools/doctor.ts already takes, rather than a per-manifest shell-out to tools/lib/toml.sh.
+ *
+ * Overlay capabilities are absent by construction now instead of by a scope filter: they live in
+ * the overlay's own tree, which this never reads. A capability name is itself a fact about a
+ * private deployment (Axon#225).
+ */
+function readDeclaredServices(trackedPaths: Set<string>): Map<string, DeclaredService> {
+  const out = new Map<string, DeclaredService>();
+  // Discovered from the tracked tree, not from a directory list. capabilities/<name>/service.toml
+  // is where most of them live, but the dashboard owns one at the repository root -- a hardcoded
+  // "capabilities" scan dropped its service block, and a hardcoded list of spine names would drop
+  // the next one the same way.
+  for (const path of trackedPaths) {
+    if (!path.endsWith("/service.toml")) continue;
+    const segments = path.split("/");
+    const name = segments.length === 3 && segments[0] === "capabilities" ? segments[1]
+      : segments.length === 2 ? segments[0]
+      : "";
+    if (!name) continue;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = Bun.TOML.parse(readFileSync(`${AXON_ROOT}/${path}`, "utf8")) as Record<string, unknown>;
+    } catch {
+      continue; // A manifest that does not parse is tools/doctor's finding, not a reason to abort.
+    }
+    const requires = parsed.requires;
+    out.set(name, {
+      // service-runner.sh treats an absent kind as a container; the manifest and the model have to
+      // agree on that default or the two disagree about capabilities that never write the line.
+      kind: parsed.kind == null ? "container" : String(parsed.kind),
+      requires: Array.isArray(requires) ? requires.map(String) : [],
+      port: parsed.port == null ? undefined : String(parsed.port),
+      image: parsed.image == null ? undefined : String(parsed.image),
+    });
   }
+  return out;
 }
 
 function readUpstreams(): SelfModel["upstreams"] {
@@ -141,9 +187,9 @@ function readTrackedPaths(): Set<string> {
 }
 
 function build(): SelfModel {
-  const registry = readRegistry();
   const graphText = readText(`${AXON_ROOT}/graphify-out/graph.json`);
   const trackedPaths = readTrackedPaths();
+  const declaredServices = readDeclaredServices(trackedPaths);
   const tracked = (p: string) => trackedPaths.has(p);
   const exists = (p: string) => existsSync(`${AXON_ROOT}/${p}`);
 
@@ -188,25 +234,17 @@ function build(): SelfModel {
 
   const codeByUnit = new Map(rollupUnits.map((u) => [u.name, u]));
   const names = new Set<string>(kindByUnit.keys());
-  // Overlay capabilities are runtime-visible but never generation-visible (Axon#225):
-  // self.json is tracked and public, and a capability name is itself a fact about a
-  // private deployment. The registry labels its own rows, so this filter does not have
-  // to guess from a path.
-  const publicRegistry = registry.filter((r) => String(r.scope ?? "") !== "overlay-capability");
-  for (const row of publicRegistry) names.add(String(row.name));
+  for (const name of declaredServices.keys()) names.add(name);
 
   const units: SelfModel["units"] = [...names].sort().map((name) => {
-    const reg = publicRegistry.find((r) => String(r.name) === name);
+    const declared = declaredServices.get(name);
     const code = codeByUnit.get(name);
-    const kind = kindByUnit.get(name) ?? (reg ? "capability" : "unknown");
+    const kind = kindByUnit.get(name) ?? (declared ? "capability" : "unknown");
     const out: SelfModel["units"][number] = { name, kind };
-    if (reg) {
-      out.service = {
-        kind: String(reg.kind ?? ""),
-        requires: (reg.requires as string[]) ?? [],
-      };
-      if (reg.port) out.service.port = String(reg.port);
-      if (reg.image) out.service.image = String(reg.image);
+    if (declared) {
+      out.service = { kind: declared.kind, requires: declared.requires };
+      if (declared.port) out.service.port = declared.port;
+      if (declared.image) out.service.image = declared.image;
     }
     if (code) out.code = { files: code.files, nodes: code.nodes };
     return out;

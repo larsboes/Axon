@@ -127,6 +127,11 @@
     {
       "name": "home-assistant",
       "kind": "capability",
+      "service": {
+        "kind": "container",
+        "requires": [],
+        "image": "ghcr.io/home-assistant/home-assistant"
+      },
       "code": {
         "files": 1,
         "nodes": 6
@@ -165,8 +170,8 @@
         "port": "4244"
       },
       "code": {
-        "files": 11,
-        "nodes": 85
+        "files": 13,
+        "nodes": 94
       }
     },
     {
@@ -197,13 +202,18 @@
       "name": "overlay",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 10
+        "files": 3,
+        "nodes": 17
       }
     },
     {
       "name": "pihole",
       "kind": "capability",
+      "service": {
+        "kind": "container",
+        "requires": [],
+        "image": "pihole/pihole"
+      },
       "code": {
         "files": 1,
         "nodes": 5
@@ -214,11 +224,12 @@
       "kind": "capability",
       "service": {
         "kind": "container",
-        "requires": []
+        "requires": [],
+        "image": "postgres"
       },
       "code": {
         "files": 1,
-        "nodes": 9
+        "nodes": 11
       }
     },
     {
@@ -263,8 +274,8 @@
         "port": "8084"
       },
       "code": {
-        "files": 25,
-        "nodes": 383
+        "files": 26,
+        "nodes": 397
       }
     },
     {
@@ -300,8 +311,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 64,
-        "nodes": 540
+        "files": 81,
+        "nodes": 678
       }
     },
     {
@@ -347,7 +358,8 @@
       "kind": "capability",
       "service": {
         "kind": "container",
-        "requires": []
+        "requires": [],
+        "image": "vaultwarden/server"
       },
       "code": {
         "files": 1,
@@ -923,7 +935,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 5177,
+    "nodes": 5355,
     "external": 5,
     "stale": [],
     "unmatched": [

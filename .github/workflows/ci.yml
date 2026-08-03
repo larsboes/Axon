@@ -213,10 +213,12 @@ jobs:
   # baggage; doctor delegates to these identical scripts locally, so there is still one
   # implementation per rule.
   #
-  # tools/self check is deliberately NOT here. It reads `tools/capability.sh registry`,
-  # which merges this machine's machine.toml overrides and hard-fails without one, so its
-  # answer is machine-specific by construction (Axon#67). It stays a doctor check until
-  # that is resolved.
+  # tools/self check runs here now. It used to read `tools/capability.sh registry`, which merges
+  # this machine's machine.toml overrides and hard-fails without one -- so its answer was
+  # machine-specific by construction and it stayed a doctor-only check (Axon#7). It reads the
+  # service.toml manifests directly since, which makes the committed artifact reproducible from a
+  # fresh clone and this the right place for it. Bun is set up for that one step; the other two
+  # gates are pure shell.
   repo-gates:
     name: repo gates (labels, tracked inputs)
     runs-on: ubuntu-latest
@@ -227,3 +229,9 @@ jobs:
         run: tools/check-bazel-package-labels.sh
       - name: Publication hygiene
         run: tools/check-publication-hygiene.sh
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: self.json is current
+        run: tools/self check
