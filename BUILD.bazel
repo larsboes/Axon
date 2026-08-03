@@ -274,21 +274,11 @@ sh_test(
     ],
 )
 
-# doctor's orphan-unit report, both directions. A unit a spine manifest declares must not be
-# flagged, and a disabled capability's leftover unit must still be — without the second half
-# the check could be deleted and the test would still pass.
-sh_test(
-    name = "persistence_orphans_test",
-    size = "medium",
-    srcs = ["tools/persistence-orphans.test.sh"],
-    data = [
-        "//dashboard:service.toml",
-        "tools/doctor",
-        "tools/doctor.ts",
-        "tools/lib/paths.sh",
-        "tools/lib/toml.sh",
-    ],
-)
+# tools/persistence-orphans.test.sh is deliberately NOT an sh_test. It runs the whole
+# tools/doctor, which reads far more of the tree than a hermetic sandbox should have to
+# declare — and under-declaring it does not fail loudly, it makes doctor's persistence check
+# return early and the test pass over an empty report. That is the Axon#30 false-green shape
+# again, so it runs in CI's `repo gates` job against a real checkout instead.
 
 # Trivy itself owns vulnerability matching and expiry semantics. This test keeps the
 # repository-specific contract honest: each service receives only its own reviewed policy,

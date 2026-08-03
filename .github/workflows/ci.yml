@@ -239,3 +239,8 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - name: self.json is current
         run: tools/self check
+      # Runs here rather than as an sh_test: it drives the whole tools/doctor, and a Bazel
+      # sandbox that under-declares doctor's inputs makes the persistence check return early
+      # and the test pass over an empty report — green for the wrong reason.
+      - name: doctor reports orphan units, and only orphan units
+        run: tools/persistence-orphans.test.sh

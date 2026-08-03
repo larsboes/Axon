@@ -9,13 +9,15 @@
 #
 # So both directions are asserted here, against the real doctor rather than a reimplementation
 # of its rule.
+#
+# Not a Bazel sh_test, on purpose. Driving the whole doctor means a sandbox would have to
+# declare most of the tree, and under-declaring it does not fail loudly — doctor's persistence
+# check returns early when tools/service-runner.sh is missing, so the report comes back empty
+# and every "must still be flagged" assertion passes for the wrong reason. It runs in CI's
+# `repo gates` job against a real checkout instead. See BUILD.bazel for the same note.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  _root="$TEST_SRCDIR/$TEST_WORKSPACE"
-else
-  _root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-fi
+_root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
