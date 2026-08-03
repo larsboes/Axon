@@ -2,6 +2,12 @@
 # verdict = "adopt" | "contribute" | "overlay" | "fork" | "build" | "inspiration" | "quarry" | "reject"
 #   Preference order: adopt > contribute > overlay > fork (last resort). fork is a PR vehicle only.
 # pin = exact ref/commit consumed (empty until first consumption)
+# pin_kind = "commit" | "image" | "monorepo" | "hosted" | "dataset"
+#   Only for a pin that a GitHub release cannot describe, naming which shape it is instead. Absent
+#   means a release tag, which tools/upstream-checker compares against releases/latest. Declaring a
+#   kind turns that comparison off for the entry -- so every pin_kind requires tracked_by, because
+#   opting out of one check is not opting out of thinking about staleness.
+# tracked_by = one line: what keeps this entry current, given that releases/latest cannot.
 # cooldown: new upstream releases wait out a hold window (axon.toml [upstream]) before adoption unless fixing an exposed vuln.
 # No adopt/overlay/fork verdict lands without an audit (checked by tools/upstream-checker, M2).
 
@@ -187,6 +193,8 @@ url = "https://github.com/docker-library/postgres"
 verdict = "adopt"
 license = "PostgreSQL License (permissive) -- official image"
 pin = "17.10-alpine"    # 2026-07-08; adopted 2026-08-01 after cooldown. Trivy removed the Alpine OS findings; 15 gosu-only Go stdlib entries expire 2026-09-01 under Axon#186.
+pin_kind = "image"
+tracked_by = "the Docker Hub tag list for the official postgres image; the pin moves only at a deliberate rebuild, re-scanned with trivy at that point"
 why = "shared correlation data layer across scouting + transit (+ future capabilities): cross-domain correlation is the actual product thesis, not a hypothetical -- see capabilities/postgres/README.md's correlation section. One instance, per-capability Postgres schema (scouting.*, transit.*) so migrations/ownership stay per-capability, thin correlation layer on top for cross-schema joins. Reopened scouting's earlier Postgres-to-SQLite swap: scouting has since migrated back onto this shared instance (own scouting schema, see capabilities/scouting/README.md's Verdict) and is no longer on SQLite"
 
 [bun]
@@ -208,6 +216,8 @@ url = "https://github.com/hyperknot/openfreemap"
 verdict = "adopt"
 license = "MIT (server); OpenMapTiles/OSM attribution applies to rendered data"
 pin = "hosted-style-api"
+pin_kind = "hosted"
+tracked_by = "the hosted style URL itself, which has no version to drift; a breaking change surfaces as a broken basemap in the Trips slice, behind the one constant that names it"
 why = "keyless vector basemap for the first Trips vertical slice, using the documented hosted style URL behind one constant. The map keeps provider attribution visible and the seam can later point at a self-hosted OpenFreeMap/PMTiles deployment without changing Trip contracts"
 
 [wikimedia-api]
@@ -278,6 +288,8 @@ url = "https://github.com/JCarterJohnson/vibecoded-design-tells"
 verdict = "adopt"
 license = "MIT (code/skills; the harvested Reddit dataset under a separate, unvendored data note -- not consumed)"
 pin = "f7c4aef"         # 2026-06-23, well past cooldown as of 2026-07-10
+pin_kind = "commit"
+tracked_by = "diffing upstream's default branch against this sha whenever Packs/unslop or Packs/writing is revisited; the repo cuts no releases"
 why = "Packs/unslop/skills/unslop vendored near-verbatim (references/, scripts/; the two source skills unslop-code + unslop-ui were merged into one 2026-07-28 and their shared body prose rewritten) -- data-grounded (11.9k-73k Reddit posts per study) AI-tell scanners for code and web design, stdlib-only Python. Both halves came from the same commit; the merged SKILL.md's Provenance section documents the second-person-clause rewordings and the merge. See Packs/unslop/README.md for full attribution. The former unslop-text prose skill moved to Packs/writing/skills/human-writing 2026-07-25 and was merged with human-voice + oberskills; its references/tells.md and references/writing-with-intent.md are still this upstream's text, so this entry covers that pack too."
 
 [human-voice]
@@ -285,6 +297,8 @@ url = "https://github.com/stephenoffer/human-voice"
 verdict = "adopt"
 license = "MIT"
 pin = "9bcba2f"         # 2026-06-23, evaluated + vendored 2026-07-25
+pin_kind = "commit"
+tracked_by = "diffing upstream's default branch against this sha whenever Packs/writing/skills/human-writing is revisited; the repo cuts no releases"
 why = "Packs/writing/skills/human-writing vendors this skill's linter wholesale (scripts/human_voice_linter/, detect_ai_prose.py, ai_prose_patterns.json) plus references/{over-correction,structural-craft,cited-vs-matched,discourse-and-structure}.md verbatim with an attribution header; references/{registers,anti-hallucination}.md are extracted+condensed from its SKILL.md. Chosen as the substrate because it is the only one of the four prose-tell projects with real structural computation (32 checks: burstiness, lexical diversity, n-gram repetition, SVO monotony, over-correction, dialect drift) rather than a pure lexical regex list -- measured: it scores the over-corrected corpus at 63.5 strong-tell where the old unslop-text scanner returned clean. Two local deltas, both documented in that SKILL.md's Gotchas + Provenance: (1) check_em_dash fires on presence instead of upstream's `per_1k > threshold and count >= 2`, since a lone em dash is an absolute tell -- verified 0/24 human and 0/10 ESL-formal false positives on the bundled corpus; (2) additive entries in ai_prose_patterns.json meta_commentary/hedging. NOTE its eval corpus is hand-authored to exhibit the tells the linter looks for (ablation reports AUC 1.0 with zero drop for every category) -- calibration only, never cite as a benchmark."
 
 [oberskills]
@@ -292,6 +306,8 @@ url = "https://github.com/ryanthedev/oberskills"
 verdict = "quarry"
 license = "MIT declared in .claude-plugin/plugin.json only -- NO LICENSE file at repo root"
 pin = "5050537"         # v2.8.1, 2026-07-25
+pin_kind = "commit"
+tracked_by = "the open licence question below, not a version: this entry is re-read if upstream adds a root LICENSE file, which is the only change that would move the verdict"
 why = "Packs/writing/skills/human-writing takes the architecture of this repo's `write` skill: the mode router, the reader-job type taxonomy (references/types.md), voice profiles + template (references/voice-template.md), and the phased review protocol. Quarry not overlay -- because the MIT grant exists only as a plugin.json field with no root LICENSE text, everything taken is paraphrased and rewritten rather than copied verbatim, and both derived reference files carry an explicit note saying so. Revisit if upstream adds a proper LICENSE file."
 
 [stop-slop]
@@ -299,6 +315,8 @@ url = "https://github.com/hardikpandya/stop-slop"
 verdict = "reject"
 license = "MIT"
 pin = "8da1f03"         # 2026-03-18, evaluated 2026-07-10, re-evaluated + re-declined 2026-07-25
+pin_kind = "commit"
+tracked_by = "nothing, deliberately: rejected twice and consumed nowhere. The sha is the state that was compared, kept so a third comparison starts from evidence"
 why = "same job as human-writing (prose AI-tell removal) with a smaller hand-written phrase/structure list, no data grounding. Declined twice. Re-evaluated 2026-07-25 during the human-writing merge: its distinctive contributions (false_agency, narrator_distance, negative_listing, dramatic_fragmentation, vague_declarative) are ALREADY present as pattern categories in the vendored human-voice linter, so it adds nothing new; and its absolutist framing ('kill all adverbs', 'no em dashes ever', 'two items beat three', 'no Wh- starters') manufactures exactly the fresh uniform signature that skill exists to prevent -- human-voice's own SKILL.md names it as the anti-pattern. Recorded here, not just in a pack README, so the pin/license survive if the comparison is ever revisited."
 
 [academic-researcher]
@@ -306,6 +324,8 @@ url = "https://github.com/SiluPanda/academic-researcher"
 verdict = "overlay"
 license = "MIT"
 pin = "e75d70d"         # 2026-02-16, retroactive entry -- see why
+pin_kind = "commit"
+tracked_by = "diffing upstream's default branch against this sha whenever the three adapted scripts in Packs/academic-writing are revisited; the repo cuts no releases"
 why = "Packs/academic-writing/skills/academic-writing/scripts/{resolve-papers,validate-bib,check-citations}.js adapted+generalized from this skill's citation-workflow scripts (check-citations.js given Quarto @citekey support beyond the original's LaTeX-only \\cite{} handling, hardcoded path removed). Retroactive entry -- the pack shipped 2026-07-11 with this source recorded only as 'unknown license' in its README; resolved 2026-07-14. Real code adapted (not just ideas), so verdict is overlay not quarry -- tools/upstream-checker and tools/audit should still be run against these three files to close the M2/content-scan gate properly. See Packs/academic-writing/README.md Attribution."
 
 [academic-writing-agents]
@@ -382,6 +402,8 @@ url = "https://github.com/eclipse-mosquitto/mosquitto"
 verdict = "reject"
 license = "EPL-2.0"
 pin = "2.1.2-alpine"    # the running container reports 2.1.2 but its digest (sha256:a908c65c) matches NO current tag: the tag `2` it was pulled by has since been rebuilt to sha256:6f8d8a94, now also carrying 2.1.2-alpine and 2.1-alpine. Adopting this tag means taking the newer 2.1.2 build on next restart — a base-layer change, deliberate instead of silent. No bare 2.1.2 tag exists; 2.1.x ships -alpine only
+pin_kind = "image"
+tracked_by = "nothing while rejected: the pin records the tag the container last ran. Re-adoption is a fresh tag-and-digest decision, taken then rather than watched now"
 why = "REJECTED and removed 2026-07-26: nothing had ever used it. No mqtt config entry in HA, zero established connections, and 'Restored 0 clients / 0 subscriptions / 0 retained messages' on every restart in its own log. The devices that speak MQTT on that deployment talk to their vendor clouds, and those were the MQTT lines in HA's log, not a local broker. Re-adopt the moment a local broker has a client: the commented zigbee2mqtt service needs one"
 
 # --- vendored Home Assistant custom components -----------------------------
@@ -395,7 +417,9 @@ why = "REJECTED and removed 2026-07-26: nothing had ever used it. No mqtt config
 url = "https://github.com/StevenBlack/hosts"
 verdict = "adopt"
 license = "MIT"
-pin = "master (INTENTIONALLY UNPINNED — data, not code)"
+pin = "master"          # the branch, not a ref on it: see pin_kind/tracked_by — this is the one entry that is meant to float
+pin_kind = "dataset"
+tracked_by = "Pi-hole's own gravity pull, which refreshes the list on its schedule. Staleness is the failure mode here and drift is the intended behaviour, so there is no release to compare against"
 why = "Pi-hole's blocklist, pulled at runtime by gravity. The one entry here that SHOULD float: for a blocklist the failure mode is staleness, not supply chain — a pinned list stops blocking new domains, and it is consumed as hostname data, never executed. Recorded so it is a decision instead of an accident, which is the distinction the old setup did not make anywhere"
 
 # --- private remote-access layer --------------------------------------------
@@ -421,6 +445,8 @@ url = "https://github.com/sveltejs/ai-tools"
 verdict = "adopt"
 license = "MIT"
 pin = "6468954"         # plugin v1.0.8, 2026-07-27 — see cooldown note in `why`
+pin_kind = "commit"
+tracked_by = "`/plugin marketplace update`, which the why below makes a fresh cooldown decision rather than a routine bump. The repo's releases name individual monorepo packages (@sveltejs/opencode), never the plugin ref pinned here"
 why = "the Svelte org's own agent toolchain, adopted as a Claude Code plugin (`/plugin marketplace add sveltejs/ai-tools`) rather than vendored into a Pack. Three of its four parts are things a Pack structurally cannot carry — an HTTP MCP server (https://mcp.svelte.dev/mcp, which means every doc lookup and autofixer call sends code context to Svelte's server: public-class work only), an LSP wiring for svelteserver, and a subagent. The fourth, the two skills, is a generated artifact synced from svelte.dev and tools/skills — vendoring it would fork a moving target (runes, async Svelte, {@attach}) with no upstream path. INSIDE COOLDOWN AT ADOPTION: installed 2026-07-28 on a 1-day-old ref, accepted because the installed tree is 13 markdown files plus 2 json and contains no executable code (verified against the cache). The residual vector is plugin.json's lspServers.command, which Claude Code spawns — re-verify that field on every `/plugin marketplace update`, and treat an update as a fresh cooldown decision, not a routine bump"
 
 [sveltejs-mcp]
@@ -435,7 +461,9 @@ url = "https://github.com/sveltejs/language-tools"
 verdict = "adopt"
 license = "MIT"
 pin = "0.18.3"          # npm, 2026-06-23 — ~5 weeks old, well past cooldown. Installed globally via `bun add -g`
-why = "the `svelteserver` binary that svelte-ai-tools declares but does not ship. Without it the plugin has no Svelte diagnostics, definition lookup or rename support. Registered separately because it is a distinct package and repository; upstream-checker watches version drift"
+pin_kind = "monorepo"
+tracked_by = "the npm version of the svelte-language-server package. sveltejs/language-tools releases name its siblings (svelte2tsx, typescript-svelte-plugin) and never this package, so a repo-level release comparison would be reading someone else's version"
+why = "the `svelteserver` binary that svelte-ai-tools declares but does not ship. Without it the plugin has no Svelte diagnostics, definition lookup or rename support. Registered separately because it is a distinct package and repository"
 
 # --- agentbox: the sandboxed coding agent (capabilities/agentbox) -----------
 
@@ -458,6 +486,8 @@ url = "https://github.com/debuerreotype/docker-debian-artifacts"
 verdict = "adopt"
 license = "various (Debian main; base image is DFSG-free)"
 pin = "trixie-20260713-slim"   # 2026-07-14, 14d old on 2026-07-28 = the far edge of the cooldown window. arm64 digest sha256:8b5033c95ca60cdffb0e0f4c446e5f714e82d8960a9ef4153c0eaf13e988b0ea. Dated tag, not the rolling `trixie-slim`, so a rebuild is a decision
+pin_kind = "image"
+tracked_by = "the dated trixie-*-slim tag list on Docker Hub. The dated tag is chosen over the rolling one precisely so a rebuild is a decision; that decision is when the pin is re-read"
 why = "base image for the agentbox image. Debian rather than Alpine because the pi release binary is a dynamically-linked glibc ELF (`ELF 64-bit LSB executable, ARM aarch64, interpreter /lib/ld-linux-aarch64.so.1`) -- musl is not an option here. trixie (glibc 2.41) over bookworm because the binary is built on a newer toolchain than bookworm ships"
 
 [deutsche-bahn-data]
@@ -465,6 +495,8 @@ url = "https://github.com/piebro/deutsche-bahn-data"
 verdict = "adopt"
 license = "CC-BY-4.0 (data, licensed by Deutsche Bahn; attribution required)"
 pin = "monthly_processed_data/data-2025-11 .. data-2026-06"   # the monthly releases consumed, not a git ref: the code that produces them is irrelevant here, the published parquet files are the artifact. Files are immutable once published; a new month is a new file, never a rewrite of an old one
+pin_kind = "dataset"
+tracked_by = "the repo's monthly parquet publication. A new month is a new immutable file, so becoming current means extending the range in this pin after checking the schema note in the why below — never re-reading an old one"
 why = "historical German rail punctuality, the empirical baseline capabilities/punctuality is built on. Collected 4x/day from DB's own Station Data + Timetables APIs and republished monthly as parquet, so it is DB's data under DB's licence rather than a scrape. Chosen over calling the Timetables API directly because that answers 'what is delayed right now' and cannot be asked about last March -- history is the whole point here. Two properties the README states and the ingest must respect: coverage changes on 2025-11-02 (before it, only the ~100 largest stations; after, all ~5300), so mixing the two eras makes station coverage a confounder; and collection is 98.92% complete with 196 named missing hours, so an absent train never means 'did not run'. Schema broke once (2026-05: train_name split into train_number + line_number, all historical files reprocessed), which is why the pin names files rather than tracking a moving 'latest'"
 
 [arrow-rs]

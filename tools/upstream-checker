@@ -22,7 +22,10 @@ set -u
 _here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tools/lib/paths.sh
 . "$_here/lib/paths.sh"   # exports AXON_ROOT (+ AXON_PERSONAL_ROOT) and sources toml.sh
-MANIFEST="$AXON_ROOT/upstreams.toml"
+# The tracked manifest, unless a test points at a planted one. Same escape hatch as
+# check-bun-pin.sh's AXON_BUN_PIN_ROOT, and for the same reason: the real manifest can only
+# ever demonstrate the states it happens to be in, so the red paths below need a fixture.
+MANIFEST="${AXON_UPSTREAMS_MANIFEST:-$AXON_ROOT/upstreams.toml}"
 
 STRICT=0; OFFLINE=0; JSON=0
 for a in "$@"; do
@@ -42,6 +45,11 @@ done
 # second copy the checker can drift from. Fail loud if it can't be read.
 VALID_VERDICTS="$(grep -E '^#[[:space:]]*verdict[[:space:]]*=' "$MANIFEST" | head -1 | grep -oE '"[a-z]+"' | tr -d '"' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 [ -n "$VALID_VERDICTS" ] || { echo "upstream-checker: could not derive verdict vocabulary from $MANIFEST header comment" >&2; exit 2; }
+# Same derivation for the pin shapes a GitHub release cannot describe. Declaring one turns the
+# drift check off for that entry, so the vocabulary is deliberately not open: a typo must fail
+# rather than quietly become a new way to stop being checked.
+VALID_PIN_KINDS="$(grep -E '^#[[:space:]]*pin_kind[[:space:]]*=' "$MANIFEST" | head -1 | grep -oE '"[a-z]+"' | tr -d '"' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+[ -n "$VALID_PIN_KINDS" ] || { echo "upstream-checker: could not derive pin_kind vocabulary from $MANIFEST header comment" >&2; exit 2; }
 # "consumed" = integrated into Axon, therefore must be pinned. This is policy,
 # stated nowhere else as a list, so it lives here as the single definition.
 CONSUMED_VERDICTS="adopt contribute overlay fork"
@@ -79,7 +87,7 @@ gh_latest() {
   printf '%s\t%s\n' "$tag" "$pub"
 }
 
-fail=0; warn=0; ok=0; count=0
+fail=0; warn=0; na=0; ok=0; count=0
 
 # --json accumulates the same per-entry notes the human report prints, so the two views
 # never drift: every status line goes through emit(), which either prints it (human) or
@@ -109,8 +117,10 @@ for name in $(toml_sections "$MANIFEST"); do
   license="$(toml_get_in "$name" license "$MANIFEST")"
   why="$(toml_get_in "$name" why "$MANIFEST")"
   pin="$(toml_get_in "$name" pin "$MANIFEST")"
+  pin_kind="$(toml_get_in "$name" pin_kind "$MANIFEST")"
+  tracked_by="$(toml_get_in "$name" tracked_by "$MANIFEST")"
 
-  entry_fail=0; entry_warn=0; ENTRY_NOTES=()
+  entry_fail=0; entry_warn=0; entry_na=0; ENTRY_NOTES=()
   [ "$JSON" -eq 0 ] && printf '▸ %-28s %-11s pin %s\n' "$name" "${verdict:-—}" "${pin:-—}"
 
   # 1. completeness
@@ -136,13 +146,43 @@ for name in $(toml_sections "$MANIFEST"); do
     entry_warn=1
   fi
 
-  # 4. drift / cooldown — only for pinned GitHub upstreams
-  if [ "$OFFLINE" -eq 0 ] && [ -n "$pin" ] && printf '%s' "$url" | grep -q 'github.com'; then
+  # 4. release-drift declaration — a pin that releases/latest cannot describe
+  #
+  # Ten of this manifest's entries are pinned to a commit sha, an image tag, a hosted API
+  # surface or a data path. Each is the correct pin for what is consumed; none of them is a
+  # GitHub release, so the check below could never resolve and warned every week forever. #5
+  # was right that an unresolvable check is not a passed check — but a gate that warns
+  # permanently about entries where nothing is wrong is one people learn to skim.
+  #
+  # So the manifest gets to say the check does not apply, in the same shape as every other
+  # verdict in it: a vocabulary term plus prose. Validated rather than trusted, and paired with
+  # tracked_by so opting out of this check is not opting out of thinking about staleness. Runs
+  # offline too — whether a pin is a release tag is a fact about the manifest, not the network.
+  if [ -n "$pin_kind" ] || [ -n "$tracked_by" ]; then
+    if [ -z "$pin_kind" ]; then
+      emit "✗ tracked_by without pin_kind — name the shape ($VALID_PIN_KINDS) or drop the field"
+      entry_fail=1
+    elif ! in_list "$pin_kind" "$VALID_PIN_KINDS"; then
+      emit "✗ invalid pin_kind '$pin_kind' (allowed: $VALID_PIN_KINDS)"
+      entry_fail=1
+    elif [ -z "$tracked_by" ]; then
+      emit "✗ pin_kind '$pin_kind' without tracked_by — say what keeps this entry current instead"
+      entry_fail=1
+    else
+      emit "○ release drift n/a ($pin_kind) — tracked by: $tracked_by"
+      entry_na=1
+    fi
+  fi
+
+  # 5. drift / cooldown — only for pinned GitHub upstreams whose pin a release can describe
+  if [ "$entry_na" -eq 0 ] && [ "$OFFLINE" -eq 0 ] && [ -n "$pin" ] && printf '%s' "$url" | grep -q 'github.com'; then
     repo="$(printf '%s' "$url" | sed -E 's#.*github.com/([^/]+/[^/]+).*#\1#; s#\.git$##')"
     latest_line="$(gh_latest "$repo")"
     if [ -z "$latest_line" ]; then
-      emit "· latest release not resolvable (no releases / rate-limited) — drift unverified"
-      # A drift check that could not run is not a drift check that passed.
+      emit "⚠ latest release not resolvable (no releases / rate-limited) — drift unverified; if this pin is not a release, declare pin_kind + tracked_by"
+      # A drift check that could not run is not a drift check that passed. An undeclared entry
+      # stays a warning on purpose: rate limiting and a transient API failure land here too, and
+      # a deliberate opt-out has to look different from one of those rather than identical.
       entry_warn=1
     else
       latest_tag="${latest_line%%	*}"
@@ -164,10 +204,16 @@ for name in $(toml_sections "$MANIFEST"); do
     fi
   fi
 
+  # n/a sits between ok and warn: an entry can be declared and still owe something else (an
+  # unpinned consumed verdict, a missing field), and that has to win over the declaration.
   if [ "$entry_fail" -eq 1 ]; then
     fail=$((fail + 1)); entry_status="fail"
   elif [ "$entry_warn" -eq 1 ]; then
     warn=$((warn + 1)); entry_status="warn"
+  elif [ "$entry_na" -eq 1 ]; then
+    # `na`, not `n/a`: the human report can afford the slash, the machine view cannot — this
+    # value becomes a CSS class on the dashboard and a jq selector in upstream-watch.yml.
+    na=$((na + 1)); entry_status="na"
   else
     ok=$((ok + 1)); entry_status="ok"
   fi
@@ -178,14 +224,14 @@ for name in $(toml_sections "$MANIFEST"); do
       for _n in "${ENTRY_NOTES[@]}"; do notes_json="$notes_json,\"$(json_escape "$_n")\""; done
       notes_json="${notes_json#,}"
     fi
-    JSON_ENTRIES="$JSON_ENTRIES,{\"name\":\"$(json_escape "$name")\",\"verdict\":\"$(json_escape "$verdict")\",\"pin\":\"$(json_escape "$pin")\",\"url\":\"$(json_escape "$url")\",\"status\":\"$entry_status\",\"notes\":[$notes_json]}"
+    JSON_ENTRIES="$JSON_ENTRIES,{\"name\":\"$(json_escape "$name")\",\"verdict\":\"$(json_escape "$verdict")\",\"pin\":\"$(json_escape "$pin")\",\"pin_kind\":\"$(json_escape "$pin_kind")\",\"url\":\"$(json_escape "$url")\",\"status\":\"$entry_status\",\"notes\":[$notes_json]}"
   fi
 done
 
 if [ "$JSON" -eq 1 ]; then
   offline_bool=false; [ "$OFFLINE" -eq 1 ] && offline_bool=true
-  printf '{"manifest":"%s","offline":%s,"totals":{"count":%d,"ok":%d,"warn":%d,"fail":%d},"entries":[%s]}\n' \
-    "$(json_escape "$MANIFEST")" "$offline_bool" "$count" "$ok" "$warn" "$fail" "${JSON_ENTRIES#,}"
+  printf '{"manifest":"%s","offline":%s,"totals":{"count":%d,"ok":%d,"na":%d,"warn":%d,"fail":%d},"entries":[%s]}\n' \
+    "$(json_escape "$MANIFEST")" "$offline_bool" "$count" "$ok" "$na" "$warn" "$fail" "${JSON_ENTRIES#,}"
   exit 0
 fi
 
@@ -199,7 +245,9 @@ if [ "$OFFLINE" -eq 1 ]; then
 else
   scope="manifest format + upstream drift"
 fi
-echo "── $count entries · $ok ok · $warn warn · $fail fail ── $scope"
+echo "── $count entries · $ok ok · $na n/a · $warn warn · $fail fail ── $scope"
+# Its own group, not a silent fold into ok: an entry nobody checks should stay visible as one.
+[ "$na" -gt 0 ] && echo "   n/a = release drift declared inapplicable (pin_kind), tracked by the stated mechanism instead"
 
 exit_code=0
 [ "$fail" -gt 0 ] && exit_code=1

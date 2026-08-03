@@ -7,10 +7,13 @@
   // The M2 gate (tools/upstream-checker) is the source of truth. This page is a compact,
   // read-only lens over its offline result; it neither changes pins nor runs the network audit.
   const PAGE_SIZE = 24;
-  type Filter = "all" | "ok" | "warn" | "fail";
+  type Filter = "all" | "ok" | "na" | "warn" | "fail";
   const FILTERS: { value: Filter; label: string }[] = [
     { value: "all", label: "All" },
     { value: "ok", label: "OK" },
+    // Its own filter, not folded into OK: these are the entries release-drift checking cannot
+    // describe, so they are the ones whose freshness depends on the stated tracked_by instead.
+    { value: "na", label: "Not release-checked" },
     { value: "warn", label: "Warnings" },
     { value: "fail", label: "Failures" },
   ];
@@ -71,6 +74,9 @@
     <div>
       <strong>{data.totals.count} dependencies</strong>
       <span>{data.totals.ok} clear</span>
+      {#if data.totals.na > 0}
+        <span>{data.totals.na} not release-checked</span>
+      {/if}
     </div>
     <p class:attention={data.totals.warn > 0 || data.totals.fail > 0}>
       {#if data.totals.fail > 0}
@@ -173,6 +179,8 @@
   .dot { display: inline-block; width: 8px; height: 8px; margin-right: 0.45rem; border-radius: 50%; background: var(--success); }
   .dot.warn { background: var(--warning); }
   .dot.fail { background: var(--danger); }
+  /* Hollow, not green: nothing checked this entry, which is not the same as it passing. */
+  .dot.na { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-secondary); }
   .verdict { display: inline-block; padding: 0.1rem 0.38rem; border: 1px solid var(--card-border); border-radius: 4px; color: var(--text-secondary); font-size: 0.68rem; letter-spacing: 0.04em; text-transform: uppercase; }
   .pin { color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.76rem; overflow-wrap: anywhere; }
   .more { display: block; width: 100%; margin-top: 0.75rem; padding: 0.55rem; border: 1px solid var(--card-border); border-radius: 7px; background: transparent; color: var(--primary); font: inherit; font-size: 0.8rem; cursor: pointer; }

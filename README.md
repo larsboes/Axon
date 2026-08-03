@@ -257,6 +257,16 @@ a release unless an active vulnerability requires an explicit exception. Audit t
 than the world. A dependency that is mutable data rather than executable code must say why its pin
 policy differs.
 
+Not every correct pin is a release. A commit sha is the right pin for a repository that cuts no
+releases, and an image tag, a hosted API surface or a data path are right for what they name — but
+`releases/latest` cannot describe any of them, so the drift check must be told rather than left to
+fail. Such an entry declares `pin_kind` and `tracked_by` in `upstreams.toml`, and the checker then
+reports it in its own group instead of warning about it forever. An entry that does *not* declare
+still warns when the lookup fails, because a rate limit must not be able to look like a decision.
+`tracked_by` is what keeps the opt-out honest: it names what governs the entry's freshness once
+release drift no longer does, so declaring a check inapplicable never becomes permission to stop
+thinking about staleness.
+
 ### Secrets
 
 Secret values live in Vaultwarden, never in this repository or an overlay note. A capability may
