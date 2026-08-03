@@ -28,8 +28,10 @@
         TELOS relevance
       </dt>
       <dd>
-        {status.relevance.reachable
-          ? shortModel(status.relevance.model)
+        {status.reranker.reachable
+          ? shortModel(status.reranker.model)
+          : status.relevance.reachable
+            ? shortModel(status.relevance.model)
           : "lexical fallback"}
       </dd>
       <small>{status.relevance.profile_count} lenses · {status.relevance.active_mode}</small>
@@ -37,7 +39,7 @@
     <div>
       <dt>Evaluation mode</dt>
       <dd>{status.evaluator_revision}</dd>
-      <small>{status.ledger.semantic} semantic · {status.ledger.lexical} lexical</small>
+      <small>{status.ledger.reranked} reranked · {status.ledger.semantic} semantic · {status.ledger.lexical} lexical</small>
     </div>
     {#if status.travel_context}
       <div>

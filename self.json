@@ -97,8 +97,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 30,
-        "nodes": 555
+        "files": 32,
+        "nodes": 573
       }
     },
     {
@@ -158,7 +158,7 @@
       "kind": "lib",
       "code": {
         "files": 2,
-        "nodes": 48
+        "nodes": 56
       }
     },
     {
@@ -650,6 +650,11 @@
       "pin": ""
     },
     {
+      "name": "bge-reranker-v2-m3-mlx",
+      "verdict": "adopt",
+      "pin": "b4577f49e18adb53ed9e557192094f69f3dc2c1c"
+    },
+    {
       "name": "bitwarden-cli",
       "verdict": "adopt",
       "pin": "cli-v2026.7.0"
@@ -937,7 +942,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 5459,
+    "nodes": 5487,
     "external": 5,
     "stale": [],
     "unmatched": [

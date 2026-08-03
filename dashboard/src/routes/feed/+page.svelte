@@ -226,8 +226,10 @@
     try {
       const result = await comms.refreshRelevance(Math.max(days, 90));
       const method =
-        result.mode === "semantic"
-          ? "semantic"
+        result.mode === "reranked"
+          ? "reranked"
+          : result.mode === "semantic"
+            ? "semantic"
           : result.mode === "lexical"
             ? "lexical (local embedding unavailable)"
             : "without profiles";
@@ -600,7 +602,7 @@
               <p class="relevance">
                 <span>{e.relevance.profile_label}</span>
                 <span class="mono">{e.relevance.score.toFixed(2)}</span>
-                <span class="method">{e.relevance.mode === "semantic" ? "semantic" : "lexical"}</span>
+                <span class="method">{e.relevance.mode}</span>
               </p>
             {/if}
             {#if e.summary}

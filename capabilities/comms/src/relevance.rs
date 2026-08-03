@@ -2,9 +2,11 @@
 //!
 //! Comms owns this concern: it ranks any observation against explicitly
 //! configured focus lenses without turning Feed into a Scouting view. Profiles
-//! and items always pass through one resolved `embedding` role in one batch.
-//! When that role is absent or unavailable, both sides use the same
-//! deterministic lexical vector space and the stored mode says `lexical`.
+//! and items first pass through one resolved `embedding` role in one batch.
+//! Embeddings select at most three lens candidates per item; a resolved
+//! `reranking` role then scores those query-document pairs jointly. When the
+//! model stages are absent or unavailable, the stored mode truthfully steps
+//! down to `semantic` or the deterministic `lexical` control.
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -23,6 +25,8 @@ use crate::store::FeedItem;
 const DOCUMENT_CAP: usize = 1_800;
 const PROFILE_CAP: usize = 1_800;
 const LEXICAL_DIMENSIONS: usize = 512;
+const CANDIDATE_PROFILES_PER_ITEM: usize = 3;
+const RERANK_BATCH_SIZE: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct InterestProfile {
@@ -143,7 +147,8 @@ fn frontmatter_value(body: &str, key: &str) -> Option<String> {
 pub fn score_items(
     items: &[FeedItem],
     profiles: &[InterestProfile],
-    role: Option<&ResolvedRole>,
+    embedding_role: Option<&ResolvedRole>,
+    reranking_role: Option<&ResolvedRole>,
 ) -> Vec<ScoredFeedItem> {
     if profiles.is_empty() {
         return items
@@ -175,7 +180,7 @@ pub fn score_items(
         .cloned()
         .chain(item_documents.iter().cloned())
         .collect::<Vec<_>>();
-    let semantic = embed(&semantic_inputs, role);
+    let semantic = embed(&semantic_inputs, embedding_role);
     let (vectors, mode) = match semantic {
         Some(vectors) if vectors.len() == semantic_inputs.len() => (vectors, "semantic"),
         _ => (
@@ -189,19 +194,72 @@ pub fn score_items(
 
     let profile_vectors = &vectors[..profiles.len()];
     let item_vectors = &vectors[profiles.len()..];
+    let candidate_profiles = item_vectors
+        .iter()
+        .map(|item_vector| {
+            let mut candidates = profile_vectors
+                .iter()
+                .enumerate()
+                .map(|(index, profile_vector)| (index, cosine(profile_vector, item_vector)))
+                .collect::<Vec<_>>();
+            candidates.sort_by(|left, right| {
+                right
+                    .1
+                    .partial_cmp(&left.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            candidates.truncate(CANDIDATE_PROFILES_PER_ITEM);
+            candidates
+        })
+        .collect::<Vec<_>>();
+    let reranked = if mode == "semantic" {
+        reranking_role.and_then(|role| {
+            match rerank_candidate_scores(role, profiles, &item_documents, &candidate_profiles) {
+                Ok(scores) => Some(scores),
+                Err(error) => {
+                    eprintln!("  comms: reranking unavailable ({error}) - keeping semantic scores");
+                    None
+                }
+            }
+        })
+    } else {
+        None
+    };
     items
         .iter()
-        .zip(item_vectors)
-        .map(|(item, item_vector)| {
-            let mut matches = profiles
-                .iter()
-                .zip(profile_vectors)
-                .map(|(profile, profile_vector)| {
-                    let score = cosine(profile_vector, item_vector);
-                    let method = if mode == "semantic" {
-                        "Semantische Nähe"
-                    } else {
-                        "Lexikalische Nähe"
+        .enumerate()
+        .map(|(item_index, item)| {
+            let rerank_scores = reranked.as_ref().map(|scores| &scores[item_index]);
+            let profile_scores = if let Some(scores) = rerank_scores {
+                candidate_profiles[item_index]
+                    .iter()
+                    .map(|(profile_index, _)| (*profile_index, scores[*profile_index].unwrap()))
+                    .collect::<Vec<_>>()
+            } else {
+                profiles
+                    .iter()
+                    .enumerate()
+                    .map(|(profile_index, _)| {
+                        (
+                            profile_index,
+                            cosine(&profile_vectors[profile_index], &item_vectors[item_index]),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let scoring_mode = if rerank_scores.is_some() {
+                "reranked"
+            } else {
+                mode
+            };
+            let mut matches = profile_scores
+                .into_iter()
+                .map(|(profile_index, score)| {
+                    let profile = &profiles[profile_index];
+                    let method = match scoring_mode {
+                        "reranked" => "Gemeinsam bewertete Relevanz",
+                        "semantic" => "Semantische Nähe",
+                        _ => "Lexikalische Nähe",
                     };
                     let rationale = if profile.focus.is_empty() {
                         format!("{method} zur TELOS-Linse {}", profile.label)
@@ -213,7 +271,7 @@ pub fn score_items(
                         profile_label: profile.label.clone(),
                         score,
                         rationale,
-                        mode: mode.to_string(),
+                        mode: scoring_mode.to_string(),
                         profile_revision: profile.fingerprint.clone(),
                     }
                 })
@@ -230,6 +288,45 @@ pub fn score_items(
             }
         })
         .collect()
+}
+
+fn rerank_candidate_scores(
+    role: &ResolvedRole,
+    profiles: &[InterestProfile],
+    item_documents: &[String],
+    candidate_profiles: &[Vec<(usize, f64)>],
+) -> Result<Vec<Vec<Option<f64>>>, String> {
+    let mut scores = vec![vec![None; profiles.len()]; item_documents.len()];
+    for (profile_index, profile) in profiles.iter().enumerate() {
+        let item_indices = candidate_profiles
+            .iter()
+            .enumerate()
+            .filter_map(|(item_index, candidates)| {
+                candidates
+                    .iter()
+                    .any(|(candidate, _)| *candidate == profile_index)
+                    .then_some(item_index)
+            })
+            .collect::<Vec<_>>();
+        for item_chunk in item_indices.chunks(RERANK_BATCH_SIZE) {
+            let documents = item_chunk
+                .iter()
+                .map(|index| item_documents[*index].clone())
+                .collect::<Vec<_>>();
+            let reranked = role.rerank(&profile.text, &documents)?;
+            for (item_index, score) in item_chunk.iter().zip(reranked) {
+                scores[*item_index][profile_index] = Some(f64::from(score));
+            }
+        }
+    }
+    if scores.iter().enumerate().any(|(item_index, row)| {
+        candidate_profiles[item_index]
+            .iter()
+            .any(|(profile_index, _)| row[*profile_index].is_none())
+    }) {
+        return Err("reranker omitted a selected candidate".into());
+    }
+    Ok(scores)
 }
 
 /// Cheap provider-specific readiness probe. Listing installed models avoids
@@ -258,19 +355,13 @@ fn item_document(item: &FeedItem) -> String {
     )
 }
 
-fn embed(
-    inputs: &[(String, TextRole)],
-    role: Option<&ResolvedRole>,
-) -> Option<Vec<Vec<f64>>> {
-    role?
-        .embed_mixed(inputs)
-        .ok()
-        .map(|vectors| {
-            vectors
-                .into_iter()
-                .map(|vector| vector.into_iter().map(f64::from).collect())
-                .collect()
-        })
+fn embed(inputs: &[(String, TextRole)], role: Option<&ResolvedRole>) -> Option<Vec<Vec<f64>>> {
+    role?.embed_mixed(inputs).ok().map(|vectors| {
+        vectors
+            .into_iter()
+            .map(|vector| vector.into_iter().map(f64::from).collect())
+            .collect()
+    })
 }
 
 fn lexical_vector(text: &str) -> Vec<f64> {
@@ -377,6 +468,9 @@ mod tests {
     #[test]
     fn a_missing_embedding_role_is_an_explicit_lexical_fallback() {
         assert!(!embedding_backend_configured(None));
-        assert_eq!(embedding_provider_label(None), "No embedding role configured");
+        assert_eq!(
+            embedding_provider_label(None),
+            "No embedding role configured"
+        );
     }
 }

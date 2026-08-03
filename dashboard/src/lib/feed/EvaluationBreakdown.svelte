@@ -11,8 +11,10 @@
 
   const percentage = $derived(Math.round(evaluation.overall_score * 100));
   const modeLabel = $derived(
-    evaluation.mode === "semantic"
-      ? "semantic"
+    evaluation.mode === "reranked"
+      ? "reranked"
+      : evaluation.mode === "semantic"
+        ? "semantic"
       : evaluation.mode === "lexical"
         ? "lexical"
         : "without TELOS",

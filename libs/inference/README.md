@@ -25,7 +25,7 @@ Two levels. Callers only ever touch the second.
 
 - A **backend** is a server: an API shape (`openai` or `ollama`), a base URL, optionally a
   file to read a bearer key out of. Declared once.
-- A **role** is a job: `embedding`, `summarization`. It names a backend, the model on it,
+- A **role** is a job: `embedding`, `reranking`, `summarization`. It names a backend, the model on it,
   and that model's input conventions.
 
 ```rust
@@ -43,7 +43,10 @@ anywhere, and moving between them is a config edit rather than a code change.
 `inference.json`, honours the backend override, and resolves bearer keys from the referenced
 private file. Consumers receive a resolved role without hardcoding a URL or model. Comms also
 uses the resolved role for model readiness, mixed query/document embedding batches and
-OpenAI-compatible chat completion routing.
+OpenAI-compatible chat completion routing. Reranking roles use the Cohere/Jina-compatible
+`/v1/rerank` shape, restore sorted results to input order and reject incomplete, duplicate or
+out-of-range scores before a consumer can persist them. The Ollama-native API has no equivalent
+route, so callers degrade explicitly when a machine overrides that backend.
 
 ## Config
 

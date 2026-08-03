@@ -12,7 +12,7 @@ use crate::relevance::{InterestProfile, RelevanceMatch};
 use crate::store::FeedItem;
 use crate::travel::{self, TravelContext};
 
-pub const EVALUATOR_REVISION: &str = "feed-evaluator-v2-travel";
+pub const EVALUATOR_REVISION: &str = "feed-evaluator-v3-reranking";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EvaluationFactorContext {
@@ -64,6 +64,7 @@ pub fn item_revision(item: &FeedItem) -> String {
 pub fn context_revision(
     profiles: &[InterestProfile],
     embedding_producer: Option<&str>,
+    reranking_producer: Option<&str>,
     travel_revision: &str,
 ) -> String {
     let mut revisions = profiles
@@ -76,6 +77,10 @@ pub fn context_revision(
     revisions.push(format!(
         "embedding:{}",
         embedding_producer.unwrap_or("lexical")
+    ));
+    revisions.push(format!(
+        "reranking:{}",
+        reranking_producer.unwrap_or("semantic")
     ));
     revisions.push(format!("travel:{travel_revision}"));
     revisions.sort();
@@ -109,10 +114,10 @@ pub fn evaluate(
                 "{} mit {:.0}% Übereinstimmung ({})",
                 matched.profile_label,
                 interest_score * 100.0,
-                if matched.mode == "semantic" {
-                    "semantisch"
-                } else {
-                    "lexikal"
+                match matched.mode.as_str() {
+                    "reranked" => "gemeinsam bewertet",
+                    "semantic" => "semantisch",
+                    _ => "lexikal",
                 }
             )
         })
@@ -144,14 +149,16 @@ pub fn evaluate(
             score: travel_signal.score,
             weight: 0.25,
             rationale: travel_signal.rationale,
-            context: travel_signal.context.map(|context| EvaluationFactorContext {
-                kind: "trip".into(),
-                id: context.id,
-                label: context.label,
-                date_start: Some(context.date_start),
-                date_end: Some(context.date_end),
-                matched_terms: context.matched_terms,
-            }),
+            context: travel_signal
+                .context
+                .map(|context| EvaluationFactorContext {
+                    kind: "trip".into(),
+                    id: context.id,
+                    label: context.label,
+                    date_start: Some(context.date_start),
+                    date_end: Some(context.date_end),
+                    matched_terms: context.matched_terms,
+                }),
         },
         EvaluationFactor {
             key: "freshness".into(),
@@ -238,7 +245,10 @@ fn evidence_score(item: &FeedItem) -> (f64, String) {
         .collect::<Vec<_>>();
     let rationale = match (present.is_empty(), missing.is_empty()) {
         (_, true) => "Titel, Autor, Kurzfassung und Quelltext vorhanden".into(),
-        (true, _) => format!("Noch keine auswertbaren Inhalte; fehlt: {}", missing.join(", ")),
+        (true, _) => format!(
+            "Noch keine auswertbaren Inhalte; fehlt: {}",
+            missing.join(", ")
+        ),
         _ => format!(
             "Vorhanden: {}; fehlt: {}",
             present.join(", "),
@@ -278,11 +288,7 @@ fn age_days(day: &str) -> Option<i64> {
         return None;
     }
     let item_days = days_from_civil(year, month, date);
-    let now_days = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64
-        / 86_400;
+    let now_days = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64 / 86_400;
     Some((now_days - item_days).max(0))
 }
 
@@ -337,16 +343,29 @@ mod tests {
     fn context_revision_includes_embedding_vector_space() {
         let profiles = Vec::new();
         assert_ne!(
-            context_revision(&profiles, Some("ollama:nomic-embed-text"), "travel"),
-            context_revision(&profiles, Some("omlx:multilingual-embedding"), "travel")
+            context_revision(&profiles, Some("ollama:nomic-embed-text"), None, "travel"),
+            context_revision(
+                &profiles,
+                Some("omlx:multilingual-embedding"),
+                None,
+                "travel"
+            )
         );
     }
 
     #[test]
     fn context_revision_includes_travel_snapshot() {
         assert_ne!(
-            context_revision(&[], None, "travel-one"),
-            context_revision(&[], None, "travel-two")
+            context_revision(&[], None, None, "travel-one"),
+            context_revision(&[], None, None, "travel-two")
+        );
+    }
+
+    #[test]
+    fn context_revision_includes_reranking_model() {
+        assert_ne!(
+            context_revision(&[], Some("omlx:e5"), Some("omlx:reranker-a"), "travel"),
+            context_revision(&[], Some("omlx:e5"), Some("omlx:reranker-b"), "travel")
         );
     }
 
@@ -364,7 +383,16 @@ mod tests {
         let evaluation = evaluate(&item, Some(&matched), "context", &[]);
         assert_eq!(evaluation.factors.len(), 4);
         assert!((0.0..=1.0).contains(&evaluation.overall_score));
-        assert!((evaluation.factors.iter().map(|factor| factor.weight).sum::<f64>() - 1.0).abs() < 1e-9);
+        assert!(
+            (evaluation
+                .factors
+                .iter()
+                .map(|factor| factor.weight)
+                .sum::<f64>()
+                - 1.0)
+                .abs()
+                < 1e-9
+        );
         assert_eq!(evaluation.mode, "semantic");
     }
 

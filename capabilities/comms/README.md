@@ -81,20 +81,24 @@ Neither path is the Trips importer, edits TELOS, or scans Scouting's opportunity
 Comms does not need both oMLX and Ollama as permanent runtimes. The split was historical:
 summaries already used oMLX's OpenAI-compatible chat endpoint, while relevance was first
 implemented directly against Ollama's `/api/embed`. Current oMLX releases expose
-`/v1/chat/completions`, `/v1/embeddings` and `/v1/models`, support embedding models alongside
+`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank` and `/v1/models`, support embedding and
+sequence-classification models alongside
 LLMs, and manage them through LRU eviction, per-model idle TTLs and a process memory guard.
 The intended local-AI rung is therefore one authenticated oMLX process with one generation
-model and one much smaller multilingual embedding model. See the
+model, one much smaller multilingual embedding model and one bounded reranker. See the
 [oMLX API and model-management documentation](https://github.com/jundot/omlx#api-compatibility).
 The selected model is
 [`mlx-community/multilingual-e5-base-mlx` at the audited commit](https://huggingface.co/mlx-community/multilingual-e5-base-mlx/tree/576fdf3eab52a419f6d126a0c4d7c59b3882ffde):
 573 MB, 94 languages, XLM-RoBERTa, MIT-licensed, and represented by tokenizer/config data plus
 one safetensors weight shard. It replaced the 253 MB E5-small baseline only after the base
 model passed the same frozen DE/EN corpus that small failed; both decisions and exact pins are
-recorded in `upstreams.toml`.
+recorded in `upstreams.toml`. The reranking stage uses the Apache-2.0
+[`soichisumi/bge-reranker-v2-m3-mlx` pinned tree](https://huggingface.co/soichisumi/bge-reranker-v2-m3-mlx/tree/b4577f49e18adb53ed9e557192094f69f3dc2c1c),
+an XLM-RoBERTa sequence-classification conversion whose inspected tree contains only model,
+tokenizer and config artifacts.
 
 The shared `inference.json` makes that protocol choice explicit. Comms asks for
-the `embedding` and `summarization` roles; backend URLs, model IDs, role prefixes
+the `embedding`, `reranking` and `summarization` roles; backend URLs, model IDs, role prefixes
 and key-file references are declared once there rather than repeated in
 `comms.json`:
 
@@ -108,12 +112,18 @@ and key-file references are declared once there rather than repeated in
   enrichment pass benefits more from returning unified memory immediately than from keeping a
   model warm for Ollama's default idle period. See Ollama's
   [keep-alive documentation](https://docs.ollama.com/faq#how-can-i-preload-a-model-into-ollama-to-get-faster-response-times).
-- An unknown, unavailable or incomplete provider fails to the labeled lexical path. It never
+  It has no native reranking endpoint, so Comms truthfully keeps semantic scores on that backend.
+- An unknown, unavailable or incomplete provider fails to the labelled lexical path. It never
   silently presents a heuristic score as semantic.
 
-The resolved embedding role's cache key is part of the evaluation context revision. Changing
-the producing backend or model therefore invalidates the right ledger rows on the next normal
-refresh. Relevance input is capped at 1,800 characters, and a stored summary
+Feed relevance is two-stage. One mixed embedding batch selects at most three candidate lenses
+per item. The reranker then evaluates those `(lens, item)` pairs jointly in batches of 32. If a
+reranking request fails, the whole refresh keeps the embedding scores rather than mixing score
+spaces; if embedding fails, the deterministic lexical control remains labelled `lexical`.
+
+The resolved embedding and reranking roles' cache keys are part of the evaluation context
+revision. Changing either producing backend or model therefore invalidates the right ledger rows
+on the next normal refresh. Relevance input is capped at 1,800 characters, and a stored summary
 replaces rather than duplicates the raw transcript; this fits the selected model's 512-token
 window without spending local compute on text it would truncate.
 
@@ -305,7 +315,9 @@ Postgres with only the built-in classification heuristics. Fields:
 `database_url` (unset → built from `axon-overlay/config/postgres.env`),
 `google_env_path` (default `$AXON_PERSONAL_ROOT/config/comms.env`), `port`,
 `relevance {profile_paths}`. Model roles come from the overlay's shared
-`inference.json`; see `libs/inference/inference.config.example.json`. A profile note may define a single-line `relevance_query` in
+`inference.json`; see `libs/inference/inference.config.example.json`. The active producer revision
+includes both embedding and reranking roles, so a model change invalidates stale evaluations. A
+profile note may define a single-line `relevance_query` in
 its frontmatter; this is the inspectable embedding input and changes that profile's revision,
 while `summary`, `current_focus` and `category_affinity` remain reader-facing metadata,
 `vault_link_sources[] {id, path, heading?, enabled}`,

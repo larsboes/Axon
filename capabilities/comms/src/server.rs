@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 
+use axum::http::{HeaderName, HeaderValue, Method};
 use axum::{
     extract::{DefaultBodyLimit, Path, Query},
     http::StatusCode,
@@ -14,7 +15,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use axum::http::{HeaderName, HeaderValue, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
@@ -34,7 +34,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// Axum middleware layer that rejects requests without a valid shared secret.
@@ -65,20 +68,15 @@ async fn require_auth(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .or_else(|| {
-            headers
-                .get("x-axon-token")
-                .and_then(|v| v.to_str().ok())
-        });
+        .or_else(|| headers.get("x-axon-token").and_then(|v| v.to_str().ok()));
 
     match token {
-        Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => {
-            next.run(request).await
-        }
+        Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => next.run(request).await,
         _ => (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "invalid or missing authentication token" })),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
@@ -356,7 +354,9 @@ async fn feed_origins_handler() -> Json<Value> {
     let result = tokio::task::spawn_blocking(move || -> Result<Vec<OriginSummary>, String> {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
-        store.list_origin_summaries().map_err(|error| error.to_string())
+        store
+            .list_origin_summaries()
+            .map_err(|error| error.to_string())
     })
     .await;
 
@@ -396,10 +396,7 @@ fn full_item(store: &Store, item: FeedItem) -> Result<FeedFullItem, String> {
         .feed_evaluation(&item.id)
         .map_err(|error| error.to_string())?;
     Ok(FeedFullItem::from_store(
-        item,
-        relevance,
-        evaluation,
-        origins,
+        item, relevance, evaluation, origins,
     ))
 }
 
@@ -488,10 +485,13 @@ fn enrich_many_in_background(ids: Vec<String>) {
         let profiles = relevance::load_profiles(&cfg.relevance);
         let embedding_role = cfg.embedding_role();
         let embedding_producer = embedding_role.as_ref().map(|role| role.cache_key());
+        let reranking_role = cfg.reranking_role();
+        let reranking_producer = reranking_role.as_ref().map(|role| role.cache_key());
         let travel_context = travel::load(&store, &cfg.travel_context);
         let context_revision = evaluation::context_revision(
             &profiles,
             embedding_producer.as_deref(),
+            reranking_producer.as_deref(),
             &travel_context.revision,
         );
         items.retain(|item| {
@@ -502,7 +502,12 @@ fn enrich_many_in_background(ids: Vec<String>) {
         if items.is_empty() {
             return;
         }
-        let scored = relevance::score_items(&items, &profiles, embedding_role.as_ref());
+        let scored = relevance::score_items(
+            &items,
+            &profiles,
+            embedding_role.as_ref(),
+            reranking_role.as_ref(),
+        );
         for (item, result) in items.iter().zip(scored) {
             if let Err(error) = store.replace_feed_relevance(&item.id, &result.matches) {
                 eprintln!("ingest: relevance failed for {}: {error}", item.id);
@@ -602,10 +607,13 @@ async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> (StatusCode
         let profiles = relevance::load_profiles(&cfg.relevance);
         let embedding_role = cfg.embedding_role();
         let embedding_producer = embedding_role.as_ref().map(|role| role.cache_key());
+        let reranking_role = cfg.reranking_role();
+        let reranking_producer = reranking_role.as_ref().map(|role| role.cache_key());
         let travel_context = travel::load(&store, &cfg.travel_context);
         let context_revision = evaluation::context_revision(
             &profiles,
             embedding_producer.as_deref(),
+            reranking_producer.as_deref(),
             &travel_context.revision,
         );
         let considered = items.len();
@@ -613,25 +621,25 @@ async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> (StatusCode
             items.retain(|item| {
                 let item_revision = evaluation::item_revision(item);
                 let stored = store.feed_evaluation(&item.id).ok().flatten();
-                !evaluation::is_current(
-                    stored.as_ref(),
-                    &item_revision,
-                    &context_revision,
-                )
+                !evaluation::is_current(stored.as_ref(), &item_revision, &context_revision)
             });
         }
-        let scored = relevance::score_items(&items, &profiles, embedding_role.as_ref());
+        let scored = relevance::score_items(
+            &items,
+            &profiles,
+            embedding_role.as_ref(),
+            reranking_role.as_ref(),
+        );
         for (source, item) in items.iter().zip(&scored) {
             store
                 .replace_feed_relevance(&item.feed_id, &item.matches)
                 .map_err(|error| error.to_string())?;
-            let evaluated =
-                evaluation::evaluate(
-                    source,
-                    item.matches.first(),
-                    &context_revision,
-                    &travel_context.contexts,
-                );
+            let evaluated = evaluation::evaluate(
+                source,
+                item.matches.first(),
+                &context_revision,
+                &travel_context.contexts,
+            );
             store
                 .replace_feed_evaluation(&evaluated)
                 .map_err(|error| error.to_string())?;
@@ -680,6 +688,8 @@ async fn evaluation_status_handler() -> (StatusCode, Json<Value>) {
         let profiles = relevance::load_profiles(&cfg.relevance);
         let embedding_role = cfg.embedding_role();
         let embedding_producer = embedding_role.as_ref().map(|role| role.cache_key());
+        let reranking_role = cfg.reranking_role();
+        let reranking_producer = reranking_role.as_ref().map(|role| role.cache_key());
         let summarization_role = cfg.summarization_role();
         let travel_context = travel::cached(&store);
         let travel_revision = travel_context
@@ -698,15 +708,19 @@ async fn evaluation_status_handler() -> (StatusCode, Json<Value>) {
         let summarizer_reachable = media::summarizer_reachable(&cfg);
         let relevance_reachable =
             relevance::embedding_backend_reachable(embedding_role.as_ref());
+        let reranking_reachable =
+            relevance::embedding_backend_reachable(reranking_role.as_ref());
         Ok(json!({
             "evaluator_revision": evaluation::EVALUATOR_REVISION,
             "context_revision": evaluation::context_revision(
                 &profiles,
                 embedding_producer.as_deref(),
+                reranking_producer.as_deref(),
                 travel_revision,
             ),
             "ledger": {
                 "evaluated": summary.evaluated,
+                "reranked": summary.reranked,
                 "semantic": summary.semantic,
                 "lexical": summary.lexical,
                 "unscored": summary.unscored,
@@ -742,7 +756,25 @@ async fn evaluation_status_handler() -> (StatusCode, Json<Value>) {
                 "configured": relevance::embedding_backend_configured(embedding_role.as_ref()),
                 "reachable": relevance_reachable,
                 "profile_count": profiles.len(),
-                "active_mode": if relevance_reachable { "semantic" } else { "lexical" },
+                "active_mode": if relevance_reachable && reranking_reachable {
+                    "reranked"
+                } else if relevance_reachable {
+                    "semantic"
+                } else {
+                    "lexical"
+                },
+            },
+            "reranker": {
+                "provider": reranking_role
+                    .as_ref()
+                    .map(|role| role.provider_label())
+                    .unwrap_or("No reranking role configured"),
+                "model": reranking_role
+                    .as_ref()
+                    .map(|role| role.model.as_str())
+                    .unwrap_or(""),
+                "configured": reranking_role.is_some(),
+                "reachable": reranking_reachable,
             },
             "travel_context": {
                 "enabled": cfg.travel_context.enabled,
@@ -834,9 +866,7 @@ struct SourceScanBody {
     source_id: Option<String>,
 }
 
-async fn source_scan_handler(
-    Json(body): Json<SourceScanBody>,
-) -> (StatusCode, Json<Value>) {
+async fn source_scan_handler(Json(body): Json<SourceScanBody>) -> (StatusCode, Json<Value>) {
     let result = tokio::task::spawn_blocking(move || -> Result<(Value, Vec<String>), String> {
         let cfg = Config::load();
         let selected = cfg
@@ -1065,8 +1095,7 @@ fn spawn_enrichment_drain(every_minutes: u64) {
 
     eprintln!("enrichment drain: every {every_minutes} min");
     tokio::spawn(async move {
-        let mut ticker =
-            tokio::time::interval(std::time::Duration::from_secs(every_minutes * 60));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(every_minutes * 60));
         loop {
             ticker.tick().await;
             // The join result is inspected, not discarded: a panic inside the
@@ -1189,10 +1218,7 @@ mod tests {
     /// middleware stack — a handler called directly would skip the layer that
     /// is the entire point.
     async fn serve(api_secret: Option<&str>) -> String {
-        let app = build_router(
-            api_secret.map(str::to_string),
-            "http://127.0.0.1:47117",
-        );
+        let app = build_router(api_secret.map(str::to_string), "http://127.0.0.1:47117");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -1216,7 +1242,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), 401, "no token must not reach the handler");
+        assert_eq!(
+            response.status(),
+            401,
+            "no token must not reach the handler"
+        );
         assert!(
             response
                 .headers()

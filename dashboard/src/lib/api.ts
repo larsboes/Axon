@@ -582,7 +582,7 @@ export interface FeedRelevance {
   profile_label: string;
   score: number;
   rationale: string;
-  mode: 'semantic' | 'lexical';
+  mode: 'reranked' | 'semantic' | 'lexical';
   profile_revision: string;
 }
 
@@ -605,7 +605,7 @@ export interface FeedEvaluationFactor {
 export interface FeedEvaluation {
   overall_score: number;
   explanation: string;
-  mode: 'semantic' | 'lexical' | 'unscored';
+  mode: 'reranked' | 'semantic' | 'lexical' | 'unscored';
   item_revision: string;
   context_revision: string;
   evaluator_revision: string;
@@ -618,6 +618,7 @@ export interface CommsEvaluationStatus {
   context_revision: string;
   ledger: {
     evaluated: number;
+    reranked: number;
     semantic: number;
     lexical: number;
     unscored: number;
@@ -634,7 +635,13 @@ export interface CommsEvaluationStatus {
     configured: boolean;
     reachable: boolean;
     profile_count: number;
-    active_mode: 'semantic' | 'lexical';
+    active_mode: 'reranked' | 'semantic' | 'lexical';
+  };
+  reranker: {
+    provider: string;
+    model: string;
+    configured: boolean;
+    reachable: boolean;
   };
   travel_context: {
     enabled: boolean;
@@ -1140,7 +1147,7 @@ export const comms = {
       considered: number;
       skipped_current: number;
       profile_count: number;
-      mode: 'semantic' | 'lexical' | null;
+      mode: 'reranked' | 'semantic' | 'lexical' | null;
       evaluator_revision: string;
       travel_context: {
         upcoming_count: number;

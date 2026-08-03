@@ -10,6 +10,19 @@ Run it from the Axon root:
 bun capabilities/comms/eval/run-relevance.ts
 ```
 
+The cross-encoder candidate is gated against the same corpus and unchanged judgements:
+
+```sh
+bun capabilities/comms/eval/run-reranking.ts
+```
+
+That runner calls the loopback `/v1/rerank` route once per lens and validates the returned index
+and closed `0..=1` score contract. `OMLX_RERANKING_MODEL` selects another installed model. The
+embedding baseline remains the candidate-retrieval gate; the reranking run deliberately isolates
+the second stage without rewriting the corpus around a model's scores. A disposable, loopback-only
+test server with authentication disabled may set `OMLX_NO_AUTH=1`; the normal path still requires
+the configured key reference.
+
 The runner reads `.auth.api_key` from `~/.omlx/settings.json`, sends one batch to the loopback
 `/v1/embeddings` endpoint and never prints the key or vectors. `OMLX_SETTINGS_PATH`,
 `OMLX_BASE_URL` and `OMLX_EMBEDDING_MODEL` override machine-specific details; E5-base is the
@@ -88,3 +101,9 @@ native Apple variants are retained as tested failures:
 models, while the shared [`NLContextualEmbedding`](results/2026-07-30-apple-contextual.md)
 runs after an explicit asset request and mean-pools subword vectors. Neither clears the same
 corpus.
+
+The second-stage
+[`bge-reranker-v2-m3-mlx` run](results/2026-08-04-bge-reranker-v2-m3-mlx.md) uses the same
+corpus unchanged and passes at 6/6 useful top-1, `0.912` pairwise accuracy and `0.993` mean nDCG.
+Its result is kept separately because cross-encoder scores and embedding cosine scores are not
+the same scale.

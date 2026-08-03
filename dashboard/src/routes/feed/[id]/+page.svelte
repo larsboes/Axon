@@ -188,7 +188,7 @@
           <section aria-labelledby="relevance-title">
             <div class="aside-title">
               <p class="section-label" id="relevance-title">Matches</p>
-              <span>{entry.relevance[0].mode === "semantic" ? "semantic" : "lexical"}</span>
+              <span>{entry.relevance[0].mode}</span>
             </div>
             {#each entry.relevance as match (match.profile_key)}
               <div class="match">

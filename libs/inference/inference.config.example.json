@@ -12,13 +12,17 @@
       "base_url": "http://127.0.0.1:11434"
     }
   },
-  "_comment_roles": "A role names the backend, the model on it, and that model's input conventions. The prefixes are not decoration: multilingual-e5 expects 'query: ' and 'passage: ', nomic-embed-text expects 'search_query: ' and 'search_document: ', and sending the wrong ones costs retrieval quality without raising anything.",
+  "_comment_roles": "A role names the backend, the model on it, and that model's input conventions. The prefixes are not decoration: multilingual-e5 expects 'query: ' and 'passage: ', nomic-embed-text expects 'search_query: ' and 'search_document: ', and sending the wrong ones costs retrieval quality without raising anything. Reranking uses the OpenAI-compatible backend's Cohere/Jina-style /rerank endpoint.",
   "roles": {
     "embedding": {
       "backend": "omlx",
       "model": "multilingual-e5-base-mlx",
       "query_prefix": "query: ",
       "document_prefix": "passage: "
+    },
+    "reranking": {
+      "backend": "omlx",
+      "model": "bge-reranker-v2-m3-mlx"
     },
     "summarization": {
       "backend": "omlx",
