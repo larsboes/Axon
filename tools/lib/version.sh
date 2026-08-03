@@ -24,8 +24,74 @@ ver_gt() {
   [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
 }
 
+# strip_decoration <entry name> <tag> — the orderable version inside a decorated tag, or the tag
+# unchanged when removing the decoration would mean guessing.
+#
+# The entry name is a parameter because it is the only thing that separates two identical shapes.
+# bun pins `1.3.14` against tag `bun-v1.3.14` -- the same version. svelte-language-server pins
+# `0.18.3` against tag `svelte2tsx@0.7.59` -- a different package in the same monorepo. Both are a
+# bare pin against a decorated tag; nothing about their form tells them apart. What does is whether
+# the decoration names the entry, which makes the rule derived from the manifest rather than from a
+# list of upstreams somebody has to maintain.
+#
+# Every rule here removes decoration only when the result is demonstrably orderable. Where it is
+# not, the tag comes back whole and the caller reports it unverified -- deliberately, because
+# inventing an order is how this file's other comment came to describe advising a downgrade as a
+# security warning.
+strip_decoration() {
+  local name="$1" core="$2" lname ltag rest
+  lname="$(printf '%s' "$name" | tr 'A-Z' 'a-z')"
+  ltag="$(printf '%s' "$core" | tr 'A-Z' 'a-z')"
+
+  # 1. A prefix that names this entry, in the separators upstreams actually use.
+  if [ -n "$lname" ]; then
+    case "$ltag" in
+      "$lname"[-_@/]*)
+        core="${core:${#lname}}"
+        core="${core#[-_@/]}"
+        ;;
+    esac
+  fi
+
+  # 2. The leading v, same as norm_ver.
+  core="${core#v}"
+
+  # 3. A build or distribution variant on the end: -alpine, -slim, -bookworm. Removed only when
+  #    what remains can be ordered, so trixie-20260713-slim stays whole rather than turning into a
+  #    date that would then be compared against a version.
+  case "$core" in
+    *-*)
+      rest="${core%-*}"
+      if ver_numeric "$rest"; then core="$rest"; fi
+      ;;
+  esac
+
+  printf '%s' "$core"
+}
+
+# shared_decoration <pin> <tag> — the digit-free leading decoration both sides carry, or empty.
+#
+# A decoration present on BOTH sides names the same thing whichever it is, so it cannot mislead:
+# bitwarden-cli pins `cli-v2026.6.0` against tag `cli-v2026.7.0`, and the entry name matches
+# neither. Digit-free on purpose -- splitting at the first digit would cut `svelte2tsx` in half and
+# make two unrelated packages look like they share a prefix.
+# Tested with grep before extracting with sed, rather than sed's `t` branch: BSD sed does not
+# accept a label terminated by a semicolon, so the one-expression form works on GNU and errors on
+# macOS (README.md#portable-shell).
+shared_decoration() {
+  local a="" b=""
+  if printf '%s' "$1" | grep -Eq '^[^0-9]+[0-9]'; then
+    a="$(printf '%s' "$1" | sed -E 's/^([^0-9]+)[0-9].*$/\1/')"
+  fi
+  if printf '%s' "$2" | grep -Eq '^[^0-9]+[0-9]'; then
+    b="$(printf '%s' "$2" | sed -E 's/^([^0-9]+)[0-9].*$/\1/')"
+  fi
+  [ -n "$a" ] && [ "$a" = "$b" ] && printf '%s' "$a"
+  return 0
+}
+
 # --- upstream drift classification ----------------------------------------
-# drift_note <pin> <latest_tag> <age_days> <cooldown_min> <cooldown_max>
+# drift_note <entry name> <pin> <latest_tag> <age_days> <cooldown_min> <cooldown_max>
 #   Prints the one status note for a pinned upstream against the newest upstream release.
 #   Exit 0 = nothing is owed. Exit 1 = the entry needs attention (the caller's `warn`).
 #
@@ -45,9 +111,20 @@ ver_gt() {
 #     asked it before deciding. An unorderable pair is now reported as unverified, not as drift,
 #     because a gate that cannot answer must say so rather than guess.
 drift_note() {
-  local pin="$1" latest_tag="$2" age_days="$3" cd_min="$4" cd_max="$5"
-  local latest_norm pin_norm
-  latest_norm="$(norm_ver "$latest_tag")"; pin_norm="$(norm_ver "$pin")"
+  local name="$1" pin="$2" latest_tag="$3" age_days="$4" cd_min="$5" cd_max="$6"
+  local latest_norm pin_norm deco
+  pin_norm="$(strip_decoration "$name" "$pin")"
+  latest_norm="$(strip_decoration "$name" "$latest_tag")"
+
+  # Second chance before giving up: a decoration both sides carry, which the entry-name rule above
+  # cannot see because it does not name the entry.
+  if ! ver_numeric "$pin_norm" || ! ver_numeric "$latest_norm"; then
+    deco="$(shared_decoration "$pin" "$latest_tag")"
+    if [ -n "$deco" ]; then
+      pin_norm="$(strip_decoration "" "${pin#"$deco"}")"
+      latest_norm="$(strip_decoration "" "${latest_tag#"$deco"}")"
+    fi
+  fi
 
   if [ "$latest_norm" = "$pin_norm" ]; then
     printf '✓ pinned to latest release (%s)\n' "$latest_tag"; return 0

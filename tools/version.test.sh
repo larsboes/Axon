@@ -96,22 +96,48 @@ check "describe_release takes a rev"     yes [ "$(describe_release v0.1.0)" = "v
 dn() { drift_note "$@" >/dev/null 2>&1; }
 note_of() { drift_note "$@" 2>/dev/null; }
 
-check "pinned to latest owes nothing"    yes dn 1.2.3 v1.2.3 0 7 14
-check "maintenance branch owes nothing"  yes dn 59.1.0 v58.4.0 90 7 14
-check "inside cooldown owes nothing"     yes dn 1.0.0 v1.1.0 1 7 14
-check "cooldown window is owed"          no  dn 1.0.0 v1.1.0 10 7 14
-check "past cooldown is owed"            no  dn 1.0.0 v1.1.0 82 7 14
-check "unorderable pair is owed"         no  dn 1.3.14 bun-v1.3.14 82 7 14
-check "unresolvable age is owed"         no  dn 1.0.0 v1.1.0 "?" 7 14
+check "pinned to latest owes nothing"    yes dn any 1.2.3 v1.2.3 0 7 14
+check "maintenance branch owes nothing"  yes dn arrow-rs 59.1.0 v58.4.0 90 7 14
+check "inside cooldown owes nothing"     yes dn any 1.0.0 v1.1.0 1 7 14
+check "cooldown window is owed"          no  dn any 1.0.0 v1.1.0 10 7 14
+check "past cooldown is owed"            no  dn any 1.0.0 v1.1.0 82 7 14
+check "unorderable pair is owed"         no  dn svelte-language-server 1.3.14 bun-v1.3.14 82 7 14
+check "unresolvable age is owed"         no  dn any 1.0.0 v1.1.0 "?" 7 14
 
 # The bun case again, on the note itself: an unorderable pair must not be dressed up as drift.
-check "unorderable says so"              yes contains "not comparable" "$(note_of 1.3.14 bun-v1.3.14 82 7 14)"
-check "unorderable claims no age"        no  contains "82d old" "$(note_of 1.3.14 bun-v1.3.14 82 7 14)"
+check "unorderable says so"              yes contains "not comparable" "$(note_of svelte-language-server 1.3.14 bun-v1.3.14 82 7 14)"
+check "unorderable claims no age"        no  contains "82d old" "$(note_of svelte-language-server 1.3.14 bun-v1.3.14 82 7 14)"
 # And the boundaries, because off-by-one here decides whether a bump is allowed.
-check "exactly cooldown_min is a window" no  dn 1.0.0 v1.1.0 7 7 14
-check "exactly cooldown_max is a window" no  dn 1.0.0 v1.1.0 14 7 14
-check "one past the window is stale"     no  dn 1.0.0 v1.1.0 15 7 14
-check "window note names the window"     yes contains "cooldown window (7-14d)" "$(note_of 1.0.0 v1.1.0 10 7 14)"
+check "exactly cooldown_min is a window" no  dn any 1.0.0 v1.1.0 7 7 14
+check "exactly cooldown_max is a window" no  dn any 1.0.0 v1.1.0 14 7 14
+check "one past the window is stale"     no  dn any 1.0.0 v1.1.0 15 7 14
+check "window note names the window"     yes contains "cooldown window (7-14d)" "$(note_of any 1.0.0 v1.1.0 10 7 14)"
+
+# --- decoration, and where it must NOT be removed -------------------------
+# The two shapes that cannot be told apart by form: a bare pin against a decorated tag, where the
+# decoration either names this entry (strip it) or names a different package (never strip it).
+check "entry-name prefix is stripped"    yes dn bun 1.3.14 bun-v1.3.14 82 7 14
+check "a foreign package stays unread"   no  dn svelte-language-server 0.18.3 svelte2tsx@0.7.59 82 7 14
+check "foreign package says unverified"  yes contains "not comparable"   "$(note_of svelte-language-server 0.18.3 svelte2tsx@0.7.59 82 7 14)"
+
+# A decoration both sides carry names the same thing whichever it is.
+check "shared prefix compares"           no  dn bitwarden-cli cli-v2026.6.0 cli-v2026.7.0 82 7 14
+check "shared prefix, equal versions"    yes dn bitwarden-cli cli-v2026.6.0 cli-v2026.6.0 82 7 14
+
+# A build variant on one side only.
+check "variant suffix on the pin"        no  dn vaultwarden 1.37.0-alpine 1.37.1 82 7 14
+check "variant suffix, same version"     yes dn vaultwarden 1.37.0-alpine 1.37.0 82 7 14
+# Both sides decorated AND suffixed: the date is what is left, and it is orderable.
+check "shared prefix plus variant"       no  dn debian trixie-20260713-slim trixie-20260801-slim 82 7 14
+
+# A sha is not a version and never becomes one.
+check "a sha stays unverified"           no  dn svelte-ai-tools 6468954 @sveltejs/opencode@0.1.13 82 7 14
+# Stripping must not invent an order where the remainder is not a version.
+check "unorderable remainder is kept"    no  dn something 1.2.3 name-vNIGHTLY 82 7 14
+
+# The entry-name rule is case-insensitive but never partial: a name that is only a PREFIX of the
+# decoration must not match, or ProjectName-v1 would strip for an entry called "Project".
+check "partial name does not match"      no  dn proj 1.2.3 project-v9.9.9 82 7 14
 
 if [ "$fails" -gt 0 ]; then
   echo "version.sh: $fails check(s) failed"
