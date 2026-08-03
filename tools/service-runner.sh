@@ -13,9 +13,13 @@ AXON_ROOT="$(cd "$TOOLS_DIR/.." && pwd)"
 source "$TOOLS_DIR/lib/paths.sh"
 source "$TOOLS_DIR/lib/platform.sh"
 source "$TOOLS_DIR/lib/toml.sh"
+# Canonical publish-set form, so a declaration and a running container can be compared
+# at all (each runtime reports its bindings in its own shape).
+source "$TOOLS_DIR/lib/publish.sh"
 
 usage() {
-  echo "usage: service-runner.sh <start|stop|idle-stop|restart|resume|status|install-persistence> <capability>" >&2
+  echo "usage: service-runner.sh <start|stop|idle-stop|restart|resume|recreate|status|install-persistence> <capability>" >&2
+  echo "       service-runner.sh recreate <capability>          # rebuild the container from the current declaration" >&2
   echo "       service-runner.sh stop <capability> [--no-hold]   # --no-hold: do not keep it down" >&2
   echo "       service-runner.sh up [--all]     # start the autostart set (--all: everything enabled)" >&2
   echo "       service-runner.sh down           # stop everything enabled, dependents first; no hold" >&2
@@ -580,6 +584,7 @@ start_service() {
       if "$RUNTIME_BIN" list --format json 2>/dev/null | grep -q "\"id\":\"$NAME\""; then
         :  # already running
       elif "$RUNTIME_BIN" list -a --format json 2>/dev/null | grep -q "\"id\":\"$NAME\""; then
+        report_publish_drift >&2 || true
         "$RUNTIME_BIN" start "$NAME"
       else
         "$RUNTIME_BIN" run -d "${CONTAINER_ARGS[@]}" "$(qualified_image)"
@@ -589,12 +594,35 @@ start_service() {
       if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | grep -qx "$NAME"; then
         :  # already running
       elif "$RUNTIME_BIN" ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$NAME"; then
+        report_publish_drift >&2 || true
         "$RUNTIME_BIN" start "$NAME"
       else
         "$RUNTIME_BIN" run -d --restart unless-stopped "${CONTAINER_ARGS[@]}" "$(qualified_image)"
       fi
       ;;
   esac
+}
+
+# recreate — apply the current declaration to an existing container.
+#
+# Removal is safe for declared state by construction: container_init mounts every state path as a
+# named volume or a host path, both of which outlive the container. What does NOT survive is state
+# written inside the container and never declared -- which README.md#state-mounts-record-reality
+# says should not exist, and which this makes visible if it does.
+#
+# The bounded part of the rollback is the manifest: the new container is built from the same
+# resolved declaration a fresh install would use, so a failed `run` leaves the capability down with
+# its data intact and its next `start` builds it again. There is no old spec to restore, because
+# the old spec is exactly what is being discarded -- so this is a deliberate verb, never something
+# `start` or `restart` does on its own.
+recreate_service() {
+  container_prepare
+  ensure_runtime
+  echo "service-runner.sh: recreating '$CAP' — declared state mounts survive, undeclared in-container state does not"
+  "$RUNTIME_BIN" stop "$NAME" >/dev/null 2>&1 || true
+  "$RUNTIME_BIN" rm "$NAME" >/dev/null 2>&1 || "$RUNTIME_BIN" delete "$NAME" >/dev/null 2>&1 || true
+  rm -f "$MAINT_LOCK"
+  start_service
 }
 
 # Take it down and KEEP it down. Idempotent: an already-stopped capability is fine,
@@ -611,6 +639,49 @@ resume_service() {
   start_service
 }
 
+# The publish set the manifest and overlay currently resolve to, canonical and sorted.
+declared_publish_set() {
+  local p
+  for p in ${PORTS[@]+"${PORTS[@]}"}; do normalize_publish "$p"; done | sort
+}
+
+# What the running container actually publishes. Empty output with a non-zero status means the
+# runtime could not be asked -- which must never be rendered as "they match".
+running_publish_set() {
+  ensure_runtime
+  case "$AXON_CONTAINER_RUNTIME" in
+    apple-container)
+      "$RUNTIME_BIN" list -a --format json 2>/dev/null | publish_from_apple "$NAME"
+      ;;
+    docker|podman)
+      "$RUNTIME_BIN" inspect "$NAME" --format '{{json .HostConfig.PortBindings}}' 2>/dev/null \
+        | publish_from_docker
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# report_publish_drift — print the difference between declaration and container, exit 1 if any.
+#
+# start_service starts an existing container by NAME and only builds a new one when none exists,
+# so every `run -d` argument -- the publish set among them -- is frozen at creation time. A changed
+# `ports` value parses, resolves, and never reaches the container; `restart` does not help either,
+# because stop_service stops without removing. Nothing said so, which is the actual defect: a
+# bind-address narrowed for security read as applied when it was not.
+report_publish_drift() {
+  local d r
+  d="$(mktemp)"; r="$(mktemp)"
+  declared_publish_set > "$d"
+  running_publish_set > "$r" 2>/dev/null
+  local rc=0
+  if ! publish_diff "$d" "$r"; then
+    echo "  the running container was created with a different publish set — 'service-runner.sh recreate $CAP' applies it" >&2
+    rc=1
+  fi
+  rm -f "$d" "$r"
+  return $rc
+}
+
 status_service() {
   container_prepare
   local state="stopped"
@@ -619,7 +690,13 @@ status_service() {
     state="running"
   fi
   if maintenance_hold_active 2>/dev/null; then state="$state, held"; fi
+  # Drift is only meaningful for a container that exists; a stopped-and-absent one gets its
+  # declaration applied by the next start anyway.
+  if [ "${state#running}" != "$state" ] && ! report_publish_drift >/dev/null 2>&1; then
+    state="$state, ports differ"
+  fi
   printf '  %-14s %-9s %-22s %s\n' "$CAP" "container" "$state" "$IMAGE:$TAG"
+  [ "${state%, ports differ}" = "$state" ] || report_publish_drift >&2 || true
 }
 
 install_persistence() {
@@ -759,6 +836,13 @@ case "$CMD" in
     ;;
   status)
     if [ "$KIND" = process ]; then status_process; else status_service; fi
+    ;;
+  recreate)
+    if [ "$KIND" = process ]; then
+      echo "service-runner.sh: 'recreate' is for container capabilities; use restart for a process" >&2
+      exit 1
+    fi
+    recreate_service
     ;;
   install-persistence) install_persistence ;;
   *) usage ;;
