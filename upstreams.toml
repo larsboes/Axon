@@ -259,7 +259,7 @@ why = "~230 published agent skills, referenced from Packs/writing/README.md. Min
 url = "https://github.com/ClementTsang/bottom"
 verdict = "adopt"
 license = "MIT"
-pin = "0.14.3"          # 2026-07-02, 8d old as of 2026-07-10 -- clears the 7d min cooldown by a day. Latest (0.14.4) shipped 2026-07-09, one day old -- deliberately NOT that one; installed via `cargo install bottom --version 0.14.3 --locked`, not brew (brew's bottle always tracks latest, no clean way to pin an older formula version)
+pin = "0.14.7"          # 2026-07-27, 7d old on 2026-08-03 = the near edge of the 7-14d window, so bumped after an audit rather than on sight. Installed and VERIFIED on this machine (`btm --version` -> 0.14.7) in the same change that moved this line; installed via `cargo install bottom --version 0.14.7 --locked`, not brew (brew's bottle always tracks latest, no clean way to pin an older formula version). Delta 0.14.3..0.14.7 read in full: four releases, all bug fixes plus one small config feature (default sort order, 0.14.7), no breaking change and nothing touching how tools/sysmon consumes it. What actually mattered: the first disk I/O reading at startup being wildly too high and Linux signals >=34 being off by two (both 0.14.5), and 'Q' not quitting (0.14.4). The 0.14.4-only note this comment used to carry is superseded -- it was skipped at one day old for cooldown, and its fixes arrive here
 why = "tools/sysmon TUI backend -- cross-platform system monitor (CPU/mem/disk/net/proc, history graphs), Rust, matches the language bias in README.md#implementation-languages-and-intelligence. Adopt over build: README.md#upstream-first requires checking for prior art before writing a system-usage overview from scratch"
 
 [macmon]
