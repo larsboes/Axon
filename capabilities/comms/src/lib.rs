@@ -28,6 +28,7 @@ pub mod extraction_eval;
 pub mod google;
 pub mod media;
 pub mod normalize;
+pub mod provenance;
 pub mod relevance;
 pub mod rules;
 pub mod store;

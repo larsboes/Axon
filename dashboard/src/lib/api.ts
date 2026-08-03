@@ -665,6 +665,13 @@ export interface FeedOrigin {
   label: string | null;
 }
 
+export interface FeedStageProvenance {
+  stage: "extraction" | "normalization" | "summary" | "ranking";
+  tier: "legacy" | "deterministic" | "model" | "human";
+  revision: string;
+  completed_at: string;
+}
+
 interface FeedEntryBase {
   id: string;
   stream: FeedStream;
@@ -690,6 +697,7 @@ export interface FeedEntryDetail extends FeedEntryBase {
   content_status: "full" | "thin" | "none" | "unknown";
   /** Which client handed the content over; null when the server fetched it. */
   captured_via: string | null;
+  processing: FeedStageProvenance[];
   origins: FeedOrigin[];
 }
 

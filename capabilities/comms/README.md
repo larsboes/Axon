@@ -360,6 +360,11 @@ the DB connection string is redacted before any display.
 - `feed_evaluation_factors` — ordered normalized factors with label, value, weight and
   rationale. It is normalized rather than JSON so later trip/deadline factors remain queryable
   and individually inspectable.
+- Stage provenance stays beside the value it describes: extraction tier/revision in
+  `feed_raw_content`, normalization and summary tier/revision in `feed_items`, and ranking tier
+  beside the existing revision tuple in `feed_evaluations`. Tiers are ordered
+  `legacy < deterministic < model < human`; equal-tier reruns replace idempotently and a lower
+  tier cannot downgrade the stored value.
 - `feed_origins` — one row per exact Vault source/reference that introduced an item. An item
   may retain multiple origins without duplicating its canonical feed row.
 
@@ -367,6 +372,9 @@ Both item tables use a **status-preserving upsert**: `status` is set only on
 first insert and is deliberately absent from the `ON CONFLICT DO UPDATE`, so a
 human's triage/keeper decision survives the same item being re-swept or
 re-ingested (`upsert_preserves_status_across_refetch_*` tests prove it).
+The reader shows the human keeper/dismiss verdict above every processing
+producer; migrated values whose producer cannot be recovered are labelled
+`legacy-unknown` rather than assigned a guessed model or revision.
 
 ## Tests
 

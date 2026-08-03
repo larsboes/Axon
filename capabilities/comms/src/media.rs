@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::config::Config;
 use crate::normalize;
+use crate::provenance::StageProvenance;
 use crate::store::{FeedItem, Store};
 use crate::{CommsError, Result};
 
@@ -997,9 +998,11 @@ pub fn fetch_with_content(
 /// `fetch` plus a summary. The CLI path.
 pub fn ingest(url: &str, cfg: &Config) -> Result<FeedItem> {
     let mut item = fetch(url)?;
+    let summary_producer = cfg.summarization_role().map(|role| role.cache_key());
     if let Some(text) = &item.transcript {
         if let SummarizeOutcome::Ok(summary) = summarize(text, cfg) {
             item.summary = Some(summary);
+            item.summary_provenance = summary_producer.map(StageProvenance::model);
         }
     }
     Ok(item)
@@ -1104,10 +1107,14 @@ pub fn summarize_item(store: &Store, cfg: &Config, id: &str) -> Result<bool> {
         Some(t) => t,
         None => return Ok(false),
     };
+    let producer_revision = cfg
+        .summarization_role()
+        .map(|role| role.cache_key())
+        .unwrap_or_else(|| "summarizer-unconfigured".to_string());
     match summarize(text, cfg) {
         SummarizeOutcome::Ok(summary) => {
             store
-                .update_feed_summary(id, &summary)
+                .update_feed_summary(id, &summary, &producer_revision)
                 .map_err(|e| CommsError::Other(e.to_string()))?;
             Ok(true)
         }
@@ -1126,12 +1133,16 @@ pub fn summarize_pending(store: &Store, cfg: &Config) -> Result<usize> {
         .feed_pending_summaries()
         .map_err(|e| CommsError::Other(e.to_string()))?;
     let mut done = 0;
+    let producer_revision = cfg
+        .summarization_role()
+        .map(|role| role.cache_key())
+        .unwrap_or_else(|| "summarizer-unconfigured".to_string());
     for item in pending {
         if let Some(text) = &item.transcript {
             match summarize(text, cfg) {
                 SummarizeOutcome::Ok(summary) => {
                     store
-                        .update_feed_summary(&item.id, &summary)
+                        .update_feed_summary(&item.id, &summary, &producer_revision)
                         .map_err(|e| CommsError::Other(e.to_string()))?;
                     done += 1;
                 }
