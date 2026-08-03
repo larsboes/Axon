@@ -141,11 +141,25 @@ esac
 say_profile() { # say_profile <checkout>
   ( cd "$1" && printf '' | bash "$_root/tools/install.sh" 2>&1 | head -8 )
 }
-case "$(say_profile "$_root")" in
-  *"Profile: development"*) ;;
-  *"Profile: usage"*) ;;
-  *) fail "tools/install.sh does not state which profile it is serving" ;;
+# Three legitimate answers, not two: under `bazel test` the runfiles tree is not a git
+# checkout at all, and saying so is the correct third statement rather than a gap. The
+# criterion is that it states which profile it serves — asserting on one specific answer
+# would only be asserting on where the test happens to be running.
+PROFILE_LINE="$(say_profile "$_root" | grep '^Profile:' || true)"
+case "$PROFILE_LINE" in
+  "Profile: development"*|"Profile: usage"*|"Profile: not a git checkout"*) ;;
+  *) fail "tools/install.sh does not state which profile it is serving (got: '${PROFILE_LINE:-<nothing>}')" ;;
 esac
+
+# A checkout with real git history must resolve to a real profile, never the fallback — the
+# half that keeps the assertion above from passing on "not a git checkout" forever. Both
+# clones this test made are genuine checkouts, so they are the honest place to check it.
+for d in "$USAGE_DIR" "$DEV_DIR"; do
+  case "$(git -C "$d" rev-parse --is-shallow-repository 2>/dev/null)" in
+    true|false) ;;
+    *) fail "$d is not a git checkout, so the profile statement cannot be exercised against it" ;;
+  esac
+done
 
 if [ "$fails" -gt 0 ]; then
   echo "bootstrap: $fails check(s) failed"
