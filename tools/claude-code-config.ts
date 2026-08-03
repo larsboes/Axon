@@ -55,10 +55,61 @@
 // 1 = usage or missing-template error, 2 = existing user settings.json is unparseable
 // (never clobbered), 3 = the overlay fragment is invalid (nothing deployed).
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { overlayRoot } from "./lib/overlay.ts";
+
+// Both layers this tool writes are policy files a half-write destroys rather than degrades:
+// a truncated managed-settings.json is unparseable, and an unparseable security floor is an
+// ABSENT security floor, not a weaker one. So neither layer gets a bare writeFileSync.
+//
+// Same directory as the target on purpose: rename() is only atomic within one filesystem,
+// and $TMPDIR is routinely on a different one. Mode is set at open() rather than chmod'd
+// after the rename, because the post-rename version publishes a world-readable file first
+// and tightens it a moment later. On failure the temp file is removed and the previous
+// target is left exactly as it was — the caller sees the error, the reader sees the old
+// policy, and nobody ever sees a fragment.
+export function writeFileAtomic(target: string, contents: string, mode: number): void {
+  const dir = dirname(target);
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, `.${basename(target)}.axon-${process.pid}.tmp`);
+  let fd: number | null = null;
+  try {
+    // "wx" — never follow a symlink into, or reuse, an existing path at this name.
+    fd = openSync(tmp, "wx", mode);
+    const buf = Buffer.from(contents, "utf8");
+    for (let off = 0; off < buf.length; ) off += writeSync(fd, buf, off, buf.length - off);
+    fsyncSync(fd); // content durable BEFORE the rename publishes it
+    closeSync(fd);
+    fd = null;
+    renameSync(tmp, target);
+  } catch (e) {
+    if (fd !== null) try { closeSync(fd); } catch {}
+    try { unlinkSync(tmp); } catch {}
+    throw e;
+  }
+  // Best-effort: makes the rename itself survive a power loss. Not every platform lets you
+  // open a directory for fsync, and failing here would undo a write that already succeeded.
+  try {
+    const dfd = openSync(dir, "r");
+    try { fsyncSync(dfd); } finally { closeSync(dfd); }
+  } catch {}
+}
 
 const HELP = `tools/claude-code-config — deploy Axon's Claude Code harness config.
 
@@ -169,8 +220,11 @@ function deployUserLayer(): never {
     for (const p of added) console.log(`  + ${p}`);
     process.exit(0);
   }
-  mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, JSON.stringify(merged, null, 2) + "\n");
+  // Keep whatever mode the user's own settings.json already carries — this command merges
+  // into a file Claude Code created, and silently tightening or loosening it is not what
+  // "add Axon's baseline keys" means. A file we create ourselves starts at 0600.
+  const userMode = existsSync(target) ? statSync(target).mode & 0o777 : 0o600;
+  writeFileAtomic(target, JSON.stringify(merged, null, 2) + "\n", userMode);
   console.log(`claude-code-config: updated ${target} — added:`);
   for (const p of added) console.log(`  + ${p}`);
   process.exit(0);
@@ -339,8 +393,9 @@ function deployManagedLayer(): never {
 
   // Try to write directly (works when run as root / when target is user-writable, e.g. tests).
   try {
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, desired);
+    // 0644 matches the `sudo install -m 0644` handoff below: every user's harness has to be
+    // able to READ the security floor; only root may write it.
+    writeFileAtomic(target, desired, 0o644);
     managedOut(`claude-code-config: ${verb === "install" ? "installed" : "replaced"} ${target} from Axon's managed policy.`);
     process.exit(0);
   } catch (e: any) {
