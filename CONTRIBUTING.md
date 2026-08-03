@@ -49,6 +49,12 @@ bazel test //:architecture_up_to_date_test
 
 Do not describe a skipped or unavailable check as passing.
 
+The same rule applies inside a test. An assertion that needs something only one platform has —
+`/dev/full`, a container runtime, a specific filesystem — may be given up on a developer machine
+and never in an automated run, where "it runs in CI" would otherwise be an assumption nobody can
+see failing. Guard it with `skippable` from `tools/lib/test-support.sh`: outside CI it prints what
+coverage was lost, and inside CI it fails.
+
 ## Open the pull request
 
 Open a draft pull request first. State the outcome and linked issue, then bound the exact scope.
