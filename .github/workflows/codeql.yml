@@ -33,8 +33,24 @@ name: CodeQL
 # On Rust and Bazel: #13 flagged that CodeQL's default setup relies on autobuild, which will not
 # drive `bazel build //...`. That concern does not apply once the build mode is stated: every
 # language here runs `build-mode: none`, which extracts from source instead of observing a build.
-# Bazel is never invoked, so it cannot fail to be invoked. The per-crate Cargo.toml files give the
-# Rust extractor what it needs to resolve dependencies without building anything.
+# Bazel is never invoked, so it cannot fail to be invoked. The extractor discovers the ten
+# per-crate Cargo.toml files recursively; no workspace root is needed, and none exists here.
+#
+# What the first run actually measured, because "the job is green" is not the same claim:
+#
+#   10 manifests found · 0 extraction errors · 2159 extraction warnings · 82 files, of which the
+#   metric counts 71 as "extracted with errors" — meaning at least one warning, not a failure to
+#   extract. Every file is in the database.
+#
+#   2153 of those warnings are one thing: a macro CodeQL's Rust extractor cannot expand.
+#   assert_eq 683 · format 504 · assert 299 · println (format_args_nl) 299 · json 219+17 · vec 90
+#
+#   Roughly 46% of them are test assertions, where losing expression detail costs nothing. The two
+#   that matter are `format!` and `json!`: string and JSON construction is exactly where injection
+#   dataflow lives, and expressions inside those macros are not in the database, so dataflow
+#   through them is not analysed. That is a limitation of a comparatively young extractor, not
+#   something this workflow can configure away — recorded here so the Rust check is not read as
+#   more coverage than it is.
 
 on:
   push:
