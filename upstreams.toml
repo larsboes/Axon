@@ -383,20 +383,6 @@ license = "EUPL-1.2"
 pin = "2026.07.2"       # latest stable 2026-07-07; adopted 2026-08-01 after cooldown. Trivy reduced 23 findings to 15; the image-scoped remainder expires 2026-08-15 under Axon#185.
 why = "DNS, local-name resolution and per-client query logging for a private network; FTLDNS adds logging and allow/deny lists over plain dnsmasq. Host networking preserves client source IPs"
 
-[grafana]
-url = "https://github.com/grafana/grafana"
-verdict = "reject"
-license = "AGPL-3.0"
-pin = "13.0.2"          # digest-confirmed == the running sha256:5dad0df1. Was :latest
-why = "REJECTED and removed 2026-07-26. It had ZERO dashboards — not stale ones, none had ever been created — so the metrics stack had no reader, which is exactly why nobody noticed its data source dying 69 days earlier. Home Assistant already keeps 315k hourly long-term statistics rows across 180 sensors indefinitely and puts the Energy dashboard on top of them. Re-adopt only against a dashboard somebody actually wants"
-
-[influxdb]
-url = "https://github.com/influxdata/influxdb"
-verdict = "reject"
-license = "MIT (v2 OSS)"
-pin = "2.7.12"          # digest-confirmed == the running sha256:b8d940ca; the floating :2.7 currently aliases the same image, which is exactly why it looked safe. 52w retention, bucket "homeassistant"
-why = "REJECTED and removed 2026-07-26 after 69 days as a dead pipe. Last engine write 2026-05-18, the same day a compose commit rebound its port to the LAN IP only while HA — host-network — kept calling localhost:8086, which has no route. The premise was that HA's recorder does not keep long series; it does, as 315k hourly statistics rows over 180 sensors, kept indefinitely. Re-adopt only for a series HA's statistics genuinely cannot express"
-
 [mosquitto]
 url = "https://github.com/eclipse-mosquitto/mosquitto"
 verdict = "reject"
