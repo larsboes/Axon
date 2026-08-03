@@ -33,3 +33,12 @@ overlay = "~/.axon-overlay"
 # them here, nothing hardcodes 7/14. (Quoted per toml.sh's scalar contract.)
 cooldown_min_days = "7"
 cooldown_max_days = "14"
+
+[release]
+# Which tags are release tags (README.md#the-release-line). Six call sites across bash and
+# TypeScript ask git "what version is this checkout" — tools/update.sh, tools/repos.ts and
+# tools/doctor.ts, twice each — and every one of them used a bare `git describe --tags`. That
+# answers with ANY reachable tag, so an archive marker, a vendor tag or a nightly silently
+# becomes the reported version. The pattern lives here rather than in a shell library because
+# the two TypeScript callers exec bun directly and never source one.
+tag_glob = "v[0-9]*"

@@ -27,6 +27,7 @@ import { basename, resolve, dirname, join } from "node:path";
 import { defaultCodexDeployConfig, getStatuses } from "./packs-codex.ts";
 import { readAxonHarnessStatuses } from "./packs-axon.ts";
 import { resolveMachineToml, resolveOverlayRoot } from "./lib/overlay.ts";
+import { releaseTagGlob } from "./lib/release.ts";
 
 const HELP = `tools/doctor — health checks for an already-set-up Axon machine.
 
@@ -424,12 +425,17 @@ function gitOut(...args: string[]): string {
   return proc.exitCode === 0 ? proc.stdout.toString().trim() : "";
 }
 
+// Which tags are release tags — axon.toml [release] tag_glob, the one home shared with
+// tools/lib/version.sh (README.md#the-release-line). Resolved once at load; a missing key is a
+// broken manifest and should stop the tool, not be papered over with a literal.
+const RELEASE_TAG_GLOB = releaseTagGlob(AXON_ROOT);
+
 // Newest semver release tag (vX.Y.Z), or "" if none cut yet. Mirrors tools/lib/delta.sh's
 // latest_release_ref so doctor --version and update.sh agree on "the newest release" — the first
 // tag in descending version order that is actually a dotted number (a stray -rc/non-version tag
 // is skipped, not mistaken for the latest release).
 function latestReleaseTag(): string {
-  const tags = gitOut("tag", "-l", "v*", "--sort=-v:refname");
+  const tags = gitOut("tag", "-l", RELEASE_TAG_GLOB, "--sort=-v:refname");
   if (!tags) return "";
   for (const raw of tags.split("\n")) {
     const t = raw.trim();
@@ -449,7 +455,7 @@ function printVersion(online: boolean): void {
     Bun.spawnSync({ cmd: ["git", "-C", AXON_ROOT, "fetch", "--quiet", "origin", "main"], stdout: "pipe", stderr: "pipe" });
   }
 
-  const describe = gitOut("describe", "--tags", "--always", "--dirty");
+  const describe = gitOut("describe", "--tags", "--always", "--dirty", "--match", RELEASE_TAG_GLOB);
   console.log(`  installed: ${formatVersion(describe, gitOut("log", "-1", "--format=%cs"))}`);
 
   // Release-aware: once tags exist, say where this checkout sits relative to the newest release,
@@ -1412,7 +1418,7 @@ const CHECKS: Check[] = [
   {
     name: "Session orientation",
     run(ctx) {
-      ctx.ok(`version: ${formatVersion(gitOut("describe", "--tags", "--always", "--dirty"), gitOut("log", "-1", "--format=%cs"))}`);
+      ctx.ok(`version: ${formatVersion(gitOut("describe", "--tags", "--always", "--dirty", "--match", RELEASE_TAG_GLOB), gitOut("log", "-1", "--format=%cs"))}`);
       const branchProc = Bun.spawnSync({ cmd: ["git", "-C", ctx.root, "branch", "--show-current"], stdout: "pipe" });
       const branch = branchProc.stdout.toString().trim() || "(detached HEAD)";
       const headProc = Bun.spawnSync({ cmd: ["git", "-C", ctx.root, "log", "-1", "--format=%h %s (%cr)"], stdout: "pipe" });

@@ -6,9 +6,9 @@
 // carry zero tags today; `git describe` degrades to a short sha, and that is a fact
 // worth rendering rather than an error worth hiding.
 //
-// Read-only on purpose. Nothing here creates, moves or pushes a tag: a browser button
-// that writes to git needs a gate in front of it, and there is no versioning scheme to
-// write against yet (decided with the principal, 2026-07-30).
+// Read-only on purpose. Nothing here creates, moves or pushes a tag: a browser button that
+// writes to git needs a gate in front of it, and tags are cut by tools/release under its own
+// clean/on-main/not-behind/doctor gate (README.md#cutting-and-consuming-a-release).
 //
 // The remote is normalised to an https URL because its only consumer is an <a href>.
 // An ssh remote (git@github.com:owner/repo.git) is not a URL a browser can follow.
@@ -16,6 +16,7 @@
 // usage: tools/repos [--json]
 
 import { basename } from "node:path";
+import { releaseTagGlob } from "./lib/release.ts";
 
 interface RepoStatus {
   /** Display name — the directory the repo lives in, never its absolute path. */
@@ -24,9 +25,9 @@ interface RepoStatus {
   /** Browsable https URL, or null when the remote is missing or not http(s)-expressible. */
   remote_url: string | null;
   branch: string | null;
-  /** `git describe --tags --always --dirty` — a tag when one exists, else a short sha. */
+  /** `git describe` over the release line — a release tag when one is reachable, else a short sha. */
   describe: string | null;
-  /** The most recent reachable tag, or null when the repo has never been tagged. */
+  /** The most recent reachable RELEASE tag, or null when the repo carries none. */
   tag: string | null;
   /** Commits since `tag`; null when there is no tag to count from. */
   commits_since_tag: number | null;
@@ -62,7 +63,9 @@ function browsableRemote(raw: string | null): string | null {
   return null;
 }
 
-function read(path: string, role: RepoStatus["role"]): RepoStatus {
+// releaseGlob is passed in rather than read here: it comes from the spine's axon.toml, and this
+// function also runs against the overlay, which has no release line of its own to consult.
+function read(path: string, role: RepoStatus["role"], releaseGlob: string): RepoStatus {
   const base: RepoStatus = {
     name: basename(path),
     role,
@@ -82,7 +85,7 @@ function read(path: string, role: RepoStatus["role"]): RepoStatus {
     return { ...base, error: `not a git repository: ${basename(path)}` };
   }
 
-  const tag = git(path, "describe", "--tags", "--abbrev=0");
+  const tag = git(path, "describe", "--tags", "--abbrev=0", "--match", releaseGlob);
   // --count needs both ends; with no tag there is nothing to count from, and reporting
   // "all commits ever" as commits-since-tag would read like a release is overdue.
   const commitsSinceTag =
@@ -106,7 +109,7 @@ function read(path: string, role: RepoStatus["role"]): RepoStatus {
     ...base,
     remote_url: browsableRemote(git(path, "remote", "get-url", "origin")),
     branch: git(path, "rev-parse", "--abbrev-ref", "HEAD"),
-    describe: git(path, "describe", "--tags", "--always", "--dirty"),
+    describe: git(path, "describe", "--tags", "--always", "--dirty", "--match", releaseGlob),
     tag,
     commits_since_tag: commitsSinceTag,
     ahead,
@@ -125,9 +128,13 @@ if (!axonRoot) {
 // not an error. It is also private, so only its basename is ever reported.
 const overlayRoot = process.env.AXON_PERSONAL_ROOT;
 
-const repos = [read(axonRoot, "spine")];
+// One home for "which tags are release tags" — axon.toml [release] tag_glob, shared with
+// tools/lib/version.sh and tools/doctor.ts (README.md#the-release-line).
+const releaseGlob = releaseTagGlob(axonRoot);
+
+const repos = [read(axonRoot, "spine", releaseGlob)];
 if (overlayRoot && (await Bun.file(`${overlayRoot}/.git/HEAD`).exists())) {
-  repos.push(read(overlayRoot, "overlay"));
+  repos.push(read(overlayRoot, "overlay", releaseGlob));
 }
 
 if (process.argv.includes("--json") || !process.stdout.isTTY) {

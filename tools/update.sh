@@ -12,11 +12,15 @@
 #   tools/update.sh            # fetch + ff-only pull + doctor
 #   tools/update.sh --check    # fetch + version summary + incoming preview, never pulls
 #   tools/update.sh --no-pull  # fetch + report only, don't pull
+#   tools/update.sh --yes      # answer the confirm up front (also: AXON_ASSUME_YES=1)
 #   tools/update.sh -h         # this help
 #
 # Interactive: when stdin is a TTY, the pull path shows the incoming preview
 # and asks before fast-forwarding. Non-TTY (CI, cron, pipes) never prompts
-# and pulls straight through, exactly as before.
+# and pulls straight through, exactly as before. --yes shows the preview and
+# proceeds without asking, so automation that allocates a PTY -- which looks
+# like a TTY and would otherwise block on the prompt forever -- has a way
+# through that does not depend on hiding the terminal.
 #
 # bash 3.2-safe.
 set -euo pipefail
@@ -32,16 +36,21 @@ source "$TOOLS_DIR/lib/paths.sh"
 # with tools/release so the "what changed" view and the release notes never drift (README.md#documentation-stays-owned-and-current).
 source "$TOOLS_DIR/lib/delta.sh"
 
-case "${1:-}" in
-  -h|--help)
-    sed -n '2,21p' "$0"
-    exit 0
-    ;;
-esac
-NO_PULL=0
-[ "${1:-}" = "--no-pull" ] && NO_PULL=1
-CHECK=0
-[ "${1:-}" = "--check" ] && CHECK=1
+NO_PULL=0; CHECK=0
+# Env default so a wrapper can set it once for a whole automated run; the flag still wins.
+ASSUME_YES=0
+[ "${AXON_ASSUME_YES:-0}" = "1" ] && ASSUME_YES=1
+# One loop over every argument, not three tests against $1: --check --yes together used to
+# depend on which flag was typed first, and an unrecognised flag was accepted in silence.
+for _a in "$@"; do
+  case "$_a" in
+    --no-pull)  NO_PULL=1 ;;
+    --check)    CHECK=1 ;;
+    --yes|-y)   ASSUME_YES=1 ;;
+    -h|--help)  sed -n '2,23p' "$0"; exit 0 ;;
+    *) echo "update.sh: unknown argument '$_a' — see --help" >&2; exit 1 ;;
+  esac
+done
 
 # Incoming preview: the categorized delta the pull would bring (capabilities/upstreams/
 # toolchain/commits, via tools/lib/delta.sh) plus which ENABLED capabilities (machine.toml, via
@@ -96,8 +105,8 @@ echo "  $AHEAD ahead, $BEHIND behind origin/main"
 
 if [ "$CHECK" -eq 1 ]; then
   echo
-  echo "  installed: $(git describe --tags --always --dirty) ($(git log -1 --format=%cs))"
-  echo "  latest:    $(git describe --tags --always origin/main) ($(git log -1 --format=%cs origin/main)) — origin/main"
+  echo "  installed: $(describe_release) ($(git log -1 --format=%cs))"
+  echo "  latest:    $(describe_release origin/main) ($(git log -1 --format=%cs origin/main)) — origin/main"
   # Release-aware identity: once tags exist, say where this checkout sits relative to the newest
   # release, not only relative to the moving main branch. Silent when no release has been cut yet.
   LATEST_TAG="$(latest_release_ref)"
@@ -132,7 +141,11 @@ fi
 # with the pre-interactive behavior (same guard idiom as install.sh's
 # capability prompt: `read` on a closed stdin would EOF non-zero under
 # `set -e`).
-if [ -t 0 ]; then
+if [ "$ASSUME_YES" -eq 1 ]; then
+  print_incoming
+  echo
+  echo "Confirmed up front (--yes / AXON_ASSUME_YES) — fast-forwarding."
+elif [ -t 0 ]; then
   print_incoming
   echo
   read -r -p "Fast-forward now? [y/N]: " CONFIRM
