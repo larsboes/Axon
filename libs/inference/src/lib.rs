@@ -184,12 +184,84 @@ impl ResolvedRole {
         format!("{}:{}", self.backend_name, self.model)
     }
 
-    fn endpoint(&self) -> String {
+    fn embedding_endpoint(&self) -> String {
         let base = self.backend.base_url.trim_end_matches('/');
         match self.backend.api {
             Api::OpenAi => format!("{base}/embeddings"),
             Api::Ollama => format!("{base}/api/embed"),
         }
+    }
+
+    /// OpenAI-compatible chat-completions endpoint for generative roles.
+    /// Ollama exposes the same wire shape under its `/v1` compatibility path.
+    pub fn chat_completions_endpoint(&self) -> String {
+        let base = self.backend.base_url.trim_end_matches('/');
+        match self.backend.api {
+            Api::OpenAi => format!("{base}/chat/completions"),
+            Api::Ollama => format!("{base}/v1/chat/completions"),
+        }
+    }
+
+    pub fn provider_label(&self) -> &'static str {
+        match self.backend.api {
+            Api::OpenAi => "OpenAI-compatible local endpoint",
+            Api::Ollama => "Ollama-compatible local endpoint",
+        }
+    }
+
+    pub fn bearer_key(&self) -> Option<String> {
+        api_key_from_file(self.backend.api_key_file.as_deref())
+    }
+
+    /// Cheap readiness probe that confirms the role's selected model is listed
+    /// without loading it or running inference.
+    pub fn model_reachable(&self) -> bool {
+        if self.backend.base_url.trim().is_empty() || self.model.trim().is_empty() {
+            return false;
+        }
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return false,
+        };
+        let base = self.backend.base_url.trim_end_matches('/');
+        let endpoint = match self.backend.api {
+            Api::OpenAi => format!("{base}/models"),
+            Api::Ollama => format!("{base}/api/tags"),
+        };
+        let mut request = client.get(endpoint);
+        if let Some(key) = self.bearer_key() {
+            request = request.bearer_auth(key);
+        }
+        let body = match request.send() {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>() {
+                    Ok(body) => body,
+                    Err(_) => return false,
+                }
+            }
+            _ => return false,
+        };
+        let models = match self.backend.api {
+            Api::OpenAi => body.get("data").and_then(|models| models.as_array()),
+            Api::Ollama => body.get("models").and_then(|models| models.as_array()),
+        };
+        models.is_some_and(|models| {
+            models.iter().any(|model| {
+                let installed = match self.backend.api {
+                    Api::OpenAi => model.get("id"),
+                    Api::Ollama => model.get("name").or_else(|| model.get("model")),
+                }
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+                installed == self.model
+                    || installed
+                        .strip_suffix(":latest")
+                        .is_some_and(|name| name == self.model)
+            })
+        })
     }
 
     fn prefix(&self, text_role: TextRole) -> &str {
@@ -200,10 +272,18 @@ impl ResolvedRole {
     }
 
     pub fn request_body(&self, texts: &[String], text_role: TextRole) -> serde_json::Value {
-        let prefix = self.prefix(text_role);
-        let input: Vec<String> = texts
+        let inputs = texts
             .iter()
-            .map(|text| format!("{prefix}{text}"))
+            .cloned()
+            .map(|text| (text, text_role))
+            .collect::<Vec<_>>();
+        self.request_body_mixed(&inputs)
+    }
+
+    pub fn request_body_mixed(&self, inputs: &[(String, TextRole)]) -> serde_json::Value {
+        let input: Vec<String> = inputs
+            .iter()
+            .map(|(text, role)| format!("{}{text}", self.prefix(*role)))
             .collect();
         let mut payload = serde_json::json!({ "model": self.model, "input": input });
         if self.backend.api == Api::Ollama {
@@ -219,20 +299,32 @@ impl ResolvedRole {
     /// Embeds a batch. `Err` carries a reason worth printing; callers are
     /// expected to degrade rather than abort.
     pub fn embed(&self, texts: &[String], text_role: TextRole) -> Result<Vec<Vec<f32>>, String> {
-        if texts.is_empty() {
+        let inputs = texts
+            .iter()
+            .cloned()
+            .map(|text| (text, text_role))
+            .collect::<Vec<_>>();
+        self.embed_mixed(&inputs)
+    }
+
+    /// Embeds query and document inputs in one batch while applying each
+    /// input's declared role prefix. Retrieval consumers use this to keep both
+    /// sides in one request and one vector space.
+    pub fn embed_mixed(&self, inputs: &[(String, TextRole)]) -> Result<Vec<Vec<f32>>, String> {
+        if inputs.is_empty() {
             return Ok(Vec::new());
         }
-        let endpoint = self.endpoint();
+        let endpoint = self.embedding_endpoint();
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|error| format!("client build: {error}"))?;
 
-        let mut request = client.post(&endpoint).json(&self.request_body(texts, text_role));
-        if self.backend.api == Api::OpenAi {
-            if let Some(key) = api_key_from_file(self.backend.api_key_file.as_deref()) {
-                request = request.bearer_auth(key);
-            }
+        let mut request = client
+            .post(&endpoint)
+            .json(&self.request_body_mixed(inputs));
+        if let Some(key) = self.bearer_key() {
+            request = request.bearer_auth(key);
         }
 
         let response = request
@@ -258,10 +350,10 @@ impl ResolvedRole {
             }
         };
 
-        if vectors.len() != texts.len() {
+        if vectors.len() != inputs.len() {
             return Err(format!(
                 "expected {} embeddings, got {}",
-                texts.len(),
+                inputs.len(),
                 vectors.len()
             ));
         }
@@ -332,6 +424,15 @@ mod tests {
         InferenceConfig::from_str(SAMPLE).expect("sample parses")
     }
 
+    fn write_temp_key(name: &str, content: &str) -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("axon-inference-key-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("key");
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
     #[test]
     fn a_role_resolves_to_its_backend() {
         let role = config().role("embedding").expect("declared");
@@ -349,11 +450,17 @@ mod tests {
     fn the_endpoint_follows_the_api_shape_not_the_backend_name() {
         let mut cfg = config();
         let openai = cfg.role("embedding").unwrap();
-        assert_eq!(openai.endpoint(), "http://127.0.0.1:8000/v1/embeddings");
+        assert_eq!(
+            openai.embedding_endpoint(),
+            "http://127.0.0.1:8000/v1/embeddings"
+        );
 
         cfg.roles.get_mut("embedding").unwrap().backend = "ollama".into();
         let ollama = cfg.role("embedding").unwrap();
-        assert_eq!(ollama.endpoint(), "http://127.0.0.1:11434/api/embed");
+        assert_eq!(
+            ollama.embedding_endpoint(),
+            "http://127.0.0.1:11434/api/embed"
+        );
     }
 
     #[test]
@@ -364,6 +471,54 @@ mod tests {
 
         let document = role.request_body(&["Kanutour".into()], TextRole::Document);
         assert_eq!(document["input"][0], "passage: Kanutour");
+    }
+
+    #[test]
+    fn mixed_embedding_inputs_keep_query_and_document_roles() {
+        let role = config().role("embedding").unwrap();
+        let body = role.request_body_mixed(&[
+            ("lens".into(), TextRole::Query),
+            ("item".into(), TextRole::Document),
+        ]);
+        assert_eq!(body["input"][0], "query: lens");
+        assert_eq!(body["input"][1], "passage: item");
+    }
+
+    #[test]
+    fn chat_endpoint_follows_the_backend_api_shape() {
+        let mut cfg = config();
+        assert_eq!(
+            cfg.role("embedding").unwrap().chat_completions_endpoint(),
+            "http://127.0.0.1:8000/v1/chat/completions"
+        );
+        cfg.roles.get_mut("embedding").unwrap().backend = "ollama".into();
+        assert_eq!(
+            cfg.role("embedding").unwrap().chat_completions_endpoint(),
+            "http://127.0.0.1:11434/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn bearer_key_reads_json_and_raw_secret_references() {
+        let json = write_temp_key(
+            "json",
+            "{\"auth\": {\"api_key\": \"sk-json\"}, \"other\": 1}",
+        );
+        let raw = write_temp_key("raw", "  sk-raw\n");
+        assert_eq!(api_key_from_file(json.to_str()), Some("sk-json".into()));
+        assert_eq!(api_key_from_file(raw.to_str()), Some("sk-raw".into()));
+        let _ = std::fs::remove_dir_all(json.parent().unwrap());
+        let _ = std::fs::remove_dir_all(raw.parent().unwrap());
+    }
+
+    #[test]
+    fn bearer_key_rejects_empty_or_wrong_json_shape() {
+        let empty = write_temp_key("empty", "  \n");
+        let wrong = write_temp_key("wrong-json", "{\"auth\": {}}");
+        assert_eq!(api_key_from_file(empty.to_str()), None);
+        assert_eq!(api_key_from_file(wrong.to_str()), None);
+        let _ = std::fs::remove_dir_all(empty.parent().unwrap());
+        let _ = std::fs::remove_dir_all(wrong.parent().unwrap());
     }
 
     /// Ollama keeps a model resident for five minutes unless told otherwise.

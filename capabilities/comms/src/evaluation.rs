@@ -8,7 +8,6 @@
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::config::RelevanceConfig;
 use crate::relevance::{InterestProfile, RelevanceMatch};
 use crate::store::FeedItem;
 use crate::travel::{self, TravelContext};
@@ -64,7 +63,7 @@ pub fn item_revision(item: &FeedItem) -> String {
 
 pub fn context_revision(
     profiles: &[InterestProfile],
-    relevance: &RelevanceConfig,
+    embedding_producer: Option<&str>,
     travel_revision: &str,
 ) -> String {
     let mut revisions = profiles
@@ -75,11 +74,8 @@ pub fn context_revision(
     // notes do not. Including it here makes the persisted ledger self-heal on
     // the next normal refresh instead of requiring an undocumented force run.
     revisions.push(format!(
-        "embedding:{}:{}:{}:{}",
-        relevance.provider.trim().to_ascii_lowercase(),
-        relevance.model.trim(),
-        relevance.query_prefix,
-        relevance.document_prefix
+        "embedding:{}",
+        embedding_producer.unwrap_or("lexical")
     ));
     revisions.push(format!("travel:{travel_revision}"));
     revisions.sort();
@@ -340,24 +336,17 @@ mod tests {
     #[test]
     fn context_revision_includes_embedding_vector_space() {
         let profiles = Vec::new();
-        let ollama = RelevanceConfig::default();
-        let omlx = RelevanceConfig {
-            provider: "openai".into(),
-            model: "multilingual-embedding".into(),
-            ..Default::default()
-        };
         assert_ne!(
-            context_revision(&profiles, &ollama, "travel"),
-            context_revision(&profiles, &omlx, "travel")
+            context_revision(&profiles, Some("ollama:nomic-embed-text"), "travel"),
+            context_revision(&profiles, Some("omlx:multilingual-embedding"), "travel")
         );
     }
 
     #[test]
     fn context_revision_includes_travel_snapshot() {
-        let relevance = RelevanceConfig::default();
         assert_ne!(
-            context_revision(&[], &relevance, "travel-one"),
-            context_revision(&[], &relevance, "travel-two")
+            context_revision(&[], None, "travel-one"),
+            context_revision(&[], None, "travel-two")
         );
     }
 

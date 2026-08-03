@@ -98,7 +98,7 @@
       },
       "code": {
         "files": 30,
-        "nodes": 572
+        "nodes": 555
       }
     },
     {
@@ -158,7 +158,7 @@
       "kind": "lib",
       "code": {
         "files": 2,
-        "nodes": 37
+        "nodes": 48
       }
     },
     {
@@ -311,8 +311,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 79,
-        "nodes": 667
+        "files": 92,
+        "nodes": 779
       }
     },
     {
@@ -456,6 +456,18 @@
       "evidence": [
         "capabilities/comms/BUILD.bazel",
         "capabilities/comms/src/server.rs"
+      ]
+    },
+    {
+      "from": "comms",
+      "to": "inference",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/comms/BUILD.bazel",
+        "capabilities/comms/src/lib.rs"
       ]
     },
     {
@@ -925,12 +937,9 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 5355,
+    "nodes": 5459,
     "external": 5,
-    "stale": [
-      "tools/lib/publish.sh",
-      "tools/publish.test.sh"
-    ],
+    "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",
@@ -941,7 +950,8 @@
       "CODE_OF_CONDUCT.md",
       "CONTRIBUTING.md",
       "README.md",
-      "SECURITY.md"
+      "SECURITY.md",
+      "bootstrap.sh"
     ]
   }
 }

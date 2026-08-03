@@ -2,21 +2,19 @@
 //!
 //! Comms owns this concern: it ranks any observation against explicitly
 //! configured focus lenses without turning Feed into a Scouting view. Profiles
-//! and items always pass through the same embedding backend in one batch. oMLX
-//! is the preferred shared local server through its OpenAI-compatible endpoint;
-//! Ollama remains a compatibility provider. When the selected endpoint is
-//! unavailable, both sides use the same deterministic lexical vector space and
-//! the stored mode says `lexical`.
+//! and items always pass through one resolved `embedding` role in one batch.
+//! When that role is absent or unavailable, both sides use the same
+//! deterministic lexical vector space and the stored mode says `lexical`.
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::config::RelevanceConfig;
+use crate::inference::{ResolvedRole, TextRole};
 use crate::store::FeedItem;
 
 // The selected multilingual E5 model accepts 512 tokens. A conservative
@@ -51,48 +49,15 @@ pub struct ScoredFeedItem {
     pub matches: Vec<RelevanceMatch>,
 }
 
-#[derive(Debug, Deserialize)]
-struct OllamaEmbedResponse {
-    embeddings: Vec<Vec<f64>>,
+pub fn embedding_provider_label(role: Option<&ResolvedRole>) -> &'static str {
+    role.map(ResolvedRole::provider_label)
+        .unwrap_or("No embedding role configured")
 }
 
-#[derive(Debug, Deserialize)]
-struct OpenAiEmbedDatum {
-    index: usize,
-    embedding: Vec<f64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAiEmbedResponse {
-    data: Vec<OpenAiEmbedDatum>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EmbeddingProvider {
-    Ollama,
-    OpenAi,
-}
-
-fn embedding_provider(config: &RelevanceConfig) -> Option<EmbeddingProvider> {
-    match config.provider.trim().to_ascii_lowercase().as_str() {
-        "ollama" => Some(EmbeddingProvider::Ollama),
-        "openai" | "omlx" => Some(EmbeddingProvider::OpenAi),
-        _ => None,
-    }
-}
-
-pub fn embedding_provider_label(config: &RelevanceConfig) -> &'static str {
-    match embedding_provider(config) {
-        Some(EmbeddingProvider::OpenAi) => "OpenAI-compatible local endpoint",
-        Some(EmbeddingProvider::Ollama) => "Ollama-compatible local endpoint",
-        None => "Unknown embedding endpoint",
-    }
-}
-
-pub fn embedding_backend_configured(config: &RelevanceConfig) -> bool {
-    embedding_provider(config).is_some()
-        && !config.base_url.trim().is_empty()
-        && !config.model.trim().is_empty()
+pub fn embedding_backend_configured(role: Option<&ResolvedRole>) -> bool {
+    role.is_some_and(|role| {
+        !role.backend.base_url.trim().is_empty() && !role.model.trim().is_empty()
+    })
 }
 
 pub fn load_profiles(config: &RelevanceConfig) -> Vec<InterestProfile> {
@@ -178,7 +143,7 @@ fn frontmatter_value(body: &str, key: &str) -> Option<String> {
 pub fn score_items(
     items: &[FeedItem],
     profiles: &[InterestProfile],
-    config: &RelevanceConfig,
+    role: Option<&ResolvedRole>,
 ) -> Vec<ScoredFeedItem> {
     if profiles.is_empty() {
         return items
@@ -195,13 +160,14 @@ pub fn score_items(
         .map(|profile| profile.text.clone())
         .collect::<Vec<_>>();
     let item_documents = items.iter().map(item_document).collect::<Vec<_>>();
-    let all_documents = profiles
+    let semantic_inputs = profiles
         .iter()
-        .map(|profile| prefixed_document(&config.query_prefix, &profile.text))
+        .map(|profile| (profile.text.clone(), TextRole::Query))
         .chain(
             item_documents
                 .iter()
-                .map(|document| prefixed_document(&config.document_prefix, document)),
+                .cloned()
+                .map(|document| (document, TextRole::Document)),
         )
         .collect::<Vec<_>>();
     let lexical_documents = profile_documents
@@ -209,9 +175,9 @@ pub fn score_items(
         .cloned()
         .chain(item_documents.iter().cloned())
         .collect::<Vec<_>>();
-    let semantic = embed(&all_documents, config);
+    let semantic = embed(&semantic_inputs, role);
     let (vectors, mode) = match semantic {
-        Some(vectors) if vectors.len() == all_documents.len() => (vectors, "semantic"),
+        Some(vectors) if vectors.len() == semantic_inputs.len() => (vectors, "semantic"),
         _ => (
             lexical_documents
                 .iter()
@@ -268,66 +234,8 @@ pub fn score_items(
 
 /// Cheap provider-specific readiness probe. Listing installed models avoids
 /// running an embedding just to paint a status indicator in the dashboard.
-pub fn embedding_backend_reachable(config: &RelevanceConfig) -> bool {
-    if !embedding_backend_configured(config) {
-        return false;
-    }
-    let provider = match embedding_provider(config) {
-        Some(provider) => provider,
-        None => return false,
-    };
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return false,
-    };
-    let endpoint = match provider {
-        EmbeddingProvider::Ollama => {
-            format!("{}/api/tags", config.base_url.trim_end_matches('/'))
-        }
-        EmbeddingProvider::OpenAi => {
-            format!("{}/models", config.base_url.trim_end_matches('/'))
-        }
-    };
-    let mut request = client.get(endpoint);
-    if provider == EmbeddingProvider::OpenAi {
-        if let Some(key) = crate::config::api_key_from_file(config.api_key_file.as_deref()) {
-            request = request.bearer_auth(key);
-        }
-    }
-    let response = match request.send() {
-        Ok(response) if response.status().is_success() => response,
-        _ => return false,
-    };
-    let body = match response.json::<serde_json::Value>() {
-        Ok(body) => body,
-        Err(_) => return false,
-    };
-    let models = match provider {
-        EmbeddingProvider::Ollama => body.get("models").and_then(|models| models.as_array()),
-        EmbeddingProvider::OpenAi => body.get("data").and_then(|models| models.as_array()),
-    };
-    models.is_some_and(|models| {
-        models.iter().any(|model| {
-            let installed = match provider {
-                EmbeddingProvider::Ollama => model
-                    .get("name")
-                    .or_else(|| model.get("model"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default(),
-                EmbeddingProvider::OpenAi => model
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default(),
-            };
-            installed == config.model
-                || installed
-                    .strip_suffix(":latest")
-                    .is_some_and(|name| name == config.model)
-        })
-    })
+pub fn embedding_backend_reachable(role: Option<&ResolvedRole>) -> bool {
+    role.is_some_and(ResolvedRole::model_reachable)
 }
 
 fn item_document(item: &FeedItem) -> String {
@@ -350,66 +258,19 @@ fn item_document(item: &FeedItem) -> String {
     )
 }
 
-fn prefixed_document(prefix: &str, document: &str) -> String {
-    format!("{}{document}", prefix.trim_start())
-}
-
-fn embedding_request(
-    documents: &[String],
-    config: &RelevanceConfig,
-) -> Option<(EmbeddingProvider, String, serde_json::Value)> {
-    let provider = embedding_provider(config)?;
-    let endpoint = match provider {
-        EmbeddingProvider::Ollama => {
-            format!("{}/api/embed", config.base_url.trim_end_matches('/'))
-        }
-        EmbeddingProvider::OpenAi => {
-            format!("{}/embeddings", config.base_url.trim_end_matches('/'))
-        }
-    };
-    let mut payload = serde_json::json!({
-        "model": config.model,
-        "input": documents,
-    });
-    if provider == EmbeddingProvider::Ollama {
-        // Ollama otherwise keeps the model resident for five minutes. Feed
-        // enrichment is revision-cached and bursty, so immediate unload trades
-        // a future cold start for returning unified memory to the desktop.
-        payload["keep_alive"] = serde_json::json!(0);
-    }
-    Some((provider, endpoint, payload))
-}
-
-fn embed(documents: &[String], config: &RelevanceConfig) -> Option<Vec<Vec<f64>>> {
-    if !embedding_backend_configured(config) {
-        return None;
-    }
-    let (provider, endpoint, payload) = embedding_request(documents, config)?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(45))
-        .build()
-        .ok()?;
-    let mut request = client.post(endpoint).json(&payload);
-    if provider == EmbeddingProvider::OpenAi {
-        if let Some(key) = crate::config::api_key_from_file(config.api_key_file.as_deref()) {
-            request = request.bearer_auth(key);
-        }
-    }
-    let response = request.send().ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    match provider {
-        EmbeddingProvider::Ollama => response
-            .json::<OllamaEmbedResponse>()
-            .ok()
-            .map(|body| body.embeddings),
-        EmbeddingProvider::OpenAi => {
-            let mut body = response.json::<OpenAiEmbedResponse>().ok()?;
-            body.data.sort_by_key(|datum| datum.index);
-            Some(body.data.into_iter().map(|datum| datum.embedding).collect())
-        }
-    }
+fn embed(
+    inputs: &[(String, TextRole)],
+    role: Option<&ResolvedRole>,
+) -> Option<Vec<Vec<f64>>> {
+    role?
+        .embed_mixed(inputs)
+        .ok()
+        .map(|vectors| {
+            vectors
+                .into_iter()
+                .map(|vector| vector.into_iter().map(f64::from).collect())
+                .collect()
+        })
 }
 
 fn lexical_vector(text: &str) -> Vec<f64> {
@@ -514,71 +375,8 @@ mod tests {
     }
 
     #[test]
-    fn semantic_roles_are_configurable() {
-        assert_eq!(prefixed_document("query: ", "local AI"), "query: local AI");
-        assert_eq!(prefixed_document("", "local AI"), "local AI");
-    }
-
-    #[test]
-    fn provider_selection_is_explicit_and_backwards_compatible() {
-        let ollama = RelevanceConfig::default();
-        assert_eq!(embedding_provider(&ollama), Some(EmbeddingProvider::Ollama));
-
-        let omlx = RelevanceConfig {
-            provider: "openai".into(),
-            base_url: "http://127.0.0.1:8000/v1".into(),
-            model: "embedding-model".into(),
-            query_prefix: "query: ".into(),
-            document_prefix: "passage: ".into(),
-            api_key_file: Some("~/.omlx/settings.json".into()),
-            ..Default::default()
-        };
-        assert_eq!(embedding_provider(&omlx), Some(EmbeddingProvider::OpenAi));
-        assert!(embedding_backend_configured(&omlx));
-
-        let unknown = RelevanceConfig {
-            provider: "guess".into(),
-            ..Default::default()
-        };
-        assert_eq!(embedding_provider(&unknown), None);
-        assert!(!embedding_backend_configured(&unknown));
-    }
-
-    #[test]
-    fn provider_requests_use_the_right_endpoint_and_unload_policy() {
-        let documents = vec!["one".into(), "two".into()];
-        let (_, ollama_endpoint, ollama_payload) =
-            embedding_request(&documents, &RelevanceConfig::default()).unwrap();
-        assert_eq!(ollama_endpoint, "http://127.0.0.1:11434/api/embed");
-        assert_eq!(ollama_payload["keep_alive"], 0);
-
-        let omlx = RelevanceConfig {
-            provider: "openai".into(),
-            base_url: "http://127.0.0.1:8000/v1/".into(),
-            model: "embedding-model".into(),
-            ..Default::default()
-        };
-        let (_, omlx_endpoint, omlx_payload) = embedding_request(&documents, &omlx).unwrap();
-        assert_eq!(omlx_endpoint, "http://127.0.0.1:8000/v1/embeddings");
-        assert!(omlx_payload.get("keep_alive").is_none());
-        assert_eq!(omlx_payload["input"].as_array().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn openai_embeddings_are_restored_to_input_order() {
-        let mut response: OpenAiEmbedResponse = serde_json::from_value(serde_json::json!({
-            "data": [
-                {"index": 1, "embedding": [0.0, 1.0]},
-                {"index": 0, "embedding": [1.0, 0.0]}
-            ]
-        }))
-        .unwrap();
-        response.data.sort_by_key(|datum| datum.index);
-        let vectors = response
-            .data
-            .into_iter()
-            .map(|datum| datum.embedding)
-            .collect::<Vec<_>>();
-        assert_eq!(vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+    fn a_missing_embedding_role_is_an_explicit_lexical_fallback() {
+        assert!(!embedding_backend_configured(None));
+        assert_eq!(embedding_provider_label(None), "No embedding role configured");
     }
 }
