@@ -9,9 +9,15 @@
 #
 # Built on the same throwaway-root idea as service-runner.test.sh and manifest-resolution.test.sh:
 # a scratch Axon root with its own overlay, machine.toml and capability manifests, plus a scratch
-# HOME so unit files land inside the sandbox. Nothing here reads this machine's enabled set,
-# touches its LaunchAgents, or runs launchctl/systemctl — `persistence-status` renders and
-# compares files, which is exactly why rendering was separated from installing.
+# HOME so unit files land inside the sandbox.
+#
+# launchctl, systemctl and loginctl are STUBBED on PATH. The first version of this file did not
+# stub them and called the real `install-persistence`, which registered a live `com.axon.always`
+# job in the author's launchd pointing at a scratch path that the test then deleted. A test for
+# "does this machine's boot persistence match its declaration" must not itself install boot
+# persistence on the machine running it. The stubs also make the load state deterministic, which
+# a real supervisor cannot be: the same assertion answered `installed` on macOS and
+# `installed-not-loaded` on the Linux CI runner.
 set -uo pipefail
 
 fails=0
@@ -38,6 +44,40 @@ cp "$SRC_TOOLS/service-runner.sh" "$SRC_TOOLS/capability.sh" "$SRC_TOOLS/watchdo
 cp "$SRC_TOOLS"/lib/*.sh "$ROOT/tools/lib/"
 cp -R "$SRC_TOOLS"/templates/. "$ROOT/tools/templates/"   # -R: templates/ has subdirectories
 printf 'overlay = "%s"\n' "$OVERLAY" > "$ROOT/axon.toml"
+
+# --- supervisor stubs ------------------------------------------------------
+# One state file holds the labels the fake supervisor considers loaded, so load/unload and the
+# query that reads them cannot disagree. Deliberately dumb: this stands in for launchd, it does
+# not model it.
+STUB_BIN="$SCRATCH/bin"; STUB_STATE="$SCRATCH/loaded.txt"
+mkdir -p "$STUB_BIN"; : > "$STUB_STATE"
+cat > "$STUB_BIN/launchctl" <<'STUB'
+#!/bin/bash
+case "${1:-}" in
+  list)   cat "$AXON_TEST_STUB_STATE" ;;
+  load)   printf '%s\t0\tcom.axon.%s\n' "$$" "$(basename "${2:-}" .plist | sed 's/^com\.axon\.//')" >> "$AXON_TEST_STUB_STATE" ;;
+  unload) label="com.axon.$(basename "${2:-}" .plist | sed 's/^com\.axon\.//')"
+          grep -v "$label\$" "$AXON_TEST_STUB_STATE" > "$AXON_TEST_STUB_STATE.new" || true
+          mv "$AXON_TEST_STUB_STATE.new" "$AXON_TEST_STUB_STATE" ;;
+esac
+exit 0
+STUB
+cat > "$STUB_BIN/systemctl" <<'STUB'
+#!/bin/bash
+args="$*"
+case "$args" in
+  *is-active*)   unit="${args##* }"; grep -q "^${unit}$" "$AXON_TEST_STUB_STATE" && exit 0 || exit 1 ;;
+  *enable*)      unit="${args##* }"; echo "$unit" >> "$AXON_TEST_STUB_STATE" ;;
+  *disable*)     unit="${args##* }"
+                 grep -v "^${unit}$" "$AXON_TEST_STUB_STATE" > "$AXON_TEST_STUB_STATE.new" || true
+                 mv "$AXON_TEST_STUB_STATE.new" "$AXON_TEST_STUB_STATE" ;;
+esac
+exit 0
+STUB
+printf '#!/bin/bash\necho "Linger=yes"\n' > "$STUB_BIN/loginctl"
+chmod +x "$STUB_BIN"/launchctl "$STUB_BIN"/systemctl "$STUB_BIN"/loginctl
+export AXON_TEST_STUB_STATE="$STUB_STATE"
+PATH="$STUB_BIN:$PATH"; export PATH
 
 # Four capabilities, one per state the issue names. `always` is the interesting one; the rest fix
 # the shape of an answer that must NOT be "install something".
@@ -69,6 +109,33 @@ expect_state() {  # expect_state <label> <capability> <expected state>
   [ "$got" = "$3" ] || fail "$1: expected state '$3', got '$got' (full: $out)"
 }
 
+# The unit file is there and matches, whether or not a supervisor has loaded it. Used for the
+# Linux branch, where the load half is genuinely not decidable from a planted tree: that branch's
+# persistence_loaded also tests for /run/systemd/system, which no PATH stub can create, so the
+# answer is `unknown` on a macOS host and stub-driven on a systemd one. Asserting the file half
+# there is asserting the part the planted tree actually determines.
+expect_installed_file() {  # expect_installed_file <label> <capability>
+  run "$2"
+  local got; got="$(state_of)"
+  case "$got" in
+    installed|installed-not-loaded) ;;
+    *) fail "$1: expected the unit to match the declaration, got '$got' (full: $out)" ;;
+  esac
+}
+
+# The guard that would have caught the first version of this file: if PATH resolution ever puts
+# the real supervisor ahead of the stub, every assertion below still passes while the test quietly
+# installs launchd jobs on the machine running it. Checked before anything runs, not after.
+for _bin in launchctl systemctl loginctl; do
+  _resolved="$(command -v "$_bin" 2>/dev/null || true)"
+  case "$_resolved" in
+    "$STUB_BIN"/*) ;;
+    *) echo "FAIL: '$_bin' resolves to '${_resolved:-nothing}', not the stub in $STUB_BIN —"
+       echo "      this test would drive the real supervisor on this machine. Refusing to run."
+       exit 1 ;;
+  esac
+done
+
 # --- macOS -----------------------------------------------------------------
 machine macos '["always", "ondemand", "gone"]'
 PLIST="$FAKE_HOME/Library/LaunchAgents/com.axon.always.plist"
@@ -81,6 +148,9 @@ expect_state "macos, nothing installed" always missing
 run always install-persistence
 [ -f "$PLIST" ] || fail "install-persistence did not write $PLIST (said: $out)"
 expect_state "macos, freshly installed" always installed
+# ...and it actually asked the supervisor to load it. Writing the file without loading it is the
+# `installed-not-loaded` state, which install must not leave behind.
+grep -q "com\.axon\.always\$" "$STUB_STATE" || fail "install-persistence wrote the unit but never loaded it"
 
 # stale — the unit exists but no longer matches what the declaration renders to. This is the case
 # a plain existence check cannot see, and it is how a moved runtime binary silently keeps a
@@ -146,7 +216,7 @@ sed -e "s|__WATCHDOG_PATH__|$ROOT/tools/watchdog.sh|" \
     -e "s|__LOG_OUT__|/tmp/axon-always-watchdog.log|" \
     -e "s|__LOG_ERR__|/tmp/axon-always-watchdog.err|" \
     "$ROOT/tools/templates/systemd-watchdog.service.tmpl" > "$UNIT"
-expect_state "linux, unit matching the declaration" always installed
+expect_installed_file "linux, unit matching the declaration" always
 
 printf '# hand-edited\n' >> "$UNIT"
 expect_state "linux, unit edited" always stale
