@@ -224,6 +224,7 @@ sh_test(
     srcs = ["tools/backup.test.sh"],
     data = [
         "tools/backup.sh",
+        "tools/lib/test-support.sh",
         "tools/lib/toml.sh",
     ],
 )

@@ -21,6 +21,10 @@ mkdir -p "$FIXTURE/tools/lib" "$FIXTURE/capabilities/vaultwarden" \
 
 cp "$ROOT/tools/backup.sh" "$FIXTURE/tools/backup.sh"
 cp "$ROOT/tools/lib/toml.sh" "$FIXTURE/tools/lib/toml.sh"
+# The skip guard: a platform-dependent assertion may be given up on a developer machine and never
+# in CI. Sourced from the real tree, not the fixture — it governs this test, not the script under
+# test.
+source "$ROOT/tools/lib/test-support.sh"
 
 cat > "$FIXTURE/tools/lib/paths.sh" <<PATHS
 #!/bin/bash
@@ -239,7 +243,10 @@ if [ -c /dev/full ]; then
   grep -q 'failed part-way' "$short_log" \
     || fail "an unwritable stream did not say so; log: $(cat "$short_log")"
 else
-  echo "NOTE: short-write assertion skipped — no /dev/full on this host (it runs in CI, which is Linux)"
+  # Not "skipped, presumably fine": on a developer machine this prints what is being given up,
+  # and in CI it fails, because a platform-dependent assertion that stops running everywhere is
+  # the failure this guard exists for (tools/lib/test-support.sh).
+  skippable "no /dev/full on this host, so the short-write path cannot be forced"
 fi
 
 # Recovery mode is additive and the stopped-state order spans every host path plus
