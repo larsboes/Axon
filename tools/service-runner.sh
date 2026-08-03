@@ -15,7 +15,7 @@ source "$TOOLS_DIR/lib/platform.sh"
 source "$TOOLS_DIR/lib/toml.sh"
 # Canonical publish-set form, so a declaration and a running container can be compared
 # at all (each runtime reports its bindings in its own shape).
-source "$TOOLS_DIR/lib/publish.sh"
+source "$TOOLS_DIR/lib/runargs.sh"
 
 usage() {
   echo "usage: service-runner.sh <start|stop|idle-stop|restart|resume|recreate|status|install-persistence> <capability>" >&2
@@ -584,7 +584,7 @@ start_service() {
       if "$RUNTIME_BIN" list --format json 2>/dev/null | grep -q "\"id\":\"$NAME\""; then
         :  # already running
       elif "$RUNTIME_BIN" list -a --format json 2>/dev/null | grep -q "\"id\":\"$NAME\""; then
-        report_publish_drift >&2 || true
+        report_arg_drift >&2 || true
         "$RUNTIME_BIN" start "$NAME"
       else
         "$RUNTIME_BIN" run -d "${CONTAINER_ARGS[@]}" "$(qualified_image)"
@@ -594,7 +594,7 @@ start_service() {
       if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | grep -qx "$NAME"; then
         :  # already running
       elif "$RUNTIME_BIN" ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$NAME"; then
-        report_publish_drift >&2 || true
+        report_arg_drift >&2 || true
         "$RUNTIME_BIN" start "$NAME"
       else
         "$RUNTIME_BIN" run -d --restart unless-stopped "${CONTAINER_ARGS[@]}" "$(qualified_image)"
@@ -639,64 +639,94 @@ resume_service() {
   start_service
 }
 
-# The publish set the manifest and overlay currently resolve to, canonical and sorted.
-declared_publish_set() {
-  local p
-  for p in ${PORTS[@]+"${PORTS[@]}"}; do normalize_publish "$p"; done | sort
-}
-
-# What the running container actually publishes. Empty output with a non-zero status means the
-# runtime could not be asked -- which must never be rendered as "they match".
-running_publish_set() {
+# The runtime's own description of this container, as one JSON document.
+#
+# Kept in a variable and never in a file, deliberately: it contains the container's resolved
+# environment, so writing it to $TMPDIR to answer a drift question would put every credential the
+# capability holds on disk. One call per drift report, reused across all five classes.
+inspect_json() {
   ensure_runtime
   case "$AXON_CONTAINER_RUNTIME" in
-    apple-container)
-      "$RUNTIME_BIN" list -a --format json 2>/dev/null | publish_from_apple "$NAME"
-      ;;
-    docker|podman)
-      "$RUNTIME_BIN" inspect "$NAME" --format '{{json .HostConfig.PortBindings}}' 2>/dev/null \
-        | publish_from_docker
-      ;;
+    apple-container) "$RUNTIME_BIN" list -a --format json 2>/dev/null ;;
+    docker|podman)   "$RUNTIME_BIN" inspect "$NAME" --format '{{json .}}' 2>/dev/null ;;
     *) return 1 ;;
   esac
 }
 
-# report_publish_drift — print the difference between declaration and container, exit 1 if any.
+# The classes report_arg_drift walks, in the order an operator would act on them. Each one is an
+# argument that `run -d` takes at creation and `start` cannot change (README.md#state-mounts-record-reality).
+RUNARG_CLASSES="port mount cap network"
+
+# report_arg_drift — print every difference between the declaration and the container, exit 1 if
+# any. Writes to stdout; callers redirect.
 #
 # start_service starts an existing container by NAME and only builds a new one when none exists,
-# so every `run -d` argument -- the publish set among them -- is frozen at creation time. A changed
-# `ports` value parses, resolves, and never reaches the container; `restart` does not help either,
-# because stop_service stops without removing. Nothing said so, which is the actual defect: a
-# bind-address narrowed for security read as applied when it was not.
-report_publish_drift() {
-  local d r
-  d="$(mktemp)"; r="$(mktemp)"
-  declared_publish_set > "$d"
-  running_publish_set > "$r" 2>/dev/null
-  local rc=0
-  if ! publish_diff "$d" "$r"; then
-    echo "  the running container was created with a different publish set — 'service-runner.sh recreate $CAP' applies it" >&2
-    rc=1
+# so every `run -d` argument is frozen at creation time. A changed value parses, resolves, and
+# never reaches the container; `restart` does not help either, because stop_service stops without
+# removing. #11 said so for ports. Everything else stayed silent, and `--env-file` is the one that
+# matters most: a rotated credential in the overlay looked applied when the container was still
+# serving the old one.
+report_arg_drift() {
+  local json d r class out rc=0 envfile
+  json="$(inspect_json)" || {
+    echo "  the container runtime could not be asked about '$NAME' — drift unverified, NOT verified equal"
+    return 1
+  }
+  if [ -z "$json" ] || [ "$json" = "[]" ] || [ "$json" = "null" ]; then
+    echo "  no container named '$NAME' exists — drift unverified, NOT verified equal"
+    return 1
   fi
+
+  d="$(mktemp)"; r="$(mktemp)"
+  declared_runspec ${CONTAINER_ARGS[@]+"${CONTAINER_ARGS[@]}"} | sort > "$d"
+  case "$AXON_CONTAINER_RUNTIME" in
+    apple-container) printf '%s\n' "$json" | runspec_from_apple "$NAME" > "$r" ;;
+    docker|podman)   printf '%s\n' "$json" | runspec_from_docker      > "$r" ;;
+  esac
+
+  for class in $RUNARG_CLASSES; do
+    if ! out="$(runspec_diff "$d" "$r" "$class")"; then
+      printf '  %s:\n%s\n' "$class" "$out"
+      rc=1
+    fi
+  done
+
+  # The env file last, and through its own comparison: its values are secrets, so they never join
+  # the canonical stream above and only their key names are ever printed.
+  envfile="$(grep '^envfile ' "$d" | head -1 | sed 's/^envfile //')"
   rm -f "$d" "$r"
+  if [ -n "$envfile" ]; then
+    case "$AXON_CONTAINER_RUNTIME" in
+      apple-container) out="$(printf '%s\n' "$json" | env_from_apple "$NAME" | env_diff "$envfile")" || rc=1 ;;
+      docker|podman)   out="$(printf '%s\n' "$json" | env_from_docker        | env_diff "$envfile")" || rc=1 ;;
+    esac
+    [ -n "$out" ] && printf '  env-file:\n%s\n' "$out"
+  fi
+
+  [ "$rc" -eq 0 ] || echo "  the running container was created from a different declaration — 'service-runner.sh recreate $CAP' applies the current one"
   return $rc
 }
 
 status_service() {
   container_prepare
-  local state="stopped"
+  local state="stopped" report="" classes=""
   if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | grep -qx "$NAME" \
      || "$RUNTIME_BIN" list --format json 2>/dev/null | grep -q "\"id\":\"$NAME\""; then
     state="running"
   fi
   if maintenance_hold_active 2>/dev/null; then state="$state, held"; fi
   # Drift is only meaningful for a container that exists; a stopped-and-absent one gets its
-  # declaration applied by the next start anyway.
-  if [ "${state#running}" != "$state" ] && ! report_publish_drift >/dev/null 2>&1; then
-    state="$state, ports differ"
+  # declaration applied by the next start anyway. Captured once rather than asked three times:
+  # the summary and the detail below are the same report, so they cannot disagree, and the
+  # runtime is queried once instead of per class.
+  if [ "${state#running}" != "$state" ] && ! report="$(report_arg_drift 2>/dev/null)"; then
+    classes="$(printf '%s\n' "$report" | sed -n 's/^  \([a-z-]*\):$/\1/p' | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+    # No class headings means the report is the "could not be asked" line, not a set of
+    # differences — which must not render as a clean container either.
+    state="$state, drift: ${classes:-unverified}"
   fi
   printf '  %-14s %-9s %-22s %s\n' "$CAP" "container" "$state" "$IMAGE:$TAG"
-  [ "${state%, ports differ}" = "$state" ] || report_publish_drift >&2 || true
+  [ -z "$report" ] || printf '%s\n' "$report" >&2
 }
 
 install_persistence() {
