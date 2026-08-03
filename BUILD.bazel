@@ -239,6 +239,22 @@ sh_test(
     ],
 )
 
+# The pin-vs-installed check over planted manifests and planted binaries. The tracked
+# manifest can only show the state this machine happens to be in, so every red path --
+# disagreeing, absent, unprobeable, and an unsafe probe -- needs a fixture. Hermetic: it
+# plants its own PATH, and the --offline flag keeps the network out.
+sh_test(
+    name = "installed_probe_test",
+    size = "small",
+    srcs = ["tools/installed-probe.test.sh"],
+    data = [
+        "tools/lib/paths.sh",
+        "tools/lib/toml.sh",
+        "tools/lib/version.sh",
+        "tools/upstream-checker",
+    ],
+)
+
 # Trivy itself owns vulnerability matching and expiry semantics. This test keeps the
 # repository-specific contract honest: each service receives only its own reviewed policy,
 # while images with no accepted findings remain unfiltered.
