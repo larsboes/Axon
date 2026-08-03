@@ -8,6 +8,12 @@
 #   kind turns that comparison off for the entry -- so every pin_kind requires tracked_by, because
 #   opting out of one check is not opting out of thinking about staleness.
 # tracked_by = one line: what keeps this entry current, given that releases/latest cannot.
+# installed_probe = the command that asks THIS HOST which version it actually has, for a pin
+#   that means "what is installed here" rather than "what the registry lists". Drift alone
+#   compares pin against releases/latest -- both sides remote -- so a package manager can move
+#   the machine past the pin and nothing notices (it did: brew took typst and bitwarden-cli,
+#   found 2026-08-03). Executed as argv, never through a shell, and restricted to letters,
+#   digits and - _ . / = : so a manifest value cannot become an injection vector.
 # cooldown: new upstream releases wait out a hold window (axon.toml [upstream]) before adoption unless fixing an exposed vuln.
 # No adopt/overlay/fork verdict lands without an audit (checked by tools/upstream-checker, M2).
 
@@ -137,6 +143,7 @@ url = "https://github.com/bitwarden/clients"
 verdict = "adopt"
 license = "GPL-3.0-only"
 pin = "cli-v2026.7.0"   # 2026-07-24, audited + pinned 2026-08-03. Same case as typst: brew had already upgraded, so the previous pin described an install that no longer existed. Delta is importers (KeePass/Keeper), tray settings and an org-invite refactor -- nothing touching `bw config server` or the item create/read tools/setup-secret.sh drives. Watch item: PM-37875 automatic V2 cipher migration, already live on the pinned machine without incident
+installed_probe = "bw --version"   # how tools/setup-secret.sh reads and writes the vault -- the uncomfortable one: it ran an unaudited version for days
 why = "official CLI for the vaultwarden-protocol-compatible vault; setup-secret.sh scripts item create/read against self-hosted vaultwarden (bw config server) so Vaultwarden, not per-machine Keychain, is the canonical capability-secret store"
 
 [scout]
@@ -260,6 +267,7 @@ url = "https://github.com/ClementTsang/bottom"
 verdict = "adopt"
 license = "MIT"
 pin = "0.14.7"          # 2026-07-27, 7d old on 2026-08-03 = the near edge of the 7-14d window, so bumped after an audit rather than on sight. Installed and VERIFIED on this machine (`btm --version` -> 0.14.7) in the same change that moved this line; installed via `cargo install bottom --version 0.14.7 --locked`, not brew (brew's bottle always tracks latest, no clean way to pin an older formula version). Delta 0.14.3..0.14.7 read in full: four releases, all bug fixes plus one small config feature (default sort order, 0.14.7), no breaking change and nothing touching how tools/sysmon consumes it. What actually mattered: the first disk I/O reading at startup being wildly too high and Linux signals >=34 being off by two (both 0.14.5), and 'Q' not quitting (0.14.4). The 0.14.4-only note this comment used to carry is superseded -- it was skipped at one day old for cooldown, and its fixes arrive here
+installed_probe = "btm --version"   # cargo install, so nothing but this pin decides which version the host runs
 why = "tools/sysmon TUI backend -- cross-platform system monitor (CPU/mem/disk/net/proc, history graphs), Rust, matches the language bias in README.md#implementation-languages-and-intelligence. Adopt over build: README.md#upstream-first requires checking for prior art before writing a system-usage overview from scratch"
 
 [macmon]
@@ -267,6 +275,7 @@ url = "https://github.com/vladkens/macmon"
 verdict = "adopt"
 license = "MIT"
 pin = "0.7.0"           # crates.io lags GitHub (latest tag there is v0.7.2, 2026-05-02); 0.7.0 is what `cargo install macmon` resolves and is well past cooldown either way. Installed via `cargo install macmon --version 0.7.0 --locked`
+installed_probe = "macmon --version"   # cargo install, same shape as bottom
 why = "tools/sysmon power/thermal backend -- sudoless powermetrics wrapper for Apple Silicon (GPU/ANE utilization, package power draw, thermal pressure) that bottom and Activity Monitor don't surface. arm64-only; tools/sysmon gates the `power` subcommand on `uname -m`"
 
 [typst]
@@ -274,6 +283,7 @@ url = "https://github.com/typst/typst"
 verdict = "adopt"
 license = "Apache-2.0"
 pin = "0.15.1"          # 2026-07-17, audited + pinned 2026-08-03. NOTE the pin was behind the MACHINE, not the other way round: brew had already upgraded to 0.15.1, so 0.15.0 described an install that no longer existed. Delta is bugfix-only (NCM font 8.1.1, two math-alignment regressions, layout fixes)
+installed_probe = "typst --version"   # brew formula; the entry whose pin the machine had already overtaken when this check was written
 why = "capabilities/cv rendering -- LaTeX replacement for CV typesetting. Plain-text templates with real scripting (array filter/map) instead of awesome-cv.cls's `\\ifx\\cvtarget` macro chains; single Rust-built binary, no TeX Live install, git-diffable output. Adopt over build: a typesetting engine is exactly the kind of thing not to hand-roll"
 
 [yq]
@@ -465,6 +475,7 @@ url = "https://github.com/apple/container"
 verdict = "adopt"
 license = "Apache-2.0"
 pin = "1.0.0"           # what is INSTALLED and running (`container --version`, verified 2026-08-03), read off the machine rather than a registry listing -- a signed .pkg the operator installs by hand, so upstream-checker watches drift here, it does not own the update. The pin deliberately does NOT move ahead of the machine: a pin claiming a version the host is not running is the exact failure Axon#54 exists to catch, so it bumps in the change that verifies `container --version`, never before. AUDIT 2026-08-03 -- 1.1.0 and 1.2.0 both reviewed against how Axon actually uses the runtime (`container run` for postgres and vaultwarden, published loopback ports from machine.toml, agentbox's `container network create --internal` host-only network). Verdict: reviewed, adoption DEFERRED to the next release (operator decision 2026-08-03, after the audit rather than instead of it). 1.2.0 ships only as a signed .pkg needing admin rights, and installing it restarts the runtime under containers that were live and mid-migration on this deployment at the time; the next release will be past its cooldown anyway, so the wait costs a cooldown skip rather than earning one. What is deferred with it: the three security fixes below stay unapplied until then, and that is the price of waiting, not a reason the audit was wrong. Neither release flags a breaking CLI or API change touching run, network create or port publishing. Four items earn it -- kernel archive integrity verification (apple/container#1703), container-ID validation on XPC requests (#1956), no longer following a destination symlink when copying user configuration (#1957), and a TCP/UDP port-forward buffer fix (#2027) on exactly the publish path every containerised capability here uses; 1.1.0 adds socket-mount permission propagation (#1750, #1751) and stops silently discarding graceful-stop errors (#1782), which tools/service-runner.sh's stop path depends on. The 1.2.0 installer was fetched and its signature verified before the deferral (Developer ID Installer: Apple Inc. - Containerization, UPBK2H6LZM, notarized, trusted timestamp 2026-07-29), so this entry has been read at 1.2.0 and the next sweep starts from that rather than from 1.0.0 again
+installed_probe = "container --version"   # the runtime every containerised capability boots on; its `why` already said the pin is read off the machine
 why = "the container runtime <overlay>/config/machine.toml already names (container_runtime = \"apple-container\"), registered here now that a capability depends on more than `run`: each container is its own VM rather than a shared kernel, which is the isolation claim agentbox actually rests on, and `container network create --internal` gives a host-only network with no external route -- the egress control the writeup left explicitly out of scope. Apple-signed component, no third-party daemon, which is the install story a sovereignty review asks about"
 
 [debian]

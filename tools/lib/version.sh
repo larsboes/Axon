@@ -90,6 +90,78 @@ shared_decoration() {
   return 0
 }
 
+# --- installed-version probes ---------------------------------------------
+#
+# Several pins in upstreams.toml mean "what is INSTALLED on this host", not "what the
+# registry lists" — apple-container's comment says so outright. That intent was documented
+# and unenforced, and on 2026-08-03 an audit found two entries where the machine had quietly
+# moved PAST the pin: brew had upgraded typst to 0.15.1 and bitwarden-cli to 2026.7.0 while
+# the manifest still claimed 0.15.0 and cli-v2026.6.0. Nothing noticed, because the drift
+# check compares the pin against releases/latest — both sides remote. Nothing ever asked the
+# host.
+#
+# That matters more than a stale number. The cooldown exists so a release waits out the
+# window in which a compromised one gets yanked, and that protection is worth exactly as much
+# as the machine's willingness to stay on the pinned version. `brew upgrade` does not read
+# upstreams.toml. bitwarden-cli is how tools/setup-secret.sh reads and writes the vault, and
+# it ran an unaudited version for some number of days.
+
+# probe_argv_safe <probe> — is this manifest value safe to execute without a shell?
+#
+# A manifest is data, and data that reaches a shell is an injection vector. The probe is
+# therefore never passed to `sh -c`, `eval`, or a backtick: the caller word-splits it and
+# execs argv directly. This function is the second lock — it rejects every character that
+# would matter IF someone later reintroduced a shell, so the safety does not rest on one
+# call site staying correct. Allowed: letters, digits, and - _ . / = : plus the spaces that
+# separate arguments. That admits `container --version` and `bw --version`, and rejects
+# `$(...)`, backticks, ; | & > < newline, quotes and globs.
+probe_argv_safe() {
+  case "$1" in
+    "") return 1 ;;
+    *[!A-Za-z0-9\ ./_=:-]*) return 1 ;;
+  esac
+  # A leading dash would make the first word look like a flag rather than a command, and a
+  # path is only allowed to be absolute or bare — never a ../ escape assembled in a manifest.
+  case "$1" in
+    -*|*..*) return 1 ;;
+  esac
+  return 0
+}
+
+# probe_extract_version <output> — the first version-shaped token in a tool's --version text.
+#
+# Every tool answers differently: `bottom 0.14.7`, `typst 0.15.1 (a1b2c3)`, `container CLI
+# version 1.0.0 (build: release, commit: ee848e3)`, or a bare `2026.7.0`. Rather than a
+# per-tool parser, take the first token that is a dotted numeric version. That is the whole
+# contract, and an entry whose tool does not answer that way is reported as unprobeable
+# rather than quietly compared against something else.
+probe_extract_version() {
+  printf '%s' "$1" \
+    | tr ' \t\n' '\n\n\n' \
+    | sed -E 's/^v//; s/[(),]//g' \
+    | grep -E '^[0-9]+(\.[0-9]+)+$' \
+    | head -1
+}
+
+# probe_core <string> — reduce a pin or a probe answer to its bare dotted version, or empty.
+#
+# strip_decoration is not the right tool here: it removes a decoration that names the ENTRY
+# (`bun-v1.3.14` for `bun`), and the decorations on this side name neither the entry nor each
+# other. bitwarden-cli pins `cli-v2026.7.0` while `bw --version` answers a bare `2026.7.0`;
+# vaultwarden pins `1.37.0-alpine` while the binary would say `1.37.0`. Both sides are reduced
+# to the version itself instead, which is the only part a host can actually confirm.
+probe_core() {
+  printf '%s' "$1" | sed -E 's/^[^0-9]*//; s/[^0-9.].*$//; s/\.$//'
+}
+
+# probe_agrees <entry name> <pin> <installed> — does the host match the pin?
+probe_agrees() {
+  local pin_core installed_core
+  pin_core="$(probe_core "$2")"
+  installed_core="$(probe_core "$3")"
+  [ -n "$pin_core" ] && [ "$pin_core" = "$installed_core" ]
+}
+
 # --- upstream drift classification ----------------------------------------
 # drift_note <entry name> <pin> <latest_tag> <age_days> <cooldown_min> <cooldown_max>
 #   Prints the one status note for a pinned upstream against the newest upstream release.

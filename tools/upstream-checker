@@ -119,6 +119,7 @@ for name in $(toml_sections "$MANIFEST"); do
   pin="$(toml_get_in "$name" pin "$MANIFEST")"
   pin_kind="$(toml_get_in "$name" pin_kind "$MANIFEST")"
   tracked_by="$(toml_get_in "$name" tracked_by "$MANIFEST")"
+  installed_probe="$(toml_get_in "$name" installed_probe "$MANIFEST")"
 
   entry_fail=0; entry_warn=0; entry_na=0; ENTRY_NOTES=()
   [ "$JSON" -eq 0 ] && printf '▸ %-28s %-11s pin %s\n' "$name" "${verdict:-—}" "${pin:-—}"
@@ -171,6 +172,52 @@ for name in $(toml_sections "$MANIFEST"); do
     else
       emit "○ release drift n/a ($pin_kind) — tracked by: $tracked_by"
       entry_na=1
+    fi
+  fi
+
+  # 4b. pin vs INSTALLED — the direction the drift check structurally cannot see
+  #
+  # Check 5 below compares the pin against releases/latest. Both sides are remote, so a pin and
+  # an install can disagree indefinitely while the entry reports `ok` — which is exactly what
+  # happened when brew moved typst and bitwarden-cli past their pins (#54). An entry whose pin
+  # means "what is installed here" declares how to ask the host, and gets asked.
+  #
+  # Runs offline on purpose: this is a local question, and a check that only ran with a network
+  # would be skipped in precisely the CI and cron paths that most need it. Costs one exec.
+  if [ -n "$installed_probe" ]; then
+    if ! probe_argv_safe "$installed_probe"; then
+      emit "✗ installed_probe is not a safe argv — letters, digits and - _ . / = : only, no shell metacharacters"
+      entry_fail=1
+    elif [ -z "$pin" ]; then
+      emit "✗ installed_probe without pin — there is nothing to compare the host against"
+      entry_fail=1
+    else
+      # Word-split into an argv array and exec directly. No eval, no sh -c, no backticks: a
+      # manifest value must never reach a shell, and probe_argv_safe is the belt to this
+      # brace. An array rather than `set --` so the script's own positional parameters stay
+      # intact — this runs once per entry, and a loop that quietly rewrites "$@" is a trap
+      # for whoever adds the next check.
+      probe_argv=()
+      # shellcheck disable=SC2086
+      for _w in $installed_probe; do probe_argv+=("$_w"); done
+      if ! command -v "${probe_argv[0]}" >/dev/null 2>&1; then
+        # Absent is its own answer. Reporting it as agreement would be the failure this whole
+        # check exists to prevent, one level up.
+        emit "⚠ pin claims $pin but '${probe_argv[0]}' is not installed on this machine — absent, not agreeing"
+        entry_warn=1
+      else
+        probe_out="$("${probe_argv[@]}" 2>&1)" || probe_out=""
+        installed_ver="$(probe_extract_version "$probe_out")"
+        if [ -z "$installed_ver" ]; then
+          emit "⚠ '$installed_probe' returned no version-shaped output — unprobeable, so the pin is unverified"
+          entry_warn=1
+        elif probe_agrees "$name" "$pin" "$installed_ver"; then
+          emit "✓ installed matches the pin ($installed_ver, via '$installed_probe')"
+        else
+          emit "✗ pin says $pin, machine has $installed_ver — the package manager moved this, not Axon"
+          entry_fail=1
+        fi
+      fi
     fi
   fi
 
