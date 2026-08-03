@@ -343,3 +343,26 @@ export function mergeCoupling(edges: SourceCoupling[]): Array<{
     })
     .sort((a, b) => (a.from === b.from ? a.to.localeCompare(b.to) : a.from.localeCompare(b.from)));
 }
+
+/**
+ * Whether `tools/self generate` must refuse to write.
+ *
+ * The `code` layer is derived from `graphify-out/graph.json`, which is git-ignored and
+ * machine-local. On a fresh clone, or any machine that has never built the graph, every unit's
+ * counts are absent — and writing that out silently removed 181 lines from the committed artifact.
+ * Nothing downstream objected: `tools/self check` narrows its own claim when no graph is present,
+ * so it passed on the gutted file for the same reason (#35).
+ *
+ * Carrying the committed numbers forward instead was rejected. They would describe a tree that no
+ * longer exists, which is a different lie rather than a fix.
+ *
+ * Only refuses when there is something to lose: a committed artifact that has no code layer either
+ * regenerates freely, which is what a first generate on a graphless machine needs.
+ */
+export function generateWouldDropCode(
+  graphPresent: boolean,
+  committedUnits: Array<{ code?: unknown }> | null,
+): boolean {
+  if (graphPresent) return false;
+  return (committedUnits ?? []).some((u) => u.code !== undefined);
+}
