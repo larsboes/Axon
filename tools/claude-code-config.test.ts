@@ -9,13 +9,14 @@
 
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   managedHandoffInstructions,
   mergeFragment,
   stageManagedPolicy,
+  writeFileAtomic,
 } from "./claude-code-config.ts";
 
 const base = () => ({
@@ -272,6 +273,66 @@ describe("managed-policy CLI deployment boundary", () => {
     } finally {
       rmSync(first.stageDir, { recursive: true, force: true });
       rmSync(second.stageDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// A policy file that can end up half-written is not a policy file: /etc/claude-code/managed-settings.json
+// is parsed as JSON, so a fragment of it is not a weaker security floor but an absent one.
+describe("writeFileAtomic — a reader never observes a fragment", () => {
+  test("replaces an existing file in one step and honours the requested mode", () => {
+    const root = mkdtempSync(join(tmpdir(), "axon-atomic-replace-"));
+    try {
+      const target = join(root, "managed-settings.json");
+      writeFileAtomic(target, '{"first":true}\n', 0o644);
+      writeFileAtomic(target, '{"second":true}\n', 0o644);
+      expect(readFileSync(target, "utf8")).toBe('{"second":true}\n');
+      expect(statSync(target).mode & 0o777).toBe(0o644);
+      // Nothing but the target survives: a leaked temp file would be the next run's "wx" failure.
+      expect(readdirSync(root)).toEqual(["managed-settings.json"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a write that fails leaves the previous policy intact and drops no fragment", () => {
+    const root = mkdtempSync(join(tmpdir(), "axon-atomic-fail-"));
+    try {
+      const target = join(root, "managed-settings.json");
+      writeFileAtomic(target, '{"good":true}\n', 0o644);
+
+      // Make the directory read-only so creating the temp file fails mid-operation — the
+      // same shape as a full disk or a denied /etc, without needing either.
+      chmodSync(root, 0o500);
+      let threw = false;
+      try {
+        writeFileAtomic(target, '{"replacement":true}\n', 0o644);
+      } catch {
+        threw = true;
+      }
+      chmodSync(root, 0o700);
+
+      expect(threw).toBe(true);
+      // The old policy is byte-identical, not truncated, not empty, not partially replaced.
+      expect(readFileSync(target, "utf8")).toBe('{"good":true}\n');
+      expect(readdirSync(root)).toEqual(["managed-settings.json"]);
+    } finally {
+      chmodSync(root, 0o700);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("creates a fresh target with the mode set before it is visible, never after", () => {
+    const root = mkdtempSync(join(tmpdir(), "axon-atomic-create-"));
+    try {
+      const target = join(root, "nested", "settings.json");
+      writeFileAtomic(target, "{}\n", 0o600);
+      // 0600 from the moment the name exists: a post-rename chmod would have published a
+      // world-readable file first, which for a file holding tokens is the whole problem.
+      expect(statSync(target).mode & 0o777).toBe(0o600);
+      expect(readFileSync(target, "utf8")).toBe("{}\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
