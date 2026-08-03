@@ -6,6 +6,11 @@
 # `container list -a --format json` and `docker inspect --format '{{json .}}'`), so the cases run
 # without a container runtime and cover every class the issue names — ports, mounts, capabilities,
 # network, and the env file whose values must never be rendered.
+#
+# One deliberate departure from what the runtime prints: apple-container writes a volume's `source`
+# under the operator's home. It is genericized here because this file is tracked and public
+# (tools/check-publication-hygiene.sh), and nothing reads that field for a volume mount anyway —
+# the name comes from `type.volume.name`. Do not "restore" it.
 set -uo pipefail
 
 _dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -114,7 +119,7 @@ apple_json='[
    "capAdd":["CAP_NET_ADMIN"],
    "networks":[{"network":"default"}],
    "mounts":[
-     {"destination":"/var/lib/postgresql/data","source":"/Users/x/volumes/axon-postgres-data/volume.img","type":{"volume":{"name":"axon-postgres-data"}}},
+     {"destination":"/var/lib/postgresql/data","source":"/var/volumes/axon-postgres-data/volume.img","type":{"volume":{"name":"axon-postgres-data"}}},
      {"destination":"/data","source":"/overlay/data/vaultwarden","type":{"virtiofs":{}}},
      {"destination":"/run","source":"","type":{"tmpfs":{}}}
    ],
