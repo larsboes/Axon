@@ -3,7 +3,8 @@ name: upstream-watch
 # Watch pinned upstreams for newer releases past their cooldown so a bump stays a
 # deliberate, audited act (README.md#dependency-verdicts-and-provenance and README.md#pins-and-cooldown) instead of something noticed by
 # accident. This never bumps anything — it reports drift as a de-duplicated issue.
-# ci.yml has no schedule; this is Axon's only scheduled workflow. The drift check
+# ci.yml has no schedule; the only other scheduled workflow is codeql.yml, which runs
+# two hours earlier so the two never contend for a runner. The drift check
 # is tools/upstream-checker (the same gate doctor and axon-status use) — one
 # implementation per rule, not a second copy here.
 

@@ -1,0 +1,88 @@
+name: CodeQL
+
+# Static analysis over the code in this tree. Dependabot already covers known-vulnerable
+# dependencies and says nothing about what is written here (#13).
+#
+# WHAT IS ANALYSED, and what is not. This list is the point of the workflow: a scanner whose
+# coverage nobody wrote down reads as "the repository is scanned" when most of it is not.
+#
+#   rust                  1.22 MB, the largest surface. build-mode: none — see the note below.
+#   javascript-typescript 0.51 MB of .ts plus 0.04 MB of .js
+#   python                0.32 MB, the vendored + adapted scanners under Packs/
+#   actions               these workflow files themselves
+#
+# NOT analysed, and why:
+#
+#   Shell   0.44 MB, all of tools/ — the largest hand-written surface here and CodeQL has no
+#           shell extractor at all. It is not an option that was declined; it does not exist.
+#           Whether that gap earns a shellcheck gate is a separate decision (#13 says so too).
+#   Svelte  0.56 MB across 51 files. Not a CodeQL language. The javascript extractor does not
+#           claim .svelte, so the <script> blocks in those components are unscanned — the
+#           single biggest thing this workflow does NOT cover, stated here rather than left to
+#           be inferred from a green check.
+#   Starlark 0.07 MB of Bazel files. Not a CodeQL language.
+#   Swift   0.01 MB: two eval scripts under capabilities/comms/eval/. CodeQL supports Swift,
+#           but only on a macOS runner and only with a real build. That is a whole matrix leg
+#           and a paid runner for 13 KB of throwaway evaluation code. Declined deliberately;
+#           revisit if Swift ever becomes a shipped surface here.
+#
+# The supported-language list was read from the pinned action's own src/languages/builtin.json
+# rather than from documentation, so it describes the version actually running:
+#   actions cpp csharp go java javascript python ruby rust swift
+#
+# On Rust and Bazel: #13 flagged that CodeQL's default setup relies on autobuild, which will not
+# drive `bazel build //...`. That concern does not apply once the build mode is stated: every
+# language here runs `build-mode: none`, which extracts from source instead of observing a build.
+# Bazel is never invoked, so it cannot fail to be invoked. The per-crate Cargo.toml files give the
+# Rust extractor what it needs to resolve dependencies without building anything.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays ~04:17 UTC, offset from upstream-watch's 06:23 so the two never contend. A schedule
+    # earns its place here for a reason a push trigger cannot cover: CodeQL's query packs change,
+    # so unchanged code gets newly-known findings without anyone touching it.
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      # Writing the results IS the output of this workflow; without it the run is a no-op that
+      # reports success. `actions: read` lets the analysis resolve workflow runs for the
+      # `actions` language.
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, javascript-typescript, python, actions]
+
+    steps:
+      - name: Check out Axon
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # Pinned by commit sha like every other action here, and the comment names the release the
+      # sha belongs to so a bump is reviewable as a version change rather than as a hash swap.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@18420e3271f74589575af831a523c833acda327f # codeql-bundle-v2.26.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@18420e3271f74589575af831a523c833acda327f # codeql-bundle-v2.26.2
+        with:
+          category: "/language:${{ matrix.language }}"
