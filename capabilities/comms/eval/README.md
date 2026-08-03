@@ -1,4 +1,34 @@
-# Comms relevance evaluation
+# Comms quality evaluation
+
+## Extraction and normalization
+
+`extraction-corpus.json` is the frozen, offline gate for the text passed from each
+extractor class into normalization. Its synthetic stored-page snapshots cover an
+article, repository, paper, client-rendered page, captured page and PDF text. Each
+fixture names exact text that must survive and exact boilerplate that must not.
+
+Run it from `capabilities/comms`:
+
+```sh
+cargo run --bin comms-extraction-eval -- eval/extraction-corpus.json
+```
+
+The runner reports raw and normalized character counts, total retention, useful
+retention and boilerplate leakage per fixture. The fixed gate requires 100% of
+the judged useful text and 0% of the judged boilerplate; a miss exits non-zero.
+It also requires every declared input class and every inspectable normalization
+rule to have fixture coverage. A host adapter change refreshes or adds its stored
+snapshot before implementation; a normalization rule change adds its expectation
+to a fixture. Change judgements before examining the new result, never to make a
+failed implementation pass. Append every accepted baseline under `results/`.
+
+The snapshots begin at the extractor/normalizer seam, not at the network. They
+therefore remain deterministic and measure the canonical text contract while the
+live fetchers keep their separate HTTP tests. The PDF fixture is stored extracted
+text because xberg adoption and byte-level PDF extraction remain separately
+blocked by their dependency cooldown.
+
+## Relevance
 
 This directory owns the small public quality baseline for semantic Feed–TELOS ranking. It is
 separate from unit tests: the runner calls the real local oMLX server, while the committed

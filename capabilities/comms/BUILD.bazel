@@ -63,6 +63,7 @@ rust_library(
 rust_test(
     name = "comms_test",
     crate = ":comms",
+    data = glob(["eval/**"]),
     size = "small",
 )
 
@@ -96,4 +97,12 @@ rust_binary(
         "@crate_index_comms//:tokio",
         "@crate_index_comms//:tower-http",
     ],
+)
+
+rust_binary(
+    name = "comms-extraction-eval",
+    srcs = ["src/extraction_eval_main.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [":comms"],
 )

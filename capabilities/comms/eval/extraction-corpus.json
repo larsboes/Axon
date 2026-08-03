@@ -1,0 +1,56 @@
+{
+  "acceptance": {
+    "minimum_useful_retention_percent": 100.0,
+    "maximum_boilerplate_leakage_percent": 0.0
+  },
+  "fixtures": [
+    {
+      "id": "article-with-page-furniture",
+      "input_class": "article",
+      "source": "fixtures/article.txt",
+      "must_survive": ["Transit data should remain inspectable.", "A second useful paragraph survives."],
+      "must_not_survive": ["Accept all cookies", "Subscribe to our newsletter"],
+      "expected_rules": ["cookie-notice", "newsletter-interstitial"]
+    },
+    {
+      "id": "repository-readme",
+      "input_class": "repository",
+      "source": "fixtures/repository.md",
+      "must_survive": ["A local-first research index.", "cargo run --release"],
+      "must_not_survive": ["Share on Twitter", "Copy link"],
+      "expected_rules": ["share-widget"]
+    },
+    {
+      "id": "paper-abstract",
+      "input_class": "paper",
+      "source": "fixtures/paper.txt",
+      "must_survive": ["We evaluate six deterministic retrieval strategies.", "The frozen corpus prevents judgement drift."],
+      "must_not_survive": ["Home", "Menu"],
+      "expected_rules": ["navigation"]
+    },
+    {
+      "id": "client-rendered-page",
+      "input_class": "client-rendered-page",
+      "source": "fixtures/client-rendered.md",
+      "must_survive": ["Rendered results arrive after hydration.", "The captured table contains 42 journeys."],
+      "must_not_survive": ["[Overview](https://example.test/overview)", "[Pricing](https://example.test/pricing)", "[Account](https://example.test/account)"],
+      "expected_rules": ["link-list-run"]
+    },
+    {
+      "id": "captured-page",
+      "input_class": "captured-page",
+      "source": "fixtures/captured-page.md",
+      "must_survive": ["Member-only field notes remain readable.", "Measurements were repeated three times."],
+      "must_not_survive": ["Accept cookies", "Copy link"],
+      "expected_rules": ["cookie-notice", "share-widget"]
+    },
+    {
+      "id": "pdf-text",
+      "input_class": "pdf",
+      "source": "fixtures/pdf-text.txt",
+      "must_survive": ["Appendix A: Reproducible protocol", "Every observation carries a source identifier."],
+      "must_not_survive": ["Subscribe now"],
+      "expected_rules": ["newsletter-interstitial", "blank-run"]
+    }
+  ]
+}

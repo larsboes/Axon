@@ -1,0 +1,4 @@
+Home
+Menu
+We evaluate six deterministic retrieval strategies.
+The frozen corpus prevents judgement drift.
