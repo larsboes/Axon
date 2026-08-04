@@ -69,6 +69,51 @@ pub fn postgres_conn_from_shared_env() -> Option<String> {
     ))
 }
 
+/// The deployment's home timezone, from `<overlay>/config/deployment.env`.
+///
+/// A timezone is a fact about the deployment, not about one capability: calendar
+/// and scouting both need it and both used to carry their own copy, which is two
+/// values that agree until one of them is edited. This is the single declaration.
+///
+/// Plain `KEY=value`, the same shape `postgres.env` uses, because this crate is
+/// deliberately dependency-free (see Cargo.toml) and a JSON source would change
+/// every consumer's dependency resolution to read one string. `None` when the
+/// file or key is absent — callers refuse to guess rather than defaulting.
+pub fn deployment_home_timezone() -> Option<String> {
+    let body = std::fs::read_to_string(overlay_config("deployment.env")?).ok()?;
+    body.lines().find_map(|l| {
+        l.strip_prefix("AXON_HOME_TIMEZONE=")
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    })
+}
+
+/// Resolution order for the home timezone, one implementation shared by every
+/// capability that needs one.
+///
+/// A capability-level value still wins, so an existing config keeps working. What
+/// it may not do is silently disagree: two different values are the drift this
+/// contract exists to prevent, so that case is an error naming both sources rather
+/// than a precedence rule nobody remembers. `Ok(None)` means neither is set, and
+/// the caller emits its own refuse-to-guess error with its own domain reason.
+pub fn resolve_home_timezone(
+    capability_value: Option<&str>,
+    capability_source: &str,
+) -> Result<Option<String>, String> {
+    let capability = capability_value.map(str::trim).filter(|v| !v.is_empty());
+    let deployment = deployment_home_timezone();
+    match (capability, deployment.as_deref()) {
+        (Some(c), Some(d)) if c != d => Err(format!(
+            "home timezone conflict: {capability_source} says {c:?}, \
+             <overlay>/config/deployment.env says {d:?}. Remove the capability-level \
+             value so the deployment declaration is the only one."
+        )),
+        (Some(c), _) => Ok(Some(c.to_string())),
+        (None, Some(d)) => Ok(Some(d.to_string())),
+        (None, None) => Ok(None),
+    }
+}
+
 /// The runner's port contract, one implementation: `AXON_PORT` (exported by
 /// `tools/service-runner.sh` from the manifest plus any machine-local
 /// `[capability.<name>]` override) always wins; a capability-specific escape
@@ -260,5 +305,77 @@ mod tests {
             "postgresql://127.0.0.1:5432/axon"
         );
         assert_eq!(redact_dsn("not a url"), "not a url");
+    }
+
+    /// Writes a deployment.env into a throwaway overlay and points
+    /// AXON_PERSONAL_ROOT at it. Returns the guard so the caller holds it.
+    fn with_deployment_env(body: Option<&str>) -> (EnvGuard, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "axon-config-tz-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let config = root.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let file = config.join("deployment.env");
+        match body {
+            Some(text) => std::fs::write(&file, text).unwrap(),
+            None => {
+                let _ = std::fs::remove_file(&file);
+            }
+        }
+        let guard = EnvGuard::set("AXON_PERSONAL_ROOT", root.to_str().unwrap());
+        (guard, root)
+    }
+
+    #[test]
+    fn the_deployment_declaration_is_used_when_a_capability_has_none() {
+        let _l = env_lock();
+        let (_g, root) = with_deployment_env(Some("AXON_HOME_TIMEZONE=Europe/Berlin\n"));
+        assert_eq!(deployment_home_timezone().as_deref(), Some("Europe/Berlin"));
+        assert_eq!(
+            resolve_home_timezone(None, "calendar.json").unwrap().as_deref(),
+            Some("Europe/Berlin")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_capability_value_still_wins_so_existing_configs_keep_working() {
+        let _l = env_lock();
+        let (_g, root) = with_deployment_env(None);
+        assert_eq!(deployment_home_timezone(), None);
+        assert_eq!(
+            resolve_home_timezone(Some("UTC"), "scouting.json").unwrap().as_deref(),
+            Some("UTC")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn two_different_values_are_an_error_naming_both_sources() {
+        let _l = env_lock();
+        let (_g, root) = with_deployment_env(Some("AXON_HOME_TIMEZONE=Europe/Berlin\n"));
+        let error = resolve_home_timezone(Some("UTC"), "scouting.json").unwrap_err();
+        assert!(error.contains("scouting.json"), "got: {error}");
+        assert!(error.contains("deployment.env"), "got: {error}");
+        // Agreeing is not a conflict — that is the state a migration passes through.
+        assert_eq!(
+            resolve_home_timezone(Some("Europe/Berlin"), "scouting.json")
+                .unwrap()
+                .as_deref(),
+            Some("Europe/Berlin")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn neither_source_set_resolves_to_none_rather_than_a_default() {
+        let _l = env_lock();
+        let (_g, root) = with_deployment_env(None);
+        assert_eq!(resolve_home_timezone(None, "calendar.json").unwrap(), None);
+        // An empty or whitespace value is absent, not a zone named "".
+        assert_eq!(resolve_home_timezone(Some("  "), "calendar.json").unwrap(), None);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

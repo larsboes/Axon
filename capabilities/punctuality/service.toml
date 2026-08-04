@@ -10,5 +10,16 @@ health_path = "/health"
 # the code (README.md#schemas-and-dependency-direction). Declared so `up` starts the database first.
 requires = ["postgres"]
 
-# No autostart: this answers lookups for transit and the dashboard, both of which are
-# themselves on-demand. The shell starts it when something asks.
+# Always-on, and it is the one capability here that genuinely is. The old comment claimed
+# "the shell starts it when something asks", which was never true: nothing asks. Its only
+# caller is transit's server-side enrichment (capabilities/transit/src/punctuality.rs),
+# which reaches it over HTTP and — by explicit design — degrades to no delay score rather
+# than failing when it is absent. So there is no request that could start it on demand,
+# and no page to hang a start call off.
+#
+# That left it running purely because an installed watchdog contradicted an on-demand
+# declaration. Two honest options: declare it always-on, or accept that delay enrichment
+# silently never happens. A hard `requires` on transit's side is the wrong third one — it
+# would turn a degradable dependency into a startup failure, which is the trade transit's
+# own module documents refusing.
+autostart   = "true"

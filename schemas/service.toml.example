@@ -121,10 +121,11 @@ backup_stale_days  = "7"                  # past this age the last backup counts
                                           # different answers, and a capability whose data changes hourly and
                                           # one that changes monthly do not share either. Read from the receipt
                                           # backup.sh writes (overlay backup/receipts/<cap>.json) to decide what
-                                          # a surface shows. Declared before anything schedules it on purpose:
-                                          # the manual dashboard trigger reads these today and the scheduler
-                                          # reads the same two fields later, so automating is a new consumer
-                                          # rather than a new declaration. No default — a capability that
+                                          # a surface shows. Declared ahead of any consumer on purpose: no
+                                          # surface reads these two fields yet — not the dashboard, which has
+                                          # no backup trigger, and not a scheduler, which does not exist. The
+                                          # declaration is here so that adding either is a new consumer rather
+                                          # than a new manifest field. No default — a capability that
                                           # declares a backup but no cadence is only ever reported as "last run
                                           # <age>", never as overdue, because nothing said what timely means.
 

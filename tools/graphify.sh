@@ -125,4 +125,31 @@ else
   # code-only by design.
   uv tool run --from graphifyy==0.9.19 graphify update .
 fi
-echo "--- graphify: done -- see graphify-out/graph.html, GRAPH_REPORT.md ---"
+# What actually came out, read off the artifact rather than scraped from graphify's log.
+# graphify preserves a usable AST graph and exits 0 even when semantic extraction hits a
+# memory guard, so exit status alone cannot tell the two apart. `summary` is the field only
+# the semantic pass writes; `community_name` is not a semantic signal despite the name --
+# it is slugified from paths and symbols, so it is populated on a code-only run too.
+report_outcome() {
+  local graph="$AXON_ROOT/graphify-out/graph.json" total=0 summarized=0
+
+  if [ ! -f "$graph" ]; then
+    echo "--- graphify: unavailable -- no graph.json was produced ---" >&2
+    return 1
+  fi
+  total="$(jq -r '.nodes | length' "$graph" 2>/dev/null || echo 0)"
+  summarized="$(jq -r '[.nodes[] | select(.summary != null and .summary != "")] | length' "$graph" 2>/dev/null || echo 0)"
+
+  if [ "$_use_backend" != "1" ]; then
+    echo "--- graphify: code-only -- $total nodes, no semantic pass requested ---"
+  elif [ "$summarized" -eq 0 ]; then
+    echo "--- graphify: code-only -- $total nodes, semantic pass via '$GRAPHIFY_BACKEND' returned nothing ---" >&2
+  elif [ "$summarized" -lt "$total" ]; then
+    echo "--- graphify: partial -- $summarized/$total nodes summarized via '$GRAPHIFY_BACKEND' ---" >&2
+  else
+    echo "--- graphify: complete -- $total nodes summarized via '$GRAPHIFY_BACKEND' ---"
+  fi
+  echo "    see graphify-out/graph.html, GRAPH_REPORT.md"
+}
+
+report_outcome

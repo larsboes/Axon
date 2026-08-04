@@ -20,9 +20,15 @@ set -euo pipefail
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$TOOLS_DIR/lib/paths.sh"   # AXON_PERSONAL_ROOT
 
-# Source of truth for the live tree. Overridable so this works on any machine and in
-# tests; the default follows the LifeOS install convention rather than one user's path.
-LIFEOS_USER_DIR="${LIFEOS_USER_DIR:-$HOME/.config/LIFEOS/USER}"
+# Source of truth for the live tree: the USER zone of this machine's declared `lifeos`
+# state mount. Overridable via LIFEOS_USER_DIR for tests and one-off targets. Resolved
+# rather than defaulted, so this and lifeos-user-sync.sh cannot drift apart.
+if [ -z "${LIFEOS_USER_DIR:-}" ]; then
+  LIFEOS_USER_DIR="$(axon_lifeos_user_dir)" || {
+    echo "mirror-lifeos-user: declare a [[state_mount]] with tool = \"lifeos\" in $AXON_MACHINE_TOML, or set LIFEOS_USER_DIR" >&2
+    exit 1
+  }
+fi
 MIRROR="$AXON_PERSONAL_ROOT/resources/backups/lifeos/USER"
 
 APPLY=0

@@ -20,6 +20,7 @@
     type CalendarView,
   } from "$lib/calendar/types";
   import {
+    axonStatus,
     calendar,
     type CalendarCommitment,
     type CalendarContext,
@@ -147,6 +148,13 @@
     loading = true;
     error = "";
     try {
+      // calendar's manifest declares it on-demand, so opening this page is what
+      // has to start it — the same thing /travel and /feed do for their backends.
+      // Without this the page is only ever reachable on a machine where something
+      // else already started the service, which is what a watchdog was papering
+      // over. A failure here is not fatal on its own: the requests below produce
+      // the real, specific error.
+      await axonStatus.start("calendar").catch(() => undefined);
       const [nextEntries, nextContexts, nextRhythms, nextWindows, nextGoogleExports] = await Promise.all([
         calendar.entries.list(from, to),
         calendar.contexts.list(from, to),

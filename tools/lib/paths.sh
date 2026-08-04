@@ -110,4 +110,57 @@ axon_manifest_for() {
   return 1
 }
 
+# <tool> -> the path this machine declares for that state mount, on stdout, with a
+# leading ~ expanded. Exit 1 when the machine declares no mount for the tool, exit 2
+# when it declares more than one. Ambiguity is refused rather than resolved by order,
+# for the same reason axon_manifest_for refuses a duplicate name.
+#
+# machine.toml's [[state_mount]] is array-of-tables, past toml.sh's single-line
+# contract (see its header), so this reads it through Bun.TOML like every other
+# array-of-tables caller. That keeps the manifest the one source of truth instead of
+# letting each script carry its own fallback path — the failure mode being that the
+# two agree on one installation and silently disagree on the next.
+axon_state_mount_for() {
+  local tool="$1" out=""
+  [ -f "$AXON_MACHINE_TOML" ] || {
+    echo "paths.sh: no machine manifest at $AXON_MACHINE_TOML" >&2
+    return 1
+  }
+  # Inputs go through the environment, not argv: `bun -e` treats trailing arguments
+  # as further scripts to run, so a positional path is opened as a file and fails.
+  out="$(_AXON_MOUNT_FILE="$AXON_MACHINE_TOML" _AXON_MOUNT_TOOL="$tool" bun -e '
+    const file = process.env._AXON_MOUNT_FILE, tool = process.env._AXON_MOUNT_TOOL;
+    const mounts = Bun.TOML.parse(await Bun.file(file).text()).state_mount ?? [];
+    const hits = mounts.filter((m) => m?.tool === tool);
+    if (hits.length > 1) process.exit(2);
+    if (hits.length === 0 || !hits[0].path) process.exit(1);
+    console.log(hits[0].path);
+  ' 2>/dev/null)" || {
+    local rc=$?
+    if [ "$rc" = "2" ]; then
+      echo "paths.sh: $AXON_MACHINE_TOML declares more than one [[state_mount]] for '$tool'" >&2
+      return 2
+    fi
+    echo "paths.sh: $AXON_MACHINE_TOML declares no [[state_mount]] for '$tool'" >&2
+    return 1
+  }
+  echo "${out/#\~/$HOME}"
+}
+
+# The LifeOS USER tree on stdout — the zone inside the `lifeos` state mount that holds the
+# principal's identity files. Both sync tools resolve it through here so they cannot drift
+# apart, which was the whole defect: each carried its own fallback path.
+#
+# Resolved to its physical path. A LifeOS install may place the mount's USER zone behind a
+# symlink (a `~/.claude/LIFEOS/USER -> ~/.config/LIFEOS/USER` layout is normal), and `find`
+# does not descend into a symlinked start directory — a caller handed the link would walk
+# zero files and report a clean sync of an empty tree.
+axon_lifeos_user_dir() {
+  local mount="" dir=""
+  mount="$(axon_state_mount_for lifeos)" || return $?
+  dir="$mount/LIFEOS/USER"
+  [ -d "$dir" ] || { echo "$dir"; return 0; }
+  (cd "$dir" && pwd -P)
+}
+
 unset _overlay_raw _lib

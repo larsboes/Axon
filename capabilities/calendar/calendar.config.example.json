@@ -7,8 +7,8 @@
   "_comment_port": "HTTP port for calendar-server (default 8087). AXON_PORT from the service runner wins, then AXON_CALENDAR_PORT, then this.",
   "port": 8087,
 
-  "_comment_home_timezone": "The one zone every stored wall time is in (README § Time model). NO DEFAULT on purpose: Google events carry a real UTC offset, and converting them with the wrong zone writes every import silently an hour or more off. Both the import and the export refuse until this is set. Accepts UTC, a fixed ±HH:MM offset, or one of the supported IANA zones listed in src/zone.rs.",
-  "home_timezone": "Europe/Berlin",
+  "_comment_home_timezone": "The one zone every stored wall time is in (README § Time model). DECLARE IT ONCE, in the overlay's config/deployment.env as AXON_HOME_TIMEZONE (schemas/deployment.env.example) — scouting needs the same value, and two independent copies agree until one is edited. Setting it here still overrides, but a value that disagrees with the deployment declaration is an error naming both files, not a precedence rule. NO DEFAULT either way: Google events carry a real UTC offset, and converting them with the wrong zone writes every import silently an hour or more off. Both the import and the export refuse until it resolves. Accepts UTC, a fixed ±HH:MM offset, or one of the supported IANA zones listed in src/zone.rs.",
+  "home_timezone": "",
 
   "_comment_google": "Phase E, Google Calendar two-way sync. calendar_id has NO DEFAULT — 'primary' is the account's own calendar, a secondary one is its long …@group.calendar.google.com id; guessing would sync the wrong calendar. env_path points at a KEY=value file holding GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN, defaulting to $AXON_PERSONAL_ROOT/config/calendar.env. capabilities/comms/auth/get-refresh-token.ts already mints a token with the calendar.events scope, so pointing env_path at comms.env reuses that grant instead of creating a second one. Never put a token value in this file.",
   "google": {

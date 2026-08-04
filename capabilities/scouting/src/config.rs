@@ -212,7 +212,18 @@ impl Config {
             calendar_base_url: file
                 .calendar_base_url
                 .unwrap_or_else(|| crate::calendar_promote::DEFAULT_CALENDAR_BASE_URL.to_string()),
-            home_timezone: file.home_timezone.filter(|tz| !tz.trim().is_empty()),
+            // Deployment declaration first, capability override second — one
+            // implementation in axon_config so scouting and calendar cannot drift.
+            // A conflict resolves to None deliberately: `--promote-calendar` then
+            // refuses for its own reason rather than promoting at a guessed hour.
+            home_timezone: crate::axon_config::resolve_home_timezone(
+                file.home_timezone.as_deref(),
+                "scouting.json",
+            )
+            .unwrap_or_else(|conflict| {
+                eprintln!("warning: {conflict}");
+                None
+            }),
             geo: file.geo,
             sources,
         }

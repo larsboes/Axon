@@ -52,8 +52,8 @@
   "_comment_calendar_base_url": "Base URL of capabilities/calendar for `scout --promote-calendar`. Loopback only — calendar binds through libs/axon-server's serve_local. Defaults to http://127.0.0.1:8087, calendar's own default port.",
   "calendar_base_url": "http://127.0.0.1:8087",
 
-  "_comment_home_timezone": "Your home timezone, used to turn Luma's UTC instants into the naive local wall time calendar stores. NO DEFAULT on purpose: promoting without one would silently write the wrong hour, so --promote-calendar refuses until this is set (or --timezone is passed). Accepts UTC, a fixed ±HH:MM offset, or one of the supported IANA zones listed in src/localtime.rs.",
-  "home_timezone": "Europe/Berlin",
+  "_comment_home_timezone": "Your home timezone, used to turn Luma's UTC instants into the naive local wall time calendar stores. DECLARE IT ONCE, in the overlay's config/deployment.env as AXON_HOME_TIMEZONE (schemas/deployment.env.example) — calendar needs the same value, and two independent copies agree until one is edited. Setting it here still overrides, but a value that disagrees with the deployment declaration is an error naming both files. NO DEFAULT either way: promoting without one would silently write the wrong hour, so --promote-calendar refuses until it resolves (or --timezone is passed). Accepts UTC, a fixed ±HH:MM offset, or one of the supported IANA zones listed in src/localtime.rs.",
+  "home_timezone": "",
 
   "_comment_geo": "Private routing policy for physical events. Set home_latitude, home_longitude, and local_radius_km together in the overlay to classify complete coordinate pairs by great-circle distance; there are deliberately no public home or radius defaults. Sparse events fall back to the local country tokens and then timezone prefixes. allow_unknown=true is an explicit compatibility override; false leaves evidence-free events unresolved. No route drops an opportunity.",
   "geo": {

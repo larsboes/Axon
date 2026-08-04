@@ -11,8 +11,9 @@
 # differing destination is a divergence — SKIPPED and reported, never clobbered.
 # Nothing is lost in either direction; you reconcile divergences by hand.
 #
-# Paths derived via paths.sh (AXON_PERSONAL_ROOT). Source dir overridable via
-# LIFEOS_USER_DIR. Zero hardcoded personal paths. bash 3.2-safe.
+# Paths derived via paths.sh: the overlay copy from AXON_PERSONAL_ROOT, the source from
+# this machine's declared `lifeos` state mount. Overridable via LIFEOS_USER_DIR. Zero
+# hardcoded personal paths. bash 3.2-safe.
 #
 # Exit 0 = clean, 1 = divergence(s) skipped, 2 = usage/setup error.
 
@@ -22,7 +23,17 @@ _here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tools/lib/paths.sh
 . "$_here/lib/paths.sh"   # exports AXON_ROOT, AXON_PERSONAL_ROOT
 
-USER_SRC="${LIFEOS_USER_DIR:-$HOME/.config/LIFEOS/USER}"
+# The source is the USER zone of whatever this machine declares as its `lifeos` state
+# mount, not a second copy of that path kept here. LIFEOS_USER_DIR still overrides, for
+# a one-off restore against a tree the machine has not declared.
+if [ -n "${LIFEOS_USER_DIR:-}" ]; then
+  USER_SRC="$LIFEOS_USER_DIR"
+else
+  USER_SRC="$(axon_lifeos_user_dir)" || {
+    echo "lifeos-user-sync: declare a [[state_mount]] with tool = \"lifeos\" in $AXON_MACHINE_TOML, or set LIFEOS_USER_DIR" >&2
+    exit 2
+  }
+fi
 OVERLAY_COPY="$AXON_PERSONAL_ROOT/resources/backups/lifeos/USER"
 
 MODE=""; DRY=0

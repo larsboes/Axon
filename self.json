@@ -82,8 +82,8 @@
         "port": "8087"
       },
       "code": {
-        "files": 12,
-        "nodes": 462
+        "files": 13,
+        "nodes": 481
       }
     },
     {
@@ -97,8 +97,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 40,
-        "nodes": 755
+        "files": 43,
+        "nodes": 804
       }
     },
     {
@@ -128,8 +128,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 64,
-        "nodes": 395
+        "files": 71,
+        "nodes": 417
       }
     },
     {
@@ -275,8 +275,8 @@
       "name": "schemas",
       "kind": "spine",
       "code": {
-        "files": 1,
-        "nodes": 173
+        "files": 5,
+        "nodes": 794
       }
     },
     {
@@ -327,8 +327,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 92,
-        "nodes": 779
+        "files": 94,
+        "nodes": 785
       }
     },
     {
@@ -1066,7 +1066,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 5924,
+    "nodes": 6645,
     "external": 5,
     "stale": [],
     "unmatched": [
@@ -1080,7 +1080,9 @@
       "CONTRIBUTING.md",
       "README.md",
       "SECURITY.md",
-      "bootstrap.sh"
+      "bootstrap.sh",
+      "scripts/axapi",
+      "scripts/axon-context"
     ]
   }
 }
