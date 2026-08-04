@@ -1059,6 +1059,24 @@ export interface TriageSweepResult {
   exhausted: boolean;
 }
 
+/** Freshness of the unattended inbox sweep. Counts, times and an error class;
+ *  no mail reaches this shape. `last_success_at` is deliberately separate from
+ *  `last_run_at` — a failing run still ran, and "when did collection last
+ *  actually work" is the question a red schedule raises. */
+export interface TriageSweepStatus {
+  enabled: boolean;
+  every_minutes: number;
+  max_threads: number;
+  quiet_hours: { start: number; end: number } | null;
+  last_run_at: string | null;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_error: 'auth' | 'quota' | 'network' | 'unknown' | null;
+  considered_count: number;
+  new_count: number;
+  consecutive_failures: number;
+}
+
 /** What a redaction pass removed, by kind and count — never the values. */
 export interface TriageRedactResult {
   reviewed: number;
@@ -1605,6 +1623,8 @@ export const comms = {
     ),
   reconcileGmail: () =>
     request<GmailMaintenanceResult>('/comms/triage/reconcile', jsonInit('POST', {})),
+  triageSweepStatus: (signal?: AbortSignal) =>
+    request<TriageSweepStatus>('/comms/triage/sweep/status', signal ? { signal } : undefined),
   sweepTriage: (limit = 100, cursor?: string | null) =>
     request<TriageSweepResult>(
       '/comms/triage/sweep',

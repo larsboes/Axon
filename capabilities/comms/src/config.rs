@@ -157,6 +157,9 @@ struct FileConfig {
     dashboard_origin: Option<String>,
     enrichment_drain_minutes: Option<u64>,
     gmail_maintenance_minutes: Option<u64>,
+    inbox_sweep_minutes: Option<u64>,
+    inbox_sweep_max_threads: Option<usize>,
+    inbox_sweep_quiet_hours: Option<String>,
     #[serde(default)]
     rules: Vec<Rule>,
     keeper_export_dir: Option<String>,
@@ -193,6 +196,19 @@ pub struct Config {
     /// Retry durable Gmail actions and reconcile labels on this interval. `0`
     /// disables automatic maintenance; manual reconciliation remains available.
     pub gmail_maintenance_minutes: u64,
+    /// Pull new inbox proposals on this interval. **`0`, disabled, is the
+    /// default and the shipped value.** An unattended job that reads a mailbox
+    /// is opt-in per machine, never something a fresh clone starts doing.
+    pub inbox_sweep_minutes: u64,
+    /// Newest-N threads per scheduled pass. A bound, not a cursor: a cursor
+    /// that advances every run walks backwards through the whole mailbox over
+    /// time, which is the unbounded rescan this schedule exists to avoid.
+    /// Re-reading the newest page is free because upserts key on thread id.
+    pub inbox_sweep_max_threads: usize,
+    /// `"22-7"` — local hours `[start, end)` in which the schedule holds off.
+    /// `None` means no quiet window. Manual sweeps ignore it: the point is to
+    /// stop unattended traffic, not to lock the operator out of their own tool.
+    pub inbox_sweep_quiet_hours: Option<(u32, u32)>,
     /// Shared, machine-resolved inference roles. Backend URLs, models and key
     /// references never belong to Comms configuration.
     pub inference: InferenceConfig,
@@ -238,6 +254,16 @@ pub(crate) fn api_key_from_file(path: Option<&str>) -> Option<String> {
             .map(str::to_string);
     }
     Some(trimmed.to_string())
+}
+
+/// `"22-7"` -> `(22, 7)`. Returns `None` for anything it does not fully
+/// understand, and `None` means "no quiet window" — a misconfigured string
+/// must not silently become a window that suppresses every run instead.
+fn parse_quiet_hours(value: &str) -> Option<(u32, u32)> {
+    let (start, end) = value.trim().split_once('-')?;
+    let start: u32 = start.trim().parse().ok()?;
+    let end: u32 = end.trim().parse().ok()?;
+    (start < 24 && end < 24 && start != end).then_some((start, end))
 }
 
 fn config_path() -> PathBuf {
@@ -307,6 +333,12 @@ impl Config {
             .unwrap_or_else(|| "http://127.0.0.1:47117".into());
         let enrichment_drain_minutes = file.enrichment_drain_minutes.unwrap_or(15);
         let gmail_maintenance_minutes = file.gmail_maintenance_minutes.unwrap_or(15);
+        let inbox_sweep_minutes = file.inbox_sweep_minutes.unwrap_or(0);
+        let inbox_sweep_max_threads = file.inbox_sweep_max_threads.unwrap_or(25).clamp(1, 100);
+        let inbox_sweep_quiet_hours = file
+            .inbox_sweep_quiet_hours
+            .as_deref()
+            .and_then(parse_quiet_hours);
         let inference = InferenceConfig::load(crate::axon_config::overlay_config);
         let keeper_export_dir = file.keeper_export_dir.map(|p| expand_tilde(&p));
         let mut relevance = file.relevance.unwrap_or_default();
@@ -335,6 +367,9 @@ impl Config {
             dashboard_origin,
             enrichment_drain_minutes,
             gmail_maintenance_minutes,
+            inbox_sweep_minutes,
+            inbox_sweep_max_threads,
+            inbox_sweep_quiet_hours,
             inference,
             rules: file.rules,
             keeper_export_dir,
@@ -368,6 +403,18 @@ mod tests {
         std::env::set_var("HOME", "/tmp/fake-home");
         assert_eq!(expand_tilde("~/foo"), PathBuf::from("/tmp/fake-home/foo"));
         assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
+    }
+
+    #[test]
+    fn quiet_hours_parse_or_decline() {
+        assert_eq!(parse_quiet_hours("22-7"), Some((22, 7)));
+        assert_eq!(parse_quiet_hours(" 0 - 6 "), Some((0, 6)));
+        // Anything unparseable means no window, never an all-day one — the
+        // failure mode of the opposite choice is a schedule that silently
+        // never runs and looks identical to a broken connector.
+        for bad in ["", "22", "22-24", "9-9", "night", "22-7-3"] {
+            assert_eq!(parse_quiet_hours(bad), None, "{bad} should not parse");
+        }
     }
 
     #[test]

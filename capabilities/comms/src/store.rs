@@ -282,6 +282,17 @@ pub struct SourceState {
     pub source_name: String,
     pub last_run_at: String,
     pub cursor: Option<String>,
+    /// Distinct from `last_run_at`: a run that failed still ran. Kept apart so
+    /// "we last actually collected something at T" survives a failing streak,
+    /// which is the number a human wants when deciding whether to intervene.
+    pub last_success_at: Option<String>,
+    pub last_failure_at: Option<String>,
+    /// Error *class*, never a message body or a mail field.
+    pub last_error: Option<String>,
+    pub considered_count: i64,
+    pub new_count: i64,
+    /// Drives the backoff. Reset to 0 by any success.
+    pub consecutive_failures: i32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -418,6 +429,22 @@ impl Store {
                 last_run_at TEXT,
                 cursor TEXT
             );
+
+            -- Outcome of the last pass, so an unattended schedule can be read
+            -- rather than trusted. Counts and an error class only: a scheduler
+            -- log that quotes a subject is the same leak the sweep gate closes.
+            ALTER TABLE {schema}.source_state
+                ADD COLUMN IF NOT EXISTS last_success_at TEXT;
+            ALTER TABLE {schema}.source_state
+                ADD COLUMN IF NOT EXISTS last_failure_at TEXT;
+            ALTER TABLE {schema}.source_state
+                ADD COLUMN IF NOT EXISTS last_error TEXT;
+            ALTER TABLE {schema}.source_state
+                ADD COLUMN IF NOT EXISTS considered_count BIGINT NOT NULL DEFAULT 0;
+            ALTER TABLE {schema}.source_state
+                ADD COLUMN IF NOT EXISTS new_count BIGINT NOT NULL DEFAULT 0;
+            ALTER TABLE {schema}.source_state
+                ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0;
 
             CREATE TABLE IF NOT EXISTS {schema}.feed_relevance (
                 feed_id TEXT NOT NULL REFERENCES {schema}.feed_items(id) ON DELETE CASCADE,
@@ -3124,7 +3151,9 @@ impl Store {
         let mut conn = self.conn.lock().unwrap();
         let row = conn.query_opt(
             &format!(
-                "SELECT source_name, last_run_at, cursor FROM {}.source_state WHERE source_name = $1",
+                "SELECT source_name, last_run_at, cursor, last_success_at, last_failure_at,
+                        last_error, considered_count, new_count, consecutive_failures
+                 FROM {}.source_state WHERE source_name = $1",
                 self.schema
             ),
             &[&source_name],
@@ -3133,7 +3162,97 @@ impl Store {
             source_name: r.get(0),
             last_run_at: r.get(1),
             cursor: r.get(2),
+            last_success_at: r.get(3),
+            last_failure_at: r.get(4),
+            last_error: r.get(5),
+            considered_count: r.get(6),
+            new_count: r.get(7),
+            consecutive_failures: r.get(8),
         }))
+    }
+
+    /// Record a completed pass. Success clears the failure streak; the counts
+    /// describe the pass that just ran, not a running total, because "how much
+    /// did the last run see" is the question a stale schedule raises.
+    pub fn record_sweep_success(
+        &self,
+        source_name: &str,
+        considered: i64,
+        new_items: i64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = epoch_now();
+        let mut conn = self.conn.lock().unwrap();
+        conn.execute(
+            &format!(
+                "INSERT INTO {schema}.source_state
+                     (source_name, last_run_at, last_success_at, considered_count,
+                      new_count, consecutive_failures)
+                 VALUES ($1, $2, $2, $3, $4, 0)
+                 ON CONFLICT (source_name) DO UPDATE SET
+                     last_run_at = excluded.last_run_at,
+                     last_success_at = excluded.last_success_at,
+                     considered_count = excluded.considered_count,
+                     new_count = excluded.new_count,
+                     consecutive_failures = 0,
+                     last_error = NULL",
+                schema = self.schema
+            ),
+            &[&source_name, &now, &considered, &new_items],
+        )?;
+        Ok(())
+    }
+
+    /// `error_class` is a short stable label — `auth`, `quota`, `network`,
+    /// `store`. Never a provider message: those quote request URLs and, for
+    /// mail, occasionally the subject that failed.
+    pub fn record_sweep_failure(
+        &self,
+        source_name: &str,
+        error_class: &str,
+    ) -> Result<i32, Box<dyn std::error::Error>> {
+        let now = epoch_now();
+        let mut conn = self.conn.lock().unwrap();
+        let row = conn.query_one(
+            &format!(
+                "INSERT INTO {schema}.source_state
+                     (source_name, last_run_at, last_failure_at, last_error, consecutive_failures)
+                 VALUES ($1, $2, $2, $3, 1)
+                 ON CONFLICT (source_name) DO UPDATE SET
+                     last_run_at = excluded.last_run_at,
+                     last_failure_at = excluded.last_failure_at,
+                     last_error = excluded.last_error,
+                     consecutive_failures = {schema}.source_state.consecutive_failures + 1
+                 RETURNING consecutive_failures",
+                schema = self.schema
+            ),
+            &[&source_name, &now, &error_class],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Whether the store's clock currently sits inside a quiet window, given
+    /// `[start, end)` in local hours. Asked of Postgres rather than computed in
+    /// Rust: the store's clock is the one every other timestamp here comes
+    /// from, and comms carries no date library to disagree with it.
+    pub fn within_quiet_hours(
+        &self,
+        start_hour: u32,
+        end_hour: u32,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        if start_hour == end_hour {
+            return Ok(false);
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let row = conn.query_one("SELECT EXTRACT(HOUR FROM now())::INTEGER", &[])?;
+        let hour: i32 = row.get(0);
+        let (start, end) = (start_hour as i32, end_hour as i32);
+        // A window that wraps midnight (22→7) is the normal case, so it is the
+        // one spelled out rather than the one left to fall through.
+        Ok(if start < end {
+            hour >= start && hour < end
+        } else {
+            hour >= start || hour < end
+        })
     }
 }
 
@@ -4635,6 +4754,63 @@ mod tests {
             st2.cursor.as_deref(),
             Some("cur-1"),
             "cursor preserved when not given"
+        );
+    }
+
+    /// A failing streak must not erase the last time collection actually
+    /// worked: "last success" is the number that tells a human whether a red
+    /// schedule is an outage or a five-minute blip.
+    #[test]
+    fn a_failure_streak_preserves_the_last_success_and_recovery_clears_it() {
+        let (store, _schema) = open_test_store("sweep_outcome");
+
+        store.record_sweep_success("gmail-inbox", 25, 3).unwrap();
+        let ok = store.get_source_state("gmail-inbox").unwrap().unwrap();
+        let first_success = ok.last_success_at.clone().expect("success is recorded");
+        assert_eq!((ok.considered_count, ok.new_count), (25, 3));
+        assert_eq!(ok.consecutive_failures, 0);
+        assert!(ok.last_error.is_none());
+
+        assert_eq!(store.record_sweep_failure("gmail-inbox", "auth").unwrap(), 1);
+        assert_eq!(
+            store.record_sweep_failure("gmail-inbox", "quota").unwrap(),
+            2
+        );
+        let failing = store.get_source_state("gmail-inbox").unwrap().unwrap();
+        assert_eq!(failing.consecutive_failures, 2);
+        assert_eq!(failing.last_error.as_deref(), Some("quota"));
+        assert_eq!(
+            failing.last_success_at.as_deref(),
+            Some(first_success.as_str()),
+            "a failing run must not overwrite when collection last worked"
+        );
+        assert!(failing.last_failure_at.is_some());
+
+        store.record_sweep_success("gmail-inbox", 25, 0).unwrap();
+        let recovered = store.get_source_state("gmail-inbox").unwrap().unwrap();
+        assert_eq!(recovered.consecutive_failures, 0, "success clears the streak");
+        assert!(recovered.last_error.is_none(), "and clears the error class");
+        assert!(
+            recovered.last_failure_at.is_some(),
+            "but keeps that a failure happened"
+        );
+    }
+
+    /// The window that wraps midnight is the one people actually configure, so
+    /// it is the one worth a test. Uses the store's own clock, so the assertion
+    /// is on the two windows that must always disagree.
+    #[test]
+    fn quiet_hours_wrap_midnight() {
+        let (store, _schema) = open_test_store("quiet_hours");
+        let all_day = store.within_quiet_hours(0, 23).unwrap();
+        let inverse = store.within_quiet_hours(23, 0).unwrap();
+        assert_ne!(
+            all_day, inverse,
+            "a window and its complement cannot both hold at one instant"
+        );
+        assert!(
+            !store.within_quiet_hours(9, 9).unwrap(),
+            "an empty window is never quiet"
         );
     }
 }

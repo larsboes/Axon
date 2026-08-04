@@ -66,6 +66,32 @@ of them uses is a gate over half the traffic. `POST /triage/redact` applies the
 same pass to rows stored before this existed; it is idempotent and reports what
 kind of thing it removed, never the value.
 
+### Collecting on a schedule
+
+`inbox_sweep_minutes` lets comms-server pull proposals unattended. It ships as
+`0`, disabled — a background job that reads a mailbox is opt-in per machine, not
+something a fresh clone starts doing. The manual paths are unaffected either
+way: `comms sweep --dry-run` previews without storing, and the board's own sweep
+button still pages on demand.
+
+Each scheduled pass takes the newest `inbox_sweep_max_threads` threads and stops
+— a bound, not a cursor. A cursor advancing every run would walk backwards
+through the whole mailbox over days, which is the unbounded rescan the schedule
+is meant to avoid; re-reading the newest page instead costs nothing, because
+proposals upsert on Gmail thread id and preserve human decisions. Paging deeper
+stays a manual, cursor-carrying call. Both the schedule and the manual route run
+the same sweep function, for the same reason both go through the intake gate.
+
+`inbox_sweep_quiet_hours` (`"22-7"`, wrapping midnight) suppresses only the
+unattended pass. Failures are counted, not narrated: the run records an error
+*class* — `auth`, `quota`, `network`, `unknown` — and each consecutive failure
+doubles the number of ticks skipped, up to 32, so an expired token backs off
+instead of retrying every fifteen minutes all night. Any success clears the
+streak. `GET /triage/sweep/status` exposes last run, last *success* (kept
+separate, because a failing run still ran), last failure, the error class and
+the counts from the last pass; the mail board renders it, and reads visibly
+different when the schedule is failing.
+
 Category and TELOS relevance are deliberately separate axes. An explicit
 relevance refresh compares the stored sender, subject and Gmail snippet with
 the configured TELOS lenses through the existing embedding/reranking pipeline.

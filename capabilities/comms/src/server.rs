@@ -6,6 +6,7 @@
 //! loopback because ingest is allowed to fetch external URLs.
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::http::{HeaderName, HeaderValue, Method};
 use axum::{
@@ -159,6 +160,11 @@ const ROUTES: &[route_manifest::Route] = &[
         "Apply one action across many mails.",
     ),
     r("POST", "/triage/sweep", "Pull new mail from Gmail."),
+    r(
+        "GET",
+        "/triage/sweep/status",
+        "Freshness and failure state of the scheduled inbox sweep.",
+    ),
     r(
         "POST",
         "/triage/reconcile",
@@ -2068,53 +2074,96 @@ struct TriageSweepBody {
     cursor: Option<String>,
 }
 
+/// Counts from one sweep pass. No field here can carry mail content — this is
+/// what both the HTTP response and the unattended schedule's log are built
+/// from, and the schedule writes to a log nobody is watching at the time.
+struct SweepOutcome {
+    fetched: usize,
+    new_count: usize,
+    skipped: usize,
+    redacted: usize,
+    next_cursor: Option<String>,
+}
+
+/// The sweep itself, with no HTTP and no scheduling in it. Both the manual
+/// route and the timer call this, for the same reason both go through
+/// `intake`: two copies of a mail-reading loop is how one of them ends up
+/// missing the gate.
+fn run_inbox_sweep(
+    cfg: &Config,
+    limit: usize,
+    cursor: Option<&str>,
+) -> Result<SweepOutcome, String> {
+    let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+    let token = google::access_token(&cfg.google_env_path).map_err(|error| error.to_string())?;
+    let page = google::list_inbox_threads_page(&token, limit, cursor)
+        .map_err(|error| error.to_string())?;
+    let mut outcome = SweepOutcome {
+        fetched: 0,
+        new_count: 0,
+        skipped: 0,
+        redacted: 0,
+        next_cursor: page.next_page_token.clone(),
+    };
+    for stub in &page.threads {
+        let meta = match google::thread_meta(&token, &stub.id) {
+            Ok(meta) => meta,
+            Err(_) => {
+                outcome.skipped += 1;
+                continue;
+            }
+        };
+        let intake = intake::from_thread(meta, &cfg.rules);
+        if intake.redaction_count() > 0 {
+            outcome.redacted += 1;
+        }
+        if store
+            .upsert_triage(&intake.item)
+            .map_err(|error| error.to_string())?
+        {
+            outcome.new_count += 1;
+        }
+        outcome.fetched += 1;
+    }
+    Ok(outcome)
+}
+
+/// Which bucket a failure falls in, for the stored state. Deliberately lossy:
+/// the classes drive backoff and are safe to display, while the provider's own
+/// message can quote a request URL or a subject line and is only ever logged.
+fn sweep_error_class(error: &str) -> &'static str {
+    let lowered = error.to_ascii_lowercase();
+    if lowered.contains("401") || lowered.contains("403") || lowered.contains("auth") {
+        "auth"
+    } else if lowered.contains("429") || lowered.contains("quota") || lowered.contains("rate") {
+        "quota"
+    } else if lowered.contains("timeout") || lowered.contains("connect") || lowered.contains("dns")
+    {
+        "network"
+    } else {
+        "unknown"
+    }
+}
+
 async fn triage_sweep_handler(Json(body): Json<TriageSweepBody>) -> (StatusCode, Json<Value>) {
     let limit = body.limit.unwrap_or(100).clamp(1, 100);
     let cursor = body.cursor.filter(|value| !value.trim().is_empty());
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
+        let outcome = run_inbox_sweep(&cfg, limit, cursor.as_deref())?;
         let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
-        let token =
-            google::access_token(&cfg.google_env_path).map_err(|error| error.to_string())?;
-        let page = google::list_inbox_threads_page(&token, limit, cursor.as_deref())
-            .map_err(|error| error.to_string())?;
-        let mut fetched = 0usize;
-        let mut new_count = 0usize;
-        let mut skipped = 0usize;
-        let mut redacted = 0usize;
-        for stub in &page.threads {
-            let meta = match google::thread_meta(&token, &stub.id) {
-                Ok(meta) => meta,
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            // Same gate as the CLI sweep, by construction: see src/intake.rs.
-            let intake = intake::from_thread(meta, &cfg.rules);
-            if intake.redaction_count() > 0 {
-                redacted += 1;
-            }
-            if store
-                .upsert_triage(&intake.item)
-                .map_err(|error| error.to_string())?
-            {
-                new_count += 1;
-            }
-            fetched += 1;
-        }
         let total_stored = store
             .list_triage(None)
             .map_err(|error| error.to_string())?
             .len();
         Ok(json!({
-            "fetched": fetched,
-            "new_count": new_count,
-            "skipped": skipped,
-            "redacted": redacted,
+            "fetched": outcome.fetched,
+            "new_count": outcome.new_count,
+            "skipped": outcome.skipped,
+            "redacted": outcome.redacted,
             "total_stored": total_stored,
-            "next_cursor": page.next_page_token,
-            "exhausted": page.next_page_token.is_none(),
+            "next_cursor": outcome.next_cursor,
+            "exhausted": outcome.next_cursor.is_none(),
         }))
     })
     .await;
@@ -2590,6 +2639,45 @@ async fn triage_data_class_handler(
     }
 }
 
+/// Freshness and failure of the unattended schedule, for a dashboard to read.
+/// Unauthenticated with the other reads: it carries counts, timestamps and an
+/// error class, and no mail ever reaches it.
+async fn triage_sweep_status_handler() -> (StatusCode, Json<Value>) {
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let state = store
+            .get_source_state(INBOX_SWEEP_SOURCE)
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "enabled": cfg.inbox_sweep_minutes > 0,
+            "every_minutes": cfg.inbox_sweep_minutes,
+            "max_threads": cfg.inbox_sweep_max_threads,
+            "quiet_hours": cfg.inbox_sweep_quiet_hours.map(|(s, e)| json!({"start": s, "end": e})),
+            "last_run_at": state.as_ref().map(|s| s.last_run_at.clone()),
+            "last_success_at": state.as_ref().and_then(|s| s.last_success_at.clone()),
+            "last_failure_at": state.as_ref().and_then(|s| s.last_failure_at.clone()),
+            "last_error": state.as_ref().and_then(|s| s.last_error.clone()),
+            "considered_count": state.as_ref().map(|s| s.considered_count).unwrap_or(0),
+            "new_count": state.as_ref().map(|s| s.new_count).unwrap_or(0),
+            "consecutive_failures": state.as_ref().map(|s| s.consecutive_failures).unwrap_or(0),
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct TriageRedactBody {
     limit: Option<usize>,
@@ -3013,6 +3101,102 @@ fn spawn_trash_cleanup() {
     });
 }
 
+/// The stored name this schedule keeps its run state under. Matches the
+/// existing `source_state` convention rather than inventing a second one.
+const INBOX_SWEEP_SOURCE: &str = "gmail-inbox";
+
+/// Unattended inbox collection. Off unless the overlay turns it on, bounded to
+/// the newest N threads, and silent during quiet hours.
+///
+/// No persisted cursor, on purpose. A cursor that advances each pass walks
+/// backwards through the entire mailbox over days, which is precisely the
+/// unbounded rescan this is supposed to avoid; re-reading the newest page
+/// instead is idempotent because proposals upsert on Gmail thread id and
+/// preserve human decisions. Paging deeper stays a manual, cursor-carrying
+/// call from the board.
+fn spawn_inbox_sweep(every_minutes: u64, max_threads: usize, quiet: Option<(u32, u32)>) {
+    if every_minutes == 0 {
+        eprintln!("Inbox sweep schedule disabled (inbox_sweep_minutes = 0)");
+        return;
+    }
+    match quiet {
+        Some((start, end)) => eprintln!(
+            "Inbox sweep: every {every_minutes} min, newest {max_threads}, quiet {start:02}:00-{end:02}:00"
+        ),
+        None => eprintln!("Inbox sweep: every {every_minutes} min, newest {max_threads}"),
+    }
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(every_minutes * 60));
+        loop {
+            ticker.tick().await;
+            let joined = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+                let cfg = Config::load();
+                if !cfg.google_env_path.is_file() {
+                    return Ok(None);
+                }
+                let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+
+                if let Some((start, end)) = quiet {
+                    if store
+                        .within_quiet_hours(start, end)
+                        .map_err(|error| error.to_string())?
+                    {
+                        return Ok(None);
+                    }
+                }
+
+                // Backoff is expressed as skipped ticks rather than a sleep, so
+                // a recovered connector is picked up on the next ordinary tick
+                // instead of after whatever long sleep was already running.
+                let state = store
+                    .get_source_state(INBOX_SWEEP_SOURCE)
+                    .map_err(|error| error.to_string())?;
+                let failures = state.map(|s| s.consecutive_failures).unwrap_or(0);
+                if failures > 0 {
+                    let skip_ticks = 1i64 << failures.min(5);
+                    let elapsed_ticks = TICKS_SINCE_START.fetch_add(1, Ordering::Relaxed) as i64;
+                    if elapsed_ticks % skip_ticks != 0 {
+                        return Ok(None);
+                    }
+                }
+
+                match run_inbox_sweep(&cfg, max_threads, None) {
+                    Ok(outcome) => {
+                        store
+                            .record_sweep_success(
+                                INBOX_SWEEP_SOURCE,
+                                outcome.fetched as i64,
+                                outcome.new_count as i64,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        Ok(Some(format!(
+                            "{} considered, {} new, {} redacted, {} skipped",
+                            outcome.fetched, outcome.new_count, outcome.redacted, outcome.skipped
+                        )))
+                    }
+                    Err(error) => {
+                        let class = sweep_error_class(&error);
+                        let streak = store
+                            .record_sweep_failure(INBOX_SWEEP_SOURCE, class)
+                            .map_err(|error| error.to_string())?;
+                        Err(format!("{class} error, {streak} in a row"))
+                    }
+                }
+            })
+            .await;
+            match joined {
+                Ok(Ok(Some(summary))) => eprintln!("Inbox sweep: {summary}"),
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => eprintln!("Inbox sweep: {error}"),
+                Err(error) => eprintln!("Inbox sweep: pass did not finish: {error}"),
+            }
+        }
+    });
+}
+
+/// Ticks since boot, so the backoff above can skip them without sleeping.
+static TICKS_SINCE_START: AtomicU64 = AtomicU64::new(0);
+
 fn spawn_gmail_maintenance(every_minutes: u64) {
     if every_minutes == 0 {
         eprintln!("Gmail maintenance disabled (gmail_maintenance_minutes = 0)");
@@ -3081,7 +3265,8 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
         .route("/content/cloud-providers", get(cloud_providers_handler))
         .route("/content/:source/:id", get(content_item_handler))
         .route("/sources", get(sources_handler))
-        .route("/triage", get(triage_handler));
+        .route("/triage", get(triage_handler))
+        .route("/triage/sweep/status", get(triage_sweep_status_handler));
 
     // Mutating routes: require shared secret.
     let write_routes = Router::new()
@@ -3143,6 +3328,11 @@ async fn main() {
     spawn_enrichment_drain(cfg.enrichment_drain_minutes);
     spawn_trash_cleanup();
     spawn_gmail_maintenance(cfg.gmail_maintenance_minutes);
+    spawn_inbox_sweep(
+        cfg.inbox_sweep_minutes,
+        cfg.inbox_sweep_max_threads,
+        cfg.inbox_sweep_quiet_hours,
+    );
 
     let app = build_router(api_secret, &cfg.dashboard_origin);
 
@@ -3154,6 +3344,20 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Backoff and the stored error class both key off this, and both are
+    /// wrong in a way nobody notices if it silently answers "unknown" — an
+    /// expired refresh token would then retry at full cadence forever.
+    #[test]
+    fn sweep_errors_land_in_the_class_that_drives_backoff() {
+        assert_eq!(sweep_error_class("HTTP 401 Unauthorized"), "auth");
+        assert_eq!(sweep_error_class("token refresh failed: auth"), "auth");
+        assert_eq!(sweep_error_class("HTTP 429 Too Many Requests"), "quota");
+        assert_eq!(sweep_error_class("userRateLimitExceeded"), "quota");
+        assert_eq!(sweep_error_class("connect timeout"), "network");
+        assert_eq!(sweep_error_class("dns failure"), "network");
+        assert_eq!(sweep_error_class("something else entirely"), "unknown");
+    }
 
     /// Serve the real router on an ephemeral port and return its base URL. The
     /// requests below go over actual HTTP, because the thing under test is the

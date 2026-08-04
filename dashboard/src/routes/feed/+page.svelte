@@ -19,6 +19,7 @@
     type FeedStream,
     type MailCategory,
     type TriageItem,
+    type TriageSweepStatus,
     type VaultLinkCandidate,
   } from "$lib/api";
 
@@ -94,6 +95,7 @@
   let syncCursor = $state<string | null>(null);
   let syncExhausted = $state(false);
   let syncNotice = $state<string | null>(null);
+  let sweepStatus = $state<TriageSweepStatus | null>(null);
   let scoringMail = $state(false);
   let scoringNotice = $state<string | null>(null);
   let classifyingMailData = $state(false);
@@ -242,7 +244,14 @@
     loading = true;
     try {
       if (view === "mail") {
-        triage = await comms.triage();
+        // Freshness is allowed to fail on its own: an older comms without the
+        // status route should still show the board, not an offline page.
+        const [proposals, status] = await Promise.all([
+          comms.triage(),
+          comms.triageSweepStatus().catch(() => null),
+        ]);
+        triage = proposals;
+        sweepStatus = status;
         offline = false;
         return;
       }
@@ -686,6 +695,31 @@
 
     {#if mailActionError}
       <p class="notice"><Icon name="alert" size={13} /> {mailActionError}</p>
+    {/if}
+    {#if sweepStatus?.enabled}
+      <p class="context-note mail-notice" class:sweep-failing={sweepStatus.consecutive_failures > 0}>
+        {#if sweepStatus.consecutive_failures > 0}
+          <Icon name="alert" size={13} />
+          Scheduled sweep failing — {sweepStatus.last_error} error,
+          {sweepStatus.consecutive_failures}
+          {sweepStatus.consecutive_failures === 1 ? "run" : "runs"} in a row, backing off.
+          {#if sweepStatus.last_success_at}
+            Last collected {mailDateLabel(sweepStatus.last_success_at)}.
+          {:else}
+            It has never completed a run.
+          {/if}
+        {:else if sweepStatus.last_success_at}
+          Scheduled sweep every {sweepStatus.every_minutes} min, newest
+          {sweepStatus.max_threads}. Last run {mailDateLabel(sweepStatus.last_success_at)} —
+          {sweepStatus.considered_count} considered, {sweepStatus.new_count} new.
+        {:else}
+          Scheduled sweep every {sweepStatus.every_minutes} min, newest
+          {sweepStatus.max_threads}. It has not run yet.
+        {/if}
+        {#if sweepStatus.quiet_hours}
+          Quiet {sweepStatus.quiet_hours.start}:00–{sweepStatus.quiet_hours.end}:00.
+        {/if}
+      </p>
     {/if}
     {#if syncNotice}<p class="context-note mail-notice">{syncNotice}</p>{/if}
     {#if reconcileNotice}<p class="context-note mail-notice">{reconcileNotice}</p>{/if}
@@ -1329,6 +1363,12 @@
 
   .mail-notice {
     margin: -0.4rem 0 0.85rem;
+  }
+
+  /* A schedule that stopped collecting has to read differently from one
+     reporting a quiet night, or "last run 3 days ago" gets skimmed as normal. */
+  .sweep-failing {
+    color: var(--warning, var(--text-primary));
   }
 
   .bulk-bar {

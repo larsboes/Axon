@@ -22,6 +22,15 @@
   "_comment_gmail_maintenance_minutes": "How often comms-server retries durable Gmail actions and reconciles up to 200 stored thread locations from metadata labels (default 15 minutes). It reads labels only, never bodies or attachments. Set 0 to disable automatic maintenance; the authenticated manual reconciliation route remains available.",
   "gmail_maintenance_minutes": 15,
 
+  "_comment_inbox_sweep_minutes": "How often comms-server pulls new inbox proposals, in minutes. 0 (the shipped default) disables it: an unattended job that reads a mailbox is opt-in per machine, never something a fresh clone starts doing. The manual preview stays available either way — `comms sweep --dry-run` prints proposals without storing any, and the board's own sweep button is unaffected.",
+  "inbox_sweep_minutes": 0,
+
+  "_comment_inbox_sweep_max_threads": "Newest-N threads per scheduled pass (default 25, clamped 1-100). A bound rather than a cursor on purpose: a cursor advancing every run would walk backwards through the entire mailbox over days, which is the unbounded rescan this schedule avoids. Re-reading the newest page costs nothing because proposals upsert on Gmail thread id and preserve human decisions. Paging deeper stays a manual, cursor-carrying call.",
+  "inbox_sweep_max_threads": 25,
+
+  "_comment_inbox_sweep_quiet_hours": "Local hours [start, end) in which the schedule holds off, as \"22-7\". Omit for no quiet window. Wraps midnight. Only the unattended schedule respects it; manual sweeps do not, because the point is to stop background traffic, not to lock you out of your own tool. An unparseable value means no window rather than an all-day one — a schedule that silently never runs looks identical to a broken connector.",
+  "inbox_sweep_quiet_hours": "22-7",
+
   "_comment_quality_flags": "Computed review-queue thresholds. Passing extraction fixtures retain 39.7–89.6% of total raw text, preserve 100% judged useful text, and leak 0% judged boilerplate; the defaults round that observed total-retention envelope outward to 39–90% and keep leakage at 0%. summary_attempt_warning=2 flags the attempt before the existing three-attempt cap parks an item. Flagging never calls a provider or enriches an item.",
   "quality_flags": {
     "minimum_total_retention_percent": 39.0,
