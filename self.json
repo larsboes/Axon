@@ -120,8 +120,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 62,
-        "nodes": 343
+        "files": 64,
+        "nodes": 361
       }
     },
     {
@@ -942,7 +942,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 5605,
+    "nodes": 5623,
     "external": 5,
     "stale": [],
     "unmatched": [
