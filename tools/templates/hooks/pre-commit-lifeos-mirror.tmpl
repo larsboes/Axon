@@ -22,11 +22,17 @@
 # one case where re-staging is correct is when the caller already staged mirror paths — then
 # refreshing them is completing what they asked for, not widening it.
 #
-# Install: copy to <overlay>/.git/hooks/pre-commit and chmod +x.
+# Install: tools/mirror-lifeos-user.sh install-hook   (substitutes __MIRROR_TOOL__ below)
 # Remove:  rm <overlay>/.git/hooks/pre-commit
 # Refresh logic lives in Axon's tools/mirror-lifeos-user.sh; this is only the trigger.
+#
+# __MIRROR_TOOL__ is filled in at install time, the same way the launchd and systemd
+# templates in this directory's parent are filled in. It is not defaulted to a literal
+# sibling path: the installer already knows where this checkout is, and a guessed
+# ~/Developer/Axon would be a hardcoded cross-repo path — which doctor's undeclared-
+# connection sweep rejects, correctly, since a hook is a per-machine artifact.
 
-MIRROR_TOOL="${AXON_MIRROR_TOOL:-$HOME/Developer/Axon/tools/mirror-lifeos-user.sh}"
+MIRROR_TOOL="${AXON_MIRROR_TOOL:-__MIRROR_TOOL__}"
 MIRROR_PATH="resources/backups/lifeos"
 
 if [ ! -x "$MIRROR_TOOL" ]; then
