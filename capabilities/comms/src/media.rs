@@ -10,6 +10,12 @@ use std::process::Command;
 use serde::Deserialize;
 
 use crate::config::Config;
+// `cap` is the extraction stage's cap, so it lives there; the alias keeps the
+// name every fetch_* arm already reads by.
+use crate::extraction::{
+    self, cap as cap_text, collapse_ws, decode_basic_entities, Document, InputClass,
+    TranscriptSource,
+};
 use crate::normalize;
 use crate::provenance::StageProvenance;
 use crate::store::{FeedItem, Store};
@@ -18,8 +24,6 @@ use crate::{CommsError, Result};
 /// Max characters of article/transcript text fed to the summarizer prompt.
 const SUMMARY_INPUT_CAP: usize = 15_000;
 pub const SUMMARY_PROMPT_REVISION: &str = "feed-summary-v2-english";
-/// Max characters of extracted article body persisted as transcript.
-const ARTICLE_TEXT_CAP: usize = 20_000;
 /// Transcript length at or above which `content_status` is `full` (not `thin`).
 /// One threshold, read by the classifier here and by the evaluator grading a
 /// legacy row whose status predates classification.
@@ -441,15 +445,13 @@ fn http_client() -> Result<reqwest::blocking::Client> {
         .build()?)
 }
 
-/// Fetch an article and extract (title, visible-text).
+/// Fetch an article: GET the bytes, hand them to the HTML extractor.
 ///
-/// This used to sit behind a `Command::new("xberg")` shell-out that executed
-/// whatever binary named `xberg` came first on PATH, and fell through to here
-/// whenever that failed — which was always, xberg not being installed. It was
-/// also an undeclared external dependency, which README.md#dependency-verdicts-and-provenance forbids and
-/// `tools/upstream-checker` cannot see, because it validates the manifest and
-/// not the code. Removed 2026-07-31; xberg returns as a crate behind the
-/// extraction trait once its cooldown clears (#77).
+/// The split is the point. This function owns the protocol — the client, the
+/// status check — and owns no opinion about turning markup into text; that
+/// lives behind `extraction::Extractor`, one implementation per input class
+/// (#77). Before the trait it also hand-rolled the HTML, which is how the same
+/// stripper ended up written twice with two different bugs.
 fn extract_article(url: &str) -> Result<(Option<String>, String)> {
     let http = http_client()?;
     let resp = http.get(url).send()?;
@@ -460,176 +462,8 @@ fn extract_article(url: &str) -> Result<(Option<String>, String)> {
         )));
     }
     let html = resp.text()?;
-    let title = extract_title(&html);
-    let text = extract_visible_text(&html);
-    Ok((title, text))
-}
-
-fn extract_title(html: &str) -> Option<String> {
-    let low = html.to_lowercase();
-    let start = low.find("<title")?;
-    let gt = low[start..].find('>')? + start + 1;
-    let end = low[gt..].find("</title>")? + gt;
-    let title = decode_basic_entities(&strip_tags(html[gt..end].trim()));
-    let title = collapse_ws(title.trim());
-    if title.is_empty() {
-        None
-    } else {
-        Some(title)
-    }
-}
-
-/// Drop <script>/<style> blocks, turn the remaining markup into text, cap
-/// length. Deliberately simple -- no HTML crate dependency.
-///
-/// What a tag becomes is the whole point. This used to run every tag through
-/// `strip_tags` and then `collapse_ws`, which welded the document into one
-/// line. That broke both stages downstream of it: `normalize` is a table of
-/// line predicates, so a single line longer than `BOILERPLATE_LINE_MAX` made
-/// every rule unreachable and stored consent walls verbatim as article text,
-/// and a tag boundary that emitted nothing welded `Home</a><a>Jobs` into one
-/// token the embedder then scored on.
-fn extract_visible_text(html: &str) -> String {
-    let without_blocks = remove_blocks(html, &["script", "style", "noscript", "head"]);
-    let text = tags_to_breaks(&without_blocks);
-    let collapsed = collapse_lines(&decode_basic_entities(&text));
-    collapsed.chars().take(ARTICLE_TEXT_CAP).collect()
-}
-
-/// HTML elements that end a line of text. Everything not listed is inline and
-/// becomes a single space, so two adjacent text nodes stay two words.
-const BLOCK_TAGS: &[&str] = &[
-    "address",
-    "article",
-    "aside",
-    "blockquote",
-    "br",
-    "button",
-    "dd",
-    "div",
-    "dl",
-    "dt",
-    "figcaption",
-    "figure",
-    "footer",
-    "form",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "header",
-    "hr",
-    "li",
-    "main",
-    "nav",
-    "ol",
-    "option",
-    "p",
-    "pre",
-    "section",
-    "table",
-    "td",
-    "th",
-    "tr",
-    "ul",
-];
-
-/// Replace every tag with the separator its element implies: a newline for a
-/// block element, a space for an inline one. An unterminated `<` is markup the
-/// page never closed, so the remainder goes -- same call `strip_tags` makes.
-fn tags_to_breaks(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut rest = html;
-
-    while let Some(open) = rest.find('<') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        let close = match after.find('>') {
-            Some(i) => i,
-            None => return out,
-        };
-        out.push(if is_block_tag(&after[..close]) {
-            '\n'
-        } else {
-            ' '
-        });
-        rest = &after[close + 1..];
-    }
-
-    out.push_str(rest);
-    out
-}
-
-fn is_block_tag(inner: &str) -> bool {
-    let name = inner
-        .trim_start_matches('/')
-        .split(|c: char| c.is_whitespace() || c == '/')
-        .next()
-        .unwrap_or_default();
-    BLOCK_TAGS.iter().any(|tag| tag.eq_ignore_ascii_case(name))
-}
-
-/// Collapse whitespace inside each line, keeping the breaks the tag walk
-/// produced. `collapse_ws` cannot be reused: it joins across newlines, which
-/// is exactly the structure loss this path exists to avoid.
-fn collapse_lines(s: &str) -> String {
-    s.lines()
-        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn remove_blocks(html: &str, tags: &[&str]) -> String {
-    let mut out = html.to_string();
-    for tag in tags {
-        loop {
-            let low = out.to_lowercase();
-            let open = match low.find(&format!("<{tag}")) {
-                Some(i) => i,
-                None => break,
-            };
-            let close_tag = format!("</{tag}>");
-            let close = match low[open..].find(&close_tag) {
-                Some(i) => open + i + close_tag.len(),
-                None => {
-                    out.truncate(open);
-                    break;
-                }
-            };
-            out.replace_range(open..close, " ");
-        }
-    }
-    out
-}
-
-fn decode_basic_entities(s: &str) -> String {
-    s.replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-}
-
-fn collapse_ws(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Cap a body at `ARTICLE_TEXT_CAP` characters (not bytes — the caps are about
-/// what a summarizer can read, and a multibyte split would corrupt the text).
-///
-/// Capping is the last thing extraction does. Cleaning is not extraction's job:
-/// `normalize::normalize` owns that, in its own stage, over the raw this
-/// returns (#86).
-fn cap_text(s: String) -> String {
-    if s.chars().count() <= ARTICLE_TEXT_CAP {
-        s
-    } else {
-        s.chars().take(ARTICLE_TEXT_CAP).collect()
-    }
+    let out = extraction::require(InputClass::Html)?.extract(&Document::html(html.as_bytes()))?;
+    Ok((out.title, out.text))
 }
 
 /// Raw extraction output to canonical body plus its status, in one place, so
@@ -651,8 +485,9 @@ fn normalized_body(raw: &str) -> (Option<String>, String) {
 /// keeps it and stores the normalized form beside it. An extractor that came
 /// back with nothing stores nothing, rather than an empty string the summarizer
 /// would then be handed.
-fn finish_extraction(item: &mut FeedItem, raw: Option<String>) {
+fn finish_extraction(item: &mut FeedItem, raw: Option<String>, source: TranscriptSource) {
     let raw = raw.filter(|r| !r.trim().is_empty());
+    item.transcript_source = source.as_str().to_string();
     let (text, status) = match &raw {
         Some(r) => normalized_body(r),
         None => (None, "none".to_string()),
@@ -822,10 +657,14 @@ fn fetch_github_target(
     }
 }
 
+/// Returns the arXiv shape, because one of its arms IS arXiv: a Hugging Face
+/// paper page is a view of the same preprint, so whether the text is the paper
+/// or its abstract is a fact about this item too, not one arXiv URLs alone get
+/// to carry (#78). Every other arm reads the thing itself.
 fn fetch_huggingface(
     target: &HuggingFaceTarget,
     url: &str,
-) -> Result<(Option<String>, Option<String>, String)> {
+) -> Result<(Option<String>, Option<String>, String, TranscriptSource)> {
     match target {
         HuggingFaceTarget::Paper { paper_id } => fetch_arxiv(paper_id),
         HuggingFaceTarget::Model { model_id } => {
@@ -857,10 +696,10 @@ fn fetch_huggingface(
 
                 let header = format!("Model: {model_id} · Pipeline: {pipeline} · Downloads: {downloads} · Likes: {likes}");
                 let text = format!("{header}\n\n---\n\n{raw_readme}");
-                return Ok((title, author, cap_text(text)));
+                return Ok((title, author, cap_text(text), TranscriptSource::FullText));
             }
 
-            extract_article(url).map(|(t, text)| (t, author, text))
+            extract_article(url).map(|(t, text)| (t, author, text, TranscriptSource::FullText))
         }
         HuggingFaceTarget::Dataset { dataset_id } => {
             let http = http_client()?;
@@ -888,10 +727,10 @@ fn fetch_huggingface(
                 let header =
                     format!("Dataset: {dataset_id} · Downloads: {downloads} · Likes: {likes}");
                 let text = format!("{header}\n\n---\n\n{raw_readme}");
-                return Ok((title, author, cap_text(text)));
+                return Ok((title, author, cap_text(text), TranscriptSource::FullText));
             }
 
-            extract_article(url).map(|(t, text)| (t, author, text))
+            extract_article(url).map(|(t, text)| (t, author, text, TranscriptSource::FullText))
         }
     }
 }
@@ -919,7 +758,7 @@ fn xml_field(body: &str, tag: &str) -> Option<String> {
 /// never once ran — an inert branch that made the capability read as if it
 /// pulled full text. It comes back when there is a PDF extractor that actually
 /// works (#77), and not before.
-fn fetch_arxiv(id: &str) -> Result<(Option<String>, Option<String>, String)> {
+fn fetch_arxiv(id: &str) -> Result<(Option<String>, Option<String>, String, TranscriptSource)> {
     let http = http_client()?;
     let resp = http
         .get(format!(
@@ -957,7 +796,36 @@ fn fetch_arxiv(id: &str) -> Result<(Option<String>, Option<String>, String)> {
         _ => Some(format!("{} et al.", authors[..3].join(", "))),
     };
 
-    Ok((title, author, cap_text(abstract_text)))
+    // The paper is one request away, so try it and say which one was read
+    // (#78). Today nothing is registered for PDF, so this is the abstract on
+    // every item — and the fallback is exercised rather than hypothetical.
+    let (text, source) = match arxiv_full_text(&http, id) {
+        Some(full) => (full, TranscriptSource::FullText),
+        None => (abstract_text, TranscriptSource::Abstract),
+    };
+
+    Ok((title, author, cap_text(text), source))
+}
+
+/// The paper's own text, or `None` when this build cannot read a PDF.
+///
+/// Both ways of returning `None` are ordinary, not errors to report: no PDF
+/// extractor is registered (the state until #77 lands), or the fetch or the
+/// conversion failed on this one paper. Either way the caller has an abstract
+/// to fall back to, and records that it used it. Nothing writes the PDF to
+/// disk.
+fn arxiv_full_text(http: &reqwest::blocking::Client, id: &str) -> Option<String> {
+    let extractor = extraction::for_class(InputClass::Pdf)?;
+    let resp = http
+        .get(format!("https://arxiv.org/pdf/{id}"))
+        .send()
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let bytes = resp.bytes().ok()?;
+    let out = extractor.extract(&Document::pdf(&bytes)).ok()?;
+    Some(out.text).filter(|t| !t.trim().is_empty())
 }
 
 /// A Reddit post via the `.json` view of its permalink: the selftext plus the
@@ -1058,6 +926,11 @@ pub fn fetch(url: &str) -> Result<FeedItem> {
     let (kind, stream) = detect(url);
     let mut item = FeedItem::new(url, stream, kind);
 
+    // Every arm but arXiv reads the document itself. arXiv is the one source
+    // that offers a stand-in when the document cannot be read, so it is the
+    // one arm that decides its own answer here (#78).
+    let mut source = TranscriptSource::FullText;
+
     let raw = match kind {
         "youtube" | "instagram" | "podcast" => {
             let meta = ytdlp_meta(url)?;
@@ -1077,16 +950,18 @@ pub fn fetch(url: &str) -> Result<FeedItem> {
         "huggingface" => {
             let target =
                 parse_huggingface_url(url).expect("detect() matched parse_huggingface_url");
-            let (title, author, text) = fetch_huggingface(&target, url)?;
+            let (title, author, text, read) = fetch_huggingface(&target, url)?;
             item.title = title;
             item.author = author;
+            source = read;
             Some(text)
         }
         "arxiv" => {
             let id = arxiv_id(url).expect("detect() matched arxiv_id");
-            let (title, author, text) = fetch_arxiv(&id)?;
+            let (title, author, text, read) = fetch_arxiv(&id)?;
             item.title = title;
             item.author = author;
+            source = read;
             Some(text)
         }
         "reddit" => {
@@ -1106,19 +981,9 @@ pub fn fetch(url: &str) -> Result<FeedItem> {
 
     // An extractor that came back with nothing stores nothing, rather than an
     // empty string the summarizer would then be handed.
-    finish_extraction(&mut item, raw);
+    finish_extraction(&mut item, raw, source);
 
     Ok(item)
-}
-
-fn is_html(raw: &str) -> bool {
-    let low = raw.to_lowercase();
-    low.contains("<html")
-        || low.contains("<body")
-        || low.contains("<div")
-        || low.contains("<p>")
-        || low.contains("<span")
-        || low.contains("<article")
 }
 
 /// Build a `FeedItem` from a URL and optional client-supplied content, title and
@@ -1142,16 +1007,26 @@ pub fn fetch_with_content(
     let (kind, stream) = detect(url);
     let mut item = FeedItem::new(url, stream, kind);
 
-    let extracted = content.map(|raw| {
-        if is_html(raw) {
+    // A client hands over either the page's markup or text it already
+    // extracted. Both are input classes, so both go through the same trait
+    // rather than through a branch that hand-rolls one of them.
+    let extracted = content
+        .map(|raw| {
+            let class = if extraction::looks_like_html(raw) {
+                InputClass::Html
+            } else {
+                InputClass::PlainText
+            };
+            let out = extraction::require(class)?.extract(&Document {
+                class,
+                bytes: raw.as_bytes(),
+            })?;
             if item.title.is_none() {
-                item.title = extract_title(raw);
+                item.title = out.title;
             }
-            extract_visible_text(raw)
-        } else {
-            cap_text(raw.trim().to_string())
-        }
-    });
+            Ok::<String, CommsError>(out.text)
+        })
+        .transpose()?;
 
     if let Some(t) = title {
         if !t.trim().is_empty() {
@@ -1165,7 +1040,10 @@ pub fn fetch_with_content(
         }
     }
 
-    finish_extraction(&mut item, extracted);
+    // Client-supplied content is the document the client was looking at, so
+    // it is full text by definition — there is no source offering a stand-in
+    // in this path.
+    finish_extraction(&mut item, extracted, TranscriptSource::FullText);
 
     // Only a body that actually came from the client is that client's capture.
     // A call that supplied a title and nothing else fetched nothing and
@@ -1578,40 +1456,47 @@ mod tests {
     }
 
     #[test]
-    fn extract_title_and_text() {
-        let html = "<html><head><title>My &amp; Page</title><style>.x{}</style></head><body><script>bad()</script><p>Hello  world</p></body></html>";
-        assert_eq!(extract_title(html).as_deref(), Some("My & Page"));
-        let text = extract_visible_text(html);
-        assert!(text.contains("Hello world"), "got: {text}");
-        assert!(!text.contains("bad()"), "script body must be dropped");
+    fn an_item_records_which_of_the_two_it_read() {
+        // #78 asks for this as a field rather than as an `Abstract:` prefix
+        // inside the text: a prefix has to be parsed back out by every reader,
+        // and the embedder would score it as if the paper had said it.
+        let mut abstract_only = FeedItem::new("https://arxiv.org/abs/1", "news", "arxiv");
+        finish_extraction(
+            &mut abstract_only,
+            Some("We show that transit feeds drift.".into()),
+            TranscriptSource::Abstract,
+        );
+        assert_eq!(abstract_only.transcript_source, "abstract");
+
+        let mut paper = FeedItem::new("https://arxiv.org/abs/2", "news", "arxiv");
+        finish_extraction(
+            &mut paper,
+            Some("1 Introduction. The full paper.".into()),
+            TranscriptSource::FullText,
+        );
+        assert_eq!(paper.transcript_source, "full-text");
+
+        // Independent of content_status, which measures length: both of these
+        // are `thin`, and they are not the same thing.
+        assert_eq!(abstract_only.content_status, "thin");
+        assert_eq!(paper.content_status, "thin");
     }
 
     #[test]
-    fn html_extraction_hands_the_normalizer_line_structure() {
-        // The normalizer is a line predicate table, so extraction owes it
-        // lines. Collapsing a page to one paragraph made every rule
-        // unreachable and shipped LinkedIn's cookie banner as article text.
-        let html = "<html><head><title>T</title></head><body>\
-            <nav><a href=\"/a\">Home</a><a href=\"/b\">Jobs</a></nav>\
-            <div id=\"consent\"><p>Accept all cookies</p>\
-            <p>Reject non-essential cookies</p></div>\
-            <article><p>Transit data should remain inspectable, which is the \
-            single claim this article exists to make.</p></article>\
-            </body></html>";
-
-        let raw = extract_visible_text(html);
-        let clean = normalize::normalize(&raw);
-
+    fn the_arxiv_pdf_path_is_skipped_entirely_while_no_pdf_extractor_exists() {
+        // The fallback #78 describes is not a branch waiting for a rainy day:
+        // it is what every arXiv item takes today, and it costs no request
+        // because the registry is consulted before the fetch. When xberg
+        // registers (#77) this assertion is what says the behaviour changed.
         assert!(
-            !clean.text.contains("Accept all cookies"),
-            "consent banner survived normalization: {}",
-            clean.text
+            extraction::for_class(InputClass::Pdf).is_none(),
+            "a PDF extractor is registered — arxiv_full_text now fetches, and \
+             fetch_arxiv should be returning FullText for readable papers"
         );
-        assert!(
-            clean.text.contains("Transit data should remain inspectable"),
-            "the article body must survive: {}",
-            clean.text
-        );
+
+        // No client, no network: `arxiv_full_text` returns before using either.
+        let http = http_client().unwrap();
+        assert_eq!(arxiv_full_text(&http, "2501.00001"), None);
     }
 
     #[test]
@@ -1733,7 +1618,7 @@ mod tests {
     fn extraction_and_normalization_keep_separate_outputs() {
         let raw = "Menu\nWe use cookies. Accept all\n\nThe actual article body.\n";
         let mut item = FeedItem::new("https://example.com/a", "news", "article");
-        finish_extraction(&mut item, Some(raw.to_string()));
+        finish_extraction(&mut item, Some(raw.to_string()), TranscriptSource::FullText);
 
         assert_eq!(
             item.raw_content.as_deref(),
@@ -1752,14 +1637,18 @@ mod tests {
         assert!(raw.chars().count() >= CONTENT_FULL_THRESHOLD);
 
         let mut item = FeedItem::new("https://example.com/b", "news", "article");
-        finish_extraction(&mut item, Some(raw));
+        finish_extraction(&mut item, Some(raw), TranscriptSource::FullText);
         assert_eq!(item.content_status, "thin");
     }
 
     #[test]
     fn an_item_that_is_all_boilerplate_stores_no_transcript() {
         let mut item = FeedItem::new("https://example.com/c", "news", "article");
-        finish_extraction(&mut item, Some("Menu\nHome\nCopy link\n".to_string()));
+        finish_extraction(
+            &mut item,
+            Some("Menu\nHome\nCopy link\n".to_string()),
+            TranscriptSource::FullText,
+        );
         assert_eq!(item.transcript, None);
         assert_eq!(item.content_status, "none");
         assert!(

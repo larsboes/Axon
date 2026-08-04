@@ -1,0 +1,54 @@
+<!doctype html>
+<!--
+  A page, not a snapshot of extractor output — this is the only fixture in the
+  corpus that starts before extraction, and the shape is the point.
+
+  Modelled on the LinkedIn article that shipped its consent wall as body text:
+  the banner sits in block elements, the nav links are adjacent inline anchors
+  with no whitespace between them, and the actual article is one paragraph
+  among page furniture. Extraction that flattens this to a single line makes
+  every normalization rule unreachable (they are all guarded by a max line
+  length), and a tag boundary that emits nothing welds `Home</a><a>Jobs` into
+  one token the embedder then scores on. Both were real, both are asserted by
+  the judgement terms in extraction-corpus.json.
+-->
+<html lang="en">
+<head>
+  <title>Transit data should remain inspectable</title>
+  <style>.banner { display: block; }</style>
+  <script>window.__consent = function () { return false; };</script>
+</head>
+<body>
+  <nav>
+    <ul>
+      <li><a href="/">Home</a></li>
+      <li><a href="/feed">Menu</a></li>
+      <li><a href="/login">Sign in</a></li>
+    </ul>
+  </nav>
+
+  <div class="banner">
+    <p>We use cookies to improve your experience.</p>
+    <p>Accept all cookies</p>
+    <button>Cookie settings</button>
+  </div>
+
+  <article>
+    <h1>Transit data should remain inspectable</h1>
+    <p>
+      A departure board that cannot be checked against its source is a claim,
+      not a measurement. The operator publishes a feed; anything downstream that
+      reshapes it owes the reader a way back to what was actually published.
+    </p>
+    <p>
+      That is the whole argument, and it survives normalization because it is
+      prose rather than page furniture.
+    </p>
+  </article>
+
+  <footer>
+    <p>Subscribe to our newsletter</p>
+    <p>Share on Twitter</p>
+  </footer>
+</body>
+</html>

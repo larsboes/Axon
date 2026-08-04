@@ -44,6 +44,15 @@ pub struct FeedItem {
     /// Extraction quality: `full` (≥1k chars), `thin` (abstract/card), `none`
     /// (no transcript extracted), `unknown` (legacy, not yet classified).
     pub content_status: String,
+    /// What the stored text IS: `full-text` (the document), `abstract` (a
+    /// stand-in the source offered instead), `unknown` (legacy). A separate
+    /// axis from `content_status`, which answers how much text there is — a
+    /// long abstract is `full`/`abstract`, a one-line article `thin`/`full-text`.
+    ///
+    /// Queryable on purpose (#78): an `Abstract:` prefix inside the text would
+    /// have to be parsed back out by every reader, and would be indexed by the
+    /// embedder as if the paper had said it.
+    pub transcript_source: String,
     /// How many times summarization was attempted and failed.
     pub summary_attempts: i32,
     /// Error class of the last failed summarization attempt, if any.
@@ -81,6 +90,7 @@ impl FeedItem {
             created_at: String::new(),
             status: "new".into(),
             content_status: "unknown".into(),
+            transcript_source: "unknown".into(),
             summary_attempts: 0,
             summary_last_error: None,
             summary_next_attempt: None,
@@ -696,6 +706,20 @@ impl Store {
             -- would need a migration every time one is added.
             ALTER TABLE {schema}.feed_items
                 ADD COLUMN IF NOT EXISTS captured_via TEXT;
+
+            -- #78: what the stored text IS, as against how much of it there is.
+            -- Constrained, unlike captured_via, because this set is closed by
+            -- the enum that writes it (extraction::TranscriptSource) rather
+            -- than open to whatever a new client calls itself. Existing rows
+            -- stay 'unknown': every one of them predates the distinction, and
+            -- backfilling them as 'full-text' would assert something about
+            -- arXiv items that is false.
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS transcript_source TEXT NOT NULL DEFAULT 'unknown';
+            ALTER TABLE {schema}.feed_items DROP CONSTRAINT IF EXISTS feed_items_transcript_source_check;
+            ALTER TABLE {schema}.feed_items
+                ADD CONSTRAINT feed_items_transcript_source_check
+                CHECK (transcript_source IN ('full-text','abstract','unknown'));
 
             -- #77: producer provenance lives beside each stage value. Legacy
             -- rows are labelled unknown rather than assigned a guessed model.
@@ -2104,12 +2128,12 @@ impl Store {
             &format!(
                 "INSERT INTO {schema}.feed_items AS f
                     (id, stream, kind, title, url, author, summary, transcript, day, created_at,
-                     status, content_status, captured_via, normalization_tier,
+                     status, content_status, transcript_source, captured_via, normalization_tier,
                      normalization_revision, normalization_completed_at,
                      summary_tier, summary_revision, summary_completed_at)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8, CURRENT_DATE, now(), 'new',
-                         $9,$10,$11,$12, CASE WHEN $8::text IS NOT NULL THEN now() END,
-                         $13,$14, CASE WHEN $7::text IS NOT NULL THEN now() END)
+                         $9,$10,$11,$12,$13, CASE WHEN $8::text IS NOT NULL THEN now() END,
+                         $14,$15, CASE WHEN $7::text IS NOT NULL THEN now() END)
                  ON CONFLICT (id) DO UPDATE SET
                      stream = excluded.stream,
                      kind = excluded.kind,
@@ -2164,6 +2188,16 @@ impl Store {
                            CASE f.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
                          THEN excluded.content_status
                          ELSE f.content_status
+                     END,
+                     -- Same guard as content_status: both describe the text
+                     -- actually stored, so a re-fetch that loses to the
+                     -- existing transcript must not relabel it.
+                     transcript_source = CASE
+                         WHEN excluded.transcript IS NOT NULL AND
+                           CASE excluded.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                           CASE f.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
+                         THEN excluded.transcript_source
+                         ELSE f.transcript_source
                      END",
                 schema = self.schema
             ),
@@ -2177,6 +2211,7 @@ impl Store {
                 &item.summary,
                 &item.transcript,
                 &item.content_status,
+                &item.transcript_source,
                 &item.captured_via,
                 &normalization_tier,
                 &normalization_revision,
@@ -2526,7 +2561,7 @@ impl Store {
         let row = conn.query_opt(
             &format!(
                 "SELECT id, stream, kind, title, url, author, summary, transcript, day::text, created_at::text, status,
-                       content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via
+                       content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via, transcript_source
                  FROM {}.feed_items WHERE id = $1",
                 self.schema
             ),
@@ -2548,7 +2583,7 @@ impl Store {
         let mut conn = self.conn.lock().unwrap();
         let mut sql = format!(
             "SELECT DISTINCT f.id, f.stream, f.kind, f.title, f.url, f.author, f.summary, NULL::text, f.day::text, f.created_at::text, f.status,
-                    f.content_status, f.summary_attempts, f.summary_last_error, f.summary_next_attempt::text, f.captured_via, f.created_at
+                    f.content_status, f.summary_attempts, f.summary_last_error, f.summary_next_attempt::text, f.captured_via, f.transcript_source, f.created_at
              FROM {schema}.feed_items f",
             schema = self.schema
         );
@@ -2590,7 +2625,7 @@ impl Store {
         let rows = conn.query(
             &format!(
                 "SELECT id, stream, kind, title, url, author, summary, transcript, day::text, created_at::text, status,
-                        content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via
+                        content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via, transcript_source
                  FROM {}.feed_items
                  WHERE transcript IS NOT NULL
                    AND (summary IS NULL OR ($1::text IS NOT NULL AND
@@ -2638,7 +2673,7 @@ impl Store {
         let rows = conn.query(
             &format!(
                 "SELECT id, stream, kind, title, url, author, summary, transcript, day::text, created_at::text, status,
-                        content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via
+                        content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via, transcript_source
                  FROM {}.feed_items
                  WHERE day >= CURRENT_DATE - $1::int
                  ORDER BY created_at DESC
@@ -3184,6 +3219,13 @@ fn row_to_feed_list(r: &postgres::Row) -> FeedItem {
         summary_last_error: r.get(13),
         summary_next_attempt: r.get(14),
         captured_via: r.get(15),
+        // By name, not by index: this column was appended to four SELECTs whose
+        // trailing positions already differ (the list query carries created_at
+        // after it, for ordering), and a positional read would have to agree
+        // with all of them.
+        transcript_source: r
+            .get::<_, Option<String>>("transcript_source")
+            .unwrap_or_else(|| "unknown".into()),
         // Raw extraction output lives in its own table; `get_raw_content` is
         // the only reader, and only the renormalize path asks for it.
         raw_content: None,
@@ -3211,6 +3253,13 @@ fn row_to_feed_full(r: &postgres::Row) -> FeedItem {
         summary_last_error: r.get(13),
         summary_next_attempt: r.get(14),
         captured_via: r.get(15),
+        // By name, not by index: this column was appended to four SELECTs whose
+        // trailing positions already differ (the list query carries created_at
+        // after it, for ordering), and a positional read would have to agree
+        // with all of them.
+        transcript_source: r
+            .get::<_, Option<String>>("transcript_source")
+            .unwrap_or_else(|| "unknown".into()),
         // Raw extraction output lives in its own table; `get_raw_content` is
         // the only reader, and only the renormalize path asks for it.
         raw_content: None,
@@ -3625,7 +3674,8 @@ mod tests {
             .set_triage_data_class("thread:private", "vault")
             .unwrap());
 
-        let rules = crate::content_item::DataClass::classify_mail("aktiv", "friend@example.com", "Hello");
+        let rules =
+            crate::content_item::DataClass::classify_mail("aktiv", "friend@example.com", "Hello");
         assert!(!store
             .refresh_triage_data_class("thread:private", &rules)
             .unwrap());
@@ -4416,6 +4466,59 @@ mod tests {
             store.get_feed(&captured.id).unwrap().unwrap().captured_via,
             None,
             "content the server fetched must not still claim to be a capture"
+        );
+    }
+
+    #[test]
+    fn transcript_source_round_trips_and_is_not_relabelled_by_an_empty_refetch() {
+        let (store, _schema) = open_test_store("transcript_source");
+
+        // A paper stored as its abstract, which is what every arXiv item is
+        // until a PDF extractor is registered (#78).
+        let mut item = mk_feed("https://arxiv.org/abs/2501.00001", "arxiv", "news");
+        item.transcript = Some("We show that ...".into());
+        item.transcript_source = "abstract".into();
+        store.upsert_feed(&item).unwrap();
+        assert_eq!(
+            store.get_feed(&item.id).unwrap().unwrap().transcript_source,
+            "abstract"
+        );
+
+        // A re-fetch that brings back nothing must not relabel it: the field
+        // describes the text actually stored, and the stored text did not
+        // change. Same guard content_status is under.
+        let mut empty = item.clone();
+        empty.transcript = None;
+        empty.transcript_source = "full-text".into();
+        store.upsert_feed(&empty).unwrap();
+        assert_eq!(
+            store.get_feed(&item.id).unwrap().unwrap().transcript_source,
+            "abstract",
+            "an empty re-fetch relabelled an abstract as full text"
+        );
+
+        // A re-fetch that DOES bring the paper back relabels it, because now
+        // the stored text really is the document.
+        let mut full = item.clone();
+        full.transcript = Some("1 Introduction ...".into());
+        full.transcript_source = "full-text".into();
+        store.upsert_feed(&full).unwrap();
+        assert_eq!(
+            store.get_feed(&item.id).unwrap().unwrap().transcript_source,
+            "full-text"
+        );
+
+        // Legacy rows predate the distinction and stay unknown rather than
+        // being backfilled into a claim nobody checked.
+        let legacy = mk_feed("https://example.com/legacy", "article", "news");
+        store.upsert_feed(&legacy).unwrap();
+        assert_eq!(
+            store
+                .get_feed(&legacy.id)
+                .unwrap()
+                .unwrap()
+                .transcript_source,
+            "unknown"
         );
     }
 

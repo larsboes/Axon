@@ -33,6 +33,7 @@ pub mod cloud_derivative;
 pub mod cloud_dispatch;
 pub mod config;
 pub mod evaluation;
+pub mod extraction;
 pub mod extraction_eval;
 pub mod google;
 pub mod intake;

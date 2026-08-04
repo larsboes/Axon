@@ -305,7 +305,7 @@ read the local disk, and this path is reachable over HTTP.
 | `youtube` | youtube.com, youtu.be | yt-dlp metadata | subtitles (de/en), VTT stripped |
 | `instagram`, `podcast` | instagram.com; `.mp3`/`.m4a`/"podcast" | yt-dlp metadata | subtitles when present |
 | `github` | github.com/`<owner>`/`<repo>` only | repo description; owner | stars/language/license/topics + raw README |
-| `arxiv` | arxiv.org `/abs/` or `/pdf/` | paper title; authors (3 + et al.) | the abstract |
+| `arxiv` | arxiv.org `/abs/` or `/pdf/` | paper title; authors (3 + et al.) | the paper if readable, else the abstract |
 | `reddit` | a `/comments/<id>` permalink | post title; `u/<author>` | selftext + top-level comments |
 | `article` | everything else | `<title>`; none | visible text, tags stripped |
 
@@ -313,6 +313,28 @@ A deeper GitHub path (an issue, a blob, a profile) is an `article` on purpose:
 the generic path already renders those, while the repo API answers what no HTML
 strip can. arXiv keeps the version suffix, because v1 and v2 are different
 papers to a reader.
+
+### Fetching is not extraction
+
+Routing and protocol live in `media.rs`; turning bytes into text lives behind
+`extraction::Extractor`, one implementation per input class (`html`, `pdf`,
+`text`). The two were the same function until #77, which is how the same HTML
+stripper ended up written twice with two different bugs.
+
+**Nothing reads PDFs yet, and the arXiv path depends on that rather than working
+around it.** `fetch_arxiv` asks the registry for a PDF extractor, is told there
+is none, and stores the abstract — recording which of the two it read as
+`transcript_source` (`full-text` | `abstract` | `unknown` for rows predating the
+distinction). So the fallback runs on every arXiv item today instead of being a
+branch nobody exercises. When xberg clears its cooldown (#77, pin `1.0.5`,
+2026-08-06) it registers as the `pdf` implementation and that fallback stops
+firing, with no caller changing.
+
+`transcript_source` is a separate axis from `content_status`, which measures how
+much text there is: a long abstract is `full` + `abstract`, a one-line article
+is `thin` + `full-text`. It is a column rather than an `Abstract:` prefix inside
+the body because a prefix has to be parsed back out by every reader, and the
+embedder would score it as if the paper had said it (#78).
 
 **Reddit needs credentials and does not have them.** Verified 2026-07-28: the
 `.json` view answers 403 to every unauthenticated caller, on `www` and `old`,
@@ -541,11 +563,19 @@ text, summary retry state, and whether a ranking row exists. It never calls an i
 never treats a model's self-confidence as evidence, and never changes the human Feed status.
 
 The public defaults in `comms.config.example.json` come from the frozen extraction corpus rather
-than an intuition: its six passing input classes retain 39.7–89.6% of total raw text, preserve
+than an intuition: its passing input classes retain 39.7–89.6% of total raw text, preserve
 100% of judged useful text, and leak 0% of judged boilerplate. Operational items do not have
 per-item human judgements, so the review signal deliberately uses the rounded 39–90% observed
 total-retention envelope and a 0% residual-normalizer-rule threshold as suggestions for inspection,
 not correctness verdicts. Two failed summary attempts warn before the existing three-attempt cap.
+
+**One fixture class starts before extraction.** Every other one stores the text an extractor
+already produced, which is why the gate could not see the defect it exists to catch: the real HTML
+path emitted a single line, every normalization rule is guarded by a max line length, and the
+corpus reported 0% leakage while production stored consent walls verbatim as article bodies. The
+`html` class holds a page (`eval/fixtures/page.html`) and runs extraction then normalization, so a
+change to either is scored end to end — and a replacement extractor (#77) can be measured against
+the built-in one on the same pages.
 
 ## Tests
 

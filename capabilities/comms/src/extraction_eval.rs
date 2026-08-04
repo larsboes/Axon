@@ -11,11 +11,13 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::extraction::{self, Extractor};
 use crate::normalize;
 use crate::{CommsError, Result};
 
-const INPUT_CLASSES: [&str; 6] = [
+const INPUT_CLASSES: [&str; 7] = [
     "article",
+    "html",
     "repository",
     "paper",
     "client-rendered-page",
@@ -81,19 +83,42 @@ fn evaluate(corpus: Corpus, root: &Path) -> Result<EvaluationReport> {
     let mut fixtures = Vec::with_capacity(corpus.fixtures.len());
 
     for fixture in corpus.fixtures {
-        let raw = fs::read_to_string(root.join(&fixture.source))?;
+        let source_text = fs::read_to_string(root.join(&fixture.source))?;
+
+        // The `html` class starts one stage earlier than the rest: its fixture
+        // is a page, so extraction runs first and the normalizer is scored on
+        // what the extractor actually hands it.
+        //
+        // That gap is why this gate could not see the defect it exists to
+        // catch. Every other fixture stores text already shaped like an
+        // extractor's output — multi-line — while the real HTML path emitted
+        // one long line, and the normalizer's rules are all guarded by a max
+        // line length. The corpus passed at 0% leakage while production stored
+        // consent walls verbatim. It is also what lets a replacement extractor
+        // (#77) be scored against the built-in one on the same pages.
+        let raw = if fixture.input_class == "html" {
+            extraction::Builtin
+                .extract(&extraction::Document::html(source_text.as_bytes()))?
+                .text
+        } else {
+            source_text.clone()
+        };
+
         let normalized = normalize::normalize(&raw);
         let raw_chars = raw.chars().count();
         let normalized_chars = normalized.text.chars().count();
         let retained_percent = percent(normalized_chars, raw_chars);
         let mut failures = Vec::new();
 
+        // Checked against the file, not against `raw`: for an html fixture the
+        // terms are judgements about the page, and an extractor that dropped a
+        // boilerplate term itself is doing its job rather than failing.
         for term in fixture
             .must_survive
             .iter()
             .chain(fixture.must_not_survive.iter())
         {
-            if !raw.contains(term) {
+            if !source_text.contains(term) {
                 failures.push(format!(
                     "judgement term `{term}` is absent from the raw fixture"
                 ));
