@@ -117,7 +117,17 @@ if [ "$_use_backend" = "1" ]; then
   echo "--- graphify: semantic extraction via backend '$GRAPHIFY_BACKEND' ---"
   _model_args=()
   [ -n "${GRAPHIFY_MODEL:-}" ] && _model_args=(--model "$GRAPHIFY_MODEL")
-  uv tool run --from "graphifyy[openai]==0.9.19" graphify extract . --backend "$_real_backend" "${_model_args[@]}"
+  # graphify defaults to four semantic chunks in flight, and its own --help says to set 1
+  # for local LLMs. A local server answers one request at a time anyway, so four in flight
+  # buys no throughput and does risk the memory guard on a machine also running the model.
+  # Not a fix for the failure observed here (see the note in tools/graphify.env.example):
+  # that one is a parse failure, and it reproduces at concurrency 1. This is upstream's
+  # documented setting for this deployment shape, correct on its own terms.
+  _tuning_args=()
+  case "$GRAPHIFY_BACKEND" in
+    omlx|mlx|ollama) _tuning_args=(--max-concurrency 1) ;;
+  esac
+  uv tool run --from "graphifyy[openai]==0.9.19" graphify extract . --backend "$_real_backend" "${_model_args[@]}" "${_tuning_args[@]}"
 else
   # `update`, not `extract --code-only`: the latter has a confirmed-broken --code-only
   # flag on every graphifyy release through 0.9.10 (silently demands an LLM key for doc
@@ -126,28 +136,33 @@ else
   uv tool run --from graphifyy==0.9.19 graphify update .
 fi
 # What actually came out, read off the artifact rather than scraped from graphify's log.
-# graphify preserves a usable AST graph and exits 0 even when semantic extraction hits a
-# memory guard, so exit status alone cannot tell the two apart. `summary` is the field only
-# the semantic pass writes; `community_name` is not a semantic signal despite the name --
-# it is slugified from paths and symbols, so it is populated on a code-only run too.
+# graphify preserves a usable AST graph and exits 0 even when semantic extraction fails, so
+# exit status alone cannot tell the two apart.
+#
+# `_origin` is the signal: graphify stamps every node and edge with the pass that produced
+# it, and an AST-only graph carries `ast` on all of them. Counting anything-but-ast is
+# deliberately not a match against a specific label -- upstream may name the semantic pass
+# whatever it likes, and asking "did anything other than the AST pass contribute" survives
+# that. Two fields that look like they would work and do not: `summary` does not exist in
+# this schema at all, so any check against it reports code-only forever; `community_name`
+# is populated on a pure AST run too (it is slugified from paths and symbols).
 report_outcome() {
-  local graph="$AXON_ROOT/graphify-out/graph.json" total=0 summarized=0
+  local graph="$AXON_ROOT/graphify-out/graph.json" total=0 semantic=0 hyper=0
 
   if [ ! -f "$graph" ]; then
     echo "--- graphify: unavailable -- no graph.json was produced ---" >&2
     return 1
   fi
   total="$(jq -r '.nodes | length' "$graph" 2>/dev/null || echo 0)"
-  summarized="$(jq -r '[.nodes[] | select(.summary != null and .summary != "")] | length' "$graph" 2>/dev/null || echo 0)"
+  semantic="$(jq -r '[.nodes[], .links[]? | select(._origin != "ast")] | length' "$graph" 2>/dev/null || echo 0)"
+  hyper="$(jq -r '.hyperedges | length' "$graph" 2>/dev/null || echo 0)"
 
   if [ "$_use_backend" != "1" ]; then
     echo "--- graphify: code-only -- $total nodes, no semantic pass requested ---"
-  elif [ "$summarized" -eq 0 ]; then
-    echo "--- graphify: code-only -- $total nodes, semantic pass via '$GRAPHIFY_BACKEND' returned nothing ---" >&2
-  elif [ "$summarized" -lt "$total" ]; then
-    echo "--- graphify: partial -- $summarized/$total nodes summarized via '$GRAPHIFY_BACKEND' ---" >&2
+  elif [ "$semantic" -eq 0 ] && [ "$hyper" -eq 0 ]; then
+    echo "--- graphify: code-only -- $total nodes, semantic pass via '$GRAPHIFY_BACKEND' contributed nothing ---" >&2
   else
-    echo "--- graphify: complete -- $total nodes summarized via '$GRAPHIFY_BACKEND' ---"
+    echo "--- graphify: semantic -- $total nodes, $semantic non-AST element(s), $hyper hyperedge(s) via '$GRAPHIFY_BACKEND' ---"
   fi
   echo "    see graphify-out/graph.html, GRAPH_REPORT.md"
 }
