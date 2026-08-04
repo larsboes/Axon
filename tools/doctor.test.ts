@@ -11,6 +11,9 @@ import {
   collectWhyBlocks,
   findDanglingDecisionRefs,
   extractSiblingRepoRefs,
+  parseMirrorDivergence,
+  parseProjectManifestPaths,
+  pointerSearchRoots,
   findDecisionPathRot,
   findPlaintextSecretsInEnvTemplate,
   parseEnvTemplateLines,
@@ -415,5 +418,87 @@ describe("whyBlockBases", () => {
 
   test("root-level files contribute the root base and nothing else", () => {
     expect(whyBlockBases(["README.md", "axon.toml"])).toEqual([""]);
+  });
+});
+
+describe("LifeOS USER mirror divergence", () => {
+  test("the clean report reads as zero", () => {
+    expect(parseMirrorDivergence([
+      "── LifeOS USER mirror (dry-run) ──",
+      "  source: /somewhere/LIFEOS/USER",
+      "  mirror: /elsewhere/resources/backups/lifeos/USER",
+      "  up to date ✅",
+    ].join("\n"))).toBe(0);
+  });
+
+  test("the count is read from the summary line, not from the file listing above it", () => {
+    expect(parseMirrorDivergence([
+      "── LifeOS USER mirror (dry-run) ──",
+      "  Files /a/CACHE/freshness.json and /b/CACHE/freshness.json differ",
+      "  Files /a/TELOS/SUMMARY.md and /b/TELOS/SUMMARY.md differ",
+      "  2 path(s) diverged — run with --apply",
+    ].join("\n"))).toBe(2);
+  });
+
+  test("a reworded tool reads as unrecognized, never as clean", () => {
+    // The failure this exists for: a looser regex returning 0 here would report a
+    // healthy mirror on a tool that no longer says anything about divergence.
+    expect(parseMirrorDivergence("mirror sync complete, nothing to do")).toBeNull();
+  });
+});
+
+describe("LifeOS PROJECTS.md pointers", () => {
+  const manifest = [
+    "## Projects Table",
+    "",
+    "| Project | Path | URL | Visibility |",
+    "|---------|------|-----|-----------|",
+    "| **Axon** | `~/Developer/Axon` | `github.com/x/Axon` | public-safe |",
+    "| **physio-at-home** (Moca) | `~/Developer/Projects/physio-at-home` | _(no git)_ | private |",
+    "",
+    "## Open Sessions",
+    "",
+    "| Session | Stand | Offen |",
+    "|---|---|---|",
+    "| **Home-Server** | belongs in the vault again | buy the Pi |",
+    "",
+    "## Routing Aliases",
+    "",
+    "When Lars says... | Jarvis routes to...",
+    "---|---",
+    '"LifeOS", "this system" | `~/.claude`',
+  ].join("\n");
+
+  test("only the project table's rows are pointers", () => {
+    expect(parseProjectManifestPaths(manifest)).toEqual([
+      { name: "Axon", path: "~/Developer/Axon" },
+      { name: "physio-at-home", path: "~/Developer/Projects/physio-at-home" },
+    ]);
+  });
+
+  test("a bolded row with prose in cell two is not a pointer", () => {
+    // Open Sessions satisfies the bold half and nothing else. Matching on bold alone
+    // would turn every session line into a path that fails to resolve.
+    expect(parseProjectManifestPaths(manifest).map((r) => r.name)).not.toContain("Home-Server");
+  });
+
+  test("a backticked path with no bolded name is not a pointer", () => {
+    // Routing Aliases satisfies the path half. It resolves today, so matching it would
+    // pass — and would break the day an alias names something that is not a directory.
+    expect(parseProjectManifestPaths('"LifeOS" | `~/.claude`')).toEqual([]);
+  });
+
+  test("a relative or bare-word cell is not a path", () => {
+    expect(parseProjectManifestPaths("| **Thing** | `Developer/Thing` |")).toEqual([]);
+    expect(parseProjectManifestPaths("| **Thing** | Axon |")).toEqual([]);
+  });
+
+  test("search roots are the manifest's own parents, deduped", () => {
+    expect(pointerSearchRoots([
+      "/h/Developer/Axon",
+      "/h/Developer/axon-personal",
+      "/h/Developer/Projects/VBB",
+      "/h/.claude",
+    ])).toEqual(["/h", "/h/Developer", "/h/Developer/Projects"]);
   });
 });

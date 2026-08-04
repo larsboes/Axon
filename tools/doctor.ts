@@ -79,6 +79,57 @@ export function extractSiblingRepoRefs(text: string): string[] {
   return names;
 }
 
+// Pure, unit-testable core of the LifeOS USER mirror check: the divergence count
+// out of tools/mirror-lifeos-user.sh's dry-run report.
+//
+// Returns null when the output matches neither shape rather than defaulting to 0.
+// A reworded tool then reads as "unrecognized" instead of as a clean tree, which is
+// the silent-green failure a looser regex buys you — the same reason the sweep below
+// has a planted fixture.
+export function parseMirrorDivergence(output: string): number | null {
+  if (/^\s*up to date/m.test(output)) return 0;
+  const diverged = output.match(/^\s*(\d+)\s+path\(s\)\s+diverged/m);
+  return diverged ? Number(diverged[1]) : null;
+}
+
+// Pure, unit-testable core of the "LifeOS pointers" check: the project rows of
+// LifeOS' PROJECTS.md, which declares where every project this setup knows about
+// lives on disk.
+//
+// A row counts only when it bolds a name AND its second cell is a lone backticked
+// absolute path. That pair is what separates the project table from the two others
+// in the same file: Open Sessions bolds a name but carries prose in cell two,
+// Routing Aliases carries a backticked path but bolds nothing. Neither header text
+// nor column order is read, so the table can gain a column without this going blind.
+export function parseProjectManifestPaths(markdown: string): Array<{ name: string; path: string }> {
+  const rows: Array<{ name: string; path: string }> = [];
+  for (const line of markdown.split("\n")) {
+    if (!line.trimStart().startsWith("|")) continue;
+    const cells = line.split("|").slice(1, -1).map((c) => c.trim());
+    if (cells.length < 2) continue;
+    const name = cells[0].match(/\*\*(.+?)\*\*/)?.[1];
+    const path = cells[1].match(/^`((?:~|\/)[^`]+)`$/)?.[1];
+    if (name && path) rows.push({ name, path });
+  }
+  return rows;
+}
+
+// Where to look when a declared path does not resolve: the parent directories the
+// manifest itself names, deduped.
+//
+// Derived from the declarations rather than configured, because the drift this
+// catches is a project moving between two parents the manifest already knows —
+// `Developer/VBB` to `Developer/Projects/VBB`. A configured search list would be a
+// second thing to update at exactly the moment the first one went stale.
+export function pointerSearchRoots(paths: string[]): string[] {
+  const roots = new Set<string>();
+  for (const p of paths) {
+    const parent = dirname(p);
+    if (parent && parent !== p && parent !== ".") roots.add(parent);
+  }
+  return [...roots].sort();
+}
+
 // Pure, unit-testable core of the sweep's skip rule: is this file exempt from the
 // hardcoded-path sweep by what it IS, rather than by being named in a list?
 //
@@ -966,6 +1017,83 @@ const CHECKS: Check[] = [
           else ctx.bad(`${m.tool} — ${p} missing`);
         }
       }
+    },
+  },
+
+  // The LifeOS USER tree — identity, TELOS, memory — is the one state mount with no
+  // git of its own: no history, no undo, nothing to diff against a last-good state.
+  // tools/mirror-lifeos-user.sh owns the recovery copy and the comparison; doctor
+  // only asks it, in its dry-run mode, which writes nothing. Same call as the
+  // upstream-checker delegation further down — one implementation of "what
+  // diverged", two surfaces that report it.
+  //
+  // Drift is a warning, never a failure. The live tree moves between refreshes by
+  // design, and the whole point of keeping this read-only is that reconciliation
+  // stays a deliberate act: nothing here may make the mirror win over the original.
+  //
+  // The count only, never the paths. The tool prints those and they name personal
+  // files; a doctor report gets pasted into issues and chat, and the number is the
+  // part that belongs there.
+  {
+    name: "LifeOS USER mirror (read-only)",
+    run(ctx) {
+      if (!ctx.mounts.some((m) => m?.tool === "lifeos")) {
+        return ctx.warn('no [[state_mount]] with tool = "lifeos" — skipped');
+      }
+      const tool = join(ctx.root, "tools", "mirror-lifeos-user.sh");
+      if (!existsSync(tool)) return ctx.bad(`missing ${tool} — nothing owns the recovery mirror`);
+
+      const proc = Bun.spawnSync({ cmd: [tool], stdout: "pipe", stderr: "pipe" });
+      if (proc.exitCode !== 0) {
+        const why = proc.stderr.toString().trim().split("\n")[0] || `exit ${proc.exitCode}`;
+        return ctx.bad(`mirror check failed — ${why}`);
+      }
+
+      const diverged = parseMirrorDivergence(proc.stdout.toString());
+      if (diverged === null) ctx.warn("tools/mirror-lifeos-user.sh reported an unrecognized shape — read it directly");
+      else if (diverged === 0) ctx.ok("USER tree and its recovery mirror agree");
+      else ctx.warn(`${diverged} path(s) diverged — tools/mirror-lifeos-user.sh for detail, --apply to refresh`);
+    },
+  },
+
+  // Pointer resolution for the one cross-island manifest Axon does not own: LifeOS'
+  // PROJECTS.md, which declares where every project lives. It is the same class of
+  // bug the state-mount check above covers — a manifest asserting a path nobody
+  // verifies — and the class is worth one sweep rather than one fix per instance.
+  //
+  // Deliberately not cross-checked against systems.toml. That registry lists systems
+  // with a ROLE in Axon, not every project on the machine, so the difference between
+  // the two is intended and comparing them would manufacture findings.
+  {
+    name: "LifeOS pointers (PROJECTS.md)",
+    run(ctx) {
+      const mount = ctx.mounts.find((m) => m?.tool === "lifeos");
+      if (!mount) return ctx.warn('no [[state_mount]] with tool = "lifeos" — skipped');
+
+      const manifest = join(expandHome(mount.path), "LIFEOS", "USER", "PROJECTS.md");
+      if (!existsSync(manifest)) return ctx.warn(`no ${manifest} — nothing to resolve`);
+
+      const rows = parseProjectManifestPaths(readFileSync(manifest, "utf8"));
+      if (rows.length === 0) return ctx.warn(`${manifest} declares no project path — has the table changed shape?`);
+
+      const roots = pointerSearchRoots(rows.map((r) => expandHome(r.path)));
+      let resolved = 0;
+      for (const row of rows) {
+        const declared = expandHome(row.path);
+        if (existsSync(declared)) {
+          resolved += 1;
+          continue;
+        }
+        // A checkout that moved between two parents the manifest already names is a
+        // stale declaration and fails. Anything else is indistinguishable from a
+        // project simply not cloned here, which is legitimate on a second machine.
+        const moved = roots
+          .map((root) => join(root, basename(declared)))
+          .find((candidate) => candidate !== declared && existsSync(candidate));
+        if (moved) ctx.bad(`${row.name}: declared ${row.path}, actually at ${moved}`);
+        else ctx.warn(`${row.name}: ${row.path} does not resolve — not cloned here, or the path is stale`);
+      }
+      if (resolved > 0) ctx.ok(`${resolved}/${rows.length} declared project path(s) resolve`);
     },
   },
 

@@ -47,6 +47,12 @@ updates on its own, and has its own backup path in
 same fact (README.md#one-manifest-per-concern). This capability covers only what sits *inside* the
 system tree and would otherwise be invisible and unrecoverable.
 
+What the USER zone does get is visibility. `tools/doctor` runs
+`tools/mirror-lifeos-user.sh` in dry-run and reports the divergence count
+against the overlay's recovery mirror — read-only, warning not failure, count
+without paths. Drift between refreshes is normal; the mirror silently winning
+over the original is not, which is why nothing on this path ever writes.
+
 ## Why two mechanisms
 
 `tools/lifeos-sync` picks per target, and the choice is not stylistic:
