@@ -182,16 +182,10 @@ fn xml_field(body: &str, tag: &str) -> Option<String> {
     )
 }
 
-fn decode_entities(value: &str) -> String {
-    value
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&#x2F;", "/")
-        .replace("&nbsp;", " ")
-}
+// Entity decoding is one job with one home (#77). This file's own copy also
+// decoded `&amp;` first, so `&amp;lt;` came back as a real `<` — the same
+// double-decode the shared version is ordered to avoid.
+use crate::extraction::decode_basic_entities as decode_entities;
 
 #[cfg(test)]
 mod tests {

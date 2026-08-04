@@ -388,13 +388,36 @@ pub fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The entities Axon's sources actually emit.
+///
+/// `&amp;` is decoded **last**, and that ordering is the whole correctness
+/// argument: decoding it first turns `&amp;lt;` into `&lt;`, which the next
+/// replacement then turns into a real `<`. A page that escaped its markup for
+/// display would have it silently reconstituted as markup, one stage before
+/// the tag walk that eats it.
 pub fn decode_basic_entities(s: &str) -> String {
-    s.replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = s.to_string();
+    for (entity, replacement) in [
+        ("&nbsp;", " "),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&apos;", "'"),
+        ("&#39;", "'"),
+        ("&#x2F;", "/"),
+        ("&hellip;", "…"),
+        ("&mdash;", "—"),
+        ("&ndash;", "–"),
+        ("&amp;", "&"),
+    ] {
+        if out.contains(entity) {
+            out = out.replace(entity, replacement);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -560,6 +583,23 @@ mod tests {
             .extract(&Document::html(b"<p>caf\xFF\xFE latte</p>"))
             .unwrap();
         assert!(out.text.contains("latte"), "got: {:?}", out.text);
+    }
+
+    #[test]
+    fn escaped_markup_does_not_come_back_as_markup() {
+        // Decoding `&amp;` first turns `&amp;lt;` into `&lt;`, which the next
+        // replacement turns into a real `<`. A page that escaped its markup
+        // for display would have it reconstituted one stage before the tag
+        // walk eats it. Ordering is the fix, so ordering is what is tested.
+        assert_eq!(
+            decode_basic_entities("&amp;lt;script&amp;gt;"),
+            "&lt;script&gt;"
+        );
+        assert_eq!(decode_basic_entities("Rust &amp; Zig"), "Rust & Zig");
+        assert_eq!(decode_basic_entities("a &lt; b"), "a < b");
+        assert_eq!(decode_basic_entities("path&#x2F;to"), "path/to");
+        // Untouched when there is nothing to decode.
+        assert_eq!(decode_basic_entities("plain text"), "plain text");
     }
 
     #[test]
