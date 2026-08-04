@@ -496,7 +496,7 @@ describe("LifeOS PROJECTS.md pointers", () => {
   test("search roots are the manifest's own parents, deduped", () => {
     expect(pointerSearchRoots([
       "/h/Developer/Axon",
-      "/h/Developer/axon-personal",
+      "/h/Developer/axon-overlay",
       "/h/Developer/Projects/VBB",
       "/h/.claude",
     ])).toEqual(["/h", "/h/Developer", "/h/Developer/Projects"]);
