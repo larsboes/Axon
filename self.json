@@ -83,7 +83,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 434
+        "nodes": 436
       }
     },
     {
@@ -274,8 +274,8 @@
         "port": "8084"
       },
       "code": {
-        "files": 26,
-        "nodes": 402
+        "files": 27,
+        "nodes": 425
       }
     },
     {
@@ -942,7 +942,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 5579,
+    "nodes": 5604,
     "external": 5,
     "stale": [],
     "unmatched": [

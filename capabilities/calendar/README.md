@@ -51,7 +51,7 @@ without a check are not started.
 - [x] Trip drafts — events grouped by place and time proximity (`GET /api/trip-drafts`)
 - [x] Time-bounded planning context — editable notices that affect Home ranking without blocking calendar time
 - [x] Home composition — upcoming calendar commitments, open calendar choices, planning context, location clusters, and source overview
-- [ ] A dashboard surface that shows a verdict (Entdecken badge — not started)
+- [x] Feed's Entdecken view shows each dated candidate's soft verdict and evidence
 - [x] Materialising a reviewed trip draft into a `trips.plan` through the
       public Trips API, with an idempotence ledger and dashboard confirmation
 - [ ] Dashboard travel‑day view (Phase F — not started)
@@ -426,10 +426,10 @@ as `already_in_calendar` instead. That is the free clause's "or only
 `travel_ok`/`event`"; a *different* confirmed event on the same day is still a
 conflict, because you cannot attend both.
 
-The match is on `external_id` alone, so **the candidate id must be the key
-promotion wrote**, not a differently-shaped id for the same thing. A promoter
-that stores a bare provider event id has to ask about that same bare id; passing
-the wrapped opportunity id instead reads as a different event and self-conflicts.
+The match accepts either the entry's provider `external_id` or the originating
+Scouting id in `payload.opportunity_id`. That preserves provider-level dedupe
+while allowing Feed to ask with its namespaced opportunity id; either key
+recognizes the candidate's own entry instead of reporting a self-conflict.
 
 **A verdict carries its evidence.** Every overlapping entry comes back with its
 id, kind, title, range and impact, strongest first — including the neutral ones,

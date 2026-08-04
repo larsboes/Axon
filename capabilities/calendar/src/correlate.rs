@@ -320,6 +320,18 @@ pub fn verdict_for(candidate: &Candidate, entries: &[Entry]) -> Result<Verdict, 
     })
 }
 
+/// Verdicts for one caller-supplied batch, in the caller's order.
+///
+/// The HTTP edge reads one Calendar window for the whole batch and delegates
+/// here. Keeping the loop beside `verdict_for` makes the served batch contract
+/// testable without a database or an Axum router.
+pub fn verdicts_for(candidates: &[Candidate], entries: &[Entry]) -> Result<Vec<Verdict>, String> {
+    candidates
+        .iter()
+        .map(|candidate| verdict_for(candidate, entries))
+        .collect()
+}
+
 /// The day window a candidate set needs read out of the store, as the
 /// `from`/`to` pair `CalendarStore::list_entries` takes (from inclusive, to
 /// exclusive). `None` for an empty set — no candidates, no query.
@@ -756,6 +768,45 @@ mod tests {
         assert_eq!(from, "2026-08-14");
         assert_eq!(to, "2026-09-04");
         assert_eq!(query_window(&[]).unwrap(), None);
+    }
+
+    #[test]
+    fn a_batch_preserves_candidate_order_and_returns_all_three_verdicts() {
+        let candidates = [
+            Candidate {
+                id: "free".into(),
+                starts_at: "2026-08-10".into(),
+                ends_at: None,
+            },
+            Candidate {
+                id: "needs-travel-day".into(),
+                starts_at: "2026-08-11".into(),
+                ends_at: None,
+            },
+            Candidate {
+                id: "conflicts".into(),
+                starts_at: "2026-08-12".into(),
+                ends_at: None,
+            },
+        ];
+        let entries = [
+            entry("work_remote", "2026-08-10", "2026-08-11"),
+            entry("work_onsite", "2026-08-11", "2026-08-12"),
+            entry("away", "2026-08-12", "2026-08-13"),
+        ];
+
+        let verdicts = verdicts_for(&candidates, &entries).unwrap();
+        assert_eq!(
+            verdicts
+                .iter()
+                .map(|verdict| (verdict.id.as_str(), verdict.verdict))
+                .collect::<Vec<_>>(),
+            [
+                ("free", Feasibility::Free),
+                ("needs-travel-day", Feasibility::NeedsTravelDay),
+                ("conflicts", Feasibility::Conflicts),
+            ]
+        );
     }
 
     fn days(from: &str, to: &str) -> (i64, i64) {

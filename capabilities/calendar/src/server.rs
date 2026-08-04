@@ -504,10 +504,7 @@ async fn candidate_verdicts(
             // No candidates, no query — an empty ask is not an error.
             None => Vec::new(),
         };
-        let verdicts = candidates
-            .iter()
-            .map(|candidate| correlate::verdict_for(candidate, &entries))
-            .collect::<Result<Vec<_>, _>>()?;
+        let verdicts = correlate::verdicts_for(&candidates, &entries)?;
         Ok(json!({ "verdicts": verdicts }))
     })
     .await
