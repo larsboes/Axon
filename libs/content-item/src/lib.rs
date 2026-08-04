@@ -137,8 +137,137 @@ impl DataClass {
     /// construction, whatever the event itself is — a public concert still
     /// tells you the building is empty that evening.
     pub fn personal_source_default(rationale: impl Into<String>) -> Self {
-        Self::new("personal", rationale, "source-default", "data-class-source-v1")
+        Self::new(
+            "personal",
+            rationale,
+            "source-default",
+            "data-class-source-v1",
+        )
     }
+
+    /// Classify a mail from the metadata a read-only sweep has already
+    /// admitted: the stream its mail rules picked, the sender and the subject.
+    ///
+    /// The body is deliberately not a parameter. Classification decides whether
+    /// a body may be fetched at all, so it must not depend on having one.
+    ///
+    /// Never returns `public`. A mailbox holds no public content — someone
+    /// chose to write to *this* operator, and that choice is itself personal.
+    pub fn classify_mail(stream: &str, from: &str, subject: &str) -> Self {
+        let text = format!("{from} {subject}").to_ascii_lowercase();
+        match mail_vault_reason(stream, &text) {
+            Some(rationale) => Self::new("vault", rationale, "rules", MAIL_CLASSIFIER_VERSION),
+            None => Self::new(
+                "personal",
+                "Mail metadata is Personal by default.",
+                "rules",
+                MAIL_CLASSIFIER_VERSION,
+            ),
+        }
+    }
+}
+
+/// The stored classes, in the order a reader should offer them. `vault` is the
+/// stored value; `Private` is the word the product uses (see [`DataClass::new`]).
+pub const DATA_CLASSES: [&str; 3] = ["public", "personal", "vault"];
+
+/// Stamped on every rules-produced classification, so a stored row records
+/// which rule set decided it. Bump with any change to [`mail_vault_reason`].
+pub const MAIL_CLASSIFIER_VERSION: &str = "data-class-rules-v1";
+
+pub fn valid(data_class: &str) -> bool {
+    DATA_CLASSES.contains(&data_class)
+}
+
+/// Whether a stored *review representation* of this class must be redacted
+/// before it is persisted.
+///
+/// The distinction that matters: for every other class the sensitive material
+/// is in the body, and keeping bodies transient is enough. For `vault` the
+/// metadata is the payload — a one-time code arrives in the subject line, and
+/// storing that subject verbatim puts it in a log, an API response and a
+/// dashboard at once.
+pub fn redact_before_persistence(data_class: &str) -> bool {
+    data_class == "vault"
+}
+
+/// Why a mail's metadata alone is enough to call it Private, or `None` for the
+/// personal default.
+///
+/// Conservative on purpose: a false `vault` costs a redacted subject line in a
+/// review list, a false `personal` costs a leaked credential.
+fn mail_vault_reason(stream: &str, lowercased_text: &str) -> Option<&'static str> {
+    if stream == "steuern" {
+        return Some("Tax-related mail is Private by default.");
+    }
+    if stream == "belege" {
+        return Some("Receipts and invoices are Private by default.");
+    }
+    const AUTHENTICATION: [&str; 22] = [
+        "verification code",
+        "security code",
+        "security alert",
+        "account alert",
+        "one-time code",
+        "one-time access token",
+        "access token",
+        "recovery code",
+        "new sign in",
+        "new sign-in",
+        "new login",
+        "trusted device",
+        "suspicious activity",
+        "magic link",
+        "secure mail",
+        "securemail",
+        "vertraulich",
+        "bestätigungscode",
+        "sicherheitscode",
+        "einmalcode",
+        "passwort",
+        "password",
+    ];
+    const FINANCIAL: [&str; 8] = [
+        "bank statement",
+        "kontoauszug",
+        "rechnung",
+        "invoice",
+        "payment",
+        "zahlung",
+        "insurance",
+        "versicherung",
+    ];
+    const HEALTH: [&str; 7] = [
+        "diagnosis",
+        "diagnose",
+        "prescription",
+        "rezept",
+        "medical result",
+        "befund",
+        "krankenversicherung",
+    ];
+
+    // `2fa` and `otp` are matched as whole words: `otp` alone also sits inside
+    // ordinary German words, and a substring match there classified unrelated
+    // mail as Private.
+    let bounded_token = lowercased_text
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| word == "2fa" || word == "otp");
+
+    if bounded_token || contains_any(lowercased_text, &AUTHENTICATION) {
+        return Some("Authentication or account-recovery metadata is Private.");
+    }
+    if contains_any(lowercased_text, &FINANCIAL) {
+        return Some("Financial or insurance metadata is Private.");
+    }
+    if contains_any(lowercased_text, &HEALTH) {
+        return Some("Health-related metadata is Private.");
+    }
+    None
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
 }
 
 /// Derived permission boundary. Records eligibility; never evidence that a
@@ -347,21 +476,54 @@ mod tests {
         let value = serde_json::to_value(minimal("calendar")).unwrap();
         let object = value.as_object().unwrap();
         for field in [
-            "schema_version", "source", "id", "kind", "title", "url", "author", "summary",
-            "content", "content_label", "day", "created_at", "status", "content_status",
-            "data_class", "processing_policy", "cloud_processing", "relevance", "evaluation",
-            "processing", "origins", "links", "mail", "calendar",
+            "schema_version",
+            "source",
+            "id",
+            "kind",
+            "title",
+            "url",
+            "author",
+            "summary",
+            "content",
+            "content_label",
+            "day",
+            "created_at",
+            "status",
+            "content_status",
+            "data_class",
+            "processing_policy",
+            "cloud_processing",
+            "relevance",
+            "evaluation",
+            "processing",
+            "origins",
+            "links",
+            "mail",
+            "calendar",
         ] {
-            assert!(object.contains_key(field), "{field} missing from the wire shape");
+            assert!(
+                object.contains_key(field),
+                "{field} missing from the wire shape"
+            );
         }
-        assert!(object["title"].is_null(), "an absent title is null, not omitted");
-        assert_eq!(object["links"], json!([]), "an empty collection is [], not null");
+        assert!(
+            object["title"].is_null(),
+            "an absent title is null, not omitted"
+        );
+        assert_eq!(
+            object["links"],
+            json!([]),
+            "an empty collection is [], not null"
+        );
     }
 
     #[test]
     fn the_stored_vault_class_is_labelled_private() {
         assert_eq!(DataClass::new("vault", "r", "human", "v1").label, "Private");
-        assert_eq!(DataClass::new("personal", "r", "rules", "v1").label, "Personal");
+        assert_eq!(
+            DataClass::new("personal", "r", "rules", "v1").label,
+            "Personal"
+        );
         assert_eq!(DataClass::public_source_default().label, "Public");
     }
 
@@ -370,11 +532,72 @@ mod tests {
     #[test]
     fn policy_is_derived_from_the_class_and_never_widens_it() {
         assert_eq!(processing_policy("public").cloud_handling, "eligible");
-        assert_eq!(processing_policy("personal").cloud_handling, "pseudonymization_required");
+        assert_eq!(
+            processing_policy("personal").cloud_handling,
+            "pseudonymization_required"
+        );
         assert_eq!(processing_policy("vault").cloud_handling, "blocked");
         // An unknown class gets the strictest policy, not the loosest.
         assert_eq!(processing_policy("something-new").cloud_handling, "blocked");
         assert!(processing_policy("something-new").pseudonymization_required);
+    }
+
+    #[test]
+    fn ordinary_mail_is_personal_and_never_public() {
+        let result = DataClass::classify_mail("aktiv", "friend@example.com", "Weekend plan");
+        assert_eq!(result.value, "personal");
+        assert_eq!(result.method, "rules");
+        assert_eq!(
+            processing_policy(&result.value).cloud_handling,
+            "pseudonymization_required"
+        );
+        assert!(!redact_before_persistence(&result.value));
+    }
+
+    #[test]
+    fn authentication_financial_and_health_mail_is_private() {
+        for (stream, from, subject) in [
+            ("belege", "shop@example.com", "Your order"),
+            ("steuern", "amt@example.com", "Bescheid"),
+            ("aktiv", "account@example.com", "Your verification code"),
+            (
+                "aktiv",
+                "account@example.com",
+                "Security alert: new sign in",
+            ),
+            ("aktiv", "bank@example.com", "Kontoauszug Juli"),
+            ("aktiv", "praxis@example.com", "Ihr Befund"),
+        ] {
+            let result = DataClass::classify_mail(stream, from, subject);
+            assert_eq!(result.value, "vault", "{subject} should be Private");
+            assert!(redact_before_persistence(&result.value));
+        }
+        assert_eq!(processing_policy("vault").cloud_handling, "blocked");
+    }
+
+    /// The previous rule matched `" otp "` with literal surrounding spaces, so
+    /// a subject that *began* with the code word slipped through as Personal —
+    /// exactly the shape a one-time-code mail actually has.
+    #[test]
+    fn a_code_word_at_a_string_boundary_still_classifies_as_private() {
+        for subject in ["OTP for your login", "Login 2FA", "your otp"] {
+            assert_eq!(
+                DataClass::classify_mail("aktiv", "noreply@example.com", subject).value,
+                "vault",
+                "{subject} should be Private"
+            );
+        }
+    }
+
+    /// Whole-word matching has to cut both ways, or the conservative default
+    /// turns into "everything is Private" and the class stops carrying signal.
+    #[test]
+    fn a_code_word_inside_an_unrelated_word_does_not_trigger() {
+        assert_eq!(
+            DataClass::classify_mail("aktiv", "kollege@example.com", "Laptop-Adapter mitbringen?")
+                .value,
+            "personal"
+        );
     }
 
     #[test]
@@ -401,8 +624,15 @@ mod tests {
         });
         let value = serde_json::to_value(&item).unwrap();
         assert_eq!(value["calendar"]["commitment"], "committed");
-        assert_eq!(value["status"], "committed", "status mirrors the triage axis of the source");
-        assert_eq!(value["relevance"], json!([]), "a decided item is not ranked");
+        assert_eq!(
+            value["status"], "committed",
+            "status mirrors the triage axis of the source"
+        );
+        assert_eq!(
+            value["relevance"],
+            json!([]),
+            "a decided item is not ranked"
+        );
         assert!(value["evaluation"].is_null());
         assert!(value["mail"].is_null(), "one extension at a time");
     }

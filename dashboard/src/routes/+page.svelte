@@ -19,6 +19,7 @@
     type OpportunityStatus,
     type ScoutingOpportunity,
     type ScoutingSource,
+    type TriageItem,
     type TripPlan,
   } from "$lib/api";
   import { entryLink } from "$lib/calendar/types";
@@ -33,7 +34,8 @@
     | { key: string; kind: "feed"; priority: number; entry: FeedEntry }
     | { key: string; kind: "calendar"; priority: number; entry: CalendarEntry }
     | { key: string; kind: "opportunity"; priority: number; opportunity: ScoutingOpportunity }
-    | { key: string; kind: "trip"; priority: number; plan: TripPlan };
+    | { key: string; kind: "trip"; priority: number; plan: TripPlan }
+    | { key: string; kind: "mail"; priority: number; item: TriageItem };
   type HomeView = "now" | "locations" | "sources";
 
   const today = new Date();
@@ -59,6 +61,7 @@
   let macmonSample = $state<MacmonSample | null>(null);
   let macmonErr = $state(false);
   let feedEntries = $state<FeedEntry[]>([]);
+  let mailProposals = $state<TriageItem[]>([]);
   let opportunities = $state<ScoutingOpportunity[]>([]);
   let scoutingSources = $state<ScoutingSource[]>([]);
   let plans = $state<TripPlan[]>([]);
@@ -135,6 +138,24 @@
       });
     }
 
+    /// Mail sits between opportunities and reading, and only `aktiv` mail gets
+    /// here at all. The other six categories are the ones the rules already
+    /// decided about — a receipt or a newsletter has no call left to make, and
+    /// putting the whole inbox in this list would repeat the mistake the note
+    /// below the loop describes, with 25 proposals instead of 53 articles.
+    for (const item of mailProposals) {
+      if (item.status !== "proposed" || item.stream !== "aktiv") continue;
+      const recent = item.internal_date
+        ? Date.now() - new Date(item.internal_date).getTime() < 172_800_000
+        : false;
+      items.push({
+        key: `mail:${item.id}`,
+        kind: "mail",
+        item,
+        priority: 550 + (recent ? 30 : 0),
+      });
+    }
+
     for (const entry of feedEntries) {
       if (entry.status !== "new") continue;
       const recent = Date.now() - new Date(entry.created_at).getTime() < 86_400_000 ? 40 : 0;
@@ -191,6 +212,9 @@
       return `${sentenceCase(whenLabel(next.plan.date_start))}: ${where}, ${tripGap(next.plan)}.`;
     }
     if (next.kind === "calendar") return `${next.entry.title} on ${dateLabel(next.entry.starts_at)} is still undecided.`;
+    if (next.kind === "mail") {
+      return `${next.item.subject ?? "A mail"} from ${next.item.from_addr ?? "an unknown sender"} is waiting for a call.`;
+    }
     return `${next.opportunity.title} is waiting for a yes or no.`;
   });
 
@@ -240,7 +264,16 @@
 
     const [healthResult, feedResult, scoutingResult, tripResult, calendarResult] = await Promise.allSettled([
       axonStatus.health(),
-      readCapability("comms", () => comms.feed({ days: 30 })),
+      // Both come from comms, so they share one capability gate and one
+      // failure path — a reachable comms that returns no mail is a different
+      // fact from an unreachable comms, and merging them would hide it.
+      readCapability("comms", async () => {
+        const [entries, proposals] = await Promise.all([
+          comms.feed({ days: 30 }),
+          comms.triage("proposed"),
+        ]);
+        return { entries, proposals };
+      }),
       readCapability("scouting", async () => {
         const [opportunityResult, sourceResult] = await Promise.all([
           scouting.opportunities(false),
@@ -263,7 +296,8 @@
     else missing.push("System status");
 
     if (feedResult.status === "fulfilled") {
-      feedEntries = feedResult.value.filter((entry) => entry.status === "new");
+      feedEntries = feedResult.value.entries.filter((entry) => entry.status === "new");
+      mailProposals = feedResult.value.proposals;
     } else {
       missing.push("Feed");
     }
@@ -307,6 +341,27 @@
     try {
       await comms.setStatus(id, status);
       feedEntries = feedEntries.filter((entry) => entry.id !== id);
+    } catch (caught) {
+      actionError = message(caught);
+    } finally {
+      busy = null;
+    }
+  }
+
+  function mailLink(item: TriageItem): string {
+    return `/feed/${encodeURIComponent(item.id)}?source=mail`;
+  }
+
+  /// Local only. Dismissing drops the proposal from this list and changes
+  /// nothing in Gmail — the archive and trash actions live on the entry page,
+  /// behind their own confirmation, because they leave Axon.
+  async function dismissMail(id: string): Promise<void> {
+    if (busy) return;
+    busy = `mail:${id}`;
+    actionError = null;
+    try {
+      await comms.setTriageStatus(id, "dismissed");
+      mailProposals = mailProposals.filter((item) => item.id !== id);
     } catch (caught) {
       actionError = message(caught);
     } finally {
@@ -385,6 +440,10 @@
   function openDecision(decision: Decision): void {
     if (decision.kind === "feed") {
       location.href = `/feed/${encodeURIComponent(decision.entry.id)}`;
+    } else if (decision.kind === "mail") {
+      // The entry route resolves an item from its source alone, so mail opens
+      // the same reader feed does — with the Gmail actions its extension adds.
+      location.href = `/feed/${encodeURIComponent(decision.item.id)}?source=mail`;
     } else if (decision.kind === "calendar") {
       location.href = "/calendar";
     } else if (decision.kind === "opportunity") {
@@ -709,6 +768,40 @@
                     onclick={() => void setFeedStatus(decision.entry.id, "dismissed")}
                   >
                     <Icon name="close" size={13} />
+                  </button>
+                </div>
+              {:else if decision.kind === "mail"}
+                <div class="decision-mark"><Icon name="mail" size={16} /></div>
+                <div class="decision-copy">
+                  <span class="kind">
+                    Mail · {decision.item.from_addr ?? "unknown sender"}
+                    {#if decision.item.internal_date}
+                      · {relativeDate(decision.item.internal_date)}
+                    {/if}
+                    {#if decision.item.data_class === "vault"}
+                      · <span class="private-mark">Private, redacted</span>
+                    {/if}
+                  </span>
+                  <a class="decision-title" href={mailLink(decision.item)}>
+                    {decision.item.subject ?? "(no subject)"}
+                  </a>
+                  {#if decision.item.snippet}<p>{decision.item.snippet}</p>{/if}
+                </div>
+                <div class="decision-actions">
+                  <a class="btn" href={mailLink(decision.item)}>Open</a>
+                  <button
+                    class="btn icon-action"
+                    type="button"
+                    disabled={busy === decision.key}
+                    aria-label="Dismiss mail proposal"
+                    title="Dismiss"
+                    onclick={() => void dismissMail(decision.item.id)}
+                  >
+                    {#if busy === decision.key}
+                      <Icon name="loader" size={13} />
+                    {:else}
+                      <Icon name="close" size={13} />
+                    {/if}
                   </button>
                 </div>
               {:else if decision.kind === "calendar"}
@@ -1267,6 +1360,12 @@
     font: 600 0.625rem/1.4 var(--font-mono);
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Says why the subject reads oddly, so a row of [number] markers looks like
+     a decision the system made rather than a rendering fault. */
+  .private-mark {
+    color: var(--text-secondary);
   }
 
   .decision-title {

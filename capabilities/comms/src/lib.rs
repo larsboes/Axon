@@ -21,13 +21,21 @@ pub(crate) mod axon_config;
 #[allow(dead_code)]
 pub(crate) mod inference;
 
+// The `content-item-v1` reader contract, on the same include terms as calendar
+// uses it. It owns data classification for every capability, mail included:
+// this module previously carried its own byte-identical copy of `DataClass` and
+// `processing_policy`, which is exactly the drift the shared lib exists to stop.
+#[path = "../../../libs/content-item/src/lib.rs"]
+#[allow(dead_code)]
+pub mod content_item;
+
 pub mod cloud_derivative;
 pub mod cloud_dispatch;
 pub mod config;
-pub mod data_class;
 pub mod evaluation;
 pub mod extraction_eval;
 pub mod google;
+pub mod intake;
 pub mod media;
 pub mod normalize;
 pub mod provenance;

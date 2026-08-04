@@ -1052,9 +1052,23 @@ export interface TriageSweepResult {
   fetched: number;
   new_count: number;
   skipped: number;
+  /** Threads whose subject or snippet was redacted before being stored. */
+  redacted: number;
   total_stored: number;
   next_cursor: string | null;
   exhausted: boolean;
+}
+
+/** What a redaction pass removed, by kind and count — never the values. */
+export interface TriageRedactResult {
+  reviewed: number;
+  in_scope: number;
+  changed: number;
+  dry_run: boolean;
+  entity_types: Record<string, number>;
+  audit: { id: string; digest: string }[];
+  transformation: string;
+  provider_calls: number;
 }
 
 export interface TriageRelevanceResult {
@@ -1605,6 +1619,13 @@ export const comms = {
     request<TriageDataClassRefreshResult>(
       '/comms/triage/data-class/refresh',
       jsonInit('POST', { limit }),
+    ),
+  /** Remediate rows stored before the sweep redacted Private mail in place.
+   *  Idempotent: a second run reports `changed: 0`. */
+  redactTriage: (limit = 500, dryRun = false) =>
+    request<TriageRedactResult>(
+      '/comms/triage/redact',
+      jsonInit('POST', { limit, dry_run: dryRun }),
     ),
   bulkTriage: (
     ids: string[],

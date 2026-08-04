@@ -15,8 +15,8 @@
 use std::collections::BTreeMap;
 
 use comms::config::{redact_database_url, Config};
-use comms::store::{Store, TriageItem};
-use comms::{data_class, google, media, normalize, rules};
+use comms::store::Store;
+use comms::{google, intake, media, normalize};
 
 fn arg_after<'a>(args: &'a [String], flag: &str) -> Option<&'a String> {
     args.iter()
@@ -119,6 +119,7 @@ fn cmd_sweep(args: &[String], cfg: &Config) {
     let mut grouped: BTreeMap<String, Vec<(String, String, String)>> = BTreeMap::new();
     let mut total = 0usize;
     let mut persisted_new = 0usize;
+    let mut redacted = 0usize;
 
     for stub in &stubs {
         let meta = match google::thread_meta(&token, &stub.id) {
@@ -128,56 +129,27 @@ fn cmd_sweep(args: &[String], cfg: &Config) {
                 continue;
             }
         };
+        let id = meta.id.clone();
         let from = meta.from_addr.clone().unwrap_or_default();
-        let subject = meta.subject.clone().unwrap_or_default();
-        let facts = rules::MailFacts {
-            from: &from,
-            subject: &subject,
-            has_list_unsubscribe: meta.has_list_unsubscribe(),
-        };
-        let (stream, rationale) = rules::classify(&facts, &cfg.rules);
-        let data_classification = data_class::classify_mail(&stream, &from, &subject);
+        let intake = intake::from_thread(meta, &cfg.rules);
         total += 1;
+        redacted += usize::from(intake.redaction_count() > 0);
 
         if let Some(st) = &store {
-            let item = TriageItem {
-                id: meta.id.clone(),
-                from_addr: meta.from_addr.clone(),
-                subject: meta.subject.clone(),
-                snippet: meta.snippet.clone(),
-                internal_date_ms: meta.internal_date_ms,
-                internal_date_text: None,
-                stream: stream.clone(),
-                rationale: rationale.clone(),
-                classification_method: "rules".into(),
-                classification_version: "mail-rules-v1".into(),
-                data_class: data_classification.class,
-                data_class_rationale: data_classification.rationale,
-                data_classification_method: data_classification.method,
-                data_classification_version: data_classification.version,
-                status: "proposed".into(),
-                gmail_action: None,
-                gmail_action_at: None,
-                purge_after: None,
-                gmail_location: None,
-                gmail_observed_at: None,
-                gmail_sync_status: None,
-                gmail_sync_action: None,
-                gmail_sync_error: None,
-                first_seen: String::new(),
-                last_seen: String::new(),
-            };
-            match st.upsert_triage(&item) {
+            match st.upsert_triage(&intake.item) {
                 Ok(true) => persisted_new += 1,
                 Ok(false) => {}
-                Err(e) => eprintln!("  warning: could not persist {}: {e}", meta.id),
+                Err(e) => eprintln!("  warning: could not persist {id}: {e}"),
             }
         }
 
+        // The redacted subject, not the swept one: what the terminal prints is
+        // as much an output surface as the database is.
+        let subject = intake.item.subject.clone().unwrap_or_default();
         grouped
-            .entry(stream)
+            .entry(intake.item.stream.clone())
             .or_default()
-            .push((from, subject, rationale));
+            .push((from, subject, intake.item.rationale.clone()));
     }
 
     for (stream, items) in &grouped {
@@ -190,6 +162,11 @@ fn cmd_sweep(args: &[String], cfg: &Config) {
     }
 
     println!("total: {total} threads across {} streams", grouped.len());
+    if redacted > 0 {
+        println!(
+            "redacted: {redacted} Private thread(s) — subject and snippet stored with markers"
+        );
+    }
     if let Some(_st) = &store {
         println!("persisted: {persisted_new} new proposals (existing decisions preserved)");
     } else {

@@ -916,10 +916,10 @@ impl Store {
         id: &str,
         data_class: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        if !crate::data_class::valid(data_class) {
+        if !crate::content_item::valid(data_class) {
             return Err(format!(
                 "invalid data class '{data_class}' -- must be one of: {}",
-                crate::data_class::DATA_CLASSES.join(", ")
+                crate::content_item::DATA_CLASSES.join(", ")
             )
             .into());
         }
@@ -944,7 +944,7 @@ impl Store {
     pub fn refresh_triage_data_class(
         &self,
         id: &str,
-        classification: &crate::data_class::DataClassification,
+        classification: &crate::content_item::DataClass,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn.lock().unwrap();
         let affected = conn.execute(
@@ -958,12 +958,36 @@ impl Store {
                 self.schema
             ),
             &[
-                &classification.class,
+                &classification.value,
                 &classification.rationale,
                 &classification.method,
                 &classification.version,
                 &id,
             ],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// Overwrite a stored row's review fields with their redacted form.
+    ///
+    /// Deliberately the only write that narrows these two columns, and
+    /// deliberately not a delete: the proposal, its decision and its Gmail
+    /// identity all stay reviewable — only the material that should never have
+    /// been persisted goes. A resweep cannot undo it, because the sweep now
+    /// redacts before it writes (see `intake`).
+    pub fn redact_triage_review_fields(
+        &self,
+        id: &str,
+        subject: Option<&str>,
+        snippet: Option<&str>,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let mut conn = self.conn.lock().unwrap();
+        let affected = conn.execute(
+            &format!(
+                "UPDATE {}.triage_items SET subject = $1, snippet = $2 WHERE id = $3",
+                self.schema
+            ),
+            &[&subject, &snippet, &id],
         )?;
         Ok(affected > 0)
     }
@@ -1487,7 +1511,7 @@ impl Store {
         if !matches!(approval.source.as_str(), "feed" | "mail") {
             return Err("cloud derivative source must be 'feed' or 'mail'".into());
         }
-        if !crate::data_class::valid(&approval.original_data_class) {
+        if !crate::content_item::valid(&approval.original_data_class) {
             return Err("cloud derivative has an invalid original data class".into());
         }
         if !matches!(
@@ -3601,7 +3625,7 @@ mod tests {
             .set_triage_data_class("thread:private", "vault")
             .unwrap());
 
-        let rules = crate::data_class::classify_mail("aktiv", "friend@example.com", "Hello");
+        let rules = crate::content_item::DataClass::classify_mail("aktiv", "friend@example.com", "Hello");
         assert!(!store
             .refresh_triage_data_class("thread:private", &rules)
             .unwrap());

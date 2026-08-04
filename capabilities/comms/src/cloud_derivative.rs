@@ -151,6 +151,37 @@ pub fn prepare(input: &CloudDocumentInput) -> CloudDerivativePreview {
     }
 }
 
+/// Run one stored review field — a subject, a snippet — through the same
+/// deterministic entity detection the cloud preview uses.
+///
+/// Exposed separately because the cloud boundary is not the first boundary.
+/// A `vault` mail's subject line can itself be the secret, so this also runs
+/// before the row is written (see `intake`), and again when an already-stored
+/// row is remediated. Same detector, same version string, three call sites —
+/// a second implementation is how the two drift apart.
+pub fn redact_review_field(
+    value: Option<&str>,
+    redactions: &mut Vec<RedactionFinding>,
+) -> Option<String> {
+    let value = value?;
+    if value.trim().is_empty() {
+        return Some(value.to_string());
+    }
+    Some(transform_text(value, true, redactions))
+}
+
+/// Stable identifier for what a redaction pass did, without carrying any of
+/// the material it removed. Safe to log, store and show.
+pub fn redaction_digest(findings: &[RedactionFinding]) -> String {
+    let mut parts: Vec<String> = findings
+        .iter()
+        .map(|finding| format!("{}:{}", finding.entity_type, finding.count))
+        .collect();
+    parts.sort();
+    let joined = parts.join(",");
+    digest(&[REDACTION_VERSION, &joined])
+}
+
 pub fn source_revision(input: &CloudDocumentInput) -> String {
     digest(&[
         &input.source,

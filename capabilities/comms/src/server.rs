@@ -5,7 +5,7 @@
 //! fetches and embedding calls run in spawn_blocking; the server binds only to
 //! loopback because ingest is allowed to fetch external URLs.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use axum::http::{HeaderName, HeaderValue, Method};
 use axum::{
@@ -22,14 +22,14 @@ use tower_http::cors::CorsLayer;
 use comms::cloud_derivative::{self, CloudDerivativePreview, CloudDocumentInput};
 use comms::cloud_dispatch;
 use comms::config::Config;
-use comms::data_class;
+use comms::content_item::{self, DataClass};
 use comms::evaluation::{self, EvaluationFactor, FeedEvaluation};
 use comms::google::{self, ThreadAction, ThreadLocation};
+use comms::intake;
 use comms::media;
 use comms::provenance::StageProvenance;
 use comms::quality;
 use comms::relevance::{self, RelevanceMatch};
-use comms::rules;
 use comms::sources;
 use comms::store::{
     CloudAttemptClaim, CloudDerivativeApproval, CloudDerivativeState, CloudQueueRequest, FeedItem,
@@ -168,6 +168,11 @@ const ROUTES: &[route_manifest::Route] = &[
         "POST",
         "/triage/relevance/refresh",
         "Rescore mail relevance against the current profiles.",
+    ),
+    r(
+        "POST",
+        "/triage/redact",
+        "Redact stored review fields of Private mail already persisted.",
     ),
     r(
         "POST",
@@ -545,34 +550,6 @@ struct MailContentExtensionOut {
     gmail_sync_error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-struct DataClassOut {
-    value: String,
-    label: &'static str,
-    rationale: String,
-    method: String,
-    version: String,
-}
-
-impl DataClassOut {
-    fn new(classification: data_class::DataClassification) -> Self {
-        let label = if classification.class == "vault" {
-            "Private"
-        } else if classification.class == "personal" {
-            "Personal"
-        } else {
-            "Public"
-        };
-        Self {
-            value: classification.class,
-            label,
-            rationale: classification.rationale,
-            method: classification.method,
-            version: classification.version,
-        }
-    }
-}
-
 /// One reader shape for every kind of observed content. Source adapters own
 /// collection and actions; the dashboard owns one renderer for this contract.
 #[derive(Debug, Serialize)]
@@ -591,8 +568,8 @@ struct ContentItemOut {
     created_at: String,
     status: String,
     content_status: String,
-    data_class: DataClassOut,
-    processing_policy: data_class::ProcessingPolicy,
+    data_class: DataClass,
+    processing_policy: content_item::ProcessingPolicy,
     cloud_processing: CloudDerivativeState,
     relevance: Vec<RelevanceOut>,
     evaluation: Option<EvaluationOut>,
@@ -609,8 +586,8 @@ impl ContentItemOut {
         processing: Vec<StageProvenance>,
         origins: Vec<FeedOrigin>,
     ) -> Self {
-        let classification = data_class::public_source_default();
-        let processing_policy = data_class::processing_policy(&classification.class);
+        let classification = DataClass::public_source_default();
+        let processing_policy = content_item::processing_policy(&classification.value);
         let content_label = match item.kind.as_str() {
             "github" => "README",
             "arxiv" => "Abstract",
@@ -632,7 +609,7 @@ impl ContentItemOut {
             created_at: item.created_at,
             status: item.status,
             content_status: item.content_status,
-            data_class: DataClassOut::new(classification),
+            data_class: classification,
             processing_policy,
             cloud_processing: CloudDerivativeState::not_prepared(),
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
@@ -662,13 +639,13 @@ impl ContentItemOut {
         } else {
             "none"
         };
-        let classification = data_class::DataClassification {
-            class: item.data_class.clone(),
-            rationale: item.data_class_rationale.clone(),
-            method: item.data_classification_method.clone(),
-            version: item.data_classification_version.clone(),
-        };
-        let processing_policy = data_class::processing_policy(&classification.class);
+        let classification = DataClass::new(
+            item.data_class.clone(),
+            item.data_class_rationale.clone(),
+            item.data_classification_method.clone(),
+            item.data_classification_version.clone(),
+        );
+        let processing_policy = content_item::processing_policy(&classification.value);
         Self {
             schema_version: "content-item-v1",
             source: "mail",
@@ -684,7 +661,7 @@ impl ContentItemOut {
             created_at,
             status: item.status,
             content_status: content_status.into(),
-            data_class: DataClassOut::new(classification),
+            data_class: classification,
             processing_policy,
             cloud_processing: CloudDerivativeState::not_prepared(),
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
@@ -2104,6 +2081,7 @@ async fn triage_sweep_handler(Json(body): Json<TriageSweepBody>) -> (StatusCode,
         let mut fetched = 0usize;
         let mut new_count = 0usize;
         let mut skipped = 0usize;
+        let mut redacted = 0usize;
         for stub in &page.threads {
             let meta = match google::thread_meta(&token, &stub.id) {
                 Ok(meta) => meta,
@@ -2112,44 +2090,13 @@ async fn triage_sweep_handler(Json(body): Json<TriageSweepBody>) -> (StatusCode,
                     continue;
                 }
             };
-            let from = meta.from_addr.clone().unwrap_or_default();
-            let subject = meta.subject.clone().unwrap_or_default();
-            let facts = rules::MailFacts {
-                from: &from,
-                subject: &subject,
-                has_list_unsubscribe: meta.has_list_unsubscribe(),
-            };
-            let (stream, rationale) = rules::classify(&facts, &cfg.rules);
-            let data_classification = data_class::classify_mail(&stream, &from, &subject);
-            let item = TriageItem {
-                id: meta.id,
-                from_addr: meta.from_addr,
-                subject: meta.subject,
-                snippet: meta.snippet,
-                internal_date_ms: meta.internal_date_ms,
-                internal_date_text: None,
-                stream,
-                rationale,
-                classification_method: "rules".into(),
-                classification_version: "mail-rules-v1".into(),
-                data_class: data_classification.class,
-                data_class_rationale: data_classification.rationale,
-                data_classification_method: data_classification.method,
-                data_classification_version: data_classification.version,
-                status: "proposed".into(),
-                gmail_action: None,
-                gmail_action_at: None,
-                purge_after: None,
-                gmail_location: None,
-                gmail_observed_at: None,
-                gmail_sync_status: None,
-                gmail_sync_action: None,
-                gmail_sync_error: None,
-                first_seen: String::new(),
-                last_seen: String::new(),
-            };
+            // Same gate as the CLI sweep, by construction: see src/intake.rs.
+            let intake = intake::from_thread(meta, &cfg.rules);
+            if intake.redaction_count() > 0 {
+                redacted += 1;
+            }
             if store
-                .upsert_triage(&item)
+                .upsert_triage(&intake.item)
                 .map_err(|error| error.to_string())?
             {
                 new_count += 1;
@@ -2164,6 +2111,7 @@ async fn triage_sweep_handler(Json(body): Json<TriageSweepBody>) -> (StatusCode,
             "fetched": fetched,
             "new_count": new_count,
             "skipped": skipped,
+            "redacted": redacted,
             "total_stored": total_stored,
             "next_cursor": page.next_page_token,
             "exhausted": page.next_page_token.is_none(),
@@ -2467,7 +2415,7 @@ async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> (StatusCode, J
     if action == "set-data-class"
         && !selected_data_class
             .as_deref()
-            .is_some_and(data_class::valid)
+            .is_some_and(content_item::valid)
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -2643,6 +2591,98 @@ async fn triage_data_class_handler(
 }
 
 #[derive(Debug, Deserialize)]
+struct TriageRedactBody {
+    limit: Option<usize>,
+    /// Report what would change without writing. The default is to write:
+    /// this endpoint exists because material is already stored, and a preview
+    /// that has to be run twice is a preview that gets run once.
+    dry_run: Option<bool>,
+}
+
+/// Remediate rows persisted before the intake gate existed.
+///
+/// Bounded, idempotent, and reviewable: it reports how many rows it examined,
+/// how many it changed and what kinds of entity it removed — never the removed
+/// values, and never the values it left. Running it twice reports zero changes
+/// the second time, which is how you know it finished.
+async fn triage_redact_handler(Json(body): Json<TriageRedactBody>) -> (StatusCode, Json<Value>) {
+    let limit = body.limit.unwrap_or(500).clamp(1, 2_000);
+    let dry_run = body.dry_run.unwrap_or(false);
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let items = store
+            .list_triage(None)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .take(limit)
+            .collect::<Vec<_>>();
+        let reviewed = items.len();
+        let mut in_scope = 0usize;
+        let mut changed = 0usize;
+        let mut entity_types: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut digests = Vec::new();
+
+        for item in items {
+            let Some(remediation) = intake::remediate(
+                &item.data_class,
+                item.subject.as_deref(),
+                item.snippet.as_deref(),
+            ) else {
+                continue;
+            };
+            in_scope += 1;
+            if !remediation.changed {
+                continue;
+            }
+            for finding in &remediation.redactions {
+                *entity_types.entry(finding.entity_type).or_default() += finding.count;
+            }
+            if let Some(digest) = remediation.audit_digest.clone() {
+                digests.push(json!({ "id": item.id, "digest": digest }));
+            }
+            if !dry_run
+                && store
+                    .redact_triage_review_fields(
+                        &item.id,
+                        remediation.subject.as_deref(),
+                        remediation.snippet.as_deref(),
+                    )
+                    .map_err(|error| error.to_string())?
+            {
+                changed += 1;
+            } else if dry_run {
+                changed += 1;
+            }
+        }
+
+        Ok(json!({
+            "reviewed": reviewed,
+            "in_scope": in_scope,
+            "changed": changed,
+            "dry_run": dry_run,
+            "entity_types": entity_types,
+            "audit": digests,
+            "transformation": cloud_derivative::REDACTION_VERSION,
+            "provider_calls": 0,
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct TriageDataClassRefreshBody {
     limit: Option<usize>,
 }
@@ -2668,7 +2708,7 @@ async fn triage_data_class_refresh_handler(
                 preserved_human += 1;
                 continue;
             }
-            let classification = data_class::classify_mail(
+            let classification = DataClass::classify_mail(
                 &item.stream,
                 item.from_addr.as_deref().unwrap_or_default(),
                 item.subject.as_deref().unwrap_or_default(),
@@ -2684,7 +2724,7 @@ async fn triage_data_class_refresh_handler(
             "reviewed": reviewed,
             "updated": updated,
             "preserved_human": preserved_human,
-            "classifier_version": data_class::CLASSIFIER_VERSION,
+            "classifier_version": content_item::MAIL_CLASSIFIER_VERSION,
             "content_inputs": ["sender", "subject", "category"],
             "provider_calls": 0,
         }))
@@ -3063,6 +3103,7 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
         .route("/feed/:id/status", post(feed_status_handler))
         .route("/triage/sweep", post(triage_sweep_handler))
         .route("/triage/relevance/refresh", post(triage_relevance_handler))
+        .route("/triage/redact", post(triage_redact_handler))
         .route(
             "/triage/data-class/refresh",
             post(triage_data_class_refresh_handler),

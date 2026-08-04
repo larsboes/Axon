@@ -13,7 +13,7 @@
     | "map-pin" | "database" | "external" | "arrow-right" | "play" | "square"
     | "refresh" | "sun" | "moon" | "menu" | "close" | "clock" | "alert" | "wifi-off"
     | "check" | "loader" | "plus" | "search" | "swap" | "calendar" | "ticket"
-    | "git-branch" | "thermometer" | "cpu" | "activity" | "chevron";
+    | "git-branch" | "thermometer" | "cpu" | "activity" | "chevron" | "mail";
 
   let { name, size = 16 }: { name: Name; size?: number } = $props();
 
@@ -45,6 +45,7 @@
     "search": "M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3",
     "swap": "M8 3 4 7l4 4 M4 7h16 M16 21l4-4-4-4 M20 17H4",
     "calendar": "M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z",
+    "mail": "M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z M3.5 6.5 12 13l8.5-6.5",
     "ticket": "M3 9a3 3 0 0 1 0 6v3a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3a3 3 0 0 1 0-6V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2z M13 5v2 M13 11v2 M13 17v2",
     "git-branch": "M6 3v12 M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M15 6a9 9 0 0 1-9 9",
     "thermometer": "M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z",
