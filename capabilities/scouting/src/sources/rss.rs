@@ -60,7 +60,7 @@ impl SourceAdapter for RssFeedSource {
         for item in items {
             let title = item.title.unwrap_or_else(|| "Untitled".into());
             let link = item.link.unwrap_or_default();
-            let desc = item.description.unwrap_or_default();
+            let desc = html_to_text(&item.description.unwrap_or_default());
             let pub_date = item.pub_date.unwrap_or_default();
 
             let dedup_key = format!("{}|{}", link, title);
@@ -203,6 +203,65 @@ fn extract_tag(block: &str, tag: &str) -> Option<String> {
     None
 }
 
+/// A feed description is markup often enough that storing it as text is a bug:
+/// it reaches `score::opportunity_text`, so `<p>` and `<img src="…">` get
+/// embedded as words and matched against the interest profile.
+///
+/// A tag becomes a space rather than nothing, so `Join us</a><a>here` stays
+/// two words instead of welding into one token. Two strip passes around the
+/// decode: a description carries either literal markup (CDATA) or escaped
+/// markup (`&lt;p&gt;`), one pass cannot see both, and a third would change
+/// nothing.
+fn html_to_text(raw: &str) -> String {
+    let once = strip_tags(raw);
+    let text = strip_tags(&decode_entities(&once));
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find('>') {
+            Some(close) => {
+                out.push(' ');
+                rest = &after[close + 1..];
+            }
+            // Markup the feed never closed: the remainder is not text.
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = s.to_string();
+    for (entity, replacement) in [
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&apos;", "'"),
+        ("&#39;", "'"),
+        ("&nbsp;", " "),
+        ("&hellip;", "…"),
+        ("&mdash;", "—"),
+        ("&ndash;", "–"),
+        // Last: decoding it first would resurrect `&amp;lt;` as a real tag.
+        ("&amp;", "&"),
+    ] {
+        if out.contains(entity) {
+            out = out.replace(entity, replacement);
+        }
+    }
+    out
+}
+
 /// Extract href from an Atom <link> element.
 fn extract_atom_link(block: &str) -> Option<String> {
     let link_start = block.find("<link")?;
@@ -283,6 +342,25 @@ mod tests {
         assert_eq!(items[0].title.as_deref(), Some("Conference CFP Deadline"));
         assert_eq!(items[0].link.as_deref(), Some("https://example.com/cfp"));
         assert!(items[0].description.as_deref().unwrap().contains("Submit"));
+    }
+
+    #[test]
+    fn a_description_reaches_the_embedder_as_text_not_markup() {
+        // CDATA: literal markup.
+        assert_eq!(
+            html_to_text(r#"<p>Join us</p><a href="/x">here</a><img src="a.png">"#),
+            "Join us here"
+        );
+        // Escaped markup, the non-CDATA form. One strip pass would store the
+        // tags as words.
+        assert_eq!(
+            html_to_text("&lt;p&gt;A weekend of building AI&lt;/p&gt;"),
+            "A weekend of building AI"
+        );
+        // Entities in prose still decode.
+        assert_eq!(html_to_text("Rust &amp; Zig"), "Rust & Zig");
+        // Text without markup is returned as it arrived.
+        assert_eq!(html_to_text("Monthly meetup."), "Monthly meetup.");
     }
 
     #[test]

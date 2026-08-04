@@ -21,7 +21,9 @@ pub const SUMMARY_PROMPT_REVISION: &str = "feed-summary-v2-english";
 /// Max characters of extracted article body persisted as transcript.
 const ARTICLE_TEXT_CAP: usize = 20_000;
 /// Transcript length at or above which `content_status` is `full` (not `thin`).
-const CONTENT_FULL_THRESHOLD: usize = 1_000;
+/// One threshold, read by the classifier here and by the evaluator grading a
+/// legacy row whose status predates classification.
+pub const CONTENT_FULL_THRESHOLD: usize = 1_000;
 
 /// Typed summarization outcome -- replaces the old `Option<String>` that
 /// collapsed every failure into `None`, making them indistinguishable from
@@ -477,13 +479,107 @@ fn extract_title(html: &str) -> Option<String> {
     }
 }
 
-/// Drop <script>/<style> blocks, strip remaining tags, collapse whitespace,
-/// cap length. Deliberately simple -- no HTML crate dependency.
+/// Drop <script>/<style> blocks, turn the remaining markup into text, cap
+/// length. Deliberately simple -- no HTML crate dependency.
+///
+/// What a tag becomes is the whole point. This used to run every tag through
+/// `strip_tags` and then `collapse_ws`, which welded the document into one
+/// line. That broke both stages downstream of it: `normalize` is a table of
+/// line predicates, so a single line longer than `BOILERPLATE_LINE_MAX` made
+/// every rule unreachable and stored consent walls verbatim as article text,
+/// and a tag boundary that emitted nothing welded `Home</a><a>Jobs` into one
+/// token the embedder then scored on.
 fn extract_visible_text(html: &str) -> String {
     let without_blocks = remove_blocks(html, &["script", "style", "noscript", "head"]);
-    let stripped = strip_tags(&without_blocks);
-    let collapsed = collapse_ws(&decode_basic_entities(&stripped));
+    let text = tags_to_breaks(&without_blocks);
+    let collapsed = collapse_lines(&decode_basic_entities(&text));
     collapsed.chars().take(ARTICLE_TEXT_CAP).collect()
+}
+
+/// HTML elements that end a line of text. Everything not listed is inline and
+/// becomes a single space, so two adjacent text nodes stay two words.
+const BLOCK_TAGS: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "br",
+    "button",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "option",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "td",
+    "th",
+    "tr",
+    "ul",
+];
+
+/// Replace every tag with the separator its element implies: a newline for a
+/// block element, a space for an inline one. An unterminated `<` is markup the
+/// page never closed, so the remainder goes -- same call `strip_tags` makes.
+fn tags_to_breaks(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let close = match after.find('>') {
+            Some(i) => i,
+            None => return out,
+        };
+        out.push(if is_block_tag(&after[..close]) {
+            '\n'
+        } else {
+            ' '
+        });
+        rest = &after[close + 1..];
+    }
+
+    out.push_str(rest);
+    out
+}
+
+fn is_block_tag(inner: &str) -> bool {
+    let name = inner
+        .trim_start_matches('/')
+        .split(|c: char| c.is_whitespace() || c == '/')
+        .next()
+        .unwrap_or_default();
+    BLOCK_TAGS.iter().any(|tag| tag.eq_ignore_ascii_case(name))
+}
+
+/// Collapse whitespace inside each line, keeping the breaks the tag walk
+/// produced. `collapse_ws` cannot be reused: it joins across newlines, which
+/// is exactly the structure loss this path exists to avoid.
+fn collapse_lines(s: &str) -> String {
+    s.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn remove_blocks(html: &str, tags: &[&str]) -> String {
@@ -1488,6 +1584,34 @@ mod tests {
         let text = extract_visible_text(html);
         assert!(text.contains("Hello world"), "got: {text}");
         assert!(!text.contains("bad()"), "script body must be dropped");
+    }
+
+    #[test]
+    fn html_extraction_hands_the_normalizer_line_structure() {
+        // The normalizer is a line predicate table, so extraction owes it
+        // lines. Collapsing a page to one paragraph made every rule
+        // unreachable and shipped LinkedIn's cookie banner as article text.
+        let html = "<html><head><title>T</title></head><body>\
+            <nav><a href=\"/a\">Home</a><a href=\"/b\">Jobs</a></nav>\
+            <div id=\"consent\"><p>Accept all cookies</p>\
+            <p>Reject non-essential cookies</p></div>\
+            <article><p>Transit data should remain inspectable, which is the \
+            single claim this article exists to make.</p></article>\
+            </body></html>";
+
+        let raw = extract_visible_text(html);
+        let clean = normalize::normalize(&raw);
+
+        assert!(
+            !clean.text.contains("Accept all cookies"),
+            "consent banner survived normalization: {}",
+            clean.text
+        );
+        assert!(
+            clean.text.contains("Transit data should remain inspectable"),
+            "the article body must survive: {}",
+            clean.text
+        );
     }
 
     #[test]

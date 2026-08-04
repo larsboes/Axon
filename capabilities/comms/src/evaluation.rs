@@ -8,11 +8,14 @@
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::media;
 use crate::relevance::{InterestProfile, RelevanceMatch};
 use crate::store::FeedItem;
 use crate::travel::{self, TravelContext};
 
-pub const EVALUATOR_REVISION: &str = "feed-evaluator-v4-english";
+/// v5 grades content evidence by `content_status` instead of counting field
+/// presence, so every stored evaluation restales and is recomputed.
+pub const EVALUATOR_REVISION: &str = "feed-evaluator-v5-english";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EvaluationFactorContext {
@@ -213,42 +216,51 @@ pub fn evaluate(
     }
 }
 
+/// Evidence is graded, not counted.
+///
+/// Presence alone scored a stored consent wall exactly like a stored paper,
+/// because both put a non-empty string in `transcript`. The pipeline already
+/// classifies the difference — `content_status` is derived from the
+/// *normalized* body — so the source-text signal takes the share its status
+/// earns. The other three stay binary: a title either exists or it does not.
 fn evidence_score(item: &FeedItem) -> (f64, String) {
+    let (text_earned, text_label) = source_text_evidence(item);
     let signals = [
-        ("title", item.title.as_deref().is_some_and(non_empty), 0.20),
+        (
+            "title",
+            binary(item.title.as_deref().is_some_and(non_empty)),
+            0.20,
+        ),
         (
             "author",
-            item.author.as_deref().is_some_and(non_empty),
+            binary(item.author.as_deref().is_some_and(non_empty)),
             0.15,
         ),
         (
             "summary",
-            item.summary.as_deref().is_some_and(non_empty),
+            binary(item.summary.as_deref().is_some_and(non_empty)),
             0.30,
         ),
-        (
-            "source text",
-            item.transcript.as_deref().is_some_and(non_empty),
-            0.35,
-        ),
+        (text_label, text_earned, 0.35),
     ];
     let score = signals
         .iter()
-        .filter(|(_, present, _)| *present)
-        .map(|(_, _, weight)| weight)
+        .map(|(_, earned, weight)| earned * weight)
         .sum::<f64>();
     let present = signals
         .iter()
-        .filter(|(_, present, _)| *present)
+        .filter(|(_, earned, _)| *earned > 0.0)
         .map(|(label, _, _)| *label)
         .collect::<Vec<_>>();
     let missing = signals
         .iter()
-        .filter(|(_, present, _)| !*present)
+        .filter(|(_, earned, _)| *earned == 0.0)
         .map(|(label, _, _)| *label)
         .collect::<Vec<_>>();
     let rationale = match (present.is_empty(), missing.is_empty()) {
-        (_, true) => "Title, author, summary, and source text are available".into(),
+        // `present` carries the graded label, so this arm cannot claim full
+        // source text when the item only stored a card.
+        (_, true) => format!("Available: {}", present.join(", ")),
         (true, _) => format!("No usable content yet; missing: {}", missing.join(", ")),
         _ => format!(
             "Available: {}; missing: {}",
@@ -257,6 +269,36 @@ fn evidence_score(item: &FeedItem) -> (f64, String) {
         ),
     };
     (score, rationale)
+}
+
+/// What the stored body is worth as a share of its weight, and how to name it
+/// in the rationale. `unknown` is the legacy rows written before extraction
+/// classified itself: grade those by the same threshold the classifier uses
+/// rather than assuming the best case for them.
+fn source_text_evidence(item: &FeedItem) -> (f64, &'static str) {
+    let Some(text) = item.transcript.as_deref().filter(|t| non_empty(t)) else {
+        return (0.0, "source text");
+    };
+    match item.content_status.as_str() {
+        "full" => (1.0, "source text"),
+        "thin" => (THIN_TEXT_SHARE, "thin source text"),
+        "none" => (0.0, "source text"),
+        _ if text.chars().count() >= media::CONTENT_FULL_THRESHOLD => (1.0, "source text"),
+        _ => (THIN_TEXT_SHARE, "thin source text"),
+    }
+}
+
+/// A card, an abstract or a page that normalized down to a stub is real
+/// evidence, just not the article. It keeps well under half its weight so a
+/// full body always outranks one on this factor.
+const THIN_TEXT_SHARE: f64 = 0.4;
+
+fn binary(present: bool) -> f64 {
+    if present {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 fn non_empty(value: &str) -> bool {
@@ -409,6 +451,47 @@ mod tests {
             ]
         );
         assert!(evaluation.explanation.starts_with("Strongest signal:"));
+    }
+
+    #[test]
+    fn content_evidence_grades_the_body_it_actually_stored() {
+        let mut full = item();
+        full.transcript = Some("a".repeat(media::CONTENT_FULL_THRESHOLD));
+        full.content_status = "full".into();
+
+        // Same fields populated, same field count -- a consent wall that
+        // normalized down to a stub. Counting presence scored these alike.
+        let mut thin = full.clone();
+        thin.transcript = Some("Accept all cookies".into());
+        thin.content_status = "thin".into();
+
+        let mut none = full.clone();
+        none.transcript = None;
+        none.content_status = "none".into();
+
+        let score = |item: &FeedItem| evidence_score(item).0;
+        assert!(
+            score(&full) > score(&thin),
+            "a full body must outrank a stub: {} vs {}",
+            score(&full),
+            score(&thin)
+        );
+        assert!(
+            score(&thin) > score(&none),
+            "a stub is still more than nothing"
+        );
+
+        assert!(
+            evidence_score(&thin).1.contains("thin source text"),
+            "the rationale must name what it graded: {}",
+            evidence_score(&thin).1
+        );
+
+        // A legacy row predating classification is graded by the same
+        // threshold the classifier uses, not assumed to be a full body.
+        let mut legacy = thin.clone();
+        legacy.content_status = "unknown".into();
+        assert_eq!(score(&legacy), score(&thin));
     }
 
     #[test]
