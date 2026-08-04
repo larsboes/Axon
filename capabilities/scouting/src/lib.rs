@@ -2,6 +2,7 @@ pub mod adapters;
 pub mod calendar_promote;
 pub mod config;
 pub mod embed;
+pub mod event_route;
 pub mod http;
 pub mod localtime;
 pub mod merge;

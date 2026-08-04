@@ -131,9 +131,18 @@
   }
 
   function isCalendarCandidate(opportunity: ScoutingOpportunity): boolean {
-    return ["event", "hackathon", "conference", "meetup"].includes(
-      opportunity.opportunity_type.toLowerCase(),
-    ) && normalizedInstant(opportunity.starts_at) !== null;
+    return ["local", "online"].includes(opportunity.event_route?.route ?? "")
+      && normalizedInstant(opportunity.starts_at) !== null;
+  }
+
+  function routeLabel(opportunity: ScoutingOpportunity): string | null {
+    switch (opportunity.event_route?.route) {
+      case "local": return "Local";
+      case "travel_candidate": return "Travel candidate";
+      case "online": return "Online";
+      case "unresolved": return "Route unresolved";
+      default: return null;
+    }
   }
 
   function draftFor(opportunity: ScoutingOpportunity): CalendarNewEntry | null {
@@ -171,6 +180,7 @@
         opportunity_type: opportunity.opportunity_type,
         source: opportunity.source,
         url: opportunity.url,
+        event_route: opportunity.event_route,
       },
     };
   }
@@ -428,6 +438,14 @@
           <div class="identity">
             <div class="tags">
               <span class="tag mono">{typeLabel(opportunity.opportunity_type)}</span>
+              {#if routeLabel(opportunity)}
+                <span
+                  class="route {opportunity.event_route?.route} mono"
+                  title={opportunity.event_route?.reason}
+                >
+                  {routeLabel(opportunity)}
+                </span>
+              {/if}
               <span class="source-name mono">{opportunity.source}</span>
             </div>
             <a href={opportunity.url} target="_blank" rel="noreferrer">{opportunity.title}</a>
@@ -672,6 +690,31 @@
     font-size: 0.5625rem;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .route {
+    flex-shrink: 0;
+    border-radius: 999px;
+    padding: 0.12rem 0.32rem;
+    background-color: var(--surface);
+    color: var(--text-tertiary);
+    font-size: 0.5625rem;
+  }
+
+  .route.local,
+  .route.online {
+    background-color: var(--success-soft);
+    color: var(--success);
+  }
+
+  .route.travel_candidate {
+    background-color: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  .route.unresolved {
+    background-color: var(--danger-soft);
+    color: var(--danger);
   }
 
   .identity > a {

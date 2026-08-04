@@ -314,11 +314,32 @@ etc.) always override whatever the config file resolves.
 | `port` | `SCOUTING_PORT` env var | `AXON_PORT` (from `service.toml`, set by the runner) → `port` field → `8084` |
 | `calendar_base_url` | — (new) | `capabilities/calendar` for the promotion; loopback default `http://127.0.0.1:8087`, `--calendar-url` overrides |
 | `home_timezone` | — (new) | **No default.** Required by `--promote-calendar` (or `--timezone`); see § Calendar promotion |
+| `geo` | — (new) | Private event-routing policy: optional home coordinate plus explicit local radius, local country tokens, timezone prefixes, and a safe-default-off `allow_unknown` compatibility override. No public home/radius defaults; see § Event routing. |
+
+## Event routing
+
+Interest score answers whether an event matters. The event route answers where it belongs, and
+is returned by both discovery and backlog APIs without removing the opportunity:
+
+- `local` — within the configured radius, or matched by the bounded country/timezone fallback;
+- `travel_candidate` — outside that reach and retained for the travel workflow;
+- `online` — established by source metadata or a bounded online/virtual/remote location token;
+- `unresolved` — the stored evidence or private policy cannot decide safely.
+
+The classifier first trusts explicit online evidence. For a physical event it uses great-circle
+distance only when the private policy has a complete, valid home coordinate, a positive local
+radius, and the opportunity has a complete, valid coordinate. Otherwise it falls back to the
+configured local country tokens and then timezone prefixes. A missing or half coordinate is never
+turned into `0,0`, and city-string equality is never used. `allow_unknown = true` is an explicit
+legacy override that routes an otherwise unknown event locally; its safe default is `false`.
+
+The public example contains only null/empty placeholders. Real home coordinates, radius, and
+reach tokens belong in `$AXON_PERSONAL_ROOT/config/scouting.json`.
 
 ## Calendar promotion (calendar Phase A)
 
-`scout --promote-calendar` upserts every opportunity with `source = luma` and
-`status = saved` into `capabilities/calendar` via its idempotent
+`scout --promote-calendar` classifies every opportunity with `source = luma` and
+`status = saved`. It upserts only `local` and `online` events into `capabilities/calendar` via its idempotent
 `PUT /api/entries/external`, as kind `event` with the bare Luma event id
 (`evt-…`, not scouting's namespaced `evt:luma:evt-…`) as `external_id`. Calendar's partial
 unique index on `(source, external_id)` makes a repeat run update the same row rather than add
@@ -330,6 +351,11 @@ the request body is byte-identical each time (no wall-clock stamp in `payload` �
 and `store.rs` guarantees it survives a refetch. Scouting never writes calendar's tables —
 everything goes over the HTTP contract, so calendar keeps deciding what a valid entry is.
 
+`travel_candidate` and `unresolved` events remain in Scouting and appear in the promotion report
+under `routed`, with their classification reason. They are not calendar errors and are not
+dropped. Matching travel candidates to Trips and feasible Calendar windows is a separate
+consumer concern; this classifier calls neither service.
+
 Two things it refuses rather than guesses, matching calendar's own no-guessing rule for dates:
 
 - an opportunity with no usable start or end, or a start/end that is not an explicit UTC
@@ -340,8 +366,8 @@ Two things it refuses rather than guesses, matching calendar's own no-guessing r
   DST rule — `capabilities/calendar/src/date.rs` already hand-rolls the same civil arithmetic.
 
 `payload` carries an inert evidence snapshot: the originating opportunity id, its URL, score,
-matched focus and rationale, and both original UTC instants alongside the zone they were
-converted with.
+matched focus and rationale, both original UTC instants alongside the zone they were converted
+with, and the event route, basis, reason, and optional distance.
 
 ## Scholarship Radar contract
 

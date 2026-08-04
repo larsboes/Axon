@@ -160,6 +160,7 @@ export interface ScoredResult {
   opportunity_type: string;
   status: OpportunityStatus;
   vault_link: string | null;
+  event_route: EventRoute | null;
 }
 
 export interface DiscoverResponse {
@@ -173,6 +174,23 @@ export interface DiscoverResponse {
 }
 
 export type OpportunityStatus = 'new' | 'saved' | 'dismissed';
+
+export type EventRouteKind = 'local' | 'travel_candidate' | 'online' | 'unresolved';
+
+export interface EventRoute {
+  route: EventRouteKind;
+  basis:
+    | 'source_metadata'
+    | 'location_text'
+    | 'coordinates'
+    | 'country'
+    | 'timezone'
+    | 'operator_override'
+    | 'missing_policy'
+    | 'missing_evidence';
+  reason: string;
+  distance_km: number | null;
+}
 
 export interface ScoutingOpportunity {
   id: string;
@@ -189,6 +207,10 @@ export interface ScoutingOpportunity {
   url: string;
   vault_link: string | null;
   status: OpportunityStatus;
+  country_code: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  event_route: EventRoute | null;
 }
 
 export interface ScoutingSource {

@@ -25,6 +25,7 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::event_route::{classify_ranked, EventRoute, EventRouteKind};
 use crate::localtime::HomeTimezone;
 use crate::store::{RankedRow, Store};
 
@@ -46,6 +47,15 @@ pub struct Promoted {
     pub title: String,
     pub starts_at: String,
     pub ends_at: String,
+    pub event_route: EventRouteKind,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Routed {
+    pub opportunity_id: String,
+    pub title: String,
+    pub event_route: EventRouteKind,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +69,7 @@ pub struct Skipped {
 pub struct PromotionReport {
     pub considered: usize,
     pub promoted: Vec<Promoted>,
+    pub routed: Vec<Routed>,
     pub skipped: Vec<Skipped>,
     pub dry_run: bool,
 }
@@ -77,7 +88,7 @@ fn luma_event_id(opportunity_id: &str) -> Option<&str> {
 /// Inert evidence snapshot. Deliberately carries no wall-clock "promoted at"
 /// stamp: the payload has to be byte-identical across runs for a repeat
 /// promotion to be a genuine no-op rather than a churning update.
-fn evidence_payload(row: &RankedRow, tz: &HomeTimezone) -> Value {
+fn evidence_payload(row: &RankedRow, tz: &HomeTimezone, event_route: &EventRoute) -> Value {
     json!({
         "promoted_from": "scouting",
         "opportunity_id": row.id,
@@ -89,10 +100,18 @@ fn evidence_payload(row: &RankedRow, tz: &HomeTimezone) -> Value {
         "starts_at_utc": row.starts_at,
         "ends_at_utc": row.ends_at,
         "home_timezone": tz.name(),
+        "event_route": event_route.route,
+        "event_route_basis": event_route.basis,
+        "event_route_reason": event_route.reason,
+        "distance_km": event_route.distance_km,
     })
 }
 
-fn build_entry(row: &RankedRow, tz: &HomeTimezone) -> Result<(String, Value), String> {
+fn build_entry(
+    row: &RankedRow,
+    tz: &HomeTimezone,
+    event_route: &EventRoute,
+) -> Result<(String, Value), String> {
     let external_id = luma_event_id(&row.id)
         .ok_or_else(|| format!("id '{}' is not a luma opportunity id", row.id))?
         .to_string();
@@ -126,9 +145,16 @@ fn build_entry(row: &RankedRow, tz: &HomeTimezone) -> Result<(String, Value), St
         "notes": Value::Null,
         "source": ENTRY_SOURCE,
         "external_id": external_id,
-        "payload": evidence_payload(row, tz),
+        "payload": evidence_payload(row, tz, event_route),
     });
     Ok((external_id, body))
+}
+
+fn belongs_in_day_calendar(event_route: &EventRoute) -> bool {
+    matches!(
+        event_route.route,
+        EventRouteKind::Local | EventRouteKind::Online
+    )
 }
 
 /// Reads saved Luma opportunities and upserts each into calendar.
@@ -161,31 +187,27 @@ pub fn promote_saved_luma(
     let url = format!("{}/api/entries/external", calendar_base_url.trim_end_matches('/'));
 
     for row in candidates {
-        // Reach before shape: an Impact Lab in Atlanta is a fine event and a
-        // pointless calendar entry. Skipped with the reason named rather than
-        // dropped, because a filter you cannot see is indistinguishable from a
-        // bug when something you wanted goes missing.
-        let source_timezone = row
-            .raw
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-            .and_then(|value| {
-                value
-                    .get("timezone")
-                    .and_then(|tz| tz.as_str())
-                    .map(str::to_string)
-            });
-        if let Some(reason) = geo.and_then(|policy| {
-            policy.reject(row.country_code.as_deref(), source_timezone.as_deref())
-        }) {
+        let Some(event_route) = classify_ranked(&row, geo) else {
             report.skipped.push(Skipped {
                 opportunity_id: row.id,
                 title: row.title,
-                reason,
+                reason: format!(
+                    "luma opportunity has non-event type {}",
+                    row.opportunity_type
+                ),
+            });
+            continue;
+        };
+        if !belongs_in_day_calendar(&event_route) {
+            report.routed.push(Routed {
+                opportunity_id: row.id,
+                title: row.title,
+                event_route: event_route.route,
+                reason: event_route.reason,
             });
             continue;
         }
-        let (external_id, body) = match build_entry(&row, tz) {
+        let (external_id, body) = match build_entry(&row, tz, &event_route) {
             Ok(pair) => pair,
             Err(reason) => {
                 report.skipped.push(Skipped {
@@ -205,6 +227,7 @@ pub fn promote_saved_luma(
                 title: row.title,
                 starts_at: body["starts_at"].as_str().unwrap_or_default().into(),
                 ends_at: body["ends_at"].as_str().unwrap_or_default().into(),
+                event_route: event_route.route,
             });
             continue;
         }
@@ -231,6 +254,7 @@ pub fn promote_saved_luma(
                     title: row.title,
                     starts_at: entry["starts_at"].as_str().unwrap_or_default().into(),
                     ends_at: entry["ends_at"].as_str().unwrap_or_default().into(),
+                    event_route: event_route.route,
                 });
             }
             Err(error) => {
@@ -258,22 +282,36 @@ pub fn print_report(report: &PromotionReport, calendar_base_url: &str, tz: &Home
         if report.considered == 1 { "y" } else { "ies" }
     );
 
-    if report.promoted.is_empty() && report.skipped.is_empty() {
+    if report.promoted.is_empty() && report.routed.is_empty() && report.skipped.is_empty() {
         println!("  nothing to promote — save a luma opportunity first (scout --save <id>)");
         return;
     }
 
     for p in &report.promoted {
-        println!("  promoted  {} — {}", p.external_id, p.title);
-        println!("            {} → {}  entry {}", p.starts_at, p.ends_at, p.entry_id);
+        println!(
+            "  promoted  {} — {} ({:?})",
+            p.external_id, p.title, p.event_route
+        );
+        println!(
+            "            {} → {}  entry {}",
+            p.starts_at, p.ends_at, p.entry_id
+        );
+    }
+    for routed in &report.routed {
+        println!(
+            "  routed    {} — {} ({:?})",
+            routed.opportunity_id, routed.title, routed.event_route
+        );
+        println!("            {}", routed.reason);
     }
     for s in &report.skipped {
         println!("  skipped   {} — {}", s.opportunity_id, s.title);
         println!("            {}", s.reason);
     }
     println!(
-        "\n  {} promoted, {} skipped",
+        "\n  {} promoted, {} routed, {} skipped",
         report.promoted.len(),
+        report.routed.len(),
         report.skipped.len()
     );
 }
@@ -309,6 +347,30 @@ mod tests {
         HomeTimezone::parse("Europe/Berlin").unwrap()
     }
 
+    fn local_route() -> EventRoute {
+        EventRoute {
+            route: EventRouteKind::Local,
+            basis: crate::event_route::EventRouteBasis::Coordinates,
+            reason: "fixture is local".into(),
+            distance_km: Some(10.0),
+        }
+    }
+
+    #[test]
+    fn only_local_and_online_routes_belong_in_the_day_calendar() {
+        let mut route = local_route();
+        assert!(belongs_in_day_calendar(&route));
+
+        route.route = EventRouteKind::Online;
+        assert!(belongs_in_day_calendar(&route));
+
+        route.route = EventRouteKind::TravelCandidate;
+        assert!(!belongs_in_day_calendar(&route));
+
+        route.route = EventRouteKind::Unresolved;
+        assert!(!belongs_in_day_calendar(&route));
+    }
+
     #[test]
     fn external_id_is_lumas_own_id_not_the_namespaced_one() {
         assert_eq!(luma_event_id("evt:luma:evt-E8mj424DVKBXFb4"), Some("evt-E8mj424DVKBXFb4"));
@@ -321,6 +383,7 @@ mod tests {
         let (external_id, body) = build_entry(
             &row("evt:luma:evt-E8mj424DVKBXFb4", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z"),
             &berlin(),
+            &local_route(),
         )
         .unwrap();
         assert_eq!(external_id, "evt-E8mj424DVKBXFb4");
@@ -339,22 +402,30 @@ mod tests {
         // Idempotency is only real if a repeat promotion sends the same bytes;
         // a timestamp in the payload would make every run an update.
         let r = row("evt:luma:evt-A", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z");
-        let first = build_entry(&r, &berlin()).unwrap().1;
-        let second = build_entry(&r, &berlin()).unwrap().1;
+        let first = build_entry(&r, &berlin(), &local_route()).unwrap().1;
+        let second = build_entry(&r, &berlin(), &local_route()).unwrap().1;
         assert_eq!(first, second);
     }
 
     #[test]
     fn refuses_an_event_with_no_start() {
-        let err = build_entry(&row("evt:luma:evt-A", "", "2026-07-30T19:00:00.000Z"), &berlin())
-            .unwrap_err();
+        let err = build_entry(
+            &row("evt:luma:evt-A", "", "2026-07-30T19:00:00.000Z"),
+            &berlin(),
+            &local_route(),
+        )
+        .unwrap_err();
         assert!(err.contains("no start time"), "got: {err}");
     }
 
     #[test]
     fn refuses_an_event_with_no_end() {
-        let err = build_entry(&row("evt:luma:evt-A", "2026-07-30T16:00:00.000Z", ""), &berlin())
-            .unwrap_err();
+        let err = build_entry(
+            &row("evt:luma:evt-A", "2026-07-30T16:00:00.000Z", ""),
+            &berlin(),
+            &local_route(),
+        )
+        .unwrap_err();
         assert!(err.contains("no end time"), "got: {err}");
     }
 
@@ -363,6 +434,7 @@ mod tests {
         let err = build_entry(
             &row("evt:luma:evt-A", "2026-07-30T16:00:00", "2026-07-30T19:00:00"),
             &berlin(),
+            &local_route(),
         )
         .unwrap_err();
         assert!(err.contains("explicit UTC instant"), "got: {err}");
@@ -373,6 +445,7 @@ mod tests {
         let err = build_entry(
             &row("evt:luma:evt-A", "2026-07-30T19:00:00.000Z", "2026-07-30T16:00:00.000Z"),
             &berlin(),
+            &local_route(),
         )
         .unwrap_err();
         assert!(err.contains("not after"), "got: {err}");
@@ -382,7 +455,7 @@ mod tests {
     fn falls_back_to_city_when_there_is_no_street_address() {
         let mut r = row("evt:luma:evt-A", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z");
         r.location = "  ".into();
-        let (_, body) = build_entry(&r, &berlin()).unwrap();
+        let (_, body) = build_entry(&r, &berlin(), &local_route()).unwrap();
         assert_eq!(body["location"], "Berlin");
     }
 }

@@ -16,6 +16,7 @@ use scouting::adapters::euro_hackathons::EuroHackathonsAdapter;
 use scouting::adapters::luma::LumaAdapter;
 use scouting::adapters::meetup::MeetupAdapter;
 use scouting::config::Config;
+use scouting::event_route::{classify_opportunity, classify_ranked, EventRoute};
 use scouting::pipeline::run;
 use scouting::score::{load_opp_embeddings, load_telos_profiles};
 use scouting::source::{SearchQuery, SourceAdapter};
@@ -47,6 +48,14 @@ struct ScoredResult {
     opportunity_type: String,
     status: String,
     vault_link: Option<String>,
+    event_route: Option<EventRoute>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ClassifiedOpportunity {
+    #[serde(flatten)]
+    opportunity: scouting::store::RankedRow,
+    event_route: Option<EventRoute>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -152,6 +161,7 @@ async fn discover_handler(Query(params): Query<DiscoverParams>) -> Json<Value> {
             .enumerate()
             .map(|(i, s)| {
                 let persisted_row = persisted.get(&s.opportunity.id);
+                let event_route = classify_opportunity(&s.opportunity, cfg.geo.as_ref());
                 ScoredResult {
                     id: s.opportunity.id,
                     rank: i + 1,
@@ -169,6 +179,7 @@ async fn discover_handler(Query(params): Query<DiscoverParams>) -> Json<Value> {
                         .map(|row| row.status.clone())
                         .unwrap_or_else(|| "new".to_string()),
                     vault_link: persisted_row.and_then(|row| row.vault_link.clone()),
+                    event_route,
                 }
             })
             .collect();
@@ -268,7 +279,16 @@ async fn opportunities_handler(
         let store_total = store.count().map_err(internal_error)?;
         let opportunities = store
             .list_top(limit, include_dismissed)
-            .map_err(internal_error)?;
+            .map_err(internal_error)?
+            .into_iter()
+            .map(|opportunity| {
+                let event_route = classify_ranked(&opportunity, cfg.geo.as_ref());
+                ClassifiedOpportunity {
+                    opportunity,
+                    event_route,
+                }
+            })
+            .collect::<Vec<_>>();
         Ok(Json(json!({
             "count": opportunities.len(),
             "store_total": store_total,

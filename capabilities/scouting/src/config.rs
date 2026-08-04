@@ -47,15 +47,18 @@ struct FileConfig {
 /// the field is called `country_code` and holds names, which is its own bug.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct GeoPolicy {
-    /// Country tokens worth travelling to. Empty means the policy is off.
+    /// Private home coordinate. A distance is used only when both values and
+    /// an explicit local radius are present and valid.
+    pub home_latitude: Option<f64>,
+    pub home_longitude: Option<f64>,
+    pub local_radius_km: Option<f64>,
+    /// Country tokens treated as local when either coordinate pair is absent.
+    /// Empty means country evidence cannot decide either way.
     #[serde(default)]
     pub allow_countries: Vec<String>,
-    /// What to do with an opportunity whose country nobody recorded. Defaults
-    /// to letting it through: a third of the store has no country at all, and
-    /// dropping those silently would lose real local meetups to a missing
-    /// field. Being shown something too far away costs a glance; never being
-    /// shown something nearby costs the thing itself.
-    #[serde(default = "default_allow_unknown")]
+    /// Explicit compatibility override for unlocated events. The safe default
+    /// is false: without evidence the route is `unresolved`, not guessed local.
+    #[serde(default)]
     pub allow_unknown: bool,
     /// IANA timezone prefixes to accept when no country was recorded. Luma
     /// leaves `geo_address_info` null for some events but still stamps
@@ -65,55 +68,21 @@ pub struct GeoPolicy {
     pub allow_timezone_prefixes: Vec<String>,
 }
 
-fn default_allow_unknown() -> bool {
-    true
-}
-
 impl GeoPolicy {
-    /// `None` means allowed; `Some(reason)` is what to tell the operator.
-    ///
-    /// `timezone` is the fallback for the events whose country nobody
-    /// recorded. It is checked *before* `allow_unknown`, so a generous default
-    /// never overrides a signal we actually have.
-    pub fn reject(&self, country: Option<&str>, timezone: Option<&str>) -> Option<String> {
-        if self.allow_countries.is_empty() && self.allow_timezone_prefixes.is_empty() {
-            return None;
-        }
-        let country = country.map(str::trim).filter(|c| !c.is_empty());
-        match country {
-            None => {
-                let zone = timezone.map(str::trim).filter(|z| !z.is_empty());
-                if let Some(zone) = zone {
-                    if !self.allow_timezone_prefixes.is_empty() {
-                        let near = self
-                            .allow_timezone_prefixes
-                            .iter()
-                            .any(|prefix| zone.starts_with(prefix.as_str()));
-                        return if near {
-                            None
-                        } else {
-                            Some(format!("no country recorded, and {zone} is outside the configured reach"))
-                        };
-                    }
-                }
-                if self.allow_unknown {
-                    None
-                } else {
-                    Some("no country recorded".into())
-                }
-            }
-            Some(country) => {
-                let hit = self
-                    .allow_countries
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(country));
-                if hit {
-                    None
-                } else {
-                    Some(format!("{country} is outside the configured reach"))
-                }
-            }
-        }
+    pub fn country_is_local(&self, country: &str) -> Option<bool> {
+        (!self.allow_countries.is_empty()).then(|| {
+            self.allow_countries
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(country.trim()))
+        })
+    }
+
+    pub fn timezone_is_local(&self, timezone: &str) -> Option<bool> {
+        (!self.allow_timezone_prefixes.is_empty()).then(|| {
+            self.allow_timezone_prefixes
+                .iter()
+                .any(|prefix| timezone.trim().starts_with(prefix.as_str()))
+        })
     }
 }
 
@@ -156,9 +125,8 @@ pub struct Config {
     /// promotion, and a timezone is a personal value that belongs in the
     /// overlay, not in this public crate. See `localtime.rs`.
     pub home_timezone: Option<String>,
-    /// Which places are close enough to be worth putting in the calendar.
-    /// Absent means no filtering at all, which is the honest default for a
-    /// machine that has not said where it lives.
+    /// Inspectable routing policy for physical events. Absent means their
+    /// route is unresolved; it never means that they are dropped.
     pub geo: Option<GeoPolicy>,
     /// Declared opportunity sources (resolved manifests from `sources[]` in config).
     /// When non-empty, supersedes `events_dir`/`interest_profile_dir`.
@@ -257,6 +225,9 @@ mod tests {
 
     fn policy() -> GeoPolicy {
         GeoPolicy {
+            home_latitude: None,
+            home_longitude: None,
+            local_radius_km: None,
             allow_countries: vec!["Germany".into(), "de".into(), "Netherlands".into()],
             allow_unknown: true,
             allow_timezone_prefixes: vec!["Europe/".into()],
@@ -266,49 +237,45 @@ mod tests {
     #[test]
     fn a_country_the_sources_spell_differently_still_matches() {
         // Luma writes "Germany", meetup writes "de", and neither is wrong.
-        assert!(policy().reject(Some("Germany"), None).is_none());
-        assert!(policy().reject(Some("de"), None).is_none());
-        assert!(policy().reject(Some("DE"), None).is_none());
+        assert_eq!(policy().country_is_local("Germany"), Some(true));
+        assert_eq!(policy().country_is_local("de"), Some(true));
+        assert_eq!(policy().country_is_local("DE"), Some(true));
     }
 
     #[test]
-    fn somewhere_you_cannot_get_to_is_rejected_with_a_reason() {
-        let reason = policy().reject(Some("Canada"), None).expect("rejected");
-        assert!(reason.contains("Canada"), "the operator has to be told which country: {reason}");
+    fn a_configured_non_local_country_is_a_negative_signal() {
+        assert_eq!(policy().country_is_local("Canada"), Some(false));
     }
 
     /// The Atlanta case: Luma left geo_address_info null, so the country is
     /// missing, but the event still carries America/New_York.
     #[test]
     fn a_timezone_answers_when_the_country_is_missing() {
-        let reason = policy()
-            .reject(None, Some("America/New_York"))
-            .expect("rejected on the zone");
-        assert!(reason.contains("America/New_York"));
-        assert!(policy().reject(None, Some("Europe/Berlin")).is_none());
-    }
-
-    /// Generosity must not override a signal we actually have.
-    #[test]
-    fn allow_unknown_does_not_rescue_a_far_away_timezone() {
-        let mut generous = policy();
-        generous.allow_unknown = true;
-        assert!(generous.reject(None, Some("Asia/Taipei")).is_some());
+        assert_eq!(policy().timezone_is_local("America/New_York"), Some(false));
+        assert_eq!(policy().timezone_is_local("Europe/Berlin"), Some(true));
     }
 
     #[test]
-    fn nothing_recorded_at_all_is_let_through_by_default() {
-        assert!(policy().reject(None, None).is_none());
-    }
-
-    #[test]
-    fn an_empty_policy_filters_nothing() {
+    fn an_empty_policy_has_no_country_or_timezone_answer() {
         let off = GeoPolicy {
+            home_latitude: None,
+            home_longitude: None,
+            local_radius_km: None,
             allow_countries: vec![],
             allow_unknown: false,
             allow_timezone_prefixes: vec![],
         };
-        assert!(off.reject(Some("Canada"), Some("America/New_York")).is_none());
+        assert_eq!(off.country_is_local("Canada"), None);
+        assert_eq!(off.timezone_is_local("America/New_York"), None);
+    }
+
+    #[test]
+    fn geo_policy_defaults_unknown_events_to_unresolved() {
+        let policy: GeoPolicy = serde_json::from_str("{}").unwrap();
+        assert_eq!(policy.home_latitude, None);
+        assert_eq!(policy.home_longitude, None);
+        assert_eq!(policy.local_radius_km, None);
+        assert!(!policy.allow_unknown);
     }
 
     use super::*;
