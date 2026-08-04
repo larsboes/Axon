@@ -543,6 +543,38 @@ export const axonStatus = {
     ),
 };
 
+/** One graphify node inside a unit: a file or a symbol the extractor found. */
+export interface UnitGraphNode {
+  id: string;
+  label: string;
+  source_file: string;
+  file_type: string;
+  community: number;
+}
+
+/**
+ * One unit's slice of the graphify graph, capped by the server.
+ *
+ * `total` and `truncated` are the honest part of the contract: the full graph
+ * is thousands of nodes, a drill-down returns the busiest few hundred, and a
+ * reader has to be able to tell a complete unit from a sampled one.
+ */
+export interface UnitGraph {
+  unit: string;
+  prefixes: string[];
+  total: number;
+  returned: number;
+  truncated: boolean;
+  cap: number;
+  nodes: UnitGraphNode[];
+  edges: Array<{ from: string; to: string; label?: string }>;
+}
+
+export const knowledgeGraph = {
+  unit: (name: string) =>
+    request<UnitGraph>(`/knowledge-graph/api/graph/unit/${encodeURIComponent(name)}`),
+};
+
 /** One sample from macmon pipe/serve. Every field present on Apple Silicon. */
 export interface MacmonSample {
   all_power: number;

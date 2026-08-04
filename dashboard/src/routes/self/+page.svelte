@@ -2,17 +2,33 @@
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
-  import { axonStatus, type SelfModelResponse, type SelfUnit } from "$lib/api";
+  import {
+    axonStatus,
+    knowledgeGraph,
+    type SelfModelResponse,
+    type SelfUnit,
+    type UnitGraph,
+  } from "$lib/api";
   import RepoStatusCard from "$lib/RepoStatusCard.svelte";
+  import UnitMap, { type MapNode, type MapEdge } from "$lib/UnitMap.svelte";
 
-  // Deliberately no graph-rendering dependency. The interesting relation here is
-  // 16 coupling pairs over ~31 units — small enough that a selected unit plus its
-  // in/out edges reads better than a force layout, and it costs no bundle. A real
-  // node graph is worth adding the day file-level drill-down is wanted, not before.
+  // Two altitudes, one page. The self-model is ~31 units and 16 couplings --
+  // small enough to be a picture, which is the altitude at which Axon can
+  // actually be explained. graphify's 6.6k-node graph is the drill-down under
+  // it, fetched one unit at a time and capped, never rendered whole. The
+  // knowledge-graph panel that used to live on :4244 did render it whole, which
+  // is why it was a black rectangle; this page is where that view went.
 
   let data = $state<SelfModelResponse | null>(null);
   let error = $state<string | null>(null);
   let selected = $state<string | null>(null);
+
+  /** Drill-down state: null until a unit is opened at file level. */
+  let inside = $state<UnitGraph | null>(null);
+  let insideError = $state<string | null>(null);
+  let insideLoading = $state(false);
+  /** Which file node is picked inside a unit. Its own selection, not the unit's. */
+  let insideSelected = $state<string | null>(null);
 
   onMount(() => {
     axonStatus
@@ -23,6 +39,105 @@
 
   const model = $derived(data?.model ?? null);
   const live = $derived(data?.live ?? {});
+
+  // ── The unit map ──────────────────────────────────────────────────────────
+
+  /** Largest unit by file count, so radius is relative to this repo, not absolute. */
+  const largestUnit = $derived(
+    Math.max(1, ...(model?.units ?? []).map((u) => u.code?.files ?? 0)),
+  );
+
+  /**
+   * Only coupled units go in the map.
+   *
+   * Most units compile nothing in and are compiled into nothing, and a force
+   * layout has nowhere to put such a node except away from everything -- so
+   * they ended up as a border of unrelated dots around the part worth reading,
+   * taking most of the canvas with them. They are not missing: they are listed
+   * under the map, where "couples to nothing" is the fact being shown.
+   */
+  const coupledNames = $derived(
+    new Set((model?.coupling ?? []).flatMap((c) => [c.from, c.to])),
+  );
+
+  const toMapNode = (u: SelfUnit): MapNode => ({
+    id: u.name,
+    label: u.name,
+    kind: u.kind,
+    weight: (u.code?.files ?? 0) / largestUnit,
+    state: live[u.name] === true ? "up" : live[u.name] === false ? "down" : null,
+  });
+
+  const mapNodes = $derived<MapNode[]>(
+    (model?.units ?? []).filter((u) => coupledNames.has(u.name)).map(toMapNode),
+  );
+
+  const isolated = $derived((model?.units ?? []).filter((u) => !coupledNames.has(u.name)));
+
+  const mapEdges = $derived<MapEdge[]>(
+    (model?.coupling ?? []).map((c) => ({ from: c.from, to: c.to, label: c.kinds.join(", ") })),
+  );
+
+  /** Inside a unit, colour by what the file is rather than by what it belongs to. */
+  function fileKind(fileType: string): string {
+    if (fileType === "doc" || fileType === "markdown") return "doc";
+    if (fileType === "config" || fileType === "json") return "config";
+    return "file";
+  }
+
+  const insideNodes = $derived<MapNode[]>(
+    (inside?.nodes ?? []).map((n) => ({
+      id: n.id,
+      label: n.label,
+      kind: fileKind(n.file_type),
+      weight: 0.3,
+    })),
+  );
+
+  const insideEdges = $derived<MapEdge[]>(
+    (inside?.edges ?? []).map((e) => ({ from: e.from, to: e.to, label: e.label })),
+  );
+
+  /**
+   * Open a unit at file level.
+   *
+   * knowledge-graph starts on demand, so a first call while it is down is the
+   * normal case rather than a fault: ask axon-status to bring it up, then try
+   * once more. A second failure is reported as itself.
+   */
+  const insideDetail = $derived(
+    insideSelected ? (inside?.nodes.find((n) => n.id === insideSelected) ?? null) : null,
+  );
+
+  async function openInside(unit: string): Promise<void> {
+    insideLoading = true;
+    insideError = null;
+    insideSelected = null;
+    try {
+      inside = await knowledgeGraph.unit(unit);
+    } catch {
+      try {
+        await axonStatus.start("knowledge-graph");
+        inside = await knowledgeGraph.unit(unit);
+      } catch (e) {
+        inside = null;
+        insideError = e instanceof Error ? e.message : String(e);
+      }
+    } finally {
+      insideLoading = false;
+    }
+  }
+
+  function closeInside(): void {
+    inside = null;
+    insideError = null;
+    insideSelected = null;
+  }
+
+  function select(name: string | null): void {
+    selected = name;
+    if (inside && inside.unit !== name) closeInside();
+  }
 
   /** Outgoing = what this unit compiles in. Incoming = who compiles it in. */
   const outgoing = $derived(
@@ -57,7 +172,7 @@
   }
 
   function toggle(u: SelfUnit) {
-    selected = selected === u.name ? null : u.name;
+    select(selected === u.name ? null : u.name);
   }
 </script>
 
@@ -97,15 +212,117 @@
     </p>
   {/if}
 
+  <!--
+    The map is the teaching surface, so it says what it means before it draws.
+    A reader who cannot tell a coupling edge from a runtime dependency learns
+    the wrong thing from a picture, confidently.
+  -->
+  <div class="mapwrap">
+    {#if inside}
+      <p class="maplead">
+        Inside <b>{inside.unit}</b> — one dot per file or symbol graphify extracted, one line
+        per reference between them.
+        {#if inside.truncated}
+          Showing the <b>{inside.returned}</b> most-connected of
+          <b>{inside.total}</b>; the rest are real, just not drawn.
+        {:else}
+          All <b>{inside.returned}</b> of them.
+        {/if}
+        <button class="link" onclick={closeInside}>← back to units</button>
+      </p>
+      <UnitMap
+        nodes={insideNodes}
+        edges={insideEdges}
+        selected={insideSelected}
+        onSelect={(id) => (insideSelected = id)}
+        height={520}
+      />
+      <!--
+        Names are hidden at this density, so a picked node has to say what it
+        is somewhere. This line is that somewhere -- the path matters more than
+        the symbol, because it is what a reader can go open.
+      -->
+      <p class="picked">
+        {#if insideDetail}
+          <b>{insideDetail.label}</b>
+          <span class="mono">{insideDetail.source_file}</span>
+          <span class="tag">{insideDetail.file_type}</span>
+        {:else}
+          Click any dot to name it. Hover reads one out without selecting it.
+        {/if}
+      </p>
+    {:else}
+      <p class="maplead">
+        The <b>{mapNodes.length}</b> units that couple to something, sized by how much code they
+        hold and ringed when this machine has them running. A line means one unit
+        <b>compiles the other in</b> — not that it calls it at runtime. Click to select, drag to
+        move, scroll to zoom.
+      </p>
+      <UnitMap nodes={mapNodes} edges={mapEdges} {selected} onSelect={select} height={460} />
+    {/if}
+
+    <ul class="legend">
+      {#if inside}
+        <li><span class="swatch kind-file"></span>code</li>
+        <li><span class="swatch kind-doc"></span>docs</li>
+        <li><span class="swatch kind-config"></span>config</li>
+      {:else}
+        <li><span class="swatch kind-capability"></span>capability</li>
+        <li><span class="swatch kind-lib"></span>lib</li>
+        <li><span class="swatch kind-spine"></span>spine</li>
+        <li><span class="swatch kind-pack"></span>pack</li>
+        <li><span class="swatch ring-up"></span>running</li>
+        <li><span class="swatch ring-down"></span>off</li>
+      {/if}
+    </ul>
+
+    {#if !inside && isolated.length}
+      <p class="isolated-lead">
+        <b>{isolated.length}</b> units compile nothing in and are compiled into nothing. That is
+        the normal state for a self-contained capability, not a gap.
+      </p>
+      <ul class="chips">
+        {#each isolated as u (u.name)}
+          <li>
+            <button class:sel={selected === u.name} onclick={() => toggle(u)}>
+              <span class="dot {upClass(u.name)}"></span>{u.name}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+
   {#if selected && detail}
     <div class="card detail">
       <header>
         <strong>{detail.name}</strong>
         <span class="kind">{detail.kind}</span>
-        <button onclick={() => (selected = null)} aria-label="Clear selection">
+        {#if detail.code}
+          <button
+            class="inside"
+            disabled={insideLoading || inside?.unit === detail.name}
+            onclick={() => openInside(detail.name)}
+          >
+            {#if insideLoading}
+              <Icon name="loader" size={12} /> opening…
+            {:else if inside?.unit === detail.name}
+              open below
+            {:else}
+              Look inside
+            {/if}
+          </button>
+        {/if}
+        <button class="x" onclick={() => select(null)} aria-label="Clear selection">
           <Icon name="close" size={13} />
         </button>
       </header>
+      {#if insideError}
+        <p class="err small">
+          <Icon name="alert" size={13} /> knowledge-graph unavailable — {insideError}. Run
+          <span class="mono">tools/graphify.sh</span> if the graph was never built.
+        </p>
+      {/if}
       <dl>
         {#if detail.code}
           <div><dt>Code</dt><dd>{detail.code.files} files · {detail.code.nodes} nodes</dd></div>
@@ -224,6 +441,174 @@
     line-height: 1.5;
   }
 
+  .mapwrap {
+    margin: 0 0 1rem;
+  }
+  .maplead {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.55;
+    margin: 0 0 0.5rem;
+  }
+  .link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--primary);
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.9rem;
+    list-style: none;
+    padding: 0;
+    margin: 0.5rem 0 0;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+  }
+  .legend li {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .swatch {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--swatch, var(--text-tertiary));
+  }
+  /* The legend mirrors UnitMap's palette. Two copies of six hex values is the
+     price of not exporting a colour table from a component; if a third surface
+     ever needs them they move into app.css as tokens. */
+  .legend .kind-capability {
+    --swatch: #0e7490;
+  }
+  .legend .kind-lib {
+    --swatch: #7c3aed;
+  }
+  .legend .kind-spine {
+    --swatch: #b45309;
+  }
+  .legend .kind-pack {
+    --swatch: #15803d;
+  }
+  .legend .kind-file {
+    --swatch: #0e7490;
+  }
+  .legend .kind-doc {
+    --swatch: #15803d;
+  }
+  .legend .kind-config {
+    --swatch: #b45309;
+  }
+  :global(:root.dark) .legend .kind-capability,
+  :global(:root.dark) .legend .kind-file {
+    --swatch: #22d3ee;
+  }
+  :global(:root.dark) .legend .kind-lib {
+    --swatch: #a78bfa;
+  }
+  :global(:root.dark) .legend .kind-spine,
+  :global(:root.dark) .legend .kind-config {
+    --swatch: #fbbf24;
+  }
+  :global(:root.dark) .legend .kind-pack,
+  :global(:root.dark) .legend .kind-doc {
+    --swatch: #4ade80;
+  }
+  .legend .ring-up,
+  .legend .ring-down {
+    background: none;
+    border: 2px solid var(--success);
+  }
+  .legend .ring-down {
+    border-color: var(--warning);
+  }
+
+  .picked {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin: 0.5rem 0 0;
+    min-height: 1.2rem;
+  }
+  .picked b {
+    color: var(--text-primary);
+  }
+  .picked .mono {
+    overflow-wrap: anywhere;
+  }
+
+  .isolated-lead {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin: 0.9rem 0 0.4rem;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .chips button {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font: inherit;
+    font-size: 0.74rem;
+    padding: 0.2rem 0.55rem;
+    border: 1px solid var(--card-border);
+    border-radius: 999px;
+    background: var(--card-bg);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .chips button:hover {
+    color: var(--text-primary);
+    border-color: var(--card-border-hover);
+  }
+  .chips button.sel {
+    color: var(--text-primary);
+    border-color: var(--primary);
+  }
+
+  .inside {
+    margin-left: auto;
+    font: inherit;
+    font-size: 0.72rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.22rem 0.6rem;
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    background: var(--card-bg);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .inside:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: var(--card-border-hover);
+  }
+  .inside:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .err.small {
+    font-size: 0.78rem;
+    margin: 0.5rem 0 0;
+  }
+
   .err,
   .loading {
     display: flex;
@@ -324,7 +709,9 @@
     gap: 0.55rem;
     margin-bottom: 0.6rem;
   }
-  .detail header button {
+  /* `.inside` claims the auto margin when it is present, so the close button
+     only takes it when the unit has no code to look inside of. */
+  .detail header .x {
     margin-left: auto;
     background: none;
     border: none;
@@ -334,7 +721,10 @@
     padding: 0.2rem;
     display: flex;
   }
-  .detail header button:hover {
+  .detail header .inside ~ .x {
+    margin-left: 0;
+  }
+  .detail header .x:hover {
     opacity: 1;
   }
   .detail dl {

@@ -139,6 +139,55 @@ describe("GET /api/graph/node/:id", () => {
   });
 });
 
+describe("GET /api/graph/unit/:name", () => {
+  /** A unit-shaped graph: three nodes under one capability, one outside it. */
+  const UNITS = {
+    nodes: [
+      { id: "n1", label: "lib.rs", file_type: "code", source_file: "capabilities/comms/src/lib.rs", community: 0 },
+      { id: "n2", label: "media.rs", file_type: "code", source_file: "capabilities/comms/src/media.rs", community: 0 },
+      { id: "n3", label: "README.md", file_type: "doc", source_file: "capabilities/comms/README.md", community: 0 },
+      { id: "n4", label: "score.rs", file_type: "code", source_file: "capabilities/scouting/src/score.rs", community: 1 },
+    ],
+    links: [
+      { source: "n1", target: "n2", label: "imports" },
+      { source: "n2", target: "n4", label: "imports" },
+    ],
+  };
+
+  test("returns only the unit's own files, and only the edges between them", async () => {
+    rmSync(root, { recursive: true, force: true });
+    plant(UNITS);
+    const { status, body } = await call("/api/graph/unit/comms");
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ unit: "comms", total: 3, returned: 3, truncated: false });
+    expect(body.nodes.map((n: any) => n.label).sort()).toEqual(["README.md", "lib.rs", "media.rs"]);
+    // n2→n4 crosses out of the unit, so it is not an edge of this subgraph.
+    expect(body.edges).toHaveLength(1);
+  });
+
+  test("a spine directory is the unit, with no <name> segment under it", async () => {
+    rmSync(root, { recursive: true, force: true });
+    plant({
+      nodes: [{ id: "t1", label: "doctor.ts", file_type: "code", source_file: "tools/doctor.ts", community: 0 }],
+      links: [],
+    });
+    const { status, body } = await call("/api/graph/unit/tools");
+    expect(status).toBe(200);
+    expect(body.prefixes).toEqual(["tools/"]);
+    expect(body.returned).toBe(1);
+  });
+
+  test("a path masquerading as a unit name is rejected, not resolved", async () => {
+    expect((await call("/api/graph/unit/..%2F..%2Fetc")).status).toBe(400);
+  });
+
+  test("a unit with nothing in the graph is a 404 naming where it looked", async () => {
+    const { status, body } = await call("/api/graph/unit/nowhere");
+    expect(status).toBe(404);
+    expect(body.error).toContain("capabilities/nowhere/");
+  });
+});
+
 describe("failure paths", () => {
   test("no graph on disk is a 404 that says how to produce one", async () => {
     rmSync(root, { recursive: true, force: true });

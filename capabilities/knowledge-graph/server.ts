@@ -1,9 +1,14 @@
 #!/usr/bin/env bun
-// server.ts — serves the knowledge-graph capability: static Svelte UI (adapter-static)
-// plus REST API over graphify-out/graph.json.
+// server.ts — serves the knowledge-graph capability: a REST API over
+// graphify-out/graph.json. No UI of its own.
 //
-// Based on tools/panel-server.ts (heartbeat injection, backlink, security model)
-// with API routes added for programmatic graph access.
+// It used to ship a second SvelteKit app on this port, which drew the whole
+// 6.6k-node graph in one vis-network canvas loaded from a CDN. That never
+// converged into a picture and made a local-first surface depend on unpkg. The
+// browser view now lives on the dashboard's self-model page, which reads the
+// self-model at unit level and calls /api/graph/unit/:name to go one level
+// deeper — bounded, so it renders. This process kept the half that had no
+// duplicate: the data.
 //
 // usage: bun capabilities/knowledge-graph/server.ts
 // env:   AXON_PORT   the port to bind (exported by tools/service-runner.sh from the manifest)
@@ -15,21 +20,17 @@
 //   GET  /api/graph/search?q=    — search nodes by label or file type
 //   GET  /api/graph/community/:id — nodes and edges in one community
 //   GET  /api/graph/node/:id     — one node with its connections
+//   GET  /api/graph/unit/:name   — one unit's files and the edges among them, capped
 //
-// Importing this file starts nothing: binding the port, resolving the built UI and every
-// exit live in main(), behind `import.meta.main`. That is what lets server.test.ts call
-// handleAPI against a planted graph without a port, a build, or a running service — a
-// module that exits the process on import cannot be tested at all, and the UI's dist/ is
-// generated and untracked, so on a fresh clone the old import path would have killed the
-// test runner before its first assertion (Axon#116).
+// Importing this file starts nothing: binding the port and every exit live in
+// main(), behind `import.meta.main`. That is what lets server.test.ts call
+// handleAPI against a planted graph without a port or a running service — a
+// module that exits the process on import cannot be tested at all (Axon#116).
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join, normalize, resolve, sep } from "node:path";
-
-const HEARTBEAT_INTERVAL_MS = 30_000;
+import { join } from "node:path";
 
 const axonRoot = (): string => process.env.AXON_ROOT ?? process.cwd();
-const distDirFor = (root: string): string => resolve(join(root, "capabilities/knowledge-graph/ui/dist"));
 
 // ── Graph data ──────────────────────────────────────────────────────────────
 
@@ -90,92 +91,6 @@ function getCommunities(nodes: FlatNode[]): number[] {
     if (n.community >= 0) set.add(n.community);
   }
   return [...set].sort((a, b) => a - b);
-}
-
-// ── MIME types (from panel-server.ts) ──────────────────────────────────────
-
-const CONTENT_TYPES: Record<string, string> = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".ico": "image/x-icon",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".map": "application/json; charset=utf-8",
-  ".png": "image/png",
-  ".svg": "image/svg+xml",
-  ".txt": "text/plain; charset=utf-8",
-  ".webmanifest": "application/manifest+json",
-  ".webp": "image/webp",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-};
-
-const contentType = (path: string): string => {
-  const dot = path.lastIndexOf(".");
-  return (dot === -1 ? undefined : CONTENT_TYPES[path.slice(dot)]) ?? "application/octet-stream";
-};
-
-// ── Heartbeat injection (from panel-server.ts) ──────────────────────────────
-
-const HEARTBEAT = `<script>
-(function () {
-  var ping = function () {
-    if (document.visibilityState !== "visible") return;
-    if (navigator.sendBeacon) navigator.sendBeacon("/__axon/ping");
-    else fetch("/__axon/ping", { method: "POST", keepalive: true }).catch(function () {});
-  };
-  ping();
-  setInterval(ping, ${HEARTBEAT_INTERVAL_MS});
-  document.addEventListener("visibilitychange", ping);
-})();
-</script>`;
-
-const shellPort = process.env.AXON_SHELL_PORT ?? "";
-const BACKLINK = /^\d+$/.test(shellPort)
-  ? `<a id="axon-back" href="#" title="Back to Axon">← Axon</a>
-<style>
-#axon-back {
-  position: fixed; left: 1rem; bottom: 1rem; z-index: 2147483647;
-  padding: .4rem .7rem; border-radius: 999px;
-  font: 500 12px/1 ui-sans-serif, system-ui, sans-serif; text-decoration: none;
-  color: #e6f6ff; background: rgba(15, 23, 42, .82); border: 1px solid rgba(56, 189, 248, .45);
-  backdrop-filter: blur(6px); opacity: .55; transition: opacity .15s ease;
-}
-#axon-back:hover, #axon-back:focus-visible { opacity: 1; }
-@media print { #axon-back { display: none; } }
-</style>
-<script>
-document.getElementById("axon-back").href =
-  location.protocol + "//" + location.hostname + ":${shellPort}/";
-</script>`
-  : "";
-
-// ── Static file resolution (from panel-server.ts) ──────────────────────────
-
-function resolveFile(urlPath: string, distDir: string): string | null {
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(urlPath);
-  } catch {
-    return null;
-  }
-  const candidate = normalize(join(distDir, decoded));
-  if (candidate !== distDir && !candidate.startsWith(distDir + sep)) return null;
-
-  for (const path of [candidate, `${candidate}.html`, join(candidate, "index.html")]) {
-    if (existsSync(path) && statSync(path).isFile()) return path;
-  }
-  return null;
-}
-
-function precompressed(path: string, accept: string): { path: string; encoding: string } | null {
-  if (path.endsWith(".html")) return null;
-  for (const [encoding, ext] of [["br", ".br"], ["gzip", ".gz"]] as const) {
-    if (accept.includes(encoding) && existsSync(path + ext)) return { path: path + ext, encoding };
-  }
-  return null;
 }
 
 // ── API handlers ────────────────────────────────────────────────────────────
@@ -274,7 +189,72 @@ export function handleAPI(url: URL): Response | null {
     return jsonOk({ node, connections });
   }
 
+  // /api/graph/unit/:name — one unit's files and the edges among them
+  const unitMatch = path.match(/^\/api\/graph\/unit\/(.+)$/);
+  if (unitMatch) {
+    const unit = decodeURIComponent(unitMatch[1]);
+    const graph = loadGraph();
+    if (!graph) return json404("graph not found");
+    const prefixes = unitPrefixes(unit);
+    if (!prefixes.length) return json400(`'${unit}' is not a unit name`);
+
+    const all = flattenNodes(graph);
+    const owned = all.filter(n => prefixes.some(p => (n.source_file ?? "").startsWith(p)));
+    if (!owned.length) return json404(`no graph nodes under ${prefixes.join(" or ")}`);
+
+    // Rank by degree before capping, so a truncated answer keeps the part of the
+    // unit that explains its shape rather than an arbitrary slice of it.
+    const edges = flattenEdges(graph);
+    const ownedIds = new Set(owned.map(n => n.id));
+    const degree = new Map<string, number>();
+    for (const e of edges) {
+      if (ownedIds.has(e.from)) degree.set(e.from, (degree.get(e.from) ?? 0) + 1);
+      if (ownedIds.has(e.to)) degree.set(e.to, (degree.get(e.to) ?? 0) + 1);
+    }
+    const ranked = [...owned].sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0));
+    const nodes = ranked.slice(0, UNIT_NODE_CAP);
+    const keptIds = new Set(nodes.map(n => n.id));
+
+    return jsonOk({
+      unit,
+      prefixes,
+      // Reported, never silent: a capped answer that looked complete would read
+      // as "this is the whole unit" when it is the busiest part of it.
+      total: owned.length,
+      returned: nodes.length,
+      truncated: owned.length > nodes.length,
+      cap: UNIT_NODE_CAP,
+      nodes,
+      edges: edges.filter(e => keptIds.has(e.from) && keptIds.has(e.to)),
+    });
+  }
+
   return null; // not an API route
+}
+
+/**
+ * How many of a unit's nodes one drill-down returns.
+ *
+ * A force layout stops being a picture long before it stops being a data
+ * structure: the full graph is 6.6k nodes and rendered as a black rectangle,
+ * which is the defect this endpoint exists to make unreachable. A few hundred
+ * still lays out in well under a second and still reads as a shape.
+ */
+const UNIT_NODE_CAP = 400;
+
+/**
+ * Repo-relative path prefixes a unit owns.
+ *
+ * Mirrors `unitForPath` in tools/lib/self-model.ts, which is what named these
+ * units in the first place -- the two must agree or a unit on the self-model
+ * page drills into nothing. Spine directories ARE the unit and have no
+ * `<name>` segment; the three nouns each nest one level down
+ * (README.md#three-architectural-nouns).
+ */
+function unitPrefixes(unit: string): string[] {
+  if (unit.includes("/") || unit.includes("..")) return [];
+  if (["dashboard", "tools", "schemas"].includes(unit)) return [`${unit}/`];
+  return [`capabilities/${unit}/`, `libs/${unit}/`, `Packs/${unit}/`];
 }
 
 function jsonOk(data: any): Response {
@@ -306,27 +286,20 @@ function main(): void {
     process.exit(1);
   }
 
-  const distDir = distDirFor(axonRoot());
-  if (!existsSync(join(distDir, "index.html"))) {
-    console.error(`knowledge-graph: ${distDir} has no index.html — has the UI been built?`);
-    console.error("  cd capabilities/knowledge-graph/ui && bun install && bun run build");
-    process.exit(1);
-  }
-
-  // Idle detection (same as panel-server.ts)
+  // Idle detection. The dashboard's self-model page is the only browser
+  // caller, and it fetches rather than renders here, so the ping that a served
+  // page used to send never arrives. Every request counts as the signal
+  // instead, which is what keeps an on-demand capability alive while someone
+  // is actually reading its data.
   let lastSignal = Date.now();
 
   Bun.serve({
     hostname: "127.0.0.1",
     port,
-    async fetch(request) {
+    fetch(request) {
       const url = new URL(request.url);
+      lastSignal = Date.now();
 
-      // Liveness pair (from panel-server.ts)
-      if (url.pathname === "/__axon/ping") {
-        lastSignal = Date.now();
-        return new Response(null, { status: 204 });
-      }
       if (url.pathname === "/__axon/idle") {
         return Response.json({
           idle_seconds: Math.floor((Date.now() - lastSignal) / 1000),
@@ -334,43 +307,15 @@ function main(): void {
         });
       }
 
-      // API routes
       if (url.pathname.startsWith("/api/")) {
-        const apiResponse = handleAPI(url);
-        if (apiResponse) return apiResponse;
-        return json404("unknown API endpoint");
+        return handleAPI(url) ?? json404("unknown API endpoint");
       }
 
-      // Static file serving (from panel-server.ts)
-      const file = resolveFile(url.pathname, distDir) ?? join(distDir, "index.html");
-
-      if (file.endsWith(".html")) {
-        const html = await Bun.file(file).text();
-        const withHeartbeat = html.includes("</head>")
-          ? html.replace("</head>", `${HEARTBEAT}</head>`)
-          : html + HEARTBEAT;
-        const injected = withHeartbeat.includes("</body>")
-          ? withHeartbeat.replace("</body>", `${BACKLINK}</body>`)
-          : withHeartbeat + BACKLINK;
-        return new Response(injected, {
-          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" },
-        });
-      }
-
-      const encoded = precompressed(file, request.headers.get("accept-encoding") ?? "");
-      return new Response(Bun.file(encoded?.path ?? file), {
-        headers: {
-          "content-type": contentType(file),
-          ...(encoded ? { "content-encoding": encoded.encoding } : {}),
-          "cache-control": file.includes(`${sep}immutable${sep}`)
-            ? "public, max-age=31536000, immutable"
-            : "no-cache",
-        },
-      });
+      return json404("knowledge-graph serves /api/graph* only — the browser view is the dashboard's self-model page");
     },
   });
 
-  console.log(`knowledge-graph: serving UI + API on 127.0.0.1:${port}`);
+  console.log(`knowledge-graph: serving API on 127.0.0.1:${port}`);
 }
 
 if (import.meta.main) main();
