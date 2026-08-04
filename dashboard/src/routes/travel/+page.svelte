@@ -14,6 +14,11 @@
   } from "$lib/travel/nearby-places";
   import { loadPlaceImage, placeName, type PlaceImage } from "$lib/travel/place-image";
   import {
+    assessTravelCandidates,
+    calendarCandidatesFor,
+    type TravelCandidateAssessment,
+  } from "$lib/travel/travel-candidates";
+  import {
     axonStatus,
     calendar,
     comms,
@@ -21,11 +26,13 @@
     transit,
     trips,
     type CalendarEntry,
+    type CalendarCandidateVerdict,
     type Journey,
     type ObsidianTripCandidate,
     type PlanItem,
     type PlaceRef,
     type ScoredResult,
+    type ScoutingOpportunity,
     type TransportMode,
     type TripPlan,
   } from "$lib/api";
@@ -97,6 +104,12 @@
   let importOriginNeeded = $state(false);
   let importOriginField: HTMLDivElement | undefined = $state();
   let mapOpen = $state(false);
+  let travelCandidates = $state<TravelCandidateAssessment[]>([]);
+  let travelCandidatesLoading = $state(true);
+  let travelCandidateNotice = $state<string | null>(null);
+  let travelCandidateSaving = $state<string | null>(null);
+  let savedTravelCandidates = $state<Set<string>>(new Set());
+  let plannerElement: HTMLElement | undefined = $state();
   let openedPlanFromLink = "";
 
   const selected = $derived(results.find((result) => result.place.id === selectedId) ?? null);
@@ -179,8 +192,117 @@
       } catch {
         plans = [];
       }
+      await loadTravelCandidates();
     })();
   });
+
+  async function loadTravelCandidates(): Promise<void> {
+    travelCandidatesLoading = true;
+    travelCandidateNotice = null;
+    await axonStatus.start("scouting").catch(() => undefined);
+
+    let opportunities: ScoutingOpportunity[];
+    try {
+      opportunities = (await scouting.opportunities(false)).opportunities;
+    } catch {
+      travelCandidates = [];
+      travelCandidateNotice = "Scouting travel candidates are unavailable.";
+      travelCandidatesLoading = false;
+      return;
+    }
+
+    const requests = calendarCandidatesFor(opportunities, plans, todayKey);
+    let calendarAvailable = true;
+    let verdicts = new Map<string, CalendarCandidateVerdict>();
+    if (requests.length > 0) {
+      await axonStatus.start("calendar").catch(() => undefined);
+      try {
+        const response = await calendar.verdicts(requests);
+        verdicts = new Map(response.verdicts.map((verdict) => [verdict.id, verdict]));
+      } catch {
+        calendarAvailable = false;
+        travelCandidateNotice =
+          "Calendar feasibility is unavailable; candidates remain visible but are not offered as new plans.";
+      }
+    }
+
+    travelCandidates = assessTravelCandidates(
+      opportunities,
+      plans,
+      verdicts,
+      todayKey,
+      calendarAvailable,
+    );
+    travelCandidatesLoading = false;
+  }
+
+  function travelCandidateLabel(candidate: TravelCandidateAssessment): string {
+    switch (candidate.state) {
+      case "matching_trip": return "Matches a trip";
+      case "free_window": return "Free window";
+      case "needs_travel_day": return "Travel day needed";
+      case "conflicts": return "Calendar says no";
+      case "date_unresolved": return "Date unresolved";
+      case "calendar_unavailable": return "Calendar unavailable";
+    }
+  }
+
+  async function addTravelCandidate(candidate: TravelCandidateAssessment): Promise<void> {
+    const match = candidate.plan_match;
+    if (!match || travelCandidateSaving) return;
+    travelCandidateSaving = candidate.opportunity.id;
+    travelCandidateNotice = null;
+    try {
+      await trips.addItem(match.plan.id, {
+        item_type: "event",
+        day: candidate.opportunity.starts_at.slice(0, 10) || null,
+        external_id: `scouting:${candidate.opportunity.id}`,
+        title: candidate.opportunity.title,
+        payload: {
+          opportunity_id: candidate.opportunity.id,
+          source: candidate.opportunity.source,
+          url: candidate.opportunity.url,
+          city: candidate.opportunity.city,
+          location: candidate.opportunity.location,
+          latitude: candidate.opportunity.latitude,
+          longitude: candidate.opportunity.longitude,
+          event_route: candidate.opportunity.event_route,
+          destination_match: {
+            destination_id: match.destination.id,
+            distance_km: match.distance_km,
+          },
+        },
+      });
+      savedTravelCandidates = new Set([...savedTravelCandidates, candidate.opportunity.id]);
+      travelCandidateNotice = `“${candidate.opportunity.title}” was added to ${match.plan.title}.`;
+    } catch (caught) {
+      travelCandidateNotice = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      travelCandidateSaving = null;
+    }
+  }
+
+  function seedPlanFromCandidate(candidate: TravelCandidateAssessment): void {
+    if (!["free_window", "needs_travel_day"].includes(candidate.state)) return;
+    const opportunity = candidate.opportunity;
+    const day = opportunity.starts_at.slice(0, 10);
+    const end = opportunity.ends_at.slice(0, 10);
+    firstDestination = {
+      id: `scouting:${opportunity.id}`,
+      name: opportunity.city.trim() || opportunity.location.trim() || opportunity.title,
+      kind: opportunity.city.trim() ? "city" : "venue",
+      address: opportunity.location.trim() || null,
+      latitude: opportunity.latitude,
+      longitude: opportunity.longitude,
+    };
+    secondDestination = null;
+    showSecondDestination = false;
+    startDate = day;
+    endDate = end && end >= day ? end : day;
+    interests = opportunity.title;
+    travelCandidateNotice = `The new-trip form now carries “${opportunity.title}”; review the origin and route before saving.`;
+    plannerElement?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   // Calendar materialisation names the new plan in the URL. Resolve it only
   // after the ordinary plan list has arrived, then use the same loading path
@@ -852,6 +974,79 @@
     <a href="/travel/connections"><Icon name="train" size={14} /> Connections</a>
   </nav>
 
+  <section class="travel-candidates" aria-labelledby="travel-candidate-heading">
+    <header>
+      <div>
+        <span class="eyebrow">From Scouting</span>
+        <h2 id="travel-candidate-heading">Travel candidates</h2>
+        <p>Far events matched to dated trip destinations or checked against your Calendar.</p>
+      </div>
+      <button
+        class="btn"
+        type="button"
+        disabled={travelCandidatesLoading}
+        onclick={() => void loadTravelCandidates()}
+      >
+        <Icon name={travelCandidatesLoading ? "loader" : "refresh"} size={14} />
+        {travelCandidatesLoading ? "Checking…" : "Refresh"}
+      </button>
+    </header>
+
+    {#if travelCandidateNotice}
+      <p class="candidate-notice" aria-live="polite">{travelCandidateNotice}</p>
+    {/if}
+
+    {#if travelCandidatesLoading}
+      <p class="candidate-empty">Checking Scouting, Trips, and Calendar…</p>
+    {:else if travelCandidates.length === 0}
+      <p class="candidate-empty">No undismissed travel-candidate events are waiting.</p>
+    {:else}
+      <ol>
+        {#each travelCandidates as candidate (candidate.opportunity.id)}
+          <li class:blocked={candidate.state === "conflicts"}>
+            <div class="candidate-date">
+              <strong>{shortDate(candidate.opportunity.starts_at.slice(0, 10))}</strong>
+              <span>{candidate.opportunity.city || candidate.opportunity.location || "Place open"}</span>
+            </div>
+            <div class="candidate-copy">
+              <span class="candidate-state {candidate.state}">{travelCandidateLabel(candidate)}</span>
+              <a href={candidate.opportunity.url} target="_blank" rel="noreferrer">
+                {candidate.opportunity.title}
+              </a>
+              <small title={candidate.reason}>{candidate.reason}</small>
+            </div>
+            <div class="candidate-actions">
+              {#if candidate.plan_match}
+                <button
+                  type="button"
+                  disabled={travelCandidateSaving !== null || savedTravelCandidates.has(candidate.opportunity.id)}
+                  onclick={() => void addTravelCandidate(candidate)}
+                >
+                  <Icon
+                    name={savedTravelCandidates.has(candidate.opportunity.id) ? "check" : "plus"}
+                    size={13}
+                  />
+                  {savedTravelCandidates.has(candidate.opportunity.id)
+                    ? "Added"
+                    : travelCandidateSaving === candidate.opportunity.id
+                      ? "Adding…"
+                      : "Add to trip"}
+                </button>
+                <button type="button" onclick={() => void openPlan(candidate.plan_match!.plan)}>
+                  Open trip
+                </button>
+              {:else if ["free_window", "needs_travel_day"].includes(candidate.state)}
+                <button type="button" onclick={() => seedPlanFromCandidate(candidate)}>
+                  <Icon name="map-pin" size={13} /> Plan around event
+                </button>
+              {/if}
+            </div>
+          </li>
+        {/each}
+      </ol>
+    {/if}
+  </section>
+
   {#if plans.length > 0}
     <section class="journey-index" aria-label="Trip overview">
       <div>
@@ -966,7 +1161,7 @@
     </section>
   {/if}
 
-  <section class="planner">
+  <section class="planner" bind:this={plannerElement}>
     <div class="planner-heading">
       <span>New trip</span>
       <small>Start with the route, dates, and intent</small>
@@ -1641,6 +1836,152 @@
   .travel-nav a.active {
     color: var(--primary);
     background: var(--primary-soft);
+  }
+
+  .travel-candidates {
+    margin-bottom: 1rem;
+    overflow: hidden;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    background: var(--card-bg);
+    box-shadow: var(--card-shadow);
+  }
+
+  .travel-candidates > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.9rem 1rem;
+    border-bottom: 1px solid var(--card-border);
+  }
+
+  .travel-candidates h2,
+  .travel-candidates p {
+    margin: 0;
+  }
+
+  .travel-candidates h2 {
+    font-size: 0.875rem;
+  }
+
+  .travel-candidates header p {
+    margin-top: 0.1rem;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+  }
+
+  .travel-candidates ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .travel-candidates li {
+    display: grid;
+    gap: 0.6rem;
+    padding: 0.8rem 1rem;
+    border-bottom: 1px solid var(--card-border);
+  }
+
+  .travel-candidates li:last-child {
+    border-bottom: 0;
+  }
+
+  .travel-candidates li.blocked {
+    background: var(--danger-soft);
+  }
+
+  .candidate-date strong,
+  .candidate-date span,
+  .candidate-copy a,
+  .candidate-copy small {
+    display: block;
+  }
+
+  .candidate-date strong {
+    font-size: 0.75rem;
+  }
+
+  .candidate-date span,
+  .candidate-copy small {
+    margin-top: 0.15rem;
+    color: var(--text-tertiary);
+    font-size: 0.625rem;
+  }
+
+  .candidate-copy a {
+    margin-top: 0.25rem;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .candidate-copy a:hover {
+    color: var(--primary);
+  }
+
+  .candidate-state {
+    display: inline-block;
+    padding: 0.12rem 0.3rem;
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.5625rem;
+  }
+
+  .candidate-state.matching_trip,
+  .candidate-state.free_window {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  .candidate-state.needs_travel_day {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  .candidate-state.conflicts {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+
+  .candidate-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .candidate-actions button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.35rem 0.5rem;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--primary-soft);
+    color: var(--primary);
+    font: inherit;
+    font-size: 0.6875rem;
+    cursor: pointer;
+  }
+
+  .candidate-actions button:disabled {
+    color: var(--text-tertiary);
+    cursor: default;
+  }
+
+  .candidate-notice,
+  .candidate-empty {
+    padding: 0.75rem 1rem;
+    color: var(--text-secondary);
+    font-size: 0.6875rem;
+  }
+
+  .candidate-notice {
+    border-bottom: 1px solid var(--card-border);
+    background: var(--warning-soft);
   }
 
   .journey-index {
@@ -2956,6 +3297,15 @@
   }
 
   @media (width >= 38rem) {
+    .travel-candidates li {
+      grid-template-columns: 7rem minmax(0, 1fr) auto;
+      align-items: center;
+    }
+
+    .candidate-actions {
+      justify-content: flex-end;
+    }
+
     .calendar-anchors li {
       grid-template-columns: 7.5rem minmax(0, 1fr) auto auto;
     }

@@ -26,6 +26,18 @@ are shown before fresh discovery results as fixpoints. Adding one to the itinera
 an explicit action and records `calendar:<entry-id>` as the external id; opening Travel does
 not copy or mutate calendar data.
 
+The Travel overview also consumes Scouting's `travel_candidate` route. A future event matches
+an upcoming plan only when its start day is inside the plan window and its complete coordinate
+is within 75 km of a complete destination coordinate (great-circle distance; never city-string
+equality or a missing-coordinate `0,0` guess). Unmatched dated candidates are sent to Calendar's
+batch verdict endpoint. `free` and `needs-travel-day` remain actionable with the cost named;
+`conflicts` is displayed as a no and cannot seed a plan. A matched event is added through Trips'
+idempotent plan-item API only after an explicit click. A viable unmatched event only pre-fills
+the existing plan form; the operator still supplies/reviews the route before saving.
+
+This join remains computed in the dashboard because that is already the documented composition
+edge for Trips, Scouting, and Calendar. It persists no recommendation and reads no foreign store.
+
 HTTP surface on the manifest-declared port:
 
 - `GET /health`
