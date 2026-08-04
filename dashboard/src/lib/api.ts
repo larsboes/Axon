@@ -672,6 +672,34 @@ export interface FeedStageProvenance {
   completed_at: string;
 }
 
+export interface FeedQualityFlag {
+  feed_id: string;
+  title: string | null;
+  url: string;
+  status: FeedStatus;
+  content_status: "full" | "thin" | "none" | "unknown";
+  signal:
+    | "content_status"
+    | "extraction_path"
+    | "retention"
+    | "boilerplate_leakage"
+    | "summary_attempts"
+    | "ranking_basis"
+    | string;
+  reason: string;
+  evidence: string;
+  derived_at: string;
+}
+
+export interface FeedQualityRefresh {
+  reviewed: number;
+  flagged_items: number;
+  flag_count: number;
+  bounded_to: number;
+  days: number;
+  provider_calls: 0;
+}
+
 interface FeedEntryBase {
   id: string;
   stream: FeedStream;
@@ -1145,6 +1173,13 @@ export const comms = {
   runs: (days = 7) => request<FeedRun[]>(`/comms/feed/runs?days=${days}`),
   evaluationStatus: () =>
     request<CommsEvaluationStatus>('/comms/feed/evaluation/status'),
+  qualityFlags: (limit = 500) =>
+    request<FeedQualityFlag[]>(`/comms/feed/quality?limit=${limit}`),
+  refreshQualityFlags: (days = 3650) =>
+    request<FeedQualityRefresh>(
+      '/comms/feed/quality/refresh',
+      jsonInit('POST', { days }),
+    ),
   // Answers once the item is stored; the summary is written behind the response, so a
   // freshly ingested entry legitimately comes back with `summary: null`.
   ingest: (url: string) => request<FeedEntryDetail>('/comms/ingest', jsonInit('POST', { url })),

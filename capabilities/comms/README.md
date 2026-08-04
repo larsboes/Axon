@@ -360,6 +360,9 @@ the DB connection string is redacted before any display.
 - `feed_evaluation_factors` — ordered normalized factors with label, value, weight and
   rationale. It is normalized rather than JSON so later trip/deadline factors remain queryable
   and individually inspectable.
+- `feed_quality_flags` — the latest deterministic review signals per item. Each row stores the
+  signal name, human-readable reason, inspectable evidence and derivation time. An explicit
+  refresh replaces an item's complete set; the read route only returns stored rows.
 - Stage provenance stays beside the value it describes: extraction tier/revision in
   `feed_raw_content`, normalization and summary tier/revision in `feed_items`, and ranking tier
   beside the existing revision tuple in `feed_evaluations`. Tiers are ordered
@@ -375,6 +378,21 @@ re-ingested (`upsert_preserves_status_across_refetch_*` tests prove it).
 The reader shows the human keeper/dismiss verdict above every processing
 producer; migrated values whose producer cannot be recovered are labelled
 `legacy-unknown` rather than assigned a guessed model or revision.
+
+## Computed quality review
+
+`POST /feed/quality/refresh` examines at most 500 stored items and replaces their review flags;
+`GET /feed/quality` reads the resulting queue. The dashboard exposes both under **Feed → Review**.
+The computation reads only stored content status, capture/extraction provenance, raw and canonical
+text, summary retry state, and whether a ranking row exists. It never calls an inference provider,
+never treats a model's self-confidence as evidence, and never changes the human Feed status.
+
+The public defaults in `comms.config.example.json` come from the frozen extraction corpus rather
+than an intuition: its six passing input classes retain 39.7–89.6% of total raw text, preserve
+100% of judged useful text, and leak 0% of judged boilerplate. Operational items do not have
+per-item human judgements, so the review signal deliberately uses the rounded 39–90% observed
+total-retention envelope and a 0% residual-normalizer-rule threshold as suggestions for inspection,
+not correctness verdicts. Two failed summary attempts warn before the existing three-attempt cap.
 
 ## Tests
 

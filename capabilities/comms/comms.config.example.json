@@ -19,6 +19,14 @@
   "_comment_enrichment_drain_minutes": "How often comms-server drains the summary backlog, in minutes (default 15). Ingest-triggered enrichment only reaches items that arrive while the inference server is up; without this pass, items ingested during an outage stay empty until someone runs `comms summarize --pending` by hand. The retry ledger bounds it: three failed attempts with exponential backoff, each failure recording its error class. Set 0 to disable when something else owns the schedule.",
   "enrichment_drain_minutes": 15,
 
+  "_comment_quality_flags": "Computed review-queue thresholds. Passing extraction fixtures retain 39.7–89.6% of total raw text, preserve 100% judged useful text, and leak 0% judged boilerplate; the defaults round that observed total-retention envelope outward to 39–90% and keep leakage at 0%. summary_attempt_warning=2 flags the attempt before the existing three-attempt cap parks an item. Flagging never calls a provider or enriches an item.",
+  "quality_flags": {
+    "minimum_total_retention_percent": 39.0,
+    "maximum_total_retention_percent": 90.0,
+    "maximum_boilerplate_leakage_percent": 0.0,
+    "summary_attempt_warning": 2
+  },
+
   "_comment_keeper_export_dir": "Optional directory. When set, `comms keep <id>` also writes a distilled markdown note (title, url, date, summary — never the raw transcript). Leave unset to disable export.",
   "keeper_export_dir": "",
 

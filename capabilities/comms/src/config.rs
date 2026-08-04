@@ -32,6 +32,30 @@ impl Default for RelevanceConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+pub struct QualityFlagConfig {
+    /// Passing corpus fixtures retain 39.7–89.6% of their total raw text.
+    /// Round outward so the observed fixtures remain inside the review band.
+    pub minimum_total_retention_percent: f64,
+    pub maximum_total_retention_percent: f64,
+    /// Every passing corpus fixture leaks zero judged boilerplate.
+    pub maximum_boilerplate_leakage_percent: f64,
+    /// The summary retry ledger caps at three; warn on the attempt before it parks.
+    pub summary_attempt_warning: i32,
+}
+
+impl Default for QualityFlagConfig {
+    fn default() -> Self {
+        Self {
+            minimum_total_retention_percent: 39.0,
+            maximum_total_retention_percent: 90.0,
+            maximum_boilerplate_leakage_percent: 0.0,
+            summary_attempt_warning: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct TravelContextConfig {
     /// Trips owns the plan data. Comms reads its existing HTTP contract and
     /// retains only the last bounded context snapshot used for Feed ranking.
@@ -148,6 +172,7 @@ struct FileConfig {
     #[serde(default)]
     vault_link_sources: Vec<VaultLinkSourceConfig>,
     feed_sources: Option<Vec<FeedSourceConfig>>,
+    quality_flags: Option<QualityFlagConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -188,6 +213,7 @@ pub struct Config {
     /// General awareness sources. `None` in a file uses the public, non-personal
     /// defaults; an explicit empty array disables them all.
     pub feed_sources: Vec<FeedSourceConfig>,
+    pub quality_flags: QualityFlagConfig,
 }
 
 // One implementation, in libs/axon-config, re-exported under the name this
@@ -302,6 +328,7 @@ impl Config {
             .collect();
         let feed_sources = file.feed_sources.unwrap_or_else(default_feed_sources);
         let travel_context = file.travel_context.unwrap_or_default();
+        let quality_flags = file.quality_flags.unwrap_or_default();
 
         Self {
             database_url,
@@ -317,6 +344,7 @@ impl Config {
             travel_context,
             vault_link_sources,
             feed_sources,
+            quality_flags,
         }
     }
 
@@ -408,5 +436,12 @@ mod tests {
         assert!(cfg.relevance.profile_paths.is_empty());
         assert!(cfg.vault_link_sources.is_empty());
         assert_eq!(cfg.feed_sources.len(), 2);
+        assert_eq!(cfg.quality_flags.minimum_total_retention_percent, 39.0);
+        assert_eq!(cfg.quality_flags.maximum_total_retention_percent, 90.0);
+        assert_eq!(
+            cfg.quality_flags.maximum_boilerplate_leakage_percent,
+            0.0
+        );
+        assert_eq!(cfg.quality_flags.summary_attempt_warning, 2);
     }
 }

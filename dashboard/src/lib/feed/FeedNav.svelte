@@ -1,11 +1,12 @@
 <script lang="ts">
-  let { active }: { active: "inbox" | "discover" | "library" } = $props();
+  let { active }: { active: "inbox" | "discover" | "library" | "review" } = $props();
 </script>
 
 <nav aria-label="Feed view">
   <a class:active={active === "inbox"} href="/feed">Inbox</a>
   <a class:active={active === "discover"} href="/feed?view=discover">Discover</a>
   <a class:active={active === "library"} href="/feed/library">Library</a>
+  <a class:active={active === "review"} href="/feed/review">Review</a>
 </nav>
 
 <style>

@@ -17,6 +17,7 @@ use std::sync::Mutex;
 
 use crate::evaluation::{EvaluationFactor, EvaluationFactorContext, FeedEvaluation};
 use crate::provenance::{self, StageProvenance};
+use crate::quality::QualityFlag;
 use crate::relevance::RelevanceMatch;
 
 pub struct Store {
@@ -104,6 +105,22 @@ pub struct ContentStatusCounts {
     pub thin: i64,
     pub none: i64,
     pub unknown: i64,
+}
+
+/// One persisted signal in the Feed review queue, joined with the item facts a
+/// reviewer needs. Reasons and evidence are stored rather than reconstructed by
+/// the dashboard, so the UI cannot drift from the computation that fired.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct QualityReviewRow {
+    pub feed_id: String,
+    pub title: Option<String>,
+    pub url: String,
+    pub status: String,
+    pub content_status: String,
+    pub signal: String,
+    pub reason: String,
+    pub evidence: String,
+    pub derived_at: String,
 }
 
 /// A triage proposal for one inbox thread. On write `status`/`first_seen`/
@@ -302,6 +319,18 @@ impl Store {
                 refreshed_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
 
+            -- #79: deterministic suggestions for the human review queue. The
+            -- computation replaces this set explicitly; reading it has no side
+            -- effects and never invokes an inference provider.
+            CREATE TABLE IF NOT EXISTS {schema}.feed_quality_flags (
+                feed_id TEXT NOT NULL REFERENCES {schema}.feed_items(id) ON DELETE CASCADE,
+                signal TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                derived_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (feed_id, signal)
+            );
+
             ALTER TABLE {schema}.feed_evaluation_factors
                 ADD COLUMN IF NOT EXISTS context_json TEXT;
 
@@ -419,6 +448,8 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_feed_evaluations_score ON {schema}.feed_evaluations(overall_score DESC);
             CREATE INDEX IF NOT EXISTS idx_feed_evaluations_revision
                 ON {schema}.feed_evaluations(context_revision, evaluator_revision);
+            CREATE INDEX IF NOT EXISTS idx_feed_quality_flags_derived
+                ON {schema}.feed_quality_flags(derived_at DESC);
             "
         ))?;
         Ok(())
@@ -789,6 +820,70 @@ impl Store {
             }
         }
         Ok(stages)
+    }
+
+    /// Atomically replace the computed review signals for one item. An empty
+    /// set clears flags that no longer fire on the current stored evidence.
+    pub fn replace_feed_quality_flags(
+        &self,
+        feed_id: &str,
+        flags: &[QualityFlag],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = self.conn.lock().unwrap();
+        let mut transaction = conn.transaction()?;
+        transaction.execute(
+            &format!(
+                "DELETE FROM {}.feed_quality_flags WHERE feed_id = $1",
+                self.schema
+            ),
+            &[&feed_id],
+        )?;
+        for flag in flags {
+            transaction.execute(
+                &format!(
+                    "INSERT INTO {schema}.feed_quality_flags
+                        (feed_id, signal, reason, evidence, derived_at)
+                     VALUES ($1, $2, $3, $4, now())",
+                    schema = self.schema
+                ),
+                &[&feed_id, &flag.signal, &flag.reason, &flag.evidence],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn feed_quality_review_queue(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<QualityReviewRow>, Box<dyn std::error::Error>> {
+        let mut conn = self.conn.lock().unwrap();
+        let rows = conn.query(
+            &format!(
+                "SELECT q.feed_id, f.title, f.url, f.status, f.content_status,
+                        q.signal, q.reason, q.evidence, q.derived_at::text
+                 FROM {schema}.feed_quality_flags q
+                 JOIN {schema}.feed_items f ON f.id = q.feed_id
+                 ORDER BY f.created_at DESC, q.signal ASC
+                 LIMIT $1",
+                schema = self.schema
+            ),
+            &[&(limit as i64)],
+        )?;
+        Ok(rows
+            .iter()
+            .map(|row| QualityReviewRow {
+                feed_id: row.get(0),
+                title: row.get(1),
+                url: row.get(2),
+                status: row.get(3),
+                content_status: row.get(4),
+                signal: row.get(5),
+                reason: row.get(6),
+                evidence: row.get(7),
+                derived_at: row.get(8),
+            })
+            .collect())
     }
 
     /// Increment the attempt counter, record the error class, and set the next
@@ -1697,6 +1792,52 @@ mod tests {
         assert_eq!(stored[0].profile_label, "Polymath");
         assert_eq!(stored[0].mode, "reranked");
         assert_eq!(store.get_feed_status(&item.id).unwrap().as_deref(), Some("keeper"));
+    }
+
+    #[test]
+    fn quality_flags_round_trip_replaces_stale_reasons_and_keeps_item_status() {
+        let (store, _schema) = open_test_store("feed_quality_flags");
+        let item = mk_feed("https://example.com/quality", "article", "news");
+        store.upsert_feed(&item).unwrap();
+        store.set_feed_status(&item.id, "keeper").unwrap();
+
+        store
+            .replace_feed_quality_flags(
+                &item.id,
+                &[
+                    QualityFlag {
+                        signal: "retention".into(),
+                        reason: "retention fired: old reason".into(),
+                        evidence: "retained=95.0%".into(),
+                    },
+                    QualityFlag {
+                        signal: "summary_attempts".into(),
+                        reason: "summary_attempts fired: retrying".into(),
+                        evidence: "attempts=2; last_error=timeout".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        store
+            .replace_feed_quality_flags(
+                &item.id,
+                &[QualityFlag {
+                    signal: "retention".into(),
+                    reason: "retention fired: current reason".into(),
+                    evidence: "retained=92.0%".into(),
+                }],
+            )
+            .unwrap();
+
+        let rows = store.feed_quality_review_queue(20).unwrap();
+        assert_eq!(rows.len(), 1, "signals absent from the new set are removed");
+        assert_eq!(rows[0].signal, "retention");
+        assert_eq!(rows[0].reason, "retention fired: current reason");
+        assert_eq!(rows[0].evidence, "retained=92.0%");
+        assert_eq!(rows[0].status, "keeper", "flagging never owns status");
+
+        store.replace_feed_quality_flags(&item.id, &[]).unwrap();
+        assert!(store.feed_quality_review_queue(20).unwrap().is_empty());
     }
 
     #[test]
