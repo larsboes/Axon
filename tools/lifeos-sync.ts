@@ -44,11 +44,6 @@ const OVERLAY_ROOT = process.env.AXON_PERSONAL_ROOT ?? "";
 // is the documented default. Never hardcoded anywhere else in this file.
 const CONFIG_ROOT = process.env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude");
 
-if (!AXON_ROOT || !OVERLAY_ROOT) {
-  console.error("lifeos-sync: AXON_ROOT/AXON_PERSONAL_ROOT unset — run via tools/lifeos-sync, not directly");
-  process.exit(2);
-}
-
 type Target = {
   what: string;
   kind: "link" | "hooks";
@@ -57,36 +52,17 @@ type Target = {
   why: string;
 };
 
-// The managed set. Small on purpose: every entry here is a place Axon knowingly
-// differs from stock LifeOS, and each one carries the reason it exists.
-const TARGETS: Target[] = [
+// What Axon itself owns: the two targets Axon AUTHORS. Which files a given
+// install additionally differs in is not Axon's business — that is an instance
+// fact and it lives in the overlay's config/lifeos/overlay.toml, read below.
+// Public core owns the mechanism; the overlay owns the list.
+const AXON_TARGETS: Target[] = [
   {
     what: "ProseGate.hook.ts",
     kind: "link",
     src: join(AXON_ROOT, "capabilities/lifeos/overlay/hooks/ProseGate.hook.ts"),
     dst: join(CONFIG_ROOT, "hooks/ProseGate.hook.ts"),
     why: "Axon-authored hook, not shipped by LifeOS — a reinstall would drop it. No relative imports, so a symlink is safe.",
-  },
-  {
-    what: "PULSE.toml",
-    kind: "link",
-    src: join(OVERLAY_ROOT, "config/lifeos/PULSE.toml"),
-    dst: join(CONFIG_ROOT, "LIFEOS/PULSE/PULSE.toml"),
-    why: "Instance config (which sinks and modules are on for THIS machine) — overlay, not Axon. Pulse reads only PULSE.toml for module sections; its PULSE.user.toml overlay merges [[job]] entries only.",
-  },
-  {
-    what: "LIFEOS_SYSTEM_PROMPT.md",
-    kind: "link",
-    src: join(OVERLAY_ROOT, "config/lifeos/LIFEOS_SYSTEM_PROMPT.md"),
-    dst: join(CONFIG_ROOT, "LIFEOS/LIFEOS_SYSTEM_PROMPT.md"),
-    why: "Stock LifeOS ships this file describing an install whose ~/.claude is a private git repo with a remote. This one is not, by design, so the doctrine had to be corrected — and a correction living only in ~/.claude is unversioned. Overlay, not Axon: the edits are instance decisions about an upstream-owned file, the same shape as PULSE.toml. Loaded via --append-system-prompt-file and it has no relative imports, so a symlink is safe.",
-  },
-  {
-    what: "context-budgets.json",
-    kind: "link",
-    src: join(OVERLAY_ROOT, "config/lifeos/context-budgets.json"),
-    dst: join(CONFIG_ROOT, "LIFEOS/TOOLS/context-budgets.json"),
-    why: "Which files are always-on and what each may cost. Instance-tuned (the caps are sized to THIS principal's files), and dropping a row is a real decision — BudgetCheck.ts reads it, nothing writes it.",
   },
   {
     what: "settings.json hooks",
@@ -97,13 +73,63 @@ const TARGETS: Target[] = [
   },
 ];
 
-const args = process.argv.slice(2);
-const dryRun = args.includes("--dry-run") || args.includes("-n");
-const cmd = args.find((a) => !a.startsWith("-")) ?? "status";
-if (cmd !== "status" && cmd !== "deploy") {
-  console.error(`lifeos-sync: unknown command '${cmd}' — expected 'status' or 'deploy'`);
-  process.exit(2);
+const OVERLAY_MANIFEST = join(OVERLAY_ROOT, "config/lifeos/overlay.toml");
+
+/**
+ * The overlay's declared files, as sync targets. Pure so the parsing is testable
+ * without an overlay on disk.
+ *
+ * Every field is required and a bad entry throws rather than being skipped: a
+ * silently dropped target is a file that stops being synced while the report
+ * still says "in sync", which is the one failure this tool must not have. `kind`
+ * is not read from the manifest at all — only links are declarable, because the
+ * merge path is co-owned with Claude Code and belongs with the code that
+ * implements it.
+ */
+export function parseOverlayTargets(
+  toml: any,
+  overlayRoot: string,
+  configRoot: string,
+): Target[] {
+  const files = toml?.file ?? [];
+  if (!Array.isArray(files)) throw new Error("overlay.toml: [[file]] must be an array of tables");
+  return files.map((f: any, i: number) => {
+    for (const key of ["what", "src", "dst", "why"]) {
+      if (typeof f?.[key] !== "string" || !f[key].trim()) {
+        throw new Error(`overlay.toml: [[file]] #${i + 1} is missing '${key}'`);
+      }
+    }
+    return {
+      what: f.what,
+      kind: "link" as const,
+      src: join(overlayRoot, f.src),
+      dst: join(configRoot, f.dst),
+      why: f.why,
+    };
+  });
 }
+
+/**
+ * Axon's own targets plus whatever the overlay declares. An overlay without a
+ * manifest is legal — it just contributes nothing.
+ *
+ * Order: Axon's hook, the overlay's files, then the settings merge last, so a
+ * run that ends by touching settings.json reports that last.
+ */
+function resolveTargets(): Target[] {
+  if (!existsSync(OVERLAY_MANIFEST)) return AXON_TARGETS;
+  const declared = parseOverlayTargets(
+    Bun.TOML.parse(readFileSync(OVERLAY_MANIFEST, "utf8")),
+    OVERLAY_ROOT,
+    CONFIG_ROOT,
+  );
+  return [AXON_TARGETS[0], ...declared, AXON_TARGETS[1]];
+}
+
+// Set by main(). Module-level because deployLink/deployHooks read them, and
+// threading two flags through every call site buys nothing.
+let dryRun = false;
+let cmd = "status";
 
 // ── link targets ──────────────────────────────────────────────────────────────
 
@@ -271,28 +297,59 @@ function rel(p: string): string {
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
+//
+// Guarded by import.meta.main so lifeos-sync.test.ts can import mergeHooks and
+// parseOverlayTargets without running the CLI as a side effect of the import —
+// the same split tools/doctor.ts uses, and the reason both are testable at all.
 
-console.log(`lifeos-sync · ${cmd}${dryRun ? " (dry-run)" : ""}`);
-console.log(`  config root: ${rel(CONFIG_ROOT)}\n`);
-
-for (const t of TARGETS) {
-  if (t.kind === "link") {
-    const state = linkState(t);
-    if (cmd === "status") {
-      if (state === "linked") report("ok", t.what, `linked → ${rel(t.src)}`);
-      else if (state === "no-source") report("fail", t.what, `source missing: ${rel(t.src)}`);
-      else if (state === "absent") report("drift", t.what, `not deployed — run: tools/lifeos-sync deploy`);
-      else report("drift", t.what, `real file at ${rel(t.dst)}, not our link — deploy backs it up first`);
-    } else {
-      deployLink(t);
-    }
-  } else {
-    deployHooks(t);
+function main(): never {
+  if (!AXON_ROOT || !OVERLAY_ROOT) {
+    console.error("lifeos-sync: AXON_ROOT/AXON_PERSONAL_ROOT unset — run via tools/lifeos-sync, not directly");
+    process.exit(2);
   }
+
+  const args = process.argv.slice(2);
+  dryRun = args.includes("--dry-run") || args.includes("-n");
+  cmd = args.find((a) => !a.startsWith("-")) ?? "status";
+  if (cmd !== "status" && cmd !== "deploy") {
+    console.error(`lifeos-sync: unknown command '${cmd}' — expected 'status' or 'deploy'`);
+    process.exit(2);
+  }
+
+  let targets: Target[];
+  try {
+    targets = resolveTargets();
+  } catch (err) {
+    // Refuse to run on a manifest we cannot read. Falling back to the Axon-only
+    // set would deploy a strictly smaller delta and report success doing it.
+    console.error(`lifeos-sync: ${err instanceof Error ? err.message : err}`);
+    process.exit(2);
+  }
+
+  console.log(`lifeos-sync · ${cmd}${dryRun ? " (dry-run)" : ""}`);
+  console.log(`  config root: ${rel(CONFIG_ROOT)}\n`);
+
+  for (const t of targets) {
+    if (t.kind === "link") {
+      const state = linkState(t);
+      if (cmd === "status") {
+        if (state === "linked") report("ok", t.what, `linked → ${rel(t.src)}`);
+        else if (state === "no-source") report("fail", t.what, `source missing: ${rel(t.src)}`);
+        else if (state === "absent") report("drift", t.what, `not deployed — run: tools/lifeos-sync deploy`);
+        else report("drift", t.what, `real file at ${rel(t.dst)}, not our link — deploy backs it up first`);
+      } else {
+        deployLink(t);
+      }
+    } else {
+      deployHooks(t);
+    }
+  }
+
+  console.log();
+  if (failed) { console.log("── failures above — nothing further applied ──"); process.exit(1); }
+  if (drifted) { console.log("── drift found · tools/lifeos-sync deploy ──"); process.exit(1); }
+  console.log("── in sync ──");
+  process.exit(0);
 }
 
-console.log();
-if (failed) { console.log("── failures above — nothing further applied ──"); process.exit(1); }
-if (drifted) { console.log("── drift found · tools/lifeos-sync deploy ──"); process.exit(1); }
-console.log("── in sync ──");
-process.exit(0);
+if (import.meta.main) main();
