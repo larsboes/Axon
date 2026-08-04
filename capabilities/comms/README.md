@@ -53,6 +53,19 @@ elevate likely financial, health, authentication, or recovery mail to `vault`.
 The rules use sender, subject, and category only—never body or attachment
 content—and a dashboard override is stored as `human` and preserved by refreshes.
 
+For `vault` mail the metadata *is* the payload: a one-time code arrives in the
+subject line, so storing that subject verbatim would publish it to a log, an API
+response and a dashboard at once. The sweep therefore redacts subject and
+snippet before the row is written, using the same local deterministic detector
+the cloud preview uses (`deterministic-entity-redaction-v2` — links, addresses,
+IBANs, phone numbers, long numbers, token-like secrets). A redacted subject
+reads `Your verification code is [number]`. The sender is kept: it is what makes
+a proposal reviewable when its subject cannot be read. Both sweep entry points —
+the CLI and the HTTP API — go through one intake path, because a gate only one
+of them uses is a gate over half the traffic. `POST /triage/redact` applies the
+same pass to rows stored before this existed; it is idempotent and reports what
+kind of thing it removed, never the value.
+
 Category and TELOS relevance are deliberately separate axes. An explicit
 relevance refresh compares the stored sender, subject and Gmail snippet with
 the configured TELOS lenses through the existing embedding/reranking pipeline.
