@@ -20,6 +20,26 @@ set -euo pipefail
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$TOOLS_DIR/lib/paths.sh"   # AXON_PERSONAL_ROOT
 
+# install-hook — write the pre-commit trigger into the active overlay, with this checkout's
+# own path substituted in. The tool that owns the refresh owns its trigger's installation:
+# it is the one thing that already knows where Axon lives, so nothing has to guess a sibling
+# path. Same template-plus-sed shape as the launchd and systemd units.
+if [ "${1:-}" = "install-hook" ]; then
+  TMPL="$TOOLS_DIR/templates/hooks/pre-commit-lifeos-mirror.tmpl"
+  DEST="$AXON_PERSONAL_ROOT/.git/hooks/pre-commit"
+  [ -f "$TMPL" ] || { echo "mirror-lifeos-user: missing template $TMPL" >&2; exit 1; }
+  [ -d "$AXON_PERSONAL_ROOT/.git" ] || { echo "mirror-lifeos-user: $AXON_PERSONAL_ROOT is not a git repository" >&2; exit 1; }
+  mkdir -p "$(dirname "$DEST")"
+  if [ -f "$DEST" ] && ! grep -q '__MIRROR_TOOL__\|mirror-lifeos-user' "$DEST"; then
+    echo "mirror-lifeos-user: $DEST exists and is not this hook — refusing to overwrite it." >&2
+    exit 1
+  fi
+  sed -e "s|__MIRROR_TOOL__|$TOOLS_DIR/mirror-lifeos-user.sh|" "$TMPL" > "$DEST"
+  chmod +x "$DEST"
+  echo "mirror-lifeos-user: installed $DEST"
+  exit 0
+fi
+
 # Source of truth for the live tree: the USER zone of this machine's declared `lifeos`
 # state mount. Overridable via LIFEOS_USER_DIR for tests and one-off targets. Resolved
 # rather than defaulted, so this and lifeos-user-sync.sh cannot drift apart.

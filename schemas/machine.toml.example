@@ -13,9 +13,23 @@
 # array-of-tables is beyond that parser on purpose and is read by tools/doctor via Bun.TOML
 # — which is why doctor is TypeScript (README.md#argue-bazel-per-case).
 
+# THIS FILE IS THE ONLY COPY. An overlay does not carry its own machine.toml.example:
+# tools/install.sh writes a real machine.toml from the values it detects, and every overlay
+# already commits that real file, so an example beside it is a second thing to update and
+# the first to rot. Three such copies existed until 2026-08-04 and had already drifted —
+# not in structure, only in which OS each one happened to name. tools/doctor now reports an
+# overlay that grows one back.
+#
+# Pick the pair that matches the host; both are shown so nobody has to fork this file to
+# describe their own machine.
+
 # --- platform (required) --------------------------------------------------
 # tools/lib/platform.sh reads these so capability scripts branch on them instead of
 # assuming macOS.
+#
+#   macOS workstation:  os = "macos"    container_runtime = "apple-container"
+#   Linux server:       os = "linux"    container_runtime = "docker"
+#
 os = "linux"                       # "macos" | "linux" | "windows"
 container_runtime = "docker"       # "apple-container" | "docker" | "podman"
 

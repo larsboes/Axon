@@ -10,11 +10,13 @@
 !/.gitignore
 !/README.md
 
-# 3) config/ — structure + *.example ONLY (never machine.toml, *.env, secrets.zsh, machine.zsh)
+# 3) config/ — structure ONLY (never machine.toml, *.env, secrets.zsh, machine.zsh)
+# No machine.toml.example here on purpose: the schema has exactly one home, Axon's
+# schemas/machine.toml.example. tools/install.sh writes a real machine.toml from detected
+# values, so an overlay never needs an example of a file it already carries for real.
 !/config/
 /config/*
 !/config/.gitkeep
-!/config/machine.toml.example
 !/config/shell/
 /config/shell/*
 !/config/shell/.gitkeep

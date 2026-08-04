@@ -575,6 +575,26 @@ const CHECKS: Check[] = [
           if (ctx.machineToml.container_runtime) ctx.ok(`container_runtime = ${ctx.machineToml.container_runtime}`);
           else ctx.bad("machine.toml: missing 'container_runtime'");
         }
+
+        // The schema has one home. Three overlay-local copies of it existed until
+        // 2026-08-04 and had already drifted — never in structure, only in which OS each
+        // happened to name, which is the drift you get for free when a template is copied
+        // per consumer. An overlay commits its real machine.toml anyway, so an example
+        // beside it is a second thing to update and the first to go stale.
+        const strayExamples = [
+          join(ctx.overlayPath, "config", "machine.toml.example"),
+          join(ctx.overlayPath, "config", "machines", "machine.toml.example"),
+        ].filter(existsSync);
+        if (strayExamples.length === 0) {
+          ctx.ok("machine schema: not duplicated into the overlay");
+        } else {
+          for (const stray of strayExamples) {
+            ctx.bad(
+              `${stray} duplicates schemas/machine.toml.example — delete it and drop its ` +
+                `.gitignore allowlist line; the schema lives in Axon only`,
+            );
+          }
+        }
       } else {
         ctx.warn("skipped — no overlay to check");
       }

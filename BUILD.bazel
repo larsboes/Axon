@@ -179,7 +179,7 @@ sh_test(
     name = "lifeos_mirror_hook_test",
     size = "small",
     srcs = ["tools/pre-commit-lifeos-mirror.test.sh"],
-    data = ["tools/templates/hooks/pre-commit-lifeos-mirror"],
+    data = ["tools/templates/hooks/pre-commit-lifeos-mirror.tmpl"],
 )
 
 # The release-drift declaration in upstreams.toml (#38). The tracked manifest can only ever

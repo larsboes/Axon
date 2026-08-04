@@ -11,9 +11,9 @@
 set -uo pipefail
 
 if [ -n "${TEST_SRCDIR:-}" ]; then
-  HOOK="$TEST_SRCDIR/$TEST_WORKSPACE/tools/templates/hooks/pre-commit-lifeos-mirror"
+  HOOK="$TEST_SRCDIR/$TEST_WORKSPACE/tools/templates/hooks/pre-commit-lifeos-mirror.tmpl"
 else
-  HOOK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/templates/hooks/pre-commit-lifeos-mirror"
+  HOOK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/templates/hooks/pre-commit-lifeos-mirror.tmpl"
 fi
 
 SCRATCH="$(mktemp -d)"
@@ -44,7 +44,10 @@ exit 0
 TOOL
   chmod +x "$root/fake-mirror.sh"
   mkdir -p .git/hooks
-  cp "$HOOK" .git/hooks/pre-commit
+  # Substitute the placeholder the way `mirror-lifeos-user.sh install-hook` does, so these
+  # cases run the hook as installed rather than one steered by an env var the real thing
+  # never sets. AXON_MIRROR_TOOL still overrides, and case 5 uses it to point at nothing.
+  sed -e "s|__MIRROR_TOOL__|$root/fake-mirror.sh|" "$HOOK" > .git/hooks/pre-commit
   chmod +x .git/hooks/pre-commit
   printf '%s' "$root"
 }
@@ -63,7 +66,7 @@ root="$(plant scoped)"
 cd "$root" || exit 1
 printf 'edited\n' > fixture.txt
 git add fixture.txt
-AXON_MIRROR_TOOL="$root/fake-mirror.sh" git commit -q -m "focused" 2>/dev/null
+git commit -q -m "focused" 2>/dev/null
 committed="$(git show --stat --format='' --name-only HEAD | grep -c '^')"
 [ "$committed" = "1" ]; check "a commit of one staged file contains exactly that file" $? "committed $committed file(s), expected 1"
 git show --name-only --format='' HEAD | grep -q '^fixture.txt$'; check "the staged file is the one that landed" $? "fixture.txt absent from the commit"
@@ -82,7 +85,7 @@ printf 'edited\n' > fixture.txt
 # is indistinguishable from one never named, since git records no intent beyond the index.
 printf 'mirrored v1 hand-edited\n' > resources/backups/lifeos/USER/IDENTITY.md
 git add fixture.txt resources/backups/lifeos/USER/IDENTITY.md
-AXON_MIRROR_TOOL="$root2/fake-mirror.sh" git commit -q -m "explicit mirror" 2>/dev/null
+git commit -q -m "explicit mirror" 2>/dev/null
 git show --name-only --format='' HEAD | grep -q 'resources/backups/lifeos/USER/IDENTITY.md'; check "a caller who staged a mirror path gets it committed" $? "the opted-in mirror path did not land"
 grep -q 'refreshed' <(git show HEAD:resources/backups/lifeos/USER/IDENTITY.md); check "and it lands at its refreshed content, not the stale copy" $? "committed the pre-refresh bytes"
 
@@ -93,7 +96,7 @@ printf '#!/bin/bash\necho "boom" >&2\nexit 1\n' > "$root3/fake-mirror.sh"
 chmod +x "$root3/fake-mirror.sh"
 printf 'edited\n' > fixture.txt
 git add fixture.txt
-AXON_MIRROR_TOOL="$root3/fake-mirror.sh" git commit -q -m "refresh fails" 2>/dev/null
+git commit -q -m "refresh fails" 2>/dev/null
 [ "$(git rev-list --count HEAD)" = "2" ]; check "a failed refresh does not cost the commit" $? "the commit was blocked"
 
 # ── 5. A missing tool is survivable ─────────────────────────────────────────────────────
