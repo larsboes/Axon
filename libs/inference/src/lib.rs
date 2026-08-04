@@ -14,7 +14,8 @@
 //!
 //! * A **backend** is a server: an API shape, a base URL, optionally a file to
 //!   read a bearer key out of. Declared once.
-//! * A **role** is a job: `embedding`, `reranking`, `summarization`. It names a backend, the
+//! * A **role** is a job: `embedding`, `reranking`, `summarization`, or an explicitly reviewed
+//!   `cloud_*` task. It names a backend, the
 //!   model on it, and that model's input conventions.
 //!
 //! A capability asks for a role. It never learns whether it just talked to
@@ -71,6 +72,35 @@ pub struct Backend {
 pub struct Role {
     pub backend: String,
     pub model: String,
+    /// Safe operator-facing provider name. Cloud roles must declare this;
+    /// endpoint and credential details remain backend-private.
+    #[serde(default)]
+    pub provider_name: Option<String>,
+    /// Maximum cloud representation this role may receive. Local roles leave
+    /// this unset; an unset cloud policy is not dispatch-eligible.
+    #[serde(default)]
+    pub cloud_data_tier: Option<CloudDataTier>,
+    /// Billing boundary selected by the operator. There is deliberately no
+    /// pay-as-you-go mode: a provider must be free-only or bounded by credits.
+    #[serde(default)]
+    pub billing_mode: Option<BillingMode>,
+    /// Stable ordering among same-tier fallback roles. The explicitly selected
+    /// role always runs first; lower values win for later candidates.
+    #[serde(default)]
+    pub failover_priority: Option<u16>,
+    /// Local hard ceiling for provider requests started on one UTC date.
+    /// Cloud roles without a non-zero ceiling are deliberately inert.
+    #[serde(default)]
+    pub max_requests_per_day: Option<u32>,
+    /// Local upper bound for request input tokens. Dispatch uses UTF-8 bytes as
+    /// a conservative tokenizer-independent upper bound and never calls the
+    /// provider when that bound exceeds this value.
+    #[serde(default)]
+    pub max_input_tokens: Option<u32>,
+    /// Required for prepaid-credit roles, in YYYY-MM-DD form. Free-only roles
+    /// have no credit expiry and leave this unset.
+    #[serde(default)]
+    pub credit_expires_on: Option<String>,
     /// Prefixed onto the *query* side of a retrieval pair. Empty for models
     /// that take none.
     #[serde(default)]
@@ -78,6 +108,38 @@ pub struct Role {
     /// Prefixed onto the *document* side.
     #[serde(default)]
     pub document_prefix: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudDataTier {
+    Public,
+    PseudonymizedPersonal,
+}
+
+impl CloudDataTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::PseudonymizedPersonal => "pseudonymized_personal",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingMode {
+    FreeOnly,
+    PrepaidCredit,
+}
+
+impl BillingMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FreeOnly => "free_only",
+            Self::PrepaidCredit => "prepaid_credit",
+        }
+    }
 }
 
 /// Which side of a retrieval pair a text is, so the right prefix goes on.
@@ -101,8 +163,57 @@ pub struct ResolvedRole {
     pub backend_name: String,
     pub backend: Backend,
     pub model: String,
+    pub provider_name: Option<String>,
+    pub cloud_data_tier: Option<CloudDataTier>,
+    pub billing_mode: Option<BillingMode>,
+    pub failover_priority: Option<u16>,
+    pub max_requests_per_day: Option<u32>,
+    pub max_input_tokens: Option<u32>,
+    pub credit_expires_on: Option<String>,
     pub query_prefix: String,
     pub document_prefix: String,
+}
+
+fn model_ids_match(configured: &str, installed: &str) -> bool {
+    if installed == configured {
+        return true;
+    }
+    let configured_basename = configured.rsplit('/').next().unwrap_or(configured);
+    let installed_without_latest = installed.strip_suffix(":latest").unwrap_or(installed);
+    installed_without_latest == configured
+        || (!installed.contains('/') && installed_without_latest == configured_basename)
+}
+
+fn valid_iso_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    if bytes
+        .iter()
+        .enumerate()
+        .any(|(index, byte)| !matches!(index, 4 | 7) && !byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let Ok(year) = value[0..4].parse::<u32>() else {
+        return false;
+    };
+    let Ok(month) = value[5..7].parse::<u32>() else {
+        return false;
+    };
+    let Ok(day) = value[8..10].parse::<u32>() else {
+        return false;
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
 }
 
 /// Overrides the backend for every role, for one machine.
@@ -135,19 +246,37 @@ impl InferenceConfig {
 
     pub fn from_path(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(text) => Self::from_str(&text).unwrap_or_else(|error| {
-                eprintln!(
-                    "  inference: {} is not readable as config ({error}) — continuing without it",
-                    path.display()
-                );
-                Self::default()
-            }),
+            Ok(text) => match Self::from_str(&text) {
+                Ok(mut config) => {
+                    config.resolve_relative_key_files(path.parent().unwrap_or(Path::new(".")));
+                    config
+                }
+                Err(error) => {
+                    eprintln!(
+                        "  inference: {} is not readable as config ({error}) — continuing without it",
+                        path.display()
+                    );
+                    Self::default()
+                }
+            },
             Err(_) => Self::default(),
         }
     }
 
     pub fn from_str(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|error| error.to_string())
+    }
+
+    fn resolve_relative_key_files(&mut self, config_directory: &Path) {
+        for backend in self.backends.values_mut() {
+            let Some(raw) = backend.api_key_file.as_deref() else {
+                continue;
+            };
+            if raw.starts_with("~/") || Path::new(raw).is_absolute() {
+                continue;
+            }
+            backend.api_key_file = Some(config_directory.join(raw).to_string_lossy().into_owned());
+        }
     }
 
     /// Looks a role up and resolves its backend, applying the machine
@@ -169,9 +298,56 @@ impl InferenceConfig {
             backend_name,
             backend,
             model: role.model.clone(),
+            provider_name: role.provider_name.clone(),
+            cloud_data_tier: role.cloud_data_tier,
+            billing_mode: role.billing_mode,
+            failover_priority: role.failover_priority,
+            max_requests_per_day: role.max_requests_per_day,
+            max_input_tokens: role.max_input_tokens,
+            credit_expires_on: role.credit_expires_on.clone(),
             query_prefix: role.query_prefix.clone(),
             document_prefix: role.document_prefix.clone(),
         })
+    }
+
+    /// Resolve explicitly named cloud roles in stable order. Consumers still
+    /// decide whether the endpoint policy is suitable for their operation.
+    pub fn roles_with_prefix(&self, prefix: &str) -> Vec<(String, ResolvedRole)> {
+        let mut names = self
+            .roles
+            .keys()
+            .filter(|name| name.starts_with(prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+            .into_iter()
+            .filter_map(|name| self.role(&name).map(|role| (name, role)))
+            .collect()
+    }
+
+    /// The selected role runs first. Remaining candidates are deterministic
+    /// and may only share its exact reviewed data tier; billing and runtime
+    /// budget checks still happen immediately before each request.
+    pub fn cloud_failover_roles(&self, selected: &str) -> Vec<(String, ResolvedRole)> {
+        let Some(selected_role) = self.role(selected).filter(|role| role.has_cloud_policy()) else {
+            return Vec::new();
+        };
+        let tier = selected_role.cloud_data_tier;
+        let mut roles = self
+            .roles_with_prefix("cloud_")
+            .into_iter()
+            .filter(|(_, role)| role.has_cloud_policy() && role.cloud_data_tier == tier)
+            .collect::<Vec<_>>();
+        roles.sort_by(|(left_name, left), (right_name, right)| {
+            let left_selected = left_name != selected;
+            let right_selected = right_name != selected;
+            left_selected
+                .cmp(&right_selected)
+                .then_with(|| left.failover_priority().cmp(&right.failover_priority()))
+                .then_with(|| left_name.cmp(right_name))
+        });
+        roles
     }
 }
 
@@ -211,10 +387,96 @@ impl ResolvedRole {
     }
 
     pub fn provider_label(&self) -> &'static str {
-        match self.backend.api {
-            Api::OpenAi => "OpenAI-compatible local endpoint",
-            Api::Ollama => "Ollama-compatible local endpoint",
+        match (self.backend.api, self.is_loopback()) {
+            (Api::OpenAi, true) => "OpenAI-compatible local endpoint",
+            (Api::OpenAi, false) => "OpenAI-compatible cloud endpoint",
+            (Api::Ollama, true) => "Ollama-compatible local endpoint",
+            (Api::Ollama, false) => "Ollama-compatible cloud endpoint",
         }
+    }
+
+    pub fn is_loopback(&self) -> bool {
+        let address = self.backend.base_url.trim().to_ascii_lowercase();
+        let authority = address
+            .strip_prefix("http://")
+            .or_else(|| address.strip_prefix("https://"))
+            .unwrap_or(&address)
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .rsplit('@')
+            .next()
+            .unwrap_or_default();
+        let host = if authority.starts_with('[') {
+            authority
+                .strip_prefix('[')
+                .and_then(|value| value.split(']').next())
+                .unwrap_or_default()
+        } else {
+            authority.split(':').next().unwrap_or_default()
+        };
+        host == "localhost"
+            || host == "::1"
+            || host == "0.0.0.0"
+            || host == "127.0.0.1"
+            || host.starts_with("127.")
+    }
+
+    /// Cloud dispatch is restricted to encrypted, non-loopback endpoints.
+    pub fn is_cloud_endpoint(&self) -> bool {
+        self.backend.base_url.trim().starts_with("https://") && !self.is_loopback()
+    }
+
+    /// A cloud endpoint is inert until it has a complete reviewed policy.
+    pub fn has_cloud_policy(&self) -> bool {
+        self.is_cloud_endpoint()
+            && self
+                .provider_name
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty())
+            && self.cloud_data_tier.is_some()
+            && self.billing_mode.is_some()
+            && self.max_requests_per_day.is_some_and(|limit| limit > 0)
+            && self.max_input_tokens.is_some_and(|limit| limit > 0)
+            && match self.billing_mode {
+                Some(BillingMode::FreeOnly) => self.credit_expires_on.is_none(),
+                Some(BillingMode::PrepaidCredit) => self
+                    .credit_expires_on
+                    .as_deref()
+                    .is_some_and(valid_iso_date),
+                None => false,
+            }
+    }
+
+    pub fn failover_priority(&self) -> u16 {
+        self.failover_priority.unwrap_or(u16::MAX)
+    }
+
+    /// A prepaid role stops before dispatch after its declared final UTC day.
+    /// Free-only roles are controlled by their daily local request ceiling.
+    pub fn billing_active_on(&self, utc_date: &str) -> bool {
+        if !valid_iso_date(utc_date) {
+            return false;
+        }
+        match self.billing_mode {
+            Some(BillingMode::FreeOnly) => true,
+            Some(BillingMode::PrepaidCredit) => self
+                .credit_expires_on
+                .as_deref()
+                .filter(|expires| valid_iso_date(expires))
+                .is_some_and(|expires| expires >= utc_date),
+            None => false,
+        }
+    }
+
+    /// Reads only the configured private key file and returns a boolean. The
+    /// value is never exposed through provider discovery or logs.
+    pub fn credential_ready(&self) -> bool {
+        self.bearer_key().is_some()
+    }
+
+    pub fn dispatch_ready(&self) -> bool {
+        self.has_cloud_policy() && self.credential_ready()
     }
 
     pub fn bearer_key(&self) -> Option<String> {
@@ -264,10 +526,7 @@ impl ResolvedRole {
                 }
                 .and_then(|value| value.as_str())
                 .unwrap_or_default();
-                installed == self.model
-                    || installed
-                        .strip_suffix(":latest")
-                        .is_some_and(|name| name == self.model)
+                model_ids_match(&self.model, installed)
             })
         })
     }
@@ -545,6 +804,65 @@ mod tests {
     }
 
     #[test]
+    fn cloud_roles_are_explicit_sorted_and_require_https_off_host() {
+        let mut cfg = config();
+        cfg.backends.insert(
+            "hosted".into(),
+            Backend {
+                api: Api::OpenAi,
+                base_url: "https://api.example.com/v1".into(),
+                api_key_file: Some("/private/key-file".into()),
+            },
+        );
+        cfg.roles.insert(
+            "cloud_summarization".into(),
+            Role {
+                backend: "hosted".into(),
+                model: "hosted-model".into(),
+                provider_name: Some("Hosted test".into()),
+                cloud_data_tier: Some(CloudDataTier::PseudonymizedPersonal),
+                billing_mode: Some(BillingMode::FreeOnly),
+                failover_priority: Some(10),
+                max_requests_per_day: Some(20),
+                max_input_tokens: Some(8_000),
+                credit_expires_on: None,
+                query_prefix: String::new(),
+                document_prefix: String::new(),
+            },
+        );
+        let mut backup = cfg.roles["cloud_summarization"].clone();
+        backup.model = "backup-model".into();
+        backup.failover_priority = Some(5);
+        cfg.roles.insert("cloud_backup".into(), backup.clone());
+        backup.cloud_data_tier = Some(CloudDataTier::Public);
+        cfg.roles.insert("cloud_public".into(), backup);
+
+        let roles = cfg.roles_with_prefix("cloud_");
+        assert_eq!(roles.len(), 3);
+        let selected = cfg.role("cloud_summarization").unwrap();
+        assert!(selected.is_cloud_endpoint());
+        assert!(selected.has_cloud_policy());
+        assert!(!selected.dispatch_ready());
+        assert_eq!(
+            selected.cloud_data_tier,
+            Some(CloudDataTier::PseudonymizedPersonal)
+        );
+        assert_eq!(
+            selected.provider_label(),
+            "OpenAI-compatible cloud endpoint"
+        );
+        assert_eq!(
+            cfg.cloud_failover_roles("cloud_summarization")
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["cloud_summarization", "cloud_backup"],
+            "the chosen role stays first and a different data tier never enters failover"
+        );
+        assert!(config().role("embedding").unwrap().is_loopback());
+    }
+
+    #[test]
     fn the_endpoint_follows_the_api_shape_not_the_backend_name() {
         let mut cfg = config();
         let openai = cfg.role("embedding").unwrap();
@@ -645,6 +963,19 @@ mod tests {
     }
 
     #[test]
+    fn installed_model_basename_matches_a_namespaced_config_id() {
+        assert!(model_ids_match(
+            "mlx-community/gemma-4-26b-a4b-it-4bit",
+            "gemma-4-26b-a4b-it-4bit"
+        ));
+        assert!(model_ids_match(
+            "nomic-embed-text",
+            "nomic-embed-text:latest"
+        ));
+        assert!(!model_ids_match("owner-a/model", "owner-b/model"));
+    }
+
+    #[test]
     fn bearer_key_reads_json_and_raw_secret_references() {
         let json = write_temp_key(
             "json",
@@ -665,6 +996,107 @@ mod tests {
         assert_eq!(api_key_from_file(wrong.to_str()), None);
         let _ = std::fs::remove_dir_all(empty.parent().unwrap());
         let _ = std::fs::remove_dir_all(wrong.parent().unwrap());
+    }
+
+    #[test]
+    fn relative_key_files_resolve_beside_the_private_config() {
+        let directory =
+            std::env::temp_dir().join(format!("axon-inference-config-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let config_path = directory.join("inference.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "backends": {
+                "hosted": {
+                  "api": "openai",
+                  "base_url": "https://api.example.com/v1",
+                  "api_key_file": "runtime-secrets/provider-key"
+                }
+              },
+              "roles": {}
+            }"#,
+        )
+        .unwrap();
+
+        let config = InferenceConfig::from_path(&config_path);
+        assert_eq!(
+            config.backends["hosted"].api_key_file.as_deref(),
+            Some(
+                directory
+                    .join("runtime-secrets/provider-key")
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn cloud_policy_requires_name_tier_and_billing_mode() {
+        let mut cfg = config();
+        cfg.backends.insert(
+            "hosted".into(),
+            Backend {
+                api: Api::OpenAi,
+                base_url: "https://api.example.com/v1".into(),
+                api_key_file: None,
+            },
+        );
+        cfg.roles.insert(
+            "cloud_incomplete".into(),
+            Role {
+                backend: "hosted".into(),
+                model: "hosted-model".into(),
+                provider_name: None,
+                cloud_data_tier: Some(CloudDataTier::Public),
+                billing_mode: Some(BillingMode::FreeOnly),
+                failover_priority: None,
+                max_requests_per_day: None,
+                max_input_tokens: None,
+                credit_expires_on: None,
+                query_prefix: String::new(),
+                document_prefix: String::new(),
+            },
+        );
+        assert!(!cfg.role("cloud_incomplete").unwrap().has_cloud_policy());
+    }
+
+    #[test]
+    fn prepaid_credit_policy_requires_a_valid_non_expired_date() {
+        let mut cfg = config();
+        cfg.backends.insert(
+            "hosted".into(),
+            Backend {
+                api: Api::OpenAi,
+                base_url: "https://api.example.com/v1".into(),
+                api_key_file: None,
+            },
+        );
+        cfg.roles.insert(
+            "cloud_credit".into(),
+            Role {
+                backend: "hosted".into(),
+                model: "hosted-model".into(),
+                provider_name: Some("Credit provider".into()),
+                cloud_data_tier: Some(CloudDataTier::Public),
+                billing_mode: Some(BillingMode::PrepaidCredit),
+                failover_priority: Some(20),
+                max_requests_per_day: Some(5),
+                max_input_tokens: Some(2_000),
+                credit_expires_on: Some("2026-08-31".into()),
+                query_prefix: String::new(),
+                document_prefix: String::new(),
+            },
+        );
+        let role = cfg.role("cloud_credit").unwrap();
+        assert!(role.has_cloud_policy());
+        assert!(role.billing_active_on("2026-08-31"));
+        assert!(!role.billing_active_on("2026-09-01"));
+
+        cfg.roles.get_mut("cloud_credit").unwrap().credit_expires_on = Some("2026-02-30".into());
+        assert!(!cfg.role("cloud_credit").unwrap().has_cloud_policy());
+        assert!(!valid_iso_date("2026-é-01"));
     }
 
     /// Ollama keeps a model resident for five minutes unless told otherwise.

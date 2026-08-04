@@ -88,15 +88,22 @@ fn luma_event_id(opportunity_id: &str) -> Option<&str> {
 /// Inert evidence snapshot. Deliberately carries no wall-clock "promoted at"
 /// stamp: the payload has to be byte-identical across runs for a repeat
 /// promotion to be a genuine no-op rather than a churning update.
+///
+/// It also carries **no score**. Ranking is how scouting decides what to *offer*
+/// from an unbounded stream; once an opportunity is on the calendar the operator
+/// has taken a position on it, and `commitment` is the only axis that means
+/// anything. Copying the score across produced entries stamped `score: 0.0,
+/// matched_focus: "Scholarship Profile"` — a verdict on an event the operator
+/// had already accepted, rendered from a profile label that turned out to carry
+/// no signal at all. `content-item-v1` now forbids it for `source = calendar`;
+/// this is the write side of the same rule. The opportunity id stays, so the
+/// score is one lookup away for anything that genuinely wants it.
 fn evidence_payload(row: &RankedRow, tz: &HomeTimezone, event_route: &EventRoute) -> Value {
     json!({
         "promoted_from": "scouting",
         "opportunity_id": row.id,
         "url": row.url,
         "city": row.city,
-        "score": row.score,
-        "matched_focus": row.matched_focus,
-        "rationale": row.rationale,
         "starts_at_utc": row.starts_at,
         "ends_at_utc": row.ends_at,
         "home_timezone": tz.name(),
@@ -395,6 +402,33 @@ mod tests {
         assert_eq!(body["location"], "Factory Berlin Mitte");
         assert_eq!(body["payload"]["starts_at_utc"], "2026-07-30T16:00:00.000Z");
         assert_eq!(body["payload"]["home_timezone"], "Europe/Berlin");
+    }
+
+    /// A promoted event carries evidence, never a verdict.
+    ///
+    /// The regression: entries used to arrive stamped `score: 0.0` and
+    /// `matched_focus: "Scholarship Profile"` — a judgement of an event the
+    /// operator had already put on their calendar, from a profile label that
+    /// carried no signal. `content-item-v1` forbids ranking on a calendar item;
+    /// this is the write side of the same rule. `row()` deliberately sets all
+    /// three fields, so a future re-add fails here.
+    #[test]
+    fn a_promoted_event_carries_no_ranking_fields() {
+        let (_, body) = build_entry(
+            &row("evt:luma:evt-E8mj424DVKBXFb4", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z"),
+            &berlin(),
+            &local_route(),
+        )
+        .unwrap();
+        let payload = &body["payload"];
+        for field in ["score", "matched_focus", "rationale"] {
+            assert!(
+                payload.get(field).is_none(),
+                "{field} is a ranking verdict and must not ride along on a calendar entry"
+            );
+        }
+        // The link back is what survives, so the score stays one lookup away.
+        assert_eq!(payload["opportunity_id"], "evt:luma:evt-E8mj424DVKBXFb4");
     }
 
     #[test]

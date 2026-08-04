@@ -5,9 +5,12 @@
   let {
     refresh,
     onChanged,
+    onCount,
   }: {
     refresh: number;
     onChanged: () => Promise<void>;
+    /** See GoogleDraftInbox: the rail renders the badge, the section owns the window. */
+    onCount: (count: number) => void;
   } = $props();
 
   function dateKey(date: Date): string {
@@ -30,16 +33,50 @@
   let error = $state("");
   let seenRefresh = -1;
 
+  interface CommsProposalEvidence {
+    importance: "low" | "medium" | "high";
+    importance_rationale: string;
+    evidence: string | null;
+    data_class: "public" | "personal" | "vault";
+  }
+
+  function commsEvidence(entry: CalendarEntry): CommsProposalEvidence | null {
+    const payload = entry.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const value = payload as Record<string, unknown>;
+    if (
+      value.schema_version !== "calendar-proposal-provenance-v1" ||
+      !["low", "medium", "high"].includes(String(value.importance)) ||
+      typeof value.importance_rationale !== "string" ||
+      !["public", "personal", "vault"].includes(String(value.data_class))
+    ) return null;
+    return {
+      importance: value.importance as CommsProposalEvidence["importance"],
+      importance_rationale: value.importance_rationale,
+      evidence: typeof value.evidence === "string" ? value.evidence : null,
+      data_class: value.data_class as CommsProposalEvidence["data_class"],
+    };
+  }
+
+  function proposalPriority(entry: CalendarEntry): number {
+    const importance = commsEvidence(entry)?.importance;
+    return importance === "high" ? 3 : importance === "medium" ? 2 : importance === "low" ? 1 : 0;
+  }
+
   async function load() {
     loading = true;
     error = "";
     try {
-      proposals = await calendar.proposals(from, to);
+      proposals = (await calendar.proposals(from, to)).sort(
+        (left, right) => proposalPriority(right) - proposalPriority(left)
+          || left.starts_at.localeCompare(right.starts_at),
+      );
     } catch (cause) {
       error = String(cause);
     } finally {
       loading = false;
     }
+    onCount(proposals.length);
   }
 
   $effect(() => {
@@ -88,67 +125,62 @@
   }
 </script>
 
-<section class="inbox" aria-labelledby="calendar-proposals-title">
-  <div class="heading">
-    <div>
-      <p class="eyebrow">Calendar</p>
-      <h2 id="calendar-proposals-title">Proposed events</h2>
-      <p>Review individual external events here, whether or not they ever become a trip.</p>
-    </div>
-    <button class="btn" onclick={load} disabled={loading || actingId !== null}>Refresh</button>
+<p class="hint">Individual external events, whether or not they ever become a trip.</p>
+
+{#if error}<p class="message error" role="alert">{error}</p>{/if}
+
+{#if loading}
+  <p class="empty">Loading proposals…</p>
+{:else if proposals.length === 0}
+  <p class="empty">Nothing pending in the next 90 days.</p>
+{:else}
+  <div class="proposal-list">
+    {#each proposals as entry (entry.id)}
+      {@const evidence = commsEvidence(entry)}
+      <article class="proposal">
+        <div class="details">
+          <strong>{entry.title}</strong>
+          <p>{when(entry)}{#if entry.location} · {entry.location}{/if}</p>
+          <p class="source">Source: {entry.source}</p>
+          {#if evidence}
+            <p class="analysis-meta {evidence.importance}">{evidence.importance} importance · {evidence.data_class === "vault" ? "Private" : evidence.data_class}</p>
+            <p class="analysis-rationale">{evidence.importance_rationale}</p>
+            {#if evidence.evidence}<p class="analysis-evidence">Evidence: {evidence.evidence}</p>{/if}
+          {/if}
+        </div>
+        <label>
+          <span>As</span>
+          <select value={kindFor(entry)} onchange={(event) => setKind(entry, event.currentTarget.value)} disabled={actingId !== null}>
+            {#each KINDS as kind}<option value={kind.value}>{kind.label}</option>{/each}
+          </select>
+        </label>
+        <div class="actions">
+          <button class="btn btn-primary" onclick={() => adopt(entry)} disabled={actingId !== null}>{actingId === entry.id ? "Adding…" : "Add"}</button>
+          <button class="btn btn-danger" onclick={() => remove(entry)} disabled={actingId !== null}>Remove</button>
+        </div>
+      </article>
+    {/each}
   </div>
-
-  {#if error}<p class="message error" role="alert">{error}</p>{/if}
-
-  {#if loading}
-    <p class="empty">Loading proposals…</p>
-  {:else if proposals.length === 0}
-    <p class="empty">No pending calendar proposals in the next 90 days.</p>
-  {:else}
-    <div class="proposal-list">
-      {#each proposals as entry (entry.id)}
-        <article class="proposal">
-          <div class="details">
-            <strong>{entry.title}</strong>
-            <p>{when(entry)}{#if entry.location} · {entry.location}{/if}</p>
-            <p class="source">Source: {entry.source}</p>
-          </div>
-          <label>
-            <span>As</span>
-            <select value={kindFor(entry)} onchange={(event) => setKind(entry, event.currentTarget.value)} disabled={actingId !== null}>
-              {#each KINDS as kind}<option value={kind.value}>{kind.label}</option>{/each}
-            </select>
-          </label>
-          <div class="actions">
-            <button class="btn primary" onclick={() => adopt(entry)} disabled={actingId !== null}>{actingId === entry.id ? "Adding…" : "Add"}</button>
-            <button class="btn" onclick={() => remove(entry)} disabled={actingId !== null}>Remove</button>
-          </div>
-        </article>
-      {/each}
-    </div>
-  {/if}
-</section>
+{/if}
 
 <style>
-  .inbox { margin: 0 0 20px; padding: 18px; border: 1px solid var(--card-border); border-radius: 12px; background: var(--card-bg); }
-  .heading, .proposal { display: flex; align-items: center; gap: 12px; }
-  .heading { justify-content: space-between; align-items: flex-start; }
-  .heading h2 { margin: 2px 0 4px; font-size: 1.1rem; }
-  .heading p, .details p { margin: 0; color: var(--text-secondary); font-size: .86rem; }
-  .eyebrow { color: var(--primary) !important; font-size: .72rem !important; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  .proposal-list { margin-top: 14px; border-top: 1px solid var(--card-border); }
-  .proposal { padding: 11px 3px; border-bottom: 1px solid var(--card-border); }
-  .details { min-width: 0; flex: 1; }
-  .details strong { font-size: .9rem; }
-  .details .source { margin-top: 3px; font-size: .75rem; }
-  label { display: grid; gap: 4px; color: var(--text-secondary); font-size: .75rem; }
-  select { min-width: 7.5rem; border: 1px solid var(--card-border); border-radius: 6px; padding: 5px; background: var(--surface); color: var(--text-primary); font: inherit; }
-  .actions { display: flex; gap: 6px; }
-  .btn { padding: 7px 11px; border: 0; border-radius: 7px; background: var(--surface); color: var(--text-primary); font: inherit; font-size: .8rem; cursor: pointer; }
-  .btn:disabled { opacity: .5; cursor: wait; }
-  .primary { background: var(--primary); color: #fff; }
-  .message { margin: 12px 0 0; padding: 8px 10px; border-radius: 7px; font-size: .84rem; }
-  .error { color: #be123c; background: #fff1f2; }
-  .empty { margin: 14px 0 0; color: var(--text-secondary); font-size: .86rem; }
-  @media (max-width: 720px) { .heading, .proposal { display: block; } .heading .btn, .proposal > label, .proposal .actions { margin-top: 10px; } }
+  .hint { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: 0.75rem; line-height: 1.45; }
+  .message { margin: 0 0 0.5rem; padding: 0.5rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.78rem; }
+  .error { color: var(--danger); background-color: var(--danger-soft); }
+  .empty { margin: 0; color: var(--text-tertiary); font-size: 0.78rem; }
+  .proposal-list { display: flex; flex-direction: column; }
+  .proposal { padding: 0.6rem 0; border-top: 1px solid var(--card-border); }
+  .details { min-width: 0; }
+  .details strong { display: block; font-size: 0.8125rem; font-weight: 600; }
+  .details p { margin: 0.15rem 0 0; color: var(--text-secondary); font-size: 0.72rem; }
+  .details .source { color: var(--text-tertiary); }
+  .details .analysis-meta { margin-top: 0.35rem; font-weight: 600; text-transform: capitalize; }
+  .details .analysis-meta.high { color: var(--warning); }
+  .details .analysis-rationale,
+  .details .analysis-evidence { line-height: 1.4; }
+  .details .analysis-evidence { color: var(--text-tertiary); }
+  label { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.45rem; color: var(--text-secondary); font-size: 0.72rem; }
+  select { flex: 1; min-width: 0; padding: 0.25rem 0.35rem; border: 1px solid var(--input-border); border-radius: var(--radius-sm); background-color: var(--input-bg); color: var(--text-primary); font: inherit; font-size: 0.72rem; }
+  .actions { display: flex; gap: 0.3rem; margin-top: 0.45rem; }
+  .actions .btn { flex: 1; padding: 0.3rem 0.5rem; font-size: 0.72rem; }
 </style>

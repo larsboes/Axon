@@ -47,6 +47,16 @@ describe("axon skill contract", () => {
     expect(existsSync(join(packDir, "skills", "axon-operate"))).toBe(false);
   });
 
+  test("repository entrypoints delegate to the Pack-owned scripts", () => {
+    for (const script of ["axon-context", "axapi"]) {
+      const entrypoint = join(repoDir, "scripts", script);
+      expect(statSync(entrypoint).mode & 0o111).not.toBe(0);
+      expect(readFileSync(entrypoint, "utf8")).toContain(
+        `Packs/axon/skills/axon/scripts/${script}`,
+      );
+    }
+  });
+
   test("skill contains no fixed localhost port or endpoint inventory", () => {
     const skill = readFileSync(join(skillDir, "SKILL.md"), "utf8");
     expect(skill).not.toMatch(/127\.0\.0\.1:\d+/);

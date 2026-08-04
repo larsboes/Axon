@@ -140,7 +140,7 @@ now genuinely interoperating, not a new default policy.
   advertised in the dashboard picker.
 - `GET /opportunities?include_dismissed=true` returns the persistent ranked backlog,
   including stable ids plus start, end and location evidence used by the explicit
-  Calendar promotion in Feed's **Entdecken** view.
+  Calendar promotion in Feed's **Discover** view.
 - `POST /opportunities/:id/status` accepts `new`, `saved` or `dismissed`. It changes only
   human triage state; a later source scan preserves that decision.
 

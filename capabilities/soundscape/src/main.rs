@@ -315,6 +315,29 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// What this capability answers, served as data beside `/health`.
+/// Required query parameters are named in the summary: a path alone cannot tell
+/// a caller what it must send, and learning that from a 400 is the thing this
+/// endpoint exists to avoid.
+const ROUTES: &[route_manifest::Route] = &[
+    r("GET", "/health", "Liveness."),
+    r("GET", "/routes", "This manifest."),
+    r("GET", "/api/soundscape/health", "Liveness under the panel prefix. Same handler as /health."),
+    r("GET", "/api/soundscape/state", "Current playback state."),
+    r("GET", "/api/soundscape/stream", "The audio stream."),
+    r("POST", "/api/soundscape/host/claim", "Claim playback host for this browser."),
+    r("POST", "/api/soundscape/host/release", "Release the playback host."),
+];
+
+/// Shorthand so the table above reads as a table.
+const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
+    route_manifest::Route { method, path, summary }
+}
+
+async fn routes() -> axum::Json<serde_json::Value> {
+    axum::Json(route_manifest::manifest("soundscape", ROUTES))
+}
+
 async fn get_state(State(app): State<App>) -> Json<StateView> {
     Json(app.view())
 }
@@ -666,6 +689,7 @@ async fn main() {
     let index = format!("{dir}/index.html");
 
     let router = Router::new()
+        .route("/routes", get(routes))
         .route("/health", get(health))
         .route("/api/soundscape/health", get(health))
         .route("/api/soundscape/state", get(get_state).post(post_state))
@@ -899,5 +923,23 @@ mod tests {
         // a state API driven by two different clients.
         let result: Result<Patch, _> = serde_json::from_str(r#"{"prest":"focus"}"#);
         assert!(result.is_err());
+    }
+}
+
+// The self-describing surface, on the same include terms as the other libs.
+#[path = "../../../libs/route-manifest/src/lib.rs"]
+#[allow(dead_code)]
+mod route_manifest;
+
+#[cfg(test)]
+mod route_manifest_tests {
+    /// A stale manifest is worse than none, because it gets believed. This reads
+    /// the router's own source, so adding a `.route()` without a summary fails
+    /// here rather than shipping a surface that lies about itself.
+    #[test]
+    fn the_manifest_covers_every_served_route() {
+        let missing =
+            super::route_manifest::undeclared_routes(include_str!("main.rs"), super::ROUTES);
+        assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

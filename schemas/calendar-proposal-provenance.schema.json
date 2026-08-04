@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.local/schemas/calendar-proposal-provenance.schema.json",
+  "title": "Axon Calendar Proposal Provenance",
+  "description": "Minimal evidence retained when one reviewed Comms analysis date is proposed to Calendar.",
+  "type": "object",
+  "required": ["schema_version", "origin", "data_class", "analysis_schema_version", "importance", "importance_rationale", "evidence"],
+  "properties": {
+    "schema_version": { "const": "calendar-proposal-provenance-v1" },
+    "origin": {
+      "type": "object",
+      "required": ["capability", "source", "item_id", "job_id", "field", "index"],
+      "properties": {
+        "capability": { "const": "comms" },
+        "source": { "enum": ["feed", "mail"] },
+        "item_id": { "type": "string", "minLength": 1 },
+        "job_id": { "type": "string", "minLength": 1 },
+        "field": { "enum": ["important_dates", "action_items"] },
+        "index": { "type": "integer", "minimum": 0, "maximum": 9 }
+      },
+      "additionalProperties": false
+    },
+    "data_class": { "enum": ["public", "personal", "vault"] },
+    "analysis_schema_version": { "const": "cloud-content-analysis-v1" },
+    "importance": { "enum": ["low", "medium", "high"] },
+    "importance_rationale": { "type": "string", "minLength": 1, "maxLength": 600 },
+    "evidence": { "type": ["string", "null"], "maxLength": 300 }
+  },
+  "additionalProperties": false
+}

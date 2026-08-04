@@ -138,40 +138,30 @@
   }
 </script>
 
-<section class="context-panel" aria-labelledby="context-heading">
-  <div class="context-head">
-    <div>
-      <span>Planning context</span>
-      <h2 id="context-heading">What needs consideration during this period</h2>
-      <p>{rangeLabel} · affects guidance and ranking but blocks no time.</p>
-    </div>
-    <button type="button" onclick={openCreate}>+ Context</button>
-  </div>
+<p class="hint">{rangeLabel} · affects guidance and ranking but blocks no time.</p>
 
-  {#if contexts.length === 0}
-    <button type="button" class="empty" onclick={openCreate}>
-      There is no additional context for this period.
-      <strong>Add a note</strong>
-    </button>
-  {:else}
-    <div class="context-list">
-      {#each contexts as context (context.id)}
-        {@const meta = kindMeta(context.kind)}
-        <button
-          type="button"
-          class="context-card"
-          style={`--context-color: ${meta.color}`}
-          onclick={() => openEdit(context)}
-        >
-          <span class="context-kind">{meta.label}</span>
-          <strong>{context.title}</strong>
-          {#if context.details}<p>{context.details}</p>{/if}
-          <small>{dateLabel(context.valid_from)} – {dateLabel(context.valid_until)}</small>
-        </button>
-      {/each}
-    </div>
-  {/if}
-</section>
+{#if contexts.length === 0}
+  <p class="empty">Nothing noted for this period.</p>
+{:else}
+  <div class="context-list">
+    {#each contexts as context (context.id)}
+      {@const meta = kindMeta(context.kind)}
+      <button
+        type="button"
+        class="context-card"
+        style={`--context-color: ${meta.color}`}
+        onclick={() => openEdit(context)}
+      >
+        <span class="context-kind">{meta.label}</span>
+        <strong>{context.title}</strong>
+        {#if context.details}<p>{context.details}</p>{/if}
+        <small>{dateLabel(context.valid_from)} – {dateLabel(context.valid_until)}</small>
+      </button>
+    {/each}
+  </div>
+{/if}
+
+<button type="button" class="btn btn-outline add" onclick={openCreate}>+ Context</button>
 
 {#if showForm}
   <div class="overlay">
@@ -237,38 +227,13 @@
 {/if}
 
 <style>
-  .context-panel {
-    margin-bottom: 18px;
-    padding: 16px;
-    border: 1px solid var(--card-border);
-    border-radius: 12px;
-    background:
-      linear-gradient(135deg, color-mix(in srgb, var(--primary-soft) 70%, transparent), transparent 55%),
-      var(--card-bg);
-  }
+  .hint { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: 0.75rem; line-height: 1.45; }
+  .empty { margin: 0; color: var(--text-tertiary); font-size: 0.78rem; }
 
-  .context-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 20px;
-  }
-
-  .context-head span,
-  .heading p {
-    display: block;
-    margin: 0 0 3px;
-    color: var(--primary);
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  h2 { margin: 0; font-size: 0.95rem; }
-  .context-head p { margin: 5px 0 0; color: var(--text-secondary); font-size: 0.72rem; }
-
-  button {
+  /* The overlay form still owns its own button styling; only the rail body defers to
+   * the `.btn` primitive in app.css. Scoped rules would otherwise outrank it. */
+  .overlay button,
+  .context-card {
     border: 1px solid var(--card-border);
     border-radius: 7px;
     background: var(--card-bg);
@@ -277,40 +242,29 @@
     cursor: pointer;
   }
 
-  .context-head > button { padding: 6px 10px; color: var(--primary); font-size: 0.72rem; font-weight: 650; white-space: nowrap; }
+  h2 { margin: 0; font-size: 0.95rem; }
 
   .context-list {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-    gap: 8px;
-    margin-top: 13px;
+    gap: 0.35rem;
   }
 
   .context-card {
     display: grid;
-    gap: 4px;
+    gap: 0.15rem;
     min-width: 0;
-    padding: 11px 12px;
+    padding: 0.5rem 0.6rem;
     border-left: 3px solid var(--context-color);
     text-align: left;
   }
 
   .context-card:hover { border-color: var(--context-color); background: var(--surface); }
-  .context-kind { color: var(--context-color); font-size: 0.62rem; font-weight: 700; text-transform: uppercase; }
-  .context-card strong { font-size: 0.8rem; }
+  .context-kind { color: var(--context-color); font-size: 0.6rem; font-weight: 700; text-transform: uppercase; }
+  .context-card strong { font-size: 0.78rem; }
   .context-card p { margin: 0; color: var(--text-secondary); font-size: 0.7rem; line-height: 1.4; }
   .context-card small { color: var(--text-tertiary); font-size: 0.62rem; }
 
-  .empty {
-    width: 100%;
-    margin-top: 12px;
-    padding: 14px;
-    color: var(--text-secondary);
-    font-size: 0.72rem;
-    text-align: left;
-  }
-
-  .empty strong { float: right; color: var(--primary); }
+  .add { width: 100%; margin-top: 0.5rem; padding: 0.3rem 0.5rem; font-size: 0.72rem; }
 
   .overlay {
     position: fixed;
@@ -325,6 +279,17 @@
   .sheet { position: relative; width: min(520px, 100%); padding: 24px; border: 1px solid var(--card-border); border-radius: 14px; background: var(--card-bg); box-shadow: 0 16px 48px rgba(0,0,0,.35); }
   .heading { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
   .heading h2 { font-size: 1.1rem; }
+
+  .heading p {
+    display: block;
+    margin: 0 0 3px;
+    color: var(--primary);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
   .close { width: 30px; height: 30px; border-radius: 50%; font-size: 1.2rem; }
 
   fieldset { margin: 0 0 13px; padding: 0; border: 0; }
@@ -342,8 +307,6 @@
   .form-actions .danger { color: var(--danger); }
 
   @media (max-width: 38rem) {
-    .context-head { align-items: stretch; flex-direction: column; }
-    .context-head > button { align-self: flex-start; }
     .dates { grid-template-columns: 1fr; }
   }
 </style>

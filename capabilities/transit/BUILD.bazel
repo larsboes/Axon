@@ -85,7 +85,8 @@ rust_test(
 rust_binary(
     name = "transit-server",
     crate_root = "src/server.rs",
-    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs", "//libs/axon-config:src/lib.rs"],
+    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs",
+        "//libs/route-manifest:src/lib.rs", "//libs/axon-config:src/lib.rs"],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [

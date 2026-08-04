@@ -2,7 +2,7 @@ import { execFileSync, execSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sveltekit } from "@sveltejs/kit/vite";
-import { defineConfig, type ProxyOptions } from "vite";
+import { defineConfig, type Plugin, type ProxyOptions } from "vite";
 import {
   hasSameOrigin,
   installCommsProxyAuthorization,
@@ -12,6 +12,8 @@ import {
 
 const AXON_ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const port = Number(process.env.AXON_PORT ?? 47117);
+const APP_BUNDLE_LIMIT_BYTES = 500_000;
+const MAPLIBRE_BUNDLE_LIMIT_BYTES = 1_100_000;
 
 interface RegistryEntry {
   name: string;
@@ -20,6 +22,38 @@ interface RegistryEntry {
   port: string;
   proxy_extra: string[];
   proxy_api_only: string;
+}
+
+function maplibreBundleGuard(): Plugin {
+  return {
+    name: "maplibre-bundle-guard",
+    generateBundle(_options, bundle) {
+      const chunks = [];
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        if (Object.keys(output.modules).some((id) => id.includes("/maplibre-gl/"))) {
+          chunks.push(output);
+        } else if (Buffer.byteLength(output.code) > APP_BUNDLE_LIMIT_BYTES) {
+          this.error(
+            `${output.fileName} exceeds the ${APP_BUNDLE_LIMIT_BYTES}-byte application limit.`,
+          );
+        }
+      }
+      if (chunks.length === 0) return;
+
+      const eagerChunk = chunks.find((chunk) => !chunk.isDynamicEntry);
+      if (eagerChunk) {
+        this.error(`MapLibre must remain lazy; ${eagerChunk.fileName} is not a dynamic entry.`);
+      }
+
+      const bytes = chunks.reduce((total, chunk) => total + Buffer.byteLength(chunk.code), 0);
+      if (bytes > MAPLIBRE_BUNDLE_LIMIT_BYTES) {
+        this.error(
+          `MapLibre bundles total ${bytes} bytes; the limit is ${MAPLIBRE_BUNDLE_LIMIT_BYTES}.`,
+        );
+      }
+    },
+  };
 }
 
 // The proxy table is derived, not written. `tools/capability.sh registry` reads the
@@ -140,7 +174,7 @@ function guardCommsMutations(
 // table, and — under Bazel — neither the script nor the manifests in its sandbox.
 // Evaluating it at config load was what kept this app out of the build graph.
 export default defineConfig(({ command }) => ({
-  plugins: [sveltekit(), {
+  plugins: [sveltekit(), maplibreBundleGuard(), {
     name: "top-processes",
     configureServer(server) {
       server.middlewares.use(guardCommsMutations);
@@ -154,4 +188,9 @@ export default defineConfig(({ command }) => ({
     ...(command === "serve" ? { proxy: buildProxy() } : {}),
   },
   preview: { host: "127.0.0.1", port, strictPort: true },
+  build: {
+    // The plugin keeps ordinary chunks at Vite's default budget and gives only the
+    // separately guarded async map module its measured allowance.
+    chunkSizeWarningLimit: MAPLIBRE_BUNDLE_LIMIT_BYTES / 1000,
+  },
 }));

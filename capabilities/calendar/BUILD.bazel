@@ -12,6 +12,8 @@ rust_library(
     # because a glob cannot cross a package boundary.
     srcs = glob(["src/**/*.rs"], exclude = ["src/server.rs"]) + [
         "//libs/axon-config:src/lib.rs",
+        # The content-item-v1 reader contract, on the same include terms.
+        "//libs/content-item:src/lib.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],
@@ -35,7 +37,12 @@ rust_test(
 rust_binary(
     name = "calendar-server",
     crate_root = "src/server.rs",
-    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs", "//libs/axon-config:src/lib.rs"],
+    srcs = [
+        "src/server.rs",
+        "//libs/axon-server:src/lib.rs",
+        "//libs/axon-config:src/lib.rs",
+        "//libs/route-manifest:src/lib.rs",
+    ],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [

@@ -133,15 +133,15 @@
   .btn { padding: 7px 12px; border: 0; border-radius: 7px; background: var(--surface); color: var(--text-primary); font: inherit; font-size: .82rem; cursor: pointer; }
   .btn:disabled { opacity: .5; cursor: wait; }
   .primary { background: var(--primary); color: #fff; }
-  .danger { background: #be123c; color: #fff; }
+  .danger { background: var(--danger); color: var(--text-inverse); }
   .message { margin: 12px 0 0; padding: 8px 10px; border-radius: 7px; font-size: .84rem; }
-  .error { color: #be123c; background: #fff1f2; }
-  .success { color: #166534; background: #f0fdf4; }
+  .error { color: var(--danger); background-color: var(--danger-soft); }
+  .success { color: var(--success); background-color: var(--success-soft); }
   .preview { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--card-border); }
   .preview p { margin: 0 0 8px; color: var(--text-secondary); font-size: .84rem; }
   ul { margin: 0 0 14px; padding-left: 20px; color: var(--text-secondary); font-size: .84rem; }
   li + li { margin-top: 4px; }
-  .skipped { color: #92400e !important; }
+  .skipped { color: var(--warning) !important; }
   .empty { margin: 14px 0 0; color: var(--text-secondary); font-size: .86rem; }
   @media (max-width: 640px) { .heading { display: block; } .heading .btn { margin-top: 10px; } }
 </style>

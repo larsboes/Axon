@@ -17,6 +17,7 @@ use crate::{CommsError, Result};
 
 /// Max characters of article/transcript text fed to the summarizer prompt.
 const SUMMARY_INPUT_CAP: usize = 15_000;
+pub const SUMMARY_PROMPT_REVISION: &str = "feed-summary-v2-english";
 /// Max characters of extracted article body persisted as transcript.
 const ARTICLE_TEXT_CAP: usize = 20_000;
 /// Transcript length at or above which `content_status` is `full` (not `thin`).
@@ -52,10 +53,7 @@ impl SummarizeOutcome {
 struct TmpDir(PathBuf);
 impl TmpDir {
     fn new(tag: &str) -> Result<Self> {
-        let dir = std::env::temp_dir().join(format!(
-            "comms-ingest-{}-{tag}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("comms-ingest-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         Ok(Self(dir))
     }
@@ -71,9 +69,21 @@ impl Drop for TmpDir {
 
 #[derive(Debug, PartialEq, Eq)]
 enum GitHubTarget {
-    Repo { owner: String, repo: String },
-    Issue { owner: String, repo: String, number: u64 },
-    Blob { owner: String, repo: String, branch: String, path: String },
+    Repo {
+        owner: String,
+        repo: String,
+    },
+    Issue {
+        owner: String,
+        repo: String,
+        number: u64,
+    },
+    Blob {
+        owner: String,
+        repo: String,
+        branch: String,
+        path: String,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -166,14 +176,23 @@ fn parse_github_url(url: &str) -> Option<GitHubTarget> {
 
     if (seg[2] == "issues" || seg[2] == "pull") && seg.len() >= 4 {
         if let Ok(number) = seg[3].parse::<u64>() {
-            return Some(GitHubTarget::Issue { owner, repo, number });
+            return Some(GitHubTarget::Issue {
+                owner,
+                repo,
+                number,
+            });
         }
     }
 
     if (seg[2] == "blob" || seg[2] == "raw") && seg.len() >= 5 {
         let branch = seg[3].to_string();
         let path = seg[4..].join("/");
-        return Some(GitHubTarget::Blob { owner, repo, branch, path });
+        return Some(GitHubTarget::Blob {
+            owner,
+            repo,
+            branch,
+            path,
+        });
     }
 
     Some(GitHubTarget::Repo { owner, repo })
@@ -190,7 +209,9 @@ fn parse_huggingface_url(url: &str) -> Option<HuggingFaceTarget> {
     }
 
     if seg[0] == "papers" && seg.len() >= 2 {
-        return Some(HuggingFaceTarget::Paper { paper_id: seg[1].to_string() });
+        return Some(HuggingFaceTarget::Paper {
+            paper_id: seg[1].to_string(),
+        });
     }
 
     if seg[0] == "datasets" && seg.len() >= 2 {
@@ -206,7 +227,9 @@ fn parse_huggingface_url(url: &str) -> Option<HuggingFaceTarget> {
         let model_id = format!("{}/{}", seg[0], seg[1]);
         return Some(HuggingFaceTarget::Model { model_id });
     } else if seg.len() == 1 && !seg[0].contains('/') {
-        return Some(HuggingFaceTarget::Model { model_id: seg[0].to_string() });
+        return Some(HuggingFaceTarget::Model {
+            model_id: seg[0].to_string(),
+        });
     }
 
     None
@@ -280,14 +303,14 @@ fn ytdlp_meta_args(url: &str, impersonate: bool) -> Vec<String> {
 fn ytdlp_sub_args(url: &str, dir: &Path, impersonate: bool) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "--skip-download".into(),
-        // Ohne --ignore-errors bricht yt-dlp nach der ersten fehlgeschlagenen
-        // Sprache ab; auto-übersetzte Varianten (z.B. de bei en-Videos) werden
-        // von YouTube aggressiv ge-429t, die Original-Sprache lädt trotzdem.
+        // Without --ignore-errors, yt-dlp stops after the first missing
+        // language. Prefer English, then retain German as a multilingual-input
+        // fallback; generated Axon text still defaults to English.
         "--ignore-errors".into(),
         "--write-auto-subs".into(),
         "--write-subs".into(),
         "--sub-langs".into(),
-        "de,en,en-orig".into(),
+        "en,en-orig,de".into(),
         "--sub-format".into(),
         "vtt/best".into(),
     ];
@@ -317,7 +340,10 @@ fn run_ytdlp_with_fallback(
         return Some(first);
     }
     if String::from_utf8_lossy(&first.stderr).contains("impersonate") {
-        let second = Command::new("yt-dlp").args(make_args(false)).output().ok()?;
+        let second = Command::new("yt-dlp")
+            .args(make_args(false))
+            .output()
+            .ok()?;
         if second.status.success() {
             return Some(second);
         }
@@ -326,8 +352,9 @@ fn run_ytdlp_with_fallback(
 }
 
 fn ytdlp_meta(url: &str) -> Result<YtMeta> {
-    let out = run_ytdlp_with_fallback(|imp| ytdlp_meta_args(url, imp))
-        .ok_or_else(|| CommsError::Other("yt-dlp metadata failed (not runnable or fetch error)".into()))?;
+    let out = run_ytdlp_with_fallback(|imp| ytdlp_meta_args(url, imp)).ok_or_else(|| {
+        CommsError::Other("yt-dlp metadata failed (not runnable or fetch error)".into())
+    })?;
     // --dump-json emits one JSON object per line; take the first.
     let stdout = String::from_utf8_lossy(&out.stdout);
     let line = stdout.lines().next().unwrap_or("{}");
@@ -425,7 +452,10 @@ fn extract_article(url: &str) -> Result<(Option<String>, String)> {
     let http = http_client()?;
     let resp = http.get(url).send()?;
     if !resp.status().is_success() {
-        return Err(CommsError::Other(format!("article fetch HTTP {}", resp.status())));
+        return Err(CommsError::Other(format!(
+            "article fetch HTTP {}",
+            resp.status()
+        )));
     }
     let html = resp.text()?;
     let title = extract_title(&html);
@@ -536,10 +566,17 @@ fn finish_extraction(item: &mut FeedItem, raw: Option<String>) {
     item.content_status = status;
 }
 
-fn get_json(http: &reqwest::blocking::Client, url: &str, accept: &str) -> Result<serde_json::Value> {
+fn get_json(
+    http: &reqwest::blocking::Client,
+    url: &str,
+    accept: &str,
+) -> Result<serde_json::Value> {
     let resp = http.get(url).header("Accept", accept).send()?;
     if !resp.status().is_success() {
-        return Err(CommsError::Other(format!("{url} -> HTTP {}", resp.status())));
+        return Err(CommsError::Other(format!(
+            "{url} -> HTTP {}",
+            resp.status()
+        )));
     }
     Ok(resp.json()?)
 }
@@ -555,8 +592,14 @@ fn fetch_github(owner: &str, repo: &str) -> Result<(Option<String>, Option<Strin
         "application/vnd.github+json",
     )?;
 
-    let full_name = meta.get("full_name").and_then(|v| v.as_str()).unwrap_or(repo);
-    let description = meta.get("description").and_then(|v| v.as_str()).unwrap_or("");
+    let full_name = meta
+        .get("full_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(repo);
+    let description = meta
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let title = Some(if description.is_empty() {
         full_name.to_string()
     } else {
@@ -568,14 +611,19 @@ fn fetch_github(owner: &str, repo: &str) -> Result<(Option<String>, Option<Strin
         head.push_str(description);
         head.push('\n');
     }
-    let stars = meta.get("stargazers_count").and_then(|v| v.as_u64()).unwrap_or(0);
+    let stars = meta
+        .get("stargazers_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let language = meta.get("language").and_then(|v| v.as_str()).unwrap_or("—");
     let license = meta
         .get("license")
         .and_then(|l| l.get("spdx_id"))
         .and_then(|v| v.as_str())
         .unwrap_or("—");
-    head.push_str(&format!("Sterne: {stars} · Sprache: {language} · Lizenz: {license}\n"));
+    head.push_str(&format!(
+        "Stars: {stars} · Language: {language} · License: {license}\n"
+    ));
     if let Some(topics) = meta.get("topics").and_then(|v| v.as_array()) {
         let list: Vec<&str> = topics.iter().filter_map(|t| t.as_str()).collect();
         if !list.is_empty() {
@@ -585,7 +633,9 @@ fn fetch_github(owner: &str, repo: &str) -> Result<(Option<String>, Option<Strin
 
     // The raw README, when there is one. A repo without one still ingests.
     let readme = http
-        .get(format!("https://api.github.com/repos/{owner}/{repo}/readme"))
+        .get(format!(
+            "https://api.github.com/repos/{owner}/{repo}/readme"
+        ))
         .header("Accept", "application/vnd.github.raw")
         .send()
         .ok()
@@ -599,13 +649,24 @@ fn fetch_github(owner: &str, repo: &str) -> Result<(Option<String>, Option<Strin
         .and_then(|v| v.as_str())
         .map(str::to_string);
 
-    Ok((title, author, cap_text(format!("{head}\n{readme}").trim().to_string())))
+    Ok((
+        title,
+        author,
+        cap_text(format!("{head}\n{readme}").trim().to_string()),
+    ))
 }
 
-fn fetch_github_target(target: &GitHubTarget, url: &str) -> Result<(Option<String>, Option<String>, String)> {
+fn fetch_github_target(
+    target: &GitHubTarget,
+    url: &str,
+) -> Result<(Option<String>, Option<String>, String)> {
     match target {
         GitHubTarget::Repo { owner, repo } => fetch_github(owner, repo),
-        GitHubTarget::Issue { owner, repo, number } => {
+        GitHubTarget::Issue {
+            owner,
+            repo,
+            number,
+        } => {
             let http = http_client()?;
             let issue_res = get_json(
                 &http,
@@ -642,9 +703,15 @@ fn fetch_github_target(target: &GitHubTarget, url: &str) -> Result<(Option<Strin
             }
             extract_article(url).map(|(t, text)| (t, Some(owner.clone()), text))
         }
-        GitHubTarget::Blob { owner, repo, branch, path } => {
+        GitHubTarget::Blob {
+            owner,
+            repo,
+            branch,
+            path,
+        } => {
             let http = http_client()?;
-            let raw_url = format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
+            let raw_url =
+                format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
             let resp = http.get(&raw_url).send();
             if let Ok(r) = resp {
                 if r.status().is_success() {
@@ -659,7 +726,10 @@ fn fetch_github_target(target: &GitHubTarget, url: &str) -> Result<(Option<Strin
     }
 }
 
-fn fetch_huggingface(target: &HuggingFaceTarget, url: &str) -> Result<(Option<String>, Option<String>, String)> {
+fn fetch_huggingface(
+    target: &HuggingFaceTarget,
+    url: &str,
+) -> Result<(Option<String>, Option<String>, String)> {
     match target {
         HuggingFaceTarget::Paper { paper_id } => fetch_arxiv(paper_id),
         HuggingFaceTarget::Model { model_id } => {
@@ -670,7 +740,9 @@ fn fetch_huggingface(target: &HuggingFaceTarget, url: &str) -> Result<(Option<St
                 "application/json",
             );
             let raw_readme = http
-                .get(format!("https://huggingface.co/{model_id}/raw/main/README.md"))
+                .get(format!(
+                    "https://huggingface.co/{model_id}/raw/main/README.md"
+                ))
                 .send()
                 .ok()
                 .filter(|r| r.status().is_success())
@@ -679,7 +751,10 @@ fn fetch_huggingface(target: &HuggingFaceTarget, url: &str) -> Result<(Option<St
 
             let author = model_id.split_once('/').map(|(a, _)| a.to_string());
             if let Ok(meta) = meta_res {
-                let pipeline = meta.get("pipeline_tag").and_then(|v| v.as_str()).unwrap_or("model");
+                let pipeline = meta
+                    .get("pipeline_tag")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("model");
                 let downloads = meta.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0);
                 let likes = meta.get("likes").and_then(|v| v.as_u64()).unwrap_or(0);
                 let title = Some(format!("{model_id} ({pipeline})"));
@@ -699,7 +774,9 @@ fn fetch_huggingface(target: &HuggingFaceTarget, url: &str) -> Result<(Option<St
                 "application/json",
             );
             let raw_readme = http
-                .get(format!("https://huggingface.co/datasets/{dataset_id}/raw/main/README.md"))
+                .get(format!(
+                    "https://huggingface.co/datasets/{dataset_id}/raw/main/README.md"
+                ))
                 .send()
                 .ok()
                 .filter(|r| r.status().is_success())
@@ -712,7 +789,8 @@ fn fetch_huggingface(target: &HuggingFaceTarget, url: &str) -> Result<(Option<St
                 let likes = meta.get("likes").and_then(|v| v.as_u64()).unwrap_or(0);
                 let title = Some(format!("Dataset: {dataset_id}"));
 
-                let header = format!("Dataset: {dataset_id} · Downloads: {downloads} · Likes: {likes}");
+                let header =
+                    format!("Dataset: {dataset_id} · Downloads: {downloads} · Likes: {likes}");
                 let text = format!("{header}\n\n---\n\n{raw_readme}");
                 return Ok((title, author, cap_text(text)));
             }
@@ -748,10 +826,15 @@ fn xml_field(body: &str, tag: &str) -> Option<String> {
 fn fetch_arxiv(id: &str) -> Result<(Option<String>, Option<String>, String)> {
     let http = http_client()?;
     let resp = http
-        .get(format!("https://export.arxiv.org/api/query?id_list={id}&max_results=1"))
+        .get(format!(
+            "https://export.arxiv.org/api/query?id_list={id}&max_results=1"
+        ))
         .send()?;
     if !resp.status().is_success() {
-        return Err(CommsError::Other(format!("arXiv API HTTP {}", resp.status())));
+        return Err(CommsError::Other(format!(
+            "arXiv API HTTP {}",
+            resp.status()
+        )));
     }
     let body = resp.text()?;
     // The feed carries its own <title>/<id> before the first <entry>; slice past
@@ -810,7 +893,10 @@ fn fetch_reddit(permalink: &str) -> Result<(Option<String>, Option<String>, Stri
         .and_then(|c| c.get("data"))
         .ok_or_else(|| CommsError::Other("reddit: no post in listing".into()))?;
 
-    let title = post.get("title").and_then(|v| v.as_str()).map(str::to_string);
+    let title = post
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let author = post
         .get("author")
         .and_then(|v| v.as_str())
@@ -858,7 +944,9 @@ fn check_scheme(url: &str) -> Result<()> {
     if low.starts_with("http://") || low.starts_with("https://") {
         Ok(())
     } else {
-        Err(CommsError::Other("only http(s) URLs can be ingested".into()))
+        Err(CommsError::Other(
+            "only http(s) URLs can be ingested".into(),
+        ))
     }
 }
 
@@ -891,7 +979,8 @@ pub fn fetch(url: &str) -> Result<FeedItem> {
             Some(text)
         }
         "huggingface" => {
-            let target = parse_huggingface_url(url).expect("detect() matched parse_huggingface_url");
+            let target =
+                parse_huggingface_url(url).expect("detect() matched parse_huggingface_url");
             let (title, author, text) = fetch_huggingface(&target, url)?;
             item.title = title;
             item.author = author;
@@ -998,7 +1087,7 @@ pub fn fetch_with_content(
 /// `fetch` plus a summary. The CLI path.
 pub fn ingest(url: &str, cfg: &Config) -> Result<FeedItem> {
     let mut item = fetch(url)?;
-    let summary_producer = cfg.summarization_role().map(|role| role.cache_key());
+    let summary_producer = summary_producer_revision(cfg);
     if let Some(text) = &item.transcript {
         if let SummarizeOutcome::Ok(summary) = summarize(text, cfg) {
             item.summary = Some(summary);
@@ -1009,18 +1098,31 @@ pub fn ingest(url: &str, cfg: &Config) -> Result<FeedItem> {
 }
 
 /// Cap the text handed to the summarizer (a 1h transcript is 100k+ chars; the
-/// local model's context is finite). Appends a `…[gekürzt]` marker when cut.
+/// local model's context is finite). Appends a `…[truncated]` marker when cut.
 /// The full transcript is still stored in the DB unchanged.
 fn truncate_for_summary(text: &str, cap: usize) -> String {
     if text.chars().count() <= cap {
         text.to_string()
     } else {
         let head: String = text.chars().take(cap).collect();
-        format!("{head}…[gekürzt]")
+        format!("{head}…[truncated]")
     }
 }
 
-/// Summarize text into a compact German Destillat via an OpenAI-compatible
+fn summary_prompt(input: &str) -> String {
+    format!(
+        "Summarize the following content as a compact digest. Start with the key points as short \
+         bullet points, then add exactly one sentence of context. Write in English, even when the \
+         source is in another language. Do not add a preamble.\n\nContent:\n{input}"
+    )
+}
+
+pub fn summary_producer_revision(cfg: &Config) -> Option<String> {
+    cfg.summarization_role()
+        .map(|role| format!("{}:{SUMMARY_PROMPT_REVISION}", role.cache_key()))
+}
+
+/// Summarize text into a compact English digest via an OpenAI-compatible
 /// chat-completions endpoint. Returns a typed outcome so the caller can
 /// distinguish "not configured" from "server down" from "empty response" and
 /// record the failure class for bounded retry.
@@ -1030,11 +1132,7 @@ pub fn summarize(text: &str, cfg: &Config) -> SummarizeOutcome {
         None => return SummarizeOutcome::Unconfigured,
     };
     let input = truncate_for_summary(text, SUMMARY_INPUT_CAP);
-    let prompt = format!(
-        "Fasse den folgenden Inhalt als kompaktes Destillat zusammen. Gib zuerst die \
-         Kernaussagen als kurze Stichpunkte (Bullets) und danach genau einen Satz zur \
-         Einordnung. Antworte auf Deutsch, ohne Vorrede.\n\nInhalt:\n{input}"
-    );
+    let prompt = summary_prompt(&input);
 
     let http = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -1096,21 +1194,26 @@ pub fn summarizer_reachable(cfg: &Config) -> bool {
 /// rather than reusing `summarize_pending`, so two concurrent ingests don't
 /// each pick up the other's row.
 pub fn summarize_item(store: &Store, cfg: &Config, id: &str) -> Result<bool> {
-    let item = match store.get_feed(id).map_err(|e| CommsError::Other(e.to_string()))? {
+    let item = match store
+        .get_feed(id)
+        .map_err(|e| CommsError::Other(e.to_string()))?
+    {
         Some(i) => i,
         None => return Ok(false),
     };
-    if item.summary.is_some() {
+    let Some(producer_revision) = summary_producer_revision(cfg) else {
+        return Ok(false);
+    };
+    if !store
+        .feed_summary_needs_revision(id, &producer_revision)
+        .map_err(|e| CommsError::Other(e.to_string()))?
+    {
         return Ok(false);
     }
     let text = match &item.transcript {
         Some(t) => t,
         None => return Ok(false),
     };
-    let producer_revision = cfg
-        .summarization_role()
-        .map(|role| role.cache_key())
-        .unwrap_or_else(|| "summarizer-unconfigured".to_string());
     match summarize(text, cfg) {
         SummarizeOutcome::Ok(summary) => {
             store
@@ -1120,7 +1223,7 @@ pub fn summarize_item(store: &Store, cfg: &Config, id: &str) -> Result<bool> {
         }
         SummarizeOutcome::Unconfigured => Ok(false),
         outcome => {
-            let _ = store.record_summary_attempt(id, outcome.error_class());
+            let _ = store.record_summary_attempt(id, outcome.error_class(), &producer_revision);
             Ok(false)
         }
     }
@@ -1129,14 +1232,13 @@ pub fn summarize_item(store: &Store, cfg: &Config, id: &str) -> Result<bool> {
 /// Retry summarization for eligible feed items (bounded by attempt cap and
 /// exponential backoff). Returns how many were newly summarized.
 pub fn summarize_pending(store: &Store, cfg: &Config) -> Result<usize> {
+    let Some(producer_revision) = summary_producer_revision(cfg) else {
+        return Ok(0);
+    };
     let pending = store
-        .feed_pending_summaries()
+        .feed_pending_summaries(Some(&producer_revision))
         .map_err(|e| CommsError::Other(e.to_string()))?;
     let mut done = 0;
-    let producer_revision = cfg
-        .summarization_role()
-        .map(|role| role.cache_key())
-        .unwrap_or_else(|| "summarizer-unconfigured".to_string());
     for item in pending {
         if let Some(text) = &item.transcript {
             match summarize(text, cfg) {
@@ -1148,7 +1250,11 @@ pub fn summarize_pending(store: &Store, cfg: &Config) -> Result<usize> {
                 }
                 SummarizeOutcome::Unconfigured => break, // no point continuing
                 outcome => {
-                    let _ = store.record_summary_attempt(&item.id, outcome.error_class());
+                    let _ = store.record_summary_attempt(
+                        &item.id,
+                        outcome.error_class(),
+                        &producer_revision,
+                    );
                 }
             }
         }
@@ -1204,7 +1310,10 @@ mod tests {
         assert_eq!(detect("https://youtu.be/x").0, "youtube");
         assert_eq!(detect("https://www.instagram.com/reel/x").0, "instagram");
         assert_eq!(detect("https://cdn.example.com/ep12.mp3").0, "podcast");
-        assert_eq!(detect("https://example.com/some-podcast-episode").0, "podcast");
+        assert_eq!(
+            detect("https://example.com/some-podcast-episode").0,
+            "podcast"
+        );
         assert_eq!(detect("https://blog.example.com/post").0, "article");
         assert_eq!(detect("https://blog.example.com/post").1, "news");
         assert_eq!(detect("https://youtu.be/x").1, "media");
@@ -1220,7 +1329,10 @@ mod tests {
             "reddit"
         );
         // Deeper GitHub paths (issues, PRs, files) are github target extractions.
-        assert_eq!(detect("https://github.com/larsboes/Axon/issues/7").0, "github");
+        assert_eq!(
+            detect("https://github.com/larsboes/Axon/issues/7").0,
+            "github"
+        );
         assert_eq!(detect("https://github.com/larsboes").0, "article");
         // A subreddit listing has no single post to ingest.
         assert_eq!(detect("https://www.reddit.com/r/rust/").0, "article");
@@ -1237,19 +1349,37 @@ mod tests {
             github_repo("https://github.com/larsboes/Axon.git?tab=readme"),
             Some(("larsboes".into(), "Axon".into()))
         );
-        assert_eq!(github_repo("https://github.com/larsboes/Axon/"), Some(("larsboes".into(), "Axon".into())));
-        assert_eq!(github_repo("https://github.com/larsboes/Axon/blob/main/README.md"), None);
+        assert_eq!(
+            github_repo("https://github.com/larsboes/Axon/"),
+            Some(("larsboes".into(), "Axon".into()))
+        );
+        assert_eq!(
+            github_repo("https://github.com/larsboes/Axon/blob/main/README.md"),
+            None
+        );
         assert_eq!(github_repo("https://gitlab.com/a/b"), None);
     }
 
     #[test]
     fn arxiv_id_covers_abs_pdf_and_legacy_ids() {
-        assert_eq!(arxiv_id("https://arxiv.org/abs/2501.12345").as_deref(), Some("2501.12345"));
+        assert_eq!(
+            arxiv_id("https://arxiv.org/abs/2501.12345").as_deref(),
+            Some("2501.12345")
+        );
         // The version is part of the identity and survives.
-        assert_eq!(arxiv_id("https://arxiv.org/pdf/2501.12345v2").as_deref(), Some("2501.12345v2"));
-        assert_eq!(arxiv_id("https://arxiv.org/pdf/2501.12345v2.pdf").as_deref(), Some("2501.12345v2"));
+        assert_eq!(
+            arxiv_id("https://arxiv.org/pdf/2501.12345v2").as_deref(),
+            Some("2501.12345v2")
+        );
+        assert_eq!(
+            arxiv_id("https://arxiv.org/pdf/2501.12345v2.pdf").as_deref(),
+            Some("2501.12345v2")
+        );
         // Legacy archive-prefixed ids keep their slash.
-        assert_eq!(arxiv_id("https://arxiv.org/abs/cs/0112017").as_deref(), Some("cs/0112017"));
+        assert_eq!(
+            arxiv_id("https://arxiv.org/abs/cs/0112017").as_deref(),
+            Some("cs/0112017")
+        );
         assert_eq!(arxiv_id("https://arxiv.org/list/cs.AI/recent"), None);
         assert_eq!(arxiv_id("https://example.com/abs/2501.12345"), None);
     }
@@ -1257,7 +1387,8 @@ mod tests {
     #[test]
     fn reddit_permalink_canonicalizes_post_urls() {
         assert_eq!(
-            reddit_permalink("https://www.reddit.com/r/rust/comments/abc123/some_title/").as_deref(),
+            reddit_permalink("https://www.reddit.com/r/rust/comments/abc123/some_title/")
+                .as_deref(),
             Some("https://www.reddit.com/r/rust/comments/abc123")
         );
         // old.reddit.com and a slugless permalink resolve to the same canonical form.
@@ -1266,7 +1397,10 @@ mod tests {
             Some("https://www.reddit.com/r/rust/comments/abc123")
         );
         assert_eq!(reddit_permalink("https://www.reddit.com/r/rust/"), None);
-        assert_eq!(reddit_permalink("https://www.reddit.com/user/someone"), None);
+        assert_eq!(
+            reddit_permalink("https://www.reddit.com/user/someone"),
+            None
+        );
     }
 
     #[test]
@@ -1280,9 +1414,13 @@ mod tests {
 
     #[test]
     fn xml_field_reads_first_match_decoded() {
-        let entry = "<entry><title>A &amp; B\n  study</title><summary>  abstract text </summary></entry>";
+        let entry =
+            "<entry><title>A &amp; B\n  study</title><summary>  abstract text </summary></entry>";
         assert_eq!(xml_field(entry, "title").as_deref(), Some("A & B study"));
-        assert_eq!(xml_field(entry, "summary").as_deref(), Some("abstract text"));
+        assert_eq!(
+            xml_field(entry, "summary").as_deref(),
+            Some("abstract text")
+        );
         assert_eq!(xml_field(entry, "author"), None);
     }
 
@@ -1297,14 +1435,19 @@ mod tests {
 
         let subs = ytdlp_sub_args("https://youtu.be/x", std::path::Path::new("/tmp/d"), true);
         assert!(subs.windows(2).any(|w| w == ["--impersonate", "chrome"]));
-        assert!(subs.windows(2).any(|w| w == ["--sub-langs", "de,en,en-orig"]));
+        assert!(subs
+            .windows(2)
+            .any(|w| w == ["--sub-langs", "en,en-orig,de"]));
         assert_eq!(subs.last().unwrap(), "https://youtu.be/x");
     }
 
     #[test]
     fn ytdlp_args_omit_impersonate_on_fallback() {
         let meta = ytdlp_meta_args("https://youtu.be/x", false);
-        assert!(!meta.iter().any(|a| a == "--impersonate"), "fallback drops the flag");
+        assert!(
+            !meta.iter().any(|a| a == "--impersonate"),
+            "fallback drops the flag"
+        );
         let subs = ytdlp_sub_args("https://youtu.be/x", std::path::Path::new("/tmp/d"), false);
         assert!(!subs.iter().any(|a| a == "--impersonate"));
     }
@@ -1314,8 +1457,15 @@ mod tests {
         assert_eq!(truncate_for_summary("short", 15_000), "short");
         let long = "a".repeat(20_000);
         let out = truncate_for_summary(&long, 15_000);
-        assert!(out.ends_with("…[gekürzt]"), "cut text carries the marker");
-        assert_eq!(out.chars().count(), 15_000 + "…[gekürzt]".chars().count());
+        assert!(out.ends_with("…[truncated]"), "cut text carries the marker");
+        assert_eq!(out.chars().count(), 15_000 + "…[truncated]".chars().count());
+    }
+
+    #[test]
+    fn summary_prompt_requires_english_output() {
+        let prompt = summary_prompt("Ein deutschsprachiger Quelltext.");
+        assert!(prompt.contains("Write in English"));
+        assert!(prompt.contains("Content:\nEin deutschsprachiger Quelltext."));
     }
 
     #[test]
@@ -1370,8 +1520,7 @@ mod tests {
         let url = "https://example.com/behind-a-login";
         let body = "# Members only\n\nThe part the server could never fetch.";
 
-        let captured =
-            fetch_with_content(url, Some(body), None, None, Some("axon-clip")).unwrap();
+        let captured = fetch_with_content(url, Some(body), None, None, Some("axon-clip")).unwrap();
         assert_eq!(captured.captured_via.as_deref(), Some("axon-clip"));
 
         // Handed over by something that did not name itself: still a capture,
@@ -1489,6 +1638,9 @@ mod tests {
         finish_extraction(&mut item, Some("Menu\nHome\nCopy link\n".to_string()));
         assert_eq!(item.transcript, None);
         assert_eq!(item.content_status, "none");
-        assert!(item.raw_content.is_some(), "raw is kept even when all of it is dropped");
+        assert!(
+            item.raw_content.is_some(),
+            "raw is kept even when all of it is dropped"
+        );
     }
 }

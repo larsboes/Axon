@@ -12,7 +12,7 @@ use crate::relevance::{InterestProfile, RelevanceMatch};
 use crate::store::FeedItem;
 use crate::travel::{self, TravelContext};
 
-pub const EVALUATOR_REVISION: &str = "feed-evaluator-v3-reranking";
+pub const EVALUATOR_REVISION: &str = "feed-evaluator-v4-english";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EvaluationFactorContext {
@@ -111,25 +111,25 @@ pub fn evaluate(
     let interest_rationale = strongest_match
         .map(|matched| {
             format!(
-                "{} mit {:.0}% Übereinstimmung ({})",
+                "{} with {:.0}% alignment ({})",
                 matched.profile_label,
                 interest_score * 100.0,
                 match matched.mode.as_str() {
-                    "reranked" => "gemeinsam bewertet",
-                    "semantic" => "semantisch",
-                    _ => "lexikal",
+                    "reranked" => "reranked",
+                    "semantic" => "semantic",
+                    _ => "lexical",
                 }
             )
         })
-        .unwrap_or_else(|| "Keine konfigurierte TELOS-Linse verfügbar".into());
+        .unwrap_or_else(|| "No configured TELOS lens is available".into());
 
     let age = age_days(&item.day);
     let freshness_score = freshness_score(age);
     let freshness_rationale = match age {
-        Some(0) => "Heute erfasst".to_string(),
-        Some(1) => "Gestern erfasst".to_string(),
-        Some(days) => format!("Vor {days} Tagen erfasst"),
-        None => "Erfassungsdatum nicht auswertbar".to_string(),
+        Some(0) => "Captured today".to_string(),
+        Some(1) => "Captured yesterday".to_string(),
+        Some(days) => format!("Captured {days} days ago"),
+        None => "Capture date cannot be evaluated".to_string(),
     };
 
     let (evidence_score, evidence_rationale) = evidence_score(item);
@@ -137,7 +137,7 @@ pub fn evaluate(
     let factors = vec![
         EvaluationFactor {
             key: "interest".into(),
-            label: "Interessen-Fit".into(),
+            label: "Interest fit".into(),
             score: interest_score,
             weight: 0.45,
             rationale: interest_rationale,
@@ -145,7 +145,7 @@ pub fn evaluate(
         },
         EvaluationFactor {
             key: "travel".into(),
-            label: "Reisebezug".into(),
+            label: "Travel relevance".into(),
             score: travel_signal.score,
             weight: 0.25,
             rationale: travel_signal.rationale,
@@ -162,7 +162,7 @@ pub fn evaluate(
         },
         EvaluationFactor {
             key: "freshness".into(),
-            label: "Aktualität".into(),
+            label: "Freshness".into(),
             score: freshness_score,
             weight: 0.20,
             rationale: freshness_rationale,
@@ -170,7 +170,7 @@ pub fn evaluate(
         },
         EvaluationFactor {
             key: "evidence".into(),
-            label: "Inhaltsbasis".into(),
+            label: "Content evidence".into(),
             score: evidence_score,
             weight: 0.10,
             rationale: evidence_rationale,
@@ -191,7 +191,7 @@ pub fn evaluate(
         .min_by(|left, right| left.score.partial_cmp(&right.score).unwrap())
         .expect("the evaluator always has factors");
     let explanation = format!(
-        "Stärkstes Signal: {} ({:.0}%). Größter Abschlag: {} ({:.0}%).",
+        "Strongest signal: {} ({:.0}%). Largest deduction: {} ({:.0}%).",
         strongest.label,
         strongest.score * 100.0,
         weakest.label,
@@ -215,15 +215,19 @@ pub fn evaluate(
 
 fn evidence_score(item: &FeedItem) -> (f64, String) {
     let signals = [
-        ("Titel", item.title.as_deref().is_some_and(non_empty), 0.20),
-        ("Autor", item.author.as_deref().is_some_and(non_empty), 0.15),
+        ("title", item.title.as_deref().is_some_and(non_empty), 0.20),
         (
-            "Kurzfassung",
+            "author",
+            item.author.as_deref().is_some_and(non_empty),
+            0.15,
+        ),
+        (
+            "summary",
             item.summary.as_deref().is_some_and(non_empty),
             0.30,
         ),
         (
-            "Quelltext",
+            "source text",
             item.transcript.as_deref().is_some_and(non_empty),
             0.35,
         ),
@@ -244,13 +248,10 @@ fn evidence_score(item: &FeedItem) -> (f64, String) {
         .map(|(label, _, _)| *label)
         .collect::<Vec<_>>();
     let rationale = match (present.is_empty(), missing.is_empty()) {
-        (_, true) => "Titel, Autor, Kurzfassung und Quelltext vorhanden".into(),
-        (true, _) => format!(
-            "Noch keine auswertbaren Inhalte; fehlt: {}",
-            missing.join(", ")
-        ),
+        (_, true) => "Title, author, summary, and source text are available".into(),
+        (true, _) => format!("No usable content yet; missing: {}", missing.join(", ")),
         _ => format!(
-            "Vorhanden: {}; fehlt: {}",
+            "Available: {}; missing: {}",
             present.join(", "),
             missing.join(", ")
         ),
@@ -394,6 +395,20 @@ mod tests {
                 < 1e-9
         );
         assert_eq!(evaluation.mode, "semantic");
+        assert_eq!(
+            evaluation
+                .factors
+                .iter()
+                .map(|factor| factor.label.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Interest fit",
+                "Travel relevance",
+                "Freshness",
+                "Content evidence"
+            ]
+        );
+        assert!(evaluation.explanation.starts_with("Strongest signal:"));
     }
 
     #[test]

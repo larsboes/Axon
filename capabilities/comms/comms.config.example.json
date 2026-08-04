@@ -4,7 +4,7 @@
   "_comment_database": "Postgres connection string. Leave unset to auto-build one from axon-overlay/config/postgres.env (capabilities/postgres, the shared local instance). Set only to point at a different instance.",
   "database_url": "",
 
-  "_comment_google_env": "Path to the KEY=value env file holding GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN (mint the refresh token once via auth/get-refresh-token.ts). Defaults to $AXON_PERSONAL_ROOT/config/comms.env. Gmail is READ-ONLY in this build.",
+  "_comment_google_env": "Path to the KEY=value env file holding GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN (mint the refresh token once via auth/get-refresh-token.ts). Defaults to $AXON_PERSONAL_ROOT/config/comms.env. Sweeps are read-only; authenticated, confirmed dashboard actions may archive a stored thread or move it to Gmail Trash.",
   "google_env_path": "",
 
   "_comment_port": "HTTP port for comms-server (default 8083).",
@@ -18,6 +18,9 @@
 
   "_comment_enrichment_drain_minutes": "How often comms-server drains the summary backlog, in minutes (default 15). Ingest-triggered enrichment only reaches items that arrive while the inference server is up; without this pass, items ingested during an outage stay empty until someone runs `comms summarize --pending` by hand. The retry ledger bounds it: three failed attempts with exponential backoff, each failure recording its error class. Set 0 to disable when something else owns the schedule.",
   "enrichment_drain_minutes": 15,
+
+  "_comment_gmail_maintenance_minutes": "How often comms-server retries durable Gmail actions and reconciles up to 200 stored thread locations from metadata labels (default 15 minutes). It reads labels only, never bodies or attachments. Set 0 to disable automatic maintenance; the authenticated manual reconciliation route remains available.",
+  "gmail_maintenance_minutes": 15,
 
   "_comment_quality_flags": "Computed review-queue thresholds. Passing extraction fixtures retain 39.7–89.6% of total raw text, preserve 100% judged useful text, and leak 0% judged boilerplate; the defaults round that observed total-retention envelope outward to 39–90% and keep leakage at 0%. summary_attempt_warning=2 flags the attempt before the existing three-attempt cap parks an item. Flagging never calls a provider or enriches an item.",
   "quality_flags": {
@@ -78,7 +81,7 @@
     {
       "match": { "subject_contains": ["invoice", "rechnung"], "from_contains": ["noreply"] },
       "stream": "belege",
-      "note": "transaktionaler Beleg von einem Noreply-Absender"
+      "note": "transactional receipt from a no-reply sender"
     }
   ]
 }

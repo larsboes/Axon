@@ -81,7 +81,9 @@ pub fn load(store: &Store, config: &TravelContextConfig) -> LoadedTravelContext 
             LoadedTravelContext {
                 contexts,
                 revision,
-                refreshed_at: cached.map(|snapshot| snapshot.refreshed_at).unwrap_or_default(),
+                refreshed_at: cached
+                    .map(|snapshot| snapshot.refreshed_at)
+                    .unwrap_or_default(),
                 reachable: true,
                 from_cache: false,
             }
@@ -242,7 +244,7 @@ pub fn score_item(item: &FeedItem, contexts: &[TravelContext]) -> TravelSignal {
         Some((score, context, matched_terms)) => TravelSignal {
             score,
             rationale: format!(
-                "Bezug zu „{}“ ({} bis {}): {}",
+                "Related to \"{}\" ({} to {}): {}",
                 context.title,
                 context.date_start,
                 context.date_end,
@@ -259,10 +261,10 @@ pub fn score_item(item: &FeedItem, contexts: &[TravelContext]) -> TravelSignal {
         None => TravelSignal {
             score: 0.0,
             rationale: if contexts.is_empty() {
-                "Keine anstehende Reise im gecachten Trips-Kontext".into()
+                "No upcoming trip in the cached Trips context".into()
             } else {
                 format!(
-                    "Kein klarer Orts- oder Interessenbezug zu {} anstehenden Reisen",
+                    "No clear location or interest match across {} upcoming trips",
                     contexts.len()
                 )
             },
@@ -273,8 +275,8 @@ pub fn score_item(item: &FeedItem, contexts: &[TravelContext]) -> TravelSignal {
 
 fn tokens(value: &str) -> HashSet<String> {
     const STOP_WORDS: &[&str] = &[
-        "and", "der", "die", "das", "den", "des", "ein", "eine", "for", "from", "mit",
-        "oder", "the", "und", "von", "zur",
+        "and", "der", "die", "das", "den", "des", "ein", "eine", "for", "from", "mit", "oder",
+        "the", "und", "von", "zur",
     ];
     value
         .to_lowercase()
@@ -299,11 +301,9 @@ fn civil_from_days(days: i64) -> String {
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let day_of_era = z - era * 146_097;
     let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096)
-            / 365;
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let mut year = year_of_era + era * 400;
-    let day_of_year =
-        day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_prime = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
     let month = month_prime + if month_prime < 10 { 3 } else { -9 };
@@ -337,6 +337,9 @@ mod tests {
     fn destination_and_interest_produce_explainable_signal() {
         let signal = score_item(&item("Rust conference in Berlin"), &[trip()]);
         assert!(signal.score > 0.7);
+        assert!(signal
+            .rationale
+            .starts_with("Related to \"Berlin Rust Week\""));
         let context = signal.context.unwrap();
         assert_eq!(context.id, "trip:berlin");
         assert!(context.matched_terms.contains(&"Berlin".to_string()));

@@ -116,7 +116,7 @@ pub struct Verdict {
     pub starts_at: String,
     pub ends_at: String,
     /// An entry with this candidate's `external_id` already exists (Phase A's
-    /// "in Kalender übernehmen" promoted it). It is excluded from the verdict:
+    /// "add to Calendar" promoted it). It is excluded from the verdict:
     /// correlating an opportunity against itself would make every saved
     /// opportunity conflict with itself.
     pub already_in_calendar: bool,
@@ -233,8 +233,12 @@ fn resolve(candidate: &Candidate) -> Result<Resolved, String> {
 /// corruption, and a verdict computed as if the entry were not there would be
 /// confidently wrong about the operator's own time.
 fn entry_range(entry: &Entry) -> Result<(i64, i64), String> {
-    let start = date::instant_minutes(&entry.starts_at)
-        .ok_or_else(|| format!("entry {}: unreadable starts_at {}", entry.id, entry.starts_at))?;
+    let start = date::instant_minutes(&entry.starts_at).ok_or_else(|| {
+        format!(
+            "entry {}: unreadable starts_at {}",
+            entry.id, entry.starts_at
+        )
+    })?;
     let end = date::instant_minutes(&entry.ends_at)
         .ok_or_else(|| format!("entry {}: unreadable ends_at {}", entry.id, entry.ends_at))?;
     Ok((start, end))
@@ -252,7 +256,7 @@ fn overlaps(a: (i64, i64), b: (i64, i64)) -> bool {
 /// the *provider's* key — the bare `evt-…` Luma id — deliberately so, because
 /// a second path to the same event (an ICS import rather than the JSON scrape)
 /// produces that same key and must dedupe onto the same row. But the caller
-/// asking for a verdict is Feed's Entdecken view, and what it holds is the
+/// asking for a verdict is Feed's Discover view, and what it holds is the
 /// *scouting opportunity* id, `evt:luma:evt-…`. Matching only `external_id`
 /// meant a saved opportunity came back `already_in_calendar: false` and
 /// `conflicts` — with itself, because its own promoted entry is `kind = event`.
@@ -265,11 +269,104 @@ fn is_same_thing(entry: &Entry, candidate_id: &str) -> bool {
     if entry.external_id.as_deref() == Some(candidate_id) {
         return true;
     }
-    entry
-        .payload
-        .get("opportunity_id")
-        .and_then(Value::as_str)
-        == Some(candidate_id)
+    entry.payload.get("opportunity_id").and_then(Value::as_str) == Some(candidate_id)
+}
+
+/// Do two entries describe the same real-world event?
+///
+/// `is_same_thing` answers that by *key*, which is the right answer whenever
+/// both sides hold one. But identity in this store is `(source, external_id)`,
+/// so the same party scraped off the venue's own site and imported from Google
+/// lands as two rows sharing no key at all. One of them is something the
+/// operator already adopted; the other keeps showing up in the proposal inbox
+/// announcing itself as new — while the month grid draws both.
+///
+/// So this matches on what independent sources do agree about: it happens at
+/// the same time, and it is called the same thing once spelling is taken out of
+/// the comparison. Place is deliberately *not* required — 13 of 62 events in
+/// the last live Luma sweep carried no usable place, which would exempt exactly
+/// the entries most likely to arrive twice.
+pub fn is_same_event(a: &Entry, b: &Entry) -> Result<bool, String> {
+    if !overlaps(entry_range(a)?, entry_range(b)?) {
+        return Ok(false);
+    }
+    let title = comparable_title(&a.title);
+    Ok(!title.is_empty() && title == comparable_title(&b.title))
+}
+
+/// The proposals that are not already sitting in the calendar under another
+/// key. Order is preserved: this only ever removes.
+///
+/// Read-time rather than write-time on purpose. Merging at ingest would have to
+/// pick a winner between two sources' versions of the same event and would be
+/// irreversible; suppressing at read leaves both rows intact, so a match this
+/// gets wrong costs a proposal that reappears the moment the rule is corrected,
+/// not data.
+pub fn without_already_adopted(
+    proposals: Vec<Entry>,
+    adopted: &[Entry],
+) -> Result<Vec<Entry>, String> {
+    let mut kept = Vec::with_capacity(proposals.len());
+    for proposal in proposals {
+        let mut duplicate = false;
+        for entry in adopted {
+            if is_same_event(&proposal, entry)? {
+                duplicate = true;
+                break;
+            }
+        }
+        if !duplicate {
+            kept.push(proposal);
+        }
+    }
+    Ok(kept)
+}
+
+/// A title reduced to what two independent sources can be expected to agree on.
+///
+/// Case, diacritics and punctuation are where they differ without meaning
+/// anything different: the only thing between `Bootshaus pres. BC173 (let’s get
+/// loco)` and `Bootshaus pres BC173 (lets get loco)` is a typographic
+/// apostrophe and a full stop.
+///
+/// Only whitespace separates words. Every other non-alphanumeric is *dropped*
+/// rather than treated as a break, which is the difference between `let’s`
+/// folding to `lets` and shattering into `let s` — the second reads as two
+/// words the other source simply does not have. Verified against live data
+/// 2026-08-04: splitting on punctuation left the Bootshaus twins unmatched.
+fn comparable_title(title: &str) -> String {
+    title
+        .split_whitespace()
+        .map(|word| {
+            word.to_lowercase()
+                .chars()
+                .filter_map(|ch| match fold(ch) {
+                    Some(folded) => Some(folded.to_string()),
+                    None if ch.is_alphanumeric() => Some(ch.to_string()),
+                    None => None,
+                })
+                .collect::<String>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Latin-1 diacritics folded to the letter the other source probably typed.
+/// `ß` is the one that is not one-to-one, which is why this returns a string.
+/// Everything else is already comparable and passes through untouched.
+fn fold(ch: char) -> Option<&'static str> {
+    Some(match ch {
+        'ä' | 'à' | 'á' | 'â' | 'ã' | 'å' => "a",
+        'ë' | 'è' | 'é' | 'ê' => "e",
+        'ï' | 'ì' | 'í' | 'î' => "i",
+        'ö' | 'ò' | 'ó' | 'ô' | 'õ' | 'ø' => "o",
+        'ü' | 'ù' | 'ú' | 'û' => "u",
+        'ñ' => "n",
+        'ç' => "c",
+        'ß' => "ss",
+        _ => return None,
+    })
 }
 
 /// The verdict for one candidate against the entries of a window that covers
@@ -484,7 +581,10 @@ mod tests {
             Feasibility::NeedsTravelDay
         );
         assert_eq!(
-            verdict(&day, &[entry("busy", "2026-08-14T09:00", "2026-08-14T10:00")]),
+            verdict(
+                &day,
+                &[entry("busy", "2026-08-14T09:00", "2026-08-14T10:00")]
+            ),
             Feasibility::NeedsTravelDay
         );
     }
@@ -497,7 +597,10 @@ mod tests {
             Feasibility::Conflicts
         );
         assert_eq!(
-            verdict(&day, &[entry("event", "2026-08-14T18:00", "2026-08-14T22:00")]),
+            verdict(
+                &day,
+                &[entry("event", "2026-08-14T18:00", "2026-08-14T22:00")]
+            ),
             Feasibility::Conflicts
         );
     }
@@ -564,6 +667,7 @@ mod tests {
             ("work_remote", Free, Free, Free),
             ("away", Free, Ntd, Conflicts),
             ("event", Free, Ntd, Conflicts),
+            ("deadline", Free, Free, Free),
             ("travel_ok", Free, Free, Free),
             ("something_invented_in_2027", Free, Free, Free),
         ];
@@ -630,14 +734,20 @@ mod tests {
         assert_eq!(verdict(&all_day, &ends_at_midnight), Feasibility::Free);
 
         let starts_at_midnight = [entry("away", "2026-08-14T00:00", "2026-08-14T01:00")];
-        assert_eq!(verdict(&all_day, &starts_at_midnight), Feasibility::Conflicts);
+        assert_eq!(
+            verdict(&all_day, &starts_at_midnight),
+            Feasibility::Conflicts
+        );
     }
 
     #[test]
     fn all_day_entries_overlap_timed_candidates_and_the_reverse() {
         let evening = candidate("2026-08-14T18:00", Some("2026-08-14T22:00"));
         let all_day_block = [entry("work_onsite", "2026-08-14", "2026-08-15")];
-        assert_eq!(verdict(&evening, &all_day_block), Feasibility::NeedsTravelDay);
+        assert_eq!(
+            verdict(&evening, &all_day_block),
+            Feasibility::NeedsTravelDay
+        );
 
         // A timed block that ends before the candidate starts does not.
         let morning_block = [entry("work_onsite", "2026-08-14T09:00", "2026-08-14T17:00")];
@@ -645,7 +755,10 @@ mod tests {
 
         // ...and the all-day candidate sees that same morning block.
         let whole_day = candidate("2026-08-14", Some("2026-08-15"));
-        assert_eq!(verdict(&whole_day, &morning_block), Feasibility::NeedsTravelDay);
+        assert_eq!(
+            verdict(&whole_day, &morning_block),
+            Feasibility::NeedsTravelDay
+        );
     }
 
     #[test]
@@ -673,7 +786,7 @@ mod tests {
         // The seam between scouting's promotion and this layer, found live on
         // 2026-07-30. Promotion stores the *provider's* key in `external_id`
         // (bare `evt-…`) so an ICS import of the same event dedupes onto the
-        // same row — but Feed's Entdecken view asks with the *opportunity* id
+        // same row — but Feed's Discover view asks with the *opportunity* id
         // (`evt:luma:evt-…`). Matching only `external_id` made a saved
         // opportunity conflict with itself.
         let mut promoted = entry("event", "2026-08-14", "2026-08-15");
@@ -810,7 +923,10 @@ mod tests {
     }
 
     fn days(from: &str, to: &str) -> (i64, i64) {
-        (date::parse_date(from).unwrap(), date::parse_date(to).unwrap())
+        (
+            date::parse_date(from).unwrap(),
+            date::parse_date(to).unwrap(),
+        )
     }
 
     #[test]
@@ -858,6 +974,125 @@ mod tests {
         assert!(feasible_windows(from, to, &entries, 1).unwrap().is_empty());
     }
 
+    /// The bug this exists for, in its real shape: the operator adopted the
+    /// Google import of a party, and the venue scraper keeps re-proposing the
+    /// same night under its own key, so the month grid draws it twice.
+    #[test]
+    fn the_same_event_from_two_sources_is_recognised_across_keys() {
+        let mut adopted = entry_at(
+            "nightlife",
+            Commitment::Planned,
+            "2026-08-15T16:00:00",
+            "2026-08-15T22:00:00",
+        );
+        adopted.title = "Bootshaus pres. BC173 (let\u{2019}s get loco)".into();
+        adopted.source = "google".into();
+        adopted.external_id = Some("3q7l9v1c8m2p4t6y0x5z".into());
+
+        let mut proposal = entry_at(
+            "nightlife",
+            Commitment::Possible,
+            "2026-08-15T16:00:00",
+            "2026-08-15T23:00:00",
+        );
+        proposal.title = "Bootshaus pres BC173 (lets get loco)".into();
+        proposal.source = "web".into();
+        proposal.external_id = Some("bootshaus:15-8-26-bc173-lets-get-loco".into());
+
+        assert!(
+            is_same_event(&proposal, &adopted).unwrap(),
+            "an apostrophe and a full stop are not two different parties"
+        );
+        assert!(
+            without_already_adopted(vec![proposal], &[adopted])
+                .unwrap()
+                .is_empty(),
+            "a proposal already in the calendar must not be proposed again"
+        );
+    }
+
+    /// The negation, which is what stops this from swallowing real proposals.
+    #[test]
+    fn a_different_event_or_a_different_night_survives() {
+        let adopted = entry("event", "2026-08-15T16:00", "2026-08-15T22:00");
+
+        let mut same_night_other_thing = entry_at(
+            "event",
+            Commitment::Possible,
+            "2026-08-15T16:00",
+            "2026-08-15T22:00",
+        );
+        same_night_other_thing.title = "Something else entirely".into();
+        assert!(!is_same_event(&same_night_other_thing, &adopted).unwrap());
+
+        let mut same_thing_other_night = same_night_other_thing.clone();
+        same_thing_other_night.title = adopted.title.clone();
+        same_thing_other_night.starts_at = "2026-08-22T16:00".into();
+        same_thing_other_night.ends_at = "2026-08-22T22:00".into();
+        assert!(
+            !is_same_event(&same_thing_other_night, &adopted).unwrap(),
+            "a recurring night is a real second event"
+        );
+
+        let kept = without_already_adopted(
+            vec![same_night_other_thing, same_thing_other_night],
+            &[adopted],
+        )
+        .unwrap();
+        assert_eq!(kept.len(), 2, "neither was already in the calendar");
+    }
+
+    /// An all-day import of a timed event still covers it — the shape Google
+    /// produces for anything it treats as a whole-day commitment.
+    #[test]
+    fn an_all_day_twin_still_matches_the_timed_original() {
+        let mut all_day = entry("event", "2026-08-15", "2026-08-16");
+        all_day.title = "DevFest Hamburg 2026".into();
+
+        let mut timed = entry_at(
+            "event",
+            Commitment::Possible,
+            "2026-08-15T09:00",
+            "2026-08-15T18:00",
+        );
+        timed.title = "DevFest Hamburg 2026".into();
+
+        assert!(is_same_event(&timed, &all_day).unwrap());
+    }
+
+    #[test]
+    fn titles_compare_past_case_diacritics_and_punctuation() {
+        assert_eq!(
+            comparable_title("Müllers Straße — Café!"),
+            "mullers strasse cafe"
+        );
+        assert_eq!(
+            comparable_title("Bootshaus pres. BC173 (let\u{2019}s get loco)"),
+            comparable_title("bootshaus  pres BC173 lets get loco")
+        );
+        // The live 2026-08-04 miss: an apostrophe must vanish, not split a word.
+        assert_eq!(comparable_title("let\u{2019}s"), comparable_title("lets"));
+        assert_eq!(comparable_title("BC-173"), comparable_title("BC173"));
+        // ...but whitespace still separates, so two words are never one.
+        assert_ne!(
+            comparable_title("Boots haus"),
+            comparable_title("Bootshaus")
+        );
+        // ...and two events that merely share a word are not the same event.
+        assert_ne!(
+            comparable_title("Bootshaus BC173"),
+            comparable_title("Bootshaus BC174")
+        );
+        // A title made only of punctuation cannot identify anything, so it
+        // must never match another one — see the emptiness guard.
+        assert_eq!(comparable_title("!!! ---"), "");
+        let mut untitled = entry("event", "2026-08-15T16:00", "2026-08-15T22:00");
+        untitled.title = "***".into();
+        let mut other = untitled.clone();
+        other.title = "###".into();
+        assert!(!is_same_event(&untitled, &other).unwrap());
+    }
+
     #[test]
     fn verdicts_serialize_as_the_contracts_wire_names() {
         let json = serde_json::to_string(&[
@@ -869,7 +1104,6 @@ mod tests {
         assert_eq!(json, r#"["free","needs-travel-day","conflicts"]"#);
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Phase D: which entries belong to one journey
@@ -884,7 +1118,9 @@ mod tests {
 /// recompute on every request instead of storing and invalidating.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TripDraft {
-    /// The clustering key, as the source recorded it.
+    /// The clustering key: the city, derived by `city_of` from whatever the
+    /// source recorded. The venue lives on the member entries, where a trip to
+    /// two places in one city can still show both.
     pub place: String,
     pub starts_on: String,
     /// Exclusive, like every other end in this capability.
@@ -927,8 +1163,83 @@ fn place_of(entry: &Entry) -> Option<String> {
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|city| !city.is_empty());
-    let fallback = entry.location.as_deref().map(str::trim).filter(|l| !l.is_empty());
+    let fallback = entry
+        .location
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty());
     city.or(fallback).map(|place| place.to_string())
+}
+
+/// Is this place the city the operator lives in, however the source spelled it?
+///
+/// `home` is a bare city — `Bonn`. What sources actually write into `location`
+/// is a venue line: `Telekom, Bonn`, or `Sparkassen Innovation Hub, Grüner
+/// Deich 15, 20097 Hamburg`. Comparing the whole line therefore never fired for
+/// exactly the entries this exists for, and two committed days at the
+/// operator's own employer, in the city they live in, were proposed as a
+/// journey (found live 2026-08-04).
+///
+/// So the comparison runs per address segment, with a leading postal code
+/// dropped. Segments rather than a substring search on purpose: a venue named
+/// `Moxy Köln/Bonn Flughafen` is in Köln, and a rule that found `Bonn` inside
+/// it would silently cancel a real trip — the failure that costs something.
+fn is_home(place: &str, home: &str) -> bool {
+    let home = home.trim().to_lowercase();
+    !home.is_empty()
+        && place
+            .split(',')
+            .map(without_postal_code)
+            .any(|segment| segment.to_lowercase() == home)
+}
+
+/// `20097 Hamburg` is the city Hamburg. Only a *leading* run of digits goes: a
+/// house number trails its street (`Grüner Deich 15`), so a segment ending in
+/// digits is an address line and must not be mistaken for a city.
+fn without_postal_code(segment: &str) -> &str {
+    let segment = segment.trim();
+    match segment.split_once(' ') {
+        Some((first, rest)) if !first.is_empty() && first.chars().all(|c| c.is_ascii_digit()) => {
+            rest.trim()
+        }
+        _ => segment,
+    }
+}
+
+/// The city a free-text place is in — the key two events have to share before
+/// they can be one journey.
+///
+/// Grouping on the raw string made the venue part of the identity, so a
+/// conference at `Sparkassen Innovation Hub, Grüner Deich 15, 20097 Hamburg`
+/// and a meetup elsewhere in Hamburg were two places, and neither ever reached
+/// the two-event floor that makes a trip. You do not travel to a venue; you
+/// travel to a city and then walk.
+///
+/// A postal code is a city's own routing key, so the segment carrying one is
+/// the city segment wherever it sits. Failing that, the last segment: German
+/// venue lines end on the city. That is the assumption, and its limit is
+/// `Berlin, Germany`, which would yield `Germany` — it does not occur here
+/// because Luma writes `payload.city`, which `place_of` prefers outright, and
+/// the manual entries are addresses. If it ever does, the fix is to record
+/// `payload.city`, not to teach this function geography.
+fn city_of(place: &str) -> String {
+    let segments: Vec<&str> = place
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let city = segments
+        .iter()
+        .find(|segment| without_postal_code(segment) != **segment)
+        .or_else(|| segments.last())
+        .map(|segment| without_postal_code(segment))
+        .unwrap_or("")
+        .trim();
+    if city.is_empty() {
+        place.trim().to_string()
+    } else {
+        city.to_string()
+    }
 }
 
 /// Groups entries into draft trips.
@@ -957,7 +1268,12 @@ pub fn cluster_trips(
                 reason: "no place recorded, so it cannot be grouped with anything".into(),
             }),
             Some(place) => {
-                if home.is_some_and(|home| home.eq_ignore_ascii_case(&place)) {
+                // The home test reads the *raw* place, every segment of it,
+                // and the clustering key reads the derived city. Deliberately
+                // different: a forgiving home test can only ever exclude a day
+                // the operator was at home anyway, while a forgiving grouping
+                // key would merge two cities into one journey.
+                if home.is_some_and(|home| is_home(&place, home)) {
                     unclustered.push(Unclustered {
                         entry_id: entry.id.clone(),
                         title: entry.title.clone(),
@@ -965,7 +1281,7 @@ pub fn cluster_trips(
                     });
                     continue;
                 }
-                by_place.entry(place).or_default().push(entry);
+                by_place.entry(city_of(&place)).or_default().push(entry);
             }
         }
     }
@@ -993,7 +1309,10 @@ pub fn cluster_trips(
     }
 
     drafts.sort_by(|a, b| a.starts_on.cmp(&b.starts_on).then(a.place.cmp(&b.place)));
-    Ok(TripDrafts { drafts, unclustered })
+    Ok(TripDrafts {
+        drafts,
+        unclustered,
+    })
 }
 
 /// A journey is evidence from multiple calendar anchors. A remote one-off is
@@ -1025,7 +1344,11 @@ fn entry_days(entry: &Entry) -> Result<(i64, i64), String> {
         .ok_or_else(|| format!("{}: unreadable starts_at", entry.id))?;
     let ends_raw = date::parse_date(&entry.ends_at[..10.min(entry.ends_at.len())])
         .ok_or_else(|| format!("{}: unreadable ends_at", entry.id))?;
-    let ends = if entry.all_day { ends_raw - 1 } else { ends_raw };
+    let ends = if entry.all_day {
+        ends_raw - 1
+    } else {
+        ends_raw
+    };
     Ok((starts, ends.max(starts)))
 }
 
@@ -1050,7 +1373,6 @@ fn draft_from(place: &str, run: &[&Entry]) -> Result<TripDraft, String> {
             .unwrap_or(Commitment::Possible),
     })
 }
-
 
 #[cfg(test)]
 mod cluster_tests {
@@ -1082,8 +1404,20 @@ mod cluster_tests {
     #[test]
     fn two_events_in_one_place_within_the_gap_are_one_trip() {
         let entries = [
-            event("a", "München", "2026-08-12T09:00:00", "2026-08-12T17:00:00", Commitment::Possible),
-            event("b", "München", "2026-08-17T18:00:00", "2026-08-17T21:00:00", Commitment::Possible),
+            event(
+                "a",
+                "München",
+                "2026-08-12T09:00:00",
+                "2026-08-12T17:00:00",
+                Commitment::Possible,
+            ),
+            event(
+                "b",
+                "München",
+                "2026-08-17T18:00:00",
+                "2026-08-17T21:00:00",
+                Commitment::Possible,
+            ),
         ];
         let out = cluster_trips(&entries, 5, None).unwrap();
         assert_eq!(out.drafts.len(), 1, "five days apart is still one journey");
@@ -1097,20 +1431,51 @@ mod cluster_tests {
     #[test]
     fn a_wider_gap_leaves_two_single_events_for_calendar_review() {
         let entries = [
-            event("a", "München", "2026-08-12T09:00:00", "2026-08-12T17:00:00", Commitment::Possible),
-            event("b", "München", "2026-08-20T18:00:00", "2026-08-20T21:00:00", Commitment::Possible),
+            event(
+                "a",
+                "München",
+                "2026-08-12T09:00:00",
+                "2026-08-12T17:00:00",
+                Commitment::Possible,
+            ),
+            event(
+                "b",
+                "München",
+                "2026-08-20T18:00:00",
+                "2026-08-20T21:00:00",
+                Commitment::Possible,
+            ),
         ];
         let out = cluster_trips(&entries, 5, None).unwrap();
         assert!(out.drafts.is_empty(), "one event is not a trip");
-        assert_eq!(out.unclustered.len(), 2, "each isolated event stays a calendar proposal");
-        assert!(out.unclustered.iter().all(|entry| entry.reason.contains("calendar event")));
+        assert_eq!(
+            out.unclustered.len(),
+            2,
+            "each isolated event stays a calendar proposal"
+        );
+        assert!(out
+            .unclustered
+            .iter()
+            .all(|entry| entry.reason.contains("calendar event")));
     }
 
     #[test]
     fn different_places_never_merge_however_close_in_time() {
         let entries = [
-            event("a", "München", "2026-08-12T09:00:00", "2026-08-12T17:00:00", Commitment::Possible),
-            event("b", "Hamburg", "2026-08-13T09:00:00", "2026-08-13T17:00:00", Commitment::Possible),
+            event(
+                "a",
+                "München",
+                "2026-08-12T09:00:00",
+                "2026-08-12T17:00:00",
+                Commitment::Possible,
+            ),
+            event(
+                "b",
+                "Hamburg",
+                "2026-08-13T09:00:00",
+                "2026-08-13T17:00:00",
+                Commitment::Possible,
+            ),
         ];
         let out = cluster_trips(&entries, 5, None).unwrap();
         assert!(out.drafts.is_empty());
@@ -1120,7 +1485,13 @@ mod cluster_tests {
     /// 13 of 62 events in the last live Luma sweep had no usable place.
     #[test]
     fn an_event_without_a_place_is_reported_not_dropped() {
-        let mut placeless = event("x", "", "2026-08-12T09:00:00", "2026-08-12T17:00:00", Commitment::Possible);
+        let mut placeless = event(
+            "x",
+            "",
+            "2026-08-12T09:00:00",
+            "2026-08-12T17:00:00",
+            Commitment::Possible,
+        );
         placeless.payload = json!({});
         let out = cluster_trips(&[placeless], 5, None).unwrap();
         assert!(out.drafts.is_empty());
@@ -1130,18 +1501,117 @@ mod cluster_tests {
 
     #[test]
     fn home_is_not_a_trip_and_says_so() {
-        let entries = [event("a", "Example City", "2026-08-12T19:00:00", "2026-08-12T21:00:00", Commitment::Possible)];
+        let entries = [event(
+            "a",
+            "Example City",
+            "2026-08-12T19:00:00",
+            "2026-08-12T21:00:00",
+            Commitment::Possible,
+        )];
         let out = cluster_trips(&entries, 5, Some("example city")).unwrap();
         assert!(out.drafts.is_empty(), "matching is case-insensitive");
         assert!(out.unclustered[0].reason.contains("home"));
+    }
+
+    /// The live 2026-08-04 miss: two committed days at the operator's own
+    /// employer, in the city they live in, proposed as a journey — because the
+    /// entries say `Telekom, Bonn` and home says `Bonn`.
+    #[test]
+    fn a_venue_in_the_home_city_is_still_home() {
+        let entries = [
+            event(
+                "a",
+                "Telekom, Bonn",
+                "2026-09-15",
+                "2026-09-16",
+                Commitment::Committed,
+            ),
+            event(
+                "b",
+                "Telekom, Bonn",
+                "2026-09-16",
+                "2026-09-17",
+                Commitment::Committed,
+            ),
+        ];
+        let out = cluster_trips(&entries, 5, Some("Bonn")).unwrap();
+        assert!(out.drafts.is_empty(), "your own city is not a journey");
+        assert_eq!(out.unclustered.len(), 2);
+        assert!(out.unclustered.iter().all(|e| e.reason.contains("home")));
+    }
+
+    /// The failure that would cost something: cancelling a real trip because
+    /// the home city appears *inside* a venue name somewhere else.
+    #[test]
+    fn a_venue_merely_named_after_home_is_still_a_trip() {
+        let away = "Moxy Köln/Bonn Flughafen, Kennedystrasse Flughafen 14, 51147 Köln";
+        assert!(!is_home(away, "Bonn"), "that airport hotel is in Köln");
+        assert!(
+            is_home(away, "köln"),
+            "and the postal code must not hide it"
+        );
+
+        let entries = [
+            event(
+                "a",
+                away,
+                "2026-08-15T16:00:00",
+                "2026-08-15T22:00:00",
+                Commitment::Possible,
+            ),
+            event(
+                "b",
+                away,
+                "2026-08-16T16:00:00",
+                "2026-08-16T22:00:00",
+                Commitment::Possible,
+            ),
+        ];
+        assert_eq!(
+            cluster_trips(&entries, 5, Some("Bonn"))
+                .unwrap()
+                .drafts
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn only_a_leading_postal_code_is_dropped_never_a_house_number() {
+        assert_eq!(without_postal_code(" 20097 Hamburg "), "Hamburg");
+        assert_eq!(without_postal_code("Grüner Deich 15"), "Grüner Deich 15");
+        assert_eq!(without_postal_code("Bonn"), "Bonn");
+        // A street is not a city, whatever the home city is called.
+        assert!(!is_home(
+            "Sparkassen Innovation Hub, Grüner Deich 15, 20097 Hamburg",
+            "Bonn"
+        ));
+        assert!(is_home(
+            "Sparkassen Innovation Hub, Grüner Deich 15, 20097 Hamburg",
+            "Hamburg"
+        ));
+        // An empty home means every place clusters, as documented.
+        assert!(!is_home("Bonn", "   "));
     }
 
     /// One booked ticket makes the whole journey real: you are going anyway.
     #[test]
     fn a_draft_carries_the_strongest_commitment_in_it() {
         let entries = [
-            event("a", "München", "2026-08-12T09:00:00", "2026-08-12T17:00:00", Commitment::Possible),
-            event("b", "München", "2026-08-13T09:00:00", "2026-08-13T17:00:00", Commitment::Committed),
+            event(
+                "a",
+                "München",
+                "2026-08-12T09:00:00",
+                "2026-08-12T17:00:00",
+                Commitment::Possible,
+            ),
+            event(
+                "b",
+                "München",
+                "2026-08-13T09:00:00",
+                "2026-08-13T17:00:00",
+                Commitment::Committed,
+            ),
         ];
         let out = cluster_trips(&entries, 5, None).unwrap();
         assert_eq!(out.drafts[0].commitment, Commitment::Committed);
@@ -1152,17 +1622,127 @@ mod cluster_tests {
     #[test]
     fn an_all_day_events_exclusive_end_does_not_lengthen_the_trip() {
         let entries = [
-            event("a", "München", "2026-08-12", "2026-08-13", Commitment::Possible),
-            event("b", "München", "2026-08-12T18:00:00", "2026-08-12T21:00:00", Commitment::Possible),
+            event(
+                "a",
+                "München",
+                "2026-08-12",
+                "2026-08-13",
+                Commitment::Possible,
+            ),
+            event(
+                "b",
+                "München",
+                "2026-08-12T18:00:00",
+                "2026-08-12T21:00:00",
+                Commitment::Possible,
+            ),
         ];
         let out = cluster_trips(&entries, 5, None).unwrap();
         assert_eq!(out.drafts[0].starts_on, "2026-08-12");
         assert_eq!(out.drafts[0].ends_before, "2026-08-13");
     }
 
+    /// You travel to a city, not to a venue. Two Hamburg addresses that share
+    /// nothing textually are one journey — the case the raw-string key missed,
+    /// leaving both below the two-event floor and neither ever a trip.
+    #[test]
+    fn two_venues_in_one_city_are_one_trip() {
+        let mut hub = event(
+            "a",
+            "",
+            "2026-10-16T09:00:00",
+            "2026-10-16T18:00:00",
+            Commitment::Committed,
+        );
+        hub.payload = json!({});
+        hub.location = Some("Sparkassen Innovation Hub, Grüner Deich 15, 20097 Hamburg".into());
+
+        let mut elsewhere = event(
+            "b",
+            "",
+            "2026-10-17T19:00:00",
+            "2026-10-17T22:00:00",
+            Commitment::Possible,
+        );
+        elsewhere.payload = json!({});
+        elsewhere.location =
+            Some("Elbphilharmonie, Platz der Deutschen Einheit 4, 20457 Hamburg".into());
+
+        let out = cluster_trips(&[hub, elsewhere], 5, Some("Bonn")).unwrap();
+        assert_eq!(out.drafts.len(), 1, "two venues, one Hamburg, one journey");
+        assert_eq!(
+            out.drafts[0].place, "Hamburg",
+            "the draft is labelled by city"
+        );
+        assert_eq!(out.drafts[0].entry_ids, vec!["a", "b"]);
+        assert!(out.unclustered.is_empty());
+    }
+
+    #[test]
+    fn a_city_is_derived_from_whatever_shape_the_source_wrote() {
+        assert_eq!(city_of("Telekom, Bonn"), "Bonn");
+        assert_eq!(
+            city_of("Sparkassen Innovation Hub, Grüner Deich 15, 20097 Hamburg"),
+            "Hamburg"
+        );
+        assert_eq!(
+            city_of("Moxy Köln/Bonn Flughafen, Kennedystrasse Flughafen 14, 51147 Köln"),
+            "Köln"
+        );
+        assert_eq!(city_of("München"), "München");
+        // A postal code identifies the city segment wherever it sits, so a
+        // country tacked on the end cannot displace it.
+        assert_eq!(
+            city_of("Elbphilharmonie, 20457 Hamburg, Germany"),
+            "Hamburg"
+        );
+        // Nothing usable in, the original back out rather than an empty key.
+        assert_eq!(city_of("   "), "");
+        assert_eq!(city_of(",,,"), ",,,");
+    }
+
+    /// Different cities must never merge, whatever their addresses look like.
+    #[test]
+    fn two_cities_stay_two_places() {
+        let mut hamburg = event(
+            "a",
+            "",
+            "2026-10-16T09:00:00",
+            "2026-10-16T18:00:00",
+            Commitment::Possible,
+        );
+        hamburg.payload = json!({});
+        hamburg.location = Some("Grüner Deich 15, 20097 Hamburg".into());
+
+        let mut koeln = event(
+            "b",
+            "",
+            "2026-10-17T09:00:00",
+            "2026-10-17T18:00:00",
+            Commitment::Possible,
+        );
+        koeln.payload = json!({});
+        koeln.location = Some("Kennedystrasse 14, 51147 Köln".into());
+
+        let out = cluster_trips(&[hamburg, koeln], 5, None).unwrap();
+        assert!(out.drafts.is_empty());
+        assert_eq!(out.unclustered.len(), 2);
+        assert!(out
+            .unclustered
+            .iter()
+            .any(|u| u.reason.contains("in Hamburg")));
+        assert!(out.unclustered.iter().any(|u| u.reason.contains("in Köln")));
+    }
+
     #[test]
     fn one_remote_event_is_a_calendar_proposal_not_a_trip() {
-        let entries = [event("a", "München", "2026-08-12T09:00:00", "2026-08-12T17:00:00", Commitment::Possible)];
+        let entries = [event(
+            "a",
+            "München",
+            "2026-08-12T09:00:00",
+            "2026-08-12T17:00:00",
+            Commitment::Possible,
+        )];
         let out = cluster_trips(&entries, 5, None).unwrap();
         assert!(out.drafts.is_empty());
         assert_eq!(out.unclustered.len(), 1);
@@ -1171,7 +1751,13 @@ mod cluster_tests {
 
     #[test]
     fn only_events_cluster_work_and_away_blocks_are_not_trips() {
-        let mut work = event("w", "München", "2026-08-12T09:00:00", "2026-08-12T17:00:00", Commitment::Committed);
+        let mut work = event(
+            "w",
+            "München",
+            "2026-08-12T09:00:00",
+            "2026-08-12T17:00:00",
+            Commitment::Committed,
+        );
         work.kind = "work_onsite".into();
         let out = cluster_trips(&[work], 5, None).unwrap();
         assert!(out.drafts.is_empty() && out.unclustered.is_empty());

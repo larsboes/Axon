@@ -50,8 +50,10 @@ _ARCHITECTURE_INPUTS = [
     "//libs/ai-client:README.md",
     "//libs/axon-config:README.md",
     "//libs/axon-server:README.md",
+    "//libs/content-item:README.md",
     "//libs/inference:README.md",
     "//libs/overlay:README.md",
+    "//libs/route-manifest:README.md",
     # The generator discovers spine apps via the root-level */service.toml glob; the
     # sandbox only materializes declared files, so the manifest must be data here or
     # the sandbox regeneration silently loses the dashboard row (caught by this very
@@ -305,6 +307,18 @@ sh_test(
     data = [
         "tools/backup.sh",
         "tools/lib/test-support.sh",
+        "tools/lib/toml.sh",
+    ],
+)
+
+sh_test(
+    name = "materialize_inference_key_test",
+    size = "small",
+    srcs = ["tools/materialize-inference-key.test.sh"],
+    data = [
+        "axon.toml",
+        "tools/materialize-inference-key",
+        "tools/lib/paths.sh",
         "tools/lib/toml.sh",
     ],
 )

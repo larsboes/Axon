@@ -207,6 +207,32 @@ code,
   color: var(--text-inverse);
 }
 
+/* Modifiers, not new buttons. Every surface that needed a bordered or destructive
+ * button used to redefine `.btn` locally — Svelte scopes component styles, so those
+ * local rules silently outranked this primitive and the app drifted into four button
+ * shapes. Anything the primitive cannot express belongs here, once. */
+
+.btn-outline {
+  border: 1px solid var(--card-border);
+  background-color: var(--card-bg);
+  color: var(--text-primary);
+}
+
+.btn-outline:hover {
+  border-color: var(--card-border-hover);
+  background-color: var(--surface);
+  color: var(--text-primary);
+}
+
+.btn-danger {
+  color: var(--danger);
+}
+
+.btn-danger:hover {
+  background-color: var(--danger-soft);
+  color: var(--danger);
+}
+
 .input {
   width: 100%;
   background-color: var(--input-bg);

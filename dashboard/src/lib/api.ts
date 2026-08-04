@@ -531,10 +531,10 @@ export const axonStatus = {
   self: () => request<SelfModelResponse>('/axon-status/api/axon-status/self'),
   repos: () => request<{ repos: RepoStatus[] }>('/axon-status/api/axon-status/repos'),
   upstreams: () => request<UpstreamAudit>('/axon-status/api/axon-status/upstreams'),
-  start: (name: string) =>
+  start: (name: string, signal?: AbortSignal) =>
     request<{ name: string; up: boolean; detail: string }>(
       `/axon-status/api/axon-status/capabilities/${encodeURIComponent(name)}/start`,
-      { method: 'POST' },
+      { method: 'POST', signal },
     ),
   stop: (name: string) =>
     request<{ name: string; up: boolean; detail: string }>(
@@ -751,6 +751,186 @@ export interface FeedEntryDetail extends FeedEntryBase {
   origins: FeedOrigin[];
 }
 
+export type ContentSource = 'feed' | 'mail' | 'calendar';
+
+/**
+ * Which capability owns each content source.
+ *
+ * The contract is shared; the data is not. A source is served by the capability
+ * that stores it, and every one of them exposes the same `/content/:source/:id`
+ * shape — so the reader resolves an item from its source alone and no caller
+ * carries a per-capability special case. Adding a source is one line here.
+ */
+const CONTENT_BASE: Record<ContentSource, string> = {
+  feed: '/comms',
+  mail: '/comms',
+  calendar: '/calendar/api',
+};
+
+/** Any content item, from whichever capability owns that source. */
+export function contentItem(source: ContentSource, id: string, signal?: AbortSignal) {
+  return request<ContentItemDetail>(
+    `${CONTENT_BASE[source]}/content/${source}/${encodeURIComponent(id)}`,
+    signal ? { signal } : undefined,
+  );
+}
+export type DataClass = 'public' | 'personal' | 'vault';
+
+export interface ContentDataClass {
+  value: DataClass;
+  label: 'Public' | 'Personal' | 'Private';
+  rationale: string;
+  method: 'source-default' | 'rules' | 'human';
+  version: string;
+}
+
+export interface ContentProcessingPolicy {
+  local_processing: 'allowed';
+  cloud_handling: 'eligible' | 'pseudonymization_required' | 'blocked';
+  pseudonymization_required: boolean;
+  rationale: string;
+}
+
+export interface CloudProcessingState {
+  status: 'not_prepared' | 'staged' | 'stale';
+  preview_hash: string | null;
+  approved_at: string | null;
+  dispatch_status: 'not_queued' | 'queued' | 'running' | 'succeeded' | 'failed';
+  job_id: string | null;
+  provider_role: string | null;
+  queued_at: string | null;
+  provider_calls: number;
+  task: 'content-analysis-v1' | null;
+  started_at: string | null;
+  completed_at: string | null;
+  last_error: string | null;
+  result: CloudContentAnalysis | null;
+}
+
+export interface CloudContentAnalysis {
+  schema_version: 'cloud-content-analysis-v1';
+  summary: string;
+  importance: 'low' | 'medium' | 'high';
+  importance_rationale: string;
+  important_dates: Array<{ label: string; date: string | null; source_text: string }>;
+  action_items: Array<{ text: string; due_date: string | null }>;
+  topics: string[];
+}
+
+export interface CloudProvider {
+  role: string;
+  name: string;
+  model: string;
+  provider_label: string;
+  location: 'cloud';
+  data_tier: 'public' | 'pseudonymized_personal';
+  billing_mode: 'free_only' | 'prepaid_credit';
+  available: boolean;
+}
+
+export interface RedactionFinding {
+  entity_type: string;
+  marker: string;
+  count: number;
+}
+
+export interface CloudDerivativePreview {
+  schema_version: 'cloud-derivative-preview-v1';
+  source: ContentSource;
+  id: string;
+  source_revision: string;
+  preview_hash: string;
+  original_data_class: DataClass;
+  derivative_data_class: 'public' | 'personal';
+  transformation: 'bounded-public-v1' | 'deterministic-entity-redaction-v2';
+  document: string;
+  redaction_count: number;
+  redactions: RedactionFinding[];
+  entity_detection: 'not-required' | 'local-deterministic-v2';
+  truncated: boolean;
+  approval_required: true;
+  provider_calls: 0;
+  limitations: string[];
+}
+
+export interface MailContentExtension {
+  category: MailCategory;
+  rationale: string;
+  classification_method: 'rules' | 'human';
+  classification_version: string;
+  gmail_action: 'archive' | 'trash' | 'restore' | null;
+  gmail_action_at: string | null;
+  purge_after: string | null;
+  gmail_location: 'inbox' | 'archive' | 'trash' | 'missing' | null;
+  gmail_observed_at: string | null;
+  gmail_sync_status: 'synced' | 'queued' | 'retrying' | 'attention' | null;
+  gmail_sync_action: 'archive' | 'trash' | 'restore' | null;
+  gmail_sync_error: string | null;
+}
+
+/** Versioned reader contract shared by Feed sources and mail proposals. */
+export interface ContentItemDetail {
+  schema_version: 'content-item-v1';
+  source: ContentSource;
+  id: string;
+  /** The source's own type discriminator, not a shared enum — a feed article is
+   *  an `article`, a calendar entry is a `nightlife` or `work_onsite`. Open
+   *  string, exactly as the schema types it: a source may add a kind without a
+   *  dashboard release, and every reader already falls back for unknown ones. */
+  kind: string;
+  title: string | null;
+  url: string;
+  author: string | null;
+  summary: string | null;
+  content: string | null;
+  content_label: string;
+  day: string;
+  created_at: string;
+  /** Each source's triage axis, in one field: feed keeps or dismisses, mail
+   *  moves through Gmail states, calendar commits. */
+  status: FeedStatus | TriageStatus | CalendarCommitment;
+  content_status: 'full' | 'thin' | 'none' | 'unknown';
+  data_class: ContentDataClass;
+  processing_policy: ContentProcessingPolicy;
+  cloud_processing: CloudProcessingState;
+  relevance: FeedRelevance[];
+  evaluation: FeedEvaluation | null;
+  processing: FeedStageProvenance[];
+  origins: FeedOrigin[];
+  links: ContentLink[];
+  mail: MailContentExtension | null;
+  calendar: CalendarContentExtension | null;
+}
+
+/** A named way out of an item: source page, the mail that carried the ticket,
+ *  a map, a vault note. `kind` is a presentation hint and stays open — an
+ *  unknown one still renders a working link. */
+export interface ContentLink {
+  label: string;
+  kind: string;
+  url: string;
+}
+
+/** What only a calendar entry has. No score on purpose: a decided item is not
+ *  ranked, so `commitment` is its triage axis. */
+export interface CalendarContentExtension {
+  starts_at: string;
+  /** Exclusive, as everywhere in calendar. */
+  ends_at: string;
+  all_day: boolean;
+  commitment: 'possible' | 'planned' | 'committed';
+  location: string | null;
+  /** The operator's own note — why they care, not what the thing is. */
+  notes: string | null;
+  /** Which adapter contributed the row (`manual`, `luma`, `google`) — not the
+   *  item's `source`, which is always `calendar`. Decides which actions are
+   *  honest: an entry imported from Google must not offer to export back. */
+  entry_source: string;
+  /** Set when materialized from a rhythm. Such an instance is not exported
+   *  individually, and any patch detaches it from its rhythm. */
+  rhythm_id: string | null;
+}
+
 // One item's place in a collector run. Derived server-side per request, so a
 // run never becomes stale state on the entry itself.
 export interface FeedRun {
@@ -792,15 +972,90 @@ export interface FeedSourceScan {
   }>;
 }
 
+export type MailCategory =
+  | 'aktiv'
+  | 'issue'
+  | 'feed'
+  | 'werbung'
+  | 'belege'
+  | 'steuern'
+  | 'sonstiges';
+
+export type TriageStatus =
+  | 'proposed'
+  | 'approved'
+  | 'executed'
+  | 'archived'
+  | 'trashed'
+  | 'missing'
+  | 'dismissed';
+
 export interface TriageItem {
   id: string;
-  from_addr: string;
-  subject: string;
-  snippet: string;
-  stream: FeedStream;
+  from_addr: string | null;
+  subject: string | null;
+  snippet: string | null;
+  stream: MailCategory;
   rationale: string;
-  status: string;
+  classification_method: 'rules' | 'human';
+  classification_version: string;
+  data_class: DataClass;
+  data_class_rationale: string;
+  data_classification_method: 'rules' | 'human';
+  data_classification_version: string;
+  status: TriageStatus;
+  gmail_action: 'archive' | 'trash' | 'restore' | null;
+  gmail_action_at: string | null;
+  purge_after: string | null;
+  gmail_location: 'inbox' | 'archive' | 'trash' | 'missing' | null;
+  gmail_observed_at: string | null;
+  gmail_sync_status: 'synced' | 'queued' | 'retrying' | 'attention' | null;
+  gmail_sync_action: 'archive' | 'trash' | 'restore' | null;
+  gmail_sync_error: string | null;
   internal_date: string | null;
+  relevance: FeedRelevance[];
+}
+
+export interface TriageSweepResult {
+  fetched: number;
+  new_count: number;
+  skipped: number;
+  total_stored: number;
+  next_cursor: string | null;
+  exhausted: boolean;
+}
+
+export interface TriageRelevanceResult {
+  scored: number;
+  profile_count: number;
+  mode: 'reranked' | 'semantic' | 'lexical' | null;
+  local_only: true;
+}
+
+export interface TriageDataClassRefreshResult {
+  reviewed: number;
+  updated: number;
+  preserved_human: number;
+  classifier_version: string;
+  content_inputs: ['sender', 'subject', 'category'];
+  provider_calls: 0;
+}
+
+export interface TriageBulkResult {
+  succeeded: string[];
+  failures: Array<{ id: string; error: string }>;
+  gmail_changed: boolean;
+}
+
+export interface GmailMaintenanceResult {
+  retried: number;
+  recovered: number;
+  retry_failures: number;
+  reconciled: number;
+  changed: number;
+  read_failures: number;
+  missing: number;
+  content_fetched: false;
 }
 
 /** How binding an entry is, orthogonal to `kind`. The calendar capability
@@ -1191,7 +1446,41 @@ export const comms = {
     const qs = params.toString();
     return request<FeedEntry[]>(`/comms/feed${qs ? `?${qs}` : ''}`);
   },
-  entry: (id: string) => request<FeedEntryDetail>(`/comms/feed/${encodeURIComponent(id)}`),
+  entry: (id: string, signal?: AbortSignal) =>
+    request<FeedEntryDetail>(
+      `/comms/feed/${encodeURIComponent(id)}`,
+      signal ? { signal } : undefined,
+    ),
+  /** Kept as the comms-shaped alias so existing comms callers read naturally;
+   *  the routing itself lives in `contentItem` so there is one map, not two. */
+  content: (source: ContentSource, id: string, signal?: AbortSignal) =>
+    contentItem(source, id, signal),
+  prepareCloudPreview: (source: ContentSource, id: string) =>
+    request<CloudDerivativePreview>(
+      `/comms/content/${source}/${encodeURIComponent(id)}/cloud-preview`,
+      { method: 'POST' },
+    ),
+  approveCloudPreview: (source: ContentSource, id: string, preview_hash: string) =>
+    request<CloudProcessingState>(
+      `/comms/content/${source}/${encodeURIComponent(id)}/cloud-approval`,
+      jsonInit('POST', { preview_hash }),
+    ),
+  cloudProviders: () => request<CloudProvider[]>('/comms/content/cloud-providers'),
+  queueCloudDerivative: (
+    source: ContentSource,
+    id: string,
+    preview_hash: string,
+    provider_role: string,
+  ) =>
+    request<CloudProcessingState>(
+      `/comms/content/${source}/${encodeURIComponent(id)}/cloud-queue`,
+      jsonInit('POST', { preview_hash, provider_role }),
+    ),
+  runCloudJob: (jobId: string) =>
+    request<CloudProcessingState>(
+      `/comms/content/cloud-jobs/${encodeURIComponent(jobId)}/run`,
+      jsonInit('POST', {}),
+    ),
   runs: (days = 7) => request<FeedRun[]>(`/comms/feed/runs?days=${days}`),
   evaluationStatus: () =>
     request<CommsEvaluationStatus>('/comms/feed/evaluation/status'),
@@ -1239,6 +1528,60 @@ export const comms = {
     ),
   setStatus: (id: string, status: FeedStatus) =>
     request<void>(`/comms/feed/${encodeURIComponent(id)}/status`, jsonInit('POST', { status })),
-  triage: (status = 'proposed') =>
-    request<TriageItem[]>(`/comms/triage?status=${encodeURIComponent(status)}`),
+  triage: (status?: TriageStatus) =>
+    request<TriageItem[]>(
+      `/comms/triage${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+    ),
+  setTriageStatus: (id: string, status: 'proposed' | 'approved' | 'dismissed') =>
+    request<void>(
+      `/comms/triage/${encodeURIComponent(id)}/status`,
+      jsonInit('POST', { status }),
+    ),
+  setTriageCategory: (id: string, stream: MailCategory) =>
+    request<void>(
+      `/comms/triage/${encodeURIComponent(id)}/stream`,
+      jsonInit('POST', { stream }),
+    ),
+  setTriageDataClass: (id: string, data_class: DataClass) =>
+    request<void>(
+      `/comms/triage/${encodeURIComponent(id)}/data-class`,
+      jsonInit('POST', { data_class }),
+    ),
+  applyGmailAction: (id: string, action: 'archive' | 'trash' | 'restore') =>
+    request<{ ok: true; action: 'archive' | 'trash' | 'restore'; gmail_changed: boolean; gmail_confirmed: true }>(
+      `/comms/triage/${encodeURIComponent(id)}/gmail`,
+      jsonInit('POST', { action }),
+    ),
+  decideGmailJob: (id: string, decision: 'retry' | 'cancel') =>
+    request<{ ok: true; state: 'completed' | 'canceled'; gmail_changed?: boolean }>(
+      `/comms/triage/${encodeURIComponent(id)}/gmail-job`,
+      jsonInit('POST', { decision }),
+    ),
+  reconcileGmail: () =>
+    request<GmailMaintenanceResult>('/comms/triage/reconcile', jsonInit('POST', {})),
+  sweepTriage: (limit = 100, cursor?: string | null) =>
+    request<TriageSweepResult>(
+      '/comms/triage/sweep',
+      jsonInit('POST', { limit, cursor: cursor ?? null }),
+    ),
+  refreshTriageRelevance: (limit = 200) =>
+    request<TriageRelevanceResult>(
+      '/comms/triage/relevance/refresh',
+      jsonInit('POST', { limit }),
+    ),
+  refreshTriageDataClasses: (limit = 500) =>
+    request<TriageDataClassRefreshResult>(
+      '/comms/triage/data-class/refresh',
+      jsonInit('POST', { limit }),
+    ),
+  bulkTriage: (
+    ids: string[],
+    action: 'dismiss' | 'categorize' | 'set-data-class' | 'archive' | 'trash',
+    stream?: MailCategory,
+    data_class?: DataClass,
+  ) =>
+    request<TriageBulkResult>(
+      '/comms/triage/bulk',
+      jsonInit('POST', { ids, action, stream: stream ?? null, data_class: data_class ?? null }),
+    ),
 };

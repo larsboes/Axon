@@ -136,11 +136,12 @@
 </script>
 
 <section class="locations">
-  <div class="intro">
-    <span>By location</span>
-    <h2>What makes sense to combine in one place</h2>
-    <p>Committed events, open opportunities, and trips are grouped by location and ordered by date.</p>
-  </div>
+  <!-- The kicker and title live in Home's shared section head, which owns the
+       view switcher too. Only the sentence that explains the grouping is
+       this view's own. -->
+  <p class="intro">
+    Committed events, open opportunities, and trips grouped by location, ordered by date.
+  </p>
 
   {#if groups.length === 0}
     <p class="empty">No events, opportunities, or trips with a location yet.</p>
@@ -174,10 +175,7 @@
 </section>
 
 <style>
-  .intro { margin-bottom: 1rem; }
-  .intro > span { color: var(--primary); font-size: 0.65rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  h2 { margin: .15rem 0 0; font-size: 1rem; }
-  .intro p { max-width: 42rem; margin: .4rem 0 0; color: var(--text-secondary); font-size: .72rem; }
+  .intro { max-width: 42rem; margin: 0 0 1rem; color: var(--text-secondary); font-size: .72rem; }
 
   .groups { display: grid; gap: .8rem; }
   article { overflow: hidden; border: 1px solid var(--card-border); border-radius: var(--radius-lg); background: var(--card-bg); }

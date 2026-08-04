@@ -257,14 +257,14 @@ pub fn score_items(
                 .map(|(profile_index, score)| {
                     let profile = &profiles[profile_index];
                     let method = match scoring_mode {
-                        "reranked" => "Gemeinsam bewertete Relevanz",
-                        "semantic" => "Semantische Nähe",
-                        _ => "Lexikalische Nähe",
+                        "reranked" => "Reranked relevance",
+                        "semantic" => "Semantic similarity",
+                        _ => "Lexical similarity",
                     };
                     let rationale = if profile.focus.is_empty() {
-                        format!("{method} zur TELOS-Linse {}", profile.label)
+                        format!("{method} for the TELOS lens {}", profile.label)
                     } else {
-                        format!("{method} zu {} · {}", profile.label, profile.focus)
+                        format!("{method} for {} · {}", profile.label, profile.focus)
                     };
                     RelevanceMatch {
                         profile_key: profile.key.clone(),
@@ -463,6 +463,22 @@ mod tests {
         let document = item_document(&item);
         assert!(document.contains("distilled"));
         assert!(!document.contains("long raw transcript"));
+    }
+
+    #[test]
+    fn lexical_rationale_uses_the_english_surface() {
+        let item = FeedItem::new("https://example.com", "news", "article");
+        let profile = InterestProfile {
+            key: "profile".into(),
+            label: "Systems".into(),
+            focus: "software architecture".into(),
+            text: "software architecture".into(),
+            fingerprint: "revision".into(),
+        };
+        let scored = score_items(&[item], &[profile], None, None);
+        assert!(scored[0].matches[0]
+            .rationale
+            .starts_with("Lexical similarity for Systems"));
     }
 
     #[test]

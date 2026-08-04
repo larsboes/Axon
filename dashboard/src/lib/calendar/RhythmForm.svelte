@@ -264,7 +264,7 @@
   .primary { background: var(--primary); color: #fff; }
   .secondary { background: var(--surface); color: var(--text-primary); }
 
-  .error { color: #e11d48; font-size: 0.8125rem; margin-bottom: 8px; }
+  .error { color: var(--danger); font-size: 0.8125rem; margin-bottom: 8px; }
 
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 </style>

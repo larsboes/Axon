@@ -14,20 +14,12 @@ use std::path::PathBuf;
 use crate::inference::{InferenceConfig, ResolvedRole};
 use crate::rules::Rule;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct RelevanceConfig {
     /// Exact Markdown files or non-recursive directories containing TELOS
     /// focus lenses. Personal paths belong in the private overlay.
     pub profile_paths: Vec<String>,
-}
-
-impl Default for RelevanceConfig {
-    fn default() -> Self {
-        Self {
-            profile_paths: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -164,6 +156,7 @@ struct FileConfig {
     api_secret_file: Option<String>,
     dashboard_origin: Option<String>,
     enrichment_drain_minutes: Option<u64>,
+    gmail_maintenance_minutes: Option<u64>,
     #[serde(default)]
     rules: Vec<Rule>,
     keeper_export_dir: Option<String>,
@@ -197,6 +190,9 @@ pub struct Config {
     /// ingested while the inference server was unreachable stay empty forever —
     /// that is how 36 of 39 items ended up without a summary (#74).
     pub enrichment_drain_minutes: u64,
+    /// Retry durable Gmail actions and reconcile labels on this interval. `0`
+    /// disables automatic maintenance; manual reconciliation remains available.
+    pub gmail_maintenance_minutes: u64,
     /// Shared, machine-resolved inference roles. Backend URLs, models and key
     /// references never belong to Comms configuration.
     pub inference: InferenceConfig,
@@ -310,6 +306,7 @@ impl Config {
             .dashboard_origin
             .unwrap_or_else(|| "http://127.0.0.1:47117".into());
         let enrichment_drain_minutes = file.enrichment_drain_minutes.unwrap_or(15);
+        let gmail_maintenance_minutes = file.gmail_maintenance_minutes.unwrap_or(15);
         let inference = InferenceConfig::load(crate::axon_config::overlay_config);
         let keeper_export_dir = file.keeper_export_dir.map(|p| expand_tilde(&p));
         let mut relevance = file.relevance.unwrap_or_default();
@@ -337,6 +334,7 @@ impl Config {
             api_secret,
             dashboard_origin,
             enrichment_drain_minutes,
+            gmail_maintenance_minutes,
             inference,
             rules: file.rules,
             keeper_export_dir,
@@ -438,10 +436,7 @@ mod tests {
         assert_eq!(cfg.feed_sources.len(), 2);
         assert_eq!(cfg.quality_flags.minimum_total_retention_percent, 39.0);
         assert_eq!(cfg.quality_flags.maximum_total_retention_percent, 90.0);
-        assert_eq!(
-            cfg.quality_flags.maximum_boilerplate_leakage_percent,
-            0.0
-        );
+        assert_eq!(cfg.quality_flags.maximum_boilerplate_leakage_percent, 0.0);
         assert_eq!(cfg.quality_flags.summary_attempt_warning, 2);
     }
 }

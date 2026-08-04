@@ -1,0 +1,135 @@
+#!/bin/bash
+# Human-run bridge from one reviewed Vaultwarden Secure Note to the private,
+# gitignored key file consumed by libs/inference. Secret bytes go directly
+# from `bw get notes` into a mode-0600 temporary file and are never printed.
+set -euo pipefail
+set +x
+umask 077
+
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+source "$TOOLS_DIR/lib/paths.sh"
+PRIVATE_ROOT="${AXON_INFERENCE_KEY_OVERLAY:-$AXON_PERSONAL_ROOT}"
+
+usage() {
+  echo "usage: materialize-inference-key <gemini|nvidia-nim>" >&2
+  exit 1
+}
+
+[ $# -eq 1 ] || usage
+PROVIDER="$1"
+case "$PROVIDER" in
+  gemini) ITEM="inference-gemini-api-key" ;;
+  nvidia-nim) ITEM="inference-nvidia-nim-api-key" ;;
+  *) usage ;;
+esac
+
+command -v bw >/dev/null 2>&1 || {
+  echo "materialize-inference-key: Bitwarden CLI is not installed" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  echo "materialize-inference-key: jq is not installed" >&2
+  exit 1
+}
+
+VW_ENV="$PRIVATE_ROOT/config/vaultwarden.env"
+[ -f "$VW_ENV" ] || {
+  echo "materialize-inference-key: Vaultwarden is not configured in the active overlay" >&2
+  exit 1
+}
+DOMAIN="$(grep -m1 '^DOMAIN=' "$VW_ENV" | cut -d= -f2-)"
+[ -n "$DOMAIN" ] || {
+  echo "materialize-inference-key: Vaultwarden DOMAIN is missing" >&2
+  exit 1
+}
+
+STATUS_JSON="$(bw status 2>/dev/null || true)"
+CURRENT_SERVER="$(printf '%s' "$STATUS_JSON" | jq -r '.serverUrl // empty')"
+VAULT_STATUS="$(printf '%s' "$STATUS_JSON" | jq -r '.status // "unauthenticated"')"
+if [ "$CURRENT_SERVER" != "$DOMAIN" ]; then
+  if [ "$VAULT_STATUS" != "unauthenticated" ]; then
+    echo "materialize-inference-key: Bitwarden CLI is logged into a different server" >&2
+    echo "run 'bw logout' yourself, then rerun this command; it will configure the active Axon Vaultwarden server" >&2
+    exit 1
+  fi
+  bw config server "$DOMAIN" >/dev/null
+  echo "materialize-inference-key: active Axon Vaultwarden server configured; run 'bw login' yourself, then rerun" >&2
+  exit 1
+fi
+
+LOCKED_BY_US=0
+BW_SESSION="${BW_SESSION:-}"
+case "$VAULT_STATUS" in
+  unauthenticated)
+    echo "materialize-inference-key: run 'bw login' yourself first" >&2
+    exit 1
+    ;;
+  locked)
+    echo "Vault is locked — enter your master password for this run only:"
+    BW_SESSION="$(bw unlock --raw)" || {
+      echo "materialize-inference-key: unlock failed" >&2
+      exit 1
+    }
+    export BW_SESSION
+    LOCKED_BY_US=1
+    ;;
+  unlocked)
+    [ -n "$BW_SESSION" ] || {
+      echo "materialize-inference-key: export a current BW_SESSION and retry" >&2
+      exit 1
+    }
+    ;;
+  *)
+    echo "materialize-inference-key: unexpected vault status" >&2
+    exit 1
+    ;;
+esac
+
+TARGET_DIR="$PRIVATE_ROOT/config/runtime-secrets"
+TARGET="$TARGET_DIR/$ITEM"
+TMP="$TARGET.tmp.$$"
+cleanup() {
+  [ -f "$TMP" ] && rm -f "$TMP"
+  [ "$LOCKED_BY_US" = 1 ] && bw lock >/dev/null 2>&1 || true
+  unset BW_SESSION
+}
+trap cleanup EXIT
+
+bw sync --session "$BW_SESSION" >/dev/null
+FOLDER_ID="$(bw list folders --session "$BW_SESSION" --nointeraction \
+  | jq -r '.[] | select(.name=="Axon") | .id' | head -1)"
+[ -n "$FOLDER_ID" ] || {
+  echo "materialize-inference-key: Vaultwarden folder 'Axon' is missing" >&2
+  exit 1
+}
+ITEM_ID="$(bw list items --folderid "$FOLDER_ID" --session "$BW_SESSION" --nointeraction \
+  | jq -r --arg name "$ITEM" '.[] | select(.name==$name) | .id' | head -1)"
+[ -n "$ITEM_ID" ] || {
+  echo "materialize-inference-key: Secure Note '$ITEM' is missing from folder 'Axon'" >&2
+  exit 1
+}
+ITEM_TYPE="$(bw get item "$ITEM_ID" --session "$BW_SESSION" --nointeraction | jq -r '.type')"
+[ "$ITEM_TYPE" = 2 ] || {
+  echo "materialize-inference-key: '$ITEM' must be a Secure Note" >&2
+  exit 1
+}
+
+if [ -f "$TARGET" ]; then
+  read -r -p "Replace the existing local $PROVIDER key file? [y/N]: " CONFIRM
+  case "$CONFIRM" in
+    [Yy]*) ;;
+    *) echo "cancelled, nothing written"; exit 0 ;;
+  esac
+fi
+
+mkdir -p "$TARGET_DIR"
+bw get notes "$ITEM_ID" --session "$BW_SESSION" --nointeraction > "$TMP"
+grep -q '[^[:space:]]' "$TMP" || {
+  echo "materialize-inference-key: '$ITEM' has an empty Notes field" >&2
+  exit 1
+}
+chmod 600 "$TMP"
+mv "$TMP" "$TARGET"
+
+echo "done — $PROVIDER credential materialized for local Axon runtime use"
+echo "restart Comms before testing provider availability"

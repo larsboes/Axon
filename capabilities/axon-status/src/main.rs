@@ -185,6 +185,30 @@ static UPSTREAMS_CACHE: OnceLock<Mutex<Option<(Instant, Value)>>> = OnceLock::ne
 /// Two concurrent misses may both run the script. That is left alone deliberately: the
 /// script is a pure read, running it twice costs one extra fork, and avoiding it would
 /// mean holding a lock across an await for no correctness gain.
+/// What this capability answers, served as data beside `/health`.
+/// Required query parameters are named in the summary: a path alone cannot tell
+/// a caller what it must send, and learning that from a 400 is the thing this
+/// endpoint exists to avoid.
+const ROUTES: &[route_manifest::Route] = &[
+    r("GET", "/health", "Liveness."),
+    r("GET", "/routes", "This manifest."),
+    r("GET", "/api/axon-status/health", "Aggregate health across enabled capabilities."),
+    r("GET", "/api/axon-status/routes", "Every enabled capability's route manifest, in one map."),
+    r("GET", "/api/axon-status/capabilities", "Enabled capabilities, their ports and whether each is up."),
+    r("GET", "/api/axon-status/self", "This machine's resolved Axon model."),
+    r("GET", "/api/axon-status/repos", "Axon and overlay repo state."),
+    r("GET", "/api/axon-status/upstreams", "Declared upstreams and their pins."),
+];
+
+/// Shorthand so the table above reads as a table.
+const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
+    route_manifest::Route { method, path, summary }
+}
+
+async fn routes() -> axum::Json<serde_json::Value> {
+    axum::Json(route_manifest::manifest("axon-status", ROUTES))
+}
+
 async fn registry() -> Result<Vec<Service>, String> {
     let root = axon_root()?;
     let key = manifest_key(&root);
@@ -414,6 +438,51 @@ async fn capabilities_handler() -> Result<Json<Vec<CapabilityView>>, (StatusCode
     Ok(Json(views))
 }
 
+/// Every enabled capability's route manifest, in one map.
+///
+/// The single "what can I call" endpoint. Each capability reports its own paths,
+/// so this stays correct across the five different URL conventions in use
+/// without anyone having to remember which capability follows which — and it
+/// keeps working unchanged if those conventions later converge.
+///
+/// A capability that is down, or too old to serve `/routes`, is reported with
+/// its reason rather than omitted. Silently returning a shorter list would read
+/// as "that capability has no endpoints", which is the one wrong answer here.
+async fn routes_handler() -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let services = registry().await.map_err(bad_gateway)?;
+    let client = reqwest::Client::new();
+
+    let mut capabilities = Vec::with_capacity(services.len());
+    for service in services {
+        if service.port.is_empty() {
+            continue;
+        }
+        let url = format!("http://127.0.0.1:{}/routes", service.port);
+        let manifest = client
+            .get(&url)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+            .ok()
+            .filter(|response| response.status().is_success());
+        let entry = match manifest {
+            Some(response) => match response.json::<Value>().await {
+                Ok(body) => json!({ "name": service.name, "routes": body["routes"] }),
+                Err(error) => json!({
+                    "name": service.name,
+                    "unavailable": format!("served /routes but the body did not parse: {error}"),
+                }),
+            },
+            None => json!({
+                "name": service.name,
+                "unavailable": "not running, or does not serve /routes",
+            }),
+        };
+        capabilities.push(entry);
+    }
+    Ok(Json(json!({ "capabilities": capabilities })))
+}
+
 /// Start or stop one capability on demand — the click-to-open half of the dashboard.
 ///
 /// The only reachable names are the ones the registry already lists, so a request can
@@ -563,8 +632,10 @@ async fn main() {
     }
 
     let app = Router::new()
+        .route("/routes", get(routes))
         .route("/health", get(health_handler))
         .route("/api/axon-status/health", get(axon_status_health_handler))
+        .route("/api/axon-status/routes", get(routes_handler))
         .route("/api/axon-status/capabilities", get(capabilities_handler))
         .route("/api/axon-status/self", get(self_model_handler))
         .route("/api/axon-status/repos", get(repos_handler))
@@ -583,4 +654,22 @@ async fn main() {
     // CORS layer, unlike the data-serving siblings: a permissive header here would
     // let any website's JS drive start/stop from the operator's own browser.
     axon_server::serve_local("axon-status", port, app).await;
+}
+
+// The self-describing surface, on the same include terms as the other libs.
+#[path = "../../../libs/route-manifest/src/lib.rs"]
+#[allow(dead_code)]
+mod route_manifest;
+
+#[cfg(test)]
+mod route_manifest_tests {
+    /// A stale manifest is worse than none, because it gets believed. This reads
+    /// the router's own source, so adding a `.route()` without a summary fails
+    /// here rather than shipping a surface that lies about itself.
+    #[test]
+    fn the_manifest_covers_every_served_route() {
+        let missing =
+            super::route_manifest::undeclared_routes(include_str!("main.rs"), super::ROUTES);
+        assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
 }

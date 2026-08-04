@@ -252,11 +252,11 @@
   .text-button { padding: 0; border: 0; background: transparent; color: var(--primary); font: inherit; font-size: .78rem; cursor: pointer; text-decoration: underline; }
   .hint, .reason { margin: 7px 0 0; color: var(--text-secondary); font-size: .78rem; }
   .message { margin: 12px 0 0; padding: 8px 10px; border-radius: 7px; font-size: .84rem; }
-  .error { color: #be123c; background: #fff1f2; }
-  .success { color: #166534; background: #f0fdf4; }
+  .error { color: var(--danger); background-color: var(--danger-soft); }
+  .success { color: var(--success); background-color: var(--success-soft); }
   .summary { margin-top: 14px; flex-wrap: wrap; color: var(--text-secondary); font-size: .8rem; }
   .summary span { padding: 4px 7px; border-radius: 999px; background: var(--surface); }
-  .summary .warning { color: #92400e; background: #fef3c7; }
+  .summary .warning { color: var(--warning); background-color: var(--warning-soft); }
   .review-actions { margin: 14px 0 8px; flex-wrap: wrap; }
   .filters { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
   .search { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: .82rem; }
@@ -264,7 +264,7 @@
   .review-actions > div { display: flex; gap: 7px; flex-wrap: wrap; }
   .candidate-list { border-top: 1px solid var(--card-border); max-height: 32rem; overflow: auto; }
   .candidate { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px 3px; border-bottom: 1px solid var(--card-border); }
-  .candidate.duplicate { background: color-mix(in srgb, #f59e0b 8%, transparent); }
+  .candidate.duplicate { background: var(--warning-soft); }
   .candidate.muted { opacity: .7; }
   .select { padding-top: 2px; }
   .details { min-width: 0; }
@@ -272,10 +272,10 @@
   .details strong { font-size: .9rem; }
   .details p { margin: 3px 0 0; color: var(--text-secondary); font-size: .8rem; }
   .status, .recurring { padding: 2px 6px; border-radius: 999px; font-size: .7rem; background: var(--surface); color: var(--text-secondary); }
-  .status.importable { color: #166534; background: #dcfce7; }
-  .status.likely-duplicate { color: #92400e; background: #fef3c7; }
-  .status.invalid, .status.cancelled { color: #9f1239; background: #ffe4e6; }
-  .recurring { color: #3730a3; background: #e0e7ff; }
+  .status.importable { color: var(--success); background-color: var(--success-soft); }
+  .status.likely-duplicate { color: var(--warning); background-color: var(--warning-soft); }
+  .status.invalid, .status.cancelled { color: var(--danger); background-color: var(--danger-soft); }
+  .recurring { color: var(--primary); background-color: var(--primary-soft); }
   .candidate a { color: var(--primary); font-size: .78rem; white-space: nowrap; }
   .empty { color: var(--text-secondary); font-size: .86rem; padding: 16px 0; }
   @media (max-width: 640px) {

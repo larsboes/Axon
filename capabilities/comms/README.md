@@ -1,6 +1,6 @@
 # comms
 
-General observed-information intake for Axon, plus read-only mail triage. Its `feed_items`
+General observed-information intake for Axon, plus reviewed mail triage. Its `feed_items`
 store is intentionally source-agnostic. Security advisories and updates to systems or
 packages belong here. So do watched-repository changes, news, useful articles and opportunity
 signals such as scholarships, hackathons, calls for papers or events. The extractors
@@ -8,10 +8,12 @@ implemented today are the current ingestion set, not the boundary of that contra
 
 The capability currently has two ingestion paths:
 
-1. **Gmail-as-router (read-only triage).** Sweeps your inbox threads, classifies
+1. **Gmail-as-router (read-only sweep, explicit reviewed actions).** Sweeps your inbox threads, classifies
    each into a stream (`aktiv`, `issue`, `feed`, `werbung`, `belege`, `steuern`,
-   `sonstiges`) with a one-sentence rationale, and proposes triage. It never
-   changes anything in Gmail.
+   `sonstiges`) with a one-sentence rationale, and proposes triage. A sweep never
+   changes Gmail. Authenticated dashboard actions may archive one stored thread
+   or move it to Gmail Trash after a separate confirmation; permanent deletion,
+   sending and arbitrary label changes do not exist.
 2. **Share-link media ingest.** Turns a pasted URL into a feed item — metadata,
    an optional transcript, and an optional local-LLM summary — stored for a
    dashboard to read. Per-source extractors for YouTube/Instagram/podcast
@@ -26,6 +28,56 @@ The capability currently has two ingestion paths:
 Mirrors `capabilities/scouting`'s shape: a `comms` library plus two binaries
 (`comms` CLI, `comms-server` HTTP API), sync Postgres client, config resolved
 from the private overlay at runtime.
+
+### Mail classification today
+
+Mail triage is deterministic and local. It does not call an LLM, embedding
+model, or cloud AI service, and it does not produce an importance score. The
+classifier considers only the sender header, subject header, and whether a
+`List-Unsubscribe` header exists. The fetched snippet, Gmail labels, internal
+date, message body, and attachments do not affect the category.
+
+Rules use first-match-wins order: personal rules from the private overlay,
+then generic public heuristics, then the conservative `aktiv` fallback. Every
+proposal stores the rationale, method, and classifier revision. A category
+changed in the dashboard becomes a `human` override and later sweeps preserve
+it. Category ordering in the dashboard is an attention aid, not a hidden score.
+
+Every shared content item also carries one inspectable trust class. `public`
+(shown as **Public**) may use local processing and is eligible for configured
+cloud processing. `personal` (shown as **Personal**) stays local unless an
+explicitly reviewed, pseudonymized derivative is created. `vault` (shown as
+**Private**) keeps the original content local-only. Public Feed sources default
+to `public`; mail defaults to `personal`, while deterministic metadata rules
+elevate likely financial, health, authentication, or recovery mail to `vault`.
+The rules use sender, subject, and category only—never body or attachment
+content—and a dashboard override is stored as `human` and preserved by refreshes.
+
+Category and TELOS relevance are deliberately separate axes. An explicit
+relevance refresh compares the stored sender, subject and Gmail snippet with
+the configured TELOS lenses through the existing embedding/reranking pipeline.
+Only loopback inference endpoints are accepted for mail; if the local model is
+unavailable, the result is truthfully labelled `lexical`. Mail bodies and
+attachments are not fetched or scored. Raw relevance values are ranking
+signals, not calibrated probabilities, and neither scoring nor a human mail
+correction changes a TELOS source note.
+
+The dashboard presents proposed mail as a horizontally scrolling category
+board. Each column has a real stored-item count, its own select-all control and
+cards ranked by their strongest TELOS match when one exists. Inbox collection
+is cursor-paged in batches of at most 100 instead of being capped at the CLI's
+25-item default. The cursor is intentionally browser-session state: rescanning
+from the newest page is idempotent because proposal upserts preserve human
+decisions.
+
+The board is an index, not a second reader. Opening either a normal Feed entry
+or a mail proposal resolves the versioned
+[`content-item-v1`](../../schemas/content-item.schema.json) contract and uses
+the same dashboard reader. The contract owns canonical title, author, optional
+summary, source content, relevance, evaluation and provenance. Its nullable
+`mail` extension adds category and classification evidence; Gmail mutations
+remain separate authenticated actions. This adapter boundary lets collection
+tables evolve independently without duplicating content presentation.
 
 ## Relationship to scouting
 
@@ -187,19 +239,25 @@ After E5-base became the configured model, the first normal refresh semantically
 35 stored items; the immediate second non-forced refresh evaluated zero and skipped all 35 as
 revision-current.
 
-## Read-only-in-Phase-0 guarantee
+## Gmail mutation boundary
 
-In this build Gmail is **strictly read-only**. The only Google endpoints the
-code calls are:
+Every sweep is **strictly read-only**. The Google endpoints used by the sweep are:
 
 - OAuth token refresh — `POST https://oauth2.googleapis.com/token`
 - list inbox threads — `GET .../gmail/v1/users/me/threads?q=in:inbox`
 - thread metadata — `GET .../gmail/v1/users/me/threads/{id}` (`format=metadata`)
 
-There is no modify / trash / delete / labels / send call anywhere in the code —
-not behind a flag. `comms sweep --dry-run` and `comms sweep` are equally
-read-only against Gmail; `--dry-run` only controls whether proposals are written
-to the local store.
+`comms sweep --dry-run` and `comms sweep` are equally read-only against Gmail;
+`--dry-run` only controls whether proposals are written to the local store.
+
+Two writes exist only behind the authenticated Comms mutation router and only
+for a thread already present in the local proposal store:
+
+- Archive removes the `INBOX` label through `POST .../threads/{id}/modify`.
+- Move to Trash calls `POST .../threads/{id}/trash`; it does not permanently delete.
+
+The dashboard requires a second confirmation for either Gmail write. Dismissing
+a proposal in Axon changes only local state and is labelled accordingly.
 
 ## Commands
 
@@ -272,6 +330,38 @@ contract consumed by a dashboard panel:
 - `GET /feed?stream=&days=&include_dismissed=` → feed items (no `transcript`)
 - `GET /feed/:id` → one reader item incl. `transcript`, every stored TELOS relevance match,
   the factorized evaluation and Vault provenance
+- `GET /content/:source/:id` where source is `feed` or `mail` → the shared versioned
+  content reader contract. Mail currently supplies Gmail's bounded snippet as `content` and
+  leaves `summary` null; it does not imply that a preview is a generated summary.
+- `POST /content/:source/:id/cloud-preview` → builds a bounded local preview. Public content
+  is copied as-is; Personal and Private content receives local deterministic entity redaction
+  for recognized people after salutations, addresses, links, phone/account numbers and
+  token-like secrets. The response lists the recognized entity types, names the limitations,
+  and always reports zero provider calls. A Private preview is inspectable local evidence only;
+  it cannot be approved, queued or dispatched to cloud processing.
+- `POST /content/:source/:id/cloud-approval` `{"preview_hash":"..."}` → regenerates the
+  current preview, rejects a stale hash, and stages the exact reviewed derivative locally.
+  It does not select or contact a cloud provider.
+- `GET /content/cloud-providers` → lists only explicit `cloud_*` inference roles backed by
+  non-loopback HTTPS endpoints with a reviewed provider name, data tier and billing boundary.
+  It exposes safe role/model/policy metadata, daily usage/remaining calls and an availability
+  reason, never the endpoint, account ID, key-file path or key value.
+- `POST /content/:source/:id/cloud-queue`
+  `{"preview_hash":"...","provider_role":"cloud_summarization"}` → validates the exact
+  derivative against the role's reviewed data tier and materialized credential, then idempotently
+  records a queue job. Queueing is local and performs zero provider calls.
+- `POST /content/cloud-jobs/:job_id/run` → explicitly sends only the staged, hash-approved
+  derivative to the selected role first, then only to configured same-tier fallbacks in stable
+  priority order. It runs the fixed
+  `content-analysis-v1` task, validates and bounds the structured response, and persists the
+  result or a safe retryable error. Credentials, credit expiry, input-token upper bound and the
+  UTC daily request ceiling are revalidated immediately before every attempt. A policy-disabled
+  role causes zero provider requests. Every actual request records role, model, exact approved
+  derivative hash and bounded error/result provenance. Jobs never run automatically and stop
+  after five total provider calls. The original content is not loaded into the dispatch path.
+  A completed result still performs no Calendar write: each resolved date or dated action has a
+  separate reader action that creates or refreshes one non-blocking Calendar proposal through
+  Calendar's external-entry contract.
 - `GET /feed/evaluation/status` → configured local model names, cheap endpoint reachability,
   TELOS profile count, active semantic/lexical mode and persisted ledger counts; no secret or
   API-key value is returned
@@ -295,6 +385,33 @@ contract consumed by a dashboard panel:
   collector; `{"source_id":null}` scans all. Returns per-source fetched/new/known counts and
   enriches only revision-stale items behind the response.
 - `GET /triage?status=proposed` → triage items
+- `POST /triage/sweep` `{"limit":100,"cursor":null}` → fetches one read-only inbox page,
+  stores new proposals, and returns the opaque cursor for the next page
+- `POST /triage/relevance/refresh` `{"limit":200}` → scores stored pending mail against
+  TELOS through loopback-only local inference or the labelled lexical fallback; TELOS is read-only
+- `POST /triage/data-class/refresh` `{"limit":500}` → locally classifies stored pending mail
+  from sender, subject and category only; no provider is called and human overrides are preserved
+- `POST /triage/bulk` applies one reviewed action to at most 100 stored proposals and reports
+  per-item failures. `categorize` uses `stream`, `set-data-class` uses `data_class`, and
+  `dismiss`, `archive`, or `trash` need only the selected `ids`.
+- `POST /triage/:id/status` `{"status":"proposed"|"approved"|"dismissed"}`
+  → local proposal state only; Gmail lifecycle states cannot be forged through this route
+- `POST /triage/:id/stream` `{"stream":"aktiv"|"issue"|"feed"|"werbung"|"belege"|"steuern"|"sonstiges"}`
+  → records a persistent human category override without resolving the proposal
+- `POST /triage/:id/data-class` `{"data_class":"public"|"personal"|"vault"}`
+  → records a persistent human trust-class override; the dashboard labels `vault` as **Private**
+- `POST /triage/:id/gmail` `{"action":"archive"|"trash"|"restore"}` → performs the
+  explicit action through a durable local intent. Replays first check Gmail's metadata labels,
+  so a process failure after Gmail success can finish locally without duplicating the mutation.
+  Trash retains its local copy for 30 days; restore returns either state to Inbox.
+- `POST /triage/:id/gmail-job` `{"decision":"retry"|"cancel"}` → explicitly reopens the
+  bounded retry window or cancels an action after five automatic failures. Queued work cannot be
+  canceled while it may be in flight.
+- `POST /triage/reconcile` → retries due Gmail intents and compares up to 200 stored threads with
+  Gmail metadata labels. It updates Axon Archive/Trash/Inbox state without fetching bodies or
+  attachments. Gmail 404/410 becomes an explicit Missing state that retains Axon's local record;
+  a Trash cleanup deadline remains active. The server runs the same bounded maintenance on its
+  configured interval.
 - `GET /health`
 
 Binds `127.0.0.1`, not `0.0.0.0`: `/ingest` makes the server fetch a URL on
@@ -314,6 +431,7 @@ Every field is optional; the tool runs zero-config against the shared local
 Postgres with only the built-in classification heuristics. Fields:
 `database_url` (unset → built from `axon-overlay/config/postgres.env`),
 `google_env_path` (default `$AXON_PERSONAL_ROOT/config/comms.env`), `port`,
+`gmail_maintenance_minutes` (default `15`; `0` disables the automatic pass),
 `relevance {profile_paths}`. Model roles come from the overlay's shared
 `inference.json`; see `libs/inference/inference.config.example.json`. The active producer revision
 includes both embedding and reranking roles, so a model change invalidates stale evaluations. A
@@ -342,7 +460,29 @@ the DB connection string is redacted before any display.
 
 - `triage_items` — one row per inbox thread: `id` (gmail thread id) PK,
   `from_addr`, `subject`, `snippet`, `internal_date`, `stream` (CHECK), `rationale`,
-  `status` (`proposed`/`approved`/`executed`/`dismissed`), `first_seen`, `last_seen`.
+  `status` (`proposed`/`approved`/`archived`/`trashed`/`missing`/`dismissed`; `executed` is retained
+  for legacy rows), `gmail_action`, `gmail_action_at`, `purge_after`, `first_seen`, `last_seen`,
+  observed Gmail location/time and durable sync state/error, plus trust-class value,
+  rationale, method and classifier revision. Human trust-class
+  overrides survive later rule refreshes.
+- `gmail_action_jobs` — content-free durable intent and bounded retry ledger for Archive, Trash,
+  and Restore. Only one queued action may exist per thread; five failed attempts move it to the
+  explicit attention state. An operator can retry that exact action or cancel it; canceled history
+  remains auditable without blocking a later action.
+- `triage_relevance` — additive per-thread/per-lens ranking rows containing the raw score,
+  rationale, truthful scoring mode, profile revision and scoring time. Replacing these rows
+  never changes the proposal category/status or its TELOS source.
+- `content_cloud_derivatives` — the latest explicitly approved bounded derivative per source
+  item, including source revision, preview hash, original/derivative class, transformation,
+  redaction count and approval time. It is local staging state.
+- `content_cloud_jobs` — idempotent provider intent and execution ledger for an exact approved
+  derivative. Jobs move through queued/running/succeeded/failed only after an explicit request,
+  count at most five provider calls, and retain a bounded structured result or safe error. No
+  background worker sends queued content automatically.
+- `content_cloud_attempts` — one immutable-identity row per actual provider request, including
+  sequence, role, model and approved derivative hash plus bounded result/error provenance. It is
+  also the local UTC-day usage ledger; candidates rejected by credentials, expiry or ceilings
+  create no row because they made no provider request.
 - `feed_items` — one row per ingested URL: `id` (sha256 of canonical URL) PK,
   `stream` (`news`/`media`), `kind` (`youtube`/`instagram`/`podcast`/`article`/
   `mail`/`github`/`arxiv`/`reddit`), `title`, `url`, `author`, `summary`,

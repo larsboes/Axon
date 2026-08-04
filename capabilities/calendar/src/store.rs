@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use postgres::{Client, NoTls, Row};
 use serde_json::Value;
 
+use crate::correlate;
 use crate::date;
 use crate::google;
 use crate::model::{
@@ -235,7 +236,33 @@ impl CalendarStore {
             ),
             &[&to_boundary, &from_boundary, &"possible", &google::SOURCE],
         )?;
-        rows.iter().map(entry_from_row).collect()
+        let proposals: Vec<Entry> = rows
+            .iter()
+            .map(entry_from_row)
+            .collect::<StoreResult<_>>()?;
+        if proposals.is_empty() {
+            return Ok(proposals);
+        }
+
+        // Anything the operator has already decided on, whatever key it came in
+        // under. `(source, external_id)` only dedupes a source against itself,
+        // so this is the one check that can tell the inbox an event is already
+        // in the calendar. The window is the caller's: a twin that overlaps a
+        // proposal *outside* the requested range is not read, which costs a
+        // suppression only for a proposal the window already cuts in half.
+        let adopted = conn.query(
+            &format!(
+                "SELECT * FROM {schema}.entries \
+                 WHERE starts_at < $1 AND ends_at > $2 AND commitment <> $3",
+                schema = self.schema
+            ),
+            &[&to_boundary, &from_boundary, &"possible"],
+        )?;
+        let adopted: Vec<Entry> = adopted
+            .iter()
+            .map(entry_from_row)
+            .collect::<StoreResult<_>>()?;
+        Ok(correlate::without_already_adopted(proposals, &adopted)?)
     }
 
     /// The entry a provider contributed under this key, if any. Phase E's
@@ -499,11 +526,7 @@ impl CalendarStore {
         Ok(context)
     }
 
-    pub fn update_context(
-        &self,
-        id: &str,
-        patch: &UpdateContext,
-    ) -> StoreResult<Option<Context>> {
+    pub fn update_context(&self, id: &str, patch: &UpdateContext) -> StoreResult<Option<Context>> {
         let mut context = match self.get_context(id)? {
             Some(context) => context,
             None => return Ok(None),

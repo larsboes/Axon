@@ -1,10 +1,45 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import EvaluationBreakdown from "$lib/feed/EvaluationBreakdown.svelte";
+  import {
+    loadFeedEntry,
+    normalizeContentItemDetail,
+    type FeedEntryLoadPhase,
+  } from "$lib/feed/entry-loader";
   import MarkdownDocument from "$lib/feed/MarkdownDocument.svelte";
+  import {
+    KINDS,
+    whenError,
+    whenOf,
+    whenPatch,
+    type EntryWhen,
+  } from "$lib/calendar/types";
+  import {
+    cloudCalendarCandidates,
+    type CloudCalendarCandidate,
+  } from "$lib/feed/cloud-calendar";
   import Icon from "$lib/Icon.svelte";
-  import { axonStatus, comms, type FeedEntryDetail, type FeedStatus } from "$lib/api";
+  import {
+    ApiError,
+    axonStatus,
+    calendar,
+    comms,
+    contentItem,
+    type CloudDerivativePreview,
+    type CloudProvider,
+    type CalendarCommitment,
+    type CalendarContentExtension,
+    type CalendarUpdateEntry,
+    type ContentItemDetail,
+    type ContentSource,
+    type DataClass,
+    type FeedStatus,
+    type MailCategory,
+  } from "$lib/api";
+
+  type GmailAction = "archive" | "trash" | "restore";
 
   const KIND_LABEL: Record<string, string> = {
     youtube: "YouTube",
@@ -17,26 +52,85 @@
     reddit: "Reddit",
   };
 
-  let entry = $state<FeedEntryDetail | null>(null);
+  let entry = $state<ContentItemDetail | null>(null);
   let loading = $state(true);
+  let loadingMessage = $state("Loading entry…");
   let error = $state<string | null>(null);
   let busy = $state(false);
+  let mailCategory = $state<MailCategory>("aktiv");
+  let selectedDataClass = $state<DataClass>("personal");
+  let confirmingGmailAction = $state<GmailAction | null>(null);
+  let cloudPreview = $state<CloudDerivativePreview | null>(null);
+  let preparingCloudPreview = $state(false);
+  let approvingCloudPreview = $state(false);
+  let cloudPreviewError = $state<string | null>(null);
+  let cloudProviders = $state<CloudProvider[]>([]);
+  let selectedProviderRole = $state("");
+  let providerListLoaded = $state(false);
+  let queueingCloudDerivative = $state(false);
+  let runningCloudJob = $state(false);
+  let calendarProposalBusy = $state<string | null>(null);
+  let calendarProposalSaved = $state<Set<string>>(new Set());
+  let calendarProposalError = $state<string | null>(null);
+  let savingField = $state(false);
+  /// Local drafts so a field shows what is being typed rather than snapping
+  /// back to the stored value on every keystroke. Reset whenever the entry
+  /// reloads, so an edit made elsewhere is not silently overwritten by a stale
+  /// buffer sitting in this tab.
+  let titleDraft = $state("");
+  let locationDraft = $state("");
+  let notesDraft = $state("");
+  let whenDraft = $state<EntryWhen>({
+    allDay: false,
+    startDate: "",
+    endDate: "",
+    startTime: "",
+    endTime: "",
+  });
+  /// Why the store would refuse this, shown next to the fields rather than as a
+  /// banner after a failed round trip.
+  let whenProblem = $state<string | null>(null);
+  let googleExported = $state(false);
+  let updatingExport = $state(false);
+  const gmailRecoveryPending = $derived(
+    entry?.mail?.gmail_sync_status === "queued" || entry?.mail?.gmail_sync_status === "retrying",
+  );
+  const gmailActionBlocked = $derived(
+    gmailRecoveryPending || entry?.mail?.gmail_sync_status === "attention",
+  );
+
+  const source = $derived<ContentSource>(
+    ((): ContentSource => {
+      const requested = page.url.searchParams.get("source");
+      return requested === "mail" || requested === "calendar" ? requested : "feed";
+    })(),
+  );
+  const BACK: Record<ContentSource, { href: string; label: string }> = {
+    feed: { href: "/feed", label: "Back to Feed" },
+    mail: { href: "/feed?view=mail", label: "Back to Mail" },
+    calendar: { href: "/calendar", label: "Back to Calendar" },
+  };
+  const backHref = $derived(BACK[source].href);
+  const backLabel = $derived(BACK[source].label);
+  const calendarCandidates = $derived(
+    entry?.cloud_processing.result && entry.cloud_processing.job_id
+      ? cloudCalendarCandidates({
+          source: entry.source,
+          itemId: entry.id,
+          jobId: entry.cloud_processing.job_id,
+          dataClass: entry.data_class.value,
+          result: entry.cloud_processing.result,
+        })
+      : [],
+  );
 
   const title = $derived(entry?.title ?? entry?.url ?? "Feed entry");
-  const bodyLabel = $derived(
-    entry?.kind === "github"
-      ? "README"
-      : entry?.kind === "arxiv"
-        ? "Abstract"
-        : entry?.kind === "youtube" || entry?.kind === "podcast"
-          ? "Transcript"
-          : "Article content",
-  );
+  const bodyLabel = $derived(entry?.content_label ?? "Source content");
   const readMinutes = $derived(
     Math.max(
       1,
       Math.ceil(
-        `${entry?.summary ?? ""} ${entry?.transcript ?? ""}`.trim().split(/\s+/).filter(Boolean)
+        `${entry?.summary ?? ""} ${entry?.content ?? ""}`.trim().split(/\s+/).filter(Boolean)
           .length / 220,
       ),
     ),
@@ -54,21 +148,258 @@
     ranking: "Ranking",
   };
 
-  onMount(() => {
-    void (async () => {
-      try {
-        await axonStatus.start("comms").catch(() => undefined);
-        entry = await comms.entry(page.params.id ?? "");
-      } catch (cause) {
-        error = cause instanceof Error ? cause.message : String(cause);
-      } finally {
-        loading = false;
+  /** Presentation hint only. An unknown kind falls back rather than dropping
+   *  the link — the contract keeps `kind` open for exactly that reason. */
+  // `as const` so the values stay literals Icon's own name union accepts —
+  // Icon does not export that type, and widening this to string would push the
+  // failure to runtime instead of the check.
+  const LINK_ICON = {
+    mail: "feed",
+    source: "external",
+    ticket: "ticket",
+    map: "map-pin",
+    vault: "boxes",
+  } as const;
+
+  function linkIcon(kind: string) {
+    return LINK_ICON[kind as keyof typeof LINK_ICON] ?? "external";
+  }
+
+  const SOURCE_LABEL: Record<ContentSource, string> = {
+    feed: "Feed",
+    mail: "Gmail",
+    calendar: "Calendar",
+  };
+
+  /** What was done to produce the body on screen. Calendar does none of it —
+   *  the note is the operator's own text, stored verbatim — and saying so is
+   *  more honest than borrowing feed's "Formatted source". */
+  function processingLabel(item: ContentItemDetail): string {
+    if (item.source === "calendar") return item.summary ? "Summary + your note" : "Your note";
+    if (item.summary) return "Summary + source";
+    return item.source === "mail" ? "Bounded preview" : "Formatted source";
+  }
+
+  const COMMITMENT_LABEL: Record<string, string> = {
+    possible: "On the radar",
+    planned: "Planned",
+    committed: "Committed",
+  };
+
+  /// Editing a calendar entry from the reader.
+  ///
+  /// Everything the calendar form edits except delete and the Google export
+  /// opt-in: what it is, when it happens, how binding it is, and the text.
+  /// The date rules are not reimplemented here — `whenOf`/`whenPatch`/`whenError`
+  /// in `calendar/types.ts` are the single implementation, and the form was
+  /// moved onto them at the same time so the two cannot drift apart.
+  async function patchEntry(patch: CalendarUpdateEntry): Promise<void> {
+    if (!entry || entry.source !== "calendar" || savingField) return;
+    savingField = true;
+    error = null;
+    try {
+      const updated = await calendar.entries.update(entry.id, patch);
+      // Re-derive from what the store actually returned, never from the patch:
+      // a PATCH detaches a rhythm-linked entry, and the response is the only
+      // place that shows up.
+      entry = {
+        ...entry,
+        kind: updated.kind,
+        title: updated.title,
+        status: updated.commitment,
+        content: updated.notes,
+        content_status: updated.notes ? "full" : "none",
+        calendar: {
+          starts_at: updated.starts_at,
+          ends_at: updated.ends_at,
+          all_day: updated.all_day,
+          commitment: updated.commitment,
+          location: updated.location,
+          notes: updated.notes,
+          entry_source: updated.source,
+          // From the response, never carried over: a patch detaches a
+          // rhythm-linked entry, and this is where that becomes visible.
+          rhythm_id: updated.rhythm_id,
+        },
+      };
+      // Re-seed from the stored values: toggling all-day rewrites both ends, and
+      // the fields have to show what was actually saved rather than what was typed.
+      whenDraft = whenOf(updated);
+      whenProblem = null;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      savingField = false;
+    }
+  }
+
+  /// Why exporting this entry to Google would be dishonest, if it would.
+  ///
+  /// Same two rules the calendar form applies — the reader can only enforce them
+  /// because the calendar extension carries `entry_source` and `rhythm_id`.
+  const exportBlocked = $derived.by(() => {
+    const extension = entry?.calendar;
+    if (!extension) return null;
+    if (extension.entry_source === "google") {
+      return "This entry came from Google and will not be exported back.";
+    }
+    if (extension.rhythm_id) {
+      return "Rhythm instances are not exported to Google individually.";
+    }
+    return null;
+  });
+
+  async function toggleGoogleExport(): Promise<void> {
+    if (!entry || exportBlocked || updatingExport) return;
+    const next = !googleExported;
+    updatingExport = true;
+    error = null;
+    try {
+      if (next) await calendar.google.optInExport(entry.id);
+      else await calendar.google.optOutExport(entry.id);
+      googleExported = next;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      updatingExport = false;
+    }
+  }
+
+  /// Deleting removes Axon's copy only. Any Google event this entry already
+  /// created is deliberately left alone — the capability's own opt-out route
+  /// makes the same call, and removing someone's calendar event as a side
+  /// effect of a delete here is not a decision this page makes.
+  async function deleteEntry(): Promise<void> {
+    if (!entry?.calendar) return;
+    if (!window.confirm(`Delete “${entry.title}” from Axon? Any Google event it created stays.`)) {
+      return;
+    }
+    savingField = true;
+    error = null;
+    try {
+      await calendar.entries.delete(entry.id);
+      await goto("/calendar");
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+      savingField = false;
+    }
+  }
+
+  /// Commits a date/time change through the same conversion the calendar form
+  /// uses (`whenPatch`), so the two surfaces cannot disagree about which day an
+  /// all-day entry ends on — the inclusive/exclusive mismatch is the one bug
+  /// worth centralising.
+  function commitWhen(next: Partial<EntryWhen>): void {
+    if (!entry?.calendar) return;
+    const merged: EntryWhen = { ...whenDraft, ...next };
+    whenDraft = merged;
+    whenProblem = whenError(merged);
+    if (whenProblem) return;
+    const patch = whenPatch(merged);
+    const current = entry.calendar;
+    if (
+      patch.starts_at === current.starts_at &&
+      patch.ends_at === current.ends_at &&
+      patch.all_day === current.all_day
+    ) {
+      return;
+    }
+    void patchEntry(patch);
+  }
+
+  /// Saves only when the value actually changed, so tabbing through a field
+  /// does not write a no-op revision.
+  function commitText(field: "title" | "location" | "notes", value: string): void {
+    if (!entry?.calendar) return;
+    const trimmed = value.trim();
+    const current =
+      field === "title" ? (entry.title ?? "") : (entry.calendar[field] ?? "");
+    if (trimmed === current.trim()) return;
+    if (field === "title") {
+      // The store rejects an empty title, so an emptied field reverts rather
+      // than sending a patch that is going to 400.
+      if (!trimmed) {
+        titleDraft = entry.title ?? "";
+        return;
       }
-    })();
+      void patchEntry({ title: trimmed });
+      return;
+    }
+    // Location and notes are genuinely nullable — clearing them means "none",
+    // not "unchanged", which is why UpdateEntry models them as present-nullable.
+    void patchEntry({ [field]: trimmed || null } as CalendarUpdateEntry);
+  }
+
+  function phaseMessage(phase: FeedEntryLoadPhase): string {
+    if (phase === "starting") return "Starting Feed…";
+    if (phase === "retrying") return "Opening entry…";
+    return "Loading entry…";
+  }
+
+  async function loadEntry(): Promise<void> {
+    loading = true;
+    error = null;
+    try {
+      entry = normalizeContentItemDetail(await loadFeedEntry({
+        id: page.params.id ?? "",
+        // One contract and one route shape, so the reader resolves an item from
+        // its source alone — no per-capability branch here at all.
+        read: (id, signal) => contentItem(source, id, signal),
+        start: (signal) => axonStatus.start(source === "calendar" ? "calendar" : "comms", signal),
+        shouldRetry: (cause) => !(cause instanceof ApiError && cause.status === 404),
+        onPhase: (phase) => { loadingMessage = phaseMessage(phase); },
+      }));
+      if (entry.mail) mailCategory = entry.mail.category;
+      selectedDataClass = entry.data_class.value;
+      titleDraft = entry.title ?? "";
+      locationDraft = entry.calendar?.location ?? "";
+      notesDraft = entry.calendar?.notes ?? "";
+      if (entry.calendar) {
+        whenDraft = whenOf(entry.calendar);
+        void loadGoogleExportState(entry.id);
+      }
+      whenProblem = null;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      loading = false;
+    }
+  }
+
+  /// The opt-in ledger is the source of truth for whether this entry exports;
+  /// the entry itself does not carry the flag. A failure here leaves the toggle
+  /// off rather than surfacing an error — not knowing is not the same as
+  /// something being wrong, and the export page reports ledger problems.
+  async function loadGoogleExportState(entryId: string): Promise<void> {
+    try {
+      const optIns = await calendar.google.exports();
+      googleExported = optIns.some((optIn) => optIn.entry_id === entryId);
+    } catch {
+      googleExported = false;
+    }
+  }
+
+  async function loadCloudProviders(): Promise<void> {
+    try {
+      cloudProviders = await comms.cloudProviders();
+      const queuedRole = entry?.cloud_processing.provider_role;
+      selectedProviderRole = cloudProviders.some((provider) => provider.role === queuedRole)
+        ? queuedRole ?? ""
+        : cloudProviders.find((provider) => provider.available)?.role ?? "";
+    } catch (cause) {
+      cloudPreviewError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      providerListLoaded = true;
+    }
+  }
+
+  onMount(() => {
+    void loadEntry();
+    void loadCloudProviders();
   });
 
   async function setStatus(status: FeedStatus): Promise<void> {
-    if (!entry || busy) return;
+    if (!entry || entry.source !== "feed" || busy) return;
     busy = true;
     try {
       await comms.setStatus(entry.id, status);
@@ -79,58 +410,503 @@
       busy = false;
     }
   }
+
+  async function setMailCategory(category: MailCategory): Promise<void> {
+    if (!entry?.mail || entry.source !== "mail" || busy || category === entry.mail.category) return;
+    busy = true;
+    error = null;
+    try {
+      await comms.setTriageCategory(entry.id, category);
+      entry.mail.category = category;
+      entry.mail.rationale = "Category set manually in Axon.";
+      entry.mail.classification_method = "human";
+      entry.mail.classification_version = "manual-v1";
+    } catch (cause) {
+      mailCategory = entry.mail.category;
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function setMailStatus(status: "proposed" | "approved" | "dismissed"): Promise<void> {
+    if (!entry?.mail || entry.source !== "mail" || busy) return;
+    busy = true;
+    error = null;
+    try {
+      await comms.setTriageStatus(entry.id, status);
+      entry.status = status;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function setDataClass(dataClass: DataClass): Promise<void> {
+    if (!entry?.mail || entry.source !== "mail" || busy || dataClass === entry.data_class.value) return;
+    busy = true;
+    error = null;
+    try {
+      const id = entry.id;
+      await comms.setTriageDataClass(id, dataClass);
+      entry = normalizeContentItemDetail(await comms.content("mail", id));
+      selectedDataClass = entry.data_class.value;
+    } catch (cause) {
+      selectedDataClass = entry.data_class.value;
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function applyGmailAction(action: GmailAction): Promise<void> {
+    if (!entry?.mail || entry.source !== "mail" || busy) return;
+    const id = entry.id;
+    busy = true;
+    error = null;
+    try {
+      await comms.applyGmailAction(id, action);
+      entry = normalizeContentItemDetail(await comms.content("mail", id));
+      mailCategory = entry.mail?.category ?? mailCategory;
+      confirmingGmailAction = null;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+      try {
+        entry = normalizeContentItemDetail(await comms.content("mail", id));
+      } catch {
+        error = `${error} Axon could not refresh the queued recovery state.`;
+      }
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function decideGmailJob(decision: "retry" | "cancel"): Promise<void> {
+    if (!entry?.mail || entry.source !== "mail" || busy) return;
+    const id = entry.id;
+    busy = true;
+    error = null;
+    try {
+      await comms.decideGmailJob(id, decision);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      try {
+        entry = normalizeContentItemDetail(await comms.content("mail", id));
+        mailCategory = entry.mail?.category ?? mailCategory;
+      } catch {
+        error = error ? `${error} Axon could not refresh the recovery state.` : "Axon could not refresh the recovery state.";
+      }
+      busy = false;
+    }
+  }
+
+  function dataClassLabel(value: DataClass | "personal" | "public"): string {
+    if (value === "vault") return "Private";
+    return value === "personal" ? "Personal" : "Public";
+  }
+
+  function lifecycleDate(value: string | null): string {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? "—"
+      : new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(date);
+  }
+
+  async function prepareCloudPreview(): Promise<void> {
+    if (!entry || preparingCloudPreview || approvingCloudPreview) return;
+    preparingCloudPreview = true;
+    cloudPreviewError = null;
+    try {
+      cloudPreview = await comms.prepareCloudPreview(entry.source, entry.id);
+    } catch (cause) {
+      cloudPreviewError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      preparingCloudPreview = false;
+    }
+  }
+
+  async function approveCloudPreview(): Promise<void> {
+    if (!entry || !cloudPreview || approvingCloudPreview) return;
+    approvingCloudPreview = true;
+    cloudPreviewError = null;
+    try {
+      entry.cloud_processing = await comms.approveCloudPreview(
+        entry.source,
+        entry.id,
+        cloudPreview.preview_hash,
+      );
+      cloudPreview = null;
+    } catch (cause) {
+      cloudPreviewError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      approvingCloudPreview = false;
+    }
+  }
+
+  async function queueCloudDerivative(): Promise<void> {
+    if (
+      !entry?.cloud_processing.preview_hash ||
+      !selectedProviderRole ||
+      queueingCloudDerivative
+    ) return;
+    queueingCloudDerivative = true;
+    cloudPreviewError = null;
+    try {
+      entry.cloud_processing = await comms.queueCloudDerivative(
+        entry.source,
+        entry.id,
+        entry.cloud_processing.preview_hash,
+        selectedProviderRole,
+      );
+    } catch (cause) {
+      cloudPreviewError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      queueingCloudDerivative = false;
+    }
+  }
+
+  function cloudDispatchLabel(status: ContentItemDetail["cloud_processing"]["dispatch_status"]): string {
+    if (status === "queued") return "Ready to run";
+    if (status === "running") return "Running";
+    if (status === "succeeded") return "Completed";
+    if (status === "failed") return "Needs attention";
+    return entry?.cloud_processing.status === "staged" ? "Staged locally" : "Not prepared";
+  }
+
+  async function runCloudJob(): Promise<void> {
+    const jobId = entry?.cloud_processing.job_id;
+    if (!entry || !jobId || runningCloudJob) return;
+    const source = entry.source;
+    const itemId = entry.id;
+    runningCloudJob = true;
+    cloudPreviewError = null;
+    try {
+      entry.cloud_processing = await comms.runCloudJob(jobId);
+    } catch (cause) {
+      cloudPreviewError = cause instanceof Error ? cause.message : String(cause);
+      try {
+        entry = normalizeContentItemDetail(await comms.content(source, itemId));
+      } catch {
+        cloudPreviewError = `${cloudPreviewError} Axon could not refresh the job state.`;
+      }
+    } finally {
+      runningCloudJob = false;
+    }
+  }
+
+  async function proposeToCalendar(candidate: CloudCalendarCandidate): Promise<void> {
+    if (calendarProposalBusy) return;
+    calendarProposalBusy = candidate.key;
+    calendarProposalError = null;
+    try {
+      await calendar.entries.upsertExternal(candidate.entry);
+      calendarProposalSaved = new Set([...calendarProposalSaved, candidate.key]);
+    } catch (cause) {
+      calendarProposalError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      calendarProposalBusy = null;
+    }
+  }
 </script>
 
 <svelte:head>
   <title>{title} · Axon Feed</title>
 </svelte:head>
 
-<a class="back" href="/feed">← Back to Feed</a>
+<a class="back" href={backHref}>← {backLabel}</a>
 
 {#if loading}
-  <p class="state" aria-live="polite"><Icon name="loader" size={14} /> Loading entry…</p>
+  <p class="state" aria-live="polite"><Icon name="loader" size={14} /> {loadingMessage}</p>
 {:else if error && !entry}
-  <p class="state error" aria-live="polite">{error}</p>
+  <div class="state error" role="alert">
+    <span>{error}</span>
+    <button class="btn" type="button" onclick={() => void loadEntry()}>Try again</button>
+  </div>
 {:else if entry}
   <article>
-    <header class="article-head">
+    <div class="reader-grid">
+      <main class="reader">
+        <header class="article-head">
       <div class="overline">
         <span class="tag mono">{KIND_LABEL[entry.kind] ?? entry.kind}</span>
         <span>{new Date(entry.created_at).toLocaleDateString("en-GB")}</span>
-        <span>{readMinutes} min read</span>
+        {#if entry.source !== "calendar"}
+          <span>{readMinutes} min read</span>
+        {/if}
       </div>
-      <h1>{title}</h1>
+      {#if entry.calendar}
+        <!-- Looks like the heading until you focus it. A calendar entry is
+             yours to rename; a feed article's title belongs to its publisher,
+             which is why only this branch is editable. -->
+        <input
+          class="title-edit"
+          aria-label="Entry title"
+          bind:value={titleDraft}
+          disabled={savingField}
+          onblur={() => commitText("title", titleDraft)}
+          onkeydown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
+            if (event.key === "Escape") titleDraft = entry?.title ?? "";
+          }}
+        />
+      {:else}
+        <h1>{title}</h1>
+      {/if}
       {#if entry.author}<p class="byline">{entry.author}</p>{/if}
-      <div class="actions">
-        <a class="btn btn-primary" href={entry.url} target="_blank" rel="noreferrer">
-          Open original <Icon name="external" size={13} />
-        </a>
-        <button
-          class="btn"
-          class:kept={entry.status === "keeper"}
-          disabled={busy}
-          onclick={() => setStatus(entry?.status === "keeper" ? "new" : "keeper")}
-        >
-          <Icon name="check" size={13} />
-          {entry.status === "keeper" ? "Remove from saved" : "Keep"}
-        </button>
-        <button class="btn" disabled={busy} onclick={() => setStatus("dismissed")}>
-          <Icon name="close" size={13} /> Dismiss
-        </button>
-      </div>
-      {#if error}<p class="inline-error" aria-live="polite">{error}</p>{/if}
-    </header>
 
-    <div class="reader-grid">
-      <div class="reader">
+      <!-- When it happens and how binding it is — the two facts a calendar
+           item leads with, where a feed article leads with its byline. -->
+      {#if entry.calendar}
+        <p class="when">
+          <Icon name="calendar" size={14} />
+          <!-- Native date/time inputs, so the OS picker and keyboard entry both
+               work; the exclusive-end and all-day rules stay in whenPatch. -->
+          <span class="when-fields">
+            <input
+              type="date"
+              aria-label="Start date"
+              value={whenDraft.startDate}
+              disabled={savingField}
+              onchange={(event) => commitWhen({ startDate: event.currentTarget.value })}
+            />
+            {#if !whenDraft.allDay}
+              <input
+                type="time"
+                aria-label="Start time"
+                value={whenDraft.startTime}
+                disabled={savingField}
+                onchange={(event) => commitWhen({ startTime: event.currentTarget.value })}
+              />
+            {/if}
+            <span class="dash">–</span>
+            {#if !whenDraft.allDay}
+              <input
+                type="time"
+                aria-label="End time"
+                value={whenDraft.endTime}
+                disabled={savingField}
+                onchange={(event) => commitWhen({ endTime: event.currentTarget.value })}
+              />
+            {/if}
+            <!-- The end date is inclusive here, as in the form: an all-day entry
+                 ending on the 16th covers the 15th, and showing the stored
+                 exclusive value would report a day you are not busy. -->
+            <input
+              type="date"
+              aria-label="End date (inclusive)"
+              value={whenDraft.endDate}
+              disabled={savingField}
+              onchange={(event) => commitWhen({ endDate: event.currentTarget.value })}
+            />
+            <label class="all-day">
+              <input
+                type="checkbox"
+                checked={whenDraft.allDay}
+                disabled={savingField}
+                onchange={(event) => commitWhen({ allDay: event.currentTarget.checked })}
+              />
+              All day
+            </label>
+          </span>
+          <!-- The triage axis, and the calendar analogue of feed's Keep /
+               Dismiss: the one decision worth making without leaving the page. -->
+          <span class="commitment-set" role="group" aria-label="Commitment">
+            {#each ["possible", "planned", "committed"] as level (level)}
+              <button
+                type="button"
+                class="commitment commitment-{level}"
+                class:chosen={entry.calendar.commitment === level}
+                disabled={savingField}
+                onclick={() => patchEntry({ commitment: level as CalendarCommitment })}
+              >
+                {COMMITMENT_LABEL[level]}
+              </button>
+            {/each}
+          </span>
+        </p>
+        <!-- Its own row: a full street address does not fit beside four date
+             controls and a commitment switch, and clipping the venue is worse
+             than one more line. -->
+        <p class="where-row">
+          <Icon name="map-pin" size={14} />
+          <input
+            class="where-edit"
+            aria-label="Location"
+            placeholder="Add a location"
+            bind:value={locationDraft}
+            disabled={savingField}
+            onblur={() => commitText("location", locationDraft)}
+            onkeydown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") locationDraft = entry?.calendar?.location ?? "";
+            }}
+          />
+        </p>
+        {#if whenProblem}
+          <p class="when-problem" role="alert">{whenProblem}</p>
+        {/if}
+        {#if exportBlocked}
+          <p class="export-note">{exportBlocked}</p>
+        {/if}
+      {/if}
+
+      <div class="actions">
+        {#if entry.source === "mail" && entry.status === "missing"}
+          <span class="btn missing-source" aria-disabled="true">No longer in Gmail</span>
+        {:else if entry.source === "calendar"}
+          <!-- Not target="_blank": a calendar item's url is a path inside this
+               same dashboard, so opening a second tab would be wrong. `url`
+               carries the ?entry= that makes the calendar open its edit form,
+               so this is the way back to changing the entry now that clicking a
+               card reads it instead. -->
+          <a class="btn btn-primary" href={entry.url}>
+            Open in Calendar <Icon name="arrow-right" size={13} />
+          </a>
+          <!-- Opting in only queues the entry; the export itself is a separate,
+               explicit run on the Calendar page. Saying "approve" rather than
+               "export" keeps that distinction visible. -->
+          <button
+            class="btn"
+            class:kept={googleExported}
+            type="button"
+            disabled={updatingExport || savingField || Boolean(exportBlocked)}
+            title={exportBlocked ?? "Approve this entry for the next Google export run"}
+            onclick={() => void toggleGoogleExport()}
+          >
+            {#if updatingExport}
+              <Icon name="loader" size={13} />
+            {:else}
+              {googleExported ? "Approved for Google" : "Approve for Google"}
+            {/if}
+          </button>
+          <button
+            class="btn danger"
+            type="button"
+            disabled={savingField}
+            onclick={() => void deleteEntry()}
+          >
+            Delete
+          </button>
+        {:else}
+          <a class="btn btn-primary" href={entry.url} target="_blank" rel="noreferrer">
+            {entry.source === "mail" ? "Open in Gmail" : "Open original"} <Icon name="external" size={13} />
+          </a>
+        {/if}
+        {#if entry.source === "feed"}
+          <button
+            class="btn"
+            class:kept={entry.status === "keeper"}
+            disabled={busy}
+            onclick={() => setStatus(entry?.status === "keeper" ? "new" : "keeper")}
+          >
+            <Icon name="check" size={13} />
+            {entry.status === "keeper" ? "Remove from saved" : "Keep"}
+          </button>
+          <button class="btn" disabled={busy} onclick={() => setStatus("dismissed")}>
+            <Icon name="close" size={13} /> Dismiss
+          </button>
+        {:else if entry.mail}
+          <label class="mail-category">
+            <span>Category</span>
+            <select
+              bind:value={mailCategory}
+              disabled={busy || entry.status === "executed" || entry.status === "archived" || entry.status === "trashed"}
+              onchange={() => void setMailCategory(mailCategory)}
+            >
+              <option value="issue">Action</option>
+              <option value="aktiv">Active</option>
+              <option value="steuern">Tax</option>
+              <option value="belege">Receipts</option>
+              <option value="feed">Feed</option>
+              <option value="sonstiges">Other</option>
+              <option value="werbung">Advertising</option>
+            </select>
+          </label>
+          {#if entry.status === "dismissed"}
+            <button class="btn" disabled={busy} onclick={() => setMailStatus("proposed")}>Return to queue</button>
+          {:else if entry.status === "missing"}
+            <span class="lifecycle-state mono">Missing in Gmail · retained in Axon</span>
+            <button class="btn" disabled={busy} onclick={() => setMailStatus("dismissed")}>Dismiss from Axon</button>
+          {:else if entry.status === "archived" || entry.status === "trashed"}
+            <span class="lifecycle-state mono">
+              {entry.status === "archived" ? "Archived in Axon + Gmail" : "In Axon + Gmail Trash"}
+            </span>
+            <button class="btn" disabled={busy || gmailActionBlocked} onclick={() => applyGmailAction("restore")}>Restore to Inbox</button>
+          {:else if entry.status !== "executed"}
+            <button class="btn" disabled={busy} onclick={() => setMailStatus("dismissed")}>Dismiss from Axon</button>
+            <button class="btn" disabled={busy || gmailActionBlocked} onclick={() => (confirmingGmailAction = "archive")}>Archive in Axon + Gmail</button>
+            <button class="btn danger" disabled={busy || gmailActionBlocked} onclick={() => (confirmingGmailAction = "trash")}>Move to Trash</button>
+          {/if}
+        {/if}
+      </div>
+
+      <!-- The shared links vocabulary. Source-agnostic on purpose: a Luma event
+           page, the mail that carried a ticket and a map pin all render here,
+           and a source that adds a new link kind needs no change to this. -->
+      {#if entry.links.length > 0}
+        <ul class="links">
+          {#each entry.links as link (link.url)}
+            <li>
+              <a
+                href={link.url}
+                target={link.url.startsWith("/") ? null : "_blank"}
+                rel={link.url.startsWith("/") ? null : "noreferrer"}
+              >
+                <Icon name={linkIcon(link.kind)} size={13} />
+                {link.label}
+              </a>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if confirmingGmailAction}
+        <div class="gmail-confirm" role="alert">
+          <p>
+            {confirmingGmailAction === "trash"
+              ? "Move this thread to Trash in Axon and Gmail? Axon retains its copy for 30 days."
+              : "Archive this thread in Axon and remove it from the Gmail Inbox?"}
+          </p>
+          <button class="btn" disabled={busy} onclick={() => (confirmingGmailAction = null)}>Cancel</button>
+          <button
+            class="btn"
+            class:danger={confirmingGmailAction === "trash"}
+            disabled={busy}
+            onclick={() => applyGmailAction(confirmingGmailAction!)}
+          >
+            {busy ? "Applying…" : confirmingGmailAction === "trash" ? "Move to Trash" : "Archive"}
+          </button>
+        </div>
+      {/if}
+      {#if entry.mail?.gmail_sync_status === "attention"}
+        <div class="gmail-confirm" role="status">
+          <p>
+            The {entry.mail.gmail_sync_action ?? "Gmail"} action stopped after five failed attempts.
+            Retry opens a fresh bounded attempt window; Cancel keeps the current Gmail and Axon state.
+          </p>
+          <button class="btn" disabled={busy} onclick={() => decideGmailJob("cancel")}>Cancel action</button>
+          <button class="btn btn-primary" disabled={busy} onclick={() => decideGmailJob("retry")}>Retry action</button>
+        </div>
+      {/if}
+      {#if error}<p class="inline-error" aria-live="polite">{error}</p>{/if}
+        </header>
+
         {#if entry.summary}
           <section class="note">
             <p class="section-label">Summary</p>
             <MarkdownDocument content={entry.summary} compact />
           </section>
+        {:else if entry.source === "mail"}
+          <section class="note pending-summary">
+            <p class="section-label">Summary</p>
+            <p>Not generated yet. This reader currently uses Gmail's bounded message preview; full-message enrichment waits for the sensitivity policy.</p>
+          </section>
         {/if}
 
-        {#if entry.transcript && transcriptCollapsible}
+        {#if entry.content && transcriptCollapsible}
           <details class="transcript-disclosure">
             <summary>
               <span>
@@ -143,46 +919,354 @@
               <a class="source-link" href={entry.url} target="_blank" rel="noreferrer">
                 Read original <Icon name="external" size={12} />
               </a>
-              <MarkdownDocument content={entry.transcript} />
+              <MarkdownDocument content={entry.content} />
             </div>
           </details>
-        {:else if entry.transcript}
+          <!-- `|| entry.calendar` so an entry with no note yet still renders the
+             field. Without it a fresh entry fell through to "no readable source
+             text", which is both wrong and the one state where you most want to
+             type something. -->
+        {:else if entry.content || entry.calendar}
           <section class="source-document">
             <div class="document-head">
               <div>
-                <p class="section-label">Source</p>
+                <p class="section-label">{entry.calendar ? "Yours" : "Source"}</p>
                 <h2>{bodyLabel}</h2>
               </div>
-              <a href={entry.url} target="_blank" rel="noreferrer">
-                Read original <Icon name="external" size={12} />
-              </a>
+              <!-- "Read original" is a promise about somewhere else. A calendar
+                   note has no elsewhere, so it does not offer one. -->
+              {#if entry.source !== "calendar"}
+                <a href={entry.url} target="_blank" rel="noreferrer">
+                  Read original <Icon name="external" size={12} />
+                </a>
+              {/if}
             </div>
-            <MarkdownDocument content={entry.transcript} />
+            {#if entry.calendar}
+              <!-- Your own note, so it is a field rather than a rendered
+                   document. Markdown still renders everywhere else, where the
+                   text came from a source and is not yours to retype. -->
+              <textarea
+                class="notes-edit"
+                aria-label="Note"
+                rows="4"
+                placeholder="Why this matters, what to bring, anything worth remembering."
+                bind:value={notesDraft}
+                disabled={savingField}
+                onblur={() => commitText("notes", notesDraft)}
+              ></textarea>
+            {:else}
+              <!-- Non-null by the branch condition, but TS cannot narrow across
+                   the `|| entry.calendar` above. -->
+              <MarkdownDocument content={entry.content ?? ""} />
+            {/if}
           </section>
         {:else}
           <section class="source-document empty">
             No readable source text is available for this entry. The original remains linked.
           </section>
         {/if}
-      </div>
+      </main>
 
       <aside class="context">
         <section>
           <p class="section-label">Entry</p>
           <dl>
-            <div><dt>Type</dt><dd>{KIND_LABEL[entry.kind] ?? entry.kind}</dd></div>
+            <div>
+              <dt>Type</dt>
+              <dd>
+                {#if entry.calendar}
+                  <!-- Kind drives the colour in the grid and the travel verdict
+                       in the correlation layer, so it is worth changing without
+                       a round trip to the form. -->
+                  <select
+                    class="kind-edit"
+                    aria-label="Entry type"
+                    value={entry.kind}
+                    disabled={savingField}
+                    onchange={(event) => patchEntry({ kind: event.currentTarget.value })}
+                  >
+                    {#each KINDS as option (option.value)}
+                      <option value={option.value}>{option.label}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  {KIND_LABEL[entry.kind] ?? entry.kind}
+                {/if}
+              </dd>
+            </div>
             <div>
               <dt>Captured</dt>
               <dd>{new Date(entry.created_at).toLocaleDateString("en-GB")}</dd>
             </div>
-            <div><dt>Reading time</dt><dd>{readMinutes} min</dd></div>
-            <div><dt>Feed status</dt><dd>{entry.status}</dd></div>
+            <!-- A reading estimate is a claim about text you have to get
+                 through. A calendar entry's body is a note you wrote; the
+                 number would be noise dressed as information. -->
+            {#if entry.source !== "calendar"}
+              <div><dt>Reading time</dt><dd>{readMinutes} min</dd></div>
+            {/if}
+            <div><dt>Source</dt><dd>{SOURCE_LABEL[entry.source]}</dd></div>
+            <div><dt>Status</dt><dd>{entry.status}</dd></div>
             <div>
               <dt>Processing</dt>
-              <dd>{entry.summary ? "Summary + source" : "Formatted source"}</dd>
+              <dd>{processingLabel(entry)}</dd>
             </div>
           </dl>
         </section>
+
+        <section aria-labelledby="data-handling-title">
+          <p class="section-label" id="data-handling-title">Data handling</p>
+          {#if entry.mail}
+            <label class="data-class-control">
+              <span>Data class</span>
+              <select
+                bind:value={selectedDataClass}
+                disabled={busy}
+                onchange={() => void setDataClass(selectedDataClass)}
+              >
+                <option value="public">Public</option>
+                <option value="personal">Personal</option>
+                <option value="vault">Private</option>
+              </select>
+            </label>
+          {:else}
+            <p class="data-class-value">{entry.data_class.label}</p>
+          {/if}
+          <dl>
+            <div><dt>Local processing</dt><dd>{entry.processing_policy.local_processing}</dd></div>
+            <div>
+              <dt>Cloud handling</dt>
+              <dd>
+                {entry.processing_policy.cloud_handling === "eligible"
+                  ? "Eligible"
+                  : entry.processing_policy.cloud_handling === "pseudonymization_required"
+                    ? "Pseudonymization required"
+                    : "Blocked"}
+              </dd>
+            </div>
+            <div><dt>Classification</dt><dd>{entry.data_class.method}</dd></div>
+          </dl>
+          <p class="classification-rationale">{entry.data_class.rationale}</p>
+          <p class="policy-rationale">{entry.processing_policy.rationale}</p>
+        </section>
+
+        <!-- Calendar has no cloud derivative pipeline, and its items report
+             `not_prepared` truthfully. Offering "Preview cloud-ready copy"
+             anyway would advertise a button that cannot do anything. -->
+        {#if entry.source !== "calendar"}
+        <section class="cloud-processing" aria-labelledby="cloud-processing-title">
+          <div class="aside-title">
+            <p class="section-label" id="cloud-processing-title">Cloud processing</p>
+            <span class:staged={entry.cloud_processing.status === "staged"}>
+              {entry.cloud_processing.status === "stale"
+                ? "Review again"
+                : cloudDispatchLabel(entry.cloud_processing.dispatch_status)}
+            </span>
+          </div>
+          <p class="cloud-explanation">
+            {entry.data_class.value === "public"
+              ? "Build a bounded copy and inspect it before a cloud task can use it."
+              : "Redact obvious identifiers locally, then inspect the exact derivative before approval."}
+          </p>
+          <button
+            class="btn cloud-preview-button"
+            disabled={preparingCloudPreview || approvingCloudPreview}
+            onclick={prepareCloudPreview}
+          >
+            {preparingCloudPreview
+              ? "Preparing locally…"
+              : entry.cloud_processing.status === "staged"
+                ? "Review a fresh copy"
+                : "Preview cloud-ready copy"}
+          </button>
+          {#if entry.cloud_processing.status === "staged"}
+            {#if entry.cloud_processing.dispatch_status !== "not_queued"}
+              <dl class="cloud-job">
+                <div><dt>Provider role</dt><dd class="mono">{entry.cloud_processing.provider_role}</dd></div>
+                <div><dt>Task</dt><dd>{entry.cloud_processing.task ?? "Content analysis"}</dd></div>
+                <div><dt>State</dt><dd>{cloudDispatchLabel(entry.cloud_processing.dispatch_status)}</dd></div>
+                <div><dt>Provider calls</dt><dd>{entry.cloud_processing.provider_calls}</dd></div>
+              </dl>
+              {#if entry.cloud_processing.dispatch_status === "queued"}
+                <button
+                  class="btn btn-primary cloud-run-button"
+                  disabled={runningCloudJob}
+                  onclick={runCloudJob}
+                >
+                  {runningCloudJob ? "Sending approved copy…" : "Run approved cloud analysis"}
+                </button>
+                <p class="cloud-boundary">This sends only the reviewed derivative to the selected provider.</p>
+              {:else if entry.cloud_processing.dispatch_status === "failed"}
+                {#if entry.cloud_processing.last_error}
+                  <p class="cloud-job-error">{entry.cloud_processing.last_error}</p>
+                {/if}
+                <button
+                  class="btn cloud-run-button"
+                  disabled={runningCloudJob || entry.cloud_processing.provider_calls >= 5}
+                  onclick={runCloudJob}
+                >
+                  {runningCloudJob ? "Retrying…" : "Retry approved cloud analysis"}
+                </button>
+                {#if entry.cloud_processing.provider_calls >= 5}
+                  <p class="cloud-boundary">The five-call retry limit has been reached. Review and stage a fresh derivative.</p>
+                {/if}
+              {:else if entry.cloud_processing.dispatch_status === "running"}
+                <p class="cloud-boundary">A provider call is in progress. Reload the entry to refresh its state.</p>
+              {/if}
+
+              {#if entry.cloud_processing.dispatch_status === "succeeded" && entry.cloud_processing.result}
+                {@const result = entry.cloud_processing.result}
+                <div class="cloud-result" aria-label="Cloud content analysis">
+                  <div class="cloud-result-head">
+                    <strong>{result.importance} importance</strong>
+                    {#if entry.cloud_processing.completed_at}
+                      <span>{lifecycleDate(entry.cloud_processing.completed_at)}</span>
+                    {/if}
+                  </div>
+                  <p>{result.summary}</p>
+                  <p class="cloud-rationale">{result.importance_rationale}</p>
+                  {#if result.important_dates.length > 0}
+                    <div class="cloud-result-group">
+                      <span class="section-label">Important dates</span>
+                      {#each result.important_dates as date, index (`${date.label}:${date.date}:${date.source_text}`)}
+                        {@const candidate = calendarCandidates.find((item) => item.key === `important_dates:${index}`)}
+                        <div class="cloud-result-item">
+                          <strong>{date.label}</strong>
+                          <span>{date.date ?? "Date not resolved"}</span>
+                          <small>{date.source_text}</small>
+                          {#if candidate}
+                            <button
+                              class="calendar-proposal-button"
+                              disabled={calendarProposalBusy !== null || calendarProposalSaved.has(candidate.key)}
+                              onclick={() => proposeToCalendar(candidate)}
+                            >
+                              {calendarProposalSaved.has(candidate.key)
+                                ? "In Calendar review"
+                                : calendarProposalBusy === candidate.key
+                                  ? "Adding…"
+                                  : "Add to Calendar review"}
+                            </button>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if result.action_items.length > 0}
+                    <div class="cloud-result-group">
+                      <span class="section-label">Actions</span>
+                      {#each result.action_items as action, index (`${action.text}:${action.due_date}`)}
+                        {@const candidate = calendarCandidates.find((item) => item.key === `action_items:${index}`)}
+                        <div class="cloud-result-item">
+                          <strong>{action.text}</strong>
+                          {#if action.due_date}<span>Due {action.due_date}</span>{/if}
+                          {#if candidate}
+                            <button
+                              class="calendar-proposal-button"
+                              disabled={calendarProposalBusy !== null || calendarProposalSaved.has(candidate.key)}
+                              onclick={() => proposeToCalendar(candidate)}
+                            >
+                              {calendarProposalSaved.has(candidate.key)
+                                ? "In Calendar review"
+                                : calendarProposalBusy === candidate.key
+                                  ? "Adding…"
+                                  : "Add deadline to Calendar review"}
+                            </button>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if result.topics.length > 0}
+                    <div class="cloud-topics" aria-label="Topics">
+                      {#each result.topics as topic (topic)}<span>{topic}</span>{/each}
+                    </div>
+                  {/if}
+                  {#if calendarProposalSaved.size > 0}
+                    <a class="calendar-review-link" href="/calendar">Open Calendar review →</a>
+                  {/if}
+                  {#if calendarProposalError}
+                    <p class="cloud-job-error" role="alert">{calendarProposalError}</p>
+                  {/if}
+                </div>
+              {/if}
+            {:else if cloudProviders.length > 0}
+              <label class="provider-control">
+                <span>Provider</span>
+                <select bind:value={selectedProviderRole} disabled={queueingCloudDerivative}>
+                  {#each cloudProviders as provider (provider.role)}
+                    <option value={provider.role} disabled={!provider.available}>
+                      {provider.name} · {provider.model}{provider.available ? "" : " · setup required"}
+                    </option>
+                  {/each}
+                </select>
+              </label>
+              {#if selectedProviderRole}
+                {@const selectedProvider = cloudProviders.find((provider) => provider.role === selectedProviderRole)}
+                {#if selectedProvider}
+                  <p class="provider-detail">
+                    {selectedProvider.provider_label} · {selectedProvider.data_tier === "pseudonymized_personal"
+                      ? "Reviewed Personal derivatives"
+                      : "Public only"} · {selectedProvider.billing_mode === "free_only" ? "Free only" : "Prepaid credit"}
+                  </p>
+                {/if}
+              {/if}
+              <button
+                class="btn cloud-queue-button"
+                disabled={queueingCloudDerivative || !selectedProviderRole}
+                onclick={queueCloudDerivative}
+              >
+                {queueingCloudDerivative ? "Queueing…" : "Queue for cloud processing"}
+              </button>
+              {#if !cloudProviders.some((provider) => provider.available)}
+                <p class="provider-missing">The reviewed providers are configured, but their keys have not been materialized on this machine.</p>
+              {/if}
+            {:else if providerListLoaded}
+              <p class="provider-missing">No reviewed HTTPS cloud role is configured.</p>
+            {/if}
+          {/if}
+          {#if entry.cloud_processing.dispatch_status === "not_queued"}
+            <p class="cloud-boundary">Approval stages only the reviewed copy. Queueing records provider intent without sending it.</p>
+          {:else if entry.cloud_processing.dispatch_status === "queued"}
+            <p class="cloud-boundary">Queued locally. Nothing has been sent until you run the approved analysis.</p>
+          {/if}
+          {#if cloudPreviewError && !cloudPreview}
+            <p class="inline-error" aria-live="polite">{cloudPreviewError}</p>
+          {/if}
+        </section>
+        {/if}
+
+        {#if entry.mail}
+          <section aria-labelledby="mail-classification-title">
+            <p class="section-label" id="mail-classification-title">Mail classification</p>
+            <dl>
+              <div><dt>Category</dt><dd>{mailCategory}</dd></div>
+              <div><dt>Method</dt><dd>{entry.mail.classification_method}</dd></div>
+              <div><dt>Revision</dt><dd class="mono">{entry.mail.classification_version}</dd></div>
+              {#if entry.mail.gmail_action_at}
+                <div><dt>Last Axon action</dt><dd>{entry.mail.gmail_action}</dd></div>
+                <div><dt>Changed</dt><dd>{lifecycleDate(entry.mail.gmail_action_at)}</dd></div>
+              {/if}
+              {#if entry.mail.gmail_location}
+                <div><dt>Gmail location</dt><dd>{entry.mail.gmail_location}</dd></div>
+              {/if}
+              {#if entry.mail.gmail_observed_at}
+                <div><dt>Last checked</dt><dd>{lifecycleDate(entry.mail.gmail_observed_at)}</dd></div>
+              {/if}
+              {#if entry.mail.gmail_sync_status}
+                <div><dt>Sync</dt><dd>{entry.mail.gmail_sync_status}</dd></div>
+              {/if}
+              {#if entry.mail.gmail_sync_action}
+                <div><dt>Pending action</dt><dd>{entry.mail.gmail_sync_action}</dd></div>
+              {/if}
+              {#if entry.mail.purge_after}
+                <div><dt>Axon cleanup</dt><dd>{lifecycleDate(entry.mail.purge_after)}</dd></div>
+              {/if}
+            </dl>
+            <p class="classification-rationale">{entry.mail.rationale}</p>
+            {#if entry.mail.gmail_sync_error}
+              <p class="inline-error">{entry.mail.gmail_sync_error}</p>
+            {/if}
+          </section>
+        {/if}
 
         {#if entry.evaluation}
           <section aria-labelledby="evaluation-title">
@@ -243,6 +1327,70 @@
       </aside>
     </div>
   </article>
+
+  {#if cloudPreview}
+    <div class="modal-backdrop">
+      <div
+        class="preview-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cloud-preview-title"
+      >
+        <header class="preview-head">
+          <div>
+            <p class="section-label">Local preview</p>
+            <h2 id="cloud-preview-title">Review the cloud-ready copy</h2>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            aria-label="Close preview"
+            disabled={approvingCloudPreview}
+            onclick={() => (cloudPreview = null)}
+          >×</button>
+        </header>
+
+        <div class="preview-facts">
+          <span>{dataClassLabel(cloudPreview.original_data_class)} source</span>
+          <span>→</span>
+          <span>{dataClassLabel(cloudPreview.derivative_data_class)} derivative</span>
+          <span>{cloudPreview.redaction_count} redactions</span>
+          <span>{cloudPreview.truncated ? "Bounded at 16,000 characters" : "Complete bounded document"}</span>
+        </div>
+
+        {#if cloudPreview.redactions.length > 0}
+          <div class="redaction-ledger" aria-label="Local entity redactions">
+            <span class="section-label">Detected locally</span>
+            {#each cloudPreview.redactions as finding (finding.entity_type)}
+              <span><code>{finding.marker}</code> {finding.entity_type.replaceAll("_", " ")} × {finding.count}</span>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="preview-document" aria-label="Document proposed for cloud processing">
+          <pre>{cloudPreview.document}</pre>
+        </div>
+
+        <div class="preview-limitations">
+          <p class="section-label">Review limits</p>
+          <ul>
+            {#each cloudPreview.limitations as limitation}
+              <li>{limitation}</li>
+            {/each}
+          </ul>
+        </div>
+
+        {#if cloudPreviewError}<p class="inline-error" aria-live="polite">{cloudPreviewError}</p>{/if}
+        <footer class="preview-actions">
+          <p>This approval stores the exact reviewed copy locally. Provider calls: 0.</p>
+          <button class="btn" disabled={approvingCloudPreview} onclick={() => (cloudPreview = null)}>Cancel</button>
+          <button class="btn btn-primary" disabled={approvingCloudPreview} onclick={approveCloudPreview}>
+            {approvingCloudPreview ? "Staging…" : "Approve cloud-ready copy"}
+          </button>
+        </footer>
+      </div>
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -258,13 +1406,12 @@
 
   article {
     width: 100%;
-    max-width: 88rem;
+    max-width: 96rem;
     margin: 0 auto;
   }
 
   .article-head {
-    max-width: 76rem;
-    margin: 0 auto 3.25rem;
+    margin: 0 0 2.5rem;
   }
 
   .overline,
@@ -281,9 +1428,9 @@
   }
 
   h1 {
-    max-width: 24ch;
+    max-width: 27ch;
     margin: 0.9rem 0 0;
-    font-size: clamp(2.1rem, 4.2vw, 3.8rem);
+    font-size: clamp(2rem, 3.25vw, 3.35rem);
     font-weight: 560;
     line-height: 1.04;
     letter-spacing: -0.04em;
@@ -294,6 +1441,217 @@
     color: var(--text-secondary);
   }
 
+  /* Where a feed article carries a byline, a calendar item carries when it
+     happens and how binding it is. Same slot, same weight. */
+  .when {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.65rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+  }
+
+  .when-fields {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .when-fields input[type="date"],
+  .when-fields input[type="time"] {
+    padding: 0.1rem 0.25rem;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+
+  .when-fields input:hover:not(:disabled) { border-color: var(--card-border); }
+  .when-fields input:focus { border-color: var(--primary); outline: none; }
+  .when-fields input:disabled { opacity: 0.6; }
+  .when-fields .dash { color: var(--text-tertiary); }
+
+  .all-day {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+  }
+
+  .when-problem {
+    margin: 0.35rem 0 0;
+    color: var(--danger);
+    font-size: 0.75rem;
+  }
+
+  /* Not an error — a standing fact about this entry, so it reads as a note
+     rather than something the operator did wrong. */
+  .export-note {
+    margin: 0.3rem 0 0;
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+  }
+
+  .where-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.3rem 0 0;
+    color: var(--text-tertiary);
+  }
+
+  /* Editable, but not shouting about it: a field reads as text until you touch
+     it. A page full of visible input chrome would make reading the harder job,
+     and reading is what this surface is for. */
+  .title-edit {
+    display: block;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-bottom: 1.5px solid transparent;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: clamp(1.75rem, 3.5vw, 2.75rem);
+    font-weight: 620;
+    letter-spacing: -0.03em;
+  }
+
+  .where-edit {
+    flex: 1;
+    min-width: 8rem;
+    padding: 0.1rem 0.2rem;
+    border: 0;
+    border-bottom: 1px solid transparent;
+    background: transparent;
+    color: var(--text-tertiary);
+    font: inherit;
+    font-size: 0.875rem;
+  }
+
+  .notes-edit {
+    display: block;
+    width: 100%;
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    resize: vertical;
+  }
+
+  .title-edit:hover,
+  .where-edit:hover,
+  .notes-edit:hover {
+    border-color: var(--card-border);
+  }
+
+  .title-edit:focus,
+  .where-edit:focus,
+  .notes-edit:focus {
+    border-color: var(--primary);
+    outline: none;
+  }
+
+  .title-edit:disabled,
+  .where-edit:disabled,
+  .notes-edit:disabled {
+    opacity: 0.6;
+  }
+
+  .kind-edit {
+    padding: 0.1rem 0.2rem;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: right;
+  }
+
+  .kind-edit:hover { border-color: var(--card-border); }
+  .kind-edit:focus { border-color: var(--primary); outline: none; }
+
+  .commitment-set {
+    display: inline-flex;
+    gap: 0.2rem;
+  }
+
+  /* The same vocabulary the month grid uses: how filled it is says how binding
+     it is. A calendar item is never given a score, so this is its only rank. */
+  .commitment {
+    padding: 0.1rem 0.45rem;
+    border: 1px solid var(--card-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-tertiary);
+    font: inherit;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .commitment:hover:not(:disabled) {
+    border-color: var(--primary);
+    color: var(--primary);
+  }
+
+  .commitment:disabled { cursor: default; }
+
+  .commitment-planned.chosen {
+    border-color: var(--primary);
+    color: var(--primary);
+  }
+
+  .commitment-committed.chosen {
+    border-color: var(--primary);
+    background: var(--primary);
+    color: var(--card-bg);
+  }
+
+  .commitment-possible.chosen {
+    border-color: var(--text-secondary);
+    color: var(--text-primary);
+  }
+
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 1rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .links a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+  }
+
+  .links a:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+  }
+
   .actions {
     margin-top: 1.25rem;
   }
@@ -302,12 +1660,85 @@
     color: var(--success);
   }
 
+  .danger {
+    color: var(--error, #c33);
+  }
+
+  .missing-source {
+    color: var(--text-tertiary);
+    cursor: default;
+    opacity: 0.75;
+  }
+
+  .mail-category {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+  }
+
+  .mail-category select {
+    min-height: 2rem;
+    padding: 0.35rem 0.55rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font: inherit;
+  }
+
+  .data-class-control {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.55rem;
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+  }
+
+  .data-class-control select {
+    min-height: 2rem;
+    padding: 0.35rem 0.55rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font: inherit;
+  }
+
+  .data-class-value {
+    margin: 0 0 0.55rem;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-weight: 560;
+  }
+
+  .gmail-confirm {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    max-width: 52rem;
+    margin-top: 0.85rem;
+    padding: 0.75rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+  }
+
+  .gmail-confirm p {
+    flex: 1;
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+  }
+
   .reader-grid {
     display: grid;
-    grid-template-columns: minmax(0, 52rem) minmax(17rem, 21rem);
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
     align-items: start;
-    justify-content: center;
-    gap: clamp(2.5rem, 5vw, 5rem);
+    gap: clamp(2rem, 4vw, 4.5rem);
   }
 
   .section-label {
@@ -328,6 +1759,187 @@
     margin-bottom: 3rem;
     padding: 1.25rem 0 1.25rem 1.4rem;
     border-left: 2px solid var(--primary);
+  }
+
+  .pending-summary p:last-child,
+  .classification-rationale {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.55;
+  }
+
+  .classification-rationale {
+    margin-top: 0.65rem;
+  }
+
+  .policy-rationale {
+    margin: 0.45rem 0 0;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+    line-height: 1.5;
+  }
+
+  .cloud-explanation,
+  .cloud-boundary {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+
+  .cloud-preview-button {
+    width: 100%;
+    justify-content: center;
+    margin-top: 0.8rem;
+  }
+
+  .provider-control {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.85rem;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+  }
+
+  .provider-control select {
+    width: 100%;
+    min-height: 2.25rem;
+    padding: 0.4rem 0.55rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font: inherit;
+  }
+
+  .provider-detail,
+  .provider-missing {
+    margin: 0.4rem 0 0;
+    color: var(--text-tertiary);
+    font-size: 0.625rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .cloud-queue-button,
+  .cloud-run-button {
+    width: 100%;
+    justify-content: center;
+    margin-top: 0.65rem;
+  }
+
+  .cloud-job {
+    margin-top: 0.8rem;
+    padding-top: 0.55rem;
+    border-top: 1px solid var(--card-border);
+  }
+
+  .cloud-boundary {
+    margin-top: 0.55rem;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+  }
+
+  .cloud-job-error {
+    margin: 0.65rem 0 0;
+    color: var(--warning);
+    font-size: 0.6875rem;
+    line-height: 1.45;
+  }
+
+  .cloud-result {
+    display: grid;
+    gap: 0.7rem;
+    margin-top: 0.8rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--card-border);
+  }
+
+  .cloud-result p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+
+  .cloud-result .cloud-rationale {
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+  }
+
+  .cloud-result-head,
+  .cloud-result-item {
+    display: grid;
+    gap: 0.15rem;
+  }
+
+  .calendar-proposal-button {
+    justify-self: start;
+    margin-top: 0.2rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--primary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.625rem;
+  }
+
+  .calendar-proposal-button:disabled {
+    cursor: default;
+    opacity: 0.65;
+  }
+
+  .calendar-review-link {
+    color: var(--primary);
+    font-size: 0.6875rem;
+  }
+
+  .cloud-result-head {
+    grid-template-columns: 1fr auto;
+    align-items: baseline;
+    font-size: 0.75rem;
+  }
+
+  .cloud-result-head strong {
+    text-transform: capitalize;
+  }
+
+  .cloud-result-head span,
+  .cloud-result-item span,
+  .cloud-result-item small {
+    color: var(--text-tertiary);
+    font-size: 0.625rem;
+  }
+
+  .cloud-result-group {
+    display: grid;
+    gap: 0.45rem;
+  }
+
+  .cloud-result-item {
+    padding-left: 0.6rem;
+    border-left: 1px solid var(--card-border);
+    font-size: 0.6875rem;
+  }
+
+  .cloud-topics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+
+  .cloud-topics span {
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--card-border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 0.625rem;
+  }
+
+  .staged {
+    color: var(--success) !important;
   }
 
   .source-document {
@@ -432,7 +2044,7 @@
 
   .context {
     position: sticky;
-    top: 8rem;
+    top: 6rem;
   }
 
   .context section {
@@ -537,6 +2149,145 @@
     color: var(--text-tertiary);
   }
 
+  .modal-backdrop {
+    position: fixed;
+    z-index: 100;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 1.5rem;
+    background: color-mix(in srgb, var(--background) 72%, transparent);
+    backdrop-filter: blur(8px);
+  }
+
+  .preview-modal {
+    display: flex;
+    width: min(62rem, 100%);
+    max-height: min(52rem, calc(100vh - 3rem));
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-lg);
+    background: var(--background);
+    box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 0.18);
+  }
+
+  .preview-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.4rem 1.5rem 1rem;
+  }
+
+  .preview-head .section-label {
+    margin-bottom: 0.35rem;
+  }
+
+  .preview-head h2 {
+    margin: 0;
+    font-size: 1.35rem;
+    font-weight: 580;
+    letter-spacing: -0.02em;
+  }
+
+  .icon-button {
+    width: 2rem;
+    height: 2rem;
+    border: 0;
+    background: transparent;
+    color: var(--text-tertiary);
+    font: inherit;
+    font-size: 1.4rem;
+    cursor: pointer;
+  }
+
+  .preview-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    padding: 0 1.5rem 1rem;
+  }
+
+  .preview-facts span {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--card-border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 0.6875rem;
+  }
+
+  .redaction-ledger {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.75rem;
+    padding: 0.7rem 1rem;
+    border-bottom: 1px solid var(--card-border);
+    color: var(--text-secondary);
+    font-size: 0.6875rem;
+  }
+
+  .redaction-ledger .section-label {
+    margin: 0;
+  }
+
+  .redaction-ledger code {
+    color: var(--primary);
+    font-family: var(--font-mono);
+  }
+
+  .preview-document {
+    min-height: 12rem;
+    flex: 1;
+    overflow: auto;
+    margin: 0 1.5rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+  }
+
+  .preview-document pre {
+    margin: 0;
+    padding: 1.25rem;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .preview-limitations {
+    padding: 1rem 1.5rem 0;
+  }
+
+  .preview-limitations .section-label {
+    margin-bottom: 0.4rem;
+  }
+
+  .preview-limitations ul {
+    margin: 0;
+    padding-left: 1rem;
+    color: var(--text-secondary);
+    font-size: 0.6875rem;
+    line-height: 1.5;
+  }
+
+  .preview-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 1rem 1.5rem 1.35rem;
+  }
+
+  .preview-actions p {
+    flex: 1;
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+  }
+
   .state {
     display: flex;
     align-items: center;
@@ -560,6 +2311,7 @@
 
     .reader-grid {
       grid-template-columns: minmax(0, 48rem);
+      justify-content: center;
     }
 
     .context {
@@ -593,6 +2345,11 @@
       flex-direction: column;
     }
 
+    .gmail-confirm {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
     .transcript-disclosure > summary {
       align-items: flex-start;
     }
@@ -603,6 +2360,27 @@
 
     .note {
       padding-left: 1rem;
+    }
+
+    .modal-backdrop {
+      padding: 0;
+    }
+
+    .preview-modal {
+      width: 100%;
+      max-height: 100vh;
+      min-height: 100vh;
+      border: 0;
+      border-radius: 0;
+    }
+
+    .preview-actions {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .preview-actions p {
+      width: 100%;
     }
   }
 </style>

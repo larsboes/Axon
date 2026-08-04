@@ -14,7 +14,7 @@ account connection, reviewed draft import, and explicit export review are live.*
 The Postgres tables, HTTP CRUD, rhythm materialization, and the dashboard
 month/week/day workspace are built and tested. Feasibility verdicts and feasible
 travel windows are computed and served over HTTP, with unit coverage in
-`src/correlate.rs`. Feed's Entdecken view batches dated opportunities through
+`src/correlate.rs`. Feed's Discover view batches dated opportunities through
 the verdict endpoint and renders the resulting evidence as a soft explanation;
 it never hides a candidate for a calendar conflict. Handing a window to a fare
 search is still a command the operator runs, not something the system does on
@@ -51,7 +51,7 @@ without a check are not started.
 - [x] Trip drafts — events grouped by place and time proximity (`GET /api/trip-drafts`)
 - [x] Time-bounded planning context — editable notices that affect Home ranking without blocking calendar time
 - [x] Home composition — upcoming calendar commitments, open calendar choices, planning context, location clusters, and source overview
-- [x] Feed's Entdecken view shows each dated candidate's soft verdict and evidence
+- [x] Feed's Discover view shows each dated candidate's soft verdict and evidence
 - [x] Materialising a reviewed trip draft into a `trips.plan` through the
       public Trips API, with an idempotence ledger and dashboard confirmation
 - [ ] Dashboard travel‑day view (Phase F — not started)
@@ -63,7 +63,7 @@ The calendar workspace lives at `/calendar` and is a first‑class primary nav e
 
 - **Three views — Monat, Woche, Tag** — behind one segmented switcher. All three
   share a single anchor date, so switching keeps the same date in view; only the
-  ‹ Heute › navigation moves it, by month, by week or by day. The service window
+  Previous/Today/Next navigation moves it, by month, by week or by day. The service window
   is exactly what is on screen (`from` inclusive, `to` exclusive), so switching
   view reloads the range rather than over‑fetching a month.
 - A **month grid**: compact, colored entry chips per day by kind (busy → red,
@@ -120,7 +120,7 @@ enabling the capability).
 | `all_day` | INTEGER | 0 or 1 |
 | `location` | TEXT? | |
 | `notes` | TEXT? | |
-| `source` | TEXT | `manual` / `rhythm` / `feed` / `scouting` / `luma` / `google` |
+| `source` | TEXT | `manual` / `rhythm` / `feed` / `comms` / `scouting` / `luma` / `google` |
 | `external_id` | TEXT? | Dedupe key per source |
 | `rhythm_id` | TEXT? → rhythms(id) ON DELETE SET NULL | |
 | `payload` | TEXT (JSON) | Inert provider evidence |
@@ -172,7 +172,7 @@ starts empty, so nothing exports by default, and opting out deletes the row.
 
 ### Kinds (extensible, not a CHECK constraint)
 
-`busy`, `work_onsite`, `work_remote`, `away`, `event`, `nightlife`, `travel_ok`,
+`busy`, `work_onsite`, `work_remote`, `away`, `event`, `nightlife`, `deadline`, `travel_ok`,
 `draft` are the well‑known kinds. Kinds are stored and validated as machine‑safe tokens
 (`[a-z0-9_]+`, 1‑40 chars) — new kinds for day‑planning blocks (Phase F) land
 without a migration. The correlation layer (Phase C) maps known kinds onto
@@ -183,7 +183,21 @@ imported Google event lands as until the operator adopts it. See § Drafts.
 
 ### Sources
 
-`manual`, `rhythm`, `feed`, `scouting`, `luma`, `web`, `google`. Same free‑text approach.
+`manual`, `rhythm`, `feed`, `comms`, `scouting`, `luma`, `web`, `google`. Same free‑text approach.
+
+### Reviewed Comms proposals
+
+A completed, explicitly run Comms analysis can hand one resolved date or dated action to
+Calendar through the existing external-entry upsert. The reader requires a separate click for
+each candidate. Calendar stores it with `source = comms`, `commitment = possible`, and a stable
+content-derived external id, so retries update rather than duplicate and the proposal blocks no
+time. Dated actions use the neutral `deadline` kind; extracted event dates use `event`.
+
+The payload follows
+[`calendar-proposal-provenance-v1`](../../schemas/calendar-proposal-provenance.schema.json): it
+retains the Comms item/job reference, trust class, importance rationale, and only the bounded
+evidence already returned by the reviewed analysis. It contains no provider endpoint, key, or
+original mail body. The ordinary Calendar proposal rail remains the only adoption surface.
 
 ### Commitment: how binding an entry is
 
@@ -359,7 +373,8 @@ capability.
 |---|---|---|
 | GET | `/health` | |
 | GET | `/api/entries?from=&to=&kind=` | Window query, optional CSV kind filter |
-| GET | `/api/proposals?from=&to=` | External, non-Google `possible` entries waiting for a Calendar decision; manual soft blocks are excluded |
+| GET | `/api/proposals?from=&to=` | External, non-Google `possible` entries waiting for a Calendar decision; manual soft blocks are excluded, and so is anything already adopted under another key (see Duplicate suppression) |
+| GET | `/api/content/calendar/:id` | The entry as [`content-item-v1`](../../schemas/content-item.schema.json), for the shared reader. Same path shape comms serves — see Content contract |
 | POST | `/api/entries` | Create entry |
 | GET | `/api/entries/:id` | |
 | PUT | `/api/entries/external` | Idempotent provider contribution; requires `source` + `external_id` |
@@ -393,6 +408,74 @@ calendar id or the credential is missing — never 200 with an empty report. A
 selected import answers **409** when Google changed an event after the review;
 the user must inspect the current version before Axon writes it.
 
+## Content contract
+
+An entry also renders as [`content-item-v1`](../../schemas/content-item.schema.json)
+at `GET /api/content/calendar/:id`, built in `src/content.rs` — pure over one
+`Entry`, so the store is untouched and nothing is written. `libs/content-item`
+carries the argument for sharing the *reader* contract while the tables stay
+apart.
+
+Two rules this projection holds to:
+
+- **It never ranks.** `relevance` and `evaluation` stay empty, and the schema
+  enforces that for `source = calendar`. An entry is something the operator
+  already decided about; `commitment` is its triage axis and it surfaces as
+  `status`. Scouting's promotion no longer copies a score across either — see
+  `calendar_promote::evidence_payload`.
+- **`summary` and `notes` are different things.** `payload.about` says what the
+  thing *is*; `notes` is why the operator cares, and no machine writes it.
+
+`payload.links[]` (and `payload.url`) become the contract's shared `links[]`, so
+the mail carrying a ticket, a Luma event page and a map pin all render through
+one block rather than a per-source view.
+
+The extension also carries `entry_source` and `rhythm_id`. Neither is display
+data: they decide which *actions* a reader may honestly offer. An entry imported
+from Google must not offer to export back to Google, and a rhythm instance is
+never exported individually — without those two fields a reader would have to
+guess, and would guess wrong for exactly the entries where it matters.
+
+### Editing from the reader
+
+The reader edits everything the calendar form does: kind, commitment, title,
+location, note, dates, times, the all‑day toggle, the Google export opt‑in, and
+delete. The date rules are **not** reimplemented there — `whenOf` / `whenPatch` /
+`whenError` in `dashboard/src/lib/calendar/types.ts` are the single
+implementation and the form was moved onto them at the same time.
+
+That matters because the two representations disagree by design: **the store's
+`ends_at` is exclusive, every form shows an inclusive end.** An all‑day entry
+ending `2026-08-16` covers the 15th, and a surface that forgets the conversion
+silently moves the entry by a day. One implementation, covered by
+`dashboard/vite/calendar-when.test.ts`.
+
+The path shape mirrors comms' `/content/:source/:id` on purpose: one contract
+served under two URL shapes would reintroduce, one layer down, exactly the
+duplication the contract removes. The dashboard resolves an item from its source
+alone (`CONTENT_BASE` in `dashboard/src/lib/api.ts`).
+
+## Duplicate suppression
+
+Entry identity is `(source, external_id)`, which dedupes a source against
+itself and nothing else. The same party scraped off the venue's own site and
+imported from Google therefore lands as two rows sharing no key — one the
+operator already adopted, one still `possible`, and the month grid drew both
+while the inbox kept announcing the second as new.
+
+`GET /api/proposals` filters those out at **read** time: a `possible` entry that
+overlaps an already-decided entry (`commitment <> possible`) and carries the
+same title once case, diacritics and punctuation are removed is not proposed.
+Place is deliberately not part of the match — 13 of 62 events in the last live
+Luma sweep carried none, which would exempt exactly the entries most likely to
+arrive twice.
+
+Read-time rather than a merge at ingest, because a merge would have to pick a
+winner between two sources' versions of one event and could not be undone. This
+leaves both rows intact, so a match the rule gets wrong costs a proposal that
+returns the moment the rule is corrected — never data. The rule lives in
+`correlate::is_same_event`, beside the key-based `is_same_thing` it backstops.
+
 ## Correlation contract
 
 The correlation layer (effectively the first half of Phase 4 as `capabilities/postgres/README.md` defines it, which
@@ -402,7 +485,7 @@ are unit‑testable without a database and the store stays the only thing that
 queries.
 
 **Verdicts.** A candidate is a date range plus the caller's own id — a
-`scouting.opportunity` id from Feed's Entdecken view. Every entry overlapping
+`scouting.opportunity` id from Feed's Discover view. Every entry overlapping
 that range contributes an impact, and the verdict is the worst of them:
 
 | Entry kind | Impact | Why |
@@ -442,7 +525,7 @@ on‑site work that day" instead of showing a badge with no argument.
 fact. The zone designator and any fractional seconds are dropped and the clock
 face is taken as written — the single‑home‑timezone call the time model above
 already makes. Nothing is converted *here*, deliberately: the callers of this
-endpoint (Feed's Entdecken, `transit`) already hand in instants that were
+endpoint (Feed's Discover, `transit`) already hand in instants that were
 produced in the home zone, so converting them again would move them. The path
 that does convert is the Google import, which receives foreign offsets and runs
 them through `src/zone.rs` — see § Time model > What Phase E settled. A
@@ -462,6 +545,28 @@ A draft is recomputed per request rather than stored, because it is a function
 of entries that can all move. Turning one into a real `trips.plan` remains a
 deliberate act: Calendar calls Trips' public HTTP API and records the result in
 its own idempotence ledger; it never writes into Trips' store directly.
+
+Sources write venue lines (`Telekom, Bonn`; `Sparkassen Innovation Hub, Grüner
+Deich 15, 20097 Hamburg`), not bare cities, and two rules read them differently
+on purpose:
+
+- **The clustering key is the city**, via `city_of` — the segment carrying a
+  postal code, else the last segment. You travel to a city and then walk, so
+  making the venue part of the identity split one Hamburg journey into two
+  places and left both below the two‑event floor. The draft is labelled by city;
+  the venues stay on the member entries.
+- **The home test reads the raw place, every comma‑separated segment of it.**
+  Not the whole string, which never matched a venue line, and not a substring
+  search, which would read `Moxy Köln/Bonn Flughafen` as home and cancel a real
+  trip to Köln. Forgiving on purpose: a false home can only drop a day the
+  operator was home for anyway, while a forgiving *grouping* key would merge two
+  cities into one journey.
+
+A segment ending in digits stays an address line, so a house number never
+becomes a city. `city_of`'s limit is `Berlin, Germany`, which yields `Germany`;
+it does not arise because Luma supplies `payload.city`, which `place_of` prefers
+outright. If it ever does, record `payload.city` — do not teach `city_of`
+geography.
 
 Verdicts are soft — see "No hard filter on conflicts" above.
 
@@ -555,8 +660,8 @@ calendar, 404 → wrong `calendar_id`, 429 → rate limit).
 ## Phases
 
 ### A — Luma live‑verify
-- [x] Add an explicit “in Kalender übernehmen” action for dated Scouting
-      opportunities in Feed > Entdecken; confirm in the calendar entry form and
+- [x] Add an explicit “add to Calendar” action for dated Scouting
+      opportunities in Feed > Discover; confirm in the calendar entry form and
       promote through an idempotent source/external-id upsert
 - [x] Run the existing `capabilities/scouting` luma adapter against the calendars
       you actually track. Done 2026-07-30 — **the adapter did not work.** What
@@ -614,7 +719,7 @@ public slug lookup.
       days, `transit plan --dates` searches exactly those (see the why‑block)
 - [x] Verdict endpoint in the correlation layer — `POST /api/verdicts` (batch)
       and `GET /api/windows`
-- [x] Entdecken renders the batch verdict as a soft badge with evidence; a
+- [x] Discover renders the batch verdict as a soft badge with evidence; a
       conflict never hides the opportunity or blocks calendar promotion
 
 ### D — Combining + trip assembly

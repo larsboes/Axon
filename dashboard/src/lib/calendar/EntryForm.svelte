@@ -1,6 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { COMMITMENTS, KINDS, type Commitment } from "./types";
+  import {
+    COMMITMENTS,
+    KINDS,
+    whenError,
+    whenOf,
+    whenPatch,
+    type Commitment,
+  } from "./types";
   import type {
     CalendarEntry,
     CalendarGoogleExportOptIn,
@@ -57,41 +64,19 @@
   let googleExported = $state(false);
   let error = $state("");
 
-  function shiftDate(value: string, days: number): string {
-    const shifted = new Date(`${value}T12:00:00`);
-    shifted.setDate(shifted.getDate() + days);
-    return [
-      shifted.getFullYear(),
-      String(shifted.getMonth() + 1).padStart(2, "0"),
-      String(shifted.getDate()).padStart(2, "0"),
-    ].join("-");
-  }
-
   function initialise() {
     kind = entry?.kind ?? draft?.kind ?? "busy";
     commitment = entry?.commitment ?? "committed";
     title = entry?.title ?? draft?.title ?? "";
-    allDay = entry?.all_day ?? draft?.all_day ?? true;
-    startDate = entry?.starts_at.slice(0, 10) ?? draft?.starts_at.slice(0, 10) ?? date ?? "";
-    endDate = entry
-      ? entry.all_day
-        ? shiftDate(entry.ends_at.slice(0, 10), -1)
-        : entry.ends_at.slice(0, 10)
-      : draft
-        ? draft.all_day
-          ? shiftDate(draft.ends_at.slice(0, 10), -1)
-          : draft.ends_at.slice(0, 10)
-        : rangeEndDate ?? date ?? "";
-    startTime = entry && !entry.all_day
-      ? entry.starts_at.slice(11, 16)
-      : draft && !draft.all_day
-        ? draft.starts_at.slice(11, 16)
-        : "09:00";
-    endTime = entry && !entry.all_day
-      ? entry.ends_at.slice(11, 16)
-      : draft && !draft.all_day
-        ? draft.ends_at.slice(11, 16)
-        : "10:00";
+    // The inclusive/exclusive conversion lives in `whenOf` so this form and the
+    // reader cannot disagree about which day an all-day entry ends on.
+    const existing = entry ?? draft;
+    const when = existing ? whenOf(existing) : null;
+    allDay = when?.allDay ?? true;
+    startDate = when?.startDate ?? date ?? "";
+    endDate = when?.endDate ?? rangeEndDate ?? date ?? "";
+    startTime = when && !when.allDay ? when.startTime : "09:00";
+    endTime = when && !when.allDay ? when.endTime : "10:00";
     location = entry?.location ?? draft?.location ?? "";
     notes = entry?.notes ?? draft?.notes ?? "";
   }
@@ -138,8 +123,9 @@
       error = "Date is required";
       return;
     }
-    if (endDate < startDate) {
-      error = "The end must be on or after the start";
+    const whenProblem = whenError({ allDay, startDate, endDate, startTime, endTime });
+    if (whenProblem) {
+      error = whenProblem;
       return;
     }
 
@@ -162,19 +148,10 @@
             }
           : {}),
       };
-      if (allDay) {
-        await onSave({
-          ...common,
-          starts_at: startDate,
-          ends_at: shiftDate(endDate, 1),
-        });
-      } else {
-        await onSave({
-          ...common,
-          starts_at: `${startDate}T${startTime || "09:00"}:00`,
-          ends_at: `${endDate}T${endTime || "10:00"}:00`,
-        });
-      }
+      await onSave({
+        ...common,
+        ...whenPatch({ allDay, startDate, endDate, startTime, endTime }),
+      });
     } catch (cause) {
       error = String(cause);
     } finally {
@@ -546,13 +523,13 @@
   }
 
   .danger {
-    background: #e11d48;
-    color: #fff;
+    background: var(--danger);
+    color: var(--text-inverse);
   }
 
   .error {
     margin: 0 0 12px;
-    color: #e11d48;
+    color: var(--danger);
     font-size: 0.8125rem;
   }
 

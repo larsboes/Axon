@@ -1,0 +1,23 @@
+[package]
+name = "content-item"
+version = "0.1.0"
+edition = "2021"
+description = "The canonical Axon content-item-v1 reader contract, shared by every capability that emits one."
+publish = false
+
+[features]
+# The test module is compiled in only for the standalone build, so
+# //libs/content-item:content_item_test actually runs it. Consumers fold this
+# file in by #[path] include and get the types without the tests.
+standalone-tests = []
+
+[lib]
+name = "content_item"
+path = "src/lib.rs"
+
+# Deliberately only what every consumer already has — see the dependency rule in
+# src/lib.rs. This file is compiled inside the consumer's crate, so anything
+# listed here that a consumer lacks is a build break in that consumer, not here.
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

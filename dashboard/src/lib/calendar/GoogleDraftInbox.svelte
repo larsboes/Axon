@@ -5,10 +5,15 @@
   let {
     refresh,
     onChanged,
+    onCount,
   }: {
     /** Raised by the import review after it creates a draft. */
     refresh: number;
     onChanged: () => Promise<void>;
+    /** Reports the pending count to the rail, which shows it on the collapsed row.
+     * The fetch stays here rather than moving up: the 90-day draft window is this
+     * component's own concern, and the rail should not have to know it. */
+    onCount: (count: number) => void;
   } = $props();
 
   function dateKey(date: Date): string {
@@ -45,6 +50,7 @@
     } finally {
       loading = false;
     }
+    onCount(drafts.length);
   }
 
   $effect(() => {
@@ -99,71 +105,53 @@
   }
 </script>
 
-<section class="inbox" aria-labelledby="google-draft-title">
-  <div class="heading">
-    <div>
-      <p class="eyebrow">Google Calendar</p>
-      <h2 id="google-draft-title">Review drafts</h2>
-      <p>Adding an entry protects it from later Google updates. Removing it deletes only Axon's copy.</p>
-    </div>
-    <button class="btn" onclick={loadDrafts} disabled={loading || actingId !== null}>Refresh</button>
+<p class="hint">Adding an entry protects it from later Google updates. Removing it deletes only Axon's copy.</p>
+
+{#if error}<p class="message error" role="alert">{error}</p>{/if}
+
+{#if loading}
+  <p class="empty">Loading Google drafts…</p>
+{:else if drafts.length === 0}
+  <p class="empty">Nothing pending in the next 90 days.</p>
+{:else}
+  <div class="draft-list">
+    {#each drafts as entry (entry.id)}
+      <article class="draft">
+        <div class="details">
+          <strong>{entry.title}</strong>
+          <p>{when(entry)}{#if entry.location} · {entry.location}{/if}</p>
+        </div>
+        <label>
+          <span>As</span>
+          <select value={kindFor(entry)} onchange={(event) => setKind(entry, event.currentTarget.value)} disabled={actingId !== null}>
+            {#each KINDS as kind}
+              <option value={kind.value}>{kind.label}</option>
+            {/each}
+          </select>
+        </label>
+        <div class="actions">
+          <button class="btn btn-primary" onclick={() => adopt(entry)} disabled={actingId !== null}>
+            {actingId === entry.id ? "Saving…" : "Add"}
+          </button>
+          <button class="btn btn-danger" onclick={() => remove(entry)} disabled={actingId !== null}>Remove</button>
+        </div>
+      </article>
+    {/each}
   </div>
-
-  {#if error}<p class="message error" role="alert">{error}</p>{/if}
-
-  {#if loading}
-    <p class="empty">Loading Google drafts…</p>
-  {:else if drafts.length === 0}
-    <p class="empty">No pending Google drafts in the next 90 days.</p>
-  {:else}
-    <div class="draft-list">
-      {#each drafts as entry (entry.id)}
-        <article class="draft">
-          <div class="details">
-            <strong>{entry.title}</strong>
-            <p>{when(entry)}{#if entry.location} · {entry.location}{/if}</p>
-          </div>
-          <label>
-            <span>As</span>
-            <select value={kindFor(entry)} onchange={(event) => setKind(entry, event.currentTarget.value)} disabled={actingId !== null}>
-              {#each KINDS as kind}
-                <option value={kind.value}>{kind.label}</option>
-              {/each}
-            </select>
-          </label>
-          <div class="actions">
-            <button class="btn primary" onclick={() => adopt(entry)} disabled={actingId !== null}>
-              {actingId === entry.id ? "Saving…" : "Add"}
-            </button>
-            <button class="btn danger" onclick={() => remove(entry)} disabled={actingId !== null}>Remove</button>
-          </div>
-        </article>
-      {/each}
-    </div>
-  {/if}
-</section>
+{/if}
 
 <style>
-  .inbox { margin: 0 0 20px; padding: 18px; border: 1px solid var(--card-border); border-radius: 12px; background: var(--card-bg); }
-  .heading, .draft, .actions { display: flex; align-items: center; gap: 10px; }
-  .heading { justify-content: space-between; align-items: flex-start; }
-  .heading h2 { margin: 2px 0 4px; font-size: 1.1rem; }
-  .heading p { margin: 0; color: var(--text-secondary); font-size: .86rem; max-width: 48rem; }
-  .eyebrow { color: var(--primary) !important; font-size: .72rem !important; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  .message { margin: 12px 0 0; padding: 8px 10px; border-radius: 7px; font-size: .84rem; }
-  .error { color: #be123c; background: #fff1f2; }
-  .empty { margin: 14px 0 0; color: var(--text-secondary); font-size: .86rem; }
-  .draft-list { margin-top: 14px; border-top: 1px solid var(--card-border); }
-  .draft { padding: 10px 3px; border-bottom: 1px solid var(--card-border); }
-  .details { flex: 1; min-width: 0; }
-  .details strong { font-size: .9rem; }
-  .details p { margin: 3px 0 0; color: var(--text-secondary); font-size: .8rem; }
-  label { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: .78rem; }
-  select { max-width: 10rem; padding: 5px 7px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--surface); color: var(--text-primary); font: inherit; }
-  .actions { justify-content: flex-end; }
-  .danger { color: #be123c; }
-  @media (max-width: 720px) {
-    .heading, .draft { display: block; }
-    .heading .btn, .draft label, .draft .actions { margin-top: 10px; }
-  }
+  .hint { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: 0.75rem; line-height: 1.45; }
+  .message { margin: 0 0 0.5rem; padding: 0.5rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.78rem; }
+  .error { color: var(--danger); background-color: var(--danger-soft); }
+  .empty { margin: 0; color: var(--text-tertiary); font-size: 0.78rem; }
+  .draft-list { display: flex; flex-direction: column; }
+  .draft { padding: 0.6rem 0; border-top: 1px solid var(--card-border); }
+  .details { min-width: 0; }
+  .details strong { display: block; font-size: 0.8125rem; font-weight: 600; }
+  .details p { margin: 0.15rem 0 0; color: var(--text-secondary); font-size: 0.72rem; }
+  label { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.45rem; color: var(--text-secondary); font-size: 0.72rem; }
+  select { flex: 1; min-width: 0; padding: 0.25rem 0.35rem; border: 1px solid var(--input-border); border-radius: var(--radius-sm); background-color: var(--input-bg); color: var(--text-primary); font: inherit; font-size: 0.72rem; }
+  .actions { display: flex; gap: 0.3rem; margin-top: 0.45rem; }
+  .actions .btn { flex: 1; padding: 0.3rem 0.5rem; font-size: 0.72rem; }
 </style>

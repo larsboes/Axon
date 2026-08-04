@@ -65,6 +65,10 @@ contract, install, or review decision.
 7. **Self-hosted by default, distributed when earned.** One home-server deployment should serve
    phone and desktop clients. Kubernetes, WASM or a native shell enter only for a measured
    portability, isolation or performance need.
+8. **English is the shared surface.** Axon-authored interfaces, documentation, prompts,
+   summaries, explanations and errors default to English. Source material and explicitly
+   locale-specific capabilities may remain multilingual; accepting multilingual input must not
+   silently change Axon's output language.
 
 ## Feed, Scouting, and Obsidian boundaries
 
@@ -89,7 +93,7 @@ recomputed. `/feed/[id]` remains one dynamic reader for every item instead of ge
 application page per link.
 
 The dashboard presents passive intake and active discovery as two views of the same `/feed`
-workspace: **Eingang** reads Comms, while **Entdecken** starts and reads Scouting. This is a UI
+workspace: **Inbox** reads Comms, while **Discover** starts and reads Scouting. This is a UI
 integration, not a database merge; the capabilities retain separate contracts and provenance.
 
 Narrower by design, `scouting` searches for and scores opportunities such as

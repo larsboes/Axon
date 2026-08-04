@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.local/schemas/content-item.schema.json",
+  "title": "Axon Content Item",
+  "description": "Canonical reader contract. Source adapters extend content without creating a second reader model.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source",
+    "id",
+    "kind",
+    "title",
+    "url",
+    "author",
+    "summary",
+    "content",
+    "content_label",
+    "day",
+    "created_at",
+    "status",
+    "content_status",
+    "data_class",
+    "processing_policy",
+    "cloud_processing",
+    "relevance",
+    "evaluation",
+    "processing",
+    "origins",
+    "links",
+    "mail",
+    "calendar"
+  ],
+  "properties": {
+    "schema_version": { "const": "content-item-v1" },
+    "source": { "enum": ["feed", "mail", "calendar"] },
+    "id": { "type": "string", "minLength": 1 },
+    "kind": { "type": "string", "minLength": 1 },
+    "title": { "type": ["string", "null"] },
+    "url": {
+      "type": "string",
+      "format": "uri-reference",
+      "description": "Where this item lives. An absolute URI for anything with an external home (a feed article, a Gmail deep link); a root-relative dashboard path for an item whose only home is Axon itself, which is why this is uri-reference and not uri."
+    },
+    "author": { "type": ["string", "null"] },
+    "summary": { "type": ["string", "null"] },
+    "content": { "type": ["string", "null"] },
+    "content_label": { "type": "string", "minLength": 1 },
+    "day": { "type": "string" },
+    "created_at": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "minLength": 1 },
+    "content_status": { "enum": ["full", "thin", "none", "unknown"] },
+    "data_class": { "$ref": "#/$defs/dataClass" },
+    "processing_policy": { "$ref": "#/$defs/processingPolicy" },
+    "cloud_processing": { "$ref": "#/$defs/cloudProcessingState" },
+    "relevance": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/relevance" }
+    },
+    "evaluation": {
+      "oneOf": [
+        { "$ref": "#/$defs/evaluation" },
+        { "type": "null" }
+      ]
+    },
+    "processing": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/processing" }
+    },
+    "origins": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/origin" }
+    },
+    "links": {
+      "type": "array",
+      "description": "Named ways out of this item: the source page, the mail that carried the ticket, a map, a vault note. Shared vocabulary rather than a per-capability payload key, because every source was about to invent it separately.",
+      "items": { "$ref": "#/$defs/link" }
+    },
+    "mail": {
+      "oneOf": [
+        { "$ref": "#/$defs/mailExtension" },
+        { "type": "null" }
+      ]
+    },
+    "calendar": {
+      "oneOf": [
+        { "$ref": "#/$defs/calendarExtension" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "dataClass": {
+      "type": "object",
+      "description": "Stored trust classification. The vault value is labelled Private in the product.",
+      "required": ["value", "label", "rationale", "method", "version"],
+      "properties": {
+        "value": { "enum": ["public", "personal", "vault"] },
+        "label": { "enum": ["Public", "Personal", "Private"] },
+        "rationale": { "type": "string", "minLength": 1 },
+        "method": { "enum": ["source-default", "rules", "human"] },
+        "version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "processingPolicy": {
+      "type": "object",
+      "description": "Derived permission boundary; it records eligibility and never proves that pseudonymization occurred.",
+      "required": ["local_processing", "cloud_handling", "pseudonymization_required", "rationale"],
+      "properties": {
+        "local_processing": { "const": "allowed" },
+        "cloud_handling": { "enum": ["eligible", "pseudonymization_required", "blocked"] },
+        "pseudonymization_required": { "type": "boolean" },
+        "rationale": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "cloudProcessingState": {
+      "type": "object",
+      "description": "Local approval plus explicit cloud execution state. Only a running or later state implies a provider call.",
+      "required": ["status", "preview_hash", "approved_at", "dispatch_status", "job_id", "provider_role", "queued_at", "provider_calls", "task", "started_at", "completed_at", "last_error", "result"],
+      "properties": {
+        "status": { "enum": ["not_prepared", "staged", "stale"] },
+        "preview_hash": { "type": ["string", "null"] },
+        "approved_at": { "type": ["string", "null"] },
+        "dispatch_status": { "enum": ["not_queued", "queued", "running", "succeeded", "failed"] },
+        "job_id": { "type": ["string", "null"] },
+        "provider_role": { "type": ["string", "null"] },
+        "queued_at": { "type": ["string", "null"] },
+        "provider_calls": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "task": { "type": ["string", "null"], "enum": ["content-analysis-v1", null] },
+        "started_at": { "type": ["string", "null"] },
+        "completed_at": { "type": ["string", "null"] },
+        "last_error": { "type": ["string", "null"] },
+        "result": {
+          "oneOf": [
+            { "$ref": "cloud-content-analysis.schema.json" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "relevance": {
+      "type": "object",
+      "required": ["profile_key", "profile_label", "score", "rationale", "mode", "profile_revision"],
+      "properties": {
+        "profile_key": { "type": "string" },
+        "profile_label": { "type": "string" },
+        "score": { "type": "number" },
+        "rationale": { "type": "string" },
+        "mode": { "enum": ["reranked", "semantic", "lexical"] },
+        "profile_revision": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "evaluation": {
+      "type": "object",
+      "required": ["overall_score", "explanation", "mode", "item_revision", "context_revision", "evaluator_revision", "evaluated_at", "factors"],
+      "properties": {
+        "overall_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "explanation": { "type": "string" },
+        "mode": { "type": "string" },
+        "item_revision": { "type": "string" },
+        "context_revision": { "type": "string" },
+        "evaluator_revision": { "type": "string" },
+        "evaluated_at": { "type": "string" },
+        "factors": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": false
+    },
+    "processing": {
+      "type": "object",
+      "required": ["stage", "tier", "revision", "completed_at"],
+      "properties": {
+        "stage": { "type": "string" },
+        "tier": { "type": "string" },
+        "revision": { "type": "string" },
+        "completed_at": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "origin": {
+      "type": "object",
+      "required": ["source_id", "source_ref", "label"],
+      "properties": {
+        "source_id": { "type": "string" },
+        "source_ref": { "type": "string" },
+        "label": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "link": {
+      "type": "object",
+      "required": ["label", "kind", "url"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A hint for presentation (mail, source, ticket, map, vault). Deliberately open: a reader that meets an unknown kind still renders a working link."
+        },
+        "url": { "type": "string", "format": "uri-reference" }
+      },
+      "additionalProperties": false
+    },
+    "calendarExtension": {
+      "type": "object",
+      "description": "What only a calendar entry has: it occupies time, and the operator has taken a position on it. There is no score here on purpose — a decided item is not ranked.",
+      "required": ["starts_at", "ends_at", "all_day", "commitment", "location", "notes", "entry_source", "rhythm_id"],
+      "properties": {
+        "starts_at": { "type": "string", "minLength": 1 },
+        "ends_at": { "type": "string", "minLength": 1, "description": "Exclusive, as everywhere in calendar." },
+        "all_day": { "type": "boolean" },
+        "commitment": { "enum": ["possible", "planned", "committed"] },
+        "location": { "type": ["string", "null"] },
+        "notes": {
+          "type": ["string", "null"],
+          "description": "The operator's own note — why they care. Distinct from `summary`, which describes what the thing is. No machine writes this."
+        },
+        "entry_source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Which adapter contributed the row (manual, luma, google) — not the item's `source`, which is always `calendar`. A reader needs it to know which actions are honest: an entry imported from Google must not offer to export back to Google."
+        },
+        "rhythm_id": {
+          "type": ["string", "null"],
+          "description": "Set when the entry was materialized from a rhythm. A rhythm instance is not exported individually, and any patch detaches it from its rhythm."
+        }
+      },
+      "additionalProperties": false
+    },
+    "mailExtension": {
+      "type": "object",
+      "required": ["category", "rationale", "classification_method", "classification_version", "gmail_action", "gmail_action_at", "purge_after", "gmail_location", "gmail_observed_at", "gmail_sync_status", "gmail_sync_action", "gmail_sync_error"],
+      "properties": {
+        "category": { "enum": ["aktiv", "issue", "feed", "werbung", "belege", "steuern", "sonstiges"] },
+        "rationale": { "type": "string" },
+        "classification_method": { "enum": ["rules", "human"] },
+        "classification_version": { "type": "string" },
+        "gmail_action": { "type": ["string", "null"], "enum": ["archive", "trash", "restore", null] },
+        "gmail_action_at": { "type": ["string", "null"] },
+        "purge_after": { "type": ["string", "null"] },
+        "gmail_location": { "type": ["string", "null"], "enum": ["inbox", "archive", "trash", "missing", null] },
+        "gmail_observed_at": { "type": ["string", "null"] },
+        "gmail_sync_status": { "type": ["string", "null"], "enum": ["synced", "queued", "retrying", "attention", null] },
+        "gmail_sync_action": { "type": ["string", "null"], "enum": ["archive", "trash", "restore", null] },
+        "gmail_sync_error": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "source": { "const": "mail" } }, "required": ["source"] },
+      "then": { "properties": { "mail": { "$ref": "#/$defs/mailExtension" } } },
+      "else": { "properties": { "mail": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "source": { "const": "calendar" } }, "required": ["source"] },
+      "then": { "properties": { "calendar": { "$ref": "#/$defs/calendarExtension" } } },
+      "else": { "properties": { "calendar": { "type": "null" } } }
+    },
+    {
+      "comment": "A source without a ranking pipeline must leave the ranking empty rather than synthesise one. This is the constraint that kept score: 0.0 and matched_focus: 'Scholarship Profile' off real calendar entries.",
+      "if": { "properties": { "source": { "const": "calendar" } }, "required": ["source"] },
+      "then": {
+        "properties": {
+          "relevance": { "type": "array", "maxItems": 0 },
+          "evaluation": { "type": "null" }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

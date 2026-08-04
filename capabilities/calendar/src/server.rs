@@ -11,12 +11,11 @@ use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 
 use calendar::config::Config;
+use calendar::content;
 use calendar::correlate::{self, Candidate};
 use calendar::date;
 use calendar::google_sync::{self, HttpCalendarApi, Settings};
-use calendar::model::{
-    NewContext, NewEntry, NewRhythm, UpdateContext, UpdateEntry, UpdateRhythm,
-};
+use calendar::model::{NewContext, NewEntry, NewRhythm, UpdateContext, UpdateEntry, UpdateRhythm};
 use calendar::store::CalendarStore;
 
 #[derive(Clone)]
@@ -35,6 +34,55 @@ fn response<T: serde::Serialize>(status: StatusCode, value: T) -> ApiResponse {
                 .unwrap_or_else(|_| json!({ "error": "serialization failed" })),
         ),
     )
+}
+
+/// What this capability answers, served as data beside `/health`.
+///
+/// Query parameters that are *required* are named in the summary: a caller
+/// reading a path alone has no way to learn that `from` and `to` are mandatory,
+/// and discovering that from a 400 is the thing this endpoint exists to avoid.
+const ROUTES: &[route_manifest::Route] = &[
+    r("GET", "/health", "Liveness."),
+    r("GET", "/routes", "This manifest."),
+    r("GET", "/api/entries", "Entries overlapping a day window. Requires from, to; optional kind (CSV)."),
+    r("POST", "/api/entries", "Create an entry."),
+    r("GET", "/api/entries/:id", "One entry."),
+    r("PATCH", "/api/entries/:id", "Patch an entry. Any patch detaches it from its rhythm."),
+    r("DELETE", "/api/entries/:id", "Delete an entry."),
+    r("PUT", "/api/entries/external", "Idempotent provider contribution. Requires source + external_id."),
+    r("GET", "/api/content/:source/:id", "The entry as content-item-v1. :source is always 'calendar'."),
+    r("GET", "/api/proposals", "Un-adopted external entries awaiting a decision. Requires from, to."),
+    r("GET", "/api/google/drafts", "Unreviewed Google imports. Requires from, to."),
+    r("GET", "/api/contexts", "Planning contexts overlapping a window. Requires from, to."),
+    r("POST", "/api/contexts", "Create a planning context."),
+    r("PATCH", "/api/contexts/:id", "Patch a planning context."),
+    r("DELETE", "/api/contexts/:id", "Delete a planning context."),
+    r("GET", "/api/rhythms", "Every rhythm."),
+    r("POST", "/api/rhythms", "Create a rhythm and materialize its future instances."),
+    r("GET", "/api/rhythms/:id", "One rhythm."),
+    r("PATCH", "/api/rhythms/:id", "Patch a rhythm."),
+    r("DELETE", "/api/rhythms/:id", "Delete a rhythm."),
+    r("POST", "/api/rhythms/:id/materialize", "Re-materialize a rhythm's future instances."),
+    r("POST", "/api/verdicts", "Feasibility verdicts for a batch of dated candidates."),
+    r("GET", "/api/windows", "Runs of days where travel is possible. Requires from, to."),
+    r("GET", "/api/trip-drafts", "Events clustered by city and time proximity. Requires from, to."),
+    r("POST", "/api/trip-drafts/materialize", "Turn a draft into a trips.plan."),
+    r("POST", "/api/google/import", "Import Google events as non-blocking drafts."),
+    r("POST", "/api/google/import-preview", "Read-only review of what an import would write."),
+    r("POST", "/api/google/import-selected", "Import an explicit selection, rejecting changed revisions."),
+    r("POST", "/api/google/export", "Push opted-in entries to Google."),
+    r("GET", "/api/google/exports", "The export opt-in ledger."),
+    r("PUT", "/api/entries/:id/google-export", "Opt an entry in to export."),
+    r("DELETE", "/api/entries/:id/google-export", "Opt an entry out. The Google event is left alone."),
+];
+
+/// Shorthand so the table above reads as a table.
+const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
+    route_manifest::Route { method, path, summary }
+}
+
+async fn routes() -> Json<Value> {
+    Json(route_manifest::manifest("calendar", ROUTES))
 }
 
 async fn health() -> Json<Value> {
@@ -171,6 +219,44 @@ async fn upsert_external_entry(
     {
         Ok(Ok(entry)) => response(StatusCode::OK, entry),
         Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+/// The same entry as `content-item-v1`, for the one dashboard reader that also
+/// renders feed articles and mail. A projection, not a second copy: the store
+/// is not touched and nothing is written.
+///
+/// Path shape mirrors comms' `/content/:source/:id` deliberately. One contract
+/// served under two different URL shapes is the same duplication the contract
+/// exists to remove, one layer down — so the reader can build the URL from the
+/// source alone rather than carrying a per-capability special case.
+async fn get_content_item(
+    State(state): State<AppState>,
+    Path((source, id)): Path<(String, String)>,
+) -> ApiResponse {
+    // The segment is part of the shared shape, not a lookup key — calendar
+    // serves exactly one source and says so rather than silently ignoring it.
+    if source != "calendar" {
+        return response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": format!("calendar serves the 'calendar' content source, not '{source}'") }),
+        );
+    }
+    let database_url = state.database_url.clone();
+    match tokio::task::spawn_blocking(move || {
+        CalendarStore::open(&database_url)
+            .and_then(|store| store.get_entry(&id))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(Some(entry))) => response(StatusCode::OK, content::from_entry(&entry)),
+        Ok(Ok(None)) => response(StatusCode::NOT_FOUND, json!({ "error": "entry not found" })),
+        Ok(Err(error)) => response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })),
         Err(error) => response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": error.to_string() }),
@@ -487,7 +573,7 @@ struct VerdictsRequest {
 }
 
 /// Soft feasibility verdicts for a batch of dated candidates. Batched because
-/// Feed's Entdecken view asks about a screenful of opportunities at once, and
+/// Feed's Discover view asks about a screenful of opportunities at once, and
 /// one span-covering read beats one query per row.
 async fn candidate_verdicts(
     State(state): State<AppState>,
@@ -579,9 +665,7 @@ async fn materialize_trip(
                 let forgotten = store
                     .forget_trip_materialization(&plan_id)
                     .map_err(|e| e.to_string())?;
-                eprintln!(
-                    "  trips: {plan_id} is gone, forgetting {forgotten} stale ledger row(s)"
-                );
+                eprintln!("  trips: {plan_id} is gone, forgetting {forgotten} stale ledger row(s)");
                 continue;
             }
             return Err(format!(
@@ -1025,6 +1109,25 @@ async fn opt_out_export(State(state): State<AppState>, Path(id): Path<String>) -
 #[allow(dead_code)]
 mod axon_server;
 
+// The self-describing surface, on the same include terms.
+#[path = "../../../libs/route-manifest/src/lib.rs"]
+#[allow(dead_code)]
+mod route_manifest;
+
+#[cfg(test)]
+mod route_manifest_tests {
+    use super::ROUTES;
+
+    /// A stale manifest is worse than none, because it gets believed. This
+    /// reads the router's own source, so adding a `.route()` without a summary
+    /// fails here rather than shipping a surface that lies about itself.
+    #[test]
+    fn the_manifest_covers_every_served_route() {
+        let missing = super::route_manifest::undeclared_routes(include_str!("server.rs"), ROUTES);
+        assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let config = Config::load();
@@ -1035,6 +1138,7 @@ async fn main() {
     };
     let app = Router::new()
         .route("/health", get(health))
+        .route("/routes", get(routes))
         .route("/api/entries", get(list_entries).post(create_entry))
         .route("/api/google/drafts", get(list_google_drafts))
         .route("/api/proposals", get(list_external_proposals))
@@ -1043,6 +1147,7 @@ async fn main() {
             "/api/entries/:id",
             get(get_entry).patch(update_entry).delete(delete_entry),
         )
+        .route("/api/content/:source/:id", get(get_content_item))
         .route("/api/contexts", get(list_contexts).post(create_context))
         .route(
             "/api/contexts/:id",

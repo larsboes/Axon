@@ -1,13 +1,19 @@
-//! READ-ONLY Gmail access. The only Google endpoints this module touches:
+//! Gmail access. Reads are used by the bounded sweep; writes happen only after
+//! an explicit dashboard action:
 //!   - OAuth token refresh: POST https://oauth2.googleapis.com/token
 //!   - list threads:        GET  .../gmail/v1/users/me/threads?q=in:inbox
 //!   - thread metadata:     GET  .../gmail/v1/users/me/threads/{id}?format=metadata
+//!   - archive a thread:    POST .../gmail/v1/users/me/threads/{id}/modify
+//!   - move to Trash:       POST .../gmail/v1/users/me/threads/{id}/trash
+//!   - restore from Trash:  POST .../gmail/v1/users/me/threads/{id}/untrash
+//!   - restore an archive:  POST .../gmail/v1/users/me/threads/{id}/modify
 //!
-//! There is intentionally NO modify/trash/delete/labels/send call here -- not
-//! behind a flag. Credentials come from the overlay's `comms.env`
+//! There is no permanent-delete, send, or arbitrary-label operation.
+//! Credentials come from the overlay's `comms.env`
 //! (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN); token
 //! values are never logged.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,6 +27,10 @@ const THREADS_URL: &str = "https://gmail.googleapis.com/gmail/v1/users/me/thread
 /// Courtesy pause between per-thread metadata fetches (see `thread_meta`).
 const THREAD_FETCH_PAUSE: std::time::Duration = std::time::Duration::from_millis(60);
 
+fn is_missing_thread_status(status: u16) -> bool {
+    matches!(status, 404 | 410)
+}
+
 /// In-process token cache (never persisted). Refreshed when within 60s of expiry.
 struct CachedToken {
     token: String,
@@ -29,7 +39,10 @@ struct CachedToken {
 static TOKEN_CACHE: OnceLock<Mutex<Option<CachedToken>>> = OnceLock::new();
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn client() -> Result<reqwest::blocking::Client> {
@@ -46,7 +59,10 @@ fn read_env_key(env_path: &Path, key: &str) -> Result<String> {
         CommsError::Config(format!("cannot read google env file {env_path:?}: {e}"))
     })?;
     body.lines()
-        .find_map(|l| l.strip_prefix(&format!("{key}=")).map(|v| v.trim().to_string()))
+        .find_map(|l| {
+            l.strip_prefix(&format!("{key}="))
+                .map(|v| v.trim().to_string())
+        })
         .filter(|v| !v.is_empty())
         .ok_or_else(|| CommsError::Config(format!("{key} missing or empty in {env_path:?}")))
 }
@@ -113,6 +129,12 @@ pub struct ThreadStub {
     pub id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ThreadPage {
+    pub threads: Vec<ThreadStub>,
+    pub next_page_token: Option<String>,
+}
+
 /// Metadata for one thread's latest message.
 #[derive(Debug, Clone, Default)]
 pub struct ThreadMeta {
@@ -125,6 +147,33 @@ pub struct ThreadMeta {
     pub label_ids: Vec<String>,
     /// internalDate of the latest message, epoch milliseconds.
     pub internal_date_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadLocation {
+    Inbox,
+    Archive,
+    Trash,
+}
+
+impl ThreadLocation {
+    pub fn from_labels(labels: &[String]) -> Self {
+        if labels.iter().any(|label| label == "TRASH") {
+            Self::Trash
+        } else if labels.iter().any(|label| label == "INBOX") {
+            Self::Inbox
+        } else {
+            Self::Archive
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inbox => "inbox",
+            Self::Archive => "archive",
+            Self::Trash => "trash",
+        }
+    }
 }
 
 impl ThreadMeta {
@@ -148,41 +197,61 @@ struct ThreadListEntry {
 /// Lists inbox threads (read-only, `q=in:inbox`), paging until `limit` ids are
 /// collected or the inbox is exhausted.
 pub fn list_inbox_threads(token: &str, limit: usize) -> Result<Vec<ThreadStub>> {
-    let http = client()?;
     let mut out: Vec<ThreadStub> = Vec::new();
     let mut page_token: Option<String> = None;
 
     while out.len() < limit {
         let remaining = limit - out.len();
-        let page_size = remaining.min(100).to_string();
-        let mut query: Vec<(&str, String)> = vec![
-            ("q", "in:inbox".to_string()),
-            ("maxResults", page_size),
-        ];
-        if let Some(pt) = &page_token {
-            query.push(("pageToken", pt.clone()));
-        }
-
-        let resp = http.get(THREADS_URL).bearer_auth(token).query(&query).send()?;
-        if !resp.status().is_success() {
-            return Err(CommsError::Other(format!(
-                "thread list failed with HTTP {}",
-                resp.status()
-            )));
-        }
-        let parsed: ThreadListResponse = resp.json()?;
-        for t in parsed.threads {
-            out.push(ThreadStub { id: t.id });
+        let page = list_inbox_threads_page(token, remaining.min(100), page_token.as_deref())?;
+        for thread in page.threads {
+            out.push(thread);
             if out.len() >= limit {
                 break;
             }
         }
-        match parsed.next_page_token {
+        match page.next_page_token {
             Some(pt) if out.len() < limit => page_token = Some(pt),
             _ => break,
         }
     }
     Ok(out)
+}
+
+/// Read one Gmail inbox page. The opaque cursor is returned to the caller but
+/// never persisted; a fresh review session can safely begin at the newest page
+/// again because triage upserts are idempotent.
+pub fn list_inbox_threads_page(
+    token: &str,
+    limit: usize,
+    page_token: Option<&str>,
+) -> Result<ThreadPage> {
+    let page_size = limit.clamp(1, 100).to_string();
+    let mut query: Vec<(&str, String)> =
+        vec![("q", "in:inbox".to_string()), ("maxResults", page_size)];
+    if let Some(cursor) = page_token.filter(|value| !value.trim().is_empty()) {
+        query.push(("pageToken", cursor.to_string()));
+    }
+
+    let response = client()?
+        .get(THREADS_URL)
+        .bearer_auth(token)
+        .query(&query)
+        .send()?;
+    if !response.status().is_success() {
+        return Err(CommsError::Other(format!(
+            "thread list failed with HTTP {}",
+            response.status()
+        )));
+    }
+    let parsed: ThreadListResponse = response.json()?;
+    Ok(ThreadPage {
+        threads: parsed
+            .threads
+            .into_iter()
+            .map(|thread| ThreadStub { id: thread.id })
+            .collect(),
+        next_page_token: parsed.next_page_token,
+    })
 }
 
 #[derive(Deserialize)]
@@ -219,10 +288,10 @@ fn find_header<'a>(headers: &'a [Header], name: &str) -> Option<&'a str> {
         .map(|h| h.value.as_str())
 }
 
-/// Fetches metadata for one thread (read-only, `format=metadata`), reading the
-/// latest message's headers/snippet/labels/internalDate. Sleeps briefly first
-/// as a rate-limit courtesy between per-thread fetches.
-pub fn thread_meta(token: &str, id: &str) -> Result<ThreadMeta> {
+/// Fetches metadata for one thread (read-only, `format=metadata`). Gmail 404
+/// and 410 responses are an authoritative missing observation, not a retryable
+/// transport failure.
+pub fn thread_meta_lookup(token: &str, id: &str) -> Result<Option<ThreadMeta>> {
     std::thread::sleep(THREAD_FETCH_PAUSE);
     let http = client()?;
     let url = format!("{THREADS_URL}/{id}");
@@ -237,6 +306,9 @@ pub fn thread_meta(token: &str, id: &str) -> Result<ThreadMeta> {
             ("metadataHeaders", "List-Unsubscribe"),
         ])
         .send()?;
+    if is_missing_thread_status(resp.status().as_u16()) {
+        return Ok(None);
+    }
     if !resp.status().is_success() {
         return Err(CommsError::Other(format!(
             "thread metadata failed with HTTP {}",
@@ -250,10 +322,19 @@ pub fn thread_meta(token: &str, id: &str) -> Result<ThreadMeta> {
         ..Default::default()
     };
 
+    meta.label_ids = detail
+        .messages
+        .iter()
+        .flat_map(|message| message.label_ids.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     if let Some(msg) = detail.messages.last() {
         meta.snippet = msg.snippet.clone();
-        meta.label_ids = msg.label_ids.clone();
-        meta.internal_date_ms = msg.internal_date.as_ref().and_then(|s| s.parse::<i64>().ok());
+        meta.internal_date_ms = msg
+            .internal_date
+            .as_ref()
+            .and_then(|s| s.parse::<i64>().ok());
         if let Some(payload) = &msg.payload {
             meta.from_addr = find_header(&payload.headers, "From").map(str::to_string);
             meta.subject = find_header(&payload.headers, "Subject").map(str::to_string);
@@ -262,7 +343,93 @@ pub fn thread_meta(token: &str, id: &str) -> Result<ThreadMeta> {
                 find_header(&payload.headers, "List-Unsubscribe").map(str::to_string);
         }
     }
-    Ok(meta)
+    Ok(Some(meta))
+}
+
+/// Compatibility helper for callers that require an existing thread.
+pub fn thread_meta(token: &str, id: &str) -> Result<ThreadMeta> {
+    thread_meta_lookup(token, id)?
+        .ok_or_else(|| CommsError::Other("Gmail thread is missing".into()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadAction {
+    Archive,
+    Trash,
+    RestoreArchive,
+    RestoreTrash,
+}
+
+impl ThreadAction {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "archive" => Some(Self::Archive),
+            "trash" => Some(Self::Trash),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Archive => "archive",
+            Self::Trash => "trash",
+            Self::RestoreArchive | Self::RestoreTrash => "restore",
+        }
+    }
+}
+
+fn valid_thread_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Apply one deliberately small Gmail mutation. Archive removes only the
+/// INBOX label. Trash uses Gmail's recoverable Trash operation; restore either
+/// adds INBOX back or uses untrash. Axon never calls permanent delete.
+pub fn apply_thread_action(token: &str, id: &str, action: ThreadAction) -> Result<()> {
+    if !valid_thread_id(id) {
+        return Err(CommsError::Other("invalid Gmail thread id".into()));
+    }
+
+    let http = client()?;
+    let response = thread_action_request(&http, THREADS_URL, token, id, action).send()?;
+
+    if !response.status().is_success() {
+        return Err(CommsError::Other(format!(
+            "Gmail {} failed with HTTP {}",
+            action.as_str(),
+            response.status()
+        )));
+    }
+    Ok(())
+}
+
+fn thread_action_request(
+    http: &reqwest::blocking::Client,
+    threads_url: &str,
+    token: &str,
+    id: &str,
+    action: ThreadAction,
+) -> reqwest::blocking::RequestBuilder {
+    match action {
+        ThreadAction::Archive => http
+            .post(format!("{threads_url}/{id}/modify"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "removeLabelIds": ["INBOX"] })),
+        ThreadAction::Trash => http
+            .post(format!("{threads_url}/{id}/trash"))
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_LENGTH, "0")
+            .body(Vec::new()),
+        ThreadAction::RestoreArchive => http
+            .post(format!("{threads_url}/{id}/modify"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "addLabelIds": ["INBOX"] })),
+        ThreadAction::RestoreTrash => http
+            .post(format!("{threads_url}/{id}/untrash"))
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_LENGTH, "0")
+            .body(Vec::new()),
+    }
 }
 
 #[cfg(test)]
@@ -276,19 +443,134 @@ mod tests {
         let f = dir.join("comms.env");
         std::fs::write(&f, "GOOGLE_CLIENT_ID=abc\nGOOGLE_CLIENT_SECRET=\n").unwrap();
         assert_eq!(read_env_key(&f, "GOOGLE_CLIENT_ID").unwrap(), "abc");
-        assert!(read_env_key(&f, "GOOGLE_CLIENT_SECRET").is_err(), "empty value is an error");
-        assert!(read_env_key(&f, "GOOGLE_REFRESH_TOKEN").is_err(), "missing key is an error");
+        assert!(
+            read_env_key(&f, "GOOGLE_CLIENT_SECRET").is_err(),
+            "empty value is an error"
+        );
+        assert!(
+            read_env_key(&f, "GOOGLE_REFRESH_TOKEN").is_err(),
+            "missing key is an error"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn header_lookup_is_case_insensitive() {
         let headers = vec![
-            Header { name: "From".into(), value: "a@b.com".into() },
-            Header { name: "List-Unsubscribe".into(), value: "<mailto:x>".into() },
+            Header {
+                name: "From".into(),
+                value: "a@b.com".into(),
+            },
+            Header {
+                name: "List-Unsubscribe".into(),
+                value: "<mailto:x>".into(),
+            },
         ];
         assert_eq!(find_header(&headers, "from"), Some("a@b.com"));
-        assert_eq!(find_header(&headers, "LIST-UNSUBSCRIBE"), Some("<mailto:x>"));
+        assert_eq!(
+            find_header(&headers, "LIST-UNSUBSCRIBE"),
+            Some("<mailto:x>")
+        );
         assert_eq!(find_header(&headers, "Subject"), None);
+    }
+
+    #[test]
+    fn thread_actions_and_ids_are_bounded() {
+        assert_eq!(ThreadAction::parse("archive"), Some(ThreadAction::Archive));
+        assert_eq!(ThreadAction::parse("trash"), Some(ThreadAction::Trash));
+        assert_eq!(ThreadAction::parse("delete"), None);
+        assert!(valid_thread_id("18f17d0a9bc123ef"));
+        assert!(!valid_thread_id("../thread"));
+        assert!(!valid_thread_id(""));
+    }
+
+    #[test]
+    fn thread_location_prefers_trash_then_inbox() {
+        assert_eq!(
+            ThreadLocation::from_labels(&["STARRED".into(), "INBOX".into()]),
+            ThreadLocation::Inbox
+        );
+        assert_eq!(
+            ThreadLocation::from_labels(&["INBOX".into(), "TRASH".into()]),
+            ThreadLocation::Trash
+        );
+        assert_eq!(
+            ThreadLocation::from_labels(&["STARRED".into()]),
+            ThreadLocation::Archive
+        );
+        assert!(is_missing_thread_status(404));
+        assert!(is_missing_thread_status(410));
+        assert!(!is_missing_thread_status(429));
+    }
+
+    #[test]
+    fn gmail_action_requests_have_explicit_bodies() {
+        let http = client().unwrap();
+        let archive = thread_action_request(
+            &http,
+            "https://gmail.example/threads",
+            "test-token",
+            "18f17d0a9bc123ef",
+            ThreadAction::Archive,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(archive.method(), reqwest::Method::POST);
+        assert!(archive.url().path().ends_with("/modify"));
+        assert_eq!(
+            archive.headers()[reqwest::header::CONTENT_TYPE],
+            "application/json"
+        );
+        assert!(archive
+            .body()
+            .and_then(reqwest::blocking::Body::as_bytes)
+            .is_some_and(|body| body == br#"{"removeLabelIds":["INBOX"]}"#));
+
+        let trash = thread_action_request(
+            &http,
+            "https://gmail.example/threads",
+            "test-token",
+            "18f17d0a9bc123ef",
+            ThreadAction::Trash,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(trash.method(), reqwest::Method::POST);
+        assert!(trash.url().path().ends_with("/trash"));
+        assert_eq!(trash.headers()[reqwest::header::CONTENT_LENGTH], "0");
+        assert!(trash
+            .body()
+            .and_then(reqwest::blocking::Body::as_bytes)
+            .is_some_and(|body| body.is_empty()));
+
+        let restore_archive = thread_action_request(
+            &http,
+            "https://gmail.example/threads",
+            "test-token",
+            "18f17d0a9bc123ef",
+            ThreadAction::RestoreArchive,
+        )
+        .build()
+        .unwrap();
+        assert!(restore_archive.url().path().ends_with("/modify"));
+        assert!(restore_archive
+            .body()
+            .and_then(reqwest::blocking::Body::as_bytes)
+            .is_some_and(|body| body == br#"{"addLabelIds":["INBOX"]}"#));
+
+        let restore_trash = thread_action_request(
+            &http,
+            "https://gmail.example/threads",
+            "test-token",
+            "18f17d0a9bc123ef",
+            ThreadAction::RestoreTrash,
+        )
+        .build()
+        .unwrap();
+        assert!(restore_trash.url().path().ends_with("/untrash"));
+        assert_eq!(
+            restore_trash.headers()[reqwest::header::CONTENT_LENGTH],
+            "0"
+        );
     }
 }

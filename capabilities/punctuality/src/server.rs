@@ -26,6 +26,26 @@ use punctuality::store::{StatRow, Store};
 /// One stop to look up. `hour` and `weekend` are the caller's, because only the caller
 /// knows which of a leg's two timestamps it is asking about — departure at the origin
 /// or arrival at the destination.
+/// What this capability answers, served as data beside `/health`.
+/// Required query parameters are named in the summary: a path alone cannot tell
+/// a caller what it must send, and learning that from a 400 is the thing this
+/// endpoint exists to avoid.
+const ROUTES: &[route_manifest::Route] = &[
+    r("GET", "/health", "Liveness."),
+    r("GET", "/routes", "This manifest."),
+    r("POST", "/lookup", "Punctuality for a connection."),
+    r("GET", "/stations", "Station search. Requires a query."),
+];
+
+/// Shorthand so the table above reads as a table.
+const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
+    route_manifest::Route { method, path, summary }
+}
+
+async fn routes() -> Json<Value> {
+    Json(route_manifest::manifest("punctuality", ROUTES))
+}
+
 #[derive(Debug, Deserialize)]
 struct StopQuery {
     eva: String,
@@ -209,6 +229,7 @@ async fn main() {
     let port = axon_server::resolve_port(None, None, 8085);
 
     let app = Router::new()
+        .route("/routes", get(routes))
         .route("/health", get(handle_health))
         .route("/lookup", post(handle_lookup))
         .route("/stations", get(handle_station))
@@ -220,4 +241,22 @@ async fn main() {
     // rationale is now axon_server::serve_local's policy (this crate's bind-failure
     // behavior became the shared default there, too).
     axon_server::serve_local("punctuality-server", port, app).await;
+}
+
+// The self-describing surface, on the same include terms as the other libs.
+#[path = "../../../libs/route-manifest/src/lib.rs"]
+#[allow(dead_code)]
+mod route_manifest;
+
+#[cfg(test)]
+mod route_manifest_tests {
+    /// A stale manifest is worse than none, because it gets believed. This reads
+    /// the router's own source, so adding a `.route()` without a summary fails
+    /// here rather than shipping a surface that lies about itself.
+    #[test]
+    fn the_manifest_covers_every_served_route() {
+        let missing =
+            super::route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
+        assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
 }

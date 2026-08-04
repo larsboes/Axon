@@ -4,20 +4,15 @@
   import MonthGrid from "$lib/calendar/MonthGrid.svelte";
   import TimeGrid from "$lib/calendar/TimeGrid.svelte";
   import EntryForm from "$lib/calendar/EntryForm.svelte";
-  import GoogleDraftInbox from "$lib/calendar/GoogleDraftInbox.svelte";
-  import GoogleExportReview from "$lib/calendar/GoogleExportReview.svelte";
-  import GoogleImportReview from "$lib/calendar/GoogleImportReview.svelte";
-  import CalendarProposalInbox from "$lib/calendar/CalendarProposalInbox.svelte";
-  import TripDraftInbox from "$lib/calendar/TripDraftInbox.svelte";
-  import RhythmForm from "$lib/calendar/RhythmForm.svelte";
-  import ContextPanel from "$lib/calendar/ContextPanel.svelte";
+  import CalendarRail from "$lib/calendar/CalendarRail.svelte";
+  import { goto } from "$app/navigation";
   import {
     VIEWS,
     addDays,
     coversDay,
     dayKey,
+    entryReaderLink,
     freeDaysOf,
-    kindConfig,
     monthDates,
     parseDayKey,
     weekDates,
@@ -64,7 +59,9 @@
 
   // One anchor date for all three views, so switching keeps your place; only
   // navigation moves it, by month, by week or by day.
-  let view = $state<CalendarView>("month");
+  /// What /calendar opens on when nothing in the URL says otherwise.
+  const DEFAULT_VIEW: CalendarView = "month";
+  let view = $state<CalendarView>(DEFAULT_VIEW);
   let anchor = $state(new Date());
   let anchorMonth = $derived(anchor.getMonth());
 
@@ -90,13 +87,18 @@
   let selectedEntry = $state<CalendarEntry | null>(null);
   let selectedDraft = $state<CalendarNewEntry | null>(null);
   let showEntryForm = $state(false);
-  let showRhythmForm = $state(false);
-  let showGoogleImport = $state(false);
-  let showGoogleExport = $state(false);
-  let googleDraftRefresh = $state(0);
-  let proposalRefresh = $state(0);
-  let tripDraftRefresh = $state(0);
+  // One counter per rail section. Bumped together: any edit here can change what any
+  // of the three has pending, and each section re-fetches only its own window.
+  let refreshes = $state({ google: 0, proposals: 0, trips: 0 });
   let googleExports = $state<ReadonlyMap<string, CalendarGoogleExportOptIn>>(new Map());
+
+  function bumpReview() {
+    refreshes = {
+      google: refreshes.google + 1,
+      proposals: refreshes.proposals + 1,
+      trips: refreshes.trips + 1,
+    };
+  }
 
   function buildDays(dates: string[], entries: CalendarEntry[], month: number): CalendarDay[] {
     const todayKey = dayKey(new Date());
@@ -177,9 +179,16 @@
   // right when the first load goes out.
   $effect(() => {
     const date = page.url.searchParams.get("date");
-    if (!date) return;
-    anchor = parseDayKey(date);
-    if (page.url.searchParams.get("entry")) view = "day";
+    const entry = page.url.searchParams.get("entry");
+    // Symmetric on purpose. Forcing day for a deep link but never releasing it
+    // left the view stuck: open an entry from Home, click Calendar in the nav,
+    // and a bare /calendar still rendered a single day. A URL with no
+    // parameters is a fresh intent, so it gets the default back.
+    if (entry) view = "day";
+    else if (!date) view = DEFAULT_VIEW;
+    // Reads only the search params, never `view`, so switching view by hand
+    // does not re-run this and get overwritten.
+    if (date) anchor = parseDayKey(date);
   });
 
   $effect(() => {
@@ -255,8 +264,15 @@
     openForm(day);
   }
 
-  function onSelectEntry(entry: CalendarEntry, day: CalendarDay) {
-    openForm(day, { entry });
+  /// Opening a card reads it; changing it is a second, deliberate step.
+  ///
+  /// Clicking a chip used to drop straight into the edit form, which meant the
+  /// only way to see an entry was a set of input fields — no rendered note, and
+  /// a ticket link you could not click. The shared reader already renders every
+  /// other kind of item, so a calendar entry goes there too and keeps `Edit`
+  /// one click away (`?entry=` still opens this form, which is how it gets back).
+  function onSelectEntry(entry: CalendarEntry, _day: CalendarDay) {
+    void goto(entryReaderLink(entry));
   }
 
   function onSelectRange(startDate: string, endDate: string) {
@@ -291,8 +307,7 @@
       await calendar.entries.create(data as CalendarNewEntry);
     }
     closeForm();
-    proposalRefresh += 1;
-    tripDraftRefresh += 1;
+    bumpReview();
     await load(windowFrom, windowTo);
   }
 
@@ -300,14 +315,12 @@
     if (!selectedEntry) return;
     await calendar.entries.delete(selectedEntry.id);
     closeForm();
-    proposalRefresh += 1;
-    tripDraftRefresh += 1;
+    bumpReview();
     await load(windowFrom, windowTo);
   }
 
   async function onSaveRhythm(data: CalendarNewRhythm) {
     await calendar.rhythms.create(data);
-    showRhythmForm = false;
     await load(windowFrom, windowTo);
   }
 
@@ -326,15 +339,10 @@
     await load(windowFrom, windowTo);
   }
 
-  async function onGoogleImported() {
-    googleDraftRefresh += 1;
-    tripDraftRefresh += 1;
-    await load(windowFrom, windowTo);
-  }
-
-  async function onCalendarProposalsChanged() {
-    proposalRefresh += 1;
-    tripDraftRefresh += 1;
+  /** Any adoption, removal, import or sync in the rail: refresh the pending lists and
+   * reload the grid, because an adopted draft becomes a visible entry. */
+  async function onReviewChanged() {
+    bumpReview();
     await load(windowFrom, windowTo);
   }
 
@@ -357,116 +365,72 @@
   desc="Your time windows, rhythms, and events — open until you add something."
 />
 
-<div class="toolbar">
-  <div class="nav">
-    <button class="btn" aria-label="Previous" onclick={() => shift(-1)}>‹</button>
-    <button class="btn primary" onclick={() => (anchor = new Date())}>Today</button>
-    <button class="btn" aria-label="Next" onclick={() => shift(1)}>›</button>
+<div class="workspace">
+  <div class="main">
+    <div class="toolbar">
+      <div class="nav">
+        <button class="btn btn-outline" aria-label="Previous" onclick={() => shift(-1)}>‹</button>
+        <button class="btn btn-primary" onclick={() => (anchor = new Date())}>Today</button>
+        <button class="btn btn-outline" aria-label="Next" onclick={() => shift(1)}>›</button>
+      </div>
+      <div class="segmented">
+        {#each VIEWS as option (option.value)}
+          <button class:active={view === option.value} onclick={() => (view = option.value)}>
+            {option.label}
+          </button>
+        {/each}
+      </div>
+    </div>
+
+    {#if loading}
+      <p class="loading">Loading calendar…</p>
+    {:else if error}
+      <p class="error">{error}</p>
+    {:else if view === "month"}
+      <MonthGrid
+        {days}
+        {onSelectDay}
+        {onSelectEntry}
+        {onSelectRange}
+        {onAddEntry}
+        {onCycleCommitment}
+        {freeDays}
+      />
+    {:else}
+      <TimeGrid
+        {days}
+        detail={view === "day"}
+        onSelectDate={focusDate}
+        onSelectAllDay={(date) => onSelectDay(dayFor(date))}
+        {onSelectSlot}
+        {onSelectEntry}
+        {onAddEntry}
+      />
+    {/if}
   </div>
-  <div class="segmented">
-    {#each VIEWS as option (option.value)}
-      <button class:active={view === option.value} onclick={() => (view = option.value)}>
-        {option.label}
-      </button>
-    {/each}
-  </div>
-  <div class="actions">
-    <button class="btn" onclick={() => (showGoogleImport = true)}>
-      Google import
-    </button>
-    <button class="btn" onclick={() => (showGoogleExport = true)}>
-      Google sync
-    </button>
-    <button class="btn primary" onclick={() => (showRhythmForm = true)}>
-      + Rhythm
-    </button>
-  </div>
-</div>
 
-{#if showGoogleImport}
-  <GoogleImportReview
-    onImported={onGoogleImported}
-    onClose={() => { showGoogleImport = false; }}
-  />
-{/if}
-
-{#if showGoogleExport}
-  <GoogleExportReview
-    onSynced={onGoogleImported}
-    onClose={() => { showGoogleExport = false; }}
-  />
-{/if}
-
-<GoogleDraftInbox refresh={googleDraftRefresh} onChanged={onGoogleImported} />
-
-<CalendarProposalInbox refresh={proposalRefresh} onChanged={onCalendarProposalsChanged} />
-
-<TripDraftInbox refresh={tripDraftRefresh} />
-
-{#if !loading && !error}
-  <ContextPanel
+  <CalendarRail
+    {refreshes}
+    {onReviewChanged}
     {contexts}
+    {rhythms}
     {rangeLabel}
     defaultFrom={windowFrom}
     defaultUntil={dates[dates.length - 1]}
-    openId={page.url.searchParams.get("context")}
-    onCreate={onCreateContext}
-    onUpdate={onUpdateContext}
-    onDelete={onDeleteContext}
+    contextOpenId={page.url.searchParams.get("context")}
+    {onCreateContext}
+    {onUpdateContext}
+    {onDeleteContext}
+    {onSaveRhythm}
   />
-{/if}
-
-{#if loading}
-  <p class="loading">Loading calendar...</p>
-{:else if error}
-  <p class="error">{error}</p>
-{:else if view === "month"}
-  <MonthGrid
-    {days}
-    {onSelectDay}
-    {onSelectEntry}
-    {onSelectRange}
-    {onAddEntry}
-    {onCycleCommitment}
-    {freeDays}
-  />
-{:else}
-  <TimeGrid
-    {days}
-    detail={view === "day"}
-    onSelectDate={focusDate}
-    onSelectAllDay={(date) => onSelectDay(dayFor(date))}
-    {onSelectSlot}
-    {onSelectEntry}
-    {onAddEntry}
-  />
-{/if}
-
-<!-- Rhythm list (compact accordion) -->
-{#if rhythms.length > 0}
-  <details class="rhythms" open>
-    <summary>Aktive Rhythmen ({rhythms.length})</summary>
-    <div class="rhythm-list">
-      {#each rhythms as r (r.id)}
-        <div class="rhythm-item">
-          <span class="rhythm-dot" style="background: {kindConfig(r.kind).color}"></span>
-          <span class="rhythm-title">{r.title}</span>
-          <span class="rhythm-schedule">
-            {r.byweekday.map((d: string) => d.charAt(0).toUpperCase() + d.slice(1)).join(", ")}
-            {#if r.start_time} {r.start_time}–{r.end_time}{/if}
-          </span>
-        </div>
-      {/each}
-    </div>
-  </details>
-{/if}
+</div>
 
 <!-- Entry form overlay (create & edit) -->
 {#if showEntryForm}
   <EntryForm
     entry={selectedEntry ?? undefined}
     draft={selectedDraft ?? undefined}
-    eyebrow={selectedDraft ? "Zeitfenster" : undefined}
+    eyebrow={selectedDraft ? "Time window" : undefined}
     date={selectedDay?.date ?? dayKey(new Date())}
     rangeEndDate={selectedEndDate ?? undefined}
     googleExport={selectedEntry ? googleExports.get(selectedEntry.id) : undefined}
@@ -477,15 +441,25 @@
   />
 {/if}
 
-<!-- Rhythm form overlay -->
-{#if showRhythmForm}
-  <RhythmForm
-    onSave={onSaveRhythm}
-    onClose={() => { showRhythmForm = false; }}
-  />
-{/if}
-
 <style>
+  /* The grid is the page; everything else is a rail beside it. `minmax(0, 1fr)` so a
+   * wide month grid shrinks instead of pushing the rail off-screen. */
+  .workspace {
+    --rail-width: 17rem;
+
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--rail-width);
+    align-items: start;
+    gap: 1.25rem;
+
+    /* Clears the grid's floating create button past the rail. */
+    --grid-fab-inset: calc(var(--rail-width) + 2.5rem);
+  }
+
+  .main {
+    min-width: 0;
+  }
+
   .toolbar {
     display: flex;
     align-items: center;
@@ -495,7 +469,7 @@
     flex-wrap: wrap;
   }
 
-  .nav, .actions { display: flex; gap: 6px; align-items: center; }
+  .nav { display: flex; gap: 6px; align-items: center; }
 
   .segmented {
     display: inline-flex;
@@ -523,53 +497,17 @@
     box-shadow: var(--card-shadow);
   }
 
-  .btn {
-    padding: 6px 14px;
-    border-radius: 8px;
-    border: 1px solid var(--card-border);
-    background: var(--card-bg);
-    color: var(--text-primary);
-    font-size: 0.875rem;
-    cursor: pointer;
-    transition: background 0.12s;
-  }
-
-  .btn:hover { background: var(--surface); }
-  .btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
-  .btn.primary:hover { opacity: 0.9; }
-
   .loading, .error { text-align: center; padding: 48px; color: var(--text-secondary); }
-  .error { color: #e11d48; }
+  .error { color: var(--danger); }
 
-  .rhythms {
-    margin-top: 20px;
-    background: var(--surface);
-    border-radius: 8px;
-    padding: 8px;
-  }
+  /* Below this the rail stops being a rail: it stacks under the grid, so the calendar
+   * still comes first on a phone rather than sitting behind a column of collapsed rows. */
+  @media (width < 64rem) {
+    .workspace {
+      grid-template-columns: minmax(0, 1fr);
 
-  .rhythms summary {
-    font-size: 0.8125rem;
-    font-weight: 600;
-    cursor: pointer;
-    padding: 8px;
-  }
-
-  .rhythm-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 8px; }
-
-  .rhythm-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.875rem;
-    padding: 4px 0;
-  }
-
-  .rhythm-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-  .rhythm-title { font-weight: 500; flex: 1; }
-
-  .rhythm-schedule {
-    font-size: 0.75rem;
-    color: var(--text-secondary);
+      /* No rail beside the grid down here, so the button returns to the edge. */
+      --grid-fab-inset: 24px;
+    }
   }
 </style>

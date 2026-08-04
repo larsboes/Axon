@@ -13,7 +13,7 @@
     | "map-pin" | "database" | "external" | "arrow-right" | "play" | "square"
     | "refresh" | "sun" | "moon" | "menu" | "close" | "clock" | "alert" | "wifi-off"
     | "check" | "loader" | "plus" | "search" | "swap" | "calendar" | "ticket"
-    | "git-branch" | "thermometer" | "cpu" | "activity";
+    | "git-branch" | "thermometer" | "cpu" | "activity" | "chevron";
 
   let { name, size = 16 }: { name: Name; size?: number } = $props();
 
@@ -50,6 +50,7 @@
     "thermometer": "M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z",
     "cpu": "M9 5v-2 M15 5v-2 M9 21v-2 M15 21v-2 M5 9h-2 M5 15h-2 M21 9h-2 M21 15h-2 M7 7h10v10H7z",
     "activity": "M22 12h-4l-3 9L9 3l-3 9H2",
+    "chevron": "M9 18l6-6-6-6",
   };
 </script>
 

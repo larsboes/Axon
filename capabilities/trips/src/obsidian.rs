@@ -183,13 +183,13 @@ fn parse_candidate(
 
     let mut issues = Vec::new();
     if date_start.is_none() {
-        issues.push("Startdatum fehlt".into());
+        issues.push("Start date is missing".into());
     }
     if date_end.is_none() {
-        issues.push("Enddatum fehlt".into());
+        issues.push("End date is missing".into());
     }
     if destination.is_none() {
-        issues.push("Zielort fehlt".into());
+        issues.push("Destination is missing".into());
     }
 
     Ok(Some(ObsidianTripCandidate {
@@ -375,7 +375,11 @@ status: confirmed
         .unwrap();
         assert_eq!(
             candidate.issues,
-            vec!["Startdatum fehlt", "Enddatum fehlt", "Zielort fehlt"]
+            vec![
+                "Start date is missing",
+                "End date is missing",
+                "Destination is missing"
+            ]
         );
     }
 }

@@ -1,7 +1,14 @@
 <script lang="ts">
   import { calendar, type CalendarTripDraft, type CalendarTripDrafts } from "$lib/api";
 
-  let { refresh = 0 }: { refresh?: number } = $props();
+  let {
+    refresh = 0,
+    onCount,
+  }: {
+    refresh?: number;
+    /** See GoogleDraftInbox: the rail renders the badge, the section owns the window. */
+    onCount: (count: number) => void;
+  } = $props();
 
   function dateKey(date: Date): string {
     return [
@@ -33,7 +40,7 @@
   let notice = $state("");
   let titles = $state<Map<string, string>>(new Map());
   let materialized = $state<Map<string, string>>(new Map());
-  let seenRefresh = -1;
+  let seenKey = "";
 
   function keyFor(draft: CalendarTripDraft): string {
     return draft.entry_ids.join("|");
@@ -67,11 +74,15 @@
     } finally {
       loading = false;
     }
+    onCount(result?.drafts.length ?? 0);
   }
 
+  // The window is part of the query, so editing a date reloads. It used to take a
+  // manual Refresh, which made a changed date look like it had no effect.
   $effect(() => {
-    if (refresh === seenRefresh) return;
-    seenRefresh = refresh;
+    const key = `${refresh}|${from}|${to}`;
+    if (key === seenKey) return;
+    seenKey = key;
     void load();
   });
 
@@ -96,110 +107,90 @@
   }
 </script>
 
-<section class="trip-drafts" aria-labelledby="trip-drafts-title">
-  <div class="heading">
-    <div>
-      <p class="eyebrow">Travel</p>
-      <h2 id="trip-drafts-title">Trip drafts from Calendar</h2>
-      <p>Similar events in one place are only proposed. A Travel plan is created only when you choose Create trip.</p>
-    </div>
-    <button class="btn" onclick={load} disabled={loading || materializing !== null}>
-      {loading ? "Checking…" : "Refresh"}
-    </button>
+<p class="hint">Similar events in one place are only proposed. A Travel plan is created when you choose Create trip.</p>
+
+<div class="range">
+  <label>From <input type="date" bind:value={from} disabled={loading || materializing !== null} /></label>
+  <label>To <input type="date" bind:value={to} disabled={loading || materializing !== null} /></label>
+</div>
+
+{#if error}
+  <p class="message error" role="alert">{error}</p>
+{:else if notice}
+  <p class="message success">{notice}</p>
+{/if}
+
+{#if loading}
+  <p class="empty">Checking…</p>
+{:else if result?.drafts.length}
+  <div class="draft-list">
+    {#each result.drafts as draft (keyFor(draft))}
+      {@const key = keyFor(draft)}
+      {@const planId = materialized.get(key)}
+      <article class="draft">
+        <div class="draft-topline">
+          <strong>{draft.place}</strong>
+          <span class="commitment {draft.commitment}">{commitmentLabel(draft.commitment)}</span>
+        </div>
+        <p>{draft.starts_on} – {inclusiveEnd(draft.ends_before)} · {draft.titles.length} fixed point{draft.titles.length === 1 ? "" : "s"}</p>
+        <ul>
+          {#each draft.titles as title}
+            <li>{title}</li>
+          {/each}
+        </ul>
+        {#if planId}
+          <p class="created">Created as a trip. <a href={`/travel?plan=${encodeURIComponent(planId)}`}>Open Travel</a></p>
+        {:else}
+          <label class="title-field">
+            <span>Trip title</span>
+            <input value={titleFor(draft)} onchange={(event) => setTitle(draft, event.currentTarget.value)} />
+          </label>
+          <button class="btn btn-primary create" onclick={() => materialize(draft)} disabled={materializing !== null}>
+            {materializing === key ? "Creating…" : "Create trip"}
+          </button>
+        {/if}
+      </article>
+    {/each}
   </div>
+{:else if result}
+  <p class="empty">No trip drafts in this period. Events at home or without a location are intentionally excluded.</p>
+{/if}
 
-  <div class="range">
-    <label>From <input type="date" bind:value={from} disabled={loading || materializing !== null} /></label>
-    <label>To <input type="date" bind:value={to} disabled={loading || materializing !== null} /></label>
-  </div>
-
-  {#if error}
-    <p class="message error" role="alert">{error}</p>
-  {:else if notice}
-    <p class="message success">{notice}</p>
-  {/if}
-
-  {#if result?.drafts.length}
-    <div class="draft-list">
-      {#each result.drafts as draft (keyFor(draft))}
-        {@const key = keyFor(draft)}
-        {@const planId = materialized.get(key)}
-        <article class="draft">
-          <div class="draft-topline">
-            <div>
-              <h3>{draft.place}</h3>
-              <p>{draft.starts_on} – {inclusiveEnd(draft.ends_before)} · {draft.titles.length} Fixpunkt{draft.titles.length === 1 ? "" : "e"}</p>
-            </div>
-            <span class="commitment {draft.commitment}">{commitmentLabel(draft.commitment)}</span>
-          </div>
-          <ul>
-            {#each draft.titles as title}
-              <li>{title}</li>
-            {/each}
-          </ul>
-          {#if planId}
-            <p class="created">Created as a trip. <a href={`/travel?plan=${encodeURIComponent(planId)}`}>Open Travel</a></p>
-          {:else}
-            <div class="create-row">
-              <label>
-                <span>Trip title</span>
-                <input value={titleFor(draft)} onchange={(event) => setTitle(draft, event.currentTarget.value)} />
-              </label>
-              <button class="btn primary" onclick={() => materialize(draft)} disabled={materializing !== null}>
-                {materializing === key ? "Creating…" : "Create trip"}
-              </button>
-            </div>
-          {/if}
-        </article>
+{#if result?.unclustered.length}
+  <details class="unclustered">
+    <summary>{result.unclustered.length} events that could not be grouped</summary>
+    <ul>
+      {#each result.unclustered as entry (entry.entry_id)}
+        <li><strong>{entry.title}</strong> — {entry.reason}</li>
       {/each}
-    </div>
-  {:else if !loading && result}
-    <p class="empty">No trip drafts in this period. Events at home or without a location are intentionally excluded.</p>
-  {/if}
-
-  {#if result?.unclustered.length}
-    <details class="unclustered">
-      <summary>{result.unclustered.length} events that could not be grouped</summary>
-      <ul>
-        {#each result.unclustered as entry (entry.entry_id)}
-          <li><strong>{entry.title}</strong> — {entry.reason}</li>
-        {/each}
-      </ul>
-    </details>
-  {/if}
-</section>
+    </ul>
+  </details>
+{/if}
 
 <style>
-  .trip-drafts { margin: 0 0 20px; padding: 18px; border: 1px solid var(--card-border); border-radius: 12px; background: var(--card-bg); }
-  .heading, .draft-topline, .create-row, .range { display: flex; align-items: center; gap: 10px; }
-  .heading, .draft-topline { justify-content: space-between; align-items: flex-start; }
-  .heading h2, .draft h3 { margin: 2px 0 4px; }
-  .heading h2 { font-size: 1.1rem; }
-  .heading p, .draft p { margin: 0; color: var(--text-secondary); font-size: .86rem; }
-  .eyebrow { color: var(--primary) !important; font-size: .72rem !important; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  .range { margin-top: 14px; flex-wrap: wrap; }
-  .range label, .create-row label { color: var(--text-secondary); font-size: .82rem; }
-  input { box-sizing: border-box; border: 1px solid var(--card-border); border-radius: 6px; padding: 6px 8px; background: var(--surface); color: var(--text-primary); font: inherit; }
-  .btn { padding: 7px 12px; border: 0; border-radius: 7px; background: var(--surface); color: var(--text-primary); font: inherit; font-size: .82rem; cursor: pointer; }
-  .btn:disabled { opacity: .5; cursor: wait; }
-  .primary { background: var(--primary); color: #fff; }
-  .message { margin: 12px 0 0; padding: 8px 10px; border-radius: 7px; font-size: .84rem; }
-  .error { color: #be123c; background: #fff1f2; }
-  .success { color: #166534; background: #f0fdf4; }
-  .draft-list { margin-top: 14px; border-top: 1px solid var(--card-border); }
-  .draft { padding: 14px 0; border-bottom: 1px solid var(--card-border); }
-  .draft h3 { font-size: .95rem; }
-  .commitment { padding: 3px 7px; border-radius: 999px; background: var(--surface); color: var(--text-secondary); font-size: .72rem; white-space: nowrap; }
-  .commitment.planned { color: #92400e; background: #fef3c7; }
-  .commitment.committed { color: #166534; background: #dcfce7; }
-  ul { margin: 10px 0; padding-left: 20px; color: var(--text-secondary); font-size: .84rem; }
-  li + li { margin-top: 4px; }
-  .create-row { justify-content: space-between; align-items: end; flex-wrap: wrap; }
-  .create-row label { display: grid; gap: 5px; min-width: min(18rem, 100%); }
-  .created { color: #166534 !important; }
+  .hint { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: 0.75rem; line-height: 1.45; }
+  .range { display: flex; gap: 0.4rem; margin-bottom: 0.5rem; }
+  .range label { flex: 1; min-width: 0; display: grid; gap: 0.2rem; color: var(--text-tertiary); font-size: 0.68rem; }
+  input { width: 100%; box-sizing: border-box; padding: 0.25rem 0.35rem; border: 1px solid var(--input-border); border-radius: var(--radius-sm); background-color: var(--input-bg); color: var(--text-primary); font: inherit; font-size: 0.72rem; }
+  .message { margin: 0 0 0.5rem; padding: 0.5rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.78rem; }
+  .error { color: var(--danger); background-color: var(--danger-soft); }
+  .success { color: var(--success); background-color: var(--success-soft); }
+  .empty { margin: 0; color: var(--text-tertiary); font-size: 0.78rem; }
+  .draft-list { display: flex; flex-direction: column; }
+  .draft { padding: 0.6rem 0; border-top: 1px solid var(--card-border); }
+  .draft-topline { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; flex-wrap: wrap; }
+  .draft-topline strong { min-width: 0; overflow-wrap: anywhere; }
+  .draft-topline strong { font-size: 0.8125rem; font-weight: 600; }
+  .draft p { margin: 0.15rem 0 0; color: var(--text-secondary); font-size: 0.72rem; }
+  .commitment { padding: 0.1rem 0.35rem; border-radius: var(--radius-sm); background-color: var(--surface); color: var(--text-secondary); font-size: 0.65rem; white-space: nowrap; }
+  .commitment.planned { color: var(--warning); background-color: var(--warning-soft); }
+  .commitment.committed { color: var(--success); background-color: var(--success-soft); }
+  ul { margin: 0.35rem 0 0; padding-left: 1rem; color: var(--text-secondary); font-size: 0.72rem; }
+  li + li { margin-top: 0.15rem; }
+  .title-field { display: grid; gap: 0.2rem; margin-top: 0.45rem; color: var(--text-tertiary); font-size: 0.68rem; }
+  .create { width: 100%; margin-top: 0.4rem; padding: 0.3rem 0.5rem; font-size: 0.72rem; }
+  .created { color: var(--success) !important; }
   a { color: var(--primary); }
-  .empty { margin: 14px 0 0; color: var(--text-secondary); font-size: .86rem; }
-  .unclustered { margin-top: 14px; color: var(--text-secondary); font-size: .82rem; }
+  .unclustered { margin-top: 0.5rem; color: var(--text-tertiary); font-size: 0.72rem; }
   .unclustered summary { cursor: pointer; }
-  @media (max-width: 640px) { .heading, .draft-topline { display: block; } .heading .btn { margin-top: 10px; } .commitment { display: inline-block; margin-top: 8px; } .create-row label { width: 100%; } }
 </style>

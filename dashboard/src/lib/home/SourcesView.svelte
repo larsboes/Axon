@@ -99,11 +99,11 @@
 </script>
 
 <section class="sources">
-  <div class="intro">
-    <span>Sources</span>
-    <h2>What Axon currently brings into your decisions</h2>
-    <p>Each source has a bounded role. Counts refer to the current Home window, not an undisclosed full scan.</p>
-  </div>
+  <!-- Kicker and title come from Home's shared section head; the caveat about
+       what the counts mean is this view's own and has to stay. -->
+  <p class="intro">
+    Each source has a bounded role. Counts refer to the current Home window, not an undisclosed full scan.
+  </p>
 
   <div class="source-grid">
     {#each cards as card (card.key)}
@@ -128,10 +128,7 @@
 </section>
 
 <style>
-  .intro { margin-bottom: 1rem; }
-  .intro > span { color: var(--primary); font-size: .65rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-  h2 { margin: .15rem 0 0; font-size: 1rem; }
-  .intro p { max-width: 42rem; margin: .4rem 0 0; color: var(--text-secondary); font-size: .72rem; }
+  .intro { max-width: 42rem; margin: 0 0 1rem; color: var(--text-secondary); font-size: .72rem; }
 
   .source-grid { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }
   .source-grid > a { display: grid; min-height: 9.5rem; padding: .85rem; border: 1px solid var(--card-border); border-radius: var(--radius-lg); background: var(--card-bg); }

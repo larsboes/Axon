@@ -174,7 +174,12 @@ fn xml_field(body: &str, tag: &str) -> Option<String> {
     let start = body.find(&format!("<{tag}>"))? + tag.len() + 2;
     let rest = &body[start..];
     let end = rest.find(&format!("</{tag}>"))?;
-    Some(decode_entities(&rest[..end]).split_whitespace().collect::<Vec<_>>().join(" "))
+    Some(
+        decode_entities(&rest[..end])
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 fn decode_entities(value: &str) -> String {

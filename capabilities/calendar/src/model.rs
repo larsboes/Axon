@@ -19,6 +19,7 @@ pub const KNOWN_KINDS: &[&str] = &[
     "away",        // not at home, not necessarily work
     "event",       // attending something concrete (a saved Luma event lands here)
     "nightlife",   // party, club or open-air event with a concrete time/place
+    "deadline",    // a dated action or due date; visible evidence, never a time block
     "travel_ok",   // explicit "up for trips in this window" signal — a boost,
                    // never a requirement: open-by-default means an empty day
                    // already counts as feasible
@@ -85,6 +86,7 @@ pub const KNOWN_SOURCES: &[&str] = &[
     "manual",   // painted or typed in the dashboard
     "rhythm",   // materialized from a rhythm rule
     "feed",     // explicitly promoted from a Comms Feed item
+    "comms",    // explicitly proposed from a reviewed Comms content analysis
     "scouting", // explicitly promoted from a Scouting opportunity
     "luma",     // imported from a Luma calendar (Phase A/C)
     "web",      // one reviewed public event page, URL retained in payload
@@ -219,6 +221,86 @@ impl NewEntry {
         }
         if (end_day, end_time) <= (start_day, start_time) {
             return Err("ends_at must be after starts_at (ends are exclusive)".into());
+        }
+        if self.source == "comms" {
+            if self.commitment != Commitment::Possible {
+                return Err("Comms contributions must remain possible until reviewed".into());
+            }
+            if !self.all_day || end_day != start_day + 1 {
+                return Err("Comms contributions must be one-day all-day proposals".into());
+            }
+            if !matches!(self.kind.as_str(), "event" | "deadline") {
+                return Err("Comms proposals must be an event or deadline".into());
+            }
+            if self
+                .external_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .is_none()
+            {
+                return Err("Comms proposals require an external_id".into());
+            }
+            let payload = self
+                .payload
+                .as_object()
+                .filter(|payload| {
+                    payload.get("schema_version").and_then(Value::as_str)
+                        == Some("calendar-proposal-provenance-v1")
+                        && matches!(
+                            payload.get("data_class").and_then(Value::as_str),
+                            Some("public" | "personal" | "vault")
+                        )
+                        && matches!(
+                            payload.get("importance").and_then(Value::as_str),
+                            Some("low" | "medium" | "high")
+                        )
+                        && payload
+                            .get("analysis_schema_version")
+                            .and_then(Value::as_str)
+                            == Some("cloud-content-analysis-v1")
+                        && payload
+                            .get("importance_rationale")
+                            .and_then(Value::as_str)
+                            .is_some_and(|value| {
+                                !value.trim().is_empty() && value.chars().count() <= 600
+                            })
+                })
+                .ok_or("Comms proposal provenance is invalid")?;
+            payload
+                .get("origin")
+                .and_then(Value::as_object)
+                .filter(|origin| {
+                    origin.get("capability").and_then(Value::as_str) == Some("comms")
+                        && matches!(
+                            origin.get("source").and_then(Value::as_str),
+                            Some("feed" | "mail")
+                        )
+                        && origin
+                            .get("item_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|value| !value.trim().is_empty())
+                        && origin
+                            .get("job_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|value| !value.trim().is_empty())
+                        && matches!(
+                            origin.get("field").and_then(Value::as_str),
+                            Some("important_dates" | "action_items")
+                        )
+                        && origin
+                            .get("index")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|value| value < 10)
+                })
+                .ok_or("Comms proposal origin is invalid")?;
+            if let Some(evidence) = payload.get("evidence") {
+                match evidence {
+                    Value::Null => {}
+                    Value::String(value) if value.chars().count() <= 300 => {}
+                    _ => return Err("Comms proposal evidence is invalid".into()),
+                }
+            }
         }
         Ok(())
     }
@@ -480,6 +562,41 @@ mod tests {
         date_only_timed.starts_at = "2026-08-14".into();
         date_only_timed.ends_at = "2026-08-15".into();
         assert!(date_only_timed.validate().is_err());
+    }
+
+    #[test]
+    fn comms_contributions_are_bounded_review_proposals() {
+        let mut proposal = entry();
+        proposal.kind = "deadline".into();
+        proposal.commitment = Commitment::Possible;
+        proposal.starts_at = "2026-08-10".into();
+        proposal.ends_at = "2026-08-11".into();
+        proposal.all_day = true;
+        proposal.source = "comms".into();
+        proposal.external_id = Some("content-analysis:mail:thread-1:action:2026-08-10".into());
+        proposal.payload = serde_json::json!({
+            "schema_version": "calendar-proposal-provenance-v1",
+            "origin": {
+                "capability": "comms",
+                "source": "mail",
+                "item_id": "thread-1",
+                "job_id": "job-1",
+                "field": "action_items",
+                "index": 0
+            },
+            "data_class": "personal",
+            "analysis_schema_version": "cloud-content-analysis-v1",
+            "importance": "high",
+            "importance_rationale": "A dated action needs review.",
+            "evidence": null
+        });
+        assert!(proposal.validate().is_ok());
+
+        proposal.commitment = Commitment::Planned;
+        assert_eq!(
+            proposal.validate().unwrap_err(),
+            "Comms contributions must remain possible until reviewed"
+        );
     }
 
     #[test]

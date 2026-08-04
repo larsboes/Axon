@@ -14,6 +14,29 @@ use transit::config::Config;
 use transit::hafas::HafasClient;
 use transit::store::TransitStore;
 
+/// What this capability answers, served as data beside `/health`.
+/// Required query parameters are named in the summary: a path alone cannot tell
+/// a caller what it must send, and learning that from a 400 is the thing this
+/// endpoint exists to avoid.
+const ROUTES: &[route_manifest::Route] = &[
+    r("GET", "/health", "Liveness."),
+    r("GET", "/routes", "This manifest."),
+    r("GET", "/api/health", "Liveness under the API prefix. Same handler as /health."),
+    r("GET", "/api/suggest", "Station suggestions for a query."),
+    r("GET", "/api/search", "Fare search between two stations on a date."),
+    r("GET", "/api/split", "Split-ticket options for a search."),
+    r("GET", "/api/trips", "Saved trip searches."),
+];
+
+/// Shorthand so the table above reads as a table.
+const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
+    route_manifest::Route { method, path, summary }
+}
+
+async fn routes() -> Json<Value> {
+    Json(route_manifest::manifest("transit", ROUTES))
+}
+
 #[derive(Deserialize)]
 struct SuggestQuery {
     q: String,
@@ -183,6 +206,7 @@ async fn main() {
     };
 
     let app = Router::new()
+        .route("/routes", get(routes))
         .route("/health", get(handle_health))
         .route("/api/health", get(handle_health))
         .route("/api/suggest", get(handle_suggest))
@@ -196,4 +220,22 @@ async fn main() {
     // here was never a documented decision and is retired with it.
     let port = axon_server::resolve_port(Some("TRANSIT_PORT"), None, 3000);
     axon_server::serve_local("transit-server", port, app).await;
+}
+
+// The self-describing surface, on the same include terms as the other libs.
+#[path = "../../../libs/route-manifest/src/lib.rs"]
+#[allow(dead_code)]
+mod route_manifest;
+
+#[cfg(test)]
+mod route_manifest_tests {
+    /// A stale manifest is worse than none, because it gets believed. This reads
+    /// the router's own source, so adding a `.route()` without a summary fails
+    /// here rather than shipping a surface that lies about itself.
+    #[test]
+    fn the_manifest_covers_every_served_route() {
+        let missing =
+            super::route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
+        assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
 }

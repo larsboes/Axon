@@ -10,6 +10,11 @@
     "ollama": {
       "api": "ollama",
       "base_url": "http://127.0.0.1:11434"
+    },
+    "hosted-example": {
+      "api": "openai",
+      "base_url": "https://api.example.com/v1",
+      "api_key_file": "~/path/to/provider-key"
     }
   },
   "_comment_roles": "A role names the backend, the model on it, and that model's input conventions. The prefixes are not decoration: multilingual-e5 expects 'query: ' and 'passage: ', nomic-embed-text expects 'search_query: ' and 'search_document: ', and sending the wrong ones costs retrieval quality without raising anything. Reranking uses the OpenAI-compatible backend's Cohere/Jina-style /rerank endpoint.",
@@ -27,6 +32,16 @@
     "summarization": {
       "backend": "omlx",
       "model": "mlx-community/gemma-4-26b-a4b-it-4bit"
+    },
+    "cloud_summarization": {
+      "backend": "hosted-example",
+      "model": "replace-with-reviewed-model",
+      "provider_name": "Reviewed hosted provider",
+      "cloud_data_tier": "public",
+      "billing_mode": "free_only",
+      "failover_priority": 10,
+      "max_requests_per_day": 10,
+      "max_input_tokens": 24000
     }
   }
 }

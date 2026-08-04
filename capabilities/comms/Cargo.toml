@@ -2,7 +2,7 @@
 name = "comms"
 version = "0.1.0"
 edition = "2021"
-description = "Mail/media pipeline: read-only Gmail-as-router triage plus share-link media ingest (metadata + transcript + summary), Postgres-backed."
+description = "Mail/media pipeline: reviewed Gmail triage plus share-link media ingest (metadata + transcript + summary), Postgres-backed."
 publish = false
 
 # Inert here, and deliberately so: libs/axon-config and libs/axon-server are

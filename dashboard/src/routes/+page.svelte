@@ -70,8 +70,19 @@
   let busyProject = $state<string | null>(null);
   let actionError = $state<string | null>(null);
   let showAll = $state(false);
+  let showReading = $state(false);
   let selectedIndex = $state(0);
   let homeView = $state<HomeView>("now");
+
+  /// How much reading is worth showing before it becomes a scroll. Past this
+  /// the Feed page is the better surface, so the list links out instead.
+  const READING_PREVIEW = 6;
+
+  const viewHeadings: Record<HomeView, { kicker: string; title: string }> = {
+    now: { kicker: "Focus", title: "Up next" },
+    locations: { kicker: "Places", title: "By location" },
+    sources: { kicker: "Inputs", title: "Sources" },
+  };
 
   const upcomingEntries = $derived(
     calendarEntries
@@ -138,7 +149,66 @@
     return items.sort((a, b) => b.priority - a.priority);
   });
 
-  const visibleDecisions = $derived(showAll ? decisions : decisions.slice(0, 6));
+  /// Two lists, not one ranked pile. A trip stage and a calendar proposal are
+  /// dated commitments — they expire whether or not you look at them. Feed is
+  /// optional reading that never expires. Interleaving them by score put 53
+  /// articles between three decisions that actually needed a call.
+  const commitments = $derived(decisions.filter((decision) => decision.kind !== "feed"));
+  const reading = $derived(
+    decisions.filter((decision): decision is Extract<Decision, { kind: "feed" }> =>
+      decision.kind === "feed",
+    ),
+  );
+
+  /// Reading opens collapsed, so J/K/Enter walk the commitments first and only
+  /// reach the articles once they are on screen.
+  const visibleReading = $derived(showAll ? reading : reading.slice(0, READING_PREVIEW));
+  const visibleDecisions = $derived<Decision[]>(
+    showReading ? [...commitments, ...visibleReading] : commitments,
+  );
+
+  const readingToday = $derived(
+    reading.filter(
+      (decision) => Date.now() - new Date(decision.entry.created_at).getTime() < 86_400_000,
+    ).length,
+  );
+
+  /// What the page is actually for, in one sentence: the nearest thing that
+  /// expires. A count of the backlog ("57 open items") reads as debt and names
+  /// nothing you can act on — and 53 of those 57 were unread articles.
+  const brief = $derived.by(() => {
+    if (loading) return "Bringing together saved information, opportunities, and travel plans.";
+    const next = commitments[0];
+    if (!next) {
+      return reading.length === 0
+        ? "There are no open decisions right now. You can start something new."
+        : `Nothing is waiting on a decision. ${countLabel(reading.length, "unread item")} below.`;
+    }
+    if (next.kind === "system") return "A service that should be running is not responding.";
+    if (next.kind === "trip") {
+      const where = next.plan.destinations.map((place) => place.name).join(" → ")
+        || next.plan.title;
+      return `${sentenceCase(whenLabel(next.plan.date_start))}: ${where}, ${tripGap(next.plan)}.`;
+    }
+    if (next.kind === "calendar") return `${next.entry.title} on ${dateLabel(next.entry.starts_at)} is still undecided.`;
+    return `${next.opportunity.title} is waiting for a yes or no.`;
+  });
+
+  function countLabel(count: number, noun: string): string {
+    return `${count} ${noun}${count === 1 ? "" : "s"}`;
+  }
+
+  function whenLabel(day: string): string {
+    const days = daysUntil(day);
+    if (days < 0) return "already under way";
+    if (days === 0) return "today";
+    if (days === 1) return "tomorrow";
+    return `in ${days} days`;
+  }
+
+  function sentenceCase(value: string): string {
+    return value.charAt(0).toLocaleUpperCase("en-GB") + value.slice(1);
+  }
 
   $effect(() => {
     if (selectedIndex >= visibleDecisions.length) {
@@ -443,13 +513,28 @@
     );
   }
 
+  /// Names the leg that is actually open, not how many are.
+  ///
+  /// Counting produced the byte-identical sentence "One stage still needs a
+  /// decision." under every trip on the page, three in a row, which told the
+  /// operator nothing and read as boilerplate. The leg and its state are both
+  /// already in the data.
   function tripGap(plan: TripPlan): string {
+    if (plan.stages.length === 0) return "no route planned yet";
     const open = plan.stages.filter(
       (stage) => stage.status === "planning" || stage.status === "option_selected",
-    ).length;
-    if (plan.stages.length === 0) return "The route and connections still need planning.";
-    if (open === 1) return "One stage still needs a decision.";
-    return `${open} stages still need a decision.`;
+    );
+    const first = open[0];
+    if (!first) return "everything booked";
+    // `option_selected` is a real distinction: a connection is chosen, so the
+    // remaining act is booking it, not deciding it.
+    const state = first.status === "option_selected" ? "chosen but not booked" : "no connection chosen";
+    const rest = open.length > 1 ? `, +${open.length - 1} more` : "";
+    // The leg only earns its words on a multi-stage trip. On a single-stage one
+    // it just repeats the destination the row already shows above it.
+    if (plan.stages.length < 2) return `${state}${rest}`;
+    const leg = [first.origin?.name, first.destination?.name].filter(Boolean).join(" → ");
+    return leg ? `${leg}, ${state}${rest}` : `${state}${rest}`;
   }
 
   function opportunityContext(opportunity: ScoutingOpportunity): string {
@@ -500,23 +585,13 @@
       <h1>
         {#if loading}
           Axon is organising the day.
-        {:else if decisions.length === 0}
-          Everything is sorted.
+        {:else if commitments.length === 0}
+          Nothing to decide.
         {:else}
           Here is what to do next.
         {/if}
       </h1>
-      <p class="brief">
-        {#if loading}
-          Bringing together saved information, opportunities, and travel plans.
-        {:else if decisions.length === 0}
-          There are no open decisions right now. You can start something new.
-        {:else}
-          Axon prioritises {decisions.length === 1
-            ? "one open item"
-            : `${decisions.length} open items`} by timing and unresolved steps.
-        {/if}
-      </p>
+      <p class="brief">{brief}</p>
     </div>
     <a class="library-link" href="/feed/library">
       Library <Icon name="arrow-right" size={13} />
@@ -533,43 +608,55 @@
     </div>
   {/if}
 
-  <nav class="home-views" aria-label="Home view">
-    <button class:active={homeView === "now"} onclick={() => (homeView = "now")}>Now</button>
-    <button class:active={homeView === "locations"} onclick={() => (homeView = "locations")}>
-      By location
-    </button>
-    <button class:active={homeView === "sources"} onclick={() => (homeView = "sources")}>
-      Sources
-    </button>
-  </nav>
-
   <div class="workspace">
-    {#if homeView === "now"}
-      <section class="next">
-      <HomeHorizon contexts={calendarContexts} entries={upcomingEntries} />
+    <section class="next">
+      {#if homeView === "now"}
+        <HomeHorizon contexts={calendarContexts} entries={upcomingEntries} />
+      {/if}
+
+      <!-- One header for the whole main column. The view switcher lives here
+           rather than above the page, because these are three readings of the
+           same column, not three modes of the page. -->
       <div class="section-head">
         <div>
-          <span class="section-kicker">Focus</span>
-          <h2>Up next</h2>
+          <span class="section-kicker">{viewHeadings[homeView].kicker}</span>
+          <h2>{viewHeadings[homeView].title}</h2>
         </div>
-        {#if visibleDecisions.length > 1}
-          <span class="key-hint"><kbd>J</kbd><kbd>K</kbd> select · <kbd>Enter</kbd> open</span>
-        {/if}
+        <nav class="home-views" aria-label="Home view">
+          <button class:active={homeView === "now"} onclick={() => (homeView = "now")}>Now</button>
+          <button class:active={homeView === "locations"} onclick={() => (homeView = "locations")}>
+            Locations
+          </button>
+          <button class:active={homeView === "sources"} onclick={() => (homeView = "sources")}>
+            Sources
+          </button>
+        </nav>
       </div>
+
+      {#if homeView === "now"}
+      {#if visibleDecisions.length > 1}
+        <p class="key-hint"><kbd>J</kbd><kbd>K</kbd> select · <kbd>Enter</kbd> open</p>
+      {/if}
 
       <div class="queue" aria-busy={loading}>
         {#if loading}
           <p class="queue-state"><Icon name="loader" size={14} /> Reading current work…</p>
-        {:else if visibleDecisions.length === 0}
+        {:else if commitments.length === 0}
           <div class="queue-state complete">
             <span class="complete-mark"><Icon name="check" size={18} /></span>
             <span>
-              <strong>Nothing is waiting for you.</strong>
-              New feed entries, opportunities, and unfinished travel stages appear here automatically.
+              <strong>Nothing is waiting on a decision.</strong>
+              Unfinished travel stages, undecided calendar events, and services that stopped appear here.
             </span>
           </div>
         {:else}
-          {#each visibleDecisions as decision, index (decision.key)}
+          {#each commitments as decision, index (decision.key)}
+            {@render decisionRow(decision, index)}
+          {/each}
+        {/if}
+      </div>
+
+      {#snippet decisionRow(decision: Decision, index: number)}
             <article class="decision" class:selected={selectedIndex === index}>
               {#if decision.kind === "system"}
                 <div class="decision-mark warning"><Icon name="alert" size={16} /></div>
@@ -700,15 +787,42 @@
                 </div>
               {/if}
             </article>
-          {/each}
-        {/if}
-      </div>
+      {/snippet}
 
-      {#if decisions.length > 6}
-        <button class="show-all" type="button" onclick={() => (showAll = !showAll)}>
-          {showAll ? "Show priorities only" : `Show ${decisions.length - 6} more`}
-          <Icon name={showAll ? "close" : "plus"} size={12} />
-        </button>
+      <!-- Reading is the other 93% of what used to be one queue, and none of it
+           expires. It gets a count and a disclosure, not a rank. -->
+      {#if !loading && reading.length > 0}
+        <div class="reading">
+          <button
+            class="reading-toggle"
+            type="button"
+            aria-expanded={showReading}
+            onclick={() => (showReading = !showReading)}
+          >
+            <Icon name="feed" size={13} />
+            <span>
+              <strong>{countLabel(reading.length, "unread item")}</strong>
+              {#if readingToday > 0}<small>{readingToday} today</small>{/if}
+            </span>
+            <em>{showReading ? "Hide" : "Read"}</em>
+          </button>
+
+          {#if showReading}
+            <div class="queue">
+              {#each visibleReading as decision, index (decision.key)}
+                {@render decisionRow(decision, commitments.length + index)}
+              {/each}
+            </div>
+            {#if reading.length > READING_PREVIEW}
+              <button class="show-all" type="button" onclick={() => (showAll = !showAll)}>
+                {showAll
+                  ? `Show ${READING_PREVIEW} at a time`
+                  : `Show ${reading.length - READING_PREVIEW} more`}
+                <Icon name={showAll ? "close" : "plus"} size={12} />
+              </button>
+            {/if}
+          {/if}
+        </div>
       {/if}
 
       {#if unavailable.length > 0}
@@ -718,23 +832,23 @@
           <button type="button" onclick={() => void loadHome()}>Try again</button>
         </p>
       {/if}
-      </section>
-    {:else if homeView === "locations"}
-      <LocationView
-        entries={calendarEntries}
-        opportunities={opportunities.filter((opportunity) => opportunity.status === "new")}
-        plans={plans.filter((plan) => plan.status !== "archived")}
-      />
-    {:else}
-      <SourcesView
-        {feedEntries}
-        {opportunities}
-        {scoutingSources}
-        {calendarEntries}
-        contexts={calendarContexts}
-        {plans}
-      />
-    {/if}
+      {:else if homeView === "locations"}
+        <LocationView
+          entries={calendarEntries}
+          opportunities={opportunities.filter((opportunity) => opportunity.status === "new")}
+          plans={plans.filter((plan) => plan.status !== "archived")}
+        />
+      {:else}
+        <SourcesView
+          {feedEntries}
+          {opportunities}
+          {scoutingSources}
+          {calendarEntries}
+          contexts={calendarContexts}
+          {plans}
+        />
+      {/if}
+    </section>
 
     <aside>
       <section class="side-section">
@@ -813,62 +927,60 @@
         </section>
       {/if}
 
-      {#if macmonErr}
-        <section class="side-section">
-          <div class="section-head compact">
-            <div>
-              <span class="section-kicker">Local machine</span>
-              <h2>System</h2>
-            </div>
-          </div>
-          <p class="mc-offline">
-            <Icon name="alert" size={12} />
-            macmon is off — <a href="/systems">Details</a>
-          </p>
-        </section>
-      {:else if macmonSample}
-        <section class="side-section">
-          <div class="section-head compact">
-            <div>
-              <span class="section-kicker">Local machine</span>
-              <h2>System</h2>
-            </div>
-          </div>
-          <div class="macmon-compact">
-            <div class="mc-temps">
-              <span class="mc-temp" class:warm={macmonSample.temp.cpu_temp_avg >= 60} class:hot={macmonSample.temp.cpu_temp_avg >= 80}>
-                {macmonSample.temp.cpu_temp_avg.toFixed(0)}° CPU
+      <!-- Machine status, not work. It stays one line until asked: health,
+           temperature and memory are things you check, not things you do, and
+           three sections of them outweighed the queue they sat beside. A
+           <details> keeps the disclosure in CSS with no state to track. -->
+      <details class="status">
+        <summary>
+          <span class="status-dot" class:ok={health?.ok} class:problem={health !== null && !health.ok}></span>
+          <span class="status-line">
+            {health === null ? "Status unknown" : health.ok ? "Systems healthy" : "Needs attention"}
+            {#if macmonSample}
+              <span class="mono">
+                · {macmonSample.temp.cpu_temp_avg.toFixed(0)}°
+                · {(macmonSample.memory.ram_usage / 1073741824).toFixed(1)} GB
               </span>
-              <span class="mc-temp">
-                {macmonSample.temp.gpu_temp_avg.toFixed(0)}° GPU
-              </span>
-              <span class="mc-power">{macmonSample.all_power.toFixed(1)} W</span>
-            </div>
-            <div class="mc-mem">
-              <span class="mc-mem-label">RAM</span>
-              <div class="mc-bar">
-                <div class="mc-fill" style="width:{(macmonSample.memory.ram_usage / macmonSample.memory.ram_total * 100).toFixed(0)}%"></div>
+            {/if}
+          </span>
+          <Icon name="chevron" size={12} />
+        </summary>
+
+        <div class="status-body">
+          {#if macmonErr}
+            <p class="mc-offline">
+              <Icon name="alert" size={12} />
+              macmon is off — <a href="/systems">Details</a>
+            </p>
+          {:else if macmonSample}
+            <div class="macmon-compact">
+              <div class="mc-temps">
+                <span class="mc-temp" class:warm={macmonSample.temp.cpu_temp_avg >= 60} class:hot={macmonSample.temp.cpu_temp_avg >= 80}>
+                  {macmonSample.temp.cpu_temp_avg.toFixed(0)}° CPU
+                </span>
+                <span class="mc-temp">
+                  {macmonSample.temp.gpu_temp_avg.toFixed(0)}° GPU
+                </span>
+                <span class="mc-power">{macmonSample.all_power.toFixed(1)} W</span>
               </div>
-              <span class="mc-mem-num mono">{(macmonSample.memory.ram_usage / 1073741824).toFixed(1)} GB</span>
+              <div class="mc-mem">
+                <span class="mc-mem-label">RAM</span>
+                <div class="mc-bar">
+                  <div class="mc-fill" style="width:{(macmonSample.memory.ram_usage / macmonSample.memory.ram_total * 100).toFixed(0)}%"></div>
+                </div>
+                <span class="mc-mem-num mono">{(macmonSample.memory.ram_usage / 1073741824).toFixed(1)} GB</span>
+              </div>
+              <a class="mc-detail" href="/systems">Details <Icon name="arrow-right" size={11} /></a>
             </div>
-            <a class="mc-detail" href="/systems">Details <Icon name="arrow-right" size={11} /></a>
-          </div>
-        </section>
-      {/if}
+          {/if}
 
-      <RepoStatusCard />
+          <RepoStatusCard />
 
-      <a class="system-line" class:problem={health !== null && !health.ok} href="/capabilities">
-        <span class="status-dot" class:ok={health?.ok}></span>
-        <span>
-          {health === null
-            ? "System status unknown"
-            : health.ok
-              ? "Systems healthy"
-              : "System needs attention"}
-        </span>
-        <Icon name="arrow-right" size={12} />
-      </a>
+          <a class="capabilities-link" href="/capabilities">
+            Capabilities <Icon name="arrow-right" size={12} />
+          </a>
+        </div>
+      </details>
     </aside>
   </div>
 </div>
@@ -960,29 +1072,31 @@
     cursor: pointer;
   }
 
+  /* Three readings of one column, not three modes of the page — so text links
+     that sit beside the heading, rather than a filled control above it that
+     implied the page had three top-level states. */
   .home-views {
     display: inline-flex;
-    gap: 0.15rem;
-    margin-top: 0.75rem;
-    padding: 0.15rem;
-    border-radius: var(--radius-md);
-    background: var(--surface);
+    gap: 0.85rem;
   }
 
   .home-views button {
-    padding: 0.35rem 0.75rem;
+    padding: 0 0 0.2rem;
     border: 0;
-    border-radius: var(--radius-sm);
+    border-bottom: 1.5px solid transparent;
     background: transparent;
-    color: var(--text-secondary);
+    color: var(--text-tertiary);
     font: 600 0.7rem var(--font-sans);
     cursor: pointer;
   }
 
+  .home-views button:hover {
+    color: var(--text-secondary);
+  }
+
   .home-views button.active {
-    background: var(--card-bg);
-    color: var(--primary);
-    box-shadow: var(--card-shadow);
+    border-bottom-color: var(--primary);
+    color: var(--text-primary);
   }
 
   .workspace {
@@ -1015,8 +1129,64 @@
   }
 
   .key-hint {
+    margin: 0 0 0.5rem;
     color: var(--text-tertiary);
     font-size: 0.625rem;
+  }
+
+  /* The reading band. Deliberately quieter than a decision row: one line with
+     a count, and the articles only when asked for. */
+  .reading {
+    margin-top: 0.9rem;
+  }
+
+  .reading-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    width: 100%;
+    padding: 0.6rem 0.1rem;
+    border: 0;
+    border-top: 1px solid var(--card-border);
+    border-bottom: 1px solid var(--card-border);
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .reading-toggle:hover {
+    color: var(--text-primary);
+  }
+
+  .reading-toggle span {
+    display: flex;
+    flex: 1;
+    align-items: baseline;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  .reading-toggle strong {
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .reading-toggle small {
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+  }
+
+  .reading-toggle em {
+    color: var(--primary);
+    font-size: 0.6875rem;
+    font-style: normal;
+    font-weight: 600;
+  }
+
+  .reading .queue {
+    border-top: 0;
   }
 
   kbd {
@@ -1398,23 +1568,56 @@
     font-weight: 600;
   }
 
-  .system-line {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
+  .status {
     margin-top: auto;
     padding-top: 0.8rem;
     border-top: 1px solid var(--card-border);
-    color: var(--text-tertiary);
-    font-size: 0.6875rem;
   }
 
-  .system-line span:nth-child(2) {
+  .status summary {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .status summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .status-line {
     flex: 1;
   }
 
-  .system-line.problem {
-    color: var(--warning);
+  .status-line .mono {
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+  }
+
+  .status summary > :global(svg) {
+    transition: transform 0.15s ease;
+  }
+
+  .status[open] summary > :global(svg) {
+    transform: rotate(90deg);
+  }
+
+  .status-body {
+    display: grid;
+    gap: 0.6rem;
+    padding-top: 0.6rem;
+  }
+
+  .capabilities-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
   }
 
   .status-dot {
@@ -1426,6 +1629,10 @@
 
   .status-dot.ok {
     background: var(--success);
+  }
+
+  .status-dot.problem {
+    background: var(--warning);
   }
 
   @media (width >= 50rem) {

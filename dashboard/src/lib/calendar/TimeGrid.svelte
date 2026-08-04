@@ -520,7 +520,10 @@
   .add-btn {
     position: fixed;
     bottom: 24px;
-    right: 24px;
+
+    /* The page owns this inset, because only the page knows whether a rail is beside
+     * the grid. Fixed to the viewport, the button would otherwise sit on top of it. */
+    right: var(--grid-fab-inset, 24px);
     z-index: 10;
     display: flex;
     align-items: center;

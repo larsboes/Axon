@@ -8,6 +8,7 @@ export type EntryKind =
   | "away"
   | "event"
   | "nightlife"
+  | "deadline"
   | "travel_ok"
   | (string & {});
 
@@ -55,6 +56,7 @@ export const KINDS: Array<{ value: EntryKind; label: string; color: string }> = 
   { value: "away", label: "Away", color: "#d97706" },
   { value: "event", label: "Event", color: "#7c3aed" },
   { value: "nightlife", label: "Nightlife / Open Air", color: "#db2777" },
+  { value: "deadline", label: "Deadline", color: "#b45309" },
   { value: "travel_ok", label: "Travel possible", color: "#16a34a" },
 ];
 
@@ -139,6 +141,14 @@ export function entryLink(entry: CalendarEntry): string {
   return `/calendar?date=${entry.starts_at.slice(0, 10)}&entry=${encodeURIComponent(entry.id)}`;
 }
 
+/** The entry in the shared content reader — the same surface that renders a
+ *  feed article or a mail, via `content-item-v1`. Distinct from `entryLink`,
+ *  which opens the editable form in the calendar grid: one is for reading what
+ *  this is and where it came from, the other for changing when it happens. */
+export function entryReaderLink(entry: CalendarEntry): string {
+  return `/feed/${encodeURIComponent(entry.id)}?source=calendar`;
+}
+
 /** Same for a planning context, which opens in the context panel. */
 export function contextLink(context: CalendarContext): string {
   return `/calendar?date=${context.valid_from.slice(0, 10)}&context=${encodeURIComponent(context.id)}`;
@@ -157,6 +167,91 @@ export function addDays(date: Date, days: number): Date {
   const d = new Date(date);
   d.setDate(d.getDate() + days);
   return d;
+}
+
+/** Shifts a `YYYY-MM-DD` key by whole days. Noon, so a DST transition cannot
+ *  push the result onto the wrong date. */
+export function shiftDayKey(value: string, days: number): string {
+  return dayKey(addDays(new Date(`${value}T12:00:00`), days));
+}
+
+/**
+ * When an entry happens, in the shape a form shows it.
+ *
+ * `endDate` is **inclusive** here and exclusive in the store. That single
+ * mismatch is the whole reason this lives in one place: an all-day entry ending
+ * on the 16th covers the 15th, and any surface that forgets the conversion
+ * silently moves the entry by a day. The month grid, the form and the reader
+ * all have to agree, so none of them owns the rule.
+ */
+export interface EntryWhen {
+  allDay: boolean;
+  startDate: string;
+  /** Inclusive — the last day the entry covers. */
+  endDate: string;
+  startTime: string;
+  endTime: string;
+}
+
+/** Store shape → form shape. Takes only the three fields it reads, so an
+ *  unsaved draft (no id yet) converts on the same path as a stored entry.
+ *
+ *  A contributed draft may omit `all_day`; the timestamp already says which it
+ *  is, because a date-only instant is exactly what all-day means in this store.
+ *  Reading it is more honest than the blanket default this replaced, which
+ *  turned a timed draft into an all-day one. */
+export function whenOf(
+  entry: { all_day?: boolean; starts_at: string; ends_at: string },
+): EntryWhen {
+  const allDay = entry.all_day ?? !entry.starts_at.includes("T");
+  return {
+    allDay,
+    startDate: entry.starts_at.slice(0, 10),
+    endDate: allDay
+      ? shiftDayKey(entry.ends_at.slice(0, 10), -1)
+      : entry.ends_at.slice(0, 10),
+    startTime: allDay ? "" : entry.starts_at.slice(11, 16),
+    endTime: allDay ? "" : entry.ends_at.slice(11, 16),
+  };
+}
+
+/** Form shape → the three fields the store takes. */
+export function whenPatch(when: EntryWhen): {
+  all_day: boolean;
+  starts_at: string;
+  ends_at: string;
+} {
+  if (when.allDay) {
+    return {
+      all_day: true,
+      starts_at: when.startDate,
+      ends_at: shiftDayKey(when.endDate, 1),
+    };
+  }
+  return {
+    all_day: false,
+    starts_at: `${when.startDate}T${when.startTime || "09:00"}:00`,
+    ends_at: `${when.endDate}T${when.endTime || "10:00"}:00`,
+  };
+}
+
+/**
+ * Why the store would reject this, before asking it.
+ *
+ * The store enforces the same rules and returns a 400; checking here is so the
+ * operator sees the reason next to the field they just changed rather than as a
+ * banner after a round trip. `null` means it would be accepted.
+ */
+export function whenError(when: EntryWhen): string | null {
+  if (!when.startDate || !when.endDate) return "A start and end date are required";
+  if (when.endDate < when.startDate) return "The end must be on or after the start";
+  if (when.allDay) return null;
+  if (!when.startTime || !when.endTime) return "A timed entry needs a start and end time";
+  // Ends are exclusive, so same instant is an empty range the store refuses.
+  if (`${when.endDate}T${when.endTime}` <= `${when.startDate}T${when.startTime}`) {
+    return "The end must be after the start";
+  }
+  return null;
 }
 
 /** Monday-based weekday index (0=Mon..6=Sun), matching calendar-capability's

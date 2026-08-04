@@ -1,4 +1,5 @@
 pub mod config;
+pub mod content;
 pub mod correlate;
 pub mod date;
 pub mod google;
@@ -15,3 +16,10 @@ pub mod zone;
 #[path = "../../../libs/axon-config/src/lib.rs"]
 #[allow(dead_code)]
 pub(crate) mod axon_config;
+
+// The `content-item-v1` reader contract, on the same include terms. Compiled
+// separately into each consumer, so this `ContentItem` is a different Rust type
+// from comms' — the boundary between them is the serialized JSON, never a call.
+#[path = "../../../libs/content-item/src/lib.rs"]
+#[allow(dead_code)]
+pub mod content_item;

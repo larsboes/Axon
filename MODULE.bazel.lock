@@ -530,7 +530,7 @@
           "FILE:@@//capabilities/axon-status/Cargo.lock fbde34d002091df276c09f5fee824154f157ad0fabc7299fcd4a02ef831cdbed",
           "FILE:@@//capabilities/axon-status/Cargo.toml bbcc533e567085a119c19cb640fdd1f8508995163a399dddafcc067fe8e0d342",
           "FILE:@@//capabilities/comms/Cargo.lock 6670183ba18daec7ea5c4729be155a41f086f67e7d9694d8ea6f8c9dc0cdbb84",
-          "FILE:@@//capabilities/comms/Cargo.toml dd784f689bcc5fad2b1f1e1fc275c404634833d9859f8066b60d6942be277d84",
+          "FILE:@@//capabilities/comms/Cargo.toml e31c15763999e0d4242ffcf648d57e95249ba32db71274d6ffbee22f04e40a0f",
           "FILE:@@//libs/ai-client/Cargo.lock 79f24cfb1310ce006795e98ed1305b08526c411f37539929efa4702905887f73",
           "FILE:@@//libs/ai-client/Cargo.toml 151ddb695fb6b4276f8949004e9b454379d15938abad1e774337d07264c5a65d",
           "FILE:@@//capabilities/punctuality/Cargo.lock 7389e85f2e77e863f2306d1c8132baabbdda0eea4aec106f395b8ea3884d0a0b",

@@ -19,14 +19,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 
+use comms::cloud_derivative::{self, CloudDerivativePreview, CloudDocumentInput};
+use comms::cloud_dispatch;
 use comms::config::Config;
+use comms::data_class;
 use comms::evaluation::{self, EvaluationFactor, FeedEvaluation};
+use comms::google::{self, ThreadAction, ThreadLocation};
 use comms::media;
 use comms::provenance::StageProvenance;
 use comms::quality;
 use comms::relevance::{self, RelevanceMatch};
+use comms::rules;
 use comms::sources;
-use comms::store::{FeedItem, FeedOrigin, FeedRun, OriginSummary, Store, TriageItem};
+use comms::store::{
+    CloudAttemptClaim, CloudDerivativeApproval, CloudDerivativeState, CloudQueueRequest, FeedItem,
+    FeedOrigin, FeedRun, GmailActionJob, OriginSummary, Store, TriageItem,
+};
 use comms::travel;
 use comms::vault_links;
 
@@ -46,6 +54,150 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Reads `Authorization: Bearer <token>` or `X-Axon-Token: <token>` and
 /// compares constant-time against the configured value. Health and read-only
 /// routes bypass this entirely — only mutating routes carry the layer.
+/// What this capability answers, served as data beside `/health`.
+/// Required query parameters are named in the summary: a path alone cannot tell
+/// a caller what it must send, and learning that from a 400 is the thing this
+/// endpoint exists to avoid.
+const ROUTES: &[route_manifest::Route] = &[
+    r("GET", "/health", "Liveness."),
+    r("GET", "/routes", "This manifest."),
+    r(
+        "GET",
+        "/content/:source/:id",
+        "An item as content-item-v1. :source is feed or mail.",
+    ),
+    r(
+        "POST",
+        "/content/:source/:id/cloud-preview",
+        "Build a bounded, reviewable copy for cloud use.",
+    ),
+    r(
+        "POST",
+        "/content/:source/:id/cloud-approval",
+        "Approve the exact previewed copy.",
+    ),
+    r(
+        "POST",
+        "/content/:source/:id/cloud-queue",
+        "Queue an approved copy for a provider role.",
+    ),
+    r(
+        "POST",
+        "/content/cloud-jobs/:job_id/run",
+        "Run a queued cloud job.",
+    ),
+    r(
+        "GET",
+        "/content/cloud-providers",
+        "Provider roles and whether each is available.",
+    ),
+    r("GET", "/feed", "Feed entries. Optional status filter."),
+    r("POST", "/ingest", "Ingest one URL into the feed."),
+    r("GET", "/feed/:id", "One feed entry."),
+    r(
+        "POST",
+        "/feed/:id/status",
+        "Set a feed entry's status (keeper, dismissed).",
+    ),
+    r("GET", "/feed/runs", "Recent collector runs. Optional days."),
+    r(
+        "GET",
+        "/feed/origins",
+        "Which source run produced each entry.",
+    ),
+    r(
+        "GET",
+        "/feed/quality",
+        "Entries flagged for quality review.",
+    ),
+    r("POST", "/feed/quality/refresh", "Recompute quality flags."),
+    r(
+        "GET",
+        "/feed/evaluation/status",
+        "Evaluation backlog and coverage.",
+    ),
+    r(
+        "POST",
+        "/feed/relevance/refresh",
+        "Rescore feed relevance against the current profiles.",
+    ),
+    r("GET", "/sources", "Declared feed sources."),
+    r(
+        "POST",
+        "/sources/scan",
+        "Collect from the declared sources.",
+    ),
+    r("GET", "/triage", "Mail proposals. Optional status filter."),
+    r(
+        "POST",
+        "/triage/:id/status",
+        "Set a mail proposal's status.",
+    ),
+    r(
+        "POST",
+        "/triage/:id/stream",
+        "Reclassify a mail into a category.",
+    ),
+    r(
+        "POST",
+        "/triage/:id/data-class",
+        "Set a mail's data classification by hand.",
+    ),
+    r(
+        "POST",
+        "/triage/:id/gmail",
+        "Apply a Gmail action (archive, trash, restore).",
+    ),
+    r(
+        "POST",
+        "/triage/:id/gmail-job",
+        "Queue a Gmail action for retry.",
+    ),
+    r(
+        "POST",
+        "/triage/bulk",
+        "Apply one action across many mails.",
+    ),
+    r("POST", "/triage/sweep", "Pull new mail from Gmail."),
+    r(
+        "POST",
+        "/triage/reconcile",
+        "Reconcile Axon's mail state against Gmail.",
+    ),
+    r(
+        "POST",
+        "/triage/relevance/refresh",
+        "Rescore mail relevance against the current profiles.",
+    ),
+    r(
+        "POST",
+        "/vault-links/scan",
+        "Vault notes that could be linked to feed entries.",
+    ),
+    r(
+        "POST",
+        "/vault-links/import",
+        "Link scanned vault notes to their entries.",
+    ),
+];
+
+/// Shorthand so the table above reads as a table.
+const fn r(
+    method: &'static str,
+    path: &'static str,
+    summary: &'static str,
+) -> route_manifest::Route {
+    route_manifest::Route {
+        method,
+        path,
+        summary,
+    }
+}
+
+async fn routes() -> Json<Value> {
+    Json(route_manifest::manifest("comms", ROUTES))
+}
+
 async fn require_auth(
     headers: axum::http::HeaderMap,
     axum::extract::State(secret): axum::extract::State<Option<String>>,
@@ -304,7 +456,10 @@ impl FeedFullItem {
             captured_via: item.captured_via,
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
             evaluation: evaluation.map(EvaluationOut::from),
-            processing: processing.into_iter().map(StageProvenanceOut::from).collect(),
+            processing: processing
+                .into_iter()
+                .map(StageProvenanceOut::from)
+                .collect(),
             origins: origins.into_iter().map(OriginOut::from).collect(),
         }
     }
@@ -319,13 +474,28 @@ struct TriageOut {
     internal_date: Option<String>,
     stream: String,
     rationale: String,
+    classification_method: String,
+    classification_version: String,
+    data_class: String,
+    data_class_rationale: String,
+    data_classification_method: String,
+    data_classification_version: String,
     status: String,
+    gmail_action: Option<String>,
+    gmail_action_at: Option<String>,
+    purge_after: Option<String>,
+    gmail_location: Option<String>,
+    gmail_observed_at: Option<String>,
+    gmail_sync_status: Option<String>,
+    gmail_sync_action: Option<String>,
+    gmail_sync_error: Option<String>,
     first_seen: String,
     last_seen: String,
+    relevance: Vec<RelevanceOut>,
 }
 
-impl From<TriageItem> for TriageOut {
-    fn from(item: TriageItem) -> Self {
+impl TriageOut {
+    fn from_store(item: TriageItem, relevance: Vec<RelevanceMatch>) -> Self {
         Self {
             id: item.id,
             from_addr: item.from_addr,
@@ -334,10 +504,231 @@ impl From<TriageItem> for TriageOut {
             internal_date: item.internal_date_text,
             stream: item.stream,
             rationale: item.rationale,
+            classification_method: item.classification_method,
+            classification_version: item.classification_version,
+            data_class: item.data_class,
+            data_class_rationale: item.data_class_rationale,
+            data_classification_method: item.data_classification_method,
+            data_classification_version: item.data_classification_version,
             status: item.status,
+            gmail_action: item.gmail_action,
+            gmail_action_at: item.gmail_action_at,
+            purge_after: item.purge_after,
+            gmail_location: item.gmail_location,
+            gmail_observed_at: item.gmail_observed_at,
+            gmail_sync_status: item.gmail_sync_status,
+            gmail_sync_action: item.gmail_sync_action,
+            gmail_sync_error: item.gmail_sync_error,
             first_seen: item.first_seen,
             last_seen: item.last_seen,
+            relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
         }
+    }
+}
+
+/// Source-specific fields attached to the canonical content reader contract.
+/// They extend the content item without forcing Gmail workflow state into
+/// every other Feed source.
+#[derive(Debug, Serialize)]
+struct MailContentExtensionOut {
+    category: String,
+    rationale: String,
+    classification_method: String,
+    classification_version: String,
+    gmail_action: Option<String>,
+    gmail_action_at: Option<String>,
+    purge_after: Option<String>,
+    gmail_location: Option<String>,
+    gmail_observed_at: Option<String>,
+    gmail_sync_status: Option<String>,
+    gmail_sync_action: Option<String>,
+    gmail_sync_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DataClassOut {
+    value: String,
+    label: &'static str,
+    rationale: String,
+    method: String,
+    version: String,
+}
+
+impl DataClassOut {
+    fn new(classification: data_class::DataClassification) -> Self {
+        let label = if classification.class == "vault" {
+            "Private"
+        } else if classification.class == "personal" {
+            "Personal"
+        } else {
+            "Public"
+        };
+        Self {
+            value: classification.class,
+            label,
+            rationale: classification.rationale,
+            method: classification.method,
+            version: classification.version,
+        }
+    }
+}
+
+/// One reader shape for every kind of observed content. Source adapters own
+/// collection and actions; the dashboard owns one renderer for this contract.
+#[derive(Debug, Serialize)]
+struct ContentItemOut {
+    schema_version: &'static str,
+    source: &'static str,
+    id: String,
+    kind: String,
+    title: Option<String>,
+    url: String,
+    author: Option<String>,
+    summary: Option<String>,
+    content: Option<String>,
+    content_label: String,
+    day: String,
+    created_at: String,
+    status: String,
+    content_status: String,
+    data_class: DataClassOut,
+    processing_policy: data_class::ProcessingPolicy,
+    cloud_processing: CloudDerivativeState,
+    relevance: Vec<RelevanceOut>,
+    evaluation: Option<EvaluationOut>,
+    processing: Vec<StageProvenanceOut>,
+    origins: Vec<OriginOut>,
+    mail: Option<MailContentExtensionOut>,
+}
+
+impl ContentItemOut {
+    fn from_feed(
+        item: FeedItem,
+        relevance: Vec<RelevanceMatch>,
+        evaluation: Option<FeedEvaluation>,
+        processing: Vec<StageProvenance>,
+        origins: Vec<FeedOrigin>,
+    ) -> Self {
+        let classification = data_class::public_source_default();
+        let processing_policy = data_class::processing_policy(&classification.class);
+        let content_label = match item.kind.as_str() {
+            "github" => "README",
+            "arxiv" => "Abstract",
+            "youtube" | "podcast" | "instagram" => "Transcript",
+            _ => "Article content",
+        };
+        Self {
+            schema_version: "content-item-v1",
+            source: "feed",
+            id: item.id,
+            kind: item.kind,
+            title: item.title,
+            url: item.url,
+            author: item.author,
+            summary: item.summary,
+            content: item.transcript,
+            content_label: content_label.into(),
+            day: item.day,
+            created_at: item.created_at,
+            status: item.status,
+            content_status: item.content_status,
+            data_class: DataClassOut::new(classification),
+            processing_policy,
+            cloud_processing: CloudDerivativeState::not_prepared(),
+            relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
+            evaluation: evaluation.map(EvaluationOut::from),
+            processing: processing
+                .into_iter()
+                .map(StageProvenanceOut::from)
+                .collect(),
+            origins: origins.into_iter().map(OriginOut::from).collect(),
+            mail: None,
+        }
+    }
+
+    fn from_mail(item: TriageItem, relevance: Vec<RelevanceMatch>) -> Self {
+        let created_at = item
+            .internal_date_text
+            .clone()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| item.first_seen.clone());
+        let day = created_at.get(..10).unwrap_or_default().to_string();
+        let content_status = if item
+            .snippet
+            .as_deref()
+            .is_some_and(|snippet| !snippet.trim().is_empty())
+        {
+            "thin"
+        } else {
+            "none"
+        };
+        let classification = data_class::DataClassification {
+            class: item.data_class.clone(),
+            rationale: item.data_class_rationale.clone(),
+            method: item.data_classification_method.clone(),
+            version: item.data_classification_version.clone(),
+        };
+        let processing_policy = data_class::processing_policy(&classification.class);
+        Self {
+            schema_version: "content-item-v1",
+            source: "mail",
+            url: format!("https://mail.google.com/mail/u/0/#all/{}", item.id),
+            id: item.id,
+            kind: "mail".into(),
+            title: item.subject,
+            author: item.from_addr,
+            summary: None,
+            content: item.snippet,
+            content_label: "Message preview".into(),
+            day,
+            created_at,
+            status: item.status,
+            content_status: content_status.into(),
+            data_class: DataClassOut::new(classification),
+            processing_policy,
+            cloud_processing: CloudDerivativeState::not_prepared(),
+            relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
+            evaluation: None,
+            processing: Vec::new(),
+            origins: Vec::new(),
+            mail: Some(MailContentExtensionOut {
+                category: item.stream,
+                rationale: item.rationale,
+                classification_method: item.classification_method,
+                classification_version: item.classification_version,
+                gmail_action: item.gmail_action,
+                gmail_action_at: item.gmail_action_at,
+                purge_after: item.purge_after,
+                gmail_location: item.gmail_location,
+                gmail_observed_at: item.gmail_observed_at,
+                gmail_sync_status: item.gmail_sync_status,
+                gmail_sync_action: item.gmail_sync_action,
+                gmail_sync_error: item.gmail_sync_error,
+            }),
+        }
+    }
+
+    fn cloud_input(&self) -> CloudDocumentInput {
+        CloudDocumentInput {
+            source: self.source.into(),
+            id: self.id.clone(),
+            title: self.title.clone(),
+            author: self.author.clone(),
+            summary: self.summary.clone(),
+            content: self.content.clone(),
+            data_class: self.data_class.value.clone(),
+        }
+    }
+
+    fn attach_cloud_state(mut self, store: &Store) -> Result<Self, Box<dyn std::error::Error>> {
+        let preview = cloud_derivative::prepare(&self.cloud_input());
+        self.cloud_processing = store.cloud_derivative_state(
+            self.source,
+            &self.id,
+            &preview.source_revision,
+            &preview.preview_hash,
+        )?;
+        Ok(self)
     }
 }
 
@@ -363,7 +754,7 @@ async fn feed_handler(Query(params): Query<FeedParams>) -> Json<Value> {
             .map_err(|error| error.to_string())?;
         items
             .into_iter()
-            .map(|item| {
+            .map(|item| -> Result<FeedListItem, String> {
                 let relevance = store
                     .feed_relevance(&item.id)
                     .map_err(|error| error.to_string())?
@@ -551,6 +942,486 @@ async fn feed_item_handler(Path(id): Path<String>) -> (StatusCode, Json<Value>) 
         _ => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "feed query failed" })),
+        ),
+    }
+}
+
+fn load_content_item(
+    store: &Store,
+    source: &str,
+    id: &str,
+) -> Result<Option<ContentItemOut>, String> {
+    let item = match source {
+        "feed" => store
+            .get_feed(id)
+            .map_err(|error| error.to_string())?
+            .map(|item| -> Result<ContentItemOut, String> {
+                let relevance = store
+                    .feed_relevance(&item.id)
+                    .map_err(|error| error.to_string())?;
+                let origins = store
+                    .feed_origins(&item.id)
+                    .map_err(|error| error.to_string())?;
+                let evaluation = store
+                    .feed_evaluation(&item.id)
+                    .map_err(|error| error.to_string())?;
+                let processing = store
+                    .feed_stage_results(&item.id)
+                    .map_err(|error| error.to_string())?;
+                Ok(ContentItemOut::from_feed(
+                    item, relevance, evaluation, processing, origins,
+                ))
+            })
+            .transpose()?,
+        "mail" => store
+            .get_triage(id)
+            .map_err(|error| error.to_string())?
+            .map(|item| -> Result<ContentItemOut, String> {
+                let relevance = store
+                    .triage_relevance(&item.id)
+                    .map_err(|error| error.to_string())?;
+                Ok(ContentItemOut::from_mail(item, relevance))
+            })
+            .transpose()?,
+        _ => return Err("source must be 'feed' or 'mail'".into()),
+    };
+    item.map(|item| {
+        item.attach_cloud_state(store)
+            .map_err(|error| error.to_string())
+    })
+    .transpose()
+}
+
+async fn content_item_handler(
+    Path((source, id)): Path<(String, String)>,
+) -> (StatusCode, Json<Value>) {
+    let result = tokio::task::spawn_blocking(move || -> Result<Option<ContentItemOut>, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        load_content_item(&store, &source, &id)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(Some(item))) => (StatusCode::OK, Json(json!(item))),
+        Ok(Ok(None)) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))),
+        Ok(Err(error)) if error == "source must be 'feed' or 'mail'" => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
+        }
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "content query failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct CloudProviderOut {
+    role: String,
+    name: String,
+    model: String,
+    provider_label: &'static str,
+    location: &'static str,
+    data_tier: &'static str,
+    billing_mode: &'static str,
+    failover_priority: u16,
+    max_requests_per_day: u32,
+    requests_used_today: Option<u32>,
+    requests_remaining_today: Option<u32>,
+    max_input_tokens: u32,
+    credit_expires_on: Option<String>,
+    available: bool,
+    unavailable_reason: Option<&'static str>,
+}
+
+fn cloud_provider_options(
+    cfg: &Config,
+    store: Option<&Store>,
+    utc_date: Option<&str>,
+) -> Vec<CloudProviderOut> {
+    cfg.inference
+        .roles_with_prefix("cloud_")
+        .into_iter()
+        .filter(|(_, role)| role.has_cloud_policy())
+        .map(|(name, role)| {
+            let request_limit = role.max_requests_per_day.unwrap();
+            let calls = store.and_then(|store| store.cloud_provider_calls_today(&name).ok());
+            let unavailable_reason = if !role.credential_ready() {
+                Some("missing_credential")
+            } else if !utc_date.is_some_and(|date| role.billing_active_on(date)) {
+                Some("billing_expired_or_unknown")
+            } else if calls.is_none() {
+                Some("budget_unavailable")
+            } else if calls.is_some_and(|used| used >= request_limit) {
+                Some("daily_request_limit_reached")
+            } else {
+                None
+            };
+            CloudProviderOut {
+                role: name,
+                name: role.provider_name.clone().unwrap_or_default(),
+                model: role.model.clone(),
+                provider_label: role.provider_label(),
+                location: "cloud",
+                data_tier: role.cloud_data_tier.unwrap().as_str(),
+                billing_mode: role.billing_mode.unwrap().as_str(),
+                failover_priority: role.failover_priority(),
+                max_requests_per_day: request_limit,
+                requests_used_today: calls,
+                requests_remaining_today: calls.map(|used| request_limit.saturating_sub(used)),
+                max_input_tokens: role.max_input_tokens.unwrap(),
+                credit_expires_on: role.credit_expires_on.clone(),
+                available: unavailable_reason.is_none(),
+                unavailable_reason,
+            }
+        })
+        .collect()
+}
+
+fn cloud_tier_allows(
+    tier: Option<&str>,
+    original_data_class: &str,
+    derivative_data_class: &str,
+    transformation: &str,
+) -> bool {
+    if original_data_class == "vault" {
+        return false;
+    }
+    let public_derivative = original_data_class == "public"
+        && derivative_data_class == "public"
+        && transformation == cloud_derivative::PASSTHROUGH_VERSION;
+    match tier {
+        Some("public") => public_derivative,
+        Some("pseudonymized_personal") => {
+            public_derivative
+                || (original_data_class == "personal"
+                    && derivative_data_class == "personal"
+                    && transformation == cloud_derivative::REDACTION_VERSION)
+        }
+        _ => false,
+    }
+}
+
+async fn cloud_providers_handler() -> Json<Value> {
+    let providers = tokio::task::spawn_blocking(|| {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).ok();
+        let utc_date = store.as_ref().and_then(|store| store.utc_date().ok());
+        cloud_provider_options(&cfg, store.as_ref(), utc_date.as_deref())
+    })
+    .await
+    .unwrap_or_default();
+    Json(json!(providers))
+}
+
+async fn cloud_preview_handler(
+    Path((source, id)): Path<(String, String)>,
+) -> (StatusCode, Json<Value>) {
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<Option<CloudDerivativePreview>, String> {
+            let cfg = Config::load();
+            let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+            Ok(load_content_item(&store, &source, &id)?
+                .map(|item| cloud_derivative::prepare(&item.cloud_input())))
+        })
+        .await;
+
+    match result {
+        Ok(Ok(Some(preview))) => (StatusCode::OK, Json(json!(preview))),
+        Ok(Ok(None)) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))),
+        Ok(Err(error)) if error == "source must be 'feed' or 'mail'" => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
+        }
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cloud preview failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudApprovalBody {
+    preview_hash: String,
+}
+
+async fn cloud_approval_handler(
+    Path((source, id)): Path<(String, String)>,
+    Json(body): Json<CloudApprovalBody>,
+) -> (StatusCode, Json<Value>) {
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<Option<CloudDerivativeState>, String> {
+            let cfg = Config::load();
+            let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+            let Some(item) = load_content_item(&store, &source, &id)? else {
+                return Ok(None);
+            };
+            let preview = cloud_derivative::prepare(&item.cloud_input());
+            if preview.preview_hash != body.preview_hash {
+                return Err(
+                    "preview is stale; prepare and review the current document again".into(),
+                );
+            }
+            if preview.original_data_class == "vault" {
+                return Err("vault content cannot be staged for cloud processing".into());
+            }
+            let approval = CloudDerivativeApproval {
+                source: preview.source,
+                item_id: preview.id,
+                source_revision: preview.source_revision,
+                preview_hash: preview.preview_hash,
+                original_data_class: preview.original_data_class,
+                derivative_data_class: preview.derivative_data_class,
+                transformation: preview.transformation.into(),
+                document: preview.document,
+                redaction_count: preview.redaction_count as i32,
+            };
+            store
+                .stage_cloud_derivative(&approval)
+                .map(Some)
+                .map_err(|error| error.to_string())
+        })
+        .await;
+
+    match result {
+        Ok(Ok(Some(state))) => (StatusCode::OK, Json(json!(state))),
+        Ok(Ok(None)) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))),
+        Ok(Err(error)) if error.starts_with("preview is stale") => {
+            (StatusCode::CONFLICT, Json(json!({ "error": error })))
+        }
+        Ok(Err(error)) if error.starts_with("vault content") => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
+        }
+        Ok(Err(error)) if error == "source must be 'feed' or 'mail'" => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
+        }
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cloud approval staging failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudQueueBody {
+    preview_hash: String,
+    provider_role: String,
+}
+
+async fn cloud_queue_handler(
+    Path((source, id)): Path<(String, String)>,
+    Json(body): Json<CloudQueueBody>,
+) -> (StatusCode, Json<Value>) {
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<Option<CloudDerivativeState>, String> {
+            let cfg = Config::load();
+            let role = cfg
+                .inference
+                .roles_with_prefix("cloud_")
+                .into_iter()
+                .find_map(|(name, role)| (name == body.provider_role).then_some(role))
+                .filter(|role| role.has_cloud_policy())
+                .ok_or_else(|| {
+                    "provider role is not a configured reviewed HTTPS cloud role".to_string()
+                })?;
+            if !role.credential_ready() {
+                return Err("provider credential is not materialized".into());
+            }
+
+            let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+            let Some(item) = load_content_item(&store, &source, &id)? else {
+                return Ok(None);
+            };
+            let preview = cloud_derivative::prepare(&item.cloud_input());
+            if preview.preview_hash != body.preview_hash {
+                return Err("approved derivative is stale; prepare and review it again".into());
+            }
+            if !cloud_tier_allows(
+                role.cloud_data_tier.map(|tier| tier.as_str()),
+                &preview.original_data_class,
+                &preview.derivative_data_class,
+                preview.transformation,
+            ) {
+                return Err("provider role does not allow this reviewed derivative".into());
+            }
+            let utc_date = store.utc_date().map_err(|error| error.to_string())?;
+            if !role.billing_active_on(&utc_date) {
+                return Err("provider billing policy is expired or inactive".into());
+            }
+            let input_upper_bound = cloud_dispatch::input_token_upper_bound(&preview.document);
+            if input_upper_bound > role.max_input_tokens.unwrap_or(0) {
+                return Err(
+                    "provider input token ceiling is below this reviewed derivative".into(),
+                );
+            }
+            let calls = store
+                .cloud_provider_calls_today(&body.provider_role)
+                .map_err(|error| error.to_string())?;
+            if calls >= role.max_requests_per_day.unwrap_or(0) {
+                return Err("provider daily request ceiling is reached".into());
+            }
+            store
+                .queue_cloud_derivative(&CloudQueueRequest {
+                    source: preview.source,
+                    item_id: preview.id,
+                    source_revision: preview.source_revision,
+                    preview_hash: preview.preview_hash,
+                    provider_role: body.provider_role,
+                })
+                .map(Some)
+                .map_err(|error| error.to_string())
+        })
+        .await;
+
+    match result {
+        Ok(Ok(Some(state))) => (StatusCode::OK, Json(json!(state))),
+        Ok(Ok(None)) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))),
+        Ok(Err(error))
+            if error.starts_with("provider role") || error.starts_with("provider credential") =>
+        {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
+        }
+        Ok(Err(error)) if error.contains("stale") || error.starts_with("approved derivative") => {
+            (StatusCode::CONFLICT, Json(json!({ "error": error })))
+        }
+        Ok(Err(error)) if error == "source must be 'feed' or 'mail'" => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
+        }
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cloud queue failed" })),
+        ),
+    }
+}
+
+async fn cloud_run_handler(Path(job_id): Path<String>) -> (StatusCode, Json<Value>) {
+    let result = tokio::task::spawn_blocking(move || -> Result<CloudDerivativeState, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let job = store
+            .cloud_job_for_dispatch(&job_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                "cloud job is completed, running, stale, or past its retry limit".to_string()
+            })?;
+        if job.task != cloud_dispatch::TASK_VERSION {
+            return Err("cloud job task is unsupported".into());
+        }
+        let selected_role = cfg
+            .inference
+            .role(&job.provider_role)
+            .filter(|role| role.has_cloud_policy())
+            .ok_or_else(|| "provider role is no longer a reviewed HTTPS cloud role".to_string())?;
+        if !cloud_tier_allows(
+            selected_role.cloud_data_tier.map(|tier| tier.as_str()),
+            &job.original_data_class,
+            &job.derivative_data_class,
+            &job.transformation,
+        ) {
+            return Err("provider role no longer allows the staged derivative".into());
+        }
+        let utc_date = store.utc_date().map_err(|error| error.to_string())?;
+        let input_upper_bound = cloud_dispatch::input_token_upper_bound(&job.document);
+        let mut requested = false;
+        let mut outcomes = Vec::new();
+
+        for (candidate_name, role) in cfg.inference.cloud_failover_roles(&job.provider_role) {
+            if !cloud_tier_allows(
+                role.cloud_data_tier.map(|tier| tier.as_str()),
+                &job.original_data_class,
+                &job.derivative_data_class,
+                &job.transformation,
+            ) {
+                continue;
+            }
+            if !role.credential_ready() {
+                outcomes.push(format!("{candidate_name}: credential unavailable"));
+                continue;
+            }
+            if !role.billing_active_on(&utc_date) {
+                outcomes.push(format!("{candidate_name}: billing policy inactive"));
+                continue;
+            }
+            if input_upper_bound > role.max_input_tokens.unwrap_or(0) {
+                outcomes.push(format!("{candidate_name}: input ceiling exceeded"));
+                continue;
+            }
+
+            let attempt_id = match store
+                .claim_cloud_job_attempt(
+                    &job.job_id,
+                    &candidate_name,
+                    &role.model,
+                    role.max_requests_per_day.unwrap_or(0),
+                )
+                .map_err(|error| error.to_string())?
+            {
+                CloudAttemptClaim::Started(attempt_id) => attempt_id,
+                CloudAttemptClaim::DailyLimitReached => {
+                    outcomes.push(format!("{candidate_name}: daily request ceiling reached"));
+                    continue;
+                }
+                CloudAttemptClaim::JobUnavailable => {
+                    return Err("cloud job was claimed by another request".into());
+                }
+            };
+            requested = true;
+            let analysis = match cloud_dispatch::analyze(&role, &job.document) {
+                Ok(analysis) => analysis,
+                Err(error) => {
+                    store
+                        .fail_cloud_job_attempt(&job.job_id, attempt_id, &error)
+                        .map_err(|store_error| store_error.to_string())?;
+                    outcomes.push(format!("{candidate_name}: {error}"));
+                    continue;
+                }
+            };
+            let result = serde_json::to_value(analysis).map_err(|error| error.to_string())?;
+            if !store
+                .complete_cloud_job_attempt(&job.job_id, attempt_id, &result)
+                .map_err(|error| error.to_string())?
+            {
+                return Err("cloud job result could not be committed".into());
+            }
+            return store
+                .cloud_derivative_state(
+                    &job.source,
+                    &job.item_id,
+                    &job.source_revision,
+                    &job.preview_hash,
+                )
+                .map_err(|error| error.to_string());
+        }
+
+        let detail = if outcomes.is_empty() {
+            "no same-tier provider is configured".to_string()
+        } else {
+            outcomes.join("; ")
+        };
+        if requested {
+            Err(format!("dispatch failed: {detail}"))
+        } else {
+            Err(format!("provider policy blocked dispatch: {detail}"))
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok(state)) => (StatusCode::OK, Json(json!(state))),
+        Ok(Err(error)) if error.starts_with("provider role") => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
+        }
+        Ok(Err(error)) if error.starts_with("provider policy blocked") => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
+        }
+        Ok(Err(error)) if error.starts_with("dispatch failed:") => {
+            (StatusCode::BAD_GATEWAY, Json(json!({ "error": error })))
+        }
+        Ok(Err(error)) if error.starts_with("cloud job") => {
+            (StatusCode::CONFLICT, Json(json!({ "error": error })))
+        }
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cloud job execution failed" })),
         ),
     }
 }
@@ -824,6 +1695,7 @@ async fn evaluation_status_handler() -> (StatusCode, Json<Value>) {
         let reranking_role = cfg.reranking_role();
         let reranking_producer = reranking_role.as_ref().map(|role| role.cache_key());
         let summarization_role = cfg.summarization_role();
+        let summary_producer_revision = media::summary_producer_revision(&cfg);
         let travel_context = travel::cached(&store);
         let travel_revision = travel_context
             .as_ref()
@@ -833,7 +1705,7 @@ async fn evaluation_status_handler() -> (StatusCode, Json<Value>) {
             .evaluation_summary()
             .map_err(|error| error.to_string())?;
         let enrichment = store
-            .feed_enrichment_counts()
+            .feed_enrichment_counts(summary_producer_revision.as_deref())
             .map_err(|error| error.to_string())?;
         let content_status = store
             .feed_content_status_counts()
@@ -1193,7 +2065,15 @@ async fn triage_handler(Query(params): Query<TriageParams>) -> Json<Value> {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_url).ok()?;
         let items = store.list_triage(params.status.as_deref()).ok()?;
-        Some(items.into_iter().map(TriageOut::from).collect())
+        Some(
+            items
+                .into_iter()
+                .map(|item| {
+                    let relevance = store.triage_relevance(&item.id).unwrap_or_default();
+                    TriageOut::from_store(item, relevance)
+                })
+                .collect(),
+        )
     })
     .await
     .ok()
@@ -1202,6 +2082,794 @@ async fn triage_handler(Query(params): Query<TriageParams>) -> Json<Value> {
     match result {
         Some(items) => Json(json!(items)),
         None => Json(json!({ "error": "triage query failed" })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TriageSweepBody {
+    limit: Option<usize>,
+    cursor: Option<String>,
+}
+
+async fn triage_sweep_handler(Json(body): Json<TriageSweepBody>) -> (StatusCode, Json<Value>) {
+    let limit = body.limit.unwrap_or(100).clamp(1, 100);
+    let cursor = body.cursor.filter(|value| !value.trim().is_empty());
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let token =
+            google::access_token(&cfg.google_env_path).map_err(|error| error.to_string())?;
+        let page = google::list_inbox_threads_page(&token, limit, cursor.as_deref())
+            .map_err(|error| error.to_string())?;
+        let mut fetched = 0usize;
+        let mut new_count = 0usize;
+        let mut skipped = 0usize;
+        for stub in &page.threads {
+            let meta = match google::thread_meta(&token, &stub.id) {
+                Ok(meta) => meta,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let from = meta.from_addr.clone().unwrap_or_default();
+            let subject = meta.subject.clone().unwrap_or_default();
+            let facts = rules::MailFacts {
+                from: &from,
+                subject: &subject,
+                has_list_unsubscribe: meta.has_list_unsubscribe(),
+            };
+            let (stream, rationale) = rules::classify(&facts, &cfg.rules);
+            let data_classification = data_class::classify_mail(&stream, &from, &subject);
+            let item = TriageItem {
+                id: meta.id,
+                from_addr: meta.from_addr,
+                subject: meta.subject,
+                snippet: meta.snippet,
+                internal_date_ms: meta.internal_date_ms,
+                internal_date_text: None,
+                stream,
+                rationale,
+                classification_method: "rules".into(),
+                classification_version: "mail-rules-v1".into(),
+                data_class: data_classification.class,
+                data_class_rationale: data_classification.rationale,
+                data_classification_method: data_classification.method,
+                data_classification_version: data_classification.version,
+                status: "proposed".into(),
+                gmail_action: None,
+                gmail_action_at: None,
+                purge_after: None,
+                gmail_location: None,
+                gmail_observed_at: None,
+                gmail_sync_status: None,
+                gmail_sync_action: None,
+                gmail_sync_error: None,
+                first_seen: String::new(),
+                last_seen: String::new(),
+            };
+            if store
+                .upsert_triage(&item)
+                .map_err(|error| error.to_string())?
+            {
+                new_count += 1;
+            }
+            fetched += 1;
+        }
+        let total_stored = store
+            .list_triage(None)
+            .map_err(|error| error.to_string())?
+            .len();
+        Ok(json!({
+            "fetched": fetched,
+            "new_count": new_count,
+            "skipped": skipped,
+            "total_stored": total_stored,
+            "next_cursor": page.next_page_token,
+            "exhausted": page.next_page_token.is_none(),
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err(error)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TriageRelevanceBody {
+    limit: Option<usize>,
+}
+
+fn loopback_inference_url(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    value.starts_with("http://127.0.0.1:")
+        || value.starts_with("https://127.0.0.1:")
+        || value.starts_with("http://localhost:")
+        || value.starts_with("https://localhost:")
+        || value.starts_with("http://[::1]:")
+        || value.starts_with("https://[::1]:")
+}
+
+async fn triage_relevance_handler(
+    Json(body): Json<TriageRelevanceBody>,
+) -> (StatusCode, Json<Value>) {
+    let limit = body.limit.unwrap_or(200).clamp(1, 500);
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let profiles = relevance::load_profiles(&cfg.relevance);
+        let triage = store
+            .list_triage(None)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|item| item.status == "proposed" || item.status == "approved")
+            .take(limit)
+            .collect::<Vec<_>>();
+        let items = triage
+            .iter()
+            .map(|proposal| {
+                let mut item = FeedItem::new(
+                    &format!("https://mail.google.com/mail/u/0/#all/{}", proposal.id),
+                    "news",
+                    "mail",
+                );
+                item.id = proposal.id.clone();
+                item.title = proposal.subject.clone();
+                item.author = proposal.from_addr.clone();
+                item.transcript = proposal.snippet.clone();
+                item
+            })
+            .collect::<Vec<_>>();
+        let embedding_role = cfg
+            .embedding_role()
+            .filter(|role| loopback_inference_url(&role.backend.base_url));
+        let reranking_role = cfg
+            .reranking_role()
+            .filter(|role| loopback_inference_url(&role.backend.base_url));
+        let scored = relevance::score_items(
+            &items,
+            &profiles,
+            embedding_role.as_ref(),
+            reranking_role.as_ref(),
+        );
+        let mode = scored
+            .iter()
+            .flat_map(|item| item.matches.first())
+            .map(|matched| matched.mode.clone())
+            .next();
+        for item in &scored {
+            store
+                .replace_triage_relevance(&item.feed_id, &item.matches)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(json!({
+            "scored": scored.len(),
+            "profile_count": profiles.len(),
+            "mode": mode,
+            "local_only": true,
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TriageBulkBody {
+    ids: Vec<String>,
+    action: String,
+    stream: Option<String>,
+    data_class: Option<String>,
+}
+
+fn thread_action_for_job(job: &GmailActionJob) -> Result<ThreadAction, String> {
+    match job.action.as_str() {
+        "archive" => Ok(ThreadAction::Archive),
+        "trash" => Ok(ThreadAction::Trash),
+        "restore" if job.source_status == "archived" => Ok(ThreadAction::RestoreArchive),
+        "restore" if job.source_status == "trashed" => Ok(ThreadAction::RestoreTrash),
+        _ => Err("stored Gmail action has an invalid source state".into()),
+    }
+}
+
+fn target_location(job: &GmailActionJob) -> Result<ThreadLocation, String> {
+    match job.action.as_str() {
+        "archive" => Ok(ThreadLocation::Archive),
+        "trash" => Ok(ThreadLocation::Trash),
+        "restore" => Ok(ThreadLocation::Inbox),
+        _ => Err("stored Gmail action is invalid".into()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GmailActionOutcome {
+    Confirmed { changed: bool },
+    Missing,
+}
+
+/// Execute one durable intent. Reading the current labels first makes replay
+/// safe when Gmail succeeded but the process stopped before the local commit.
+fn execute_gmail_action_job(
+    store: &Store,
+    token: &str,
+    job: &GmailActionJob,
+) -> Result<GmailActionOutcome, String> {
+    let meta = match google::thread_meta_lookup(token, &job.triage_id) {
+        Ok(Some(meta)) => meta,
+        Ok(None) => {
+            return store
+                .observe_gmail_missing(&job.triage_id)
+                .map_err(|_| "Axon could not record that the Gmail thread is missing".to_string())
+                .and_then(|updated| {
+                    if updated {
+                        Ok(GmailActionOutcome::Missing)
+                    } else {
+                        Err(
+                            "mail proposal disappeared before the missing state was recorded"
+                                .into(),
+                        )
+                    }
+                });
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let _ = store.fail_gmail_action(job.job_id, &message);
+            return Err(message);
+        }
+    };
+    let result = (|| -> Result<GmailActionOutcome, String> {
+        let changed = ThreadLocation::from_labels(&meta.label_ids) != target_location(job)?;
+        if changed {
+            google::apply_thread_action(token, &job.triage_id, thread_action_for_job(job)?)
+                .map_err(|error| error.to_string())?;
+        }
+        match store
+            .complete_gmail_action(job.job_id)
+            .map_err(|_| "Axon could not commit the confirmed Gmail result".to_string())?
+        {
+            true => Ok(GmailActionOutcome::Confirmed { changed }),
+            false => Err("mail proposal disappeared before local completion".into()),
+        }
+    })();
+
+    if let Err(error) = &result {
+        let _ = store.fail_gmail_action(job.job_id, error);
+    }
+    result
+}
+
+#[derive(Debug, Serialize)]
+struct GmailMaintenanceCounts {
+    retried: usize,
+    recovered: usize,
+    retry_failures: usize,
+    reconciled: usize,
+    changed: usize,
+    read_failures: usize,
+    missing: usize,
+    content_fetched: bool,
+}
+
+fn reconciled_status(current: &str, location: ThreadLocation) -> &str {
+    match location {
+        ThreadLocation::Trash => "trashed",
+        ThreadLocation::Archive => "archived",
+        ThreadLocation::Inbox if matches!(current, "archived" | "trashed" | "executed") => {
+            "proposed"
+        }
+        ThreadLocation::Inbox => current,
+    }
+}
+
+fn run_gmail_maintenance(
+    cfg: &Config,
+    reconcile_limit: i64,
+) -> Result<GmailMaintenanceCounts, String> {
+    let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+    let token = google::access_token(&cfg.google_env_path)
+        .map_err(|_| "Google authorization unavailable".to_string())?;
+    let jobs = store
+        .pending_gmail_actions(50)
+        .map_err(|error| error.to_string())?;
+    let mut counts = GmailMaintenanceCounts {
+        retried: jobs.len(),
+        recovered: 0,
+        retry_failures: 0,
+        reconciled: 0,
+        changed: 0,
+        read_failures: 0,
+        missing: 0,
+        content_fetched: false,
+    };
+    for job in &jobs {
+        match execute_gmail_action_job(&store, &token, job) {
+            Ok(GmailActionOutcome::Confirmed { .. }) => counts.recovered += 1,
+            Ok(GmailActionOutcome::Missing) => counts.missing += 1,
+            Err(_) => counts.retry_failures += 1,
+        }
+    }
+
+    let candidates = store
+        .gmail_reconcile_candidates(reconcile_limit)
+        .map_err(|error| error.to_string())?;
+    for candidate in candidates {
+        match google::thread_meta_lookup(&token, &candidate.triage_id) {
+            Ok(Some(meta)) => {
+                let location = ThreadLocation::from_labels(&meta.label_ids);
+                if reconciled_status(&candidate.status, location) != candidate.status {
+                    counts.changed += 1;
+                }
+                store
+                    .observe_gmail_location(&candidate.triage_id, location.as_str())
+                    .map_err(|error| error.to_string())?;
+                counts.reconciled += 1;
+            }
+            Ok(None) => {
+                store
+                    .observe_gmail_missing(&candidate.triage_id)
+                    .map_err(|error| error.to_string())?;
+                counts.reconciled += 1;
+                counts.changed += usize::from(candidate.status != "missing");
+                counts.missing += 1;
+            }
+            Err(_) => counts.read_failures += 1,
+        }
+    }
+    Ok(counts)
+}
+
+async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> (StatusCode, Json<Value>) {
+    if body.ids.is_empty() || body.ids.len() > 100 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "select between 1 and 100 proposals" })),
+        );
+    }
+    let mut seen = HashSet::new();
+    let ids = body
+        .ids
+        .into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .collect::<Vec<_>>();
+    let action = body.action;
+    let stream = body.stream;
+    let selected_data_class = body.data_class;
+    if !matches!(
+        action.as_str(),
+        "dismiss" | "categorize" | "set-data-class" | "archive" | "trash"
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({ "error": "action must be dismiss, categorize, set-data-class, archive, or trash" }),
+            ),
+        );
+    }
+    if action == "categorize" && stream.as_deref().is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "categorize requires a stream" })),
+        );
+    }
+    if action == "set-data-class"
+        && !selected_data_class
+            .as_deref()
+            .is_some_and(data_class::valid)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "set-data-class requires public, personal, or vault" })),
+        );
+    }
+
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let gmail_action = ThreadAction::parse(&action);
+        let token = gmail_action.map(|_| google::access_token(&cfg.google_env_path));
+        let mut succeeded = Vec::new();
+        let mut failures = Vec::new();
+        for id in ids {
+            let known = store
+                .get_triage_status(&id)
+                .map_err(|error| error.to_string())?;
+            if known.is_none() {
+                failures.push(json!({ "id": id, "error": "not found" }));
+                continue;
+            }
+            let outcome = match action.as_str() {
+                "dismiss" => store
+                    .set_triage_status(&id, "dismissed")
+                    .map_err(|error| error.to_string())
+                    .map(|updated| updated.then_some(())),
+                "categorize" => store
+                    .set_triage_stream(&id, stream.as_deref().unwrap_or_default())
+                    .map_err(|error| error.to_string())
+                    .map(|updated| updated.then_some(())),
+                "set-data-class" => store
+                    .set_triage_data_class(
+                        &id,
+                        selected_data_class.as_deref().unwrap_or_default(),
+                    )
+                    .map_err(|error| error.to_string())
+                    .map(|updated| updated.then_some(())),
+                "archive" | "trash" => store
+                    .queue_gmail_action(&id, action.as_str())
+                    .map_err(|error| error.to_string())
+                    .and_then(|job| match token.as_ref() {
+                        Some(Ok(token)) => execute_gmail_action_job(&store, token, &job),
+                        Some(Err(_)) => {
+                            let _ = store.fail_gmail_action(
+                                job.job_id,
+                                "Google authorization unavailable",
+                            );
+                            Err("Google authorization unavailable; the action remains queued for retry".into())
+                        }
+                        None => unreachable!(),
+                    })
+                    .and_then(|outcome| match outcome {
+                        GmailActionOutcome::Confirmed { .. } => Ok(Some(())),
+                        GmailActionOutcome::Missing => {
+                            Err("Gmail thread no longer exists; Axon retained its local record".into())
+                        }
+                    }),
+                _ => unreachable!(),
+            };
+            match outcome {
+                Ok(Some(())) => succeeded.push(id),
+                Ok(None) => failures.push(json!({ "id": id, "error": "not found" })),
+                Err(error) => failures.push(json!({ "id": id, "error": error.to_string() })),
+            }
+        }
+        Ok(json!({
+            "succeeded": succeeded,
+            "failures": failures,
+            "gmail_changed": gmail_action.is_some(),
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+async fn triage_status_handler(
+    Path(id): Path<String>,
+    Json(body): Json<StatusBody>,
+) -> (StatusCode, Json<Value>) {
+    if !matches!(body.status.as_str(), "proposed" | "approved" | "dismissed") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "status must be proposed, approved, or dismissed; Gmail lifecycle states require the Gmail action endpoint"
+            })),
+        );
+    }
+    let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        store
+            .set_triage_status(&id, &body.status)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(true)) => (StatusCode::OK, Json(json!({ "ok": true }))),
+        Ok(Ok(false)) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TriageStreamBody {
+    stream: String,
+}
+
+async fn triage_stream_handler(
+    Path(id): Path<String>,
+    Json(body): Json<TriageStreamBody>,
+) -> (StatusCode, Json<Value>) {
+    let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        store
+            .set_triage_stream(&id, &body.stream)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(true)) => (StatusCode::OK, Json(json!({ "ok": true }))),
+        Ok(Ok(false)) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TriageDataClassBody {
+    data_class: String,
+}
+
+async fn triage_data_class_handler(
+    Path(id): Path<String>,
+    Json(body): Json<TriageDataClassBody>,
+) -> (StatusCode, Json<Value>) {
+    let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        store
+            .set_triage_data_class(&id, &body.data_class)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(true)) => (StatusCode::OK, Json(json!({ "ok": true }))),
+        Ok(Ok(false)) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TriageDataClassRefreshBody {
+    limit: Option<usize>,
+}
+
+async fn triage_data_class_refresh_handler(
+    Json(body): Json<TriageDataClassRefreshBody>,
+) -> (StatusCode, Json<Value>) {
+    let limit = body.limit.unwrap_or(500).clamp(1, 2_000);
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let items = store
+            .list_triage(None)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .take(limit)
+            .collect::<Vec<_>>();
+        let reviewed = items.len();
+        let mut updated = 0usize;
+        let mut preserved_human = 0usize;
+        for item in items {
+            if item.data_classification_method == "human" {
+                preserved_human += 1;
+                continue;
+            }
+            let classification = data_class::classify_mail(
+                &item.stream,
+                item.from_addr.as_deref().unwrap_or_default(),
+                item.subject.as_deref().unwrap_or_default(),
+            );
+            if store
+                .refresh_triage_data_class(&item.id, &classification)
+                .map_err(|error| error.to_string())?
+            {
+                updated += 1;
+            }
+        }
+        Ok(json!({
+            "reviewed": reviewed,
+            "updated": updated,
+            "preserved_human": preserved_human,
+            "classifier_version": data_class::CLASSIFIER_VERSION,
+            "content_inputs": ["sender", "subject", "category"],
+            "provider_calls": 0,
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TriageGmailBody {
+    action: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TriageGmailJobBody {
+    decision: String,
+}
+
+async fn triage_gmail_handler(
+    Path(id): Path<String>,
+    Json(body): Json<TriageGmailBody>,
+) -> (StatusCode, Json<Value>) {
+    if !matches!(body.action.as_str(), "archive" | "trash" | "restore") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "action must be archive, trash, or restore" })),
+        );
+    }
+    let action_name = body.action;
+    let response_action = action_name.clone();
+    let result = tokio::task::spawn_blocking(
+        move || -> Result<GmailActionOutcome, (StatusCode, String)> {
+            let cfg = Config::load();
+            let store = Store::open(&cfg.database_url)
+                .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            let job = store
+                .queue_gmail_action(&id, &action_name)
+                .map_err(|error| {
+                    let message = error.to_string();
+                    let status = if message == "mail proposal not found" {
+                        StatusCode::NOT_FOUND
+                    } else {
+                        StatusCode::CONFLICT
+                    };
+                    (status, message)
+                })?;
+            let token = google::access_token(&cfg.google_env_path).map_err(|_| {
+                let _ = store.fail_gmail_action(job.job_id, "Google authorization unavailable");
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "Google authorization unavailable; the action remains queued for retry".into(),
+                )
+            })?;
+            execute_gmail_action_job(&store, &token, &job).map_err(|error| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("{error}; the action remains queued for bounded retry"),
+                )
+            })
+        },
+    )
+    .await;
+
+    match result {
+        Ok(Ok(GmailActionOutcome::Confirmed { changed })) => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "action": response_action,
+                "gmail_changed": changed,
+                "gmail_confirmed": true
+            })),
+        ),
+        Ok(Ok(GmailActionOutcome::Missing)) => (
+            StatusCode::GONE,
+            Json(json!({
+                "error": "Gmail thread no longer exists; Axon retained its local record"
+            })),
+        ),
+        Ok(Err((status, error))) => (status, Json(json!({ "error": error }))),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+async fn triage_gmail_job_handler(
+    Path(id): Path<String>,
+    Json(body): Json<TriageGmailJobBody>,
+) -> (StatusCode, Json<Value>) {
+    if !matches!(body.decision.as_str(), "retry" | "cancel") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "decision must be retry or cancel" })),
+        );
+    }
+    let decision = body.decision;
+    let result = tokio::task::spawn_blocking(move || {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url)
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        if decision == "cancel" {
+            return store
+                .cancel_abandoned_gmail_action(&id)
+                .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+                .and_then(|canceled| {
+                    if canceled {
+                        Ok((StatusCode::OK, json!({ "ok": true, "state": "canceled" })))
+                    } else {
+                        Err((
+                            StatusCode::CONFLICT,
+                            "no Gmail action needs operator attention".into(),
+                        ))
+                    }
+                });
+        }
+
+        let job = store
+            .retry_abandoned_gmail_action(&id)
+            .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
+        let token = google::access_token(&cfg.google_env_path).map_err(|_| {
+            let _ = store.fail_gmail_action(job.job_id, "Google authorization unavailable");
+            (
+                StatusCode::BAD_GATEWAY,
+                "Google authorization unavailable; the action remains queued for retry".into(),
+            )
+        })?;
+        match execute_gmail_action_job(&store, &token, &job).map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("{error}; the action remains queued for bounded retry"),
+            )
+        })? {
+            GmailActionOutcome::Confirmed { changed } => Ok((
+                StatusCode::OK,
+                json!({ "ok": true, "state": "completed", "gmail_changed": changed }),
+            )),
+            GmailActionOutcome::Missing => Ok((
+                StatusCode::GONE,
+                json!({
+                    "error": "Gmail thread no longer exists; Axon retained its local record"
+                }),
+            )),
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok((status, value))) => (status, Json(value)),
+        Ok(Err((status, error))) => (status, Json(json!({ "error": error }))),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+async fn triage_reconcile_handler() -> (StatusCode, Json<Value>) {
+    let result = tokio::task::spawn_blocking(|| {
+        let cfg = Config::load();
+        run_gmail_maintenance(&cfg, 200)
+    })
+    .await;
+    match result {
+        Ok(Ok(counts)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(counts).unwrap_or_else(|_| json!({}))),
+        ),
+        Ok(Err(error)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
     }
 }
 
@@ -1243,7 +2911,10 @@ fn spawn_enrichment_drain(every_minutes: u64) {
                         return;
                     }
                 };
-                let before = match store.feed_enrichment_counts() {
+                let summary_producer_revision = media::summary_producer_revision(&cfg);
+                let before = match store
+                    .feed_enrichment_counts(summary_producer_revision.as_deref())
+                {
                     Ok(counts) => counts,
                     Err(error) => {
                         eprintln!("enrichment drain: backlog query failed: {error}");
@@ -1273,6 +2944,70 @@ fn spawn_enrichment_drain(every_minutes: u64) {
     });
 }
 
+/// Expired Trash rows contain cached Gmail metadata and reviewed derivatives,
+/// so cleanup runs independently of inbox sweeps. Gmail's own retention is not
+/// modified here.
+fn spawn_trash_cleanup() {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+        loop {
+            ticker.tick().await;
+            let joined = tokio::task::spawn_blocking(|| {
+                let cfg = Config::load();
+                let store = Store::open(&cfg.database_url)
+                    .map_err(|error| format!("store unavailable: {error}"))?;
+                store
+                    .purge_expired_trashed()
+                    .map_err(|error| error.to_string())
+            })
+            .await;
+            match joined {
+                Ok(Ok(count)) if count > 0 => {
+                    eprintln!("mail trash cleanup: purged {count} expired item(s)")
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => eprintln!("mail trash cleanup: {error}"),
+                Err(error) => eprintln!("mail trash cleanup: pass did not finish: {error}"),
+            }
+        }
+    });
+}
+
+fn spawn_gmail_maintenance(every_minutes: u64) {
+    if every_minutes == 0 {
+        eprintln!("Gmail maintenance disabled (gmail_maintenance_minutes = 0)");
+        return;
+    }
+    eprintln!("Gmail maintenance: every {every_minutes} min");
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(every_minutes * 60));
+        loop {
+            ticker.tick().await;
+            let joined = tokio::task::spawn_blocking(|| {
+                let cfg = Config::load();
+                if !cfg.google_env_path.is_file() {
+                    return Ok(None);
+                }
+                run_gmail_maintenance(&cfg, 200).map(Some)
+            })
+            .await;
+            match joined {
+                Ok(Ok(Some(counts)))
+                    if counts.recovered > 0 || counts.changed > 0 || counts.retry_failures > 0 =>
+                {
+                    eprintln!(
+                        "Gmail maintenance: {} recovered, {} reconciled changes, {} retry failures",
+                        counts.recovered, counts.changed, counts.retry_failures
+                    )
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => eprintln!("Gmail maintenance: {error}"),
+                Err(error) => eprintln!("Gmail maintenance: pass did not finish: {error}"),
+            }
+        }
+    });
+}
+
 /// The whole HTTP surface, assembled from the two things that decide who may
 /// call it. Split out of `main` so a test can serve it on an ephemeral port and
 /// exercise the auth boundary over real HTTP rather than by reading the code
@@ -1295,6 +3030,7 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
 
     // Read-only routes: no auth required.
     let read_routes = Router::new()
+        .route("/routes", get(routes))
         .route("/health", get(health_handler))
         .route("/feed", get(feed_handler))
         .route("/feed/origins", get(feed_origins_handler))
@@ -1302,14 +3038,42 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
         .route("/feed/evaluation/status", get(evaluation_status_handler))
         .route("/feed/quality", get(quality_queue_handler))
         .route("/feed/:id", get(feed_item_handler))
+        .route("/content/cloud-providers", get(cloud_providers_handler))
+        .route("/content/:source/:id", get(content_item_handler))
         .route("/sources", get(sources_handler))
         .route("/triage", get(triage_handler));
 
     // Mutating routes: require shared secret.
     let write_routes = Router::new()
+        .route(
+            "/content/:source/:id/cloud-preview",
+            post(cloud_preview_handler),
+        )
+        .route(
+            "/content/:source/:id/cloud-approval",
+            post(cloud_approval_handler),
+        )
+        .route(
+            "/content/:source/:id/cloud-queue",
+            post(cloud_queue_handler),
+        )
+        .route("/content/cloud-jobs/:job_id/run", post(cloud_run_handler))
         .route("/feed/relevance/refresh", post(relevance_refresh_handler))
         .route("/feed/quality/refresh", post(quality_refresh_handler))
         .route("/feed/:id/status", post(feed_status_handler))
+        .route("/triage/sweep", post(triage_sweep_handler))
+        .route("/triage/relevance/refresh", post(triage_relevance_handler))
+        .route(
+            "/triage/data-class/refresh",
+            post(triage_data_class_refresh_handler),
+        )
+        .route("/triage/bulk", post(triage_bulk_handler))
+        .route("/triage/:id/status", post(triage_status_handler))
+        .route("/triage/:id/stream", post(triage_stream_handler))
+        .route("/triage/:id/data-class", post(triage_data_class_handler))
+        .route("/triage/:id/gmail", post(triage_gmail_handler))
+        .route("/triage/:id/gmail-job", post(triage_gmail_job_handler))
+        .route("/triage/reconcile", post(triage_reconcile_handler))
         .route("/ingest", post(ingest_handler))
         .route("/vault-links/scan", post(vault_scan_handler))
         .route("/vault-links/import", post(vault_import_handler))
@@ -1336,6 +3100,8 @@ async fn main() {
     }
 
     spawn_enrichment_drain(cfg.enrichment_drain_minutes);
+    spawn_trash_cleanup();
+    spawn_gmail_maintenance(cfg.gmail_maintenance_minutes);
 
     let app = build_router(api_secret, &cfg.dashboard_origin);
 
@@ -1406,6 +3172,174 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_sensitive_content_write_requires_authentication() {
+        let base = serve(Some("s3cret")).await;
+        let client = reqwest::Client::new();
+        for (path, body) in [
+            ("/content/mail/18f17d0a9bc123ef/cloud-preview", json!({})),
+            (
+                "/content/mail/18f17d0a9bc123ef/cloud-approval",
+                json!({ "preview_hash": "reviewed-hash" }),
+            ),
+            (
+                "/content/mail/18f17d0a9bc123ef/cloud-queue",
+                json!({
+                    "preview_hash": "reviewed-hash",
+                    "provider_role": "cloud_summarization"
+                }),
+            ),
+            ("/content/cloud-jobs/cloud-job-123/run", json!({})),
+            (
+                "/triage/18f17d0a9bc123ef/status",
+                json!({ "status": "dismissed" }),
+            ),
+            (
+                "/triage/18f17d0a9bc123ef/stream",
+                json!({ "stream": "feed" }),
+            ),
+            (
+                "/triage/18f17d0a9bc123ef/gmail",
+                json!({ "action": "trash" }),
+            ),
+            (
+                "/triage/18f17d0a9bc123ef/gmail-job",
+                json!({ "decision": "retry" }),
+            ),
+            ("/triage/sweep", json!({ "limit": 100 })),
+            ("/triage/relevance/refresh", json!({ "limit": 200 })),
+            ("/triage/data-class/refresh", json!({ "limit": 500 })),
+            ("/triage/reconcile", json!({})),
+            (
+                "/triage/18f17d0a9bc123ef/data-class",
+                json!({ "data_class": "vault" }),
+            ),
+            (
+                "/triage/bulk",
+                json!({ "ids": ["18f17d0a9bc123ef"], "action": "dismiss" }),
+            ),
+        ] {
+            let response = client
+                .post(format!("{base}{path}"))
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 401, "{path} must stay behind auth");
+        }
+    }
+
+    #[test]
+    fn mail_relevance_accepts_only_loopback_model_endpoints() {
+        assert!(loopback_inference_url("http://127.0.0.1:8000/v1"));
+        assert!(loopback_inference_url("http://localhost:11434"));
+        assert!(loopback_inference_url("http://[::1]:8000/v1"));
+        assert!(!loopback_inference_url("https://api.example.com/v1"));
+    }
+
+    #[test]
+    fn cloud_tiers_accept_only_the_exact_reviewed_representation() {
+        assert!(cloud_tier_allows(
+            Some("public"),
+            "public",
+            "public",
+            cloud_derivative::PASSTHROUGH_VERSION,
+        ));
+        assert!(!cloud_tier_allows(
+            Some("public"),
+            "personal",
+            "personal",
+            cloud_derivative::REDACTION_VERSION,
+        ));
+        assert!(cloud_tier_allows(
+            Some("pseudonymized_personal"),
+            "personal",
+            "personal",
+            cloud_derivative::REDACTION_VERSION,
+        ));
+        assert!(!cloud_tier_allows(
+            Some("pseudonymized_personal"),
+            "personal",
+            "personal",
+            cloud_derivative::PASSTHROUGH_VERSION,
+        ));
+        assert!(!cloud_tier_allows(
+            Some("pseudonymized_personal"),
+            "vault",
+            "personal",
+            cloud_derivative::REDACTION_VERSION,
+        ));
+    }
+
+    #[test]
+    fn reconciled_gmail_location_maps_to_truthful_local_status() {
+        assert_eq!(
+            reconciled_status("proposed", ThreadLocation::Archive),
+            "archived"
+        );
+        assert_eq!(
+            reconciled_status("archived", ThreadLocation::Inbox),
+            "proposed"
+        );
+        assert_eq!(
+            reconciled_status("approved", ThreadLocation::Inbox),
+            "approved"
+        );
+        assert_eq!(
+            reconciled_status("archived", ThreadLocation::Trash),
+            "trashed"
+        );
+    }
+
+    #[test]
+    fn mail_adapts_to_the_versioned_content_reader_contract() {
+        let item = TriageItem {
+            id: "thread-1".into(),
+            from_addr: Some("sender@example.com".into()),
+            subject: Some("A useful subject".into()),
+            snippet: Some("A bounded Gmail preview.".into()),
+            internal_date_ms: None,
+            internal_date_text: Some("2026-08-04 09:30:00+02".into()),
+            stream: "aktiv".into(),
+            rationale: "Safe fallback.".into(),
+            classification_method: "rules".into(),
+            classification_version: "mail-rules-v1".into(),
+            data_class: "personal".into(),
+            data_class_rationale: "Mail metadata is Personal by default.".into(),
+            data_classification_method: "rules".into(),
+            data_classification_version: "data-class-rules-v1".into(),
+            status: "proposed".into(),
+            gmail_action: None,
+            gmail_action_at: None,
+            purge_after: None,
+            gmail_location: None,
+            gmail_observed_at: None,
+            gmail_sync_status: None,
+            gmail_sync_action: None,
+            gmail_sync_error: None,
+            first_seen: "2026-08-04 09:31:00+02".into(),
+            last_seen: "2026-08-04 09:31:00+02".into(),
+        };
+
+        let value = serde_json::to_value(ContentItemOut::from_mail(item, Vec::new())).unwrap();
+        assert_eq!(value["schema_version"], "content-item-v1");
+        assert_eq!(value["source"], "mail");
+        assert_eq!(value["kind"], "mail");
+        assert_eq!(value["content_label"], "Message preview");
+        assert_eq!(value["content_status"], "thin");
+        assert_eq!(value["data_class"]["value"], "personal");
+        assert_eq!(
+            value["processing_policy"]["cloud_handling"],
+            "pseudonymization_required"
+        );
+        assert_eq!(value["cloud_processing"]["status"], "not_prepared");
+        assert_eq!(value["cloud_processing"]["provider_calls"], 0);
+        assert_eq!(value["mail"]["category"], "aktiv");
+        assert!(value["mail"]["gmail_location"].is_null());
+        assert!(value["mail"]["gmail_sync_status"].is_null());
+        assert!(value["evaluation"].is_null());
+    }
+
+    #[tokio::test]
     async fn a_wrong_token_is_rejected_too() {
         let base = serve(Some("s3cret")).await;
         for header in [("Authorization", "Bearer wrong"), ("X-Axon-Token", "wrong")] {
@@ -1460,5 +3394,23 @@ mod tests {
 
         let health = reqwest::get(format!("{base}/health")).await.unwrap();
         assert_eq!(health.status(), 200, "read routes carry no auth layer");
+    }
+}
+
+// The self-describing surface, on the same include terms as the other libs.
+#[path = "../../../libs/route-manifest/src/lib.rs"]
+#[allow(dead_code)]
+mod route_manifest;
+
+#[cfg(test)]
+mod route_manifest_tests {
+    /// A stale manifest is worse than none, because it gets believed. This reads
+    /// the router's own source, so adding a `.route()` without a summary fails
+    /// here rather than shipping a surface that lies about itself.
+    #[test]
+    fn the_manifest_covers_every_served_route() {
+        let missing =
+            super::route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
+        assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

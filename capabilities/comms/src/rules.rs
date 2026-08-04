@@ -1,6 +1,6 @@
 //! Pure, deterministic, config-driven classifier. No network, no LLM in this
 //! build. Given the headers of a mail thread, it assigns exactly one stream and
-//! a one-sentence German rationale.
+//! a one-sentence English rationale.
 //!
 //! Order: config `rules` (first match wins) → built-in heuristics → the
 //! conservative default (`aktiv`). The built-in heuristics are intentionally
@@ -42,12 +42,27 @@ pub struct MailFacts<'a> {
 /// The seven ratified triage streams. Kept in sync with the CHECK constraint
 /// in store.rs manually (single-user tool, not worth generating).
 pub const STREAMS: [&str; 7] = [
-    "aktiv", "issue", "feed", "werbung", "belege", "steuern", "sonstiges",
+    "aktiv",
+    "issue",
+    "feed",
+    "werbung",
+    "belege",
+    "steuern",
+    "sonstiges",
 ];
 
 const SHOPPING_KEYWORDS: [&str; 6] = ["sale", "rabatt", "%", "deal", "shop", "angebot"];
-const TECH_KEYWORDS: [&str; 6] = ["release", "changelog", "engineering", "ai", "newsletter", "digest"];
-const RECEIPT_KEYWORDS: [&str; 6] = ["rechnung", "receipt", "invoice", "zahlung", "payment", "beleg"];
+const TECH_KEYWORDS: [&str; 6] = [
+    "release",
+    "changelog",
+    "engineering",
+    "ai",
+    "newsletter",
+    "digest",
+];
+const RECEIPT_KEYWORDS: [&str; 6] = [
+    "rechnung", "receipt", "invoice", "zahlung", "payment", "beleg",
+];
 
 fn contains_ci(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(&needle.to_lowercase())
@@ -72,7 +87,7 @@ fn eval_rule(rule: &Rule, f: &MailFacts) -> Option<String> {
     if let Some(subs) = &m.from_contains {
         conditions += 1;
         if any_contains(f.from, subs) {
-            matched.push("Absender".into());
+            matched.push("sender".into());
         } else {
             return None;
         }
@@ -80,7 +95,7 @@ fn eval_rule(rule: &Rule, f: &MailFacts) -> Option<String> {
     if let Some(subs) = &m.subject_contains {
         conditions += 1;
         if any_contains(f.subject, subs) {
-            matched.push("Betreff".into());
+            matched.push("subject".into());
         } else {
             return None;
         }
@@ -88,7 +103,11 @@ fn eval_rule(rule: &Rule, f: &MailFacts) -> Option<String> {
     if let Some(want) = m.has_list_unsubscribe {
         conditions += 1;
         if f.has_list_unsubscribe == want {
-            matched.push(if want { "List-Unsubscribe vorhanden".into() } else { "kein List-Unsubscribe".into() });
+            matched.push(if want {
+                "List-Unsubscribe present".into()
+            } else {
+                "no List-Unsubscribe".into()
+            });
         } else {
             return None;
         }
@@ -115,33 +134,35 @@ pub fn classify(f: &MailFacts, rules: &[Rule]) -> (String, String) {
     if f.has_list_unsubscribe && any_contains_static(f.subject, &SHOPPING_KEYWORDS) {
         return (
             "werbung".into(),
-            "List-Unsubscribe plus Shopping-Signal im Betreff — als Werbung eingestuft.".into(),
+            "List-Unsubscribe plus a shopping signal in the subject; classified as advertising."
+                .into(),
         );
     }
     if f.has_list_unsubscribe && any_contains_static(f.subject, &TECH_KEYWORDS) {
         return (
             "feed".into(),
-            "List-Unsubscribe plus Dev/Tech-Signal im Betreff — als Feed-Newsletter eingestuft.".into(),
+            "List-Unsubscribe plus a development or technology signal in the subject; classified as a Feed newsletter.".into(),
         );
     }
     let noreply = contains_ci(f.from, "noreply") || contains_ci(f.from, "no-reply");
     if noreply && any_contains_static(f.subject, &RECEIPT_KEYWORDS) {
         return (
             "belege".into(),
-            "Noreply-Absender mit Beleg/Rechnung-Signal im Betreff — als Beleg eingestuft.".into(),
+            "A no-reply sender plus a receipt or invoice signal in the subject; classified as a receipt.".into(),
         );
     }
     if f.has_list_unsubscribe {
         return (
             "sonstiges".into(),
-            "List-Unsubscribe vorhanden, aber keine spezifische Regel gegriffen — als Sonstiges eingestuft.".into(),
+            "List-Unsubscribe is present, but no specific rule matched; classified as other."
+                .into(),
         );
     }
 
     // 3. Conservative default.
     (
         "aktiv".into(),
-        "keine Regel gegriffen — bleibt aktiv (konservativer Default).".into(),
+        "No rule matched; kept active as the conservative default.".into(),
     )
 }
 
@@ -150,39 +171,58 @@ mod tests {
     use super::*;
 
     fn facts<'a>(from: &'a str, subject: &'a str, lu: bool) -> MailFacts<'a> {
-        MailFacts { from, subject, has_list_unsubscribe: lu }
+        MailFacts {
+            from,
+            subject,
+            has_list_unsubscribe: lu,
+        }
     }
 
     #[test]
     fn builtin_shopping_promo_is_werbung() {
-        let (stream, why) = classify(&facts("news@shop.example", "Winter SALE -50% Rabatt", true), &[]);
+        let (stream, why) = classify(
+            &facts("news@shop.example", "Winter SALE -50% Rabatt", true),
+            &[],
+        );
         assert_eq!(stream, "werbung");
         assert!(!why.is_empty());
     }
 
     #[test]
     fn builtin_tech_newsletter_is_feed() {
-        let (stream, _) = classify(&facts("hello@bytes.dev", "This week in AI: new release", true), &[]);
+        let (stream, _) = classify(
+            &facts("hello@bytes.dev", "This week in AI: new release", true),
+            &[],
+        );
         assert_eq!(stream, "feed");
     }
 
     #[test]
     fn builtin_noreply_invoice_is_belege() {
-        let (stream, _) = classify(&facts("noreply@vendor.example", "Ihre Rechnung 2026-07", false), &[]);
+        let (stream, _) = classify(
+            &facts("noreply@vendor.example", "Ihre Rechnung 2026-07", false),
+            &[],
+        );
         assert_eq!(stream, "belege");
     }
 
     #[test]
     fn builtin_bare_list_unsubscribe_is_sonstiges() {
-        let (stream, _) = classify(&facts("info@social.example", "Weekly community update", true), &[]);
+        let (stream, _) = classify(
+            &facts("info@social.example", "Weekly community update", true),
+            &[],
+        );
         assert_eq!(stream, "sonstiges");
     }
 
     #[test]
     fn no_signal_is_conservative_aktiv() {
-        let (stream, why) = classify(&facts("a.person@gmail.com", "Re: lunch tomorrow?", false), &[]);
+        let (stream, why) = classify(
+            &facts("a.person@gmail.com", "Re: lunch tomorrow?", false),
+            &[],
+        );
         assert_eq!(stream, "aktiv");
-        assert!(why.contains("konservativer Default"));
+        assert!(why.contains("conservative default"));
     }
 
     #[test]
@@ -195,12 +235,12 @@ mod tests {
                 has_list_unsubscribe: None,
             },
             stream: "feed".into(),
-            note: "kuratierter Dev-Newsletter".into(),
+            note: "curated development newsletter".into(),
         }];
         let (stream, why) = classify(&facts("hello@bytes.dev", "random subject", true), &rules);
         assert_eq!(stream, "feed");
-        assert!(why.contains("kuratierter Dev-Newsletter"));
-        assert!(why.contains("Absender"));
+        assert!(why.contains("curated development newsletter"));
+        assert!(why.contains("sender"));
     }
 
     #[test]
@@ -214,7 +254,10 @@ mod tests {
             stream: "steuern".into(),
             note: "steuerrelevant".into(),
         }];
-        let (stream, _) = classify(&facts("amt@example.gov", "Ihr Steuerbescheid 2025", false), &rules);
+        let (stream, _) = classify(
+            &facts("amt@example.gov", "Ihr Steuerbescheid 2025", false),
+            &rules,
+        );
         assert_eq!(stream, "steuern");
     }
 
@@ -226,6 +269,9 @@ mod tests {
             note: "should never match".into(),
         }];
         let (stream, _) = classify(&facts("a@b.com", "hello", false), &rules);
-        assert_eq!(stream, "aktiv", "empty match spec must not act as a catch-all");
+        assert_eq!(
+            stream, "aktiv",
+            "empty match spec must not act as a catch-all"
+        );
     }
 }

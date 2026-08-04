@@ -3,10 +3,9 @@
 //! private overlay at runtime (`$AXON_PERSONAL_ROOT/config/comms.json` +
 //! `comms.env`). Mirrors `capabilities/scouting`'s split exactly.
 //!
-//! Phase 0 + media-v1: Gmail is strictly READ-ONLY here. The only Google
-//! endpoints this crate calls are OAuth token refresh and the two read GETs on
-//! `users/me/threads` (list + metadata). There is no modify/trash/delete/
-//! labels/send call anywhere -- not behind a flag.
+//! Gmail sweeps are read-only. The only Gmail writes are explicit authenticated
+//! archive or move-to-Trash actions for a stored proposal. Permanent deletion,
+//! sending, and arbitrary label changes are outside this capability.
 
 // Shared config helpers, compiled in by #[path] include rather than a cargo
 // dependency: rules_rust's splicer flattens listed manifests and breaks
@@ -22,7 +21,10 @@ pub(crate) mod axon_config;
 #[allow(dead_code)]
 pub(crate) mod inference;
 
+pub mod cloud_derivative;
+pub mod cloud_dispatch;
 pub mod config;
+pub mod data_class;
 pub mod evaluation;
 pub mod extraction_eval;
 pub mod google;
@@ -32,8 +34,8 @@ pub mod provenance;
 pub mod quality;
 pub mod relevance;
 pub mod rules;
-pub mod store;
 pub mod sources;
+pub mod store;
 pub mod travel;
 pub mod vault_links;
 

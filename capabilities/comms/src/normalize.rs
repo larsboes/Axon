@@ -316,10 +316,7 @@ fn is_link_only(line: &str) -> bool {
     if t.starts_with("http://") || t.starts_with("https://") {
         return t.split_whitespace().nth(1).is_none();
     }
-    t.starts_with('[')
-        && t.ends_with(')')
-        && t.contains("](")
-        && t.matches('[').count() == 1
+    t.starts_with('[') && t.ends_with(')') && t.contains("](") && t.matches('[').count() == 1
 }
 
 fn drop_link_runs(lines: Vec<String>) -> (Vec<String>, usize) {
@@ -429,7 +426,8 @@ mod tests {
 
     #[test]
     fn blank_runs_collapse_and_residual_markup_is_stripped() {
-        let out = normalize("\n\n# Header\n\n\n\nParagraph with <span class=\"x\">tag</span>.\n   \n\n");
+        let out =
+            normalize("\n\n# Header\n\n\n\nParagraph with <span class=\"x\">tag</span>.\n   \n\n");
         assert_eq!(out.text, "# Header\n\nParagraph with tag.");
         assert!(fired(&out, "blank-run") > 0);
     }
@@ -464,7 +462,11 @@ mod tests {
     #[test]
     fn every_rule_states_what_it_drops() {
         for rule in RULES {
-            assert!(!rule.drops.is_empty(), "{} has no drops sentence", rule.name);
+            assert!(
+                !rule.drops.is_empty(),
+                "{} has no drops sentence",
+                rule.name
+            );
         }
         for (name, drops) in structural_rules() {
             assert!(!drops.is_empty(), "{name} has no drops sentence");

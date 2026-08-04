@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from "$lib/Icon.svelte";
-  import { contextLink, entryLink, kindConfig } from "$lib/calendar/types";
+  import { contextLink, entryReaderLink, kindConfig } from "$lib/calendar/types";
   import type { CalendarContext, CalendarEntry } from "$lib/api";
 
   let {
@@ -11,13 +11,9 @@
     entries: CalendarEntry[];
   } = $props();
 
-  const contextLabels: Record<string, string> = {
-    uncertainty: "Date window",
-    transition: "Transition",
-    preference: "Preference",
-    planning_gap: "Planning gap",
-    note: "Note",
-  };
+  /// Four rows before the Calendar page is the better surface. Past that this
+  /// stops being a horizon and starts being a second calendar.
+  const ENTRY_LIMIT = 4;
 
   function shortDate(value: string) {
     return new Date(`${value.slice(0, 10)}T12:00:00`).toLocaleDateString("en-GB", {
@@ -27,210 +23,186 @@
   }
 
   function entryTime(entry: CalendarEntry) {
-    const date = shortDate(entry.starts_at);
-    if (entry.all_day) return date;
-    return `${date}, ${entry.starts_at.slice(11, 16)}`;
+    return entry.all_day ? "all day" : entry.starts_at.slice(11, 16);
+  }
+
+  /// A context is a span, so it reads as one: "1–2 Sept", or a single date when
+  /// it opens and closes on the same day. The kind label the old tiles carried
+  /// (PREFERENCE / TRANSITION / NOTE) is Calendar-page vocabulary — at a glance
+  /// the title already says what it is, and the taxonomy was pure ink.
+  function span(context: CalendarContext) {
+    const from = shortDate(context.valid_from);
+    const until = shortDate(context.valid_until);
+    return from === until ? from : `${from} – ${until}`;
   }
 </script>
 
 {#if contexts.length > 0 || entries.length > 0}
   <section class="horizon">
-    {#if contexts.length > 0}
-      <div class="horizon-section">
-        <div class="head">
-          <span>Current context</span>
-          <a href="/calendar">Edit <Icon name="arrow-right" size={11} /></a>
-        </div>
-        <div class="context-grid">
-          {#each contexts.slice(0, 4) as context (context.id)}
-            <a class="context" href={contextLink(context)}>
-              <small>{contextLabels[context.kind] ?? "Context"}</small>
-              <strong>{context.title}</strong>
-              <span>{shortDate(context.valid_from)} – {shortDate(context.valid_until)}</span>
+    {#if entries.length > 0}
+      <ol class="entries">
+        {#each entries.slice(0, ENTRY_LIMIT) as entry (entry.id)}
+          <li>
+            <!-- Reader, not the edit form: from Home you want to know what this
+                 is and what it links to, not to move it. -->
+            <a href={entryReaderLink(entry)}>
+              <time>{shortDate(entry.starts_at)}</time>
+              <i
+                style={`--entry-color: ${kindConfig(entry.kind).color}`}
+                class:planned={entry.commitment !== "committed"}
+              ></i>
+              <strong>{entry.title}</strong>
+              <small>{entry.location ? `${entryTime(entry)} · ${entry.location}` : entryTime(entry)}</small>
             </a>
-          {/each}
-        </div>
-      </div>
+          </li>
+        {/each}
+      </ol>
     {/if}
 
-    {#if entries.length > 0}
-      <div class="horizon-section schedule">
-        <div class="head">
-          <span>Coming up</span>
-          <a href="/calendar">Calendar <Icon name="arrow-right" size={11} /></a>
-        </div>
-        <div class="entry-list">
-          {#each entries.slice(0, 4) as entry (entry.id)}
-            <a href={entryLink(entry)}>
-              <i style={`--entry-color: ${kindConfig(entry.kind).color}`}></i>
-              <span>
-                <strong>{entry.title}</strong>
-                <small>
-                  {entryTime(entry)}
-                  {#if entry.location} · {entry.location}{/if}
-                </small>
-              </span>
-              <em>{entry.commitment === "committed" ? "Committed" : "Planned"}</em>
-            </a>
-          {/each}
-        </div>
-      </div>
+    {#if contexts.length > 0}
+      <p class="contexts">
+        {#each contexts as context, index (context.id)}
+          <a href={contextLink(context)} title={context.details || context.title}>
+            {context.title}<span>{span(context)}</span>
+          </a>{#if index < contexts.length - 1}<i aria-hidden="true">·</i>{/if}
+        {/each}
+        <a class="edit" href="/calendar">Calendar <Icon name="arrow-right" size={11} /></a>
+      </p>
     {/if}
   </section>
 {/if}
 
 <style>
+  /* No card, no tiles. The old shape was a bordered card holding bordered
+     tiles holding taxonomy labels — three levels of chrome around four facts.
+     A hairline rule and whitespace carry the same separation. */
   .horizon {
-    display: grid;
-    gap: 0.8rem;
-    margin-bottom: 1.15rem;
-    padding: 0.75rem;
-    border: 1px solid var(--card-border);
-    border-radius: var(--radius-lg);
-    background: var(--card-bg);
+    margin-bottom: 1.35rem;
   }
 
-  .head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 0.45rem;
+  .entries {
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
-  .head > span {
-    color: var(--primary);
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .head a {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    color: var(--text-tertiary);
-    font-size: 0.65rem;
-  }
-
-  .context-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-    gap: 0.45rem;
-  }
-
-  .context {
-    display: grid;
-    gap: 0.15rem;
-    padding: 0.45rem 0.55rem;
-    border-radius: var(--radius-sm);
-    background: var(--primary-soft);
-  }
-
-  .context:hover { box-shadow: inset 0 0 0 1px var(--primary); }
-  .context small { color: var(--primary); font-size: 0.58rem; font-weight: 700; text-transform: uppercase; }
-  .context strong { font-size: 0.7rem; line-height: 1.25; }
-  .context span { color: var(--text-secondary); font-size: 0.58rem; }
-
-  .entry-list {
+  .entries li + li {
     border-top: 1px solid var(--card-border);
   }
 
-  .entry-list a {
+  .entries a {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 0.55rem;
-    padding: 0.38rem 0;
-    border-bottom: 1px solid var(--card-border);
+    grid-template-columns: 3.5rem auto minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 0.6rem;
+    padding: 0.4rem 0.1rem;
   }
 
-  .entry-list a:last-child { border-bottom: 0; }
-  .entry-list i { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--entry-color); }
-  .entry-list span { display: grid; min-width: 0; }
-  .entry-list strong { overflow: hidden; font-size: 0.69rem; text-overflow: ellipsis; white-space: nowrap; }
-  .entry-list small { color: var(--text-tertiary); font-size: 0.57rem; }
-  .entry-list em { color: var(--text-secondary); font-size: 0.55rem; font-style: normal; text-transform: uppercase; }
+  .entries a:hover strong {
+    color: var(--primary);
+  }
 
-  @media (width >= 48rem) {
-    .horizon { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); }
+  .entries time {
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Same vocabulary the month grid uses: filled means committed, outlined
+     means planned. One glyph doing the work the old "COMMITTED" / "PLANNED"
+     labels did in a whole column of uppercase text. */
+  .entries i {
+    align-self: center;
+    width: 0.5rem;
+    height: 0.5rem;
+    border: 1.5px solid var(--entry-color);
+    border-radius: 50%;
+    background: var(--entry-color);
+  }
+
+  .entries i.planned {
+    background: transparent;
+  }
+
+  .entries strong {
+    overflow: hidden;
+    font-size: 0.8125rem;
+    font-weight: 550;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* A venue line runs to a full street address, so it truncates rather than
+     stretching the title column it sits beside. */
+  .entries small {
+    overflow: hidden;
+    max-width: 22rem;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Contexts are ambient, not scheduled — so one wrapped line of quiet text
+     under the schedule, never a row of cards competing with it. */
+  .contexts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin: 0.7rem 0 0;
+    padding-top: 0.55rem;
+    border-top: 1px solid var(--card-border);
+    font-size: 0.6875rem;
+  }
+
+  .contexts a {
+    color: var(--text-secondary);
+  }
+
+  .contexts a:hover {
+    color: var(--primary);
+  }
+
+  .contexts a span {
+    margin-left: 0.3rem;
+    color: var(--text-tertiary);
+  }
+
+  .contexts i {
+    color: var(--card-border-hover, var(--text-tertiary));
+    font-style: normal;
+  }
+
+  .contexts .edit {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: auto;
+    color: var(--text-tertiary);
   }
 
   @media (width < 38rem) {
-    .horizon {
-      gap: 1rem;
-      padding: 0.85rem;
+    .entries a {
+      grid-template-columns: 3.25rem auto minmax(0, 1fr);
+      row-gap: 0.1rem;
+      min-height: 3rem;
+      padding-block: 0.55rem;
     }
 
-    .horizon-section {
-      min-width: 0;
+    .entries small {
+      grid-column: 3;
+      text-align: left;
     }
 
-    .head {
-      margin-bottom: 0.65rem;
+    .contexts {
+      font-size: 0.75rem;
     }
 
-    .head > span,
-    .head a {
-      font-size: 0.7rem;
-    }
-
-    .head a {
-      min-height: 2.5rem;
-      margin-block: -0.75rem;
-      padding-inline-start: 0.75rem;
-    }
-
-    .context-grid {
-      grid-template-columns: none;
-      grid-auto-flow: column;
-      grid-auto-columns: minmax(14.5rem, 88%);
-      width: 100%;
-      overflow-x: auto;
-      overscroll-behavior-inline: contain;
-      padding-bottom: 0.25rem;
-      scroll-snap-type: inline mandatory;
-      scrollbar-width: none;
-    }
-
-    .context-grid::-webkit-scrollbar {
-      display: none;
-    }
-
-    .context {
-      min-height: 5rem;
-      align-content: center;
-      gap: 0.2rem;
-      padding: 0.7rem 0.75rem;
-      scroll-snap-align: start;
-    }
-
-    .context small {
-      font-size: 0.65rem;
-    }
-
-    .context strong {
-      font-size: 0.82rem;
-      line-height: 1.3;
-    }
-
-    .context span {
-      font-size: 0.68rem;
-    }
-
-    .entry-list a {
-      gap: 0.65rem;
-      min-height: 3.25rem;
-      padding-block: 0.6rem;
-    }
-
-    .entry-list strong {
-      font-size: 0.78rem;
-    }
-
-    .entry-list small,
-    .entry-list em {
-      font-size: 0.65rem;
+    .contexts a {
+      min-height: 1.75rem;
     }
   }
 </style>

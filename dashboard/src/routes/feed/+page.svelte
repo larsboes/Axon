@@ -10,19 +10,23 @@
     axonStatus,
     comms,
     type CommsEvaluationStatus,
+    type DataClass,
     type FeedEntry,
     type FeedEntryDetail,
     type FeedRun,
     type FeedSource,
     type FeedStatus,
     type FeedStream,
+    type MailCategory,
     type TriageItem,
     type VaultLinkCandidate,
   } from "$lib/api";
 
   type StreamFilter = "all" | FeedStream;
   type Order = "recent" | "relevance";
-  type FeedView = "inbox" | "discover";
+  type FeedView = "inbox" | "discover" | "mail";
+  type MailStatusFilter = "pending" | "archived" | "trashed" | "missing" | "dismissed" | "legacy" | "all";
+  type GmailAction = "archive" | "trash";
 
   const STREAMS: { value: StreamFilter; label: string }[] = [
     { value: "all", label: "All" },
@@ -40,6 +44,25 @@
     arxiv: "arXiv",
     reddit: "Reddit",
   };
+  const MAIL_CATEGORY_LABEL: Record<MailCategory, string> = {
+    aktiv: "Active",
+    issue: "Action",
+    feed: "Feed",
+    werbung: "Advertising",
+    belege: "Receipts",
+    steuern: "Tax",
+    sonstiges: "Other",
+  };
+  const MAIL_CATEGORY_ORDER = [
+    "issue",
+    "aktiv",
+    "steuern",
+    "belege",
+    "feed",
+    "sonstiges",
+    "werbung",
+  ] as const satisfies readonly MailCategory[];
+  const DATA_CLASSES = ["public", "personal", "vault"] as const satisfies readonly DataClass[];
 
   let stream = $state<StreamFilter>("all");
   let days = $state(7);
@@ -54,6 +77,27 @@
   let runs = $state<FeedRun[]>([]);
   let expandedRuns = $state<Set<string>>(new Set());
   let triage = $state<TriageItem[]>([]);
+  let mailCategory = $state<"all" | MailCategory>("all");
+  let mailStatus = $state<MailStatusFilter>("pending");
+  let mailSearch = $state("");
+  let selectedMail = $state<Set<string>>(new Set());
+  let classifierOpen = $state(false);
+  let mailBusy = $state<string | null>(null);
+  let mailJobBusy = $state<string | null>(null);
+  let mailActionError = $state<string | null>(null);
+  let confirmingBulkAction = $state<GmailAction | null>(null);
+  let bulkCategory = $state<MailCategory>("aktiv");
+  let bulkDataClass = $state<DataClass>("personal");
+  let syncingMail = $state(false);
+  let reconcilingMail = $state(false);
+  let reconcileNotice = $state<string | null>(null);
+  let syncCursor = $state<string | null>(null);
+  let syncExhausted = $state(false);
+  let syncNotice = $state<string | null>(null);
+  let scoringMail = $state(false);
+  let scoringNotice = $state<string | null>(null);
+  let classifyingMailData = $state(false);
+  let dataClassNotice = $state<string | null>(null);
   let loading = $state(true);
   let offline = $state(false);
   let busy = $state<string | null>(null);
@@ -69,8 +113,59 @@
   let sourcesBusy = $state(false);
   let feedSources = $state<FeedSource[]>([]);
   let sourceNotice = $state<string | null>(null);
-  const view = $derived<FeedView>(
-    page.url.searchParams.get("view") === "discover" ? "discover" : "inbox",
+  const view = $derived.by<FeedView>(() => {
+    const requested = page.url.searchParams.get("view");
+    if (requested === "discover" || requested === "mail") return requested;
+    return "inbox";
+  });
+  const pageTitle = $derived(
+    view === "discover" ? "Discover" : view === "mail" ? "Mail proposals" : "Inbox",
+  );
+  const pageDescription = $derived(
+    view === "discover"
+      ? "Scan active sources and review relevant opportunities. Scouting evaluates and stores them separately while keeping them in the same Feed workspace."
+      : view === "mail"
+        ? "Review and classify mail. Archive, Trash, and Restore update Axon and Gmail together."
+        : "Only new, unreviewed articles, media, repositories, security reports, and system updates. Processed entries remain available in the library.",
+  );
+
+  const pendingMailCount = $derived(
+    triage.filter((item) => item.status === "proposed" || item.status === "approved").length,
+  );
+  const visibleMail = $derived.by(() => {
+    const query = mailSearch.trim().toLocaleLowerCase();
+    return triage.filter((item) => {
+      const statusMatches =
+        mailStatus === "all" ||
+        (mailStatus === "pending" &&
+          (item.status === "proposed" || item.status === "approved")) ||
+        (mailStatus === "archived" && item.status === "archived") ||
+        (mailStatus === "trashed" && item.status === "trashed") ||
+        (mailStatus === "missing" && item.status === "missing") ||
+        (mailStatus === "dismissed" && item.status === "dismissed") ||
+        (mailStatus === "legacy" && item.status === "executed");
+      if (!statusMatches || (mailCategory !== "all" && item.stream !== mailCategory)) return false;
+      if (!query) return true;
+      return [item.subject, item.from_addr, item.rationale]
+        .filter((value): value is string => Boolean(value))
+        .some((value) => value.toLocaleLowerCase().includes(query));
+    });
+  });
+  const mailGroups = $derived.by(() =>
+    MAIL_CATEGORY_ORDER.filter(
+      (category) => mailCategory === "all" || mailCategory === category,
+    ).map((category) => ({
+      category,
+      items: visibleMail
+        .filter((item) => item.stream === category)
+        .sort((left, right) => {
+          const relevanceDelta =
+            (right.relevance[0]?.score ?? Number.NEGATIVE_INFINITY) -
+            (left.relevance[0]?.score ?? Number.NEGATIVE_INFINITY);
+          if (relevanceDelta !== 0) return relevanceDelta;
+          return (right.internal_date ?? "").localeCompare(left.internal_date ?? "");
+        }),
+    })),
   );
 
   // Grouped by the day the item belongs to, newest first. The server already returns a
@@ -146,6 +241,11 @@
   async function load(): Promise<void> {
     loading = true;
     try {
+      if (view === "mail") {
+        triage = await comms.triage();
+        offline = false;
+        return;
+      }
       const [feed, proposals, feedRuns] = await Promise.all([
         comms.feed({
           stream: stream === "all" ? undefined : stream,
@@ -170,7 +270,7 @@
   }
 
   $effect(() => {
-    if (view !== "inbox" || ready) return;
+    if (view === "discover" || ready) return;
     void axonStatus
       .start("comms")
       .catch(() => undefined)
@@ -185,7 +285,7 @@
   $effect(() => {
     void stream;
     void days;
-    if (view === "inbox" && ready) void load();
+    if (view !== "discover" && ready) void load();
   });
 
   async function ingest(): Promise<void> {
@@ -344,20 +444,411 @@
     if (diff === 1) return "Yesterday";
     return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "long" });
   }
+
+  function mailCategoryLabel(category: MailCategory): string {
+    return MAIL_CATEGORY_LABEL[category];
+  }
+
+  function dataClassLabel(dataClass: DataClass): string {
+    if (dataClass === "vault") return "Private";
+    if (dataClass === "personal") return "Personal";
+    return "Public";
+  }
+
+  function mailDateLabel(value: string | null): string | null {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return new Intl.DateTimeFormat("en-GB", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+  }
+
+  function purgeDateLabel(value: string | null): string | null {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return new Intl.DateTimeFormat("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    }).format(date);
+  }
+
+  function toggleMailSelection(id: string): void {
+    const next = new Set(selectedMail);
+    if (!next.delete(id)) next.add(id);
+    selectedMail = next;
+  }
+
+  function mailActionSelectable(item: TriageItem): boolean {
+    return (
+      (item.status === "proposed" || item.status === "approved") &&
+      item.gmail_sync_status !== "queued" &&
+      item.gmail_sync_status !== "retrying"
+    );
+  }
+
+  function selectMailGroup(items: TriageItem[]): void {
+    const selectable = items.filter(mailActionSelectable);
+    const allSelected = selectable.length > 0 && selectable.every((item) => selectedMail.has(item.id));
+    const next = new Set(selectedMail);
+    for (const item of selectable) {
+      if (allSelected) next.delete(item.id);
+      else next.add(item.id);
+    }
+    selectedMail = next;
+  }
+
+  function clearMailSelection(): void {
+    selectedMail = new Set();
+    confirmingBulkAction = null;
+  }
+
+  async function syncMoreMail(): Promise<void> {
+    if (syncingMail || syncExhausted) return;
+    syncingMail = true;
+    mailActionError = null;
+    syncNotice = null;
+    try {
+      const result = await comms.sweepTriage(100, syncCursor);
+      syncCursor = result.next_cursor;
+      syncExhausted = result.exhausted;
+      triage = await comms.triage();
+      syncNotice = `${result.fetched} inbox threads reviewed · ${result.new_count} new · ${result.total_stored} stored${result.exhausted ? " · inbox exhausted" : ""}.`;
+    } catch (cause) {
+      mailActionError = cause instanceof Error ? cause.message : "Inbox sync failed.";
+    } finally {
+      syncingMail = false;
+    }
+  }
+
+  async function reconcileGmail(): Promise<void> {
+    if (reconcilingMail) return;
+    reconcilingMail = true;
+    mailActionError = null;
+    reconcileNotice = null;
+    try {
+      const result = await comms.reconcileGmail();
+      triage = await comms.triage();
+      reconcileNotice = `${result.reconciled} locations checked · ${result.changed} Axon states updated · ${result.recovered} queued actions recovered${result.missing > 0 ? ` · ${result.missing} missing in Gmail` : ""}${result.read_failures > 0 ? ` · ${result.read_failures} unavailable` : ""}. Metadata only; no message content fetched.`;
+    } catch (cause) {
+      mailActionError = cause instanceof Error ? cause.message : "Gmail reconciliation failed.";
+    } finally {
+      reconcilingMail = false;
+    }
+  }
+
+  async function decideGmailJob(id: string, decision: "retry" | "cancel"): Promise<void> {
+    if (mailJobBusy) return;
+    mailJobBusy = id;
+    mailActionError = null;
+    try {
+      await comms.decideGmailJob(id, decision);
+    } catch (cause) {
+      mailActionError = cause instanceof Error ? cause.message : "Gmail recovery action failed.";
+    } finally {
+      try {
+        triage = await comms.triage();
+      } catch (cause) {
+        mailActionError ??= cause instanceof Error ? cause.message : "Mail proposals could not be refreshed.";
+      }
+      mailJobBusy = null;
+    }
+  }
+
+  async function scoreMailRelevance(): Promise<void> {
+    if (scoringMail) return;
+    scoringMail = true;
+    mailActionError = null;
+    scoringNotice = null;
+    try {
+      const result = await comms.refreshTriageRelevance(500);
+      triage = await comms.triage();
+      const method = result.mode ?? "unscored";
+      scoringNotice = `${result.scored} proposals compared with ${result.profile_count} TELOS lenses · ${method} · local only.`;
+    } catch (cause) {
+      mailActionError = cause instanceof Error ? cause.message : "TELOS scoring failed.";
+    } finally {
+      scoringMail = false;
+    }
+  }
+
+  async function classifyMailData(): Promise<void> {
+    if (classifyingMailData) return;
+    classifyingMailData = true;
+    mailActionError = null;
+    dataClassNotice = null;
+    try {
+      const result = await comms.refreshTriageDataClasses(2_000);
+      triage = await comms.triage();
+      dataClassNotice = `${result.reviewed} proposals reviewed · ${result.updated} classified · ${result.preserved_human} human choices preserved · local rules only.`;
+    } catch (cause) {
+      mailActionError = cause instanceof Error ? cause.message : "Data classification failed.";
+    } finally {
+      classifyingMailData = false;
+    }
+  }
+
+  async function applyBulkMailAction(
+    action: "dismiss" | "categorize" | "set-data-class" | GmailAction,
+  ): Promise<void> {
+    if (mailBusy || selectedMail.size === 0) return;
+    mailBusy = "bulk";
+    mailActionError = null;
+    try {
+      const ids = [...selectedMail];
+      const result = await comms.bulkTriage(
+        ids,
+        action,
+        action === "categorize" ? bulkCategory : undefined,
+        action === "set-data-class" ? bulkDataClass : undefined,
+      );
+      const succeeded = new Set(result.succeeded);
+      triage = await comms.triage();
+      selectedMail = new Set(
+        [...selectedMail].filter((id) => !succeeded.has(id)),
+      );
+      confirmingBulkAction = null;
+      if (result.failures.length > 0) {
+        mailActionError = `${result.succeeded.length} updated; ${result.failures.length} failed.`;
+      }
+    } catch (cause) {
+      mailActionError = cause instanceof Error ? cause.message : "Bulk action failed.";
+    } finally {
+      mailBusy = null;
+    }
+  }
 </script>
 
 <PageHeader
   badge="Feed"
-  title={view === "discover" ? "Discover" : "Inbox"}
-  desc={view === "discover"
-    ? "Scan active sources and review relevant opportunities. Scouting evaluates and stores them separately while keeping them in the same Feed workspace."
-    : "Only new, unreviewed articles, media, repositories, security reports, and system updates. Processed entries remain available in the library."}
+  title={pageTitle}
+  desc={pageDescription}
 />
 
-<FeedNav active={view} />
+<FeedNav active={view} mailCount={ready && !loading ? pendingMailCount : undefined} />
 
 {#if view === "discover"}
   <DiscoverView />
+{:else if view === "mail"}
+  {#if offline}
+    <p class="notice">
+      <Icon name="wifi-off" />
+      Mail proposals could not be loaded. See <a href="/capabilities">Capabilities</a> for details.
+    </p>
+  {:else if loading}
+    <p class="notice muted"><Icon name="loader" size={13} /> Loading mail proposals…</p>
+  {:else}
+    <div class="mail-toolbar">
+      <label class="mail-search">
+        <span class="sr-only">Search mail proposals</span>
+        <Icon name="search" size={13} />
+        <input bind:value={mailSearch} placeholder="Search sender or subject" />
+      </label>
+      <label>
+        <span class="sr-only">Filter by category</span>
+        <select bind:value={mailCategory}>
+          <option value="all">All categories</option>
+          {#each MAIL_CATEGORY_ORDER as category (category)}
+            <option value={category}>{mailCategoryLabel(category)}</option>
+          {/each}
+        </select>
+      </label>
+      <div class="segmented" aria-label="Proposal status">
+        <button class:active={mailStatus === "pending"} onclick={() => (mailStatus = "pending")}>Pending</button>
+        <button class:active={mailStatus === "archived"} onclick={() => (mailStatus = "archived")}>Archive</button>
+        <button class:active={mailStatus === "trashed"} onclick={() => (mailStatus = "trashed")}>Trash</button>
+        <button class:active={mailStatus === "missing"} onclick={() => (mailStatus = "missing")}>Missing</button>
+        <button class:active={mailStatus === "dismissed"} onclick={() => (mailStatus = "dismissed")}>Dismissed</button>
+        <button class:active={mailStatus === "legacy"} onclick={() => (mailStatus = "legacy")}>Legacy</button>
+        <button class:active={mailStatus === "all"} onclick={() => (mailStatus = "all")}>All</button>
+      </div>
+      <button class="btn" disabled={syncingMail || syncExhausted} onclick={syncMoreMail}>
+        {syncingMail ? "Syncing…" : syncExhausted ? "Inbox synced" : "Sync next 100"}
+      </button>
+      <button class="btn" disabled={reconcilingMail || triage.length === 0} onclick={reconcileGmail}>
+        {reconcilingMail ? "Checking Gmail…" : "Retry + reconcile Gmail"}
+      </button>
+      <button class="btn" disabled={scoringMail || triage.length === 0} onclick={scoreMailRelevance}>
+        {scoringMail ? "Scoring…" : "Score against TELOS"}
+      </button>
+      <button class="btn" disabled={classifyingMailData || triage.length === 0} onclick={classifyMailData}>
+        {classifyingMailData ? "Classifying…" : "Classify data"}
+      </button>
+      <button class="btn method-button" class:active={classifierOpen} onclick={() => (classifierOpen = !classifierOpen)}>
+        How classification works
+      </button>
+    </div>
+
+    {#if mailActionError}
+      <p class="notice"><Icon name="alert" size={13} /> {mailActionError}</p>
+    {/if}
+    {#if syncNotice}<p class="context-note mail-notice">{syncNotice}</p>{/if}
+    {#if reconcileNotice}<p class="context-note mail-notice">{reconcileNotice}</p>{/if}
+    {#if scoringNotice}<p class="context-note mail-notice">{scoringNotice}</p>{/if}
+    {#if dataClassNotice}<p class="context-note mail-notice">{dataClassNotice}</p>{/if}
+
+    {#if selectedMail.size > 0}
+      <section class="bulk-bar card" aria-label="Bulk mail actions">
+        <strong>{selectedMail.size} selected</strong>
+        <div class="bulk-category">
+          <select bind:value={bulkCategory} aria-label="Bulk category">
+            {#each MAIL_CATEGORY_ORDER as category (category)}
+              <option value={category}>{mailCategoryLabel(category)}</option>
+            {/each}
+          </select>
+          <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("categorize")}>Apply category</button>
+        </div>
+        <div class="bulk-category">
+          <select bind:value={bulkDataClass} aria-label="Bulk data class">
+            {#each DATA_CLASSES as dataClass (dataClass)}
+              <option value={dataClass}>{dataClassLabel(dataClass)}</option>
+            {/each}
+          </select>
+          <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("set-data-class")}>Apply data class</button>
+        </div>
+        <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("dismiss")}>Dismiss from Axon</button>
+        <button class="btn" disabled={mailBusy === "bulk"} onclick={() => (confirmingBulkAction = "archive")}>Archive in Axon + Gmail</button>
+        <button class="btn danger" disabled={mailBusy === "bulk"} onclick={() => (confirmingBulkAction = "trash")}>Move to Trash</button>
+        <button class="btn" disabled={mailBusy === "bulk"} onclick={clearMailSelection}>Clear</button>
+        {#if confirmingBulkAction}
+          <div class="bulk-confirm" role="alert">
+            <span>
+              {confirmingBulkAction === "trash"
+                ? `Move ${selectedMail.size} selected threads to Gmail Trash?`
+                : `Archive ${selectedMail.size} selected threads in Axon and Gmail?`}
+            </span>
+            <button class="btn" onclick={() => (confirmingBulkAction = null)}>Cancel</button>
+            <button
+              class="btn"
+              class:danger={confirmingBulkAction === "trash"}
+              disabled={mailBusy === "bulk"}
+              onclick={() => applyBulkMailAction(confirmingBulkAction!)}
+            >
+              {mailBusy === "bulk" ? "Applying…" : "Confirm"}
+            </button>
+          </div>
+        {/if}
+      </section>
+    {/if}
+
+    {#if classifierOpen}
+      <aside class="classifier card" aria-label="Mail classification method">
+        <div>
+          <p class="eyebrow mono">Current method</p>
+          <h2>Deterministic rules · local · no AI</h2>
+        </div>
+        <dl>
+          <div><dt>Category inputs</dt><dd>Sender, subject, and whether List-Unsubscribe exists.</dd></div>
+          <div><dt>Category method</dt><dd>Private rules first, generic heuristics second, then Active as the safe fallback.</dd></div>
+          <div><dt>Relevance inputs</dt><dd>Sender, subject, and Gmail snippet compared with configured TELOS lenses.</dd></div>
+          <div><dt>Relevance method</dt><dd>Loopback embedding and reranking only; unavailable local models fall back to labelled lexical similarity.</dd></div>
+          <div><dt>Never sent</dt><dd>Message bodies and attachments are not fetched. Mail scoring rejects non-loopback model endpoints.</dd></div>
+          <div><dt>TELOS boundary</dt><dd>Scoring reads TELOS. Categories and bulk decisions never rewrite TELOS files.</dd></div>
+          <div><dt>Corrections</dt><dd>A category you set here becomes a human override and survives later sweeps.</dd></div>
+          <div><dt>Data classes</dt><dd>Public may use approved cloud roles; Personal needs a reviewed pseudonymized derivative; Private source content stays local.</dd></div>
+        </dl>
+      </aside>
+    {/if}
+
+    {#if visibleMail.length === 0}
+      <section class="empty-state">
+        <h2>{triage.length === 0 ? "No mail proposals" : "No matching proposals"}</h2>
+        <p>{triage.length === 0 ? "Run a bounded Gmail sweep to classify new threads for review." : "Change the search, category, or status filter."}</p>
+      </section>
+    {:else}
+      <div class="mail-board" aria-label="Mail category board">
+        {#each mailGroups as group (group.category)}
+          <section class="mail-column">
+            <header>
+              <h2>{mailCategoryLabel(group.category)} <span class="count mono">{group.items.length}</span></h2>
+              <button
+                class="column-select mono"
+                disabled={group.items.length === 0}
+                onclick={() => selectMailGroup(group.items)}
+              >
+                {group.items.length > 0 && group.items.every((item) => selectedMail.has(item.id)) ? "Clear" : "Select all"}
+              </button>
+            </header>
+            <ul class="mail-proposals" aria-label={`${mailCategoryLabel(group.category)} mail proposals`}>
+              {#each group.items as proposal (proposal.id)}
+                {@const dateLabel = mailDateLabel(proposal.internal_date)}
+                {@const topMatch = proposal.relevance[0]}
+                <li class="card mail-proposal" class:has-job={proposal.gmail_sync_status === "attention"}>
+                  <div class="proposal-row">
+                    <label class="card-select" aria-label={`Select ${proposal.subject ?? "mail proposal"}`}>
+                      <input
+                        type="checkbox"
+                        checked={selectedMail.has(proposal.id)}
+                        disabled={!mailActionSelectable(proposal)}
+                        onchange={() => toggleMailSelection(proposal.id)}
+                      />
+                    </label>
+                    <a
+                      class="proposal-summary"
+                      href={`/feed/${encodeURIComponent(proposal.id)}?source=mail`}
+                    >
+                      <span class="chevron"><Icon name="arrow-right" size={12} /></span>
+                      <span class="proposal-copy">
+                        <span class="lead">{proposal.subject ?? "(No subject)"}</span>
+                        <span class="meta mono">
+                          {proposal.from_addr ?? "Unknown sender"}
+                          {#if dateLabel}<span>· {dateLabel}</span>{/if}
+                        </span>
+                        <span class="snippet">{proposal.snippet ?? "No preview available."}</span>
+                        {#if topMatch}
+                          <span class="mail-relevance">
+                            <span>{topMatch.profile_label}</span>
+                            <span class="mono">{topMatch.score.toFixed(2)}</span>
+                            <span class="mono method">{topMatch.mode}</span>
+                          </span>
+                        {:else}
+                          <span class="mail-relevance unscored">Not TELOS-scored</span>
+                        {/if}
+                        <span class="mail-data-class mono" data-class={proposal.data_class}>
+                          {dataClassLabel(proposal.data_class)}
+                        </span>
+                        {#if proposal.status === "trashed" && purgeDateLabel(proposal.purge_after)}
+                          <span class="mail-purge mono">Axon copy retained until {purgeDateLabel(proposal.purge_after)}</span>
+                        {/if}
+                        {#if proposal.status === "missing"}
+                          <span class="mail-missing">No longer available in Gmail. Axon retained its local record.</span>
+                        {/if}
+                        {#if proposal.gmail_sync_status && proposal.gmail_sync_status !== "synced"}
+                          <span class="mail-sync mono" data-status={proposal.gmail_sync_status}>
+                            Gmail sync: {proposal.gmail_sync_status}{proposal.gmail_sync_action ? ` · ${proposal.gmail_sync_action}` : ""}
+                          </span>
+                        {/if}
+                      </span>
+                      {#if proposal.status !== "proposed"}
+                        <span class="status tag mono">{proposal.status}</span>
+                      {/if}
+                    </a>
+                  </div>
+                  {#if proposal.gmail_sync_status === "attention"}
+                    <div class="mail-job-actions" aria-label="Gmail action recovery">
+                      <span>Automatic retries stopped after five attempts.</span>
+                      <button class="btn" disabled={mailJobBusy !== null} onclick={() => decideGmailJob(proposal.id, "retry")}>
+                        {mailJobBusy === proposal.id ? "Working…" : "Retry"}
+                      </button>
+                      <button class="btn" disabled={mailJobBusy !== null} onclick={() => decideGmailJob(proposal.id, "cancel")}>Cancel action</button>
+                    </div>
+                  {/if}
+                </li>
+              {/each}
+              {#if group.items.length === 0}
+                <li class="column-empty">No matching mail</li>
+              {/if}
+            </ul>
+          </section>
+        {/each}
+      </div>
+    {/if}
+  {/if}
 {:else}
 {#if modelStatus}
   <ModelStatus status={modelStatus} />
@@ -615,20 +1106,6 @@
           </li>
 {/snippet}
 
-{#if triage.length > 0}
-  <section class="day">
-    <h2>Inbox proposals <span class="count mono">{triage.length}</span></h2>
-    <ul>
-      {#each triage as t (t.id)}
-        <li class="card entry">
-          <p class="lead">{t.subject}</p>
-          <p class="meta mono">{t.from_addr} → {t.stream}</p>
-          <p class="muted">{t.rationale}</p>
-        </li>
-      {/each}
-    </ul>
-  </section>
-{/if}
 {/if}
 
 <style>
@@ -800,6 +1277,409 @@
 
   .entry {
     padding: 0.75rem;
+  }
+
+  .mail-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .mail-toolbar select,
+  .mail-search {
+    min-height: 2rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.75rem;
+  }
+
+  .mail-toolbar select {
+    padding: 0.35rem 0.55rem;
+  }
+
+  .mail-search {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex: 1;
+    min-width: min(15rem, 100%);
+    padding: 0 0.6rem;
+    color: var(--text-tertiary);
+  }
+
+  .mail-search input {
+    min-width: 0;
+    width: 100%;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.75rem;
+  }
+
+  .method-button.active {
+    color: var(--primary);
+  }
+
+  .mail-notice {
+    margin: -0.4rem 0 0.85rem;
+  }
+
+  .bulk-bar {
+    position: sticky;
+    z-index: 4;
+    top: 0.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.65rem;
+    margin-bottom: 1rem;
+  }
+
+  .bulk-bar strong {
+    margin-right: 0.25rem;
+    font-size: 0.75rem;
+  }
+
+  .bulk-category {
+    display: flex;
+    gap: 0.35rem;
+  }
+
+  .bulk-category select {
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.75rem;
+  }
+
+  .bulk-confirm {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-basis: 100%;
+    padding-top: 0.55rem;
+    border-top: 1px solid var(--card-border);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+  }
+
+  .bulk-confirm span {
+    flex: 1;
+  }
+
+  .classifier {
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .classifier h2 {
+    margin: 0.15rem 0 0.85rem;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+  }
+
+  .classifier dl {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    gap: 0.85rem 1.25rem;
+    margin: 0;
+  }
+
+  .classifier dt {
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    text-transform: uppercase;
+  }
+
+  .classifier dd {
+    margin: 0.2rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+
+  .mail-board {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(18rem, 21rem);
+    align-items: start;
+    gap: 0.75rem;
+    overflow-x: auto;
+    padding: 0 0 0.75rem;
+    scroll-snap-type: x proximity;
+  }
+
+  .mail-proposals {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: min(68vh, 48rem);
+    overflow-y: auto;
+    padding-right: 0.15rem;
+  }
+
+  .mail-column {
+    min-width: 0;
+    padding: 0.65rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-lg, 0.75rem);
+    background: var(--surface);
+    scroll-snap-align: start;
+  }
+
+  .mail-column > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.55rem;
+  }
+
+  .mail-column h2 {
+    margin: 0;
+  }
+
+  .column-select {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: 0.625rem;
+    cursor: pointer;
+  }
+
+  .column-select:hover:not(:disabled) {
+    color: var(--primary);
+  }
+
+  .column-empty {
+    padding: 1rem 0.5rem;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+    text-align: center;
+  }
+
+  .mail-proposal {
+    flex: 0 0 auto;
+    height: 11.5rem;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .proposal-row {
+    position: relative;
+    display: flex;
+  }
+
+  .card-select {
+    position: absolute;
+    top: 0.9rem;
+    left: 0.7rem;
+    z-index: 1;
+    display: flex;
+  }
+
+  .card-select input {
+    margin: 0;
+    accent-color: var(--primary);
+  }
+
+  .proposal-summary {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    width: 100%;
+    min-height: 11.5rem;
+    padding: 0.85rem 0.8rem 0.85rem 2.5rem;
+    box-sizing: border-box;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .proposal-summary:hover {
+    background: var(--surface-hover, rgba(127, 127, 127, 0.08));
+  }
+
+  .proposal-copy {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+  }
+
+  .proposal-copy .lead {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .proposal-copy .meta {
+    overflow: hidden;
+    margin-top: 0.25rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .proposal-copy .snippet {
+    display: -webkit-box;
+    overflow: hidden;
+    margin-top: 0.6rem;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.4;
+    -webkit-box-orient: vertical;
+    line-clamp: 2;
+    -webkit-line-clamp: 2;
+  }
+
+  .mail-relevance {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-width: 0;
+    margin-top: 0.4rem;
+    color: var(--primary);
+    font-size: 0.65rem;
+  }
+
+  .mail-relevance > span:first-child {
+    overflow: hidden;
+    min-width: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mail-relevance .method,
+  .mail-relevance.unscored {
+    color: var(--text-tertiary);
+  }
+
+  .mail-data-class {
+    align-self: flex-start;
+    margin-top: 0.4rem;
+    padding: 0.16rem 0.35rem;
+    border: 1px solid var(--card-border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text-tertiary);
+    font-size: 0.5625rem;
+    text-transform: uppercase;
+  }
+
+  .mail-data-class[data-class="public"] {
+    color: var(--success);
+  }
+
+  .mail-data-class[data-class="vault"] {
+    color: var(--warning);
+  }
+
+  .mail-purge {
+    display: block;
+    margin-top: 0.4rem;
+    color: var(--warning);
+    font-size: 0.625rem;
+  }
+
+  .mail-missing {
+    display: block;
+    margin-top: 0.4rem;
+    color: var(--text-secondary);
+    font-size: 0.625rem;
+    line-height: 1.4;
+  }
+
+  .mail-sync {
+    display: block;
+    margin-top: 0.35rem;
+    color: var(--warning);
+    font-size: 0.625rem;
+  }
+
+  .mail-sync[data-status="attention"] {
+    color: var(--error, #c33);
+  }
+
+  .mail-job-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.65rem 0.75rem;
+    border-top: 1px solid var(--card-border);
+    color: var(--text-secondary);
+    font-size: 0.625rem;
+  }
+
+  .mail-proposal.has-job .proposal-summary {
+    min-height: 8.5rem;
+  }
+
+  .mail-job-actions span {
+    flex: 1;
+  }
+
+  .danger {
+    color: var(--error, #c33);
+  }
+
+  .status {
+    flex-shrink: 0;
+    text-transform: uppercase;
+  }
+
+  @media (max-width: 42rem) {
+    .mail-board {
+      grid-auto-columns: minmax(85vw, 1fr);
+    }
+
+    .bulk-confirm {
+      align-items: stretch;
+      flex-direction: column;
+    }
+  }
+
+  .empty-state {
+    padding: 1.5rem 0;
+    color: var(--text-secondary);
+  }
+
+  .empty-state h2 {
+    margin-bottom: 0.35rem;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+  }
+
+  .empty-state p {
+    margin: 0;
+    font-size: 0.8125rem;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   /* A collector run, collapsed to one row until asked to open. */

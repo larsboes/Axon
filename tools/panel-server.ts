@@ -104,7 +104,7 @@ const HEARTBEAT = `<script>
  */
 const shellPort = process.env.AXON_SHELL_PORT ?? "";
 const BACKLINK = /^\d+$/.test(shellPort)
-  ? `<a id="axon-back" href="#" title="Zurück zu Axon">← Axon</a>
+  ? `<a id="axon-back" href="#" title="Back to Axon">← Axon</a>
 <style>
 #axon-back {
   position: fixed; left: 1rem; bottom: 1rem; z-index: 2147483647;

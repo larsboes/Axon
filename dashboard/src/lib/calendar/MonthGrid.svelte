@@ -123,6 +123,7 @@
             ></button>
             <button
               class="entry"
+              class:proposal={entry.commitment === "possible"}
               title={entry.title}
               aria-label={`Edit ${entry.title}`}
               onclick={() => onSelectEntry?.(entry, day)}
@@ -263,6 +264,17 @@
     outline-offset: 0;
   }
 
+  /* A proposal is a real row in this store, so the grid draws it — but it is
+     something a source suggested, not something the operator agreed to, and a
+     filled chip says the opposite. Outlined and unfilled, matching the outline
+     dot beside it: on the radar, not on the calendar. */
+  .entry.proposal {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--entry-color) 45%, transparent);
+    color: var(--text-secondary);
+  }
+
   .entry-row {
     display: flex;
     min-width: 0;
@@ -337,7 +349,10 @@
   .add-btn {
     position: fixed;
     bottom: 24px;
-    right: 24px;
+
+    /* The page owns this inset, because only the page knows whether a rail is beside
+     * the grid. Fixed to the viewport, the button would otherwise sit on top of it. */
+    right: var(--grid-fab-inset, 24px);
     z-index: 10;
     display: flex;
     align-items: center;

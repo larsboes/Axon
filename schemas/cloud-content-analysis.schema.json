@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.local/schemas/cloud-content-analysis.schema.json",
+  "title": "Axon Cloud Content Analysis",
+  "description": "A bounded structured result produced from one explicitly approved cloud derivative.",
+  "type": "object",
+  "required": ["schema_version", "summary", "importance", "importance_rationale", "important_dates", "action_items", "topics"],
+  "properties": {
+    "schema_version": { "const": "cloud-content-analysis-v1" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 1200 },
+    "importance": { "enum": ["low", "medium", "high"] },
+    "importance_rationale": { "type": "string", "minLength": 1, "maxLength": 600 },
+    "important_dates": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["label", "date", "source_text"],
+        "properties": {
+          "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "date": { "type": ["string", "null"], "maxLength": 64 },
+          "source_text": { "type": "string", "minLength": 1, "maxLength": 300 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "action_items": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["text", "due_date"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1, "maxLength": 400 },
+          "due_date": { "type": ["string", "null"], "maxLength": 64 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "topics": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+    }
+  },
+  "additionalProperties": false
+}

@@ -15,6 +15,10 @@ ports, health, graph size, repository state, and GitHub metadata are queried at 
 `axon-context`, `tools/self`, the capability registry, doctor, and GitHub. Graphify remains optional
 symbol-level drill-down.
 
+Inside this repository, `scripts/axon-context` and `scripts/axapi` are stable entrypoints that
+delegate to the Pack-owned implementations. Installed Pack copies continue to use their local
+scripts directly, so the workflow stays portable across harnesses.
+
 The Pack is the harness-neutral source. Harness adapters may materialize or link it, but they may
 not fork its workflow. Installed copies are deployment artifacts, never editing targets.
 
