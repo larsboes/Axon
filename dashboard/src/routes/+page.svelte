@@ -19,6 +19,8 @@
     type OpportunityStatus,
     type ScoutingOpportunity,
     type ScoutingSource,
+    tasks,
+    type Task,
     type TriageItem,
     type TripPlan,
   } from "$lib/api";
@@ -35,7 +37,8 @@
     | { key: string; kind: "calendar"; priority: number; entry: CalendarEntry }
     | { key: string; kind: "opportunity"; priority: number; opportunity: ScoutingOpportunity }
     | { key: string; kind: "trip"; priority: number; plan: TripPlan }
-    | { key: string; kind: "mail"; priority: number; item: TriageItem };
+    | { key: string; kind: "mail"; priority: number; item: TriageItem }
+    | { key: string; kind: "task"; priority: number; task: Task };
   type HomeView = "now" | "locations" | "sources";
 
   const today = new Date();
@@ -62,6 +65,7 @@
   let macmonErr = $state(false);
   let feedEntries = $state<FeedEntry[]>([]);
   let mailProposals = $state<TriageItem[]>([]);
+  let openTasks = $state<Task[]>([]);
   let opportunities = $state<ScoutingOpportunity[]>([]);
   let scoutingSources = $state<ScoutingSource[]>([]);
   let plans = $state<TripPlan[]>([]);
@@ -135,6 +139,20 @@
         priority: 600 + safeOpportunityScore(opportunity) * 100 + urgency
           + calendarRankAdjustment(opportunity)
           + contextRankAdjustment(opportunity),
+      });
+    }
+
+    /// A task outranks the mail it came from: someone already decided this is
+    /// owed, where a proposal is still awaiting that decision. Overdue and
+    /// due-soon lift it; an undated task sits at the base of the band.
+    for (const task of openTasks) {
+      const days = task.due ? daysUntil(task.due) : null;
+      const urgency = days === null ? 0 : days < 0 ? 260 : Math.max(0, 240 - days * 8);
+      items.push({
+        key: `task:${task.id}`,
+        kind: "task",
+        task,
+        priority: 620 + urgency,
       });
     }
 
@@ -212,6 +230,11 @@
       return `${sentenceCase(whenLabel(next.plan.date_start))}: ${where}, ${tripGap(next.plan)}.`;
     }
     if (next.kind === "calendar") return `${next.entry.title} on ${dateLabel(next.entry.starts_at)} is still undecided.`;
+    if (next.kind === "task") {
+      return next.task.due
+        ? `${next.task.title} is due ${dateLabel(next.task.due)}.`
+        : `${next.task.title} is still open.`;
+    }
     if (next.kind === "mail") {
       return `${next.item.subject ?? "A mail"} from ${next.item.from_addr ?? "an unknown sender"} is waiting for a call.`;
     }
@@ -262,7 +285,7 @@
     loading = true;
     await capabilities.refresh();
 
-    const [healthResult, feedResult, scoutingResult, tripResult, calendarResult] = await Promise.allSettled([
+    const [healthResult, feedResult, taskResult, scoutingResult, tripResult, calendarResult] = await Promise.allSettled([
       axonStatus.health(),
       // Both come from comms, so they share one capability gate and one
       // failure path — a reachable comms that returns no mail is a different
@@ -274,6 +297,7 @@
         ]);
         return { entries, proposals };
       }),
+      readCapability("tasks", () => tasks.list("open")),
       readCapability("scouting", async () => {
         const [opportunityResult, sourceResult] = await Promise.all([
           scouting.opportunities(false),
@@ -300,6 +324,12 @@
       mailProposals = feedResult.value.proposals;
     } else {
       missing.push("Feed");
+    }
+
+    if (taskResult.status === "fulfilled") {
+      openTasks = taskResult.value;
+    } else {
+      missing.push("Tasks");
     }
 
     if (scoutingResult.status === "fulfilled") {
@@ -341,6 +371,20 @@
     try {
       await comms.setStatus(id, status);
       feedEntries = feedEntries.filter((entry) => entry.id !== id);
+    } catch (caught) {
+      actionError = message(caught);
+    } finally {
+      busy = null;
+    }
+  }
+
+  async function completeTask(id: string): Promise<void> {
+    if (busy) return;
+    busy = `task:${id}`;
+    actionError = null;
+    try {
+      await tasks.patch(id, { status: "done" });
+      openTasks = openTasks.filter((task) => task.id !== id);
     } catch (caught) {
       actionError = message(caught);
     } finally {
@@ -440,6 +484,10 @@
   function openDecision(decision: Decision): void {
     if (decision.kind === "feed") {
       location.href = `/feed/${encodeURIComponent(decision.entry.id)}`;
+    } else if (decision.kind === "task") {
+      // A task's own page does not exist yet, so Enter goes to the mail it came
+      // from — the thing you actually need to read to act on it.
+      if (decision.task.source_url) location.href = decision.task.source_url;
     } else if (decision.kind === "mail") {
       // The entry route resolves an item from its source alone, so mail opens
       // the same reader feed does — with the Gmail actions its extension adds.
@@ -768,6 +816,43 @@
                     onclick={() => void setFeedStatus(decision.entry.id, "dismissed")}
                   >
                     <Icon name="close" size={13} />
+                  </button>
+                </div>
+              {:else if decision.kind === "task"}
+                <div class="decision-mark"><Icon name="check" size={16} /></div>
+                <div class="decision-copy">
+                  <span class="kind">
+                    Task
+                    {#if decision.task.due}
+                      · due {dateLabel(decision.task.due)}
+                      {#if daysUntil(decision.task.due) < 0}
+                        · <span class="private-mark">overdue</span>
+                      {/if}
+                    {/if}
+                    {#if decision.task.source_capability}
+                      · from {decision.task.source_capability}
+                    {/if}
+                  </span>
+                  {#if decision.task.source_url}
+                    <a class="decision-title" href={decision.task.source_url}>
+                      {decision.task.title}
+                    </a>
+                  {:else}
+                    <span class="decision-title">{decision.task.title}</span>
+                  {/if}
+                  {#if decision.task.note}<p>{decision.task.note}</p>{/if}
+                </div>
+                <div class="decision-actions">
+                  {#if decision.task.source_url}
+                    <a class="btn" href={decision.task.source_url}>Source</a>
+                  {/if}
+                  <button
+                    class="btn action-primary"
+                    type="button"
+                    disabled={busy === decision.key}
+                    onclick={() => void completeTask(decision.task.id)}
+                  >
+                    {#if busy === decision.key}<Icon name="loader" size={13} />{:else}Done{/if}
                   </button>
                 </div>
               {:else if decision.kind === "mail"}

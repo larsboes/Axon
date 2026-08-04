@@ -1658,3 +1658,62 @@ export const comms = {
       jsonInit('POST', { ids, action, stream: stream ?? null, data_class: data_class ?? null }),
     ),
 };
+
+/** One thing to do, plus a way back to whatever said so.
+ *
+ *  `data_class` is inherited from the source rather than re-derived: a task
+ *  promoted from a Private mail is Private, because the subject travelled into
+ *  the title. */
+export interface Task {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  due: string | null;
+  note: string | null;
+  source_capability: string | null;
+  source_id: string | null;
+  source_url: string | null;
+  data_class: DataClass;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export type TaskStatus = 'open' | 'done' | 'dropped';
+
+export interface NewTask {
+  title: string;
+  due?: string | null;
+  note?: string | null;
+  source_capability?: string | null;
+  source_id?: string | null;
+  source_url?: string | null;
+  data_class?: DataClass | null;
+}
+
+/** `created: false` means this source already owned a task — the expected
+ *  result of promoting twice, not an error. */
+export interface TaskCreated {
+  task: Task;
+  created: boolean;
+}
+
+export const tasks = {
+  list: (status?: TaskStatus, signal?: AbortSignal) =>
+    request<{ tasks: Task[] }>(
+      `/tasks/api/tasks${status ? `?status=${status}` : ''}`,
+      signal ? { signal } : undefined,
+    ).then((response) => response.tasks),
+  create: (task: NewTask) =>
+    request<TaskCreated>('/tasks/api/tasks', jsonInit('POST', task)),
+  /** Omit a field to leave it; pass `null` to clear it. */
+  patch: (
+    id: string,
+    patch: { title?: string; status?: TaskStatus; due?: string | null; note?: string | null },
+  ) => request<{ task: Task }>(`/tasks/api/tasks/${encodeURIComponent(id)}`, jsonInit('PATCH', patch)),
+  counts: (signal?: AbortSignal) =>
+    request<{ open: number; overdue: number }>(
+      '/tasks/api/counts',
+      signal ? { signal } : undefined,
+    ),
+};
