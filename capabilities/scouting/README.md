@@ -354,7 +354,9 @@ everything goes over the HTTP contract, so calendar keeps deciding what a valid 
 `travel_candidate` and `unresolved` events remain in Scouting and appear in the promotion report
 under `routed`, with their classification reason. They are not calendar errors and are not
 dropped. Matching travel candidates to Trips and feasible Calendar windows is a separate
-consumer concern; this classifier calls neither service.
+consumer concern; this classifier calls neither service. The Travel dashboard owns that
+composition through the public Scouting, Trips, and Calendar APIs; its matching and action
+contract is documented in `capabilities/trips/README.md`.
 
 Two things it refuses rather than guesses, matching calendar's own no-guessing rule for dates:
 
