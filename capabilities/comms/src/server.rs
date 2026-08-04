@@ -23,6 +23,7 @@ use comms::config::Config;
 use comms::evaluation::{self, EvaluationFactor, FeedEvaluation};
 use comms::media;
 use comms::provenance::StageProvenance;
+use comms::quality;
 use comms::relevance::{self, RelevanceMatch};
 use comms::sources;
 use comms::store::{FeedItem, FeedOrigin, FeedRun, OriginSummary, Store, TriageItem};
@@ -91,6 +92,16 @@ struct FeedParams {
     source_id: Option<String>,
     days: Option<i32>,
     include_dismissed: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QualityParams {
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QualityRefreshBody {
+    days: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -405,6 +416,102 @@ async fn feed_runs_handler(Query(params): Query<FeedParams>) -> Json<Value> {
     match result {
         Ok(Ok(runs)) => Json(json!(runs)),
         _ => Json(json!({ "error": "feed runs query failed" })),
+    }
+}
+
+async fn quality_queue_handler(Query(params): Query<QualityParams>) -> (StatusCode, Json<Value>) {
+    let limit = params.limit.unwrap_or(500).clamp(1, 2_000);
+    let result = tokio::task::spawn_blocking(move || {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        store
+            .feed_quality_review_queue(limit)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(flags)) => (StatusCode::OK, Json(json!(flags))),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+async fn quality_refresh_handler(
+    Json(body): Json<QualityRefreshBody>,
+) -> (StatusCode, Json<Value>) {
+    let days = body.days.unwrap_or(3650);
+    if !(1..=3650).contains(&days) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "days must be between 1 and 3650" })),
+        );
+    }
+
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let items = store
+            .feed_for_relevance(days, 500)
+            .map_err(|error| error.to_string())?;
+        let reviewed = items.len();
+        let mut flagged_items = 0usize;
+        let mut flag_count = 0usize;
+
+        for item in items {
+            let raw_content = store
+                .get_raw_content(&item.id)
+                .map_err(|error| error.to_string())?;
+            let stages = store
+                .feed_stage_results(&item.id)
+                .map_err(|error| error.to_string())?;
+            let has_ranking = store
+                .feed_evaluation(&item.id)
+                .map_err(|error| error.to_string())?
+                .is_some();
+            let flags = quality::derive(
+                &item,
+                raw_content.as_deref(),
+                &stages,
+                has_ranking,
+                &cfg.quality_flags,
+            );
+            if !flags.is_empty() {
+                flagged_items += 1;
+                flag_count += flags.len();
+            }
+            store
+                .replace_feed_quality_flags(&item.id, &flags)
+                .map_err(|error| error.to_string())?;
+        }
+
+        Ok(json!({
+            "reviewed": reviewed,
+            "flagged_items": flagged_items,
+            "flag_count": flag_count,
+            "bounded_to": 500,
+            "days": days,
+            "provider_calls": 0,
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
     }
 }
 
@@ -1193,6 +1300,7 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
         .route("/feed/origins", get(feed_origins_handler))
         .route("/feed/runs", get(feed_runs_handler))
         .route("/feed/evaluation/status", get(evaluation_status_handler))
+        .route("/feed/quality", get(quality_queue_handler))
         .route("/feed/:id", get(feed_item_handler))
         .route("/sources", get(sources_handler))
         .route("/triage", get(triage_handler));
@@ -1200,6 +1308,7 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
     // Mutating routes: require shared secret.
     let write_routes = Router::new()
         .route("/feed/relevance/refresh", post(relevance_refresh_handler))
+        .route("/feed/quality/refresh", post(quality_refresh_handler))
         .route("/feed/:id/status", post(feed_status_handler))
         .route("/ingest", post(ingest_handler))
         .route("/vault-links/scan", post(vault_scan_handler))
@@ -1281,6 +1390,19 @@ mod tests {
                 .unwrap_or(true),
             "the hostile origin must never be echoed back as allowed"
         );
+    }
+
+    #[tokio::test]
+    async fn computed_quality_refresh_is_a_protected_explicit_write() {
+        let base = serve(Some("s3cret")).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/feed/quality/refresh"))
+            .json(&json!({ "days": 30 }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 401);
     }
 
     #[tokio::test]
