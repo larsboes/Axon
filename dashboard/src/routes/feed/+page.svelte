@@ -403,12 +403,27 @@
     return source.id;
   }
 
-  function sourceRunLabel(value: string | null): string {
-    if (!value) return "not scanned yet";
+  /// `source_state` stores its timestamps as epoch seconds in a TEXT column,
+  /// unlike every other time on this wire, which arrives as a Postgres
+  /// timestamptz string. Both shapes go through here so a caller never has to
+  /// know which one a given field is — passing an epoch to the mail-date
+  /// formatter yields an Invalid Date and renders as nothing at all.
+  function runTimeLabel(value: string | null): string | null {
+    if (!value) return null;
     const epoch = Number(value);
-    const date = Number.isFinite(epoch) ? new Date(epoch * 1000) : new Date(value);
+    const date = Number.isFinite(epoch) && value.trim() !== "" ? new Date(epoch * 1000) : new Date(value);
     if (Number.isNaN(date.getTime())) return value;
-    return `last ${date.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
+    return date.toLocaleString("en-GB", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  function sourceRunLabel(value: string | null): string {
+    const label = runTimeLabel(value);
+    return label ? `last ${label}` : "not scanned yet";
   }
 
   async function importVault(candidate: VaultLinkCandidate): Promise<void> {
@@ -704,13 +719,13 @@
           {sweepStatus.consecutive_failures}
           {sweepStatus.consecutive_failures === 1 ? "run" : "runs"} in a row, backing off.
           {#if sweepStatus.last_success_at}
-            Last collected {mailDateLabel(sweepStatus.last_success_at)}.
+            Last collected {runTimeLabel(sweepStatus.last_success_at)}.
           {:else}
             It has never completed a run.
           {/if}
         {:else if sweepStatus.last_success_at}
           Scheduled sweep every {sweepStatus.every_minutes} min, newest
-          {sweepStatus.max_threads}. Last run {mailDateLabel(sweepStatus.last_success_at)} —
+          {sweepStatus.max_threads}. Last run {runTimeLabel(sweepStatus.last_success_at)} —
           {sweepStatus.considered_count} considered, {sweepStatus.new_count} new.
         {:else}
           Scheduled sweep every {sweepStatus.every_minutes} min, newest
