@@ -1,0 +1,13 @@
+# tasks — owned task records, written by whatever observed the thing to do.
+kind        = "process"
+name        = "tasks"
+command     = ["bazel-bin/capabilities/tasks/tasks-server"]
+build       = ["bazel", "build", "//capabilities/tasks:tasks-server"]
+port        = "8089"
+health_path = "/health"
+# `/tasks` is a dashboard route, so only `/tasks/api` reaches this process —
+# the same split trips needed for the same reason. Every server route already
+# lives under `/api`.
+proxy_api_only = "true"
+
+requires = ["postgres"]

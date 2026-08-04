@@ -1,0 +1,53 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["README.md", "service.toml"])
+
+rust_library(
+    name = "tasks_lib",
+    crate_name = "tasks",
+    crate_root = "src/lib.rs",
+    # Globbed rather than listed — see capabilities/scouting/BUILD.bazel for why the
+    # hand-maintained inventory was the drift risk (Axon#13). src/server.rs is excluded
+    # because it is the server binary's own crate root; the //libs sources stay explicit
+    # because a glob cannot cross a package boundary.
+    srcs = glob(["src/**/*.rs"], exclude = ["src/server.rs"]) + [
+        "//libs/axon-config:src/lib.rs",
+        "//libs/content-item:src/lib.rs",
+    ],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index_tasks//:postgres",
+        "@crate_index_tasks//:serde",
+        "@crate_index_tasks//:serde_json",
+    ],
+)
+
+# The store tests need the shared local Postgres (capabilities/postgres)
+# reachable; `cargo test` remains the day-to-day acceptance gate.
+rust_test(
+    name = "tasks_test",
+    crate = ":tasks_lib",
+    size = "small",
+)
+
+rust_binary(
+    name = "tasks-server",
+    crate_root = "src/server.rs",
+    srcs = [
+        "src/server.rs",
+        "//libs/axon-server:src/lib.rs",
+        "//libs/route-manifest:src/lib.rs",
+        "//libs/axon-config:src/lib.rs",
+    ],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":tasks_lib",
+        "@crate_index_tasks//:axum",
+        "@crate_index_tasks//:serde",
+        "@crate_index_tasks//:serde_json",
+        "@crate_index_tasks//:tokio",
+        "@crate_index_tasks//:tower-http",
+    ],
+)

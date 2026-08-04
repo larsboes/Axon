@@ -99,6 +99,18 @@ crate_trips.from_cargo(
 )
 use_repo(crate_trips, "crate_index_trips")
 
+# capabilities/tasks owns the record that something needs doing, plus a way back
+# to whatever observed it. Like trips it shares no Rust types across a trait
+# boundary with another capability -- comms promotes a mail over HTTP, it does
+# not link against this -- so it gets its own crate_universe repo.
+crate_tasks = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate_tasks.from_cargo(
+    name = "crate_index_tasks",
+    cargo_lockfile = "//capabilities/tasks:Cargo.lock",
+    manifests = ["//capabilities/tasks:Cargo.toml"],
+)
+use_repo(crate_tasks, "crate_index_tasks")
+
 # capabilities/soundscape owns what should be playing -- preset, params, mix, seed --
 # while the browser owns the synth and the clock it runs on. It shares no Rust types
 # across a trait boundary with any other capability (its contract is HTTP plus the UI
