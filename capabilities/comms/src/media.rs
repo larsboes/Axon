@@ -816,25 +816,38 @@ fn fetch_arxiv(id: &str) -> Result<(Option<String>, Option<String>, String, Tran
 /// LaTeX source answers 404 there, which is a clean signal rather than a
 /// judgement call about a bad conversion.
 ///
-/// PDF is the second attempt, for exactly that 404 set. It is unreachable
-/// today because nothing is registered for the class; it starts working when
-/// xberg lands (#77) without this function changing.
+/// **ar5iv second, which is most of what a PDF reader was going to be for.**
+/// Measured 2026-08-04 over 24 newest cs.AI/cs.LG/cs.CL papers: arxiv.org
+/// served HTML for 21. ar5iv answered all three misses, plus a 2007 paper
+/// arxiv.org has no HTML for, with real body text rather than a stub. It is
+/// the older LaTeXML pipeline with far wider backfill, which is exactly the
+/// shape of the remaining gap, so it is tried only on a 404 and never in
+/// preference to the canonical host.
 ///
-/// Every `None` here is ordinary rather than an error to report: no HTML, no
-/// PDF reader, or a fetch that failed on this one paper. The caller has an
-/// abstract and records that it used it. No raw PDF is persisted.
+/// PDF is the third attempt, for papers with no LaTeX source at all: scans
+/// and PDF-only submissions, mostly old. It is unreachable today because
+/// nothing is registered for the class, and starts working when xberg lands
+/// (#77) without this function changing.
+///
+/// Every `None` here is ordinary rather than an error to report: no HTML
+/// anywhere, no PDF reader, or a fetch that failed on this one paper. The
+/// caller has an abstract and records that it used it. No raw PDF is
+/// persisted.
 fn arxiv_full_text(http: &reqwest::blocking::Client, id: &str) -> Option<String> {
-    arxiv_html(http, id).or_else(|| arxiv_pdf(http, id))
+    arxiv_html(http, ARXIV_HTML_HOSTS[0], id)
+        .or_else(|| arxiv_html(http, ARXIV_HTML_HOSTS[1], id))
+        .or_else(|| arxiv_pdf(http, id))
 }
 
-fn arxiv_html(http: &reqwest::blocking::Client, id: &str) -> Option<String> {
+/// Canonical host first, wider-backfill mirror second. Order is the policy:
+/// where both have a paper, arxiv.org's is the newer conversion.
+const ARXIV_HTML_HOSTS: [&str; 2] = ["https://arxiv.org", "https://ar5iv.labs.arxiv.org"];
+
+fn arxiv_html(http: &reqwest::blocking::Client, host: &str, id: &str) -> Option<String> {
     let extractor = extraction::for_class(InputClass::Html)?;
-    let resp = http
-        .get(format!("https://arxiv.org/html/{id}"))
-        .send()
-        .ok()?;
+    let resp = http.get(format!("{host}/html/{id}")).send().ok()?;
     if !resp.status().is_success() {
-        return None; // 404: this paper has no LaTeX-derived HTML.
+        return None; // 404: no LaTeX-derived HTML for this paper on this host.
     }
     let body = resp.text().ok()?;
     let out = extractor.extract(&Document::html(body.as_bytes())).ok()?;

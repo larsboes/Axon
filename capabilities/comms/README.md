@@ -354,11 +354,18 @@ no PDF conversion and no new dependency. HTML beats a PDF for this on its own
 merits: LaTeXML keeps document structure, while PDF extraction has to
 reconstruct reading order from a two-column layout and mangles maths doing it.
 
-A paper with no LaTeX source answers 404, which is a clean signal rather than a
-judgement about a bad conversion. Those fall through to a PDF attempt — today
-unreachable, because nothing is registered for the class; registering xberg
-(#77, pin `1.0.5`, cooldown to 2026-08-06) closes that remainder without
-changing a caller. Failing both, the abstract is stored. No raw PDF is
+A 404 there is a clean signal rather than a judgement about a bad conversion,
+and it falls through to [ar5iv](https://ar5iv.labs.arxiv.org), the older
+LaTeXML pipeline with far wider backfill. Measured 2026-08-04 over the 24
+newest `cs.AI`/`cs.LG`/`cs.CL` papers: arxiv.org served 21, ar5iv answered all
+three misses plus a 2007 paper, with real body text. It is labs-grade, so it is
+the fallback and never the first request.
+
+What is left after both is papers with no LaTeX source at all, scans and
+PDF-only submissions, mostly old. Those fall through to a PDF attempt that is
+unreachable today because nothing is registered for the class; registering
+xberg (#77, pin `1.0.5`, cooldown to 2026-08-06) closes that remainder without
+changing a caller. Failing all three, the abstract is stored. No raw PDF is
 persisted.
 
 Which route ran is recorded per item as `transcript_source` (`full-text` |
