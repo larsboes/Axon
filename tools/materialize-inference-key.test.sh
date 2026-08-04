@@ -37,7 +37,10 @@ OUTPUT="$(
 
 TARGET="$OVERLAY/config/runtime-secrets/inference-gemini-api-key"
 [ "$(cat "$TARGET")" = "synthetic-test-key" ]
-MODE="$(stat -f '%Lp' "$TARGET" 2>/dev/null || stat -c '%a' "$TARGET")"
+case "$(uname -s)" in
+  Darwin) MODE="$(stat -f '%Lp' "$TARGET")" ;;
+  *) MODE="$(stat -c '%a' "$TARGET")" ;;
+esac
 [ "$MODE" = "600" ]
 case "$OUTPUT" in
   *synthetic-test-key*) echo "FAIL: command output exposed the key" >&2; exit 1 ;;
