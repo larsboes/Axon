@@ -321,14 +321,22 @@ Routing and protocol live in `media.rs`; turning bytes into text lives behind
 `text`). The two were the same function until #77, which is how the same HTML
 stripper ended up written twice with two different bugs.
 
-**Nothing reads PDFs yet, and the arXiv path depends on that rather than working
-around it.** `fetch_arxiv` asks the registry for a PDF extractor, is told there
-is none, and stores the abstract — recording which of the two it read as
-`transcript_source` (`full-text` | `abstract` | `unknown` for rows predating the
-distinction). So the fallback runs on every arXiv item today instead of being a
-branch nobody exercises. When xberg clears its cooldown (#77, pin `1.0.5`,
-2026-08-06) it registers as the `pdf` implementation and that fallback stops
-firing, with no caller changing.
+**An arXiv item stores the paper, not its abstract.** arXiv renders LaTeX
+submissions to HTML at `/html/<id>`, backfilled classics included, so
+`fetch_arxiv` reads the paper through the HTML implementation already here —
+no PDF conversion and no new dependency. HTML beats a PDF for this on its own
+merits: LaTeXML keeps document structure, while PDF extraction has to
+reconstruct reading order from a two-column layout and mangles maths doing it.
+
+A paper with no LaTeX source answers 404, which is a clean signal rather than a
+judgement about a bad conversion. Those fall through to a PDF attempt — today
+unreachable, because nothing is registered for the class; registering xberg
+(#77, pin `1.0.5`, cooldown to 2026-08-06) closes that remainder without
+changing a caller. Failing both, the abstract is stored. No raw PDF is
+persisted.
+
+Which route ran is recorded per item as `transcript_source` (`full-text` |
+`abstract` | `unknown` for rows predating the distinction).
 
 `transcript_source` is a separate axis from `content_status`, which measures how
 much text there is: a long abstract is `full` + `abstract`, a one-line article

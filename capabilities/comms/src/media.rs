@@ -796,9 +796,8 @@ fn fetch_arxiv(id: &str) -> Result<(Option<String>, Option<String>, String, Tran
         _ => Some(format!("{} et al.", authors[..3].join(", "))),
     };
 
-    // The paper is one request away, so try it and say which one was read
-    // (#78). Today nothing is registered for PDF, so this is the abstract on
-    // every item — and the fallback is exercised rather than hypothetical.
+    // The paper itself, when it can be read, with the abstract as the
+    // fallback and a record of which was used (#78).
     let (text, source) = match arxiv_full_text(&http, id) {
         Some(full) => (full, TranscriptSource::FullText),
         None => (abstract_text, TranscriptSource::Abstract),
@@ -807,14 +806,42 @@ fn fetch_arxiv(id: &str) -> Result<(Option<String>, Option<String>, String, Tran
     Ok((title, author, cap_text(text), source))
 }
 
-/// The paper's own text, or `None` when this build cannot read a PDF.
+/// The paper's own text, or `None` when neither route can read it.
 ///
-/// Both ways of returning `None` are ordinary, not errors to report: no PDF
-/// extractor is registered (the state until #77 lands), or the fetch or the
-/// conversion failed on this one paper. Either way the caller has an abstract
-/// to fall back to, and records that it used it. Nothing writes the PDF to
-/// disk.
+/// **HTML first, and not as a workaround.** arXiv renders LaTeX submissions to
+/// HTML at `/html/<id>` — including backfilled classics — and that beats a PDF
+/// for this purpose on its own merits: LaTeXML keeps document structure, while
+/// PDF text extraction has to reconstruct reading order out of a two-column
+/// layout and routinely mangles maths and ligatures doing it. A paper without
+/// LaTeX source answers 404 there, which is a clean signal rather than a
+/// judgement call about a bad conversion.
+///
+/// PDF is the second attempt, for exactly that 404 set. It is unreachable
+/// today because nothing is registered for the class; it starts working when
+/// xberg lands (#77) without this function changing.
+///
+/// Every `None` here is ordinary rather than an error to report: no HTML, no
+/// PDF reader, or a fetch that failed on this one paper. The caller has an
+/// abstract and records that it used it. No raw PDF is persisted.
 fn arxiv_full_text(http: &reqwest::blocking::Client, id: &str) -> Option<String> {
+    arxiv_html(http, id).or_else(|| arxiv_pdf(http, id))
+}
+
+fn arxiv_html(http: &reqwest::blocking::Client, id: &str) -> Option<String> {
+    let extractor = extraction::for_class(InputClass::Html)?;
+    let resp = http
+        .get(format!("https://arxiv.org/html/{id}"))
+        .send()
+        .ok()?;
+    if !resp.status().is_success() {
+        return None; // 404: this paper has no LaTeX-derived HTML.
+    }
+    let body = resp.text().ok()?;
+    let out = extractor.extract(&Document::html(body.as_bytes())).ok()?;
+    Some(out.text).filter(|t| !t.trim().is_empty())
+}
+
+fn arxiv_pdf(http: &reqwest::blocking::Client, id: &str) -> Option<String> {
     let extractor = extraction::for_class(InputClass::Pdf)?;
     let resp = http
         .get(format!("https://arxiv.org/pdf/{id}"))
@@ -1483,20 +1510,19 @@ mod tests {
     }
 
     #[test]
-    fn the_arxiv_pdf_path_is_skipped_entirely_while_no_pdf_extractor_exists() {
-        // The fallback #78 describes is not a branch waiting for a rainy day:
-        // it is what every arXiv item takes today, and it costs no request
-        // because the registry is consulted before the fetch. When xberg
-        // registers (#77) this assertion is what says the behaviour changed.
+    fn the_arxiv_pdf_attempt_costs_no_request_until_something_reads_pdfs() {
+        // The PDF half is the fallback's fallback, for papers with no
+        // LaTeX-derived HTML. It consults the registry before fetching, so
+        // while nothing reads PDFs it costs nothing. When xberg registers
+        // (#77) this assertion is what says the behaviour changed.
         assert!(
             extraction::for_class(InputClass::Pdf).is_none(),
-            "a PDF extractor is registered — arxiv_full_text now fetches, and \
-             fetch_arxiv should be returning FullText for readable papers"
+            "a PDF extractor is registered — arxiv_pdf now fetches, and papers \
+             without HTML should be returning FullText"
         );
 
-        // No client, no network: `arxiv_full_text` returns before using either.
         let http = http_client().unwrap();
-        assert_eq!(arxiv_full_text(&http, "2501.00001"), None);
+        assert_eq!(arxiv_pdf(&http, "2501.00001"), None);
     }
 
     #[test]

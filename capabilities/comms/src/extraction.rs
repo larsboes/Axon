@@ -10,13 +10,12 @@
 //! "clean" (#86). An extractor that stripped page furniture would be making,
 //! silently, the judgement that stage exists to make inspectably.
 //!
-//! **`Pdf` has no implementation today, and that is load-bearing rather than a
-//! gap.** `media::fetch_arxiv` asks for one, is told there is none, and falls
-//! back to the abstract — recording that it did, as `transcript_source`
-//! (#78). So the fallback path is exercised on every arXiv item now, instead
-//! of being a branch nobody runs until the day it matters. When xberg clears
-//! its cooldown (#77, 2026-08-06) it registers here as the `Pdf`
-//! implementation and that fallback stops firing, with no caller changing.
+//! **`Pdf` has no implementation, and less turns on that than it looks.**
+//! arXiv renders LaTeX submissions to HTML, so `media::fetch_arxiv` reads
+//! papers through the `Html` implementation here and only reaches for a PDF
+//! reader on the papers that have no HTML. Registering one (#77, cooldown to
+//! 2026-08-06) closes that remainder without changing a caller. Whichever
+//! route ran is recorded per item as `transcript_source` (#78).
 
 use crate::{CommsError, Result};
 
@@ -313,18 +312,28 @@ fn collapse_lines(s: &str) -> String {
         .join("\n")
 }
 
+/// Drop a whole element, opening tag to closing tag.
+///
+/// The tag NAME has to match, not a prefix of it. `<head` also starts
+/// `<header`, and once the real `</head>` had been consumed the search for a
+/// second one failed and took the `None` arm below — which truncates. Every
+/// page carrying a site `<header>` therefore lost everything from that element
+/// onward, silently, as an empty or stub transcript. A real arXiv paper
+/// extracted to zero characters, which is how this surfaced.
 fn remove_blocks(html: &str, tags: &[&str]) -> String {
     let mut out = html.to_string();
     for tag in tags {
         loop {
             let low = out.to_lowercase();
-            let open = match low.find(&format!("<{tag}")) {
+            let open = match find_open_tag(&low, tag) {
                 Some(i) => i,
                 None => break,
             };
             let close_tag = format!("</{tag}>");
             let close = match low[open..].find(&close_tag) {
                 Some(i) => open + i + close_tag.len(),
+                // Unclosed: the rest of the document is inside an element we
+                // are removing, so there is nothing after it to keep.
                 None => {
                     out.truncate(open);
                     break;
@@ -334,6 +343,23 @@ fn remove_blocks(html: &str, tags: &[&str]) -> String {
         }
     }
     out
+}
+
+/// Offset of `<tag` where the next character actually ends the tag name.
+fn find_open_tag(haystack: &str, tag: &str) -> Option<usize> {
+    let needle = format!("<{tag}");
+    let mut from = 0usize;
+    while let Some(hit) = haystack[from..].find(&needle) {
+        let at = from + hit;
+        let after = haystack[at + needle.len()..].chars().next();
+        match after {
+            None | Some('>') | Some('/') => return Some(at),
+            Some(c) if c.is_whitespace() => return Some(at),
+            // `<header` when looking for `<head`: keep searching.
+            _ => from = at + needle.len(),
+        }
+    }
+    None
 }
 
 /// Depth-counted tag removal, for a fragment where no separator is wanted --
@@ -408,6 +434,47 @@ mod tests {
     }
 
     #[test]
+    fn a_site_header_does_not_take_the_rest_of_the_page_with_it() {
+        // `<head` is a prefix of `<header`. With prefix matching, the second
+        // pass over the document found `<header`, failed to find a closing
+        // `</head>` (the real one was already consumed), and truncated
+        // everything from there on. A real arXiv paper extracted to zero
+        // characters; every page with a site header lost its body silently.
+        let html = "<html><head><title>T</title></head><body>\
+            <header><p>Site chrome</p></header>\
+            <article><p>The body that must survive.</p></article>\
+            </body></html>";
+
+        let out = Builtin.extract(&Document::html(html.as_bytes())).unwrap();
+        assert!(
+            out.text.contains("The body that must survive."),
+            "the page was truncated at <header>: {:?}",
+            out.text
+        );
+        assert!(
+            out.text.contains("Site chrome"),
+            "<header> is page furniture for the normalizer to judge, not for \
+             extraction to delete: {:?}",
+            out.text
+        );
+        assert_eq!(out.title.as_deref(), Some("T"));
+    }
+
+    #[test]
+    fn an_unclosed_removed_element_still_takes_the_rest() {
+        // The truncating branch is correct on its own terms: everything after
+        // an unclosed <script> is inside it. Kept as a decision, not an
+        // accident, now that exact matching stops it firing on `<header>`.
+        let out = Builtin
+            .extract(&Document::html(
+                b"<body><p>Kept.</p><script>var x = 1;<p>Gone.</p></body>",
+            ))
+            .unwrap();
+        assert!(out.text.contains("Kept."));
+        assert!(!out.text.contains("Gone."));
+    }
+
+    #[test]
     fn script_and_style_bodies_never_reach_the_text() {
         let html = "<html><head><title>My &amp; Page</title><style>.x{}</style></head>\
             <body><script>bad()</script><p>Hello  world</p></body></html>";
@@ -456,6 +523,43 @@ mod tests {
     #[test]
     fn asking_the_builtin_for_a_pdf_is_an_error_not_an_empty_string() {
         assert!(Builtin.extract(&Document::pdf(b"%PDF-1.7")).is_err());
+    }
+
+    #[test]
+    fn malformed_input_yields_text_or_nothing_but_never_an_error() {
+        // The judgement here is that a broken page is not an exceptional
+        // condition: pages are broken constantly, and a caller that had to
+        // handle an Err per malformed document would end up swallowing it.
+        // Emptiness is the signal instead, and `content_status` carries it.
+        for (name, bytes) in [
+            (
+                "unterminated tag",
+                &b"<html><body><p>Text<div class=\"x"[..],
+            ),
+            ("stray closing tag", &b"</p></div>Loose text</span>"[..]),
+            (
+                "angle brackets in prose",
+                &b"<p>Use a &lt; b and c > d</p>"[..],
+            ),
+            ("nothing at all", &b""[..]),
+            ("not html", &b"\x00\x01\x02 binary"[..]),
+            ("unclosed comment", &b"<p>Before<!-- never closed"[..]),
+        ] {
+            let out = Builtin
+                .extract(&Document::html(bytes))
+                .unwrap_or_else(|e| panic!("{name} returned an error: {e}"));
+            assert!(
+                out.text.chars().count() <= TEXT_CAP,
+                "{name} exceeded the cap"
+            );
+        }
+
+        // Invalid UTF-8 is lossy-decoded rather than rejected: a page in the
+        // wrong declared encoding is still mostly readable text.
+        let out = Builtin
+            .extract(&Document::html(b"<p>caf\xFF\xFE latte</p>"))
+            .unwrap();
+        assert!(out.text.contains("latte"), "got: {:?}", out.text);
     }
 
     #[test]

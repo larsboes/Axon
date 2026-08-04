@@ -19,13 +19,21 @@
   <script>window.__consent = function () { return false; };</script>
 </head>
 <body>
-  <nav>
-    <ul>
-      <li><a href="/">Home</a></li>
-      <li><a href="/feed">Menu</a></li>
-      <li><a href="/login">Sign in</a></li>
-    </ul>
-  </nav>
+  <!--
+    The <header> is load-bearing for this fixture: `<head` is a prefix of
+    `<header`, and prefix matching in remove_blocks truncated every page from
+    its site header onward. A real arXiv paper extracted to zero characters.
+    Anything below this element is only in the output because that is fixed.
+  -->
+  <header>
+    <nav>
+      <ul>
+        <li><a href="/">Home</a></li>
+        <li><a href="/feed">Menu</a></li>
+        <li><a href="/login">Sign in</a></li>
+      </ul>
+    </nav>
+  </header>
 
   <div class="banner">
     <p>We use cookies to improve your experience.</p>
