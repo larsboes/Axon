@@ -6,6 +6,7 @@ use scouting::adapters::luma::LumaAdapter;
 use scouting::adapters::meetup::MeetupAdapter;
 use scouting::adapters::transit_fare::TransitFareAdapter;
 use scouting::config::{redact_database_url, Config};
+use scouting::event_route::classify_ranked;
 use scouting::merge::{merge, MergedEntry};
 use scouting::opportunity::Opportunity;
 use scouting::pipeline::{backlog_from_store, fetch_json, run};
@@ -142,10 +143,25 @@ fn run_adapter(
                 } else {
                     for (i, r) in rows.iter().enumerate() {
                         let vl = r.vault_link.as_deref().unwrap_or("none");
+                        let route = classify_ranked(r, cfg.geo.as_ref());
+                        let route_label = route
+                            .as_ref()
+                            .map(|route| route.route.as_str())
+                            .unwrap_or("n/a");
                         println!(
-                            "  {}. [{:.3}] {} · {} · focus: {} · status: {} · vault: {}",
-                            i + 1, r.score, r.title, r.city, r.matched_focus, r.status, vl
+                            "  {}. [{:.3}] {} · {} · focus: {} · route: {} · status: {} · vault: {}",
+                            i + 1,
+                            r.score,
+                            r.title,
+                            r.city,
+                            r.matched_focus,
+                            route_label,
+                            r.status,
+                            vl
                         );
+                        if let Some(route) = route {
+                            println!("     {}", route.reason);
+                        }
                     }
                 }
             }
