@@ -171,6 +171,17 @@ sh_test(
     data = ["tools/check-bun-pin.sh"],
 )
 
+# The overlay's mirror hook, over planted repos. What it guards is a commit BOUNDARY, not
+# the mirror's content: the hook shipped ending in a blanket `git add`, so a path-scoped
+# commit silently grew. The added bytes were legitimate every time, which is why only an
+# assertion on how many files land can catch it.
+sh_test(
+    name = "lifeos_mirror_hook_test",
+    size = "small",
+    srcs = ["tools/pre-commit-lifeos-mirror.test.sh"],
+    data = ["tools/templates/hooks/pre-commit-lifeos-mirror"],
+)
+
 # The release-drift declaration in upstreams.toml (#38). The tracked manifest can only ever
 # show the states it happens to be in, so this plants its own via AXON_UPSTREAMS_MANIFEST and
 # stubs `gh` on PATH -- which makes the drift block itself hermetic, not merely skipped.

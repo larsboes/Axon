@@ -1,0 +1,70 @@
+#!/bin/bash
+# pre-commit — refresh the LifeOS USER identity mirror so an overlay commit carries a
+# current snapshot of the principal's personal tree.
+#
+# Why here: the LifeOS USER tree is not a git repository and has no undo of its own. The
+# overlay's .gitignore already reserves resources/backups/** as the "identity mirror"; this
+# hook is the refresh trigger, so the mirror stops going stale between manual runs.
+#
+# NEVER blocks a commit. A failed refresh is a warning, not a reason to lose your commit.
+#
+# ── The staging contract ────────────────────────────────────────────────────────────────
+# This hook refreshes the WORKING TREE and stages nothing the caller did not already stage.
+#
+# It used to end with `git add -- resources/backups/lifeos`, which quietly turned every
+# path-scoped commit into a wider one: a `git add` of four reviewed files became a commit of
+# ten. The refreshed content was legitimate every time, which is exactly why it went
+# unnoticed — the failure is the boundary, not the bytes. A caller has to be able to say
+# "commit these paths" and get those paths, or the only escape is --no-verify, which also
+# skips the checks worth running.
+#
+# So: mirror drift is reported with the exact paths and the exact command to commit it. The
+# one case where re-staging is correct is when the caller already staged mirror paths — then
+# refreshing them is completing what they asked for, not widening it.
+#
+# Install: copy to <overlay>/.git/hooks/pre-commit and chmod +x.
+# Remove:  rm <overlay>/.git/hooks/pre-commit
+# Refresh logic lives in Axon's tools/mirror-lifeos-user.sh; this is only the trigger.
+
+MIRROR_TOOL="${AXON_MIRROR_TOOL:-$HOME/Developer/Axon/tools/mirror-lifeos-user.sh}"
+MIRROR_PATH="resources/backups/lifeos"
+
+if [ ! -x "$MIRROR_TOOL" ]; then
+  echo "pre-commit: $MIRROR_TOOL missing or not executable — LifeOS mirror NOT refreshed." >&2
+  exit 0
+fi
+
+# Read the caller's intent BEFORE touching anything: which mirror paths, if any, did they
+# already stage? Those are the only ones this hook may re-stage afterwards.
+#
+# Known limit: this lists paths whose staged content differs from HEAD, because git records
+# no intent beyond the index — a path staged while byte-identical to HEAD is indistinguish-
+# able from one never named. That case degrades to the reported-not-staged branch below,
+# which is the safe direction: the caller is told, and nothing joins the commit unasked.
+preselected="$(git diff --cached --name-only -- "$MIRROR_PATH" 2>/dev/null)"
+
+if ! out="$("$MIRROR_TOOL" --apply 2>&1)"; then
+  echo "pre-commit: LifeOS mirror refresh FAILED — commit continues, backup is stale:" >&2
+  echo "$out" | sed 's/^/  /' >&2
+  exit 0
+fi
+
+if [ -n "$preselected" ]; then
+  # The caller opted in. Re-stage exactly what they had selected, never the whole path.
+  echo "$preselected" | while IFS= read -r p; do
+    [ -n "$p" ] && git add -- "$p" 2>/dev/null
+  done
+  echo "pre-commit: LifeOS mirror refreshed; restaged the mirror paths you had selected."
+  exit 0
+fi
+
+# Nothing from the mirror was staged, so nothing from the mirror joins this commit.
+drift="$(git status --porcelain -- "$MIRROR_PATH" 2>/dev/null)"
+if [ -n "$drift" ]; then
+  count="$(printf '%s\n' "$drift" | grep -c '^')"
+  echo "pre-commit: LifeOS mirror refreshed — $count path(s) updated in the working tree, NOT staged:"
+  printf '%s\n' "$drift" | sed 's/^/  /'
+  echo "  commit them on their own with:  git add $MIRROR_PATH && git commit -m 'Refresh LifeOS mirror'"
+fi
+
+exit 0
