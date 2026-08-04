@@ -2,13 +2,18 @@
 # upstream-checker — the M2 gate for upstreams.toml.
 #
 # Enforces Axon's dependency doctrine (README.md#dependency-verdicts-and-provenance, upstreams.toml header):
-# every entry is complete with a valid verdict, everything consumed is pinned,
-# and no pinned dep gets silently bumped inside its 7-14 day cooldown window.
-# Run it BEFORE adding or bumping any dependency, package, or MCP server —
-# that's the gate that stops a LiteLLM-class same-day compromise from landing.
+# every entry is complete with a valid verdict, and everything consumed is pinned.
+# Run it BEFORE adding or bumping any dependency, package, or MCP server.
+#
+# The cooldown is reported, not enforced. Being inside the window is `ok` here:
+# the pin is correct, the hold is a recommendation, and adopting early is the
+# operator's judgement to make. What earns a warning is the opposite state, a
+# cooldown that has passed with the pin left behind. An earlier header claimed
+# --strict failed on in-cooldown bumps; it never did after that inversion, and
+# saying so was worse than saying nothing.
 #
 #   tools/upstream-checker            # audit the manifest, human report
-#   tools/upstream-checker --strict   # also fail on warnings + in-cooldown bumps
+#   tools/upstream-checker --strict   # also fail on warnings (stale pins, unverified drift)
 #   tools/upstream-checker --offline  # skip the GitHub release/cooldown checks
 #   tools/upstream-checker --json     # machine-readable report (dashboard feed); exits 0
 #

@@ -277,10 +277,12 @@ or asset. A local clone or archive path is never durable provenance.
 
 ### Pins and cooldown
 
-Never consume `:latest`. Pin code to a reviewed ref and wait seven to fourteen days before adopting
-a release unless an active vulnerability requires an explicit exception. Audit the delta rather
-than the world. A dependency that is mutable data rather than executable code must say why its pin
-policy differs.
+Never consume `:latest`. Pin code to a reviewed ref, then hold seven to fourteen days before
+adopting a release. The hold is what catches a compromised publish: the ecosystem finds those in
+days, and reading the dependency tree yourself cannot. It is a recommendation and not a gate.
+`tools/upstream-checker` reports the window and never fails on it, because the operator carries
+the risk and may have reason to take it early. Audit the delta rather than the world. A dependency
+that is mutable data rather than executable code must say why its pin policy differs.
 
 Not every correct pin is a release. A commit sha is the right pin for a repository that cuts no
 releases, and an image tag, a hosted API surface or a data path are right for what they name — but

@@ -223,8 +223,12 @@ drift_note() {
     printf '⚠ newer: %s, release date unresolvable — cooldown unverified\n' "$latest_tag"; return 1
   fi
 
+  # Reported, never owed. The hold is a recommendation and the operator carries
+  # the risk of taking it early, so this states the window and the reason for
+  # it rather than issuing an instruction the tool cannot enforce anyway.
   if [ "$age_days" -lt "$cd_min" ]; then
-    printf '🔴 newer: %s (%sd old) — IN COOLDOWN, do NOT bump yet (LiteLLM class)\n' "$latest_tag" "$age_days"
+    printf '🔴 newer: %s (%sd old) — inside the %sd hold; waiting is what catches a LiteLLM-class publish\n' \
+      "$latest_tag" "$age_days" "$cd_min"
     return 0
   fi
   if [ "$age_days" -le "$cd_max" ]; then
