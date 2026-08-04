@@ -454,17 +454,17 @@ describe("LifeOS PROJECTS.md pointers", () => {
     "| Project | Path | URL | Visibility |",
     "|---------|------|-----|-----------|",
     "| **Axon** | `~/Developer/Axon` | `github.com/x/Axon` | public-safe |",
-    "| **physio-at-home** (Moca) | `~/Developer/Projects/physio-at-home` | _(no git)_ | private |",
+    "| **widget-app** (Codename) | `~/Developer/Projects/widget-app` | _(no git)_ | private |",
     "",
     "## Open Sessions",
     "",
     "| Session | Stand | Offen |",
     "|---|---|---|",
-    "| **Home-Server** | belongs in the vault again | buy the Pi |",
+    "| **Some Session** | still open | the next step |",
     "",
     "## Routing Aliases",
     "",
-    "When Lars says... | Jarvis routes to...",
+    "When the principal says... | the DA routes to...",
     "---|---",
     '"LifeOS", "this system" | `~/.claude`',
   ].join("\n");
@@ -472,14 +472,14 @@ describe("LifeOS PROJECTS.md pointers", () => {
   test("only the project table's rows are pointers", () => {
     expect(parseProjectManifestPaths(manifest)).toEqual([
       { name: "Axon", path: "~/Developer/Axon" },
-      { name: "physio-at-home", path: "~/Developer/Projects/physio-at-home" },
+      { name: "widget-app", path: "~/Developer/Projects/widget-app" },
     ]);
   });
 
   test("a bolded row with prose in cell two is not a pointer", () => {
     // Open Sessions satisfies the bold half and nothing else. Matching on bold alone
     // would turn every session line into a path that fails to resolve.
-    expect(parseProjectManifestPaths(manifest).map((r) => r.name)).not.toContain("Home-Server");
+    expect(parseProjectManifestPaths(manifest).map((r) => r.name)).not.toContain("Some Session");
   });
 
   test("a backticked path with no bolded name is not a pointer", () => {

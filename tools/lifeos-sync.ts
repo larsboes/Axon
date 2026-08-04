@@ -75,6 +75,20 @@ const TARGETS: Target[] = [
     why: "Instance config (which sinks and modules are on for THIS machine) — overlay, not Axon. Pulse reads only PULSE.toml for module sections; its PULSE.user.toml overlay merges [[job]] entries only.",
   },
   {
+    what: "LIFEOS_SYSTEM_PROMPT.md",
+    kind: "link",
+    src: join(OVERLAY_ROOT, "config/lifeos/LIFEOS_SYSTEM_PROMPT.md"),
+    dst: join(CONFIG_ROOT, "LIFEOS/LIFEOS_SYSTEM_PROMPT.md"),
+    why: "Stock LifeOS ships this file describing an install whose ~/.claude is a private git repo with a remote. This one is not, by design, so the doctrine had to be corrected — and a correction living only in ~/.claude is unversioned. Overlay, not Axon: the edits are instance decisions about an upstream-owned file, the same shape as PULSE.toml. Loaded via --append-system-prompt-file and it has no relative imports, so a symlink is safe.",
+  },
+  {
+    what: "context-budgets.json",
+    kind: "link",
+    src: join(OVERLAY_ROOT, "config/lifeos/context-budgets.json"),
+    dst: join(CONFIG_ROOT, "LIFEOS/TOOLS/context-budgets.json"),
+    why: "Which files are always-on and what each may cost. Instance-tuned (the caps are sized to THIS principal's files), and dropping a row is a real decision — BudgetCheck.ts reads it, nothing writes it.",
+  },
+  {
     what: "settings.json hooks",
     kind: "hooks",
     src: join(AXON_ROOT, "capabilities/lifeos/overlay/settings.hooks.json"),
