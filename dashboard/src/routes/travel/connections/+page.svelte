@@ -3,7 +3,7 @@
   import PageHeader from "$lib/PageHeader.svelte";
   import RelatedTools from "$lib/RelatedTools.svelte";
   import StationField from "$lib/travel/StationField.svelte";
-  import { transit, type Journey, type SplitResult, type Station } from "$lib/api";
+  import { axonStatus, transit, type Journey, type SplitResult, type Station } from "$lib/api";
 
   function tomorrow(): string {
     const d = new Date();
@@ -27,6 +27,16 @@
   let split = $state<SplitResult | null>(null);
   let splitNote = $state<string | null>(null);
   let tab = $state<"direct" | "split">("direct");
+
+  // transit declares itself on-demand, and this page is the only surface that uses it —
+  // the station fields above resolve names through it and the search below queries it.
+  // Nothing else on /travel starts it, so without this the page renders a complete form
+  // whose lookups quietly return nothing: a working-looking page that cannot answer.
+  // Reads no state, so it runs once on mount. A failure here is not fatal on its own;
+  // the lookup or search that follows reports the real error.
+  $effect(() => {
+    void axonStatus.start("transit").catch(() => undefined);
+  });
 
   async function search(): Promise<void> {
     if (!from || !to) {
