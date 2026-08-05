@@ -1,0 +1,24 @@
+# macmon — host process, not a container. Shape: schemas/service.toml.example.
+#
+# An adopted binary rather than code this repo builds, so there is no `build` line: the
+# host is expected to have it (toolchain.toml [macmon]). command[0] is a bare name on
+# purpose — PATH's job, and the generated unit's PATH is derived from `command -v macmon`
+# at install time, so a cargo-installed binary needs no absolute path in a tracked file.
+kind        = "process"
+name        = "macmon"
+command     = ["macmon", "serve", "--port", "${AXON_PORT}", "--interval", "5000"]
+port        = "9911"
+health_path = "/json"
+
+# Why ${AXON_PORT} rather than the literal: macmon takes its port on argv and cannot read
+# the AXON_PORT env var an Axon-owned process would. Writing 9911 twice — once here, once
+# in `port` above — would let the machine.toml override move one and not the other, and
+# the dashboard proxies whatever `port` says. One fact, one home.
+#
+# The interval IS spelled out, because it is not a machine fact. macmon samples hardware
+# counters on a timer whether or not anything is polling it, and the only consumer is a
+# dashboard page a human has open. At the 1000 ms default that cost ~2% of a core
+# continuously — an hour of CPU across two days on a machine whose Systems page was never
+# open. 5000 ms is imperceptible on a page you are reading and five times cheaper to leave
+# running.
+autostart   = "true"

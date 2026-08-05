@@ -39,12 +39,19 @@ bun install
 bun run dev      # or: bun run build / bun run check
 ```
 
-To show live system metrics (temperature, power, memory) on **/systems**, macmon runs automatically
-via a LaunchAgent (`com.axon.macmon.plist`) that starts `macmon serve --port 9911` at login.
+Live system metrics (temperature, power, memory) on **/systems** come from macmon, which is
+`capabilities/macmon` — enabled and started the ordinary way:
 
-macmon is proxied at `/macmon` by Vite's dev server (see `vite.config.ts`). No
-Axon capability needed — it is an external tool, discovered by the proxy the same
-way LifeOS Pulse is.
+```bash
+tools/capability.sh enable macmon
+tools/service-runner.sh start macmon
+tools/service-runner.sh install-persistence macmon   # if it should survive a reboot
+```
+
+Nothing about it is special-cased here any more. Its `port` feeds both the process and the
+`/macmon` proxy entry, which the registry loop in `vite.config.ts` generates the same way it
+does for every other capability. It was a hand-written LaunchAgent and a hardcoded proxy
+target until then; both are gone.
 
 ## What the shell discovers, and what it is told
 

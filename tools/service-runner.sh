@@ -334,10 +334,11 @@ process_init() {
     COMMAND=("$_cap_dir/target/release/$_pkg")
   fi
 
-  # ${AXON_ROOT} and ${AXON_OVERLAY_ROOT} in any argument expand first, and they are the
-  # only interpolations this manifest format performs. They exist so an overlay
-  # capability can name a shared Axon tool, and hand that tool a path back into the
-  # overlay, without either side hardcoding one machine's checkout location.
+  # ${AXON_ROOT} and ${AXON_OVERLAY_ROOT} in any argument expand first. They exist so an
+  # overlay capability can name a shared Axon tool, and hand that tool a path back into
+  # the overlay, without either side hardcoding one machine's checkout location.
+  # ${AXON_PORT} is the third and last interpolation, and it deliberately expands later —
+  # see below, after the machine.toml override has had its say.
   local _i
   for _i in "${!COMMAND[@]}"; do
     COMMAND[$_i]="${COMMAND[$_i]//\$\{AXON_ROOT\}/$AXON_ROOT}"
@@ -359,6 +360,15 @@ process_init() {
     override="$(toml_get_in "capability.$CAP" port "$AXON_MACHINE_TOML")"
     if [ -n "$override" ]; then PORT="$override"; fi
   fi
+
+  # ${AXON_PORT} expands HERE, after the override above, so a manifest that passes its
+  # port as an argument gets the same value the registry and the dev-server proxy read
+  # from `port`. An Axon-owned process reads the AXON_PORT env var this exports later; an
+  # adopted binary takes its port on argv (macmon serve --port N) and cannot. Without this
+  # the number would be written twice, and a machine.toml override would move one of them.
+  for _i in "${!COMMAND[@]}"; do
+    COMMAND[$_i]="${COMMAND[$_i]//\$\{AXON_PORT\}/$PORT}"
+  done
 }
 
 health_url() {

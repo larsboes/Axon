@@ -116,13 +116,9 @@ function buildProxy(): Record<string, ProxyOptions> {
     rewrite: (path) => path.replace(/^\/lifeos-pulse/, ""),
   };
 
-  // macmon — sudoless Apple Silicon performance monitor, proxied on 9911.
-  // Not an Axon capability; the dashboard polls /macmon/json for the Systems page.
-  proxy["/macmon"] = {
-    target: "http://localhost:9911",
-    changeOrigin: true,
-    rewrite: (path) => path.replace(/^\/macmon/, ""),
-  };
+  // macmon used to be hand-proxied here, on a hardcoded 9911, because it was not a
+  // capability. It is capabilities/macmon now, so the registry loop above already gives it
+  // /macmon from its own `port` — one fewer place for that number to be wrong.
 
   return proxy;
 }

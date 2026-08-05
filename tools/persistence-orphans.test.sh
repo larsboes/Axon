@@ -3,9 +3,13 @@
 #
 # The check answers one question — is this com.axon.* unit one this machine should have? —
 # and getting it wrong is expensive in both directions. Too strict and it tells the operator
-# to remove a unit something depends on, which is exactly what it did for the dashboard's
-# macmon sidecar (#65). Too loose and a capability's leftover unit keeps starting a service
-# the machine no longer enables, silently, which is the whole reason the check exists.
+# to remove a unit something depends on, which is exactly what it did for macmon back when
+# macmon was a hand-written unit the dashboard declared as a sidecar (#65). Too loose and a
+# capability's leftover unit keeps starting a service the machine no longer enables,
+# silently, which is the whole reason the check exists.
+#
+# macmon is an ordinary enabled capability now, so it covers the plain "enabled" case here
+# rather than the exemption case. The exemption path is still exercised by dashboard.
 #
 # So both directions are asserted here, against the real doctor rather than a reimplementation
 # of its rule.
@@ -34,7 +38,7 @@ mkdir -p "$UNIT_DIR" "$OVERLAY/config"
 cat > "$OVERLAY/config/machine.toml" <<'EOF'
 os = "macos"
 container_runtime = "docker"
-capabilities = ["postgres"]
+capabilities = ["postgres", "macmon"]
 EOF
 
 plant_unit() { printf '<plist/>\n' > "$UNIT_DIR/com.axon.$1.plist"; }
@@ -42,7 +46,7 @@ plant_unit() { printf '<plist/>\n' > "$UNIT_DIR/com.axon.$1.plist"; }
 # The three cases the issue names, planted together so one run covers all of them.
 plant_unit postgres    # enabled          -> never an orphan
 plant_unit dashboard   # spine component  -> exempt via its own root manifest
-plant_unit macmon      # declared sidecar -> exempt via dashboard/service.toml
+plant_unit macmon      # enabled capability -> never an orphan (was a dashboard sidecar)
 plant_unit trips       # a disabled capability's leftover unit -> ORPHAN
 plant_unit nothing-declares-this                                # -> ORPHAN
 
@@ -73,8 +77,9 @@ done
 
 # --- the exemption is derived, not spelled ------------------------------------------------
 # If a name that no manifest mentions is exempt, the derivation has been replaced by a list.
-if ! grep -q 'sidecars' "$_root/dashboard/service.toml"; then
-  fail "dashboard/service.toml no longer declares its sidecars — the exemption has moved back into code"
+# dashboard is exempt because it HAS a root-level service.toml, never because it is named.
+if [ ! -f "$_root/dashboard/service.toml" ]; then
+  fail "dashboard/service.toml is gone — the spine exemption derives from it, so nothing is left to derive"
 fi
 if grep -qE '"macmon"' "$_root/tools/doctor.ts"; then
   fail "tools/doctor.ts names macmon directly — the exemption must come from the manifest"
