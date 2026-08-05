@@ -108,7 +108,11 @@ mkdir -p "$MIRROR"
 # That is the doubling this whole mirror exists to avoid, pointed at itself. Without
 # the exclude, `rsync -a` would also faithfully reproduce the symlink AS a symlink,
 # giving the backup a pointer where it needs content.
-rsync -a --delete --delete-excluded --exclude '.DS_Store' --exclude 'CACHE/' --exclude 'TELOS/' "$LIFEOS_USER_DIR/" "$MIRROR/"
+# 'TELOS' without a trailing slash on purpose. With one, rsync matches directories ONLY —
+# and TELOS is a symlink here, not a directory, so the trailing-slash form let it through
+# and the mirror ended up holding a dangling pointer into the overlay. Same reason the diff
+# report above uses -x 'TELOS'.
+rsync -a --delete --delete-excluded --exclude '.DS_Store' --exclude 'CACHE/' --exclude 'TELOS' "$LIFEOS_USER_DIR/" "$MIRROR/"
 
 echo "✓ mirror refreshed: $DIVERGED path(s) updated → resources/backups/lifeos/USER"
 echo "  not committed — review and commit in axon-overlay when you're ready."
