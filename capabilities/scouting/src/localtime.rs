@@ -236,6 +236,16 @@ fn next_num<'a, T: std::str::FromStr>(
         .map_err(|_| format!("'{original}' has a non-numeric {field}"))
 }
 
+/// A Unix timestamp as the UTC ISO-8601 instant the rest of this crate stores.
+///
+/// The inverse of what `wall_time` consumes, for an adapter whose upstream
+/// sends epoch seconds rather than an ISO string. Shared rather than derived
+/// again in the adapter: the civil-from-days arithmetic is already here, and
+/// two copies of it is how the two come to disagree.
+pub fn utc_instant_from_epoch(secs: i64) -> String {
+    format!("{}Z", format_naive(secs))
+}
+
 fn format_naive(secs: i64) -> String {
     let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
     let rem = secs.rem_euclid(86_400);

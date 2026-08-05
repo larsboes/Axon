@@ -34,6 +34,8 @@ const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/sources", "Declared opportunity sources and their state."),
     r("GET", "/opportunities", "Stored opportunities. Optional include_dismissed."),
     r("POST", "/opportunities/:id/status", "Set an opportunity's status (saved, dismissed)."),
+    r("POST", "/sources/proposed", "Record a candidate source. Never runs it. Requires adapter + locator."),
+    r("POST", "/sources/proposed/:id/dismiss", "Take a candidate source out of the inbox."),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -234,9 +236,22 @@ async fn health_handler() -> Json<Value> {
     }))
 }
 
-/// Returns the list of configured sources (from scouting.json's `sources[]`).
-/// Useful for dashboards and automation to discover what's available.
+/// Returns the list of configured sources (from scouting.json's `sources[]`),
+/// plus the candidate-source inbox. Useful for dashboards and automation to
+/// discover what's available.
+///
+/// On the blocking pool like every other store-touching handler here. It did
+/// not need to be until it read the proposal inbox: `postgres` is the sync
+/// client, and calling it straight from an async handler panics the worker
+/// with "cannot start a runtime from within a runtime". Config::load reads a
+/// file, so it belongs on the same side of that line.
 async fn sources_handler() -> Json<Value> {
+    tokio::task::spawn_blocking(sources_listing)
+        .await
+        .unwrap_or_else(|error| Json(json!({ "error": error.to_string() })))
+}
+
+fn sources_listing() -> Json<Value> {
     let cfg = Config::load();
     let mut sources: Vec<Value> = cfg
         .sources
@@ -282,9 +297,41 @@ async fn sources_handler() -> Json<Value> {
             "doc_path": null,
         }));
     }
+    // The inbox, beside what is declared rather than mixed into it. A proposal
+    // is not a source: it has no id an operator chose, it never runs, and the
+    // only way it becomes one is a human editing the overlay. Putting it in the
+    // same array under `enabled: false` would have made those two things look
+    // like states of one thing.
+    let proposed: Vec<Value> = Store::open(&cfg.database_url)
+        .and_then(|store| store.list_proposed_sources("proposed"))
+        .map(|rows| {
+            rows.iter()
+                .map(|p| {
+                    json!({
+                        "id": p.id,
+                        "adapter": p.adapter,
+                        "locator": p.locator,
+                        "label": p.label,
+                        "found_by": p.found_by,
+                        "found_at": p.found_at,
+                        "note": p.note,
+                        // Derived from what is declared right now, never stored:
+                        // the fact lives in the overlay's config file, and a
+                        // copy here would only ever be a stale one.
+                        "declared": p.is_declared_by(&cfg.sources),
+                    })
+                })
+                .collect()
+        })
+        // A database that is down must not take the declared list with it. The
+        // inbox is the optional half of this endpoint.
+        .unwrap_or_default();
+
     Json(json!({
         "sources": sources,
-        "count": sources.len()
+        "count": sources.len(),
+        "proposed": proposed,
+        "proposed_count": proposed.len(),
     }))
 }
 
@@ -353,6 +400,78 @@ async fn set_status_handler(
     .map_err(internal_error)?
 }
 
+/// A candidate source somebody wants remembered.
+///
+/// `found_by` defaults to `manual` because typing a hub id in is the day-one
+/// producer, and a proposal with no origin is a fact nobody can check later.
+#[derive(Deserialize)]
+struct ProposalBody {
+    adapter: String,
+    locator: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    found_by: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Records a candidate. Deliberately cannot start anything: the only thing that
+/// makes a source run is an entry in the overlay's `sources[]`, which no code
+/// path here writes. The response says so rather than leaving the caller to
+/// assume a POST means it is live.
+async fn propose_source_handler(
+    Json(body): Json<ProposalBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    tokio::task::spawn_blocking(move || {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(internal_error)?;
+        let found_by = body.found_by.as_deref().unwrap_or("manual");
+        match store.propose_source(
+            &body.adapter,
+            &body.locator,
+            body.label.as_deref(),
+            found_by,
+            body.note.as_deref(),
+        ) {
+            Ok(is_new) => Ok(Json(json!({
+                "status": "proposed",
+                "new": is_new,
+                "enabled": false,
+                "next": "promote it by adding it to sources[] in the overlay's scouting.json",
+            }))),
+            Err(error) => Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": error.to_string() })),
+            )),
+        }
+    })
+    .await
+    .map_err(internal_error)?
+}
+
+async fn dismiss_proposal_handler(
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    tokio::task::spawn_blocking(move || {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(internal_error)?;
+        match store.dismiss_proposed_source(&id) {
+            Ok(true) => Ok(Json(json!({ "id": id, "status": "dismissed" }))),
+            Ok(false) => Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "no such proposed source" })),
+            )),
+            Err(error) => Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": error.to_string() })),
+            )),
+        }
+    })
+    .await
+    .map_err(internal_error)?
+}
+
 fn internal_error(error: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -384,6 +503,11 @@ async fn main() {
         .route("/sources", get(sources_handler))
         .route("/opportunities", get(opportunities_handler))
         .route("/opportunities/:id/status", post(set_status_handler))
+        .route("/sources/proposed", post(propose_source_handler))
+        .route(
+            "/sources/proposed/:id/dismiss",
+            post(dismiss_proposal_handler),
+        )
         // CorsLayer stays here rather than in axon_server: it is a per-capability
         // security decision and belongs where it can be seen. It is defensible only
         // because serve_local binds loopback — the browser calling this is on the

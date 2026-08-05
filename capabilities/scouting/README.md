@@ -137,7 +137,13 @@ now genuinely interoperating, not a new default policy.
   is still `GET`.
 - `GET /sources` lists configured `sources[]` entries and the one live-verified built-in
   network source, `euro_hackathons`. The three fixture-only adapters are deliberately not
-  advertised in the dashboard picker.
+  advertised in the dashboard picker. A second array, `proposed`, carries the candidate-source
+  inbox with a derived `declared` flag; a database that is down empties that array rather than
+  taking the declared list with it.
+- `POST /sources/proposed` records a candidate: `adapter` and `locator` required, `label`,
+  `note` and `found_by` optional, the last defaulting to `manual`. It cannot start anything,
+  and the response says so.
+- `POST /sources/proposed/:id/dismiss` takes one out of the inbox for good.
 - `GET /opportunities?include_dismissed=true` returns the persistent ranked backlog,
   including stable ids plus start, end and location evidence used by the explicit
   Calendar promotion in Feed's **Discover** view.
@@ -271,16 +277,51 @@ not noise, and throwing it away to protect the rule above was the overcorrection
 lands disabled, carrying where it came from, and stays inert until a human moves it into
 `sources[]`. Discovery earns a suggestion, never a fetch.
 
-The second half has no implementation yet — the triage surface that would accept a proposal is
-#130. Until it exists, the practical state of this capability is the first half alone, which is
-also exactly what the previous wording said.
+The second half is the `proposed_sources` table plus two routes. A candidate lands with its
+provenance (what found it, when, and any note), shows up under `proposed` in `GET /sources`, and
+sits there. Nothing in this crate can promote it: `create_adapter` is only ever called on
+`Config::sources`, which is read from the overlay file that no code path here writes. Promotion
+is a human copying the entry across.
+
+Three details decide whether the inbox stays worth opening. Identity is the lowercased
+`(adapter, locator)` pair, so noticing the same hub on three runs is one proposal seen three
+times; a re-sighting keeps the original `found_at`, since when it first appeared is the useful
+fact, and refreshes the label and what found it. A dismissal sticks, because re-proposing what
+the operator already refused is how an inbox stops being read. And there is no `promoted`
+status: promotion happens in a file this process cannot write, so a stored status claiming it
+had happened would be this table's opinion rather than a fact. The listing derives `declared`
+instead, by comparing each proposal against the sources configured right now.
+
+Typing a hub id in by hand is a first-class producer, and today it is the only one. Automatic
+discovery is a separate, larger question: a Splash *event* page carries no hub id anywhere in its
+markup, so finding a hub means visiting a hub, which is a search sweep and a rung above this.
 
 The other limit here is unrelated to discovery and stays absolute. Adapter names are a closed
 enum: `sources[].adapter` accepts a fixed set (`obsidian-markdown`,
-`rss`, `luma-calendar` — those three only; anything else is an `UnknownAdapter` error), and
+`rss`, `luma-calendar`, `splash-hub` — those four only; anything else is an `UnknownAdapter`
+error), and
 adding a type means adding an arm to `create_adapter()` in
 `capabilities/scouting/src/sources/mod.rs`. Not a plugin system on purpose: the set of formats
 worth connecting to is small enough that a match arm beats dynamic loading.
+
+`splash-hub` is the same move for Splash That, a white-label event platform of Luma's shape.
+One adapter keyed by hub id covers every brand hosting there, so the declared thing is
+`<host>/<hub_id>` in `url` — same-origin query, so the numeric id alone does not say which host
+answers for it.
+
+Three measured facts shaped the implementation, and each has a test. The date filter is not
+optional: unfiltered, a hub returns its whole history, which for the one this was built against
+is 3015 records and 5.5 MB, 3009 of them already past. Asking for `upcoming` returns about
+10 KB. The `result` field is an object keyed by event id rather than an array, so its keys are
+read and then sorted, because an object has no order and a run that reshuffles its own output
+cannot be diffed. And `end_timestamp` arrives as a number or an empty string within the same
+response, so it is coerced rather than strictly typed; one event with no end time would
+otherwise fail the entire hub.
+
+The record also carries a local wall-time string beside the epoch, and the two differ by the
+venue's offset. The epoch is what this reads; parsing the string as UTC would put every North
+American event on the wrong evening. Yield is honestly small: on 2026-08-05 the hub carried six
+upcoming events, one of them European. Expect empty European sweeps for stretches.
 
 `luma-calendar` is what makes "which Luma calendars do I track" a declaration rather than a
 code change. Each entry names one calendar by its `cal-…` api id in the `url` field; the

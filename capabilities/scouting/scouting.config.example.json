@@ -49,6 +49,13 @@
     },
     {
       "_comment": "One tracked Luma calendar. 'url' is the calendar's cal-… api id, NOT a lu.ma slug — Luma publishes no public slug→id lookup, so the adapter rejects a slug rather than building a URL that 404s. Read the id off any event: `scout --emit-json --adapter luma --location berlin` and look at raw.calendar_api_id. The id below is the public Claude Community Events calendar.",
+      "_comment_splash": "One Splash That brand event hub. Splash is white-label, so this one adapter covers every brand hosting there; 'url' is '<host>/<hub_id>', because the query is same-origin and the numeric id alone does not say which host answers for it. Find the id in the hub page's own XHR (the splash_hub_id parameter) — an event page does not carry it, and a slug is refused rather than guessed at. The adapter always asks for upcoming events: unfiltered, a hub returns its entire history, which for the one this was built against is 3015 records and 5.5 MB.",
+      "id": "arcteryx-community",
+      "adapter": "splash-hub",
+      "url": "community-events.arcteryx.com/142966",
+      "enabled": false
+    },
+    {
       "id": "claude-community",
       "adapter": "luma-calendar",
       "url": "cal-TOpA5LAFfuDeFpu",

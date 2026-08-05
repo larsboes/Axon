@@ -90,9 +90,35 @@ impl Store {
                 cursor TEXT
             );
 
+            -- Somewhere for a candidate source to land. A Splash hub id or a
+            -- `cal-…` noticed mid-run was lost between sessions, because the
+            -- only place a source could exist was the overlay's `sources[]`
+            -- and nothing at runtime may write there.
+            --
+            -- This table cannot make anything run. `create_adapter` is only
+            -- ever called on `Config::sources`, read from the overlay file; a
+            -- row here is inert until a human copies it across. That is the
+            -- whole design: discovery earns a suggestion, never a fetch. See
+            -- the README section on sources being declared, never discovered.
+            --
+            -- `status` borrows comms' word for the same idea one level lower,
+            -- items there and sources here, rather than inventing a second.
+            CREATE TABLE IF NOT EXISTS {schema}.proposed_sources (
+                id TEXT PRIMARY KEY,
+                adapter TEXT NOT NULL,
+                locator TEXT NOT NULL,
+                label TEXT,
+                found_by TEXT NOT NULL,
+                found_at TEXT NOT NULL,
+                note TEXT,
+                status TEXT NOT NULL DEFAULT 'proposed'
+                    CHECK (status IN ('proposed','dismissed'))
+            );
+
             CREATE INDEX IF NOT EXISTS idx_opp_type ON {schema}.opportunities(opportunity_type);
             CREATE INDEX IF NOT EXISTS idx_opp_city ON {schema}.opportunities(city);
             CREATE INDEX IF NOT EXISTS idx_opp_status ON {schema}.opportunities(status);
+            CREATE INDEX IF NOT EXISTS idx_proposed_status ON {schema}.proposed_sources(status);
             "
         ))?;
         // Retrofit for tables that predate a column. `CREATE TABLE IF NOT
@@ -189,6 +215,130 @@ impl Store {
             None => Ok(None),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Proposed sources — the inbox a discovered candidate lands in.
+    //
+    // Nothing here can start a fetch. The only thing that makes a source run is
+    // an entry in the overlay's `sources[]`, which no code path in this crate
+    // writes. A proposal is a note to a human, and the human moves it.
+    // -----------------------------------------------------------------------
+
+    /// Record a candidate source, or refresh the one already recorded for the
+    /// same `(adapter, locator)`.
+    ///
+    /// Identity is the pair, not a generated key: noticing the same Splash hub
+    /// on three separate runs is one proposal seen three times, and an inbox
+    /// that grows a row per sighting is an inbox nobody reads. A re-sighting
+    /// keeps the original `found_at` — when it first showed up is the useful
+    /// fact — and leaves a dismissal dismissed, because re-proposing something
+    /// the operator already said no to is how an inbox stops being trusted.
+    ///
+    /// Returns true when this is the first sighting.
+    pub fn propose_source(
+        &self,
+        adapter: &str,
+        locator: &str,
+        label: Option<&str>,
+        found_by: &str,
+        note: Option<&str>,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        if adapter.trim().is_empty() || locator.trim().is_empty() {
+            return Err("a proposed source needs both an adapter and a locator".into());
+        }
+        if found_by.trim().is_empty() {
+            return Err("a proposed source needs to say what found it".into());
+        }
+        let id = proposed_source_id(adapter, locator);
+        let now = chrono_now();
+        let mut conn = self.conn.lock().unwrap();
+        // `xmax = 0` is Postgres answering "this row is an insert, not an
+        // update" for the row the statement just touched. Comparing the stored
+        // `found_at` to `now` instead looks equivalent and is not: two
+        // sightings inside one second produce the same timestamp string, and
+        // the second one then reports itself as new.
+        let row = conn.query_one(
+            &format!(
+                "INSERT INTO {schema}.proposed_sources
+                     (id, adapter, locator, label, found_by, found_at, note, status)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'proposed')
+                 ON CONFLICT (id) DO UPDATE SET
+                     label    = COALESCE(excluded.label, {schema}.proposed_sources.label),
+                     found_by = excluded.found_by,
+                     note     = COALESCE(excluded.note, {schema}.proposed_sources.note)
+                 RETURNING (xmax = 0) AS inserted",
+                schema = self.schema
+            ),
+            &[
+                &id,
+                &adapter.trim(),
+                &locator.trim(),
+                &label,
+                &found_by.trim(),
+                &now,
+                &note,
+            ],
+        )?;
+        Ok(row.get::<_, bool>("inserted"))
+    }
+
+    /// Every proposal with the given status, newest sighting first.
+    pub fn list_proposed_sources(
+        &self,
+        status: &str,
+    ) -> Result<Vec<ProposedSource>, Box<dyn std::error::Error>> {
+        if !Self::PROPOSAL_STATUSES.contains(&status) {
+            return Err(format!(
+                "invalid proposal status '{status}' -- must be one of: {}",
+                Self::PROPOSAL_STATUSES.join(", ")
+            )
+            .into());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let rows = conn.query(
+            &format!(
+                "SELECT id, adapter, locator, label, found_by, found_at, note, status
+                 FROM {}.proposed_sources WHERE status = $1
+                 ORDER BY found_at DESC, id",
+                self.schema
+            ),
+            &[&status],
+        )?;
+        Ok(rows
+            .iter()
+            .map(|r| ProposedSource {
+                id: r.get(0),
+                adapter: r.get(1),
+                locator: r.get(2),
+                label: r.get(3),
+                found_by: r.get(4),
+                found_at: r.get(5),
+                note: r.get(6),
+                status: r.get(7),
+            })
+            .collect())
+    }
+
+    /// Take a proposal out of the inbox. `Ok(false)` means no such id, which is
+    /// not an error: dismissing something twice is the same wish twice.
+    pub fn dismiss_proposed_source(&self, id: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        let mut conn = self.conn.lock().unwrap();
+        let affected = conn.execute(
+            &format!(
+                "UPDATE {}.proposed_sources SET status = 'dismissed' WHERE id = $1",
+                self.schema
+            ),
+            &[&id],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// Valid proposal statuses. There is deliberately no `promoted`: promotion
+    /// happens in the overlay's config file, which this process cannot write,
+    /// so a status claiming it happened would be this table's opinion rather
+    /// than a fact. `declared` is derived on read instead — see
+    /// `ProposedSource::is_declared_by`.
+    pub const PROPOSAL_STATUSES: [&'static str; 2] = ["proposed", "dismissed"];
 
     pub fn upsert(
         &self,
@@ -370,6 +520,58 @@ pub struct SourceState {
     pub cursor: Option<String>,
 }
 
+/// A candidate source somebody noticed, waiting for a human to decide.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProposedSource {
+    pub id: String,
+    /// Which adapter would read it, if it were ever declared. Not validated
+    /// against `create_adapter`'s arms on the way in: a hub on a platform Axon
+    /// has no adapter for yet is exactly the kind of thing worth remembering,
+    /// and refusing it would throw away the note to write the adapter.
+    pub adapter: String,
+    /// The URL, path or platform id that identifies it.
+    pub locator: String,
+    pub label: Option<String>,
+    /// What found it — a run, a source id, or `manual` when it was typed in.
+    pub found_by: String,
+    pub found_at: String,
+    pub note: Option<String>,
+    pub status: String,
+}
+
+impl ProposedSource {
+    /// Whether a declared source already covers this proposal.
+    ///
+    /// Derived rather than stored, because the fact lives in the overlay's
+    /// config file and this table would only ever hold a stale copy of it. The
+    /// locator is compared to whichever field carries it for that adapter: a
+    /// URL for network sources, the root path for file ones.
+    pub fn is_declared_by(&self, declared: &[crate::sources::SourceManifest]) -> bool {
+        declared.iter().any(|source| {
+            let same_adapter = source.adapter.eq_ignore_ascii_case(&self.adapter);
+            let by_url = source
+                .url
+                .as_deref()
+                .is_some_and(|url| url.eq_ignore_ascii_case(&self.locator));
+            let by_path = source
+                .root_path
+                .as_ref()
+                .is_some_and(|path| path.to_string_lossy() == self.locator);
+            same_adapter && (by_url || by_path)
+        })
+    }
+}
+
+/// Stable id for a candidate: the pair that identifies it, not a counter.
+/// Lowercased so the same hub noticed with different casing is one proposal.
+fn proposed_source_id(adapter: &str, locator: &str) -> String {
+    format!(
+        "{}:{}",
+        adapter.trim().to_lowercase(),
+        locator.trim().to_lowercase()
+    )
+}
+
 fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
@@ -521,6 +723,151 @@ mod tests {
         let matched = store.set_status("evt:does-not-exist", "dismissed").unwrap();
         assert!(!matched, "no row should match a nonexistent id");
 
+    }
+
+    // -----------------------------------------------------------------------
+    // Proposed sources. The invariant under all of these: a proposal is a note
+    // to a human and cannot make anything run.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_proposed_source_lands_in_the_inbox_with_its_provenance() {
+        let (store, _schema) = open_test_store("propose_lands");
+
+        let first = store
+            .propose_source(
+                "splash-hub",
+                "142966",
+                Some("A brand event hub"),
+                "manual",
+                Some("noticed while reading an event page"),
+            )
+            .unwrap();
+        assert!(first, "the first sighting is new");
+
+        let inbox = store.list_proposed_sources("proposed").unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].adapter, "splash-hub");
+        assert_eq!(inbox[0].locator, "142966");
+        assert_eq!(
+            inbox[0].found_by, "manual",
+            "a proposal records what found it, or it is a fact with no origin"
+        );
+        assert!(!inbox[0].found_at.is_empty());
+    }
+
+    /// Seeing the same hub on three runs is one proposal, not three rows.
+    #[test]
+    fn a_second_sighting_updates_rather_than_filling_the_inbox() {
+        let (store, _schema) = open_test_store("propose_resight");
+
+        store
+            .propose_source("splash-hub", "142966", None, "manual", None)
+            .unwrap();
+        let first_seen = store.list_proposed_sources("proposed").unwrap()[0]
+            .found_at
+            .clone();
+
+        let again = store
+            .propose_source("splash-hub", "142966", Some("Now with a name"), "sweep", None)
+            .unwrap();
+        assert!(!again, "the second sighting is not new");
+
+        let inbox = store.list_proposed_sources("proposed").unwrap();
+        assert_eq!(inbox.len(), 1, "one candidate is one row");
+        assert_eq!(inbox[0].label.as_deref(), Some("Now with a name"));
+        assert_eq!(inbox[0].found_by, "sweep", "the latest sighting says so");
+        assert_eq!(
+            inbox[0].found_at, first_seen,
+            "when it first showed up is the fact worth keeping"
+        );
+    }
+
+    #[test]
+    fn casing_does_not_split_one_candidate_into_two() {
+        let (store, _schema) = open_test_store("propose_casing");
+        store
+            .propose_source("luma-calendar", "cal-ABC123", None, "manual", None)
+            .unwrap();
+        store
+            .propose_source("Luma-Calendar", "cal-abc123", None, "manual", None)
+            .unwrap();
+        assert_eq!(store.list_proposed_sources("proposed").unwrap().len(), 1);
+    }
+
+    /// The one that keeps the inbox worth opening.
+    #[test]
+    fn a_dismissed_candidate_does_not_come_back_on_the_next_sighting() {
+        let (store, _schema) = open_test_store("propose_dismiss");
+        store
+            .propose_source("splash-hub", "999", None, "manual", None)
+            .unwrap();
+        assert!(store.dismiss_proposed_source("splash-hub:999").unwrap());
+        assert!(store.list_proposed_sources("proposed").unwrap().is_empty());
+
+        store
+            .propose_source("splash-hub", "999", None, "sweep", None)
+            .unwrap();
+        assert!(
+            store.list_proposed_sources("proposed").unwrap().is_empty(),
+            "re-proposing what the operator refused is how an inbox stops being read"
+        );
+        assert_eq!(store.list_proposed_sources("dismissed").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn dismissing_something_that_is_not_there_is_not_an_error() {
+        let (store, _schema) = open_test_store("propose_dismiss_missing");
+        assert!(!store.dismiss_proposed_source("splash-hub:nope").unwrap());
+    }
+
+    #[test]
+    fn a_proposal_with_no_origin_or_no_locator_is_refused() {
+        let (store, _schema) = open_test_store("propose_incomplete");
+        assert!(store
+            .propose_source("splash-hub", "", None, "manual", None)
+            .is_err());
+        assert!(store
+            .propose_source("", "142966", None, "manual", None)
+            .is_err());
+        assert!(store
+            .propose_source("splash-hub", "142966", None, "  ", None)
+            .is_err());
+    }
+
+    #[test]
+    fn an_unknown_status_is_an_error_rather_than_an_empty_list() {
+        let (store, _schema) = open_test_store("propose_bad_status");
+        assert!(store.list_proposed_sources("promoted").is_err());
+    }
+
+    /// Promotion is a human editing the overlay. The table never claims it
+    /// happened; the listing derives it from what is actually declared.
+    #[test]
+    fn a_proposal_knows_when_a_declared_source_already_covers_it() {
+        use crate::sources::SourceEntry;
+
+        let declared: Vec<crate::sources::SourceManifest> = serde_json::from_value::<Vec<SourceEntry>>(
+            serde_json::json!([
+                { "id": "claude-community", "adapter": "luma-calendar", "url": "cal-TOpA5LAFfuDeFpu" }
+            ]),
+        )
+        .unwrap()
+        .iter()
+        .map(SourceEntry::resolve)
+        .collect();
+
+        let (store, _schema) = open_test_store("propose_declared");
+        store
+            .propose_source("luma-calendar", "cal-TOpA5LAFfuDeFpu", None, "manual", None)
+            .unwrap();
+        store
+            .propose_source("luma-calendar", "cal-somethingelse", None, "manual", None)
+            .unwrap();
+
+        let inbox = store.list_proposed_sources("proposed").unwrap();
+        let covered: Vec<bool> = inbox.iter().map(|p| p.is_declared_by(&declared)).collect();
+        assert_eq!(covered.iter().filter(|c| **c).count(), 1);
     }
 
     #[test]

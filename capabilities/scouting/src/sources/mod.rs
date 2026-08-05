@@ -12,6 +12,8 @@
 //!   - `obsidian-markdown` — reads markdown event files from a vault directory
 //!   - `rss` — any RSS/Atom feed
 //!   - `luma-calendar` — one Luma calendar's future events, by `cal-…` api id
+//!   - `splash-hub` — one Splash That brand event hub's upcoming events, by
+//!     `<host>/<hub_id>`; white-label, so one adapter covers every brand there
 //!
 //! Adding a new adapter type: add an arm to `create_adapter()`, implement `SourceAdapter`,
 //! register the module. That's it — no changes to `main.rs`, `server.rs`, or the pipeline.
@@ -185,7 +187,9 @@ impl SourceManifest {
 /// Errors that can occur when constructing a source adapter from a manifest.
 #[derive(Debug, thiserror::Error)]
 pub enum SourceFactoryError {
-    #[error("unknown adapter type '{0}' — valid types: obsidian-markdown, rss, luma-calendar")]
+    #[error(
+        "unknown adapter type '{0}' — valid types: obsidian-markdown, rss, luma-calendar, splash-hub"
+    )]
     UnknownAdapter(String),
     #[error("obsidian-markdown adapter: {0}")]
     ObsidianMd(String),
@@ -257,6 +261,25 @@ pub fn create_adapter(
                     detail: e.to_string(),
                 }
             })?;
+            Ok(Box::new(adapter.with_source_id(manifest.id.clone())))
+        }
+        // One adapter covers every brand on Splash That, because the platform
+        // is white-label and the hub id is the whole address. `url` carries
+        // `<host>/<hub_id>`: the query is same-origin, so the id alone does not
+        // say which host answers for it.
+        "splash-hub" => {
+            let locator = manifest
+                .url
+                .clone()
+                .ok_or_else(|| SourceFactoryError::Config {
+                    id: manifest.id.clone(),
+                    detail: "splash-hub adapter requires 'url' set to '<host>/<hub_id>'".into(),
+                })?;
+            let adapter = crate::adapters::splash_hub::SplashHubAdapter::for_hub(&locator)
+                .map_err(|detail| SourceFactoryError::Config {
+                    id: manifest.id.clone(),
+                    detail,
+                })?;
             Ok(Box::new(adapter.with_source_id(manifest.id.clone())))
         }
         other => Err(SourceFactoryError::UnknownAdapter(other.into())),

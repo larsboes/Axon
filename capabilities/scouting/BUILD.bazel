@@ -54,6 +54,25 @@ rust_test(
     size = "small",
 )
 
+# The seam the unit tests cannot reach: a declared source entry becoming an
+# adapter, its glob becoming files, and those files becoming scored
+# opportunities against a real directory tree (Axon-archive#22). A separate
+# target rather than a `crate` test because it links the library from outside,
+# the way a caller does.
+#
+# Hermetic: the suite points AXON_PERSONAL_ROOT at an empty temp dir so no
+# `embedding` role resolves and the scorer hashes instead of reaching a model
+# server. Every fixture is written and removed by the test.
+rust_test(
+    name = "scouting_integration_test",
+    srcs = ["tests/integration.rs"],
+    size = "small",
+    deps = [
+        ":scouting",
+        "@crate_index//:serde_json",
+    ],
+)
+
 rust_binary(
     name = "scout",
     srcs = ["src/main.rs"],
