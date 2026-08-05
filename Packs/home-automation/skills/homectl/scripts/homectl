@@ -97,6 +97,7 @@ DEF_COMPONENTS = DEF_CAPS / "components.toml"
 DEF_HA_CONFIG = AXON_HOME_ROOT / "config/home-assistant"
 DEF_DEST = DEF_HA_CONFIG / "custom_components"
 DEF_PACKAGES_DEST = DEF_HA_CONFIG / "integrations"  # HA packages: !include_dir_named integrations
+DEF_WWW_DEST = DEF_HA_CONFIG / "www"  # served at /local/<file>; a dashboard resource points here
 
 # A %%token%%: optional LIST:/JSON: kind prefix + an UPPER_SNAKE name.
 TOKEN_RE = re.compile(r"%%(?:(LIST|JSON):)?([A-Z0-9_]+)%%")
@@ -356,8 +357,15 @@ def _swap_in(src: Path, dest: Path) -> None:
 def cmd_components(args) -> int:
     comp_path = Path(args.components)
     # `kind` picks the destination. A Python integration lands in custom_components/<name>/;
-    # a YAML package is one file that HA loads via `packages: !include_dir_named integrations`.
-    dest_by_kind = {"component": Path(args.dest), "package": Path(args.packages_dest)}
+    # a YAML package is one file that HA loads via `packages: !include_dir_named integrations`;
+    # a Lovelace resource is one JS file in www/, which HA serves at /local/ for a dashboard to
+    # load. All three answer the same question — which external code runs in this HA, at which
+    # ref — so a frontend resource belongs in this manifest and not in a separate installer.
+    dest_by_kind = {
+        "component": Path(args.dest),
+        "package": Path(args.packages_dest),
+        "lovelace": Path(args.www_dest),
+    }
     with comp_path.open("rb") as fh:
         manifest = tomllib.load(fh)
 
@@ -376,7 +384,8 @@ def cmd_components(args) -> int:
         repo, ref = entry.get("repo"), entry.get("ref")
         kind = entry.get("kind", "component")
         if kind not in dest_by_kind:
-            print(f"[{name}] error: unknown kind={kind!r} — expected 'component' or 'package'", file=sys.stderr)
+            print(f"[{name}] error: unknown kind={kind!r} — expected one of "
+                  f"{', '.join(repr(k) for k in dest_by_kind)}", file=sys.stderr)
             ok = False
             continue
         if not repo or not ref:
@@ -386,8 +395,9 @@ def cmd_components(args) -> int:
             print(f"[{name}] warning: repo=UNTRACED (upstream not traced) — skipped", file=sys.stderr)
             continue
         rel = entry.get("file")
-        if kind == "package" and not rel:
-            print(f"[{name}] error: kind='package' needs `file` — the YAML package inside the repo", file=sys.stderr)
+        if kind in ("package", "lovelace") and not rel:
+            what = "the YAML package" if kind == "package" else "the built JS file"
+            print(f"[{name}] error: kind={kind!r} needs `file` — {what} inside the repo", file=sys.stderr)
             ok = False
             continue
 
@@ -529,11 +539,13 @@ def main() -> int:
                    help=f"output dir — instance/build, NEVER public Axon (default: {DEF_OUT})")
     m.set_defaults(func=cmd_materialize)
 
-    c = sub.add_parser("components", help="clone + vendor pinned custom components and YAML packages (build-time)")
+    c = sub.add_parser("components", help="clone + vendor pinned components, YAML packages and dashboard resources (build-time)")
     c.add_argument("--components", default=str(DEF_COMPONENTS), help=f"components.toml (default: {DEF_COMPONENTS})")
     c.add_argument("--dest", default=str(DEF_DEST), help=f"custom_components dir (default: {DEF_DEST})")
     c.add_argument("--packages-dest", default=str(DEF_PACKAGES_DEST),
                    help=f"HA packages dir for kind='package' (default: {DEF_PACKAGES_DEST})")
+    c.add_argument("--www-dest", default=str(DEF_WWW_DEST),
+                   help=f"www dir for kind='lovelace' (default: {DEF_WWW_DEST})")
     c.add_argument("--only", action="append", metavar="NAME",
                    help="vendor just this entry (repeatable). Default: every entry.")
     c.add_argument("--dry-run", action="store_true",
