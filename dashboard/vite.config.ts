@@ -12,8 +12,26 @@ import {
 
 const AXON_ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const port = Number(process.env.AXON_PORT ?? 47117);
+// What every visitor downloads before interacting with anything.
 const APP_BUNDLE_LIMIT_BYTES = 500_000;
-const MAPLIBRE_BUNDLE_LIMIT_BYTES = 1_100_000;
+// A chunk nobody can reach without a dynamic import is not application weight, but it is
+// still weight. Capped separately and higher: a diagram renderer is legitimately large, and
+// what this guards against is one arriving unnoticed rather than one existing at all.
+const LAZY_CHUNK_LIMIT_BYTES = 1_200_000;
+// Renderers heavy enough that reaching the eager graph would be a regression nobody notices
+// until every page is slow. One row per library rather than a second copy of the rule.
+//
+// `total` bounds the library across every chunk Rollup splits it into, measured with ~5%
+// headroom so an upstream bump that doubles something has to be looked at. It is a
+// footprint bound, not a per-load one, and the two differ by a lot for Mermaid: MapLibre
+// arrives as one real chunk of 1.05 MB, while Mermaid self-splits by diagram type across 52
+// chunks totalling 2.57 MB, of which a reader pulls the ~1.3 MB core plus only the diagram
+// types actually on the page. What bounds any single download is LAZY_CHUNK_LIMIT_BYTES
+// above; this bounds the library growing while nobody is watching.
+const LAZY_VENDORS = [
+  { label: "MapLibre", match: ["/maplibre-gl/"], total: 1_100_000 },
+  { label: "Mermaid", match: ["/mermaid/", "/@mermaid-js/"], total: 2_700_000 },
+];
 
 interface RegistryEntry {
   name: string;
@@ -24,33 +42,75 @@ interface RegistryEntry {
   proxy_api_only: string;
 }
 
-function maplibreBundleGuard(): Plugin {
+// Lazy is a property of the import graph, not of a flag.
+//
+// This guard used to ask `chunk.isDynamicEntry`, and measure every chunk that was not
+// MapLibre against the application limit. Both are wrong in the same direction, and adding
+// Mermaid is what exposed it: `isDynamicEntry` is true only for a chunk that IS the target
+// of a dynamic import, so a shared chunk Rollup splits OUT of one comes back false while
+// still being unreachable without it. Mermaid produced exactly that -- three chunks totalling
+// 2.2 MB, none of them reachable from an entry, all of them failing a limit named for the
+// application. The lazy loading was correct; the measurement was not.
+//
+// So reachability is computed rather than asked for: walk `imports` from each entry chunk
+// and never follow `dynamicImports`, because not following one is the entire point. What the
+// walk reaches is what every visitor downloads, and that is what the application limit is
+// about. Everything else is bounded too, just at a size a renderer can actually be.
+function bundleGuard(): Plugin {
   return {
-    name: "maplibre-bundle-guard",
+    name: "bundle-guard",
     generateBundle(_options, bundle) {
-      const chunks = [];
+      const eager = new Set<string>();
+      const walk = (fileName: string) => {
+        if (eager.has(fileName)) return;
+        const chunk = bundle[fileName];
+        if (!chunk || chunk.type !== "chunk") return;
+        eager.add(fileName);
+        for (const dep of chunk.imports) walk(dep);
+      };
       for (const output of Object.values(bundle)) {
-        if (output.type !== "chunk") continue;
-        if (Object.keys(output.modules).some((id) => id.includes("/maplibre-gl/"))) {
-          chunks.push(output);
-        } else if (Buffer.byteLength(output.code) > APP_BUNDLE_LIMIT_BYTES) {
+        if (output.type === "chunk" && output.isEntry) walk(output.fileName);
+      }
+
+      const allChunks = Object.values(bundle).flatMap((output) =>
+        output.type === "chunk" ? [output] : [],
+      );
+      const sizeOf = (chunk: (typeof allChunks)[number]) => Buffer.byteLength(chunk.code);
+
+      for (const chunk of allChunks) {
+        const isEager = eager.has(chunk.fileName);
+        const limit = isEager ? APP_BUNDLE_LIMIT_BYTES : LAZY_CHUNK_LIMIT_BYTES;
+        const bytes = sizeOf(chunk);
+        if (bytes > limit) {
           this.error(
-            `${output.fileName} exceeds the ${APP_BUNDLE_LIMIT_BYTES}-byte application limit.`,
+            `${chunk.fileName} is ${bytes} bytes; the limit for a ` +
+              `${isEager ? "statically reachable" : "lazy"} chunk is ${limit}.`,
           );
         }
       }
-      if (chunks.length === 0) return;
 
-      const eagerChunk = chunks.find((chunk) => !chunk.isDynamicEntry);
-      if (eagerChunk) {
-        this.error(`MapLibre must remain lazy; ${eagerChunk.fileName} is not a dynamic entry.`);
-      }
-
-      const bytes = chunks.reduce((total, chunk) => total + Buffer.byteLength(chunk.code), 0);
-      if (bytes > MAPLIBRE_BUNDLE_LIMIT_BYTES) {
-        this.error(
-          `MapLibre bundles total ${bytes} bytes; the limit is ${MAPLIBRE_BUNDLE_LIMIT_BYTES}.`,
+      for (const vendor of LAZY_VENDORS) {
+        const owned = allChunks.filter((chunk) =>
+          Object.keys(chunk.modules).some((id) =>
+            vendor.match.some((fragment) => id.includes(fragment)),
+          ),
         );
+        if (owned.length === 0) continue;
+
+        const leaked = owned.find((chunk) => eager.has(chunk.fileName));
+        if (leaked) {
+          this.error(
+            `${vendor.label} must remain lazy; ${leaked.fileName} is reachable from an entry ` +
+              `without a dynamic import.`,
+          );
+        }
+
+        const bytes = owned.reduce((total, chunk) => total + sizeOf(chunk), 0);
+        if (bytes > vendor.total) {
+          this.error(
+            `${vendor.label} bundles total ${bytes} bytes; the limit is ${vendor.total}.`,
+          );
+        }
       }
     },
   };
@@ -170,7 +230,7 @@ function guardCommsMutations(
 // table, and — under Bazel — neither the script nor the manifests in its sandbox.
 // Evaluating it at config load was what kept this app out of the build graph.
 export default defineConfig(({ command }) => ({
-  plugins: [sveltekit(), maplibreBundleGuard(), {
+  plugins: [sveltekit(), bundleGuard(), {
     name: "top-processes",
     configureServer(server) {
       server.middlewares.use(guardCommsMutations);
@@ -185,8 +245,10 @@ export default defineConfig(({ command }) => ({
   },
   preview: { host: "127.0.0.1", port, strictPort: true },
   build: {
-    // The plugin keeps ordinary chunks at Vite's default budget and gives only the
-    // separately guarded async map module its measured allowance.
-    chunkSizeWarningLimit: MAPLIBRE_BUNDLE_LIMIT_BYTES / 1000,
+    // Vite's own warning, silenced up to the largest size bundleGuard() will actually
+    // allow — otherwise it fires on every lazy renderer chunk the guard has already
+    // measured and accepted, and a warning that is always on is one nobody reads.
+    // The guard, not this number, is what fails a build.
+    chunkSizeWarningLimit: LAZY_CHUNK_LIMIT_BYTES / 1000,
   },
 }));
