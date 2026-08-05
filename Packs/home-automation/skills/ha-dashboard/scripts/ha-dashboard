@@ -420,6 +420,52 @@ def cmd_resources(args) -> int:
     return 0
 
 
+def _restored(ws) -> dict:
+    """entity_id -> friendly name, for every entity the registry still lists but no integration
+    provides. HA marks exactly these with attributes.restored, which is the only reliable way to
+    tell a dead registry row from an entity that is merely offline right now."""
+    states = require_result(ws.command({"type": "get_states"}), "get_states") or []
+    return {
+        s["entity_id"]: (s.get("attributes", {}).get("friendly_name") or s["entity_id"])
+        for s in states
+        if s.get("attributes", {}).get("restored") is True
+    }
+
+
+def cmd_entities(args) -> int:
+    ws = ws_client()
+    try:
+        ghosts = _restored(ws)
+        if not args.remove:
+            if args.json:
+                print(json.dumps(ghosts, ensure_ascii=False, indent=2))
+                return 0
+            by_domain: dict[str, list[tuple[str, str]]] = {}
+            for eid, name in sorted(ghosts.items()):
+                by_domain.setdefault(eid.split(".")[0], []).append((eid, name))
+            for domain, rows in sorted(by_domain.items()):
+                print(f"  {domain} ({len(rows)})")
+                for eid, name in rows:
+                    print(f"    {eid:<52} {name}")
+            print(f"  ---- {len(ghosts)} restored entit{'y' if len(ghosts) == 1 else 'ies'}")
+            return 0
+        # An entity that is merely offline looks identical in the UI and deleting it throws away
+        # a live registry row — its history, its area, its custom name. Refuse rather than warn.
+        live = [e for e in args.remove if e not in ghosts]
+        if live:
+            die("refusing to remove entities that are not restored (an integration still "
+                f"provides them): {', '.join(live)}")
+        for eid in args.remove:
+            require_result(
+                ws.command({"type": "config/entity_registry/remove", "entity_id": eid}),
+                f"entity_registry/remove {eid}",
+            )
+            print(f"Removed {eid}  ({ghosts[eid]})")
+    finally:
+        ws.close()
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="ha-dashboard",
@@ -452,6 +498,12 @@ def main() -> int:
     rs.add_argument("--type", default="module", choices=("module", "css"), help="resource type (default: module)")
     rs.add_argument("--json", "-j", action="store_true")
     rs.set_defaults(fn=cmd_resources)
+
+    en = sub.add_parser("entities", help="list registry ghosts (restored entities), or remove them")
+    en.add_argument("--remove", nargs="+", metavar="ENTITY_ID",
+                    help="delete these registry entries; refuses anything not restored")
+    en.add_argument("--json", "-j", action="store_true")
+    en.set_defaults(fn=cmd_entities)
 
     args = p.parse_args()
     try:
