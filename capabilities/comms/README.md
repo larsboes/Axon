@@ -362,11 +362,18 @@ three misses plus a 2007 paper, with real body text. It is labs-grade, so it is
 the fallback and never the first request.
 
 What is left after both is papers with no LaTeX source at all, scans and
-PDF-only submissions, mostly old. Those fall through to a PDF attempt that is
-unreachable today because nothing is registered for the class; registering
-xberg (#77, pin `1.0.5`, cooldown to 2026-08-06) closes that remainder without
-changing a caller. Failing all three, the abstract is stored. No raw PDF is
-persisted.
+PDF-only submissions, mostly old. Those fall through to the PDF, read by
+[xberg](https://github.com/xberg-io/xberg) `=1.0.5` behind the same trait
+(#77). Failing all three, the abstract is stored. No raw PDF is persisted.
+
+**The PDF rung is last for a measured reason.** On arXiv 2608.02599 (2026,
+two-column) xberg returns correct text in the wrong reading order, columns
+interleaved line by line. On arXiv 0704.0001 (2007, Type1 fonts) it drops
+every `c`: "Abstrat", "Mihigan", "quantum hromo dynamis", in 11.7s against
+0.3s for the same paper as HTML. Degraded full text still beats an abstract
+for retrieval, and it is worse evidence than LaTeXML output, so the item
+records which extractor produced it rather than leaving the two
+indistinguishable.
 
 Which route ran is recorded per item as `transcript_source` (`full-text` |
 `abstract` | `unknown` for rows predating the distinction).

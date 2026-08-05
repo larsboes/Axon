@@ -1523,19 +1523,19 @@ mod tests {
     }
 
     #[test]
-    fn the_arxiv_pdf_attempt_costs_no_request_until_something_reads_pdfs() {
-        // The PDF half is the fallback's fallback, for papers with no
-        // LaTeX-derived HTML. It consults the registry before fetching, so
-        // while nothing reads PDFs it costs nothing. When xberg registers
-        // (#77) this assertion is what says the behaviour changed.
+    fn the_arxiv_chain_has_a_reader_at_every_rung() {
+        // The three rungs of `arxiv_full_text`, asserted as a set rather than
+        // by walking them: the two HTML hosts share one reader, and the PDF
+        // rung stopped being unreachable when xberg registered (#77).
+        assert_eq!(ARXIV_HTML_HOSTS.len(), 2);
+        assert!(ARXIV_HTML_HOSTS[0].contains("arxiv.org"));
+        assert!(ARXIV_HTML_HOSTS[1].contains("ar5iv"));
+        assert!(extraction::for_class(InputClass::Html).is_some());
         assert!(
-            extraction::for_class(InputClass::Pdf).is_none(),
-            "a PDF extractor is registered — arxiv_pdf now fetches, and papers \
-             without HTML should be returning FullText"
+            extraction::for_class(InputClass::Pdf).is_some(),
+            "no PDF reader: papers with no LaTeX source would silently store \
+             their abstract, which is the state #78 existed to end"
         );
-
-        let http = http_client().unwrap();
-        assert_eq!(arxiv_pdf(&http, "2501.00001"), None);
     }
 
     #[test]
