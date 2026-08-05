@@ -263,6 +263,9 @@ pub struct StoredDigest {
     pub diagram: Option<String>,
     pub diagram_state: Option<String>,
     pub diagram_error: Option<String>,
+    pub chart: Option<String>,
+    pub chart_state: Option<String>,
+    pub chart_error: Option<String>,
     pub generated_at: String,
 }
 
@@ -598,9 +601,31 @@ impl Store {
                 diagram_state TEXT,
                 diagram_error TEXT,
                 diagram_producer TEXT,
+                -- The extracted table, as chart-data JSON. Not a Vega-Lite
+                -- spec: the reader compiles one, which is what keeps the model
+                -- out of the rendering layer. Every value in here appeared
+                -- verbatim in the source -- see libs/summarize/src/chart.rs.
+                chart TEXT,
+                chart_state TEXT,
+                chart_error TEXT,
+                chart_producer TEXT,
                 generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 PRIMARY KEY (source, item_id)
             );
+
+            -- Added after content_digests first shipped. `CREATE TABLE IF NOT
+            -- EXISTS` above never touches an installed table, so the block
+            -- alone works on a fresh database and silently leaves every
+            -- existing one without these columns -- the same trap the
+            -- feed_items `kind` constraint documents (README.md#schema).
+            ALTER TABLE {schema}.content_digests
+                ADD COLUMN IF NOT EXISTS chart TEXT;
+            ALTER TABLE {schema}.content_digests
+                ADD COLUMN IF NOT EXISTS chart_state TEXT;
+            ALTER TABLE {schema}.content_digests
+                ADD COLUMN IF NOT EXISTS chart_error TEXT;
+            ALTER TABLE {schema}.content_digests
+                ADD COLUMN IF NOT EXISTS chart_producer TEXT;
 
             -- A human-approved derivative is staged locally before a cloud job
             -- can consume it. Staging has no provider identity or side effect.
@@ -1768,7 +1793,8 @@ impl Store {
             &format!(
                 "SELECT source, item_id, text, state, shape, depth, focus, producer,
                         source_chars, redactions, attempts, last_error,
-                        diagram, diagram_state, diagram_error, generated_at::text
+                        diagram, diagram_state, diagram_error,
+                        chart, chart_state, chart_error, generated_at::text
                  FROM {}.content_digests
                  WHERE source = $1 AND item_id = $2",
                 self.schema
@@ -1791,7 +1817,10 @@ impl Store {
             diagram: row.get(12),
             diagram_state: row.get(13),
             diagram_error: row.get(14),
-            generated_at: row.get(15),
+            chart: row.get(15),
+            chart_state: row.get(16),
+            chart_error: row.get(17),
+            generated_at: row.get(18),
         }))
     }
 
@@ -1866,6 +1895,32 @@ impl Store {
                 self.schema
             ),
             &[&source, &item_id, &diagram, &state, &error, &producer],
+        )?;
+        Ok(updated)
+    }
+
+    /// Attach or clear the extracted chart table beside an existing digest.
+    ///
+    /// Its own press, like the diagram: regenerating a digest must not discard
+    /// a figure the operator already asked for.
+    pub fn update_content_chart(
+        &self,
+        source: &str,
+        item_id: &str,
+        chart: Option<&str>,
+        state: &str,
+        error: Option<&str>,
+        producer: &str,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let mut conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            &format!(
+                "UPDATE {}.content_digests
+                    SET chart = $3, chart_state = $4, chart_error = $5, chart_producer = $6
+                  WHERE source = $1 AND item_id = $2",
+                self.schema
+            ),
+            &[&source, &item_id, &chart, &state, &error, &producer],
         )?;
         Ok(updated)
     }
@@ -4920,6 +4975,9 @@ mod tests {
             diagram: None,
             diagram_state: None,
             diagram_error: None,
+            chart: None,
+            chart_state: None,
+            chart_error: None,
             generated_at: String::new(),
         }
     }

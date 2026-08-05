@@ -175,6 +175,37 @@ cheerfully answer with prose, and prose in a diagram column fails at the reader,
 hardest place to work out what went wrong. Same remote refusal as the digest, because a diagram
 of a private mail is still that mail.
 
+### Charts, and why a number has to be findable
+
+`POST /content/:source/:id/chart` pulls one set of comparable numbers out of the item's source
+and stores it as a table. Most content has none, and that comes back as `skipped_short` rather
+than an error: a reader that showed a failure for every ordinary essay would train you to stop
+reading the state.
+
+**The blocker was never rendering.** A feed item is prose, so "chart this" is an extraction
+problem, and extraction has one failure mode that matters: a model asked for numbers produces
+plausible ones. Every value therefore has to appear **verbatim in the source** before it is
+allowed into a figure. That gate is deterministic, not a second model grading the first, and it
+runs against the same capped text the model was shown — claiming a number is present because it
+sits in text the model never saw would make the check a formality. Rows that fail are dropped;
+if too few survive, the whole extraction is refused with a count of what could not be found.
+
+**One measure, one series.** The figure palette is the low-chroma print palette the operator's
+papers use. Run it through a categorical-separation check and even two of its hues fail: `warm_dark`
+against `teal_dark` is ΔE 9.7 for *normal* vision, under the 15 floor, before colour-vision
+deficiency is considered. It cannot carry identity, so a chart drawn from it must not need to.
+That is also what prose actually yields.
+
+**The form is derived, not chosen.** No second model call picks a chart type: an ordered run of
+three or more categories gets a line, everything else bars. One less model output to validate,
+and the same answer every time.
+
+What is stored is a **table, not a chart specification**. The dashboard compiles it into
+Vega-Lite, so transforms, data URLs and the palette stay out of a model's reach; the model
+chooses the numbers and, indirectly, the mark, and nothing else. The figure ships with its
+caption and a disclosure holding the extracted values, because an extracted number is a claim
+about a source and the table is where you check it.
+
 Calendar entries are digested through the same routes. Comms reads one entry over Calendar's own
 `content-item-v1` contract — the bounded cross-capability read it already does against Trips —
 rather than opening a second capability's database schema.
@@ -486,6 +517,9 @@ contract consumed by a dashboard panel:
 - `POST /content/:source/:id/diagram` → one validated Mermaid diagram, drawn from the digest
   when there is one. A model answer that is not a diagram is a typed rejection, not a stored
   string.
+- `POST /content/:source/:id/chart` → extract one set of comparable numbers as a table, every
+  value verified verbatim against the source. `skipped_short` when the content holds none, which
+  is the answer for most prose.
 - `POST /content/digests/refresh` `{"source":"mail"|"feed","limit":25}` → the bounded automatic
   pass over items with no digest, a stale producer, or a retryable failure with attempts left.
   It never touches a row an operator refined.
@@ -649,7 +683,8 @@ the DB connection string is redacted before any display.
   silently reject the new kinds on every existing one.
 - `content_digests` — one row per `(source, item_id)`: the generated text, its state, the rung
   and depth that produced it, the operator's focus terms, the producer, how much source was
-  measured, the redaction count, the retry ledger and the Mermaid columns. One table rather than
+  measured, the redaction count, the retry ledger, the Mermaid columns and the extracted chart
+  table. One table rather than
   a column on each item table: a digest is derived data with the same axes everywhere, so three
   migrations would buy only drift. **No raw source is kept here** — a mail body is fetched,
   digested and dropped inside one call, and this row is all that survives it.

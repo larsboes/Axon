@@ -112,6 +112,15 @@ pub struct Digest {
     pub diagram: Option<String>,
     pub diagram_state: Option<String>,
     pub diagram_error: Option<String>,
+    /// The chartable table pulled out of the source, as `chart-data` JSON, or
+    /// null. Not a chart *spec*: the reader compiles one, so the model never
+    /// reaches the rendering layer. Every value in it appeared verbatim in the
+    /// source text before it was allowed in.
+    pub chart: Option<Value>,
+    /// `generated` · `skipped_short` (no comparable numbers, the answer for most
+    /// prose) · a failure class.
+    pub chart_state: Option<String>,
+    pub chart_error: Option<String>,
     pub generated_at: String,
 }
 
@@ -668,6 +677,9 @@ mod tests {
             diagram: None,
             diagram_state: None,
             diagram_error: None,
+            chart: None,
+            chart_state: None,
+            chart_error: None,
             generated_at: "2026-08-05T12:00:00Z".into(),
         });
         let value = serde_json::to_value(&item).unwrap();
@@ -698,6 +710,9 @@ mod tests {
             diagram: None,
             diagram_state: None,
             diagram_error: None,
+            chart: None,
+            chart_state: None,
+            chart_error: None,
             generated_at: "2026-08-05T12:00:00Z".into(),
         });
         let value = serde_json::to_value(&item).unwrap();

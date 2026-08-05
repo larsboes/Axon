@@ -50,6 +50,10 @@ rust_library(
         # The adaptive digest engine: the length ladder, the prompt and the
         # Mermaid gate, shared with calendar rather than living in media.rs.
         "//libs/summarize:src/lib.rs",
+        # Named separately because a label cannot glob across a package
+        # boundary: lib.rs declares `mod chart`, so leaving this out fails the
+        # sandboxed build while `cargo` succeeds.
+        "//libs/summarize:src/chart.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],

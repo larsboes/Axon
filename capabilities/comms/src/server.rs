@@ -80,6 +80,11 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r(
         "POST",
+        "/content/:source/:id/chart",
+        "Extract a chartable table, every value verified against the source.",
+    ),
+    r(
+        "POST",
         "/content/digests/refresh",
         "Bounded automatic pass over one source. Requires source, optional limit.",
     ),
@@ -1071,6 +1076,23 @@ async fn diagram_handler(Path((source, id)): Path<(String, String)>) -> (StatusC
     })
     .await;
     digest_response(result, "diagram failed")
+}
+
+/// Pull a chartable table out of an item.
+///
+/// Most content has none, and that comes back as `skipped_short` rather than an
+/// error: a reader that showed a failure for every ordinary blog post would
+/// train the operator to stop reading the state.
+async fn chart_handler(Path((source, id)): Path<(String, String)>) -> (StatusCode, Json<Value>) {
+    let result = tokio::task::spawn_blocking(move || {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        digest::generate_chart(&store, &cfg, &source, &id)
+            .map(|row| row.as_ref().map(digest::to_contract))
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    digest_response(result, "chart failed")
 }
 
 fn digest_response(
@@ -3425,6 +3447,7 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
     let write_routes = Router::new()
         .route("/content/:source/:id/digest", post(digest_handler))
         .route("/content/:source/:id/diagram", post(diagram_handler))
+        .route("/content/:source/:id/chart", post(chart_handler))
         .route("/content/digests/refresh", post(digest_refresh_handler))
         .route(
             "/content/:source/:id/cloud-preview",

@@ -31,6 +31,12 @@
 //! `libs/inference`'s types: a consumer builds a [`Target`] from whatever it
 //! resolved, so a capability that has no inference module still compiles.
 
+// Non-inline submodule: rustc resolves it against this file's own directory,
+// which holds under the `#[path]` include too. Bazel globs `src/**/*.rs`, but a
+// consumer naming this lib's sources by label has to name both files.
+#[path = "chart.rs"]
+pub mod chart;
+
 use std::time::Duration;
 
 /// Bump with any change to [`digest_prompt`] or the shape ladder. It is part of
@@ -466,7 +472,7 @@ pub fn diagram(target: Option<&Target>, text: &str, allow_remote: bool) -> Outco
 
 /// One OpenAI-compatible chat completion. The only place in this lib that
 /// speaks HTTP.
-fn complete(target: &Target, prompt: &str, max_tokens: u32) -> Outcome {
+pub(crate) fn complete(target: &Target, prompt: &str, max_tokens: u32) -> Outcome {
     let http = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()

@@ -980,7 +980,31 @@ export interface ContentDigest {
   diagram: string | null;
   diagram_state: string | null;
   diagram_error: string | null;
+  /** The table pulled out of the source, or null. Deliberately data rather than
+   *  a chart specification: the reader compiles one, so a model never reaches
+   *  the rendering layer. Every value appeared verbatim in the source text
+   *  before it was admitted. */
+  chart: ContentChartData | null;
+  /** `generated`, or `skipped_short` when the source holds no comparable
+   *  numbers — the answer for most prose, and not a failure. */
+  chart_state: string | null;
+  chart_error: string | null;
   generated_at: string;
+}
+
+/** One measure over a handful of categories. One series is the maximum by
+ *  design: the figure palette is a low-chroma print palette that cannot carry
+ *  categorical identity, so a chart drawn from it must not need to. */
+export interface ContentChartData {
+  title: string;
+  category_label: string;
+  measure_label: string;
+  unit: string | null;
+  /** Derived from the categories, never chosen by a model: an ordered run of
+   *  three or more gets a line, everything else bars. */
+  mark: "bar" | "line";
+  note: string;
+  rows: { category: string; value: number }[];
 }
 
 /** A named way out of an item: source page, the mail that carried the ticket,
@@ -1579,6 +1603,11 @@ export const comms = {
     request<ContentDigest>(
       `/comms/content/${source}/${encodeURIComponent(id)}/digest`,
       jsonInit('POST', body),
+    ),
+  chart: (source: ContentSource, id: string) =>
+    request<ContentDigest>(
+      `/comms/content/${source}/${encodeURIComponent(id)}/chart`,
+      { method: 'POST' },
     ),
   diagram: (source: ContentSource, id: string) =>
     request<ContentDigest>(

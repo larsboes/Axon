@@ -68,6 +68,29 @@ to start with one of twelve known Mermaid headers. Anything else is a typed reje
 Unrenderable text stored in a diagram column fails at the reader, which is the hardest place
 to work out what went wrong.
 
+## Charts: the gate is the feature
+
+`chart.rs` pulls one set of comparable numbers out of prose. The interesting part is not the
+extraction, it is the refusal: **every value must appear verbatim in the source** before it
+reaches a figure. `value_appears_in` tries the renderings prose actually uses — the plain
+decimal, the German decimal comma, the bare integer, thousands separators both ways — and a
+number it cannot find is dropped. Conservative on purpose: a real value written in some form
+not listed costs one row, while the opposite mistake puts an invented number in a chart.
+
+Three more constraints follow from what the data and the palette can honestly support:
+
+- **One measure.** The figure palette is a print palette; even two of its hues fail a
+  categorical-separation check at the normal-vision floor. A single series needs no categorical
+  scale and no legend, so the palette is never asked to do what it cannot.
+- **The form is derived.** An ordered run of three or more categories gets a line, everything
+  else bars. Two ordered points stay bars, because a line through two dots implies everything
+  between them.
+- **Data, not a specification.** The output is rows plus one derived mark. The consumer compiles
+  the chart, so scales, transforms and data URLs are never something a model reaches.
+
+"Nothing to chart here" is `Outcome::SkippedShort`, the same verdict the digest ladder uses for
+a source too short to bother with. It is the right answer for most content and is not an error.
+
 ## Dependency rule
 
 `serde_json` and blocking `reqwest`, and nothing else — both consumers already carry them, so

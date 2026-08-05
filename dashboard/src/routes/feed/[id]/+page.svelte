@@ -10,6 +10,7 @@
   } from "$lib/feed/entry-loader";
   import MarkdownDocument from "$lib/feed/MarkdownDocument.svelte";
   import MermaidDiagram from "$lib/feed/MermaidDiagram.svelte";
+  import ChartFigure from "$lib/feed/ChartFigure.svelte";
   import {
     KINDS,
     whenError,
@@ -77,7 +78,7 @@
   let runningCloudJob = $state(false);
   /// Which digest press is in flight, or null. One variable rather than three
   /// booleans: the three presses share a model and must not run at once.
-  let digestBusy = $state<"standard" | "detailed" | "diagram" | null>(null);
+  let digestBusy = $state<"standard" | "detailed" | "diagram" | "chart" | null>(null);
   let digestError = $state<string | null>(null);
   let focusInput = $state("");
   let calendarProposalBusy = $state<string | null>(null);
@@ -219,6 +220,19 @@
     digestError = null;
     try {
       entry.digest = await comms.diagram(entry.source, entry.id);
+    } catch (cause) {
+      digestError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      digestBusy = null;
+    }
+  }
+
+  async function runChart() {
+    if (!entry || digestBusy) return;
+    digestBusy = "chart";
+    digestError = null;
+    try {
+      entry.digest = await comms.chart(entry.source, entry.id);
     } catch (cause) {
       digestError = cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -1135,8 +1149,26 @@
               >
                 {digestBusy === "diagram" ? "Drawing…" : "Diagram"}
               </button>
+              <button
+                class="btn"
+                disabled={digestBusy !== null}
+                onclick={runChart}
+                title="Pull the item's numbers out and plot them"
+              >
+                {digestBusy === "chart" ? "Reading…" : "Chart"}
+              </button>
             </div>
           </div>
+
+          {#if entry.digest?.chart}
+            <ChartFigure data={entry.digest.chart} />
+          {:else if entry.digest?.chart_state && entry.digest.chart_state !== "generated"}
+            <p class="digest-note">
+              {entry.digest.chart_state === "skipped_short"
+                ? "No chart: this source has no set of comparable numbers in it. Most prose does not."
+                : `No chart: ${entry.digest.chart_error ?? "the local model could not be reached."}`}
+            </p>
+          {/if}
 
           {#if entry.digest?.diagram}
             <MermaidDiagram source={entry.digest.diagram} />

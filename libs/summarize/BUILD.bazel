@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # it across the package boundary. src/lib.rs is exported because consumers compile
 # it in by `#[path]` include rather than a cargo path dependency -- see
 # libs/axon-config/BUILD.bazel for the full reason.
-exports_files(["README.md", "Cargo.toml", "src/lib.rs"])
+exports_files(["README.md", "Cargo.toml", "src/lib.rs", "src/chart.rs"])
 
 # libs/summarize -- a shared library, not a capability (no domain of its own, no
 # upstream verdict, no CLI). See README.md#three-architectural-nouns.

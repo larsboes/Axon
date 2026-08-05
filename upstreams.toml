@@ -225,6 +225,27 @@ license = "MIT"
 pin = "11.15.0"         # 2026-05-11, 85 days old at adoption on 2026-08-05 -- past cooldown. 11.16.1 published 2026-08-04 and is deliberately not taken
 why = "renders the Mermaid source libs/summarize produces for a content item. Adopted rather than built: a diagram renderer is a solved problem and the alternative was emitting SVG by hand. Loaded by dynamic import inside one Svelte lifecycle wrapper, the same shape as maplibre-gl-js above, so the bundle is code-split onto the reader route instead of every page. `startOnLoad` is off and rendering is an explicit call, because the reader owns when a diagram appears; nothing is fetched at runtime, which is what keeps the dashboard's no-CDN rule intact"
 
+[vega]
+url = "https://github.com/vega/vega"
+verdict = "adopt"
+license = "BSD-3-Clause"
+pin = "6.2.0"           # 2025-09-16, 322 days old at adoption on 2026-08-05. 6.3.1 shipped 2026-07-22 and is deliberately left inside cooldown
+why = "the renderer vega-lite compiles down to. Pinned rather than floated on vega-lite's `^6.0.0` peer range, so the version that actually draws is a decision here instead of whatever the resolver picked that day"
+
+[vega-lite]
+url = "https://github.com/vega/vega-lite"
+verdict = "adopt"
+license = "BSD-3-Clause"
+pin = "6.4.3"           # 2026-04-24, 102 days old at adoption on 2026-08-05 -- past cooldown
+why = "draws the figure for a content item's extracted table. Adopted rather than built because axes, scales and tick selection are where hand-rolled charts go wrong, not the marks. The model never emits a Vega-Lite specification: libs/summarize returns rows and one derived mark, and dashboard/src/lib/feed/ChartFigure.svelte compiles that here, so transforms, data URLs and the palette stay out of a model's reach"
+
+[vega-embed]
+url = "https://github.com/vega/vega-embed"
+verdict = "adopt"
+license = "BSD-3-Clause"
+pin = "7.1.0"           # 2025-10-09, 299 days old at adoption on 2026-08-05
+why = "one call that compiles a Vega-Lite specification and mounts the SVG, instead of wiring the vega-lite compiler to a vega View by hand. Loaded by dynamic import inside the one figure component, the same code-splitting shape as mermaid and maplibre-gl above; `actions: false` because the export/edit menu it ships by default points at a hosted editor"
+
 [openfreemap]
 url = "https://github.com/hyperknot/openfreemap"
 verdict = "adopt"

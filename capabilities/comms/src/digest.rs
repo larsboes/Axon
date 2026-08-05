@@ -69,6 +69,12 @@ pub fn diagram_producer_revision(cfg: &Config) -> Option<String> {
         .map(|role| summarize::producer(&role.cache_key(), summarize::DIAGRAM_PROMPT_REVISION))
 }
 
+pub fn chart_producer_revision(cfg: &Config) -> Option<String> {
+    cfg.summarization_role().map(|role| {
+        summarize::producer(&role.cache_key(), summarize::chart::CHART_PROMPT_REVISION)
+    })
+}
+
 /// What a source hands the model, and under which policy.
 struct SourceText {
     text: String,
@@ -252,6 +258,9 @@ pub fn generate(
         diagram: previous.as_ref().and_then(|row| row.diagram.clone()),
         diagram_state: previous.as_ref().and_then(|row| row.diagram_state.clone()),
         diagram_error: previous.as_ref().and_then(|row| row.diagram_error.clone()),
+        chart: previous.as_ref().and_then(|row| row.chart.clone()),
+        chart_state: previous.as_ref().and_then(|row| row.chart_state.clone()),
+        chart_error: previous.as_ref().and_then(|row| row.chart_error.clone()),
         generated_at: String::new(),
     };
     store
@@ -310,6 +319,53 @@ pub fn generate_diagram(
         .map_err(|error| crate::CommsError::Other(error.to_string()))
 }
 
+/// Extract and store a chartable table for one item.
+///
+/// The **source text** is the input, never the digest: the digest is prose the
+/// model already wrote, so verifying numbers against it would only prove the
+/// model agrees with itself. Verification has to run against what the source
+/// actually said.
+pub fn generate_chart(
+    store: &Store,
+    cfg: &Config,
+    source: &str,
+    id: &str,
+) -> Result<Option<StoredDigest>> {
+    let Some(gathered) = source_text(store, cfg, source, id)? else {
+        return Ok(None);
+    };
+    let existing = store
+        .content_digest(source, id)
+        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+
+    let outcome = summarize::chart::chart(
+        target(cfg).as_ref(),
+        &gathered.text,
+        gathered.allow_remote(),
+    );
+    let producer = chart_producer_revision(cfg).unwrap_or_else(|| "unconfigured".into());
+
+    // A chart hangs off a digest row, so an item charted before it was digested
+    // needs one to exist.
+    if existing.is_none() {
+        generate(store, cfg, source, id, &Directive::default())?;
+    }
+
+    let (chart, error) = match &outcome {
+        Outcome::Ok(chart) => (Some(chart.as_str()), None),
+        other => (None, other.error_detail()),
+    };
+    let updated = store
+        .update_content_chart(source, id, chart, outcome.state(), error, &producer)
+        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+    if updated == 0 {
+        return Ok(None);
+    }
+    store
+        .content_digest(source, id)
+        .map_err(|error| crate::CommsError::Other(error.to_string()))
+}
+
 /// The bounded automatic pass: digest the items of one source that still need
 /// one. Returns how many rows were written.
 ///
@@ -358,6 +414,15 @@ pub fn to_contract(row: &StoredDigest) -> content_item::Digest {
         diagram: row.diagram.clone(),
         diagram_state: row.diagram_state.clone(),
         diagram_error: row.diagram_error.clone(),
+        // Re-parsed rather than passed through as a string: the reader indexes
+        // into it, and a JSON blob delivered as a quoted string is a second
+        // parse every consumer has to remember to do.
+        chart: row
+            .chart
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok()),
+        chart_state: row.chart_state.clone(),
+        chart_error: row.chart_error.clone(),
         generated_at: row.generated_at.clone(),
     }
 }

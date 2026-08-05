@@ -227,6 +227,9 @@
         "diagram",
         "diagram_state",
         "diagram_error",
+        "chart",
+        "chart_state",
+        "chart_error",
         "generated_at"
       ],
       "properties": {
@@ -271,7 +274,46 @@
         },
         "diagram_state": { "type": ["string", "null"] },
         "diagram_error": { "type": ["string", "null"] },
+        "chart": {
+          "oneOf": [
+            { "$ref": "#/$defs/chartData" },
+            { "type": "null" }
+          ]
+        },
+        "chart_state": { "type": ["string", "null"] },
+        "chart_error": { "type": ["string", "null"] },
         "generated_at": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "chartData": {
+      "type": "object",
+      "description": "A chartable table pulled out of the item's source text. Deliberately not a chart specification: the reader compiles one, so a model never reaches the rendering layer. Every value appeared verbatim in the source before it was admitted, and one measure is the maximum by design — the figure palette is a low-chroma print palette that cannot carry categorical identity.",
+      "required": ["title", "category_label", "measure_label", "unit", "mark", "note", "rows"],
+      "properties": {
+        "title": { "type": "string" },
+        "category_label": { "type": "string" },
+        "measure_label": { "type": "string" },
+        "unit": { "type": ["string", "null"] },
+        "mark": {
+          "enum": ["bar", "line"],
+          "description": "Derived from the categories, never chosen by a model: an ordered sequence of three or more gets a line, everything else bars."
+        },
+        "note": { "type": "string" },
+        "rows": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 24,
+          "items": {
+            "type": "object",
+            "required": ["category", "value"],
+            "properties": {
+              "category": { "type": "string", "minLength": 1 },
+              "value": { "type": "number" }
+            },
+            "additionalProperties": false
+          }
+        }
       },
       "additionalProperties": false
     },
