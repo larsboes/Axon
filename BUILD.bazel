@@ -301,9 +301,11 @@ sh_test(
 # return early and the test pass over an empty report. That is the Axon#30 false-green shape
 # again, so it runs in CI's `repo gates` job against a real checkout instead.
 
-# Trivy itself owns vulnerability matching and expiry semantics. This test keeps the
+# Trivy itself owns vulnerability matching and expiry ENFORCEMENT. This test keeps the
 # repository-specific contract honest: each service receives only its own reviewed policy,
-# while images with no accepted findings remain unfiltered.
+# images with no accepted findings remain unfiltered, and every policy's date is reported
+# before it lapses rather than after -- the scanners enforce silently, so nothing else in
+# the system ever says a date is coming.
 sh_test(
     name = "audit_policy_test",
     size = "small",
@@ -311,12 +313,28 @@ sh_test(
     data = [
         "axon.toml",
         "tools/audit",
+        # expiry.sh because tools/audit sources it relative to itself on every path,
+        # including the gitleaks-only one that skips the scanners entirely.
+        "tools/lib/expiry.sh",
         "tools/lib/paths.sh",
         "tools/lib/toml.sh",
     ] + glob([
         "capabilities/*/service.toml",
         "trivy-ignore/*.txt",
     ]),
+)
+
+# The expiry classification alone, with no fixture root and no mocked scanner. The test above
+# proves the wiring, the exit codes and the summary lines; this proves the matrix -- window
+# boundaries, which of several dates governs, undated and malformed entries, and that the
+# helpers leak nothing into the caller's scope. Hermetic, and every fixture date is generated
+# at run time: a date written as a literal passes today and fails on its own expiry, which is
+# the bug under test wearing a different hat.
+sh_test(
+    name = "expiry_classification_test",
+    size = "small",
+    srcs = ["tools/expiry.test.sh"],
+    data = ["tools/lib/expiry.sh"],
 )
 
 sh_test(

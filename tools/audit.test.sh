@@ -77,6 +77,9 @@ git -C "$PRIMARY" -c user.name=Axon -c user.email=axon@example.invalid \
 git -C "$PRIMARY" worktree add -q -b audit-linked "$LINKED"
 
 cp "$ROOT/tools/audit" "$AUDIT_FIXTURE/tools/audit"
+# tools/audit sources lib/expiry.sh relative to itself, so the fixture root needs it even
+# on the path that skips trivy and osv entirely.
+cp "$ROOT/tools/lib/expiry.sh" "$AUDIT_FIXTURE/tools/lib/expiry.sh"
 cat > "$AUDIT_FIXTURE/tools/lib/paths.sh" <<'PATHS'
 AXON_ROOT="$AXON_AUDIT_TEST_ROOT"
 AXON_PERSONAL_ROOT="${AXON_AUDIT_TEST_OVERLAY:-}"
@@ -197,6 +200,7 @@ EXPIRY_LOG="$SCRATCH/expiry-trivy.log"
 mkdir -p "$EXPIRY_ROOT/tools/lib" "$EXPIRY_ROOT/trivy-ignore" "$EXPIRY_ROOT/capabilities/demo"
 cp "$ROOT/tools/audit" "$EXPIRY_ROOT/tools/audit"
 cp "$ROOT/tools/lib/toml.sh" "$EXPIRY_ROOT/tools/lib/toml.sh"
+cp "$ROOT/tools/lib/expiry.sh" "$EXPIRY_ROOT/tools/lib/expiry.sh"
 chmod +x "$EXPIRY_ROOT/tools/audit"
 
 # Unlike the gitleaks fixture above, this stub sources the real toml.sh: the expiry clock
