@@ -33,7 +33,15 @@ tools here are invoked directly, never Bazel targets).
 
 - `master_cv.schema.yaml` — documents the data shape: profile tags (`profiles: [...]`) on
   experience entries, education entries, individual bullets, and skill categories (omitted =
-  always included); bilingual text as `{en: ..., de: ...}` instead of bare strings.
+  always included); bilingual text as `{en: ..., de: ...}` instead of bare strings. Plus
+  `sections:`, an open list for everything the four fixed sections cannot hold — each renders
+  whichever of `entries` / `bullets` / `prose` it carries. That is one generic shape on
+  purpose: a named section per topic would mean editing `cv.typ` every time a CV grows a
+  heading, which is what happened when a master turned up carrying Hackathons, Soft Skills,
+  Community and Interests with nowhere to put them (2026-08-05).
+
+  One trap worth keeping: every string reaches Typst as a plain string, so `*bold*` in the
+  YAML prints its own asterisks. Bullets take a separate `label` for the bold part.
 - `templates/cv.typ` — the single Typst template. Reads the master file, filters by
   `--input profile=<x> --input lang=<y>`, renders.
 - `cv` — bash launcher (`build`, `--all`, `list-profiles`), resolves `$AXON_PERSONAL_ROOT` via

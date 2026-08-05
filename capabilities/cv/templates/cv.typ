@@ -126,3 +126,41 @@
     }
   }
 }
+
+// ---- Free sections ----
+//
+// Everything the four fixed sections above cannot express, as data rather than as
+// template code. One generic shape instead of a block per section: the CV master
+// carried Hackathons & Events, Soft Skills, Community & Engagement and Interests
+// with no field to put them in, and hardcoding four more `#{ }` blocks would have
+// meant a template edit every time a fifth appeared.
+//
+// A section renders whichever of the three content keys it has, in this order, and
+// may carry all three. `entries` is the label/meta/detail row (a hackathon, a talk,
+// an award); `bullets` is a plain list; `prose` is a paragraph. `profiles:` filters
+// the section and each entry or bullet inside it, exactly like everywhere else.
+#{
+  for s in data.at("sections", default: ()).filter(included) {
+    section-title(loc(s.title))
+    if "intro" in s { [#loc(s.intro)]; v(0.35em) }
+    for e in s.at("entries", default: ()).filter(included) {
+      grid(
+        columns: (1fr, auto),
+        text(weight: "bold", size: 9.8pt)[#e.label],
+        text(size: 8.6pt, style: "italic")[#e.at("meta", default: "")],
+      )
+      if "detail" in e { [#loc(e.detail)]; linebreak() }
+      v(0.2em)
+    }
+    // `label` is bold, `text` is the rest. Two fields rather than markup inside one:
+    // a YAML string interpolated into Typst renders literally, so "*Leadership*" in the
+    // data would print its own asterisks — which is exactly what it did on first build.
+    for b in s.at("bullets", default: ()).filter(included) {
+      [#sym.bullet ]
+      if "label" in b { [#text(weight: "bold")[#loc(b.label)] ] }
+      [#loc(b.text)]
+      linebreak()
+    }
+    if "prose" in s { [#loc(s.prose)] }
+  }
+}

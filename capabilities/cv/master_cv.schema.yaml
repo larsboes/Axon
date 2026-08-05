@@ -51,3 +51,30 @@ skills:
   - category: {en: "Languages & Frameworks", de: "Sprachen & Frameworks"}
     # profiles: [swe]            # omit to include this category in every build
     items: ["Item A", "Item B"]
+
+# Anything the four sections above cannot express. Optional — omit the key entirely and
+# nothing renders. Added 2026-08-05, when a CV master turned out to carry Hackathons &
+# Events, Soft Skills, Community & Engagement and Interests with nowhere to put them.
+#
+# Deliberately ONE generic shape rather than four named sections. A named section means a
+# template edit every time a fifth appears; this way a new section is data. Each entry
+# renders whichever of `entries` / `bullets` / `prose` it carries, in that order, and may
+# carry more than one. `profiles:` filters the section itself and each entry/bullet inside
+# it, same rule as everywhere else.
+sections:
+  - title: {en: "Hackathons & Events", de: "Hackathons & Events"}
+    # profiles: [swe, hackathon]     # omit to include in every build
+    intro: {en: "Optional lead-in sentence.", de: "..."}
+    entries:                          # label/meta/detail rows — an event, a talk, an award
+      - label: "Event or award name"
+        meta: "Mon. YYYY · City"      # optional right-aligned line
+        detail: {en: "What it was and what came of it.", de: "..."}
+        # profiles: [hackathon]
+  - title: {en: "Soft Skills", de: "Soziale Kompetenzen"}
+    bullets:
+      # `label` renders bold, `text` follows it. Keep markup OUT of both: these are
+      # interpolated into Typst as plain strings, so "*bold*" prints its asterisks.
+      - label: {en: "Named skill", de: "Benannte Fähigkeit"}
+        text: {en: "the evidence for it.", de: "..."}
+  - title: {en: "Interests", de: "Interessen"}
+    prose: {en: "A sentence or two; no list structure needed.", de: "..."}
