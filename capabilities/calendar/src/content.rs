@@ -231,11 +231,11 @@ mod tests {
 
     /// The constraint the schema also enforces. A decided item is not ranked,
     /// and the regression this prevents is real: a promoted Luma event used to
-    /// arrive carrying `score: 0.0` and `matched_focus: "Scholarship Profile"`.
+    /// arrive carrying `score: 0.0` and `matched_focus` set to one of the interest profiles.
     #[test]
     fn a_calendar_item_is_never_ranked_even_when_the_payload_has_a_score() {
         let mut noisy = entry();
-        noisy.payload = json!({ "score": 0.0, "matched_focus": "Scholarship Profile", "rationale": "low fit" });
+        noisy.payload = json!({ "score": 0.0, "matched_focus": "some-interest-profile", "rationale": "low fit" });
         let item = from_entry(&noisy);
         assert!(item.relevance.is_empty(), "calendar ranks by commitment, never by score");
         assert!(item.evaluation.is_none());
