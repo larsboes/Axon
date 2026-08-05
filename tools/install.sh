@@ -123,12 +123,18 @@ else
     *)
       mkdir -p "$OVERLAY_PATH"
       cp -R "$SKELETON/." "$OVERLAY_PATH/"
-      # Stamp the generic deployment label into the scaffolded README/.gitignore (they ship the
-      # __OVERLAY_NAME__ placeholder — see tools/templates/overlay-skeleton). sed -i.bak +
+      # Stamp the generic deployment label into the scaffolded README and allowlist (they ship
+      # the __OVERLAY_NAME__ placeholder — see tools/templates/overlay-skeleton). sed -i.bak +
       # rm is the portable in-place form: GNU and BSD sed disagree on bare -i (README.md#portable-shell).
-      for f in "$OVERLAY_PATH/README.md" "$OVERLAY_PATH/.gitignore"; do
+      for f in "$OVERLAY_PATH/README.md" "$OVERLAY_PATH/.ignore-allowlist"; do
         [ -f "$f" ] && sed -i.bak "s/__OVERLAY_NAME__/$OVERLAY_NAME/g" "$f" && rm -f "$f.bak"
       done
+      # .gitignore is generated, not copied (Axon#194). The skeleton ships only the allowlist —
+      # what this overlay has reviewed — and Axon renders the deny-all above it and the
+      # immutable hard blocks below it. Two overlays hand-maintaining the same floor is exactly
+      # how that floor drifts, and `tools/ignore-policy check` is what notices.
+      "$TOOLS_DIR/ignore-policy" render "$OVERLAY_PATH" \
+        || { echo "install.sh: could not render the overlay ignore policy" >&2; exit 1; }
       git -C "$OVERLAY_PATH" init -q
       echo "Scaffolded fresh overlay at $OVERLAY_PATH (local git repo, no remote)."
       echo "Add a private remote yourself when ready:"

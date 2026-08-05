@@ -1,0 +1,148 @@
+#!/bin/bash
+# tools/ignore-policy — render and verify a private overlay's default-deny .gitignore (Axon#194).
+#
+# Every private overlay runs the same doctrine: ignore everything, allow only reviewed paths,
+# and keep hard blocks for secret-shaped files no allowlist may reach. Hand-maintaining that
+# in each overlay is how a security-critical rule drifts silently — two overlays already carry
+# their own copy, and nothing compares them.
+#
+# The split:
+#   Axon owns    templates/overlay-ignore/preamble     the deny-all and the ordering contract
+#                templates/overlay-ignore/hard-blocks  the immutable floor, always last
+#   the overlay owns  .ignore-allowlist                what it has reviewed and wants tracked
+#
+#   tools/ignore-policy render <overlay-dir>   # write <overlay>/.gitignore from those inputs
+#   tools/ignore-policy print  <overlay-dir>   # same, to stdout, writing nothing
+#   tools/ignore-policy check  <overlay-dir>   # fail on drift, a missing block, or bad ordering
+#
+# Exit 0 = clean, 1 = violation, 2 = usage error. bash 3.2-safe (README.md#portable-shell).
+#
+# What this deliberately does NOT do: migrate an existing overlay. Axon#194 puts that in each
+# overlay's own repository, with its allowlist reviewed by whoever owns that deployment.
+
+set -u
+
+_here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tools/lib/paths.sh
+. "$_here/lib/paths.sh"
+
+TPL="${AXON_IGNORE_TEMPLATES:-$_here/templates/overlay-ignore}"
+PREAMBLE="$TPL/preamble"
+HARD_BLOCKS="$TPL/hard-blocks"
+
+# The marker that separates the overlay's section from Axon's floor. Emitted by render and
+# located by check — one string, so the two can never disagree about where the floor starts.
+FLOOR_MARKER="# ---- Axon immutable hard blocks — nothing may follow this line ----"
+
+die() { echo "ignore-policy: $*" >&2; exit 2; }
+fail() { echo "  ✗ $*" >&2; VIOLATIONS=$((VIOLATIONS + 1)); }
+
+usage() { sed -n '2,26p' "$0"; }
+
+overlay_name() { basename "$1" | sed 's/^axon-//'; }
+
+# render_policy <overlay-dir> — the complete file, to stdout. Pure: reads three inputs, writes
+# nothing. `check` and `render` both go through it, so a drift check can never be comparing
+# against a different generator than the one that produced the file.
+render_policy() {
+  local overlay="$1" allowlist name
+  allowlist="$overlay/.ignore-allowlist"
+  [ -f "$allowlist" ] || die "no allowlist at $allowlist
+  An overlay declares what it has reviewed; Axon supplies the deny-all and the floor.
+  Create it — even an empty one is a valid claim (allow nothing beyond the always-safe files)."
+  name="$(overlay_name "$overlay")"
+
+  sed "s/__OVERLAY_NAME__/$name/g" "$PREAMBLE"
+  echo
+  echo "# 3) reviewed allowlist — owned by this overlay, not by Axon"
+  # Comments and blank lines survive: the reasoning for an un-ignore is the most valuable
+  # thing in the file, and a generator that strips it teaches people to keep it nowhere.
+  cat "$allowlist"
+  echo
+  echo "$FLOOR_MARKER"
+  cat "$HARD_BLOCKS"
+}
+
+cmd_render() {
+  local overlay="$1" out
+  out="$overlay/.gitignore"
+  render_policy "$overlay" > "$out.part" || exit $?
+  mv "$out.part" "$out"
+  echo "ignore-policy: wrote $out"
+}
+
+cmd_print() { render_policy "$1"; }
+
+cmd_check() {
+  local overlay="$1" target expected actual floor_line last_line
+  target="$overlay/.gitignore"
+  VIOLATIONS=0
+
+  [ -f "$target" ] || die "no $target to check — run 'ignore-policy render $overlay' first"
+
+  echo "ignore-policy · $(overlay_name "$overlay")"
+
+  # 1. drift — the file is not what its declared inputs produce.
+  expected="$(render_policy "$overlay")" || exit $?
+  actual="$(cat "$target")"
+  if [ "$expected" = "$actual" ]; then
+    echo "  ✓ generated content matches its inputs"
+  else
+    fail "generated drift — $target is not what its allowlist renders to.
+      Someone edited the generated file instead of the allowlist. Re-render, or move the
+      edit into .ignore-allowlist first. Diff:"
+    diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") | sed 's/^/      /' >&2
+  fi
+
+  # 2. every hard block is present. Checked against the file on disk rather than against the
+  #    render, so a hand-edited overlay that never re-renders is still caught.
+  local missing=0 block
+  while IFS= read -r block; do
+    case "$block" in ''|'#'*) continue ;; esac
+    grep -qxF "$block" "$target" || { fail "missing hard block: $block"; missing=$((missing + 1)); }
+  done < "$HARD_BLOCKS"
+  [ "$missing" -eq 0 ] && echo "  ✓ every immutable hard block is present"
+
+  # 3. ordering — the floor must be last. git resolves a path against the LAST matching
+  #    pattern, so a single allow line below the blocks silently un-protects everything the
+  #    blocks were there to catch. This is the failure the whole file exists to prevent.
+  floor_line="$(grep -nxF "$FLOOR_MARKER" "$target" | head -1 | cut -d: -f1)"
+  if [ -z "$floor_line" ]; then
+    fail "no hard-block section marker — cannot prove the floor is last"
+  else
+    # The last line that is neither blank nor a comment.
+    last_line="$(grep -nvE '^[[:space:]]*($|#)' "$target" | tail -1 | cut -d: -f1)"
+    if [ -n "$last_line" ] && [ "$last_line" -gt "$floor_line" ]; then
+      # Everything after the marker must itself be a hard block; anything else is an allow
+      # rule that outranks the floor.
+      local trailing
+      trailing="$(sed -n "$((floor_line + 1)),\$p" "$target" | grep -vE '^[[:space:]]*($|#)' \
+        | while IFS= read -r l; do grep -qxF "$l" "$HARD_BLOCKS" || printf '%s\n' "$l"; done)"
+      if [ -n "$trailing" ]; then
+        fail "pattern(s) below the hard blocks — these outrank the floor and weaken it:"
+        printf '      %s\n' "$trailing" >&2
+      else
+        echo "  ✓ hard blocks are last; nothing outranks them"
+      fi
+    else
+      fail "the hard-block section is empty"
+    fi
+  fi
+
+  if [ "$VIOLATIONS" -eq 0 ]; then
+    echo "ignore-policy: clean"
+    return 0
+  fi
+  echo "ignore-policy: $VIOLATIONS violation(s)" >&2
+  return 1
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift || true
+case "$cmd" in
+  render) [ $# -eq 1 ] || die "render needs exactly one overlay directory"; cmd_render "$1" ;;
+  print)  [ $# -eq 1 ] || die "print needs exactly one overlay directory";  cmd_print "$1" ;;
+  check)  [ $# -eq 1 ] || die "check needs exactly one overlay directory";  cmd_check "$1" ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command '$cmd'" ;;
+esac

@@ -1,0 +1,47 @@
+# schemas/protection-zones.toml.example — what a coding assistant may read (Axon#147).
+#
+# Copy to <overlay>/config/protection-zones.toml and fill in real paths there. THIS file is
+# the contract and ships no path: the machine has material that must never reach a
+# cloud-backed model, and naming it here would publish the thing the policy exists to hide.
+#
+# Three classes, and the distinction between the middle one and the last one is the whole
+# point. "Secret" and "confidential" are different problems: a secret must reach no model at
+# all, while confidential work material may be processed locally and must not leave the
+# machine. A policy with only one protected class forces both into the same rule, and the
+# rule that results is either too weak for the secret or too strong to work with.
+#
+#   cloud-readable   ordinary project material. A cloud-backed assistant may read it.
+#                    The default for anything not listed — this class exists to be named,
+#                    not to be enumerated.
+#   local-only       protected material. Only an explicitly local model may process it.
+#                    A harness that cannot tell a local model from a cloud one must deny it
+#                    outright rather than claim a protection it cannot perform.
+#   no-model         secrets. No model reads these, local or otherwise. This is a floor, and
+#                    tools/claude-code-config's managed policy already carries a version of
+#                    it; declaring a path here can only add to that floor, never relax it.
+#
+# Verdicts per harness:  tools/protection-zones verdicts
+# Policy validity:       tools/protection-zones check
+# Claude deny rules:     tools/protection-zones claude-fragment
+#
+# A missing or unparseable file with protected paths declared anywhere is a hard failure, not
+# a default-allow. See `tools/protection-zones check`.
+
+[zones]
+
+# Paths whose contents only a local model may process. Absolute, or ~-relative.
+# Example shape only — the real ones live in the overlay:
+local_only = [
+  "~/example-work-material",
+  "~/example-client-project",
+]
+
+# Paths no model may read, ever. Additive to the managed policy's existing secret floor.
+no_model = [
+  "~/.example-credentials",
+  "~/example-recovery-keys",
+]
+
+# Everything else is cloud-readable. Listed explicitly only where a path sits inside a
+# protected tree and is deliberately carved back out — a rare and reviewable act.
+cloud_readable = []

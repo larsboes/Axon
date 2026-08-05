@@ -1205,6 +1205,29 @@ const CHECKS: Check[] = [
       const declaredPaths = new Set<string>([ctx.root, ctx.overlayPath].filter(Boolean));
       for (const m of ctx.mounts) declaredPaths.add(expandHome(m.path));
 
+      // A path the overlay declares as protected is a DENY rule, not a connection (Axon#147).
+      // This sweep's premise is that a hardcoded sibling path implies an undeclared
+      // integration, and for a protection zone that inference runs backwards: the path is
+      // named precisely so that nothing integrates with it. Demanding a systems.toml entry
+      // for it would be asking the operator to declare a connection to the one place they
+      // declared off limits. Read here rather than threaded through ctx — this is its only
+      // consumer, and the file is the overlay's, not Axon's.
+      const protectedNames = new Set<string>();
+      if (ctx.overlayPath) {
+        const zonesPath = join(ctx.overlayPath, "config", "protection-zones.toml");
+        if (existsSync(zonesPath)) {
+          try {
+            for (const m of readFileSync(zonesPath, "utf8").matchAll(/"([^"]+)"/g)) {
+              const base = basename(m[1].replace(/\/+$/, ""));
+              if (base) protectedNames.add(base);
+            }
+          } catch {
+            // An unreadable policy is tools/protection-zones' finding to report, not this
+            // sweep's. Saying it twice in two vocabularies teaches a reader to skim both.
+          }
+        }
+      }
+
       const lsFiles = Bun.spawnSync({ cmd: ["git", "-C", ctx.root, "ls-files"], stdout: "pipe", stderr: "pipe" });
       if (lsFiles.exitCode !== 0) {
         ctx.warn("git ls-files failed — skipping sweep");
@@ -1252,7 +1275,9 @@ const CHECKS: Check[] = [
         } else {
           for (const [name, refFiles] of hits) {
             const slug = name.toLowerCase();
-            if (declaredIds.has(slug)) {
+            if (protectedNames.has(name)) {
+              ctx.ok(`${name} — declared a protected path in the overlay's protection-zones.toml; a deny rule, not a connection`);
+            } else if (declaredIds.has(slug)) {
               ctx.warn(`${name} — hardcoded path in ${[...refFiles].join(", ")} (declared in systems.toml as '${slug}', but bypasses paths.sh indirection)`);
             } else {
               ctx.bad(`${name} — hardcoded path in ${[...refFiles].join(", ")}, no matching systems.toml entry — undeclared connection`);

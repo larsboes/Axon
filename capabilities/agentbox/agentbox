@@ -8,6 +8,8 @@ _dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 source "$_dir/../../tools/lib/paths.sh"
 # shellcheck source=../../tools/lib/platform.sh
 source "$_dir/../../tools/lib/platform.sh"
+# shellcheck source=../../tools/lib/advisories.sh
+source "$_dir/../../tools/lib/advisories.sh"   # advisory_scan (+ version.sh, transitively)
 
 CONFIG="$AXON_PERSONAL_ROOT/config/agentbox.toml"
 DATA="$AXON_PERSONAL_ROOT/data/agentbox"
@@ -19,9 +21,15 @@ Usage:
   agentbox build [--no-cache]        # fetch + verify the agent archive, build the image
   agentbox doctor                    # runtime, network, image, config, model endpoint
   agentbox shell [--project <dir>]   # a bash prompt in the same box, no agent
+  agentbox host-install [--force]    # install the pinned agent on the HOST, through the gate
+  agentbox gate [<version>]          # the gate alone: advisories + cooldown, no install
 
 Without --project the current directory is mounted. That is the only host path the
 box can see; --online swaps the host-only network for one with internet.
+
+host-install places the same pinned, checksummed release the box runs, plus a shim that
+refuses the agent's own self-update verbs — that path is how this machine once moved past
+a pin unnoticed (upstreams.toml, Axon#126).
 EOF
 }
 
@@ -292,6 +300,207 @@ cmd_run() {
     "$IMAGE" ${1+"$@"}
 }
 
+# --- the gate --------------------------------------------------------------
+#
+# Axon#126. Every other check in this repo describes a version the manifest names. A
+# self-updating binary replaces the thing on disk without consulting any of them, so the pin,
+# the checksum, the advisory scan and the cooldown all end up describing software the machine
+# stopped running. That is not hypothetical here: upstreams.toml's pi-coding-agent entry
+# records the host self-updating via `pi update` about 15h after a release, and the pin was
+# written afterwards to describe an adoption that had already happened.
+#
+# The gate answers one question — may this version be placed on this machine? — and is a
+# separate command so it can be run, and tested, without installing anything.
+
+# Resolve the upstream repo this profile's agent comes from, via profile.toml's declared
+# upstreams.toml section. Empty output means the profile did not declare one.
+upstream_repo() {
+  local section url
+  section="$(toml_get upstream "$PROFILE")"
+  [ -n "$section" ] || return 1
+  url="$(toml_get_in "$section" url "$AXON_ROOT/upstreams.toml")"
+  [ -n "$url" ] || return 1
+  printf '%s' "$url" | sed -E 's#.*github.com/([^/]+/[^/]+).*#\1#; s#\.git$##'
+}
+
+# Days since <repo>'s <tag> was published; empty if GitHub cannot answer. Deliberately not
+# lifted into tools/lib/: it has exactly one consumer, and advisories.sh states the rule this
+# repo follows — two consumers is what makes a lib. The moment a second caller wants a release
+# date, gh_latest in tools/upstream-checker moves out with it.
+release_age_days() {
+  local repo="$1" tag="$2" pub now then
+  command -v gh >/dev/null 2>&1 || return 1
+  pub="$(gh api "repos/$repo/releases/tags/$tag" --jq '.published_at' 2>/dev/null)" || return 1
+  [ -n "$pub" ] && [ "$pub" != "null" ] || return 1
+  if date --version >/dev/null 2>&1; then
+    then="$(date -u -d "$pub" +%s 2>/dev/null)"
+  else
+    then="$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$pub" +%s 2>/dev/null)"
+  fi
+  [ -n "$then" ] || return 1
+  now="$(date -u +%s)"
+  echo $(( (now - then) / 86400 ))
+}
+
+# cmd_gate [version] — 0 = may install, non-zero = refused.
+cmd_gate() {
+  require_config
+  target="${1:-$VERSION}"
+  repo="$(upstream_repo)" || die "profile $PROFILE declares no 'upstream' — the gate cannot know which repository to check (Axon#126)"
+
+  echo "agentbox gate: $AGENT $target ($repo)"
+
+  # 1. Advisories — a hard refusal, not a warning. README.md#pins-and-cooldown's
+  #    active-vulnerability carve-out names an in-range advisory as the one reason to bump
+  #    inside the cooldown hold, so this gate has to be able to say it out loud.
+  adv_out="$(advisory_scan "$repo" "$target")"
+  case $? in
+    3) echo "  ○ advisories n/a — '$target' is not a version an advisory range can be compared against" ;;
+    2) die "advisories unchecked — gh is not installed, and OSV does not carry GHSA for every ecosystem.
+  Refusing rather than installing unverified: a check that could not run is not a check that passed." ;;
+    1) die "advisories not resolvable (rate-limited or unavailable) — GHSA exposure unverified.
+  Refusing rather than installing unverified." ;;
+    0)
+      hits=0; undecided=0; total=0
+      while IFS="$(printf '\t')" read -r st id sev range; do
+        case "$st" in
+          hit)       echo "  ✗ $id ($sev) — $target is inside the affected range '$range'"; hits=$((hits + 1)) ;;
+          undecided) echo "  ⚠ $id ($sev) — range '$range' is not comparable to $target"; undecided=$((undecided + 1)) ;;
+          total)     total="$id" ;;
+        esac
+      done <<GATE_ADVISORIES
+$adv_out
+GATE_ADVISORIES
+      [ "$hits" -eq 0 ] || die "refused: $hits published advisory range(s) cover $target"
+      # Undecided is not a pass, but it is also not a refusal: GitHub allows free-text ranges
+      # and refusing every unorderable one would block on the manifest's own real entries
+      # ('2025.02 to 2026.01', '8+'). It becomes a confirmation, like the cooldown below.
+      [ "$undecided" -eq 0 ] || confirm_or_deny "$undecided advisory range(s) could not be compared to $target"
+      [ "$total" -gt 0 ] && echo "  ✓ $total published advisory range(s), none affecting $target"
+      [ "$total" -eq 0 ] && echo "  ✓ no published advisories against $repo"
+      ;;
+  esac
+
+  # 2. Cooldown — a confirmation, never a hard refusal, because the manifest says so:
+  #    "the cooldown is a recommendation" (172d81a, README.md#pins-and-cooldown). What it
+  #    must not do is pass silently, which is exactly what happened the last time.
+  cd_min="$(toml_get_in upstream cooldown_min_days "$AXON_ROOT/axon.toml")"
+  if [ -z "$cd_min" ]; then
+    echo "  ⚠ cooldown window missing from axon.toml [upstream] — not checked"
+  else
+    age="$(release_age_days "$repo" "v$target" || true)"
+    if [ -z "$age" ]; then
+      echo "  ⚠ release date for v$target not resolvable — cooldown unchecked"
+    elif [ "$age" -lt "$cd_min" ]; then
+      confirm_or_deny "v$target is ${age}d old, inside the ${cd_min}d cooldown"
+    else
+      echo "  ✓ v$target is ${age}d old, past the ${cd_min}d cooldown"
+    fi
+  fi
+
+  echo "agentbox gate: $target may be installed"
+}
+
+# A finding that warrants a human, not a stop. Fails closed when there is no human to ask:
+# a script, a cron job or a pipe gets a refusal, never a default yes.
+confirm_or_deny() {
+  local reason="$1" reply
+  if [ ! -t 0 ]; then
+    die "refused: $reason.
+  This needs a human decision and stdin is not a terminal, so it fails closed.
+  Re-run it interactively if you mean to accept it."
+  fi
+  printf 'agentbox: %s.\n  Install anyway? [y/N] ' "$reason" >&2
+  read -r reply
+  case "$reply" in
+    y|Y|yes|YES) echo "  → accepted interactively" ;;
+    *) die "refused by operator: $reason" ;;
+  esac
+}
+
+# --- host install ----------------------------------------------------------
+
+HOST_ROOT_DEFAULT() { printf '%s' "$DATA/host"; }
+
+cmd_host_install() {
+  force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+
+  # The host is whatever this machine is, unlike the box, which is Linux by construction.
+  # Set before require_config, which reads archive_sha256_${OS}_${ARCH} and defaults OS to
+  # the box's target — the one place where "the same pin, two targets" has to be told apart.
+  case "$(uname -s)" in
+    Darwin) OS="darwin" ;;
+    Linux)  OS="linux" ;;
+    *) die "unsupported host os $(uname -s)" ;;
+  esac
+  export OS
+  require_config
+
+  cmd_gate "$VERSION"
+
+  host_root="$(HOST_ROOT_DEFAULT)"
+  versioned="$host_root/versions/$AGENT-$VERSION"
+  shim="$host_root/bin/$AGENT"
+
+  if [ -x "$versioned/$(toml_get bin_path "$PROFILE")" ] && [ "$force" -eq 0 ]; then
+    echo "agentbox: $AGENT $VERSION already installed at $versioned (--force to redo)"
+  else
+    fetch_archive     # same cache, same sha256 check, same failure message as the box build
+    mkdir -p "$versioned"
+    tar xzf "$CACHE/$ARCHIVE_NAME" -C "$versioned" --strip-components=1 \
+      "$(toml_get archive_root "$PROFILE")" || die "extract failed"
+    chmod 755 "$versioned/$(toml_get bin_path "$PROFILE")"
+    echo "agentbox: installed $AGENT $VERSION → $versioned"
+  fi
+
+  # `current` is a symlink so the shim never has to be rewritten to move versions, and so
+  # what is running is one readlink away rather than a guess.
+  mkdir -p "$host_root/bin"
+  rm -f "$host_root/current"
+  ln -s "$versioned" "$host_root/current"
+
+  write_shim "$shim"
+  echo "agentbox: shim → $shim"
+  echo
+  echo "Add it to PATH ahead of any other $AGENT, then the self-update path is gated:"
+  echo "  export PATH=\"$host_root/bin:\$PATH\""
+  echo "Axon does not edit your shell config; that is a machine fact and belongs to you."
+}
+
+# The shim: upstream semantics preserved for every verb except the ones that replace the
+# binary in place. Those are declared in profile.toml, not hardcoded here — a different agent
+# spells them differently, and an unlisted verb must reach upstream unchanged.
+write_shim() {
+  local out="$1" verbs
+  # toml_array is one element per line; the shim wants a case-pattern alternation.
+  verbs="$(toml_array self_update_verbs "$PROFILE" | tr '\n' '|' | sed 's/|$//')"
+  [ -n "$verbs" ] || die "$PROFILE declares no self_update_verbs — refusing to write a shim that gates nothing"
+  mkdir -p "$(dirname "$out")"
+  {
+    printf '#!/bin/bash\n'
+    printf '# Generated by `agentbox host-install` — do not edit; re-run host-install instead.\n'
+    printf '# Axon#126: the agent may do anything except replace itself behind the gate.\n'
+    printf 'set -euo pipefail\n'
+    printf 'REAL="%s/current/%s"\n' "$(HOST_ROOT_DEFAULT)" "$(toml_get bin_path "$PROFILE")"
+    printf 'case "${1:-}" in\n'
+    printf '  %s)\n' "$verbs"
+    printf '    echo "%s: self-update is gated by Axon (upstreams.toml pins this version)." >&2\n' "$AGENT"
+    printf '    echo "  Use: agentbox host-install   — after bumping version + archive_sha256_* in" >&2\n'
+    printf '    echo "       capabilities/agentbox/profiles/%s/profile.toml and upstreams.toml." >&2\n' "$AGENT"
+    printf '    echo "  That path checks published advisories and the cooldown; this one does not." >&2\n'
+    printf '    exit 1 ;;\n'
+    printf 'esac\n'
+    printf 'exec "$REAL" "$@"\n'
+  } > "$out"
+  chmod 755 "$out"
+}
+
 # --- doctor ----------------------------------------------------------------
 
 ok()   { echo "  ✓ $*"; }
@@ -362,10 +571,12 @@ cmd_doctor() {
 cmd="${1:-}"
 [ $# -gt 0 ] && shift || true
 case "$cmd" in
-  build)  cmd_build "$@" ;;
-  run)    cmd_run "$@" ;;
-  shell)  cmd_run --shell "$@" ;;
-  doctor) cmd_doctor ;;
+  build)        cmd_build "$@" ;;
+  run)          cmd_run "$@" ;;
+  shell)        cmd_run --shell "$@" ;;
+  doctor)       cmd_doctor ;;
+  host-install) cmd_host_install "$@" ;;
+  gate)         cmd_gate "$@" ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command '$cmd'" ;;
 esac

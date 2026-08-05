@@ -1,0 +1,202 @@
+#!/bin/bash
+# tools/protection-zones — which coding assistants can actually protect what (Axon#147).
+#
+# The work deployment has a real protected-path class: material there must not be read by a
+# cloud-backed coding assistant. Axon's Claude managed policy protects one such location
+# today, but that is one harness, expressed as a hand-written deny list, with no statement
+# anywhere about what the other three harnesses do or cannot do.
+#
+# The gap this closes is not "add more deny rules". It is that a harness which CANNOT enforce
+# a class currently says nothing, and silence reads as protection. Four harnesses are
+# installed here; only one of them has a mechanism, and until now nothing said so out loud.
+#
+#   tools/protection-zones verdicts         per-harness: supported | unsupported | separately-profiled
+#   tools/protection-zones check            the policy is present, parseable and non-contradictory
+#   tools/protection-zones claude-fragment  deny rules derived from the zones, for the managed fragment
+#
+# Exit 0 = clean, 1 = violation, 2 = usage error. bash 3.2-safe (README.md#portable-shell).
+#
+# Public code defines the semantics; real paths live in <overlay>/config/protection-zones.toml
+# and never enter this repository, a fixture, or a log.
+
+set -u
+
+_here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tools/lib/paths.sh
+. "$_here/lib/paths.sh"
+
+POLICY="${AXON_PROTECTION_ZONES:-$AXON_PERSONAL_ROOT/config/protection-zones.toml}"
+
+die()  { echo "protection-zones: $*" >&2; exit 2; }
+usage() { sed -n '2,21p' "$0"; }
+
+# The harness roster is NOT restated here. tools/agent-integrations.sh already owns which
+# harnesses exist and where each configures itself; a second list is how the two drift and
+# how a newly-adopted harness silently gets no verdict at all.
+harness_roster() {
+  sed -n 's/^HARNESSES="\(.*\)"$/\1/p' "$_here/agent-integrations.sh" | head -1
+}
+
+# --- verdicts ----------------------------------------------------------------
+#
+# Each verdict is a claim about a mechanism this repository can point at, not an impression.
+# `unsupported` is the honest answer for a harness whose enforcement surface has not been
+# verified here, and it is deliberately the DEFAULT: the issue's own words are that a harness
+# which cannot enforce a class "must report that limitation and refuse to claim protection".
+# Upgrading one of these to `supported` means finding the mechanism and testing it, not
+# reading a vendor page.
+harness_verdict() { # -> "<verdict>\t<mechanism-or-reason>"
+  case "$1" in
+    claude)
+      printf 'supported\tmanaged policy at /etc/claude-code/managed-settings.json — highest precedence, permissions.deny + sandbox.filesystem.denyRead, additive-only from the overlay (tools/claude-code-config)' ;;
+    pi)
+      printf 'separately-profiled\tenforced inside the agentbox micro-VM, not on the host: capabilities/agentbox/profiles/pi/extensions/protected-paths blocks CONTAINER paths, and only /workspace is mounted. Says nothing about a host-installed pi' ;;
+    codex|opencode)
+      printf 'unsupported\tno path-deny mechanism verified in this repository. Nothing here enforces a protected path for this harness, so nothing here may claim one' ;;
+    *)
+      printf 'unsupported\tunknown harness — no verdict recorded, which is itself a finding' ;;
+  esac
+}
+
+cmd_verdicts() {
+  local h verdict mechanism roster
+  roster="$(harness_roster)"
+  [ -n "$roster" ] || die "could not read the harness roster from tools/agent-integrations.sh"
+
+  echo "protection-zones · harness enforcement verdicts"
+  echo
+  for h in $roster; do
+    IFS="$(printf '\t')" read -r verdict mechanism <<VERDICT
+$(harness_verdict "$h")
+VERDICT
+    case "$verdict" in
+      supported)            printf '  ✓ %-9s %s\n' "$h" "$verdict" ;;
+      separately-profiled)  printf '  ◐ %-9s %s\n' "$h" "$verdict" ;;
+      *)                    printf '  ✗ %-9s %s\n' "$h" "$verdict" ;;
+    esac
+    printf '      %s\n' "$mechanism"
+  done
+  echo
+  # Stated rather than left to be inferred from the table: Claude Code is cloud-backed in
+  # every mode, so it has no way to represent "a local model may read this". local_only
+  # therefore collapses to a deny for that harness — a stricter reading than the policy asks
+  # for, which is the safe direction, but the operator should know that is what happened
+  # rather than believe a distinction is being preserved.
+  echo "  local_only collapses to deny for every harness above: none of them can distinguish"
+  echo "  a local model from a cloud one at the filesystem boundary. That is stricter than the"
+  echo "  policy requires, and it is the only honest mapping available today."
+}
+
+# --- policy ------------------------------------------------------------------
+
+# zone_paths <key> — one path per line from the policy's [zones] array. Empty if absent.
+#
+# awk rather than a sed range, and the reason is a bug this file had first: `sed -n '/key=/,/]/p'`
+# does not test the START line for the end pattern. A single-line array `local_only = ["a"]`
+# therefore does not close on its own line — the range runs on to the NEXT line containing a
+# bracket, which is the following key. local_only silently absorbed no_model, and the class
+# overlap check then failed on every well-formed policy. A parser that merges two security
+# classes is worse than one that refuses to parse.
+zone_paths() {
+  awk -v key="$1" '
+    { line = $0; sub(/#.*/, "", line) }
+    !inarr && line ~ "^[ \t]*" key "[ \t]*=" {
+      inarr = 1
+      sub(/^[^=]*=/, "", line)      # keep only the value side of this line
+    }
+    inarr {
+      buf = buf " " line
+      if (line ~ /\]/) { print buf; exit }   # closes on its own line too
+      next
+    }
+  ' "$POLICY" 2>/dev/null | grep -oE '"[^"]+"' | tr -d '"'
+}
+
+cmd_check() {
+  local violations=0 p local_only no_model overlap
+
+  if [ ! -f "$POLICY" ]; then
+    # Fail closed, and say what to do. A missing policy is indistinguishable from a policy
+    # that allows everything, and the second reading is the one that loses data.
+    echo "protection-zones: no policy at $POLICY" >&2
+    echo "  Protected paths cannot be enforced from a file that does not exist, and absence is not permission." >&2
+    echo "  Create it from schemas/protection-zones.toml.example — an empty [zones] table is a" >&2
+    echo "  valid claim (nothing on this machine is protected)." >&2
+    return 1
+  fi
+
+  echo "protection-zones · ${POLICY##*/}"
+
+  grep -q '^\[zones\]' "$POLICY" || { echo "  ✗ no [zones] table — the file is not a protection policy" >&2; return 1; }
+
+  local_only="$(zone_paths local_only)"
+  no_model="$(zone_paths no_model)"
+
+  # A path in two classes is a contradiction the enforcement layer would resolve silently and
+  # differently per harness. Caught here instead.
+  overlap="$(printf '%s\n%s\n' "$local_only" "$no_model" | grep -v '^$' | sort | uniq -d)"
+  if [ -n "$overlap" ]; then
+    echo "  ✗ path(s) declared in both local_only and no_model — one path, one class" >&2
+    # Count only. Printing them would put the protected paths into whatever captured this run,
+    # which is the disclosure the policy exists to prevent.
+    echo "      $(printf '%s\n' "$overlap" | wc -l | tr -d ' ') path(s); names withheld deliberately" >&2
+    violations=$((violations + 1))
+  fi
+
+  # Relative paths cannot be enforced: every harness resolves them against its own cwd.
+  for p in $(printf '%s\n%s\n' "$local_only" "$no_model" | grep -v '^$'); do
+    case "$p" in
+      /*|'~'/*) ;;
+      *) echo "  ✗ non-absolute path in the policy — a harness would resolve it against its own cwd" >&2
+         violations=$((violations + 1)) ;;
+    esac
+  done
+
+  if [ "$violations" -eq 0 ]; then
+    printf '  ✓ %s local_only, %s no_model path(s), all absolute, no class overlap\n' \
+      "$(printf '%s' "$local_only" | grep -c . )" "$(printf '%s' "$no_model" | grep -c . )"
+    echo "protection-zones: policy valid"
+    return 0
+  fi
+  echo "protection-zones: $violations violation(s)" >&2
+  return 1
+}
+
+# --- claude fragment ---------------------------------------------------------
+#
+# The acceptance criterion is that Claude's managed settings are DERIVED from or CHECKED
+# AGAINST the declared protected paths, rather than being a parallel hand-written list that
+# happens to agree today. This renders the derived half.
+#
+# Output goes to stdout only. Writing it into the overlay fragment is left to the operator,
+# because that file is a security floor and deploying it is an explicit privileged action —
+# the same reason tools/claude-code-config prints a command instead of writing to /etc.
+cmd_claude_fragment() {
+  local p first=1
+  cmd_check >/dev/null || die "policy is invalid — refusing to render a security fragment from it"
+
+  echo '{'
+  echo '  "permissions": {'
+  echo '    "deny": ['
+  # Both classes deny here. local_only collapses to deny because Claude Code is cloud-backed
+  # in every mode — see the note in `verdicts`.
+  for p in $(printf '%s\n%s\n' "$(zone_paths local_only)" "$(zone_paths no_model)" | grep -v '^$'); do
+    [ "$first" -eq 1 ] || echo ','
+    first=0
+    printf '      "Read(%s/**)"' "$p"
+  done
+  [ "$first" -eq 0 ] && echo
+  echo '    ]'
+  echo '  }'
+  echo '}'
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift || true
+case "$cmd" in
+  verdicts)        cmd_verdicts ;;
+  check)           cmd_check ;;
+  claude-fragment) cmd_claude_fragment ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command '$cmd'" ;;
+esac

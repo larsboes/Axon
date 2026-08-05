@@ -70,6 +70,8 @@ COOLDOWN_MAX="$(toml_get_in upstream cooldown_max_days "$AXON_ROOT/axon.toml")"
 in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # shellcheck source=lib/version.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/version.sh"
+# shellcheck source=lib/advisories.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/advisories.sh"
 
 # epoch_of <ISO8601 e.g. 2026-07-09T22:00:00Z> — GNU date first, BSD/macOS fallback.
 epoch_of() {
@@ -96,37 +98,10 @@ gh_latest() {
   printf '%s\t%s\n' "$tag" "$pub"
 }
 
-# gh_advisories <owner/repo> — published advisories as `GHSA<TAB>severity<TAB>range` lines,
-# one line per affected range (an advisory naming three ranges yields three).
-#   Exit 0 = fetched (output may be empty) · 1 = fetch failed · 2 = gh unavailable.
-#
-# Axon#124: tools/upstream-checker compared pins against releases/latest and nothing else,
-# tools/audit runs osv-scanner, and neither sees GitHub Security Advisories. For at least
-# one adopted upstream OSV carries none at all -- queried for `@earendil-works/pi-coding-agent`
-# it answers `{}` while GitHub publishes four advisories against that repo, one of them
-# high severity. The scanner adopted for exactly this job is structurally blind to them.
-#
-# gh rather than curl, unlike gh_latest above: pairing an advisory's id and severity with
-# each of its nested ranges is a join, and doing that with grep over raw JSON is how a
-# parser silently attaches the wrong severity to the wrong range. gh bundles jq, so the
-# join is declarative — and its absence is reported as unchecked rather than passed.
-gh_advisories() {
-  local repo="$1" out rc
-  command -v gh >/dev/null 2>&1 || return 2
-  out="$(gh api "repos/$repo/security-advisories" --jq '
-    .[]
-    | select(.state == "published")
-    | .ghsa_id as $id
-    | .severity as $sev
-    | (.vulnerabilities // [])[]
-    | select(.vulnerable_version_range != null)
-    | [$id, $sev, .vulnerable_version_range]
-    | @tsv' 2>/dev/null)"
-  rc=$?
-  [ "$rc" -eq 0 ] || return 1
-  printf '%s' "$out"
-  return 0
-}
+# gh_advisories and advisory_scan now live in lib/advisories.sh, sourced above. They moved
+# there when the agentbox self-update gate became a second consumer (Axon#126): it asks the
+# same question at a different moment — seconds before a binary is placed on the machine,
+# rather than while auditing the manifest.
 
 fail=0; warn=0; na=0; ok=0; count=0
 
@@ -316,39 +291,39 @@ for name in $(toml_sections "$MANIFEST"); do
     # comparisons that cannot be made. Reported as `○` rather than `⚠` on purpose — it
     # joins the release-drift n/a group instead of warning forever about a pin shape that
     # will never become comparable.
-    if ! pin_comparable "$pin"; then
-      emit "○ advisory match n/a — pin '$pin' is not a version an advisory range can be compared against"
-    else
-      adv_repo="$(printf '%s' "$url" | sed -E 's#.*github.com/([^/]+/[^/]+).*#\1#; s#\.git$##')"
-      adv_out="$(gh_advisories "$adv_repo")"
-      adv_rc=$?
-      if [ "$adv_rc" -eq 2 ]; then
-        emit "⚠ advisories unchecked — gh is not installed, and OSV does not carry GHSA for every ecosystem"
-        entry_warn=1
-      elif [ "$adv_rc" -eq 1 ]; then
-        # Same principle as the drift check's unresolvable branch: a check that could not
-        # run is not a check that passed.
-        emit "⚠ advisories not resolvable (rate-limited or unavailable) — GHSA exposure unverified"
-        entry_warn=1
-      else
+    adv_repo="$(printf '%s' "$url" | sed -E 's#.*github.com/([^/]+/[^/]+).*#\1#; s#\.git$##')"
+    adv_out="$(advisory_scan "$adv_repo" "$pin")"
+    adv_rc=$?
+    case "$adv_rc" in
+      # advisory_scan establishes this before spending an API call: a sha pin has real
+      # advisory exposure and nothing here can map it to a version range, so asking would
+      # only produce a list of comparisons that cannot be made. Reported as `○` rather than
+      # `⚠` on purpose — it joins the release-drift n/a group instead of warning forever
+      # about a pin shape that will never become comparable.
+      3) emit "○ advisory match n/a — pin '$pin' is not a version an advisory range can be compared against" ;;
+      2) emit "⚠ advisories unchecked — gh is not installed, and OSV does not carry GHSA for every ecosystem"
+         entry_warn=1 ;;
+      # Same principle as the drift check's unresolvable branch: a check that could not run
+      # is not a check that passed.
+      1) emit "⚠ advisories not resolvable (rate-limited or unavailable) — GHSA exposure unverified"
+         entry_warn=1 ;;
+      0)
         adv_hits=0; adv_undecided=0; adv_total=0; adv_undecided_ids=""
         # Heredoc rather than a pipe: `while read` on the right of a pipe runs in a subshell
         # under bash 3.2, and every counter incremented in here would be discarded at the
         # loop's end — silently reporting zero hits over a list that had some.
-        while IFS="$(printf '\t')" read -r adv_id adv_sev adv_range; do
-          [ -n "$adv_id" ] || continue
-          adv_total=$((adv_total + 1))
-          range_contains "$pin" "$adv_range"
-          case $? in
-            0) emit "✗ $adv_id ($adv_sev) — pin $pin is inside the affected range '$adv_range'"
-               adv_hits=$((adv_hits + 1)) ;;
+        while IFS="$(printf '\t')" read -r adv_status adv_id adv_sev adv_range; do
+          case "$adv_status" in
+            hit) emit "✗ $adv_id ($adv_sev) — pin $pin is inside the affected range '$adv_range'"
+                 adv_hits=$((adv_hits + 1)) ;;
             # Collected rather than printed one per line. GitHub lets an advisory carry a
             # free-text vulnerable_version_range, and real ones behind this manifest include
             # '2025.02 to 2026.01', '≤ 2026.5.2', '8+' and a bare '1.35.4'. Refusing to order
             # those is correct — inventing a verdict is the failure lib/version.sh exists to
             # prevent — but five separate warnings per entry is how a gate becomes wallpaper.
-            2) adv_undecided=$((adv_undecided + 1))
-               adv_undecided_ids="$adv_undecided_ids $adv_id" ;;
+            undecided) adv_undecided=$((adv_undecided + 1))
+                 adv_undecided_ids="$adv_undecided_ids $adv_id" ;;
+            total) adv_total="$adv_id" ;;
           esac
         done <<ADVISORIES
 $adv_out
@@ -364,9 +339,8 @@ ADVISORIES
           # Said out loud rather than left to silence: "this repo publishes advisories and
           # none of them reaches this pin" is a different fact from "nobody looked".
           emit "✓ $adv_total published advisory range(s), none affecting pin $pin"
-        fi
-      fi
-    fi
+        fi ;;
+    esac
   fi
 
   # n/a sits between ok and warn: an entry can be declared and still owe something else (an

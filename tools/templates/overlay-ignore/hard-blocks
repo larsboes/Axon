@@ -1,0 +1,27 @@
+# Axon overlay ignore policy — IMMUTABLE HARD BLOCKS.
+#
+# These patterns must be the LAST thing in every generated overlay .gitignore, because git
+# resolves a path against the last matching pattern. An allowlist entry above can un-ignore
+# a whole directory; only a block below it can take a secret-shaped file back out again.
+# Ordering is the enforcement mechanism here, not a formatting preference — which is why
+# `tools/ignore-policy check` fails when anything follows this section.
+#
+# Nothing in this file is negotiable by an overlay. An overlay that needs one of these paths
+# tracked is an overlay with a secret in the wrong place.
+#
+# Generated into each overlay by `tools/ignore-policy render`; edit here, never there.
+
+.DS_Store
+**/.DS_Store
+*.env
+**/*.env
+*secret*
+*credential*
+*.token
+*token*.md
+*.tar.gz
+/backup/
+/data/
+config/machine.toml
+config/shell/machine.zsh
+config/shell/secrets.zsh

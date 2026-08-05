@@ -162,6 +162,10 @@
       }
     },
     {
+      "name": "host-firewall",
+      "kind": "capability"
+    },
+    {
       "name": "inference",
       "kind": "lib",
       "code": {

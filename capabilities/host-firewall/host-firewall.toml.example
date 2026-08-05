@@ -1,0 +1,34 @@
+# capabilities/host-firewall — the overlay's inputs. Copy to
+# <overlay>/config/host-firewall.toml and fill in for THIS machine.
+#
+# Nothing in this file ships with Axon. Every address, interface and port below is an example
+# from RFC 5737 / RFC 3849 documentation ranges — they are unroutable by design, so a copied
+# file cannot accidentally describe a real network, and a fixture built from it cannot leak one.
+#
+# Axon owns the rule shape, the default-deny posture and the lifecycle. This file owns which
+# machine, which interfaces, which networks and which ports.
+
+# The interface the host's real traffic arrives on. `nft` needs a name, not a guess.
+wan_interface = "eth0"
+
+# Interfaces exempt from the default-deny INPUT policy entirely. Loopback is always exempt and
+# does not need listing; a container bridge or a tailnet device usually belongs here, because
+# the security boundary for those is the network itself, not the host filter.
+trusted_interfaces = ["tailscale0"]
+
+# Source networks permitted to reach the ports below. Empty means "any source", which is a
+# real choice and a loud one — `host-firewall check` warns when a port is open to any source.
+permitted_networks = ["192.0.2.0/24", "2001:db8::/32"]
+
+# Ports reachable from permitted_networks. Each entry is "<port>/<proto>".
+# Keep this list short and reviewed: it IS the attack surface.
+permitted_ports = ["22/tcp", "443/tcp", "53/udp"]
+
+# Ports reachable from ANY source, deliberately. Separate from the list above so that
+# "open to the world" can never be the result of forgetting to set permitted_networks.
+public_ports = []
+
+# ICMP is not optional. Dropping ICMPv6 breaks IPv6 outright (neighbour discovery, PMTU) and
+# dropping ICMPv4 fragmentation-needed breaks path MTU discovery in ways that look like random
+# hangs. Axon always permits the required subset; this switch only controls echo-request.
+allow_ping = true
