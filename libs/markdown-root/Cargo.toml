@@ -1,0 +1,23 @@
+[package]
+name = "markdown-root"
+version = "0.1.0"
+edition = "2021"
+description = "A declared markdown root and the only way to get a file out of it: bounded patterns, containment proven after symlink resolution."
+publish = false
+
+[lib]
+name = "markdown_root"
+path = "src/lib.rs"
+
+# Deliberately zero dependencies, matching libs/axon-config: this file is
+# compiled inside each consumer, so anything listed here would change that
+# consumer's resolution. It is also why the pattern support is two shapes
+# rather than a glob crate.
+[dependencies]
+
+# The tests build throwaway trees and symlinks under the OS temp dir. Harmless
+# standalone; folded into a consumer they would run again for no gain, so the
+# mod is feature-gated and consumers, who never set the feature, skip it.
+[features]
+default = ["standalone-tests"]
+standalone-tests = []

@@ -66,19 +66,6 @@ impl TelosProfile {
 }
 
 
-fn resolve_markdown_path(root: &Path, pattern: &str) -> PathBuf {
-    let relative = pattern
-        .strip_suffix("/*.md")
-        .or_else(|| pattern.strip_suffix("*.md"))
-        .unwrap_or(pattern)
-        .trim_end_matches('/');
-    if relative.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(relative)
-    }
-}
-
 /// Loads interest profiles from the legacy `interest_profile_dir` AND from all
 /// configured source manifests that declare a `profiles_glob`. Profiles from both
 /// sources are merged into a single list (sources take precedence on name collision).
@@ -161,25 +148,47 @@ pub fn load_telos_profiles(
     let legacy_cache = legacy_dir.join("telos_vectors.json");
     collect_from_path(legacy_dir, Some(&legacy_cache), None);
 
-    // 2. Source-declared profiles
+    // 2. Source-declared profiles. The root is the source's own `profile_path`
+    //    when it declares one and its opportunity `path` otherwise, so a
+    //    matching predicate no longer has to live in the knowledge store the
+    //    opportunities happen to come from.
+    let legacy_cache_real = std::fs::canonicalize(&legacy_cache).ok();
     for src in sources {
         if !src.enabled {
             continue;
         }
-        let Some(ref root) = src.root_path else {
-            continue;
+        let (root, glob) = match src.profile_location() {
+            Ok(Some(found)) => found,
+            Ok(None) => continue,
+            // Loudly, because a profile that stops being applied changes every
+            // score in the run and nothing else downstream would mention it.
+            Err(detail) => {
+                eprintln!("warning: {detail} -- profile not loaded");
+                continue;
+            }
         };
-        let Some(ref glob) = src.profiles_glob else {
-            continue;
+        let profiles_path = match root.locate(glob) {
+            Ok(path) => path,
+            Err(detail) => {
+                eprintln!(
+                    "warning: source '{}' profiles_glob '{glob}': {detail}",
+                    src.id
+                );
+                continue;
+            }
         };
 
-        let profiles_path = resolve_markdown_path(root, glob);
         let src_cache = profiles_path.join("telos_vectors.json");
-        // Only pass cache path if it's different from the legacy one (avoids
-        // re-reading the same file when legacy + source point at the same dir).
-        // Exact profile files never consume a directory-wide cache: doing so
+        // Only pass a cache path when it is not the legacy one (avoids
+        // re-reading the same file when legacy and source point at one dir).
+        // Compared through the filesystem rather than as strings: the source
+        // side is canonical now and the legacy side is whatever config said.
+        // Exact profile files never consume a directory-wide cache — doing so
         // would quietly load sibling profiles and defeat the exact-file contract.
-        let cache = if profiles_path.is_file() || src_cache == legacy_cache {
+        let is_legacy_cache = std::fs::canonicalize(&src_cache)
+            .ok()
+            .is_some_and(|real| Some(&real) == legacy_cache_real.as_ref());
+        let cache = if profiles_path.is_file() || is_legacy_cache {
             None
         } else {
             Some(src_cache.as_path())
@@ -800,16 +809,165 @@ mod tests {
         assert_eq!(cosine(&a, &[0.0, 0.0, 0.0]), 0.0, "no signal, no similarity");
     }
 
+    // -----------------------------------------------------------------------
+    // Where a profile is allowed to live (#230). The predicate a source scores
+    // against is a consumer input, not a required resident of whichever
+    // knowledge store the opportunity notes came from.
+    // -----------------------------------------------------------------------
+
+    use crate::opportunity::OpportunityType;
+    use crate::sources::{SourceEntry, SourceManifest};
+
+    /// A throwaway tree under the OS temp dir, removed on drop.
+    struct Tree(PathBuf);
+
+    impl Tree {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("axon-scouting-profile-{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("temp tree");
+            Tree(dir)
+        }
+
+        fn file(&self, relative: &str, body: &str) -> PathBuf {
+            let path = self.0.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("parent");
+            }
+            std::fs::write(&path, body).expect("write");
+            path
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn entry(path: Option<&Path>, profile_path: Option<&Path>, glob: Option<&str>) -> SourceManifest {
+        let json = serde_json::json!({
+            "id": "events-radar",
+            "adapter": "obsidian-markdown",
+            "path": path.map(|p| p.to_string_lossy().into_owned()),
+            "profile_path": profile_path.map(|p| p.to_string_lossy().into_owned()),
+            "profiles_glob": glob,
+        });
+        serde_json::from_value::<SourceEntry>(json)
+            .expect("source entry")
+            .resolve()
+    }
+
+    /// The compatible form: everything under one root, which is every source
+    /// entry written before `profile_path` existed.
     #[test]
-    fn profile_pattern_can_resolve_one_exact_markdown_file() {
-        let root = Path::new("/vault");
-        assert_eq!(
-            resolve_markdown_path(root, "TELOS/Personal/Scholarship Profile.md"),
-            PathBuf::from("/vault/TELOS/Personal/Scholarship Profile.md")
+    fn one_root_still_resolves_the_profile_the_way_it_always_did() {
+        let vault = Tree::new("same-root");
+        vault.file("TELOS/Personal/Events Profile.md", "# focus");
+        let manifest = entry(
+            Some(&vault.0),
+            None,
+            Some("TELOS/Personal/Events Profile.md"),
         );
-        assert_eq!(
-            resolve_markdown_path(root, "TELOS/Focus/*.md"),
-            PathBuf::from("/vault/TELOS/Focus")
+
+        let (root, glob) = manifest
+            .profile_location()
+            .expect("resolvable")
+            .expect("a profile is declared");
+        let located = root.locate(glob).expect("located");
+        assert!(located.is_file());
+        assert!(located.ends_with("Events Profile.md"));
+    }
+
+    /// The point of the issue: the profile lives in one system, the
+    /// opportunities in another, and neither has to know about the other.
+    #[test]
+    fn a_profile_resolves_under_its_own_root_when_one_is_declared() {
+        let vault = Tree::new("split-opportunities");
+        vault.file("Applications/a.md", "note");
+        let profiles = Tree::new("split-profiles");
+        profiles.file("Events Profile.md", "# focus");
+
+        let manifest = entry(Some(&vault.0), Some(&profiles.0), Some("Events Profile.md"));
+        let (root, glob) = manifest
+            .profile_location()
+            .expect("resolvable")
+            .expect("a profile is declared");
+
+        assert_eq!(root.path(), std::fs::canonicalize(&profiles.0).unwrap());
+        let located = root.locate(glob).expect("located");
+        assert!(
+            located.starts_with(root.path()),
+            "the profile resolves under the profile root, not the vault"
         );
+    }
+
+    /// Moving a profile changes nothing about the source it belongs to.
+    #[test]
+    fn moving_a_profile_leaves_source_identity_and_type_untouched() {
+        let vault = Tree::new("identity-vault");
+        let profiles = Tree::new("identity-profiles");
+        profiles.file("Events Profile.md", "# focus");
+
+        let together = entry(Some(&vault.0), None, Some("Events Profile.md"));
+        let apart = entry(Some(&vault.0), Some(&profiles.0), Some("Events Profile.md"));
+
+        assert_eq!(together.id, apart.id);
+        assert_eq!(together.opportunity_type, apart.opportunity_type);
+        assert_eq!(together.root_path, apart.root_path);
+    }
+
+    /// A glob with nothing to resolve against used to be a silent skip.
+    #[test]
+    fn a_glob_with_no_root_at_all_is_a_named_config_error() {
+        let manifest = entry(None, None, Some("Events Profile.md"));
+        let detail = manifest
+            .profile_location()
+            .expect_err("neither root is declared");
+        assert!(detail.contains("events-radar"), "the error names the source");
+        assert!(detail.contains("profile_path"), "and the way out");
+    }
+
+    #[test]
+    fn a_profile_root_that_is_not_there_says_so_rather_than_scoring_blind() {
+        let missing = std::env::temp_dir().join("axon-scouting-profile-gone-9f8e7d");
+        let _ = std::fs::remove_dir_all(&missing);
+        let vault = Tree::new("missing-profile-root");
+
+        let detail = entry(Some(&vault.0), Some(&missing), Some("Events Profile.md"))
+            .profile_location()
+            .expect_err("a declared root that does not exist");
+        assert!(detail.contains("events-radar"));
+    }
+
+    /// An absent profile file inside a real root stays ordinary: the caller
+    /// decides that means "no profile", which is what the network adapters do.
+    #[test]
+    fn an_absent_profile_file_inside_a_real_root_is_not_an_error() {
+        let profiles = Tree::new("absent-profile-file");
+        let manifest = entry(None, Some(&profiles.0), Some("Nowhere Profile.md"));
+        let (root, glob) = manifest.profile_location().expect("root is fine").unwrap();
+        let located = root.locate(glob).expect("located");
+        assert!(!located.exists());
+    }
+
+    #[test]
+    fn a_profile_glob_cannot_climb_out_of_its_declared_root() {
+        let profiles = Tree::new("profile-traversal");
+        let manifest = entry(None, Some(&profiles.0), Some("../../*.md"));
+        let (root, glob) = manifest.profile_location().expect("root is fine").unwrap();
+        assert!(
+            root.locate(glob).is_err(),
+            "a profile glob is bounded by the root that declared it"
+        );
+    }
+
+    #[test]
+    fn a_source_declaring_no_profile_is_not_an_error() {
+        let vault = Tree::new("no-profile");
+        assert!(entry(Some(&vault.0), None, None)
+            .profile_location()
+            .expect("no profile is ordinary")
+            .is_none());
     }
 }

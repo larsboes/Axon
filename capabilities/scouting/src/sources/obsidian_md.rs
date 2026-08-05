@@ -26,13 +26,14 @@
 
 use std::path::PathBuf;
 
+use crate::markdown_root::MarkdownRoot;
 use crate::opportunity::{Opportunity, OpportunityType, SourceKind};
 use crate::source::{SearchQuery, SourceAdapter, SourceError};
 
 #[allow(dead_code)]
 pub struct ObsidianMarkdownSource {
     id: String,
-    root: PathBuf,
+    root: MarkdownRoot,
     opportunities_glob: String,
     opportunity_type: OpportunityType,
 }
@@ -44,9 +45,10 @@ impl ObsidianMarkdownSource {
         opportunities_glob: String,
         opportunity_type: OpportunityType,
     ) -> Result<Self, String> {
-        if !root.is_dir() {
-            return Err(format!("path is not a directory: {}", root.display()));
-        }
+        // `//libs/markdown-root` owns "is this a usable root", and from here on
+        // "is this file actually inside it" — the second question this adapter
+        // never asked, so a declared glob of `../../.ssh` used to resolve.
+        let root = MarkdownRoot::declare(root).map_err(|e| e.to_string())?;
         Ok(Self {
             id,
             root,
@@ -71,7 +73,11 @@ impl SourceAdapter for ObsidianMarkdownSource {
 
     fn search(&self, _query: &SearchQuery) -> Result<Vec<Opportunity>, SourceError> {
         let mut opportunities = Vec::new();
-        for path in resolve_markdown_paths(&self.root, &self.opportunities_glob)? {
+        let paths = self
+            .root
+            .markdown_files(&self.opportunities_glob)
+            .map_err(|e| SourceError::Fetch(format!("source '{}': {e}", self.id)))?;
+        for path in paths {
             match parse_opportunity_file(&path, self.opportunity_type) {
                 Ok(Some(opp)) => opportunities.push(opp),
                 Ok(None) => {} // skip (wrong type, no content, etc.)
@@ -89,40 +95,6 @@ impl SourceAdapter for ObsidianMarkdownSource {
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
-
-fn resolve_markdown_paths(root: &PathBuf, pattern: &str) -> Result<Vec<PathBuf>, SourceError> {
-    let relative = pattern.trim();
-    let candidate = root.join(relative);
-
-    if candidate.is_file() {
-        return Ok(vec![candidate]);
-    }
-
-    let relative_dir = relative
-        .strip_suffix("/*.md")
-        .or_else(|| relative.strip_suffix("*.md"))
-        .unwrap_or(relative)
-        .trim_end_matches('/');
-    let directory = if relative_dir.is_empty() {
-        root.clone()
-    } else {
-        root.join(relative_dir)
-    };
-
-    let entries = std::fs::read_dir(&directory).map_err(|e| {
-        SourceError::Fetch(format!(
-            "cannot read opportunity path {}: {e}",
-            directory.display()
-        ))
-    })?;
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("md"))
-        .collect();
-    paths.sort();
-    Ok(paths)
-}
 
 fn parse_opportunity_file(
     path: &PathBuf,
@@ -284,98 +256,11 @@ fn scholarship_is_actionable(
     true
 }
 
-/// Parse YAML-like frontmatter between `---` delimiters.
-/// Handles `key: value` and `key: [url1, url2]` (list values collapsed to comma-separated).
-fn parse_frontmatter(md: &str) -> Result<std::collections::HashMap<String, String>, String> {
-    let mut map = std::collections::HashMap::new();
-
-    if !md.starts_with("---") {
-        return Ok(map);
-    }
-
-    let end = md[3..]
-        .find("---")
-        .map(|i| i + 3)
-        .ok_or("unclosed frontmatter")?;
-    let block = &md[3..end];
-    let mut in_list = false;
-    let mut list_key = String::new();
-    let mut list_items: Vec<String> = Vec::new();
-
-    for line in block.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            // Flush pending list on blank line
-            if in_list && !list_key.is_empty() {
-                map.insert(list_key.clone(), list_items.join(", "));
-                in_list = false;
-                list_key.clear();
-                list_items.clear();
-            }
-            continue;
-        }
-
-        if in_list {
-            if trimmed.starts_with('-') {
-                let item = trimmed.trim_start_matches('-').trim().trim_matches('"');
-                if !item.is_empty() {
-                    list_items.push(item.to_string());
-                }
-                continue;
-            } else {
-                // End of list — store what we collected
-                if !list_key.is_empty() {
-                    map.insert(list_key.clone(), list_items.join(", "));
-                }
-                in_list = false;
-                list_key.clear();
-                list_items.clear();
-            }
-        }
-
-        if let Some((key, val)) = trimmed.split_once(':') {
-            let k = key.trim().to_string();
-            let v = val.trim().to_string();
-
-            if v.starts_with('[') {
-                // Inline array: [url1, url2] — extract URLs
-                let inner = v.trim_start_matches('[').trim_end_matches(']');
-                let items: Vec<String> = inner
-                    .split(',')
-                    .map(|s| s.trim().trim_matches('"').to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                map.insert(k, items.join(", "));
-            } else if v.starts_with('-') {
-                // YAML list starts on same line: key: - item
-                let first = v.trim_start_matches('-').trim().trim_matches('"');
-                in_list = true;
-                list_key = k;
-                list_items = vec![first.to_string()];
-            } else if v.is_empty() {
-                // Key with no value on this line — might be a YAML list on the
-                // following lines. Open a list and check the next line.
-                in_list = true;
-                list_key = k;
-                list_items.clear();
-            } else {
-                map.insert(k, v.trim_matches('"').to_string());
-            }
-        } else if trimmed.starts_with('-') && in_list {
-            let item = trimmed.trim_start_matches('-').trim().trim_matches('"');
-            if !item.is_empty() {
-                list_items.push(item.to_string());
-            }
-        }
-    }
-
-    // Flush any open list at end of block
-    if in_list && !list_key.is_empty() {
-        map.insert(list_key, list_items.join(", "));
-    }
-
-    Ok(map)
-}
+/// Frontmatter parsing moved to `//libs/markdown-root` when calendar's event
+/// importer needed the same format read the same way. The fields below are
+/// still this adapter's own — the lib knows what a frontmatter block is, never
+/// what `eligibility` means.
+use crate::markdown_root::frontmatter as parse_frontmatter;
 
 fn parse_location(location: &Option<String>) -> (Option<String>, Option<String>) {
     match location {

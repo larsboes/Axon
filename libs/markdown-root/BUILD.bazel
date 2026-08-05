@@ -1,0 +1,28 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# README.md is exported so the root //:architecture_up_to_date_test can reference
+# it across the package boundary. src/lib.rs is exported because consumers compile
+# it in by `#[path]` include rather than a cargo path dependency -- see
+# libs/axon-config/BUILD.bazel for the full reason.
+exports_files(["README.md", "Cargo.toml", "src/lib.rs"])
+
+# libs/markdown-root -- a shared library, not a capability (no domain of its own,
+# no upstream verdict, no CLI). See README.md#three-architectural-nouns.
+# Std-only like //libs/axon-config, so it needs no crate universe of its own and
+# never changes a consumer's dependency resolution.
+rust_library(
+    name = "markdown-root",
+    crate_name = "markdown_root",
+    srcs = glob(["src/**/*.rs"]),
+    # The test mod is feature-gated (see Cargo.toml); the standalone build
+    # enables it so //libs/markdown-root:markdown_root_test actually runs them.
+    crate_features = ["standalone-tests"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "markdown_root_test",
+    crate = ":markdown-root",
+    size = "small",
+)

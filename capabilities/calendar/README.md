@@ -398,6 +398,9 @@ capability.
 | GET | `/api/google/exports` | The export opt‑in ledger |
 | PUT | `/api/entries/:id/google-export` | Opt one entry in. Body `{"google_calendar_id": …}` optional |
 | DELETE | `/api/entries/:id/google-export` | Opt out. The Google event it already created is left alone |
+| GET | `/api/markdown/sources` | The declared markdown event sources, with their resolved roots |
+| POST | `/api/markdown/preview` | Read-only scan of one source. Body `{"source": …}`; returns the candidates **and** every refusal with its reason |
+| POST | `/api/markdown/import` | Import an explicit selection. Body `{"source": …, "external_ids": [...]}`; re-scans first, so an id the notes no longer offer is a 400 naming it |
 
 Confirming a draft is `PATCH /api/entries/:id {"kind": "event"}` and dismissing
 one is `DELETE /api/entries/:id` — no new verbs, because re‑kinding already was
@@ -569,6 +572,86 @@ outright. If it ever does, record `payload.city` — do not teach `city_of`
 geography.
 
 Verdicts are soft — see "No hard filter on conflicts" above.
+
+## Markdown event import
+
+`src/markdown_import.rs`. A bounded migration path for the case calendar had no
+answer to: an operator holding a directory of structured markdown event notes.
+Without one, they either keep two editable stores of the same events forever, or
+write into calendar's tables behind the capability's back. Both are worse than
+an importer.
+
+Notes are a **contributing** source in exactly the sense Google is. The import is
+one-directional by construction: there is no API here that could be pointed at a
+note store as a writer, and deciding a note has been superseded stays the
+operator's call, made after they have seen the entries land.
+
+### The three steps, which are three endpoints
+
+Collapsing them would lose the middle one — see what is there, say what to
+write, write exactly that.
+
+1. `POST /api/markdown/preview` reads a declared source and **writes nothing**.
+   It returns the entries it would write and every note it refused, each with
+   its reason. A note that is not an event at all (a MOC, a template, prose in
+   the same directory) is skipped silently; an *event* note that cannot be
+   honoured is reported, because that one is a decision the operator has to see.
+2. `POST /api/markdown/import` takes the ids from that review. There is no
+   "import everything" flag: importing the whole preview means sending the whole
+   preview's ids back, which keeps *I reviewed this* and *write it* the same act.
+3. It re-scans before writing rather than trusting the caller's copy. The file
+   is the source of truth and may have changed since the review; an id the fresh
+   scan no longer offers is a 400 naming it, never a silent skip.
+
+### Identity, and why a second run is safe
+
+An imported entry is keyed `(source, external_id)` where `source` is the
+declared source id and `external_id` is the note's path relative to the declared
+root. Both halves are derived, neither is invented. Writes go through
+`upsert_external_entry`, so the partial unique index already behind
+`PUT /api/entries/external` makes a re-import an update. That is what makes the
+import safe to re-run, which is what makes it safe to run at all.
+
+### The mapping, and where it refuses
+
+| Note | Entry |
+|---|---|
+| `type: event` | required — anything else is not a candidate |
+| `summary` / `title`, else the filename | `title` |
+| `start` (or `date`) | `starts_at` |
+| `end`, inclusive | `ends_at`, **exclusive**: the day after |
+| no `end` | a single day |
+| `location` | `location` |
+| `status: confirmed` / `completed` | `committed` |
+| `status: planned` | `planned` |
+| anything else, including absent and unknown | `possible` |
+
+**Uncertain never blocks a day.** A note store's status vocabulary is not
+calendar's commitment model, and only two of its values claim "this is
+happening". `cancelled` needs no special case: it is neither, so it lands on
+`possible` — visible as evidence, blocking nothing.
+
+**Malformed times fail closed.** No start, an end before its start, a zero-length
+timed entry, or one date-only side and one timed side: reported and skipped, not
+guessed. An event silently placed on the wrong day is worse than one that
+visibly did not import.
+
+**The inclusive→exclusive end is the one value the import changes** rather than
+carries, and it is the reason a one-day note (`start == end`) does not become a
+zero-length entry. It has its own test.
+
+**`payload` is inert evidence, and it is not the note.** It carries enough to
+audit the mapping later: which source, which note, and the fields the mapping
+consumed. Deliberately not the body. Copying the prose into a database column
+would recreate the two-stores problem this exists to end.
+
+### Containment
+
+Roots and globs come from the operator's private config; nothing here hardcodes
+a note-store path. Every read goes through
+[`//libs/markdown-root`](../../libs/markdown-root/README.md): a pattern that is
+absolute or contains `..` is refused before the filesystem is touched, and every
+resolved file is proven inside the declared root *after* symlink resolution.
 
 ## Google sync contract
 

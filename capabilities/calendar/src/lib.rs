@@ -4,6 +4,7 @@ pub mod correlate;
 pub mod date;
 pub mod google;
 pub mod google_sync;
+pub mod markdown_import;
 pub mod model;
 pub mod rhythm;
 pub mod store;
@@ -23,3 +24,10 @@ pub(crate) mod axon_config;
 #[path = "../../../libs/content-item/src/lib.rs"]
 #[allow(dead_code)]
 pub mod content_item;
+
+// Bounded reads out of a declared markdown root, on the same include terms.
+// The markdown importer's whole containment story lives there rather than
+// here; scouting folds in the same file. libs/markdown-root/README.md.
+#[path = "../../../libs/markdown-root/src/lib.rs"]
+#[allow(dead_code)]
+pub(crate) mod markdown_root;

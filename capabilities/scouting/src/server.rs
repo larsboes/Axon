@@ -253,6 +253,9 @@ async fn sources_handler() -> Json<Value> {
                 "opportunities_glob": s.opportunities_glob,
                 "opportunity_type": s.opportunity_type.as_str(),
                 "profiles_glob": s.profiles_glob,
+                // Null when the profile resolves under root_path, which is the
+                // compatible form and most entries.
+                "profile_root": s.profile_root.as_ref().map(|p| p.to_string_lossy()),
                 "doc_path": s.doc_path.as_ref().map(|p| p.to_string_lossy()),
             })
         })
@@ -275,6 +278,7 @@ async fn sources_handler() -> Json<Value> {
             "opportunities_glob": null,
             "opportunity_type": "hackathon",
             "profiles_glob": null,
+            "profile_root": null,
             "doc_path": null,
         }));
     }

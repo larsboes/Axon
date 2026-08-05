@@ -83,6 +83,8 @@ struct FileConfig {
     home_city: Option<String>,
     trips_base_url: Option<String>,
     google: Option<GoogleConfig>,
+    #[serde(default)]
+    markdown_sources: Vec<crate::markdown_import::MarkdownSource>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +108,22 @@ pub struct Config {
     /// reaches into its store, so this is a URL and not a database handle.
     pub trips_base_url: String,
     pub google: GoogleConfig,
+    /// Declared markdown event sources. Empty by default and empty in the
+    /// public template: a note store is something an operator points calendar
+    /// at, never something it goes looking for. `~/` is expanded here so the
+    /// importer only ever sees a real path.
+    pub markdown_sources: Vec<crate::markdown_import::MarkdownSource>,
+}
+
+impl Config {
+    /// One declared markdown source by id, enabled ones only. A disabled source
+    /// answers the same as an unknown one: the operator turned it off, and a
+    /// scan that ran anyway would be ignoring that.
+    pub fn markdown_source(&self, id: &str) -> Option<&crate::markdown_import::MarkdownSource> {
+        self.markdown_sources
+            .iter()
+            .find(|source| source.enabled && source.id == id)
+    }
 }
 
 /// The JSON config file this capability would read. Public so a "you have not
@@ -167,6 +185,14 @@ impl Config {
                 .filter(|url| !url.trim().is_empty())
                 .unwrap_or_else(|| "http://127.0.0.1:8086".to_string()),
             google: file.google.unwrap_or_default(),
+            markdown_sources: file
+                .markdown_sources
+                .into_iter()
+                .map(|mut source| {
+                    source.path = expand_tilde(&source.path).to_string_lossy().into_owned();
+                    source
+                })
+                .collect(),
         }
     }
 }

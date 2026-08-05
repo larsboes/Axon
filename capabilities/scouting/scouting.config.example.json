@@ -16,6 +16,7 @@
   "_comment_embedding_backend": "Nothing about embedding lives in this file. Interest-profile vectors come from the 'embedding' role in the overlay's inference.json (backend, model, query/document prefixes), read through libs/inference; a machine that declares no such role falls back to hash embedding. See libs/inference/README.md and src/embed.rs.",
 
   "_comment_sources": "Declared opportunity sources (supersedes events_dir/interest_profile_dir). Each entry declares an adapter type and location. The pipeline runs all enabled sources when no --adapter flag is given. See capabilities/scouting/README.md.",
+  "_comment_profile_path": "profiles_glob resolves under 'path' by default — the form every entry used before 'profile_path' existed, still working unchanged. Declare 'profile_path' when the matching profile does not belong in the store the opportunities come from: a profile is a consumer input, your own predicate about what is worth surfacing, and the two systems have separate sync lifecycles. Either way the read stays bounded by whichever root declared it; a glob climbing out with '..' is refused rather than followed.",
   "sources": [
     {
       "id": "knowledge-base",
@@ -24,6 +25,16 @@
       "events_glob": "Atlas/Events/*.md",
       "profiles_glob": "TELOS/Focus/*.md",
       "doc": "README.md",
+      "enabled": false
+    },
+    {
+      "_comment": "The split form: opportunities come out of the knowledge store, the profile scoring them lives wherever this deployment keeps its own profile state. Same source id, same stable opportunity ids — only where the predicate is read from changes.",
+      "id": "events-radar",
+      "adapter": "obsidian-markdown",
+      "path": "<knowledge-base-root>",
+      "opportunities_glob": "Projects/Life-Plan/Applications/*.md",
+      "profile_path": "<profile-root>",
+      "profiles_glob": "Events Profile.md",
       "enabled": false
     },
     {

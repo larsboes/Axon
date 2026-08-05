@@ -316,6 +316,43 @@ etc.) always override whatever the config file resolves.
 | `home_timezone` | — (new) | **No default.** Required by `--promote-calendar` (or `--timezone`); see § Calendar promotion |
 | `geo` | — (new) | Private event-routing policy: optional home coordinate plus explicit local radius, local country tokens, timezone prefixes, and a safe-default-off `allow_unknown` compatibility override. No public home/radius defaults; see § Event routing. |
 
+### Where a profile lives
+
+A source's `profiles_glob` resolves under its `path` unless the entry also declares
+`profile_path`. Both forms work; the second exists because the two things a source entry
+points at are not owned by the same system.
+
+An interest profile is a **consumer input** — an operator-curated or TELOS-derived predicate
+about what is worth surfacing, which is private runtime configuration. Opportunity notes live
+in a knowledge store with its own sync lifecycle. Nothing about scouting requires those to
+share a root, and forcing them to did two bad things: it made a matching profile a required
+resident of somebody's Obsidian vault, and it meant duplicating the profile to score a second
+source against it.
+
+So:
+
+```json
+{
+  "id": "events-radar",
+  "adapter": "obsidian-markdown",
+  "path": "~/knowledge-store",
+  "opportunities_glob": "Applications/*.md",
+  "profile_path": "~/profile-state",
+  "profiles_glob": "Events Profile.md"
+}
+```
+
+Moving a profile changes nothing else: source identity, opportunity ids and provenance are
+unaffected, because none of them were ever derived from where the profile was read.
+
+Every read is bounded by whichever root declared it — `//libs/markdown-root` refuses an
+absolute pattern or one containing `..` before touching the filesystem, and proves each
+resolved file is inside the root *after* symlink resolution rather than by string prefix. A
+source that declares a `profiles_glob` with no root to resolve it against, or a root that is
+not there, is now a named error on stderr instead of a silent skip: a profile that quietly
+stops being applied changes every score in the run, and nothing else downstream would mention
+it.
+
 ## Event routing
 
 Interest score answers whether an event matters. The event route answers where it belongs, and

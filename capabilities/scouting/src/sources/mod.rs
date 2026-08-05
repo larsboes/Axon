@@ -68,9 +68,21 @@ pub struct SourceEntry {
     #[serde(default)]
     pub opportunity_type: Option<OpportunityType>,
 
-    /// Glob pattern for interest-profile files, relative to `path`.
+    /// Glob pattern for interest-profile files, relative to `profile_path`
+    /// when one is declared and to `path` otherwise.
     #[serde(default)]
     pub profiles_glob: Option<String>,
+
+    /// Root the interest profile resolves under, when that is not the store the
+    /// opportunities come from. Supports `~/` expansion.
+    ///
+    /// A matching profile is a consumer input — an operator-curated or
+    /// TELOS-derived predicate about what is worth surfacing. It is not a
+    /// required resident of whichever knowledge store happens to hold the
+    /// opportunity notes, and the two have separate sync lifecycles. Absent,
+    /// the profile resolves under `path`, exactly as it did before this field.
+    #[serde(default)]
+    pub profile_path: Option<String>,
 
     /// Path to human-readable documentation about this source, relative to `path`.
     /// Displayed by `--list-sources --verbose`.
@@ -102,11 +114,15 @@ pub struct SourceManifest {
     pub opportunities_glob: Option<String>,
     pub opportunity_type: OpportunityType,
     pub profiles_glob: Option<String>,
+    /// Declared profile root, when it differs from `root_path`. Resolution is
+    /// `profile_root().unwrap_or(root_path)` — see `profile_location()`.
+    pub profile_root: Option<PathBuf>,
     pub doc_path: Option<PathBuf>,
     pub enabled: bool,
 }
 
 use crate::axon_config::expand_tilde;
+use crate::markdown_root::MarkdownRoot;
 
 impl SourceEntry {
     /// Resolve into a runtime manifest: expand `~`, compute absolute doc path.
@@ -125,9 +141,40 @@ impl SourceEntry {
             opportunities_glob: self.opportunities_glob.clone(),
             opportunity_type: self.opportunity_type.unwrap_or(OpportunityType::Event),
             profiles_glob: self.profiles_glob.clone(),
+            profile_root: self.profile_path.as_ref().map(|p| expand_tilde(p)),
             doc_path,
             enabled: self.enabled,
         }
+    }
+}
+
+impl SourceManifest {
+    /// Where this source's interest profile lives, if it declares one.
+    ///
+    /// `Ok(None)` means the source declares no profile, which is ordinary — the
+    /// built-in network adapters score against profiles other sources declare.
+    /// An `Err` is always an operator config error and says which: a glob with
+    /// nothing to resolve against, or a root that is not there. Both used to be
+    /// silent skips, which is how a profile could stop being applied without
+    /// anything anywhere saying so.
+    pub fn profile_location(&self) -> Result<Option<(MarkdownRoot, &str)>, String> {
+        let Some(ref glob) = self.profiles_glob else {
+            return Ok(None);
+        };
+        let root = self
+            .profile_root
+            .as_ref()
+            .or(self.root_path.as_ref())
+            .ok_or_else(|| {
+                format!(
+                    "source '{}' declares profiles_glob '{glob}' but neither \
+                     'profile_path' nor 'path' to resolve it against",
+                    self.id
+                )
+            })?;
+        let declared = MarkdownRoot::declare(root.clone())
+            .map_err(|e| format!("source '{}' profile root: {e}", self.id))?;
+        Ok(Some((declared, glob.as_str())))
     }
 }
 
@@ -255,6 +302,7 @@ mod tests {
             opportunities_glob: None,
             opportunity_type: OpportunityType::Event,
             profiles_glob: None,
+            profile_root: None,
             doc_path: None,
             enabled: true,
         }

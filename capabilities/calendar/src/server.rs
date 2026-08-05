@@ -15,6 +15,7 @@ use calendar::content;
 use calendar::correlate::{self, Candidate};
 use calendar::date;
 use calendar::google_sync::{self, HttpCalendarApi, Settings};
+use calendar::markdown_import;
 use calendar::model::{NewContext, NewEntry, NewRhythm, UpdateContext, UpdateEntry, UpdateRhythm};
 use calendar::store::CalendarStore;
 
@@ -74,6 +75,9 @@ const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/api/google/exports", "The export opt-in ledger."),
     r("PUT", "/api/entries/:id/google-export", "Opt an entry in to export."),
     r("DELETE", "/api/entries/:id/google-export", "Opt an entry out. The Google event is left alone."),
+    r("GET", "/api/markdown/sources", "Declared markdown event sources."),
+    r("POST", "/api/markdown/preview", "Read-only scan of a markdown source. Requires source."),
+    r("POST", "/api/markdown/import", "Import an explicit selection of scanned notes. Requires source and external_ids."),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -1105,6 +1109,120 @@ async fn opt_out_export(State(state): State<AppState>, Path(id): Path<String>) -
     }
 }
 
+// ---------------------------------------------------------------------------
+// Markdown event import (#231). Three endpoints because the contract has three
+// steps and collapsing them would lose the middle one: see what is there, then
+// say what to write, then write exactly that.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct MarkdownScanRequest {
+    source: String,
+}
+
+#[derive(serde::Deserialize)]
+struct MarkdownImportRequest {
+    source: String,
+    /// The notes to write, by the `external_id` the preview showed. No "import
+    /// everything" flag: a caller that wants the whole preview sends the whole
+    /// preview's ids back, which keeps "I reviewed this" and "write it" the
+    /// same act.
+    external_ids: Vec<String>,
+}
+
+/// What the operator has declared, so a caller does not have to read the
+/// overlay's config file to find out. Paths included: reviewing an import means
+/// knowing which store it came from.
+async fn list_markdown_sources(State(state): State<AppState>) -> ApiResponse {
+    response(
+        StatusCode::OK,
+        json!({ "sources": state.config.markdown_sources }),
+    )
+}
+
+fn markdown_source(
+    state: &AppState,
+    id: &str,
+) -> Result<calendar::markdown_import::MarkdownSource, ApiResponse> {
+    state.config.markdown_source(id).cloned().ok_or_else(|| {
+        response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": format!("no enabled markdown source '{id}'") }),
+        )
+    })
+}
+
+/// Reads a declared source and writes nothing. Filesystem work, so it runs on
+/// the blocking pool like every other handler here.
+async fn markdown_preview(
+    State(state): State<AppState>,
+    Json(input): Json<MarkdownScanRequest>,
+) -> ApiResponse {
+    let source = match markdown_source(&state, &input.source) {
+        Ok(source) => source,
+        Err(error) => return error,
+    };
+    match tokio::task::spawn_blocking(move || markdown_import::scan(&source)).await {
+        Ok(Ok(preview)) => response(StatusCode::OK, preview),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+/// Writes exactly the notes named, and re-scans first rather than trusting the
+/// caller's copy of the preview: the file is the source of truth, and it may
+/// have changed since it was reviewed. An id the fresh scan no longer offers is
+/// a 400 naming it, not a silent skip.
+///
+/// Every write goes through `upsert_external_entry`, so the `(source,
+/// external_id)` unique index makes a second import an update. That is what
+/// makes this safe to re-run, which is what makes it safe to run at all.
+async fn markdown_import_selected(
+    State(state): State<AppState>,
+    Json(input): Json<MarkdownImportRequest>,
+) -> ApiResponse {
+    let source = match markdown_source(&state, &input.source) {
+        Ok(source) => source,
+        Err(error) => return error,
+    };
+    if input.external_ids.is_empty() {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "external_ids is required: an import names what it writes" }),
+        );
+    }
+    let database_url = state.database_url.clone();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let preview = markdown_import::scan(&source)?;
+        let selected = markdown_import::plan(&preview, &input.external_ids)?;
+        let store = CalendarStore::open(&database_url).map_err(|error| error.to_string())?;
+        let mut imported = Vec::new();
+        for candidate in selected {
+            let entry = store
+                .upsert_external_entry(&candidate.entry)
+                .map_err(|error| format!("{}: {error}", candidate.external_id))?;
+            imported.push(json!({ "external_id": candidate.external_id, "id": entry.id }));
+        }
+        Ok(json!({
+            "source": preview.source,
+            "imported": imported,
+            "count": imported.len(),
+        }))
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(StatusCode::OK, body),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
 #[path = "../../../libs/axon-server/src/lib.rs"]
 #[allow(dead_code)]
 mod axon_server;
@@ -1172,6 +1290,9 @@ async fn main() {
             "/api/entries/:id/google-export",
             put(opt_in_export).delete(opt_out_export),
         )
+        .route("/api/markdown/sources", get(list_markdown_sources))
+        .route("/api/markdown/preview", post(markdown_preview))
+        .route("/api/markdown/import", post(markdown_import_selected))
         .layer(CorsLayer::permissive())
         .with_state(state);
     axon_server::serve_local("calendar-server", port, app).await;

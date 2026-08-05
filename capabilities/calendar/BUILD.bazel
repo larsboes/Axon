@@ -14,6 +14,8 @@ rust_library(
         "//libs/axon-config:src/lib.rs",
         # The content-item-v1 reader contract, on the same include terms.
         "//libs/content-item:src/lib.rs",
+        # Bounded reads out of a declared markdown root, for src/markdown_import.rs.
+        "//libs/markdown-root:src/lib.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],

@@ -23,11 +23,12 @@ rust_library(
     # them in would declare inputs this crate never compiles and rebuild the library
     # whenever a binary changed.
     #
-    # The two //libs sources stay explicit: they belong to other Bazel packages, which a
+    # The //libs sources stay explicit: they belong to other Bazel packages, which a
     # glob cannot reach by design.
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]) + [
         "//libs/axon-config:src/lib.rs",
         "//libs/inference:src/lib.rs",
+        "//libs/markdown-root:src/lib.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],

@@ -1559,6 +1559,7 @@ mod tests {
             home_timezone: None,
             home_city: None,
             trips_base_url: String::new(),
+            markdown_sources: Vec::new(),
             google: GoogleConfig {
                 calendar_id: Some("primary".into()),
                 ..Default::default()
@@ -1590,6 +1591,7 @@ mod tests {
             home_timezone: Some("Europe/Berlin".into()),
             home_city: None,
             trips_base_url: String::new(),
+            markdown_sources: Vec::new(),
             google: GoogleConfig::default(),
         };
         let error = Settings::resolve(&config).unwrap_err();
@@ -1605,6 +1607,7 @@ mod tests {
             home_timezone: Some("Europe/Berlin".into()),
             home_city: None,
             trips_base_url: String::new(),
+            markdown_sources: Vec::new(),
             google: GoogleConfig {
                 calendar_id: Some("  primary  ".into()),
                 ..Default::default()

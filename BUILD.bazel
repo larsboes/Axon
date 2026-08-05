@@ -52,6 +52,7 @@ _ARCHITECTURE_INPUTS = [
     "//libs/axon-server:README.md",
     "//libs/content-item:README.md",
     "//libs/inference:README.md",
+    "//libs/markdown-root:README.md",
     "//libs/overlay:README.md",
     "//libs/route-manifest:README.md",
     # The generator discovers spine apps via the root-level */service.toml glob; the

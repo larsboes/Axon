@@ -28,3 +28,11 @@ pub(crate) mod axon_config;
 #[path = "../../../libs/inference/src/lib.rs"]
 #[allow(dead_code)]
 pub(crate) mod inference;
+
+// Bounded reads out of a declared markdown root, on the same include terms.
+// Two resolvers used to live in this crate — one in score.rs, one in
+// sources/obsidian_md.rs — already diverged, and neither asked whether the
+// file it returned was inside the root. libs/markdown-root/README.md.
+#[path = "../../../libs/markdown-root/src/lib.rs"]
+#[allow(dead_code)]
+pub(crate) mod markdown_root;
