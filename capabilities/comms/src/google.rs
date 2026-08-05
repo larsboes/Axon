@@ -369,9 +369,8 @@ const BODY_TEXT_CAP: usize = 60_000;
 /// The plain text of a thread's latest message, fetched with `format=full`.
 ///
 /// **Nothing here is persisted.** The value is handed straight to the digest
-/// engine and dropped; `axon-personal#19` is explicit that a raw mail must never
-/// be kept as a local copy, and the only thing that survives this call is the
-/// digest row. It is deliberately not reachable from the sweep: the sweep stays
+/// engine and dropped. A raw mail is never kept as a local copy, so the only
+/// thing that survives this call is the digest row. It is deliberately not reachable from the sweep: the sweep stays
 /// on `format=metadata`, and reading a body is a separate, bounded, explicit
 /// act.
 ///

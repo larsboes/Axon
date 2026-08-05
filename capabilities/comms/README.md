@@ -150,8 +150,8 @@ skipped either way — a model asked to summarize nothing invents the answer con
 The sweep is unchanged: `format=metadata`, read-only, no body. A **digest** fetches
 `format=full` for that one thread, walks the MIME tree to `text/plain` (or strips `text/html`
 through the same extractor the article path uses), hands it to the model and drops it. Nothing
-writes it. The digest row is the only thing that survives the call, which is what
-`axon-personal#19` asks for: mail distilled into an outcome, never retained as a local copy.
+writes it. The digest row is the only thing that survives the call, which is the whole point:
+mail is distilled into an outcome, never retained as a local copy of the message.
 
 Two gates follow the data class rather than the caller. Only `public` content may use a
 non-loopback target, and mail is never `public` by construction — so a mail digest is

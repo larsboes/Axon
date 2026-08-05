@@ -8,9 +8,10 @@
 //! ## The mail body never lands
 //!
 //! A mail digest reads the message body with `format=full`, hands it to the
-//! model and drops it. Nothing writes it: `axon-personal#19` is explicit that a
-//! raw mail must not be retained as a local copy, and the digest row is the only
-//! thing that survives [`generate`]. The sweep is untouched and still reads
+//! model and drops it. Nothing writes it. The operator's mail doctrine is that
+//! a message is distilled into an outcome and never retained as a local copy, so
+//! the digest row is the only thing that survives [`generate`]. The sweep is
+//! untouched and still reads
 //! `format=metadata` — reading a body is a separate, bounded, explicit act.
 //!
 //! ## Personal and Private content never leaves the machine
