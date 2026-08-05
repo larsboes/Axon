@@ -1,11 +1,19 @@
-# Temporary informational-advisory exceptions. Both have an explicit owner and
-# expiry; known vulnerabilities remain blocking. See Axon#160 and Axon#182.
+# Temporary informational-advisory exceptions. Both carry an expiry; known vulnerabilities
+# remain blocking regardless. `tools/audit --expiry` reports the date and tools/doctor
+# surfaces it, so the re-decision is prompted before osv-scanner starts reporting these
+# again rather than after.
+#
+# Neither replacement is tracked in an issue. Axon-archive#182 used to hold both, and what
+# it actually said was "review upstream-supported migration paths" with no consumer, no
+# deadline of its own, and nothing to do until an ecosystem moved. The exposure, the reason
+# it is accepted, and the date it stops being accepted all belong here, next to the entry
+# they describe.
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
 ignoreUntil = 2026-11-01
-reason = "Unmaintained paste proc-macro is build-time-only via parquet 59.1.0; no affected functions, CVSS, or fixed version. Replacement tracked by Axon#182."
+reason = "Unmaintained paste proc-macro, build-time only, via parquet 59.1.0 <- punctuality. No affected functions, CVSS, or fixed version. Replacing it means Arrow/Parquet dropping the dependency upstream, not patching a transitive crate here; watch that rather than this ID."
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0192"
 ignoreUntil = 2026-11-01
-reason = "Unmaintained ttf-parser is non-optional via pdf-extract/lopdf and runtime-reachable for user-provided ticket PDFs; no known vulnerability or fixed version. Replacement tracked by Axon#182."
+reason = "Unmaintained ttf-parser, non-optional and runtime-reachable when a user-supplied rail-ticket PDF is parsed, via lopdf 0.42.0 <- pdf-extract 0.12.0 <- transit (scouting inherits the path). No known vulnerability or fixed version. This is the higher-priority of the two because it handles complex untrusted input: if a maintained pdf-extract alternative appears, take it, and keep transit's existing PDF fixtures green across the swap."

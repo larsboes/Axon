@@ -6,6 +6,7 @@
 # the private overlay, human report + optional SARIF, real exit codes.
 #
 #   tools/audit                  # full sweep, human report
+#   tools/audit --expiry         # accepted-finding policy dates only; runs no scanner
 #   tools/audit --sarif <dir>    # also write one SARIF file per scanner to <dir>
 #   tools/audit --skip <name>    # skip a scanner (gitleaks/semgrep/osv/trivy); repeatable
 #   tools/audit -h                # this help
@@ -28,6 +29,7 @@ _here="$(cd "$(dirname "$0")" && pwd)"
 
 SARIF_DIR=""
 SKIP=""
+EXPIRY_ONLY=0
 _want=""
 for a in "$@"; do
   case "$_want" in
@@ -37,9 +39,10 @@ for a in "$@"; do
   case "$a" in
     --sarif)   _want=sarif ;;
     --skip)    _want=skip ;;
-    # 2,20 rather than 2,13: the old range stopped on the first line of the two-line
+    --expiry)  EXPIRY_ONLY=1 ;;
+    # 2,21 rather than 2,13: the old range stopped on the first line of the two-line
     # gitleaks note, so --help ended mid-sentence.
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "audit: unknown arg '$a'" >&2; exit 2 ;;
   esac
 done
@@ -69,6 +72,70 @@ expiry_warn_days() {
 fail=0
 EXPIRY_WARNED=""
 EXPIRY_LAPSED=""
+
+# --expiry: the policy clock on its own, with no scanner run at all.
+#
+# Reading a date out of a file needs neither a container runtime, a pulled image nor a
+# network, so asking "when do the accepted findings lapse" should not cost a full sweep.
+# This is what tools/doctor delegates to, the same way it delegates the supply-chain
+# question to tools/upstream-checker rather than reimplementing it.
+#
+# It exists because the answer used to live in three GitHub issues whose entire content was
+# "re-scan when the upstream digest changes" -- a tracked ticket standing in for a date the
+# files already carried. The files are the record; this reads them out loud.
+sweep_expiry() {
+  local policy cap count note rc found=0
+  for policy in "$AXON_ROOT"/trivy-ignore/*.txt; do
+    [ -f "$policy" ] || continue
+    found=1
+    cap="$(basename "$policy" .txt)"
+    count="$(grep -Ev '^[[:space:]]*(#|$)' "$policy" | wc -l | tr -d ' ')"
+    # shellcheck disable=SC2046
+    note="$(expiry_note "trivy-ignore/$cap.txt" "$count" "$(expiry_warn_days)" $(expiry_dates_trivy "$policy"))"
+    rc=$?
+    echo "  $note"
+    case "$rc" in
+      1) EXPIRY_WARNED="$EXPIRY_WARNED trivy-ignore/$cap.txt" ;;
+      2) EXPIRY_LAPSED="$EXPIRY_LAPSED trivy-ignore/$cap.txt"; fail=1 ;;
+    esac
+  done
+
+  policy="$AXON_ROOT/osv-scanner.toml"
+  if [ -f "$policy" ]; then
+    count="$(osv_ignored_count "$policy")"
+    if [ "${count:-0}" -gt 0 ]; then
+      found=1
+      # shellcheck disable=SC2046
+      note="$(expiry_note "osv-scanner.toml" "$count" "$(expiry_warn_days)" $(expiry_dates_osv "$policy"))"
+      rc=$?
+      echo "  $note"
+      case "$rc" in
+        1) EXPIRY_WARNED="$EXPIRY_WARNED osv-scanner.toml" ;;
+        2) EXPIRY_LAPSED="$EXPIRY_LAPSED osv-scanner.toml"; fail=1 ;;
+      esac
+    fi
+  fi
+
+  [ "$found" -eq 0 ] && echo "  · no accepted-finding policy declares an expiry"
+  return 0
+}
+
+if [ "$EXPIRY_ONLY" -eq 1 ]; then
+  echo "Axon accepted-finding policies · $(date -u +%Y-%m-%d 2>/dev/null || date -u)"
+  echo
+  sweep_expiry
+  echo
+  if [ -n "$EXPIRY_LAPSED" ]; then
+    echo "── past their date:$EXPIRY_LAPSED"
+    echo "   The scanner no longer honours them, so these findings are live again. Re-decide"
+    echo "   with fresh evidence or delete the entries — an expired policy is not a policy."
+  fi
+  if [ -n "$EXPIRY_WARNED" ]; then
+    echo "── needing a re-decision inside $(expiry_warn_days)d:$EXPIRY_WARNED"
+  fi
+  [ -z "$EXPIRY_LAPSED" ] && [ -z "$EXPIRY_WARNED" ] && echo "── every accepted-finding policy is current ──"
+  exit "$fail"
+fi
 echo "Axon audit · $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u)"
 
 # ---- gitleaks: secret scan over Axon + the private overlay's git history ----

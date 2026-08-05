@@ -6,7 +6,15 @@
 # are runtime-reachable, so this is an expiring upstream-image disposition, not an unreachable
 # code claim. The deployment has authenticated application access and private-network reachability;
 # no Internet route is published by Axon. Recheck on Home Assistant 2026.8 stable or any digest
-# change, whichever comes first. Axon#184 owns removal; every entry expires 2026-08-15.
+# change, whichever comes first — upstream ships stable on the first Wednesday of each month, so
+# the 2026-08-15 expiry below was set expecting 2026.8 to land before it.
+#
+# Removal is deliberately not tracked in an issue. It used to be (Axon-archive#184), and that
+# issue's whole content was "re-scan when the digest changes" — a ticket restating a date this
+# file already carries, accumulating while nobody could act on it. The work is mechanical: pull
+# the new digest, re-scan, delete every ID that no longer appears, re-date what survives with the
+# fresh evidence. `tools/audit --expiry` reads the date and tools/doctor surfaces it, so the
+# prompt arrives before the lapse instead of as a red build after it.
 CVE-2024-23342 exp:2026-08-15
 CVE-2024-45337 exp:2026-08-15
 CVE-2025-22869 exp:2026-08-15

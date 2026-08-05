@@ -3,8 +3,15 @@
 # The stable upgrade removed 8 of 23 HIGH package entries. The remaining 15 entries are eight
 # unique IDs in BIND libraries/tools and c-ares. Fixed Alpine packages exist but are not yet in
 # the official image. DNS parsing remains runtime-reachable; the control is private-LAN-only
-# exposure, not an unreachable-code claim. Recheck on any official tag or digest change.
-# Axon#185 owns removal; every entry expires 2026-08-15.
+# exposure, not an unreachable-code claim. Recheck on any official tag or digest change;
+# upstream ships roughly monthly, so 2026.08 may or may not land before the date below.
+#
+# Removal is deliberately not tracked in an issue. It used to be (Axon-archive#185), and that
+# issue's whole content was "re-scan when the tag or digest changes" — a ticket restating a date
+# this file already carries. The work is mechanical: re-scan the new digest, delete every ID that
+# no longer appears, re-date what survives. `tools/audit --expiry` reads the date and tools/doctor
+# surfaces it, so the prompt arrives before the lapse rather than as a red build after it.
+# Every entry expires 2026-08-15.
 CVE-2026-11331 exp:2026-08-15
 CVE-2026-11605 exp:2026-08-15
 CVE-2026-11622 exp:2026-08-15

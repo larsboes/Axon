@@ -1629,6 +1629,38 @@ const CHECKS: Check[] = [
     },
   },
 
+  // Accepted-finding policies — delegate to tools/audit --expiry, don't reimplement.
+  //
+  // Every finding Axon accepts is accepted UNTIL a date (trivy-ignore/*.txt, osv-scanner.toml).
+  // trivy and osv-scanner each enforce their own dates silently at scan time, so without this
+  // the first notice that a decision lapsed is a red build — and the only thing that ever
+  // "tracked" the re-decision was one GitHub issue per image whose entire content was "re-scan
+  // when the upstream digest changes". The files already carry the dates; a ticket restating
+  // them was waiting dressed up as work, and this is where that belongs instead.
+  //
+  // --expiry reads the files and runs no scanner, so this costs no image pull, no container
+  // runtime and no network — it answers offline exactly like the manifest checks above.
+  {
+    name: "Accepted-finding policies (tools/audit --expiry)",
+    run(ctx) {
+      const auditPath = join(ctx.root, "tools", "audit");
+      if (!existsSync(auditPath)) {
+        ctx.warn(`missing ${auditPath}`);
+        return;
+      }
+      const proc = Bun.spawnSync({ cmd: [auditPath, "--expiry"], stdout: "pipe", stderr: "pipe" });
+      const out = proc.stdout.toString().trim();
+      if (out) console.log(out.split("\n").map((l) => `  ${l}`).join("\n"));
+      if (proc.exitCode !== 0) {
+        ctx.bad("an accepted-finding policy has lapsed — the scanner is reporting those findings again");
+      } else if (out.includes("needing a re-decision")) {
+        // warn, not bad: a date that is merely close is notice, not breakage. Failing here
+        // would hold the whole of doctor red for a fortnight before anything is wrong.
+        ctx.warn("an accepted-finding policy needs a re-decision soon — see above");
+      }
+    },
+  },
+
   // Repo freshness — is this checkout, on any deployment host, behind origin/main. `--online`
   // fetches first for a live answer (same online/offline split as the
   // upstream-checker delegation above); offline reads whatever origin/main ref
