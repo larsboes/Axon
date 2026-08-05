@@ -47,7 +47,7 @@
       "kind": "lib",
       "code": {
         "files": 2,
-        "nodes": 25
+        "nodes": 32
       }
     },
     {
@@ -97,8 +97,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 43,
-        "nodes": 804
+        "files": 44,
+        "nodes": 867
       }
     },
     {
@@ -106,7 +106,7 @@
       "kind": "lib",
       "code": {
         "files": 2,
-        "nodes": 30
+        "nodes": 39
       }
     },
     {
@@ -128,8 +128,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 71,
-        "nodes": 417
+        "files": 72,
+        "nodes": 416
       }
     },
     {
@@ -178,8 +178,8 @@
         "port": "4244"
       },
       "code": {
-        "files": 13,
-        "nodes": 94
+        "files": 3,
+        "nodes": 25
       }
     },
     {
@@ -205,6 +205,19 @@
         "files": 2,
         "nodes": 16
       }
+    },
+    {
+      "name": "macmon",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [],
+        "port": "9911"
+      }
+    },
+    {
+      "name": "markdown-root",
+      "kind": "lib"
     },
     {
       "name": "overlay",
@@ -291,7 +304,7 @@
       },
       "code": {
         "files": 27,
-        "nodes": 429
+        "nodes": 433
       }
     },
     {
@@ -324,11 +337,26 @@
       }
     },
     {
+      "name": "summarize",
+      "kind": "lib"
+    },
+    {
+      "name": "tasks",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "postgres"
+        ],
+        "port": "8089"
+      }
+    },
+    {
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 94,
-        "nodes": 785
+        "files": 96,
+        "nodes": 802
       }
     },
     {
@@ -476,6 +504,18 @@
     },
     {
       "from": "calendar",
+      "to": "markdown-root",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/calendar/BUILD.bazel",
+        "capabilities/calendar/src/lib.rs"
+      ]
+    },
+    {
+      "from": "calendar",
       "to": "route-manifest",
       "kinds": [
         "bazel-label",
@@ -512,6 +552,18 @@
     },
     {
       "from": "comms",
+      "to": "content-item",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/comms/BUILD.bazel",
+        "capabilities/comms/src/lib.rs"
+      ]
+    },
+    {
+      "from": "comms",
       "to": "inference",
       "kinds": [
         "bazel-label",
@@ -532,6 +584,18 @@
       "evidence": [
         "capabilities/comms/BUILD.bazel",
         "capabilities/comms/src/server.rs"
+      ]
+    },
+    {
+      "from": "comms",
+      "to": "summarize",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/comms/BUILD.bazel",
+        "capabilities/comms/src/lib.rs"
       ]
     },
     {
@@ -608,6 +672,18 @@
     },
     {
       "from": "scouting",
+      "to": "markdown-root",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/scouting/BUILD.bazel",
+        "capabilities/scouting/src/lib.rs"
+      ]
+    },
+    {
+      "from": "scouting",
       "to": "route-manifest",
       "kinds": [
         "bazel-label",
@@ -662,6 +738,54 @@
       "evidence": [
         "capabilities/soundscape/BUILD.bazel",
         "capabilities/soundscape/src/main.rs"
+      ]
+    },
+    {
+      "from": "tasks",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/tasks/BUILD.bazel",
+        "capabilities/tasks/src/lib.rs"
+      ]
+    },
+    {
+      "from": "tasks",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/tasks/BUILD.bazel",
+        "capabilities/tasks/src/server.rs"
+      ]
+    },
+    {
+      "from": "tasks",
+      "to": "content-item",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/tasks/BUILD.bazel",
+        "capabilities/tasks/src/lib.rs"
+      ]
+    },
+    {
+      "from": "tasks",
+      "to": "route-manifest",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/tasks/BUILD.bazel",
+        "capabilities/tasks/src/server.rs"
       ]
     },
     {
@@ -752,6 +876,11 @@
       "name": "apple-container",
       "verdict": "adopt",
       "pin": "1.0.0"
+    },
+    {
+      "name": "ar5iv",
+      "verdict": "adopt",
+      "pin": "hosted-html-render"
     },
     {
       "name": "arrow-rs",
@@ -877,6 +1006,11 @@
       "name": "mcpserver-audit",
       "verdict": "inspiration",
       "pin": ""
+    },
+    {
+      "name": "mermaid",
+      "verdict": "adopt",
+      "pin": "11.16.1"
     },
     {
       "name": "mlx",
@@ -1044,6 +1178,21 @@
       "pin": "1.37.0-alpine"
     },
     {
+      "name": "vega",
+      "verdict": "adopt",
+      "pin": "6.2.0"
+    },
+    {
+      "name": "vega-embed",
+      "verdict": "adopt",
+      "pin": "7.1.0"
+    },
+    {
+      "name": "vega-lite",
+      "verdict": "adopt",
+      "pin": "6.4.3"
+    },
+    {
       "name": "vibecoded-design-tells",
       "verdict": "adopt",
       "pin": "f7c4aef"
@@ -1066,7 +1215,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 6645,
+    "nodes": 6686,
     "external": 5,
     "stale": [],
     "unmatched": [
