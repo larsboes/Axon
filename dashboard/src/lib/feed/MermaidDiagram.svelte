@@ -9,44 +9,37 @@
    * diagram appears, and a library that scans the document on load would also
    * try to render the code fences inside an article body.
    *
+   * Colours come from `mermaid-theme.ts` and nowhere else. Mermaid resolves its
+   * theme at `initialize`, not at render, so a theme change means re-initialising
+   * and drawing again; the observer below is what notices. It watches the root
+   * element's class rather than taking a prop, because the layout owns the
+   * toggle and does not know this component exists.
+   *
    * The server's `extract_mermaid` gate means an unrenderable string never
-   * reaches this component. A parse error here is therefore a real one — a
-   * diagram Mermaid's own parser rejects — and is shown rather than swallowed,
-   * with the source kept visible so the failure is inspectable.
+   * reaches here. A parse error is therefore a real one and is shown rather than
+   * swallowed, with the source kept visible so the failure is inspectable.
    */
   import { onMount } from "svelte";
+  import { mermaidConfig } from "$lib/feed/mermaid-theme";
 
-  let { source, theme = "auto" }: { source: string; theme?: "auto" | "dark" | "light" } = $props();
+  let { source }: { source: string } = $props();
 
   let svg = $state<string | null>(null);
   let error = $state<string | null>(null);
-  let container = $state<HTMLDivElement | null>(null);
+  let dark = $state(false);
   let sequence = 0;
 
-  /** Mermaid's themes are chosen at init, so the page's own dark class decides. */
-  function resolvedTheme(): "dark" | "default" {
-    if (theme === "dark") return "dark";
-    if (theme === "light") return "default";
-    return document.documentElement.classList.contains("dark") ? "dark" : "default";
-  }
-
-  async function draw(diagram: string) {
+  async function draw(diagram: string, darkMode: boolean) {
     const run = ++sequence;
     error = null;
     try {
       const mermaid = (await import("mermaid")).default;
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: resolvedTheme(),
-        securityLevel: "strict",
-        fontFamily: "var(--font-sans)",
-      });
+      mermaid.initialize(mermaidConfig(darkMode));
       // A fresh id per render: Mermaid keys its internal definitions by id and
       // reuses a stale one otherwise, which shows the previous diagram after a
-      // regenerate.
+      // regenerate or a theme flip.
       const { svg: rendered } = await mermaid.render(`axon-mermaid-${run}`, diagram);
-      // A later press already superseded this one.
-      if (run !== sequence) return;
+      if (run !== sequence) return; // a later run already superseded this one
       svg = rendered;
     } catch (cause) {
       if (run !== sequence) return;
@@ -56,15 +49,21 @@
   }
 
   onMount(() => {
-    if (source) void draw(source);
+    const root = document.documentElement;
+    dark = root.classList.contains("dark");
+    const observer = new MutationObserver(() => {
+      dark = root.classList.contains("dark");
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
   });
 
   $effect(() => {
-    if (container && source) void draw(source);
+    if (source) void draw(source, dark);
   });
 </script>
 
-<div class="diagram" bind:this={container}>
+<figure class="diagram" class:dark>
   {#if svg}
     <!-- Mermaid returns an SVG string; there is no element API to bind to. The
          input is the server-validated diagram source, not operator HTML. -->
@@ -78,20 +77,29 @@
   {#if error}
     <pre class="diagram-source">{source}</pre>
   {/if}
-</div>
+</figure>
 
 <style>
+  /* The figure sits on the palette's own paper in light mode and on the page's
+     card in dark, so the node fills keep the same contrast either way without a
+     white plate glaring out of a dark reader. */
   .diagram {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
-    padding: 1rem;
-    border: 1px solid var(--card-border);
+    margin: 0;
+    padding: 1.25rem 1rem;
+    border: 1px solid #ddd6cf; /* palette root: grid */
     border-radius: var(--radius-md);
-    background: var(--surface);
+    background: #fbfaf7; /* palette root: paper */
     /* A wide flowchart scrolls inside its own box rather than widening the
        reader column. */
     overflow-x: auto;
+  }
+
+  .diagram.dark {
+    border-color: var(--card-border);
+    background: var(--card-bg);
   }
 
   .diagram :global(svg) {
