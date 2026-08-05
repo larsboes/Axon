@@ -57,6 +57,12 @@ rust_library(
         "@crate_index_comms//:serde_json",
         "@crate_index_comms//:sha2",
         "@crate_index_comms//:thiserror",
+        # The extraction work put both of these in the library rather than only
+        # the server binary, and Cargo.toml already declares them — bazel just
+        # had not been told. Without them the lib fails to compile under bazel
+        # while `cargo build` succeeds, which reads as a bazel bug and is not.
+        "@crate_index_comms//:tokio",
+        "@crate_index_comms//:xberg",
     ],
 )
 
