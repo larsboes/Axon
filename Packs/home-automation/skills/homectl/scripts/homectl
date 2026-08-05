@@ -46,6 +46,8 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import urllib.request
+import zipfile
 from pathlib import Path
 
 import yaml
@@ -289,6 +291,33 @@ def _clone_at_ref(repo: str, ref: str, workdir: Path) -> Path:
     return src
 
 
+def _fetch_asset(repo: str, ref: str, asset: str, workdir: Path) -> Path:
+    """Download a release asset and unpack it into workdir/src.
+
+    Some components are not runnable from their repo tree. HACS at tag 2.0.5 is 95 KB of Python
+    in `custom_components/hacs/` and a 19 MB `hacs.zip` release asset; the difference is the
+    bundled frontend, without which its panel cannot render. For those, the release IS the
+    artifact and the tree is only its source."""
+    if not asset.endswith(".zip"):
+        raise SystemExit(f"asset must be a .zip (got {asset!r})")
+    url = f"https://github.com/{repo}/releases/download/{ref}/{asset}"
+    src = workdir / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    archive = workdir / asset
+    # The URL is composed from operator-owned manifest values, not from anything fetched.
+    with urllib.request.urlopen(url, timeout=120) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        archive.write_bytes(resp.read())
+    with zipfile.ZipFile(archive) as zf:
+        # A zip is free to name entries "../x"; refuse rather than write outside the destination.
+        for name in zf.namelist():
+            target = (src / name).resolve()
+            if not str(target).startswith(str(src.resolve())):
+                raise SystemExit(f"refusing {asset}: entry escapes the destination ({name})")
+        zf.extractall(src)
+    archive.unlink()
+    return src
+
+
 def _diff_summary(old: Path, new: Path) -> tuple[str, str]:
     """(verdict, human summary) of what vendoring WOULD change vs the committed snapshot.
 
@@ -408,15 +437,26 @@ def cmd_components(args) -> int:
         if not args.dry_run:
             dest_root.mkdir(parents=True, exist_ok=True)
 
+        asset = entry.get("asset")
         with tempfile.TemporaryDirectory(prefix=f"homectl-{name}-") as tmp:
             try:
-                src = _clone_at_ref(repo, ref, Path(tmp))
+                src = (_fetch_asset(repo, ref, asset, Path(tmp)) if asset
+                       else _clone_at_ref(repo, ref, Path(tmp)))
             except subprocess.CalledProcessError as e:
                 print(f"[{name}] error cloning {repo}@{ref}: {e.stderr or e}", file=sys.stderr)
                 ok = False
                 continue
+            except (OSError, ValueError, zipfile.BadZipFile) as e:
+                print(f"[{name}] error fetching {asset} from {repo}@{ref}: {e}", file=sys.stderr)
+                ok = False
+                continue
 
-            if kind == "component":
+            if asset:
+                # A release asset unpacks to exactly what belongs at the destination. There is no
+                # custom_components/<name>/ to descend into, and no `file` to pick out.
+                inner = src
+                dest = dest_root / name
+            elif kind == "component":
                 # The component's code lives at custom_components/<name>/ inside the repo.
                 inner = src / "custom_components" / name
                 if not inner.is_dir():
