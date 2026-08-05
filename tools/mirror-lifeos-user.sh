@@ -71,7 +71,7 @@ fi
 # under `set -euo pipefail` that non-zero propagates out of the command substitution and
 # kills the script before it can report anything. Captured once rather than re-run, so the
 # count and the listing can never disagree.
-REPORT="$(diff -rq "$LIFEOS_USER_DIR" "$MIRROR" 2>/dev/null | grep -v '\.DS_Store' || true)"
+REPORT="$(diff -rq -x '.DS_Store' -x 'CACHE' "$LIFEOS_USER_DIR" "$MIRROR" 2>/dev/null || true)"
 DIVERGED="$(printf '%s' "$REPORT" | grep -c . || true)"
 
 if [ "$APPLY" -eq 0 ]; then
@@ -91,7 +91,18 @@ mkdir -p "$MIRROR"
 # --delete so a file deleted upstream disappears from the mirror too; without it the
 # mirror slowly becomes a union of every state the tree has ever had, which is not a
 # backup of anything. .DS_Store excluded: noise, and axon-overlay blocks it anyway.
-rsync -a --delete --exclude '.DS_Store' "$LIFEOS_USER_DIR/" "$MIRROR/"
+#
+# CACHE/ excluded for two reasons that happen to agree. It is regenerable by
+# definition, so a recovery copy of it recovers nothing. And it is rewritten
+# constantly — freshness.json changed twice during a single session — which made
+# doctor's mirror-drift check report divergence permanently. A signal that is
+# always on is not a signal, and it would have trained us to ignore the one case
+# that matters: real identity content diverging from its only backup.
+#
+# --delete-excluded, not just --delete: rsync PROTECTS excluded paths in the
+# destination by default, so without it the CACHE files already mirrored would
+# sit there forever, stale and never updated again — the worst of both.
+rsync -a --delete --delete-excluded --exclude '.DS_Store' --exclude 'CACHE/' "$LIFEOS_USER_DIR/" "$MIRROR/"
 
 echo "✓ mirror refreshed: $DIVERGED path(s) updated → resources/backups/lifeos/USER"
 echo "  not committed — review and commit in axon-overlay when you're ready."
