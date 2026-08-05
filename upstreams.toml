@@ -218,6 +218,13 @@ license = "BSD-3-Clause"
 pin = "v5.21.1"         # March 2026, more than four months old at adoption on 2026-07-28; v6.0.0 is six days old and deliberately remains inside cooldown
 why = "interactive map renderer for the dashboard's cross-capability Trips workspace. Consumed directly from Svelte through one lifecycle wrapper, matching dashboard/README.md; no React binding and no second UI architecture"
 
+[mermaid]
+url = "https://github.com/mermaid-js/mermaid"
+verdict = "adopt"
+license = "MIT"
+pin = "11.15.0"         # 2026-05-11, 85 days old at adoption on 2026-08-05 -- past cooldown. 11.16.1 published 2026-08-04 and is deliberately not taken
+why = "renders the Mermaid source libs/summarize produces for a content item. Adopted rather than built: a diagram renderer is a solved problem and the alternative was emitting SVG by hand. Loaded by dynamic import inside one Svelte lifecycle wrapper, the same shape as maplibre-gl-js above, so the bundle is code-split onto the reader route instead of every page. `startOnLoad` is off and rendering is an explicit call, because the reader owns when a diagram appears; nothing is fetched at runtime, which is what keeps the dashboard's no-CDN rule intact"
+
 [openfreemap]
 url = "https://github.com/hyperknot/openfreemap"
 verdict = "adopt"

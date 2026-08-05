@@ -118,6 +118,67 @@ summary, source content, relevance, evaluation and provenance. Its nullable
 remain separate authenticated actions. This adapter boundary lets collection
 tables evolve independently without duplicating content presentation.
 
+## Digests: what the local model wrote, sized to the source
+
+A **digest** is a different noun from a summary. `summary` on `content-item-v1` is what the
+*source* said it is — calendar reads it from the entry's own description — so a generated
+paragraph written over it would destroy the only verbatim text an entry has. The digest is
+stored beside it in `content_digests`, one table for every source, because a digest has none
+of the per-item invariants that keep the item tables apart.
+
+The shape follows the length, and nothing else chooses it: under 600 characters no digest is
+produced at all, then brief, standard and sectioned, each raising both the structure asked for
+and the token ceiling. The full ladder and its reasoning live in
+[`libs/summarize`](../../libs/summarize/README.md).
+
+**Improving one is a press, not a re-run of the same thing.** `POST /content/:source/:id/digest`
+takes `{"depth":"detailed","focus":["…"]}`. `detailed` moves the shape exactly one rung up that
+same ladder — asking a model to "be more detailed" only gets a longer version of the same
+guess — and the focus terms are named individually in the prompt, with an instruction to say so
+rather than invent when the source is silent on one. Both are stored with the result, so a
+differently-shaped digest is explained rather than mysterious, and the automatic pass skips any
+row whose `depth` is `detailed`: a model upgrade must not quietly throw away a decision an
+operator made. A digest replaces its predecessor; there is no revision history.
+
+That ladder also gives the short floor its escape hatch. The automatic pass skips a 400-character
+item as `skipped_short`; an explicit press produces one anyway, because the operator looking at it
+can see something the character count cannot. An *empty* source is not that case and stays
+skipped either way — a model asked to summarize nothing invents the answer confidently.
+
+### Mail reads a body, and does not keep it
+
+The sweep is unchanged: `format=metadata`, read-only, no body. A **digest** fetches
+`format=full` for that one thread, walks the MIME tree to `text/plain` (or strips `text/html`
+through the same extractor the article path uses), hands it to the model and drops it. Nothing
+writes it. The digest row is the only thing that survives the call, which is what
+`axon-personal#19` asks for: mail distilled into an outcome, never retained as a local copy.
+
+Two gates follow the data class rather than the caller. Only `public` content may use a
+non-loopback target, and mail is never `public` by construction — so a mail digest is
+loopback-only under the same rule that already governs mail relevance, and a cloud endpoint is
+refused outright rather than downgraded. For `vault` content the produced digest passes the same
+deterministic detector the sweep runs on subject and snippet **before** it is stored, and the
+count is recorded: a model asked to summarize a one-time-code mail will quote the code, and the
+digest must not be where it gets published.
+
+`POST /content/digests/refresh {"source":"mail","limit":25}` is the bounded automatic pass. It
+is explicit rather than timer-driven for the same reason the inbox sweep ships disabled: a
+background job that quietly pulls every body out of a mailbox is not something a fresh clone
+should start doing.
+
+### Diagrams
+
+`POST /content/:source/:id/diagram` draws the item as one Mermaid diagram, from the digest when
+there is one — a diagram of a long paper drawn from its first 15,000 characters is a diagram of
+its introduction. The answer is validated before it is stored: a model asked for a diagram will
+cheerfully answer with prose, and prose in a diagram column fails at the reader, which is the
+hardest place to work out what went wrong. Same remote refusal as the digest, because a diagram
+of a private mail is still that mail.
+
+Calendar entries are digested through the same routes. Comms reads one entry over Calendar's own
+`content-item-v1` contract — the bounded cross-capability read it already does against Trips —
+rather than opening a second capability's database schema.
+
 ## Relationship to scouting
 
 Feed and Scouting are connected but not interchangeable. Feed answers “what changed or may be
@@ -414,8 +475,20 @@ contract consumed by a dashboard panel:
 - `GET /feed/:id` → one reader item incl. `transcript`, every stored TELOS relevance match,
   the factorized evaluation and Vault provenance
 - `GET /content/:source/:id` where source is `feed` or `mail` → the shared versioned
-  content reader contract. Mail currently supplies Gmail's bounded snippet as `content` and
-  leaves `summary` null; it does not imply that a preview is a generated summary.
+  content reader contract, including the stored `digest` when there is one. Reads only: a GET
+  that quietly runs a local model turns opening an item into a two-minute wait. Mail supplies
+  Gmail's bounded snippet as `content` and leaves `summary` null; a preview is not a generated
+  summary, and the digest beside it says which is which.
+- `POST /content/:source/:id/digest` `{"depth":"standard"|"detailed","focus":["..."]}` →
+  generate or refine the local digest and replace it in place. Both fields are optional; an
+  unknown `depth`, or a body that is not readable JSON, is a `400` rather than a quiet fall back
+  to the default. Synchronous, unlike `POST /ingest`: this is a button the operator is watching.
+- `POST /content/:source/:id/diagram` → one validated Mermaid diagram, drawn from the digest
+  when there is one. A model answer that is not a diagram is a typed rejection, not a stored
+  string.
+- `POST /content/digests/refresh` `{"source":"mail"|"feed","limit":25}` → the bounded automatic
+  pass over items with no digest, a stale producer, or a retryable failure with attempts left.
+  It never touches a row an operator refined.
 - `POST /content/:source/:id/cloud-preview` → builds a bounded local preview. Public content
   is copied as-is; Personal and Private content receives local deterministic entity redaction
   for recognized people after salutations, addresses, links, phone/account numbers and
@@ -574,6 +647,12 @@ the DB connection string is redacted before any display.
   an edit to the `CREATE TABLE`: `IF NOT EXISTS` never touches an installed
   table's constraints, so the edit alone would work on a fresh database and
   silently reject the new kinds on every existing one.
+- `content_digests` — one row per `(source, item_id)`: the generated text, its state, the rung
+  and depth that produced it, the operator's focus terms, the producer, how much source was
+  measured, the redaction count, the retry ledger and the Mermaid columns. One table rather than
+  a column on each item table: a digest is derived data with the same axes everywhere, so three
+  migrations would buy only drift. **No raw source is kept here** — a mail body is fetched,
+  digested and dropped inside one call, and this row is all that survives it.
 - `source_state` — per-source run bookkeeping.
 - `feed_relevance` — additive per-item/per-lens match rows: raw score, rationale,
   truthful scoring mode and a profile revision fingerprint. Refresh replaces only relevance;

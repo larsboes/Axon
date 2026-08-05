@@ -70,6 +70,26 @@ impl Default for TravelContextConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+pub struct CalendarContextConfig {
+    /// Calendar owns its entries. Comms reads one over Calendar's existing
+    /// `content-item-v1` route to digest it — the same bounded
+    /// cross-capability read it already does against Trips, rather than
+    /// reaching into a second capability's database schema.
+    pub base_url: String,
+    pub timeout_ms: u64,
+}
+
+impl Default for CalendarContextConfig {
+    fn default() -> Self {
+        Self {
+            base_url: "http://127.0.0.1:8087".into(),
+            timeout_ms: 2_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct VaultLinkSourceConfig {
     /// Stable provenance id, for example `scratchpad-to-read`.
     pub id: String,
@@ -165,6 +185,7 @@ struct FileConfig {
     keeper_export_dir: Option<String>,
     relevance: Option<RelevanceConfig>,
     travel_context: Option<TravelContextConfig>,
+    calendar_context: Option<CalendarContextConfig>,
     #[serde(default)]
     vault_link_sources: Vec<VaultLinkSourceConfig>,
     feed_sources: Option<Vec<FeedSourceConfig>>,
@@ -219,6 +240,7 @@ pub struct Config {
     pub keeper_export_dir: Option<PathBuf>,
     pub relevance: RelevanceConfig,
     pub travel_context: TravelContextConfig,
+    pub calendar_context: CalendarContextConfig,
     /// Explicit Markdown link sources. This is intentionally not a vault root:
     /// Scratchpad and other notes can contain credentials and admin URLs.
     pub vault_link_sources: Vec<VaultLinkSourceConfig>,
@@ -357,6 +379,7 @@ impl Config {
             .collect();
         let feed_sources = file.feed_sources.unwrap_or_else(default_feed_sources);
         let travel_context = file.travel_context.unwrap_or_default();
+        let calendar_context = file.calendar_context.unwrap_or_default();
         let quality_flags = file.quality_flags.unwrap_or_default();
 
         Self {
@@ -375,6 +398,7 @@ impl Config {
             keeper_export_dir,
             relevance,
             travel_context,
+            calendar_context,
             vault_link_sources,
             feed_sources,
             quality_flags,

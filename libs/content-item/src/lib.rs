@@ -65,8 +65,54 @@ pub struct ContentItem {
     pub processing: Vec<Processing>,
     pub origins: Vec<Origin>,
     pub links: Vec<Link>,
+    pub digest: Option<Digest>,
     pub mail: Option<MailExtension>,
     pub calendar: Option<CalendarExtension>,
+}
+
+/// What the local model wrote about this thing, and what was asked of it.
+///
+/// Deliberately not `summary`. `summary` is what the *source* said it is —
+/// calendar reads it from the entry's own description, and a generated
+/// paragraph written over that destroys the only verbatim text an entry has. A
+/// reader that wants "the short version" prefers `digest.text` and falls back to
+/// `summary`; both being present is normal, not a conflict.
+///
+/// Every field is present so the reader never probes. `text` is null whenever
+/// `state` is anything but `generated`, and `state` then says why — including
+/// `skipped_short`, which is a verdict about the source rather than a failure.
+#[derive(Debug, Clone, Serialize)]
+pub struct Digest {
+    pub text: Option<String>,
+    /// `generated` · `skipped_short` · `remote_refused` · `unconfigured` ·
+    /// `http_error` · `model_error` · `empty_response` · `timeout`.
+    pub state: String,
+    /// The rung the ladder landed on: `none` · `brief` · `standard` · `sectioned`.
+    pub shape: String,
+    /// `standard` for the automatic pass, `detailed` when an operator asked for
+    /// one rung more.
+    pub depth: String,
+    /// The operator's focus terms, as typed. Shown back to them so a
+    /// differently-shaped digest is explained rather than mysterious.
+    pub focus: Vec<String>,
+    /// Backend, model and prompt revision. A change to any of the three makes
+    /// this row legibly stale instead of silently mixed with newer ones.
+    pub producer: String,
+    /// How much source the ladder measured. Carrying it means a reader can see
+    /// *why* a short item has no digest without re-deriving the length.
+    pub source_chars: i64,
+    /// How many entities the deterministic redactor removed before this text was
+    /// written. Non-zero only for Private content, where the metadata is the
+    /// payload and a digest could otherwise republish what the subject line was
+    /// redacted for.
+    pub redactions: i32,
+    pub attempts: i32,
+    pub last_error: Option<String>,
+    /// Mermaid source, validated before it was stored — see `libs/summarize`.
+    pub diagram: Option<String>,
+    pub diagram_state: Option<String>,
+    pub diagram_error: Option<String>,
+    pub generated_at: String,
 }
 
 /// A named way out of this item: the source page, the mail that carried the
@@ -463,6 +509,7 @@ mod tests {
             processing: Vec::new(),
             origins: Vec::new(),
             links: Vec::new(),
+            digest: None,
             mail: None,
             calendar: None,
         }
@@ -498,6 +545,7 @@ mod tests {
             "processing",
             "origins",
             "links",
+            "digest",
             "mail",
             "calendar",
         ] {
@@ -598,6 +646,64 @@ mod tests {
                 .value,
             "personal"
         );
+    }
+
+    /// A skipped digest is a claim about the source, not a missing value: the
+    /// reader has to be able to say "too short to be worth one" rather than
+    /// showing an empty box that looks like a failure.
+    #[test]
+    fn a_skipped_digest_carries_its_verdict_and_no_text() {
+        let mut item = minimal("mail");
+        item.digest = Some(Digest {
+            text: None,
+            state: "skipped_short".into(),
+            shape: "none".into(),
+            depth: "standard".into(),
+            focus: Vec::new(),
+            producer: "openai|http://127.0.0.1:8080|gemma:content-digest-v1-adaptive".into(),
+            source_chars: 148,
+            redactions: 0,
+            attempts: 0,
+            last_error: None,
+            diagram: None,
+            diagram_state: None,
+            diagram_error: None,
+            generated_at: "2026-08-05T12:00:00Z".into(),
+        });
+        let value = serde_json::to_value(&item).unwrap();
+        assert_eq!(value["digest"]["state"], "skipped_short");
+        assert!(value["digest"]["text"].is_null());
+        assert_eq!(value["digest"]["source_chars"], 148);
+        assert_eq!(value["digest"]["focus"], json!([]));
+    }
+
+    /// `summary` and `digest` are different nouns and both may be present:
+    /// calendar's summary is the source's own description, and a generated
+    /// digest must not be written over it.
+    #[test]
+    fn a_digest_never_replaces_the_sources_own_summary() {
+        let mut item = minimal("calendar");
+        item.summary = Some("A theme park in Brühl.".into());
+        item.digest = Some(Digest {
+            text: Some("- Opens 09:00\n- Ticket is dated".into()),
+            state: "generated".into(),
+            shape: "brief".into(),
+            depth: "detailed".into(),
+            focus: vec!["opening hours".into()],
+            producer: "p".into(),
+            source_chars: 1_400,
+            redactions: 0,
+            attempts: 1,
+            last_error: None,
+            diagram: None,
+            diagram_state: None,
+            diagram_error: None,
+            generated_at: "2026-08-05T12:00:00Z".into(),
+        });
+        let value = serde_json::to_value(&item).unwrap();
+        assert_eq!(value["summary"], "A theme park in Brühl.");
+        assert_eq!(value["digest"]["depth"], "detailed");
+        assert_eq!(value["digest"]["focus"], json!(["opening hours"]));
     }
 
     #[test]

@@ -1,0 +1,484 @@
+//! Producing a digest for one stored item, whatever source it came from.
+//!
+//! `libs/summarize` owns the ladder, the prompt and the Mermaid gate. This
+//! module owns the three things that are specific to Axon: **where the source
+//! text comes from**, **whether a remote target is allowed to see it**, and
+//! **what has to be removed before the result is written down**.
+//!
+//! ## The mail body never lands
+//!
+//! A mail digest reads the message body with `format=full`, hands it to the
+//! model and drops it. Nothing writes it: `axon-personal#19` is explicit that a
+//! raw mail must not be retained as a local copy, and the digest row is the only
+//! thing that survives [`generate`]. The sweep is untouched and still reads
+//! `format=metadata` — reading a body is a separate, bounded, explicit act.
+//!
+//! ## Personal and Private content never leaves the machine
+//!
+//! The data class decides. `public` may use any configured target; everything
+//! else passes `allow_remote: false`, and `libs/summarize` refuses a non-loopback
+//! endpoint outright rather than downgrading it. Mail is never `public` by
+//! construction (`content_item::DataClass::classify_mail`), so a mail digest is
+//! loopback-only by the same rule that already governs mail relevance.
+//!
+//! ## A Private digest is redacted before it is stored
+//!
+//! For `vault` content the metadata *is* the payload — a one-time code arrives
+//! in the subject line, and a model asked to summarize that mail will quote the
+//! code back. The produced text therefore goes through the same deterministic
+//! detector the sweep uses on subject and snippet, and the count is recorded, so
+//! a digest cannot republish what the sweep redacted.
+
+use crate::cloud_derivative::{redact_review_field, RedactionFinding};
+use crate::config::Config;
+use crate::content_item;
+use crate::google;
+use crate::store::{Store, StoredDigest};
+use crate::summarize::{self, Depth, Directive, Outcome, Target};
+use crate::Result;
+
+/// How many retryable failures a row accumulates before the automatic pass
+/// leaves it alone. An explicit press always runs regardless — the operator can
+/// see the model is back up.
+pub const MAX_ATTEMPTS: i32 = 3;
+
+/// The configured summarization target, if there is one.
+///
+/// The `Target` shape is deliberately plain data: `libs/summarize` never learns
+/// what an `InferenceConfig` is, so calendar can include it without also
+/// including `libs/inference`.
+pub fn target(cfg: &Config) -> Option<Target> {
+    cfg.summarization_role().map(|role| Target {
+        endpoint: role.chat_completions_endpoint(),
+        model: role.model.clone(),
+        api_key: role.bearer_key(),
+        loopback: role.is_loopback(),
+    })
+}
+
+/// The stored producer string for the current target, or `None` when no
+/// summarization role is configured.
+pub fn producer_revision(cfg: &Config) -> Option<String> {
+    cfg.summarization_role()
+        .map(|role| summarize::producer(&role.cache_key(), summarize::DIGEST_PROMPT_REVISION))
+}
+
+pub fn diagram_producer_revision(cfg: &Config) -> Option<String> {
+    cfg.summarization_role()
+        .map(|role| summarize::producer(&role.cache_key(), summarize::DIAGRAM_PROMPT_REVISION))
+}
+
+/// What a source hands the model, and under which policy.
+struct SourceText {
+    text: String,
+    data_class: String,
+}
+
+impl SourceText {
+    /// Public content may use any configured target; everything else is
+    /// loopback-only. One expression, read by both the digest and the diagram
+    /// path, because a policy spelled out twice is a policy that drifts.
+    fn allow_remote(&self) -> bool {
+        self.data_class == "public"
+    }
+
+    fn redact_before_persistence(&self) -> bool {
+        content_item::redact_before_persistence(&self.data_class)
+    }
+}
+
+/// Gather the text worth digesting for one stored item.
+///
+/// `None` means the item does not exist. An item that exists but has no usable
+/// text comes back with an empty string, which the ladder correctly reads as
+/// nothing worth digesting.
+fn source_text(store: &Store, cfg: &Config, source: &str, id: &str) -> Result<Option<SourceText>> {
+    match source {
+        "feed" => Ok(store
+            .get_feed(id)
+            .map_err(|error| crate::CommsError::Other(error.to_string()))?
+            .map(|item| SourceText {
+                // The transcript is the source; the stored summary is a
+                // previous answer, and digesting an answer compounds whatever
+                // it got wrong.
+                text: item.transcript.unwrap_or_default(),
+                data_class: "public".into(),
+            })),
+        "mail" => {
+            let Some(item) = store
+                .get_triage(id)
+                .map_err(|error| crate::CommsError::Other(error.to_string()))?
+            else {
+                return Ok(None);
+            };
+            // The body is fetched here and dropped when this function returns
+            // its digest. The snippet is the fallback for a thread Gmail no
+            // longer has, or a token that cannot be refreshed right now.
+            let body = match google::access_token(&cfg.google_env_path) {
+                Ok(token) => google::thread_body_text(&token, id).unwrap_or(None),
+                Err(_) => None,
+            };
+            let text = body
+                .filter(|body| !body.trim().is_empty())
+                .or_else(|| item.snippet.clone())
+                .unwrap_or_default();
+            Ok(Some(SourceText {
+                text,
+                data_class: item.data_class,
+            }))
+        }
+        "calendar" => Ok(calendar_entry_text(cfg, id)?),
+        other => Err(crate::CommsError::Other(format!(
+            "unknown digest source {other:?}"
+        ))),
+    }
+}
+
+/// One calendar entry, read over Calendar's own HTTP contract.
+///
+/// Comms already reads Trips this way for its evaluation context
+/// (`travel.rs`); one more bounded cross-capability read follows that precedent
+/// instead of opening a second capability's database schema. The entry's own
+/// description and notes are the source — a calendar entry is Personal by
+/// construction, so this never reaches a remote target.
+fn calendar_entry_text(cfg: &Config, id: &str) -> Result<Option<SourceText>> {
+    let base = cfg.calendar_context.base_url.trim_end_matches('/');
+    let http = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(
+            cfg.calendar_context.timeout_ms,
+        ))
+        .build()?;
+    let response = http
+        .get(format!("{base}/api/content/calendar/{id}"))
+        .send()?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(crate::CommsError::Other(format!(
+            "calendar read failed with HTTP {}",
+            response.status()
+        )));
+    }
+    let item: serde_json::Value = response.json()?;
+    let field = |key: &str| {
+        item.get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let mut text = field("title");
+    for key in ["summary", "content"] {
+        let value = field(key);
+        if !value.is_empty() {
+            text.push_str("\n\n");
+            text.push_str(&value);
+        }
+    }
+    Ok(Some(SourceText {
+        text,
+        data_class: item
+            .get("data_class")
+            .and_then(|class| class.get("value"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("personal")
+            .to_string(),
+    }))
+}
+
+/// Produce and store the digest for one item.
+///
+/// Returns the stored row, or `None` when the item does not exist. A failure
+/// class is stored rather than raised: a model that was down is a fact about the
+/// row, and the reader shows it.
+pub fn generate(
+    store: &Store,
+    cfg: &Config,
+    source: &str,
+    id: &str,
+    directive: &Directive,
+) -> Result<Option<StoredDigest>> {
+    let Some(gathered) = source_text(store, cfg, source, id)? else {
+        return Ok(None);
+    };
+    let previous = store
+        .content_digest(source, id)
+        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+    let source_chars = gathered.text.chars().count() as i64;
+    let shape = directive.shape_for(gathered.text.chars().count());
+    let producer = producer_revision(cfg).unwrap_or_else(|| "unconfigured".into());
+
+    let outcome = summarize::digest(
+        target(cfg).as_ref(),
+        &gathered.text,
+        directive,
+        gathered.allow_remote(),
+    );
+
+    let mut redactions: Vec<RedactionFinding> = Vec::new();
+    let text = match &outcome {
+        Outcome::Ok(text) if gathered.redact_before_persistence() => {
+            redact_review_field(Some(text), &mut redactions)
+        }
+        Outcome::Ok(text) => Some(text.clone()),
+        _ => None,
+    };
+
+    // A retryable failure accumulates; anything else starts the count over,
+    // because a success or a verdict says the previous failures are no longer
+    // the state of this row.
+    let attempts = match (&outcome, &previous) {
+        (outcome, Some(previous)) if outcome.retryable() => previous.attempts.saturating_add(1),
+        (outcome, None) if outcome.retryable() => 1,
+        _ => 0,
+    };
+
+    let stored = StoredDigest {
+        source: source.to_string(),
+        item_id: id.to_string(),
+        text,
+        state: outcome.state().to_string(),
+        shape: shape.as_str().to_string(),
+        depth: directive.depth.as_str().to_string(),
+        focus: directive.focus_text(),
+        producer,
+        source_chars,
+        redactions: redactions.iter().map(|finding| finding.count).sum::<usize>() as i32,
+        attempts,
+        last_error: outcome.error_detail().map(str::to_string),
+        // The diagram is a separate press and survives a regenerated digest.
+        diagram: previous.as_ref().and_then(|row| row.diagram.clone()),
+        diagram_state: previous.as_ref().and_then(|row| row.diagram_state.clone()),
+        diagram_error: previous.as_ref().and_then(|row| row.diagram_error.clone()),
+        generated_at: String::new(),
+    };
+    store
+        .upsert_content_digest(&stored)
+        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+    store
+        .content_digest(source, id)
+        .map_err(|error| crate::CommsError::Other(error.to_string()))
+}
+
+/// Produce and store a Mermaid diagram beside an existing digest.
+///
+/// The digest is the input when there is one — it is the model's own compressed
+/// reading of the item, and a diagram of a forty-page paper drawn from the
+/// paper's first 15,000 characters is a diagram of its introduction. Falls back
+/// to the source text when no digest exists yet.
+pub fn generate_diagram(
+    store: &Store,
+    cfg: &Config,
+    source: &str,
+    id: &str,
+) -> Result<Option<StoredDigest>> {
+    let Some(gathered) = source_text(store, cfg, source, id)? else {
+        return Ok(None);
+    };
+    let existing = store
+        .content_digest(source, id)
+        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+    let input = existing
+        .as_ref()
+        .and_then(|row| row.text.clone())
+        .unwrap_or_else(|| gathered.text.clone());
+
+    let outcome = summarize::diagram(target(cfg).as_ref(), &input, gathered.allow_remote());
+    let producer = diagram_producer_revision(cfg).unwrap_or_else(|| "unconfigured".into());
+
+    // A diagram hangs off a digest row, so an item digested for the first time
+    // by this press needs one to exist. Generating the digest first is also the
+    // better diagram: see the note above.
+    if existing.is_none() {
+        generate(store, cfg, source, id, &Directive::default())?;
+    }
+
+    let (diagram, error) = match &outcome {
+        Outcome::Ok(diagram) => (Some(diagram.as_str()), None),
+        other => (None, other.error_detail()),
+    };
+    let updated = store
+        .update_content_diagram(source, id, diagram, outcome.state(), error, &producer)
+        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+    if updated == 0 {
+        return Ok(None);
+    }
+    store
+        .content_digest(source, id)
+        .map_err(|error| crate::CommsError::Other(error.to_string()))
+}
+
+/// The bounded automatic pass: digest the items of one source that still need
+/// one. Returns how many rows were written.
+///
+/// Bounded and explicit rather than timer-driven. For mail this reads message
+/// bodies, and a background job that quietly pulls every body out of a mailbox
+/// is not something a machine should start doing on its own.
+pub fn refresh_pending(store: &Store, cfg: &Config, source: &str, limit: i64) -> Result<usize> {
+    let Some(producer) = producer_revision(cfg) else {
+        return Ok(0);
+    };
+    let ids = store
+        .items_needing_digest(source, &producer, MAX_ATTEMPTS, limit.clamp(1, 500))
+        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+    let directive = Directive::new(Depth::Standard, []);
+    let mut written = 0;
+    for id in ids {
+        match generate(store, cfg, source, &id, &directive) {
+            Ok(Some(row)) => {
+                written += 1;
+                // A model that is not configured or not answering will not
+                // answer for the next hundred items either.
+                if row.state == "unconfigured" {
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(_) => {}
+        }
+    }
+    Ok(written)
+}
+
+/// The wire shape, built from the stored row.
+pub fn to_contract(row: &StoredDigest) -> content_item::Digest {
+    content_item::Digest {
+        text: row.text.clone(),
+        state: row.state.clone(),
+        shape: row.shape.clone(),
+        depth: row.depth.clone(),
+        focus: Directive::parse_focus(&row.focus),
+        producer: row.producer.clone(),
+        source_chars: row.source_chars,
+        redactions: row.redactions,
+        attempts: row.attempts,
+        last_error: row.last_error.clone(),
+        diagram: row.diagram.clone(),
+        diagram_state: row.diagram_state.clone(),
+        diagram_error: row.diagram_error.clone(),
+        generated_at: row.generated_at.clone(),
+    }
+}
+
+/// Parse a reader's refine request. An unknown depth is rejected rather than
+/// defaulted: a button that silently does something else than it says is worse
+/// than one that reports it could not.
+pub fn parse_directive(depth: Option<&str>, focus: Vec<String>) -> std::result::Result<Directive, String> {
+    let depth = match depth {
+        None => Depth::Standard,
+        Some(value) => Depth::parse(value).ok_or_else(|| {
+            format!("depth must be \"standard\" or \"detailed\", not {value:?}")
+        })?,
+    };
+    Ok(Directive::new(depth, focus))
+}
+
+/// A short, reader-facing account of why there is no digest text.
+pub fn state_explanation(state: &str, shape: &str) -> &'static str {
+    match state {
+        "generated" => "",
+        "skipped_short" if shape == "none" => {
+            "Too short to be worth a digest — the source is already the summary."
+        }
+        "skipped_short" => "Nothing to digest.",
+        "remote_refused" => {
+            "This item is Personal or Private and the configured model is not local."
+        }
+        "unconfigured" => "No summarization model is configured on this machine.",
+        "timeout" => "The local model did not answer in time.",
+        "empty_response" => "The local model answered with nothing.",
+        _ => "The local model could not be reached.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unknown_depth_is_rejected_rather_than_defaulted() {
+        assert!(parse_directive(Some("deeper"), Vec::new()).is_err());
+        assert!(parse_directive(Some(""), Vec::new()).is_err());
+        assert_eq!(
+            parse_directive(None, Vec::new()).unwrap().depth,
+            Depth::Standard
+        );
+        assert_eq!(
+            parse_directive(Some("detailed"), vec!["cost".into()])
+                .unwrap()
+                .focus,
+            vec!["cost".to_string()]
+        );
+    }
+
+    /// The one rule that keeps mail off a cloud endpoint: mail is never
+    /// `public`, and only `public` allows a remote target.
+    #[test]
+    fn only_public_content_may_use_a_remote_target() {
+        for class in ["personal", "vault", "something-new"] {
+            let gathered = SourceText {
+                text: String::new(),
+                data_class: class.into(),
+            };
+            assert!(!gathered.allow_remote(), "{class} must stay local");
+        }
+        assert!(SourceText {
+            text: String::new(),
+            data_class: "public".into(),
+        }
+        .allow_remote());
+    }
+
+    #[test]
+    fn only_private_content_is_redacted_before_the_digest_is_stored() {
+        let private = SourceText {
+            text: String::new(),
+            data_class: "vault".into(),
+        };
+        assert!(private.redact_before_persistence());
+        for class in ["personal", "public"] {
+            assert!(!SourceText {
+                text: String::new(),
+                data_class: class.into(),
+            }
+            .redact_before_persistence());
+        }
+    }
+
+    /// A skip is a claim about the source, so the reader has to be able to say
+    /// which one it was without re-deriving anything.
+    #[test]
+    fn every_non_generated_state_explains_itself() {
+        for state in [
+            "skipped_short",
+            "remote_refused",
+            "unconfigured",
+            "timeout",
+            "empty_response",
+            "http_error",
+            "model_error",
+        ] {
+            assert!(
+                !state_explanation(state, "none").is_empty(),
+                "{state} has no explanation"
+            );
+        }
+        assert!(state_explanation("generated", "brief").is_empty());
+    }
+
+    /// The redactor the digest path reuses is the sweep's own. This is the
+    /// property that matters: a model asked to summarize a one-time-code mail
+    /// will quote the code, and the digest must not be where it gets published.
+    #[test]
+    fn a_private_digest_cannot_republish_a_one_time_code() {
+        let model_answer = "- Your verification code is 448215\n- It expires in 10 minutes";
+        let mut findings: Vec<RedactionFinding> = Vec::new();
+        let stored = redact_review_field(Some(model_answer), &mut findings).unwrap();
+        assert!(!stored.contains("448215"), "the code survived: {stored}");
+        assert!(
+            findings.iter().map(|finding| finding.count).sum::<usize>() > 0,
+            "a redaction that removes something must be counted"
+        );
+    }
+}

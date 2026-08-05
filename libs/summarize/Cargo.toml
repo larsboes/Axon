@@ -1,0 +1,25 @@
+[package]
+name = "axon-summarize"
+version = "0.1.0"
+edition = "2021"
+description = "One adaptive digest engine: the shape follows the source's length, 'more detailed' is a rung on that same ladder, and a Mermaid answer is validated before it is stored."
+publish = false
+
+# Inert here, and deliberately so: this file is `#[path]`-included into its
+# consumers, and its unit tests hide behind this feature so they never run
+# inside a consumer's test binary. Declaring it is what stops every build
+# printing unexpected_cfgs.
+[features]
+standalone-tests = []
+
+[lib]
+name = "axon_summarize"
+path = "src/lib.rs"
+
+# Like libs/inference this is not std-only -- it speaks HTTP and JSON. Both
+# consumers (comms, calendar) already carry these, so the `#[path]` include adds
+# nothing to a capability's dependency resolution; the versions here exist for
+# the standalone build and must stay in step with the crate universe.
+[dependencies]
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "blocking"] }

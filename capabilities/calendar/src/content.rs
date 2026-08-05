@@ -174,6 +174,12 @@ pub fn from_entry(entry: &Entry) -> ContentItem {
         processing: Vec::new(),
         origins: origins_of(entry),
         links: links_of(entry),
+        // Calendar does not generate digests: comms owns the digest engine and
+        // reads an entry over HTTP to produce one, the same bounded
+        // cross-capability read it already does against Trips. This projection
+        // stays pure — it queries nothing — so the field is null here and the
+        // reader fetches the digest from comms alongside it.
+        digest: None,
         mail: None,
         calendar: Some(CalendarExtension {
             starts_at: entry.starts_at.clone(),

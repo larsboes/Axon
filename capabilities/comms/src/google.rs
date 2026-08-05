@@ -274,6 +274,21 @@ struct MessageDetail {
 struct MessagePayload {
     #[serde(default)]
     headers: Vec<Header>,
+    // Present only under `format=full`. A metadata fetch simply leaves these
+    // absent, which is why one struct serves both shapes.
+    #[serde(rename = "mimeType", default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    body: Option<MessageBody>,
+    #[serde(default)]
+    parts: Vec<MessagePayload>,
+}
+
+#[derive(Deserialize)]
+struct MessageBody {
+    /// base64url, per Gmail's API. Absent for a part that is only a container.
+    #[serde(default)]
+    data: Option<String>,
 }
 #[derive(Deserialize)]
 struct Header {
@@ -344,6 +359,95 @@ pub fn thread_meta_lookup(token: &str, id: &str) -> Result<Option<ThreadMeta>> {
         }
     }
     Ok(Some(meta))
+}
+
+/// Max characters of decoded body text returned. The digest engine caps again
+/// at its own input limit; this one exists so a 40 MB newsletter never becomes
+/// a 40 MB `String` in the first place.
+const BODY_TEXT_CAP: usize = 60_000;
+
+/// The plain text of a thread's latest message, fetched with `format=full`.
+///
+/// **Nothing here is persisted.** The value is handed straight to the digest
+/// engine and dropped; `axon-personal#19` is explicit that a raw mail must never
+/// be kept as a local copy, and the only thing that survives this call is the
+/// digest row. It is deliberately not reachable from the sweep: the sweep stays
+/// on `format=metadata`, and reading a body is a separate, bounded, explicit
+/// act.
+///
+/// The latest message rather than the whole thread, matching
+/// [`thread_meta_lookup`] — a reply chain repeats its own quoted history, so
+/// concatenating every message digests the same text several times over.
+///
+/// `text/plain` is preferred and `text/html` is stripped through the same
+/// extraction implementation the article path uses. A missing thread is `None`,
+/// the same authoritative-absence signal metadata gives.
+pub fn thread_body_text(token: &str, id: &str) -> Result<Option<String>> {
+    std::thread::sleep(THREAD_FETCH_PAUSE);
+    let http = client()?;
+    let response = http
+        .get(format!("{THREADS_URL}/{id}"))
+        .bearer_auth(token)
+        .query(&[("format", "full")])
+        .send()?;
+    if is_missing_thread_status(response.status().as_u16()) {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(CommsError::Other(format!(
+            "thread body failed with HTTP {}",
+            response.status()
+        )));
+    }
+    let detail: ThreadDetail = response.json()?;
+    let Some(payload) = detail.messages.last().and_then(|m| m.payload.as_ref()) else {
+        return Ok(None);
+    };
+
+    let text = collect_part(payload, "text/plain")
+        .or_else(|| {
+            collect_part(payload, "text/html").map(|html| crate::extraction::html_to_lines(&html))
+        })
+        .map(|text| {
+            let text = text.trim();
+            text.chars().take(BODY_TEXT_CAP).collect::<String>()
+        })
+        .filter(|text| !text.is_empty());
+    Ok(text)
+}
+
+/// Depth-first search for the first part of a MIME type, decoded.
+///
+/// Depth-first because a `multipart/alternative` nests its plain and HTML
+/// alternatives underneath, and a breadth-first walk would find the container
+/// before either.
+fn collect_part(payload: &MessagePayload, want: &str) -> Option<String> {
+    if payload
+        .mime_type
+        .as_deref()
+        .is_some_and(|mime| mime.eq_ignore_ascii_case(want))
+    {
+        if let Some(text) = payload.body.as_ref().and_then(|body| body.data.as_deref()) {
+            if let Some(decoded) = decode_body(text) {
+                return Some(decoded);
+            }
+        }
+    }
+    payload
+        .parts
+        .iter()
+        .find_map(|part| collect_part(part, want))
+}
+
+/// Gmail encodes body data base64url without padding. A part that does not
+/// decode, or is not UTF-8, is skipped rather than returned as replacement
+/// characters — the next alternative is usually readable.
+fn decode_body(data: &str) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(data.trim_end_matches('='))
+        .ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// Compatibility helper for callers that require an existing thread.

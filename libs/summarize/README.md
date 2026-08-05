@@ -1,0 +1,88 @@
+# libs/summarize
+
+One home for **how much digest a thing is worth**.
+
+A shared library, not a capability: no domain of its own, no upstream verdict, no CLI
+(README.md#three-architectural-nouns). Consumers compile it in with a `#[path]` include rather
+than a cargo path dependency, for the same reason `libs/axon-config` does.
+
+## Why it exists
+
+`comms` had one summarizer, one prompt and one `max_tokens: 800`, reachable only from
+`media.rs` and only for a feed item that had a transcript. A forty-word mail and a forty-page
+paper got the same three bullets — the first longer than its source, the second discarding
+most of it. Mail got nothing at all.
+
+Three capabilities want the same artifact, so it stopped being feed's private helper.
+
+## A digest is not a summary
+
+Deliberately a different noun. `summary` on `content-item-v1` is what the *source* said it
+is: calendar reads it from the entry's own description, and overwriting that with generated
+prose destroys the only verbatim text an entry has. A **digest** is what the local model wrote
+about the thing, carrying its own shape, directive and provenance.
+
+## The ladder
+
+The shape follows the source's length, and nothing else chooses it:
+
+| Source | Shape | Asked for | Ceiling |
+|---|---|---|---|
+| under 600 chars | `none` | nothing — see below | — |
+| 600–2,499 | `brief` | two to three bullets | 200 tokens |
+| 2,500–8,999 | `standard` | bullets plus one context sentence | 500 tokens |
+| 9,000+ | `sectioned` | grouped bullets under at most four headings, plus context | 1,000 tokens |
+
+Below the floor **no digest is produced at all**. A paraphrase of a two-line mail is a second
+thing to read, not a shorter one, and it costs a model call to make. `Outcome::SkippedShort`
+is a verdict, not a failure, and it is never retried.
+
+**"More detailed" is a rung, not an adjective.** Asking a model to be more detailed gets you a
+longer version of the same guess. `Depth::Detailed` moves the shape exactly one step up this
+same ladder — `brief → standard → sectioned`, saturating — which changes both the requested
+structure and the ceiling, and stays inspectable afterwards because the stored row records
+which rung produced it.
+
+That rule also gives the short floor its escape hatch: `none → brief`. The automatic pass
+skips a short source; an operator looking at the item can force one anyway, because they can
+see something the character count cannot.
+
+**Focus terms** are the second half of the affordance: up to eight bounded, de-duplicated
+operator terms, named individually in the prompt with an explicit instruction to say so rather
+than invent when the source is silent on one. They are stored with the digest, so the reader
+can show what was asked for rather than leaving a differently-shaped digest unexplained.
+
+## The remote refusal lives here
+
+`digest()` and `diagram()` take the caller's data-class verdict as `allow_remote`. Personal
+and Private content passes `false`, and a non-loopback target is then refused outright —
+`Outcome::RemoteRefused`, never a quiet downgrade and never retried into success. The check
+sits at the one place that makes the request, because a policy enforced by each caller
+separately has as many holes as it has callers.
+
+## Diagrams are validated, not trusted
+
+A model asked for a diagram will cheerfully answer with prose. `extract_mermaid` unwraps a
+```` ```mermaid ```` block or accepts a bare diagram, then requires the first meaningful line
+to start with one of twelve known Mermaid headers. Anything else is a typed rejection.
+Unrenderable text stored in a diagram column fails at the reader, which is the hardest place
+to work out what went wrong.
+
+## Dependency rule
+
+`serde_json` and blocking `reqwest`, and nothing else — both consumers already carry them, so
+the `#[path]` include adds nothing to their resolution. Adding a third dependency here is a
+breaking change to every consumer.
+
+It deliberately does **not** name `libs/inference`'s types. A caller builds a `Target` from
+whatever role it resolved, so a capability that has no inference module still compiles:
+
+```rust
+let target = role.map(|role| Target {
+    endpoint: role.chat_completions_endpoint(),
+    model: role.model.clone(),
+    api_key: role.bearer_key(),
+    loopback: role.is_loopback(),
+});
+let outcome = summarize::digest(target.as_ref(), text, &directive, allow_remote);
+```

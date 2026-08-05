@@ -930,8 +930,57 @@ export interface ContentItemDetail {
   processing: FeedStageProvenance[];
   origins: FeedOrigin[];
   links: ContentLink[];
+  /** What the local model wrote about this item. Deliberately not `summary`,
+   *  which is what the *source* said it is — calendar reads that from the
+   *  entry's own description, and a generated paragraph written over it would
+   *  destroy the only verbatim text an entry has. A reader wanting the short
+   *  version prefers `digest.text` and falls back to `summary`. */
+  digest: ContentDigest | null;
   mail: MailContentExtension | null;
   calendar: CalendarContentExtension | null;
+}
+
+/** Why there is no digest text. `skipped_short` is a verdict about the source —
+ *  it is already shorter than any honest digest of it — not a failure. */
+export type DigestState =
+  | 'generated'
+  | 'skipped_short'
+  | 'remote_refused'
+  | 'unconfigured'
+  | 'http_error'
+  | 'model_error'
+  | 'empty_response'
+  | 'timeout';
+
+/** The rung the length ladder landed on. Derived from `source_chars`, never
+ *  chosen directly — see libs/summarize/README.md. */
+export type DigestShape = 'none' | 'brief' | 'standard' | 'sectioned';
+
+/** `detailed` moves the shape exactly one rung up that same ladder. It is not a
+ *  separate instruction to the model, which is why it stays inspectable. */
+export type DigestDepth = 'standard' | 'detailed';
+
+export interface ContentDigest {
+  text: string | null;
+  state: DigestState;
+  shape: DigestShape;
+  depth: DigestDepth;
+  /** The operator's focus terms, as typed. Shown back so a differently-shaped
+   *  digest is explained rather than mysterious. */
+  focus: string[];
+  producer: string;
+  source_chars: number;
+  /** Entities the deterministic redactor removed before this text was stored.
+   *  Non-zero only for Private content. */
+  redactions: number;
+  attempts: number;
+  last_error: string | null;
+  /** Mermaid source, validated against the known diagram headers before it was
+   *  stored — a string the renderer cannot draw never gets here. */
+  diagram: string | null;
+  diagram_state: string | null;
+  diagram_error: string | null;
+  generated_at: string;
 }
 
 /** A named way out of an item: source page, the mail that carried the ticket,
@@ -1519,6 +1568,28 @@ export const comms = {
    *  the routing itself lives in `contentItem` so there is one map, not two. */
   content: (source: ContentSource, id: string, signal?: AbortSignal) =>
     contentItem(source, id, signal),
+  /** Generate or refine an item's digest. Synchronous on the server: this is a
+   *  button the operator is watching, and answering early would show them the
+   *  previous digest. */
+  digest: (
+    source: ContentSource,
+    id: string,
+    body: { depth?: DigestDepth; focus?: string[] } = {},
+  ) =>
+    request<ContentDigest>(
+      `/comms/content/${source}/${encodeURIComponent(id)}/digest`,
+      jsonInit('POST', body),
+    ),
+  diagram: (source: ContentSource, id: string) =>
+    request<ContentDigest>(
+      `/comms/content/${source}/${encodeURIComponent(id)}/diagram`,
+      { method: 'POST' },
+    ),
+  refreshDigests: (source: ContentSource, limit?: number) =>
+    request<{ source: string; digested: number }>(
+      '/comms/content/digests/refresh',
+      jsonInit('POST', limit === undefined ? { source } : { source, limit }),
+    ),
   prepareCloudPreview: (source: ContentSource, id: string) =>
     request<CloudDerivativePreview>(
       `/comms/content/${source}/${encodeURIComponent(id)}/cloud-preview`,

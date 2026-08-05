@@ -1,0 +1,32 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# README.md is exported so the root //:architecture_up_to_date_test can reference
+# it across the package boundary. src/lib.rs is exported because consumers compile
+# it in by `#[path]` include rather than a cargo path dependency -- see
+# libs/axon-config/BUILD.bazel for the full reason.
+exports_files(["README.md", "Cargo.toml", "src/lib.rs"])
+
+# libs/summarize -- a shared library, not a capability (no domain of its own, no
+# upstream verdict, no CLI). See README.md#three-architectural-nouns.
+rust_library(
+    name = "summarize",
+    crate_name = "axon_summarize",
+    # Globbed rather than listed, matching //libs/inference: the day this becomes
+    # two files is not a day anyone has to remember this file exists.
+    srcs = glob(["src/**/*.rs"]),
+    # The test mod is feature-gated (see Cargo.toml) so the standalone build
+    # enables it and :summarize_test actually runs.
+    crate_features = ["standalone-tests"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index//:reqwest",
+        "@crate_index//:serde_json",
+    ],
+)
+
+rust_test(
+    name = "summarize_test",
+    crate = ":summarize",
+    size = "small",
+)

@@ -44,6 +44,11 @@ postgres = "0.19"
 # already in this workspace's resolved Cargo.lock (transitive today), so this
 # reuses a pinned dep rather than hand-rolling SHA-256.
 sha2 = "0.10"
+# Gmail returns message bodies base64url-encoded, and the digest path is the
+# first thing here that reads one. Already resolved in this crate's Cargo.lock
+# (transitive today), so naming it reuses a pinned dep rather than hand-rolling
+# a decoder -- the same reasoning as sha2 above.
+base64 = "0.22"
 # comms-server only:
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"

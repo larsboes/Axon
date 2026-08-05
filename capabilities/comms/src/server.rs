@@ -24,6 +24,7 @@ use comms::cloud_derivative::{self, CloudDerivativePreview, CloudDocumentInput};
 use comms::cloud_dispatch;
 use comms::config::Config;
 use comms::content_item::{self, DataClass};
+use comms::digest;
 use comms::evaluation::{self, EvaluationFactor, FeedEvaluation};
 use comms::google::{self, ThreadAction, ThreadLocation};
 use comms::intake;
@@ -66,6 +67,21 @@ const ROUTES: &[route_manifest::Route] = &[
         "GET",
         "/content/:source/:id",
         "An item as content-item-v1. :source is feed or mail.",
+    ),
+    r(
+        "POST",
+        "/content/:source/:id/digest",
+        "Generate or refine this item's local digest. Optional depth and focus[].",
+    ),
+    r(
+        "POST",
+        "/content/:source/:id/diagram",
+        "Draw this item as a validated Mermaid diagram.",
+    ),
+    r(
+        "POST",
+        "/content/digests/refresh",
+        "Bounded automatic pass over one source. Requires source, optional limit.",
     ),
     r(
         "POST",
@@ -581,6 +597,7 @@ struct ContentItemOut {
     evaluation: Option<EvaluationOut>,
     processing: Vec<StageProvenanceOut>,
     origins: Vec<OriginOut>,
+    digest: Option<content_item::Digest>,
     mail: Option<MailContentExtensionOut>,
 }
 
@@ -625,6 +642,8 @@ impl ContentItemOut {
                 .map(StageProvenanceOut::from)
                 .collect(),
             origins: origins.into_iter().map(OriginOut::from).collect(),
+            // Filled by `attach_digest` -- a projection cannot query.
+            digest: None,
             mail: None,
         }
     }
@@ -674,6 +693,7 @@ impl ContentItemOut {
             evaluation: None,
             processing: Vec::new(),
             origins: Vec::new(),
+            digest: None,
             mail: Some(MailContentExtensionOut {
                 category: item.stream,
                 rationale: item.rationale,
@@ -701,6 +721,19 @@ impl ContentItemOut {
             content: self.content.clone(),
             data_class: self.data_class.value.clone(),
         }
+    }
+
+    /// Read the stored digest, if one exists.
+    ///
+    /// Reads only. A GET that quietly runs a local model turns opening an item
+    /// into a two-minute wait and a load nobody asked for; generating is always
+    /// an explicit press or the bounded pass.
+    fn attach_digest(mut self, store: &Store) -> Result<Self, Box<dyn std::error::Error>> {
+        self.digest = store
+            .content_digest(self.source, &self.id)?
+            .as_ref()
+            .map(digest::to_contract);
+        Ok(self)
     }
 
     fn attach_cloud_state(mut self, store: &Store) -> Result<Self, Box<dyn std::error::Error>> {
@@ -969,10 +1002,130 @@ fn load_content_item(
         _ => return Err("source must be 'feed' or 'mail'".into()),
     };
     item.map(|item| {
-        item.attach_cloud_state(store)
+        item.attach_digest(store)
+            .and_then(|item| item.attach_cloud_state(store))
             .map_err(|error| error.to_string())
     })
     .transpose()
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DigestBody {
+    /// `"standard"` or `"detailed"`. Absent means the automatic rung.
+    depth: Option<String>,
+    /// What the reader wants the digest to pay attention to.
+    #[serde(default)]
+    focus: Vec<String>,
+}
+
+/// Generate or refine one item's digest.
+///
+/// Synchronous on purpose, unlike `POST /ingest`: this is a button the operator
+/// just pressed and is watching, so answering before the model has finished
+/// would mean showing them the *old* digest and hoping they refresh.
+async fn digest_handler(
+    Path((source, id)): Path<(String, String)>,
+    raw: axum::body::Bytes,
+) -> (StatusCode, Json<Value>) {
+    // Raw bytes rather than `Option<Json<DigestBody>>`: that extractor yields
+    // `None` for a *malformed* body exactly as it does for an absent one, so a
+    // client typo silently produced a standard digest instead of the detailed
+    // one it asked for. A button that quietly does something other than what it
+    // says is worse than one that reports it could not.
+    let body: DigestBody = if raw.is_empty() {
+        DigestBody::default()
+    } else {
+        match serde_json::from_slice(&raw) {
+            Ok(body) => body,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("could not read the request body: {error}") })),
+                )
+            }
+        }
+    };
+    let directive = match digest::parse_directive(body.depth.as_deref(), body.focus) {
+        Ok(directive) => directive,
+        Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        digest::generate(&store, &cfg, &source, &id, &directive)
+            .map(|row| row.as_ref().map(digest::to_contract))
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    digest_response(result, "digest failed")
+}
+
+/// Draw one item as a Mermaid diagram.
+async fn diagram_handler(Path((source, id)): Path<(String, String)>) -> (StatusCode, Json<Value>) {
+    let result = tokio::task::spawn_blocking(move || {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        digest::generate_diagram(&store, &cfg, &source, &id)
+            .map(|row| row.as_ref().map(digest::to_contract))
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    digest_response(result, "diagram failed")
+}
+
+fn digest_response(
+    result: Result<Result<Option<content_item::Digest>, String>, tokio::task::JoinError>,
+    failure: &'static str,
+) -> (StatusCode, Json<Value>) {
+    match result {
+        Ok(Ok(Some(digest))) => (StatusCode::OK, Json(json!(digest))),
+        Ok(Ok(None)) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))),
+        Ok(Err(error)) if error.starts_with("unknown digest source") => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
+        }
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": failure })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DigestRefreshBody {
+    source: String,
+    limit: Option<i64>,
+}
+
+/// The bounded automatic pass over one source.
+///
+/// Explicit rather than timer-driven: for mail this reads message bodies, and a
+/// background job that quietly pulls every body out of a mailbox is not
+/// something a machine should start doing on its own.
+async fn digest_refresh_handler(
+    Json(body): Json<DigestRefreshBody>,
+) -> (StatusCode, Json<Value>) {
+    let result = tokio::task::spawn_blocking(move || -> Result<(String, usize), String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let written = digest::refresh_pending(&store, &cfg, &body.source, body.limit.unwrap_or(25))
+            .map_err(|error| error.to_string())?;
+        Ok((body.source, written))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((source, written))) => (
+            StatusCode::OK,
+            Json(json!({ "source": source, "digested": written })),
+        ),
+        Ok(Err(error)) if error.contains("no digest queue for source") => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
+        }
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "digest refresh failed" })),
+        ),
+    }
 }
 
 async fn content_item_handler(
@@ -3270,6 +3423,9 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
 
     // Mutating routes: require shared secret.
     let write_routes = Router::new()
+        .route("/content/:source/:id/digest", post(digest_handler))
+        .route("/content/:source/:id/diagram", post(diagram_handler))
+        .route("/content/digests/refresh", post(digest_refresh_handler))
         .route(
             "/content/:source/:id/cloud-preview",
             post(cloud_preview_handler),

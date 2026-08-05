@@ -9,6 +9,7 @@
     type FeedEntryLoadPhase,
   } from "$lib/feed/entry-loader";
   import MarkdownDocument from "$lib/feed/MarkdownDocument.svelte";
+  import MermaidDiagram from "$lib/feed/MermaidDiagram.svelte";
   import {
     KINDS,
     whenError,
@@ -33,6 +34,7 @@
     type CalendarCommitment,
     type CalendarContentExtension,
     type CalendarUpdateEntry,
+    type ContentDigest,
     type ContentItemDetail,
     type ContentSource,
     type DataClass,
@@ -73,6 +75,11 @@
   let providerListLoaded = $state(false);
   let queueingCloudDerivative = $state(false);
   let runningCloudJob = $state(false);
+  /// Which digest press is in flight, or null. One variable rather than three
+  /// booleans: the three presses share a model and must not run at once.
+  let digestBusy = $state<"standard" | "detailed" | "diagram" | null>(null);
+  let digestError = $state<string | null>(null);
+  let focusInput = $state("");
   let calendarProposalBusy = $state<string | null>(null);
   let calendarProposalSaved = $state<Set<string>>(new Set());
   let calendarProposalError = $state<string | null>(null);
@@ -128,6 +135,97 @@
       : [],
   );
 
+  /// The digest is the short version when there is one; `summary` is what the
+  /// source itself said, and stays visible beside it rather than under it.
+  const digestText = $derived(
+    entry?.digest?.state === "generated" ? entry.digest.text : null,
+  );
+
+  const SHAPE_LABEL: Record<string, string> = {
+    brief: "Brief",
+    standard: "Standard",
+    sectioned: "Sectioned",
+    none: "None",
+  };
+
+  /// The rung, and whether it was asked for. Both, because "Sectioned" alone
+  /// does not say whether the length earned it or the operator did.
+  const digestRungLabel = $derived(
+    entry?.digest
+      ? `${SHAPE_LABEL[entry.digest.shape] ?? entry.digest.shape}${
+          entry.digest.depth === "detailed" ? " · you asked for more" : ""
+        }`
+      : "",
+  );
+
+  /// Why there is no text. A skip is a claim about the source, so it reads
+  /// differently from a model that could not be reached.
+  function digestExplanation(digest: ContentDigest): string {
+    switch (digest.state) {
+      case "generated":
+        return "";
+      case "skipped_short":
+        return "Too short to be worth a digest — the source is already the summary. Press More detail to force one.";
+      case "remote_refused":
+        return "This item is Personal or Private and the configured model is not local, so nothing was sent.";
+      case "unconfigured":
+        return "No summarization model is configured on this machine.";
+      case "timeout":
+        return "The local model did not answer in time.";
+      case "empty_response":
+        return "The local model answered with nothing.";
+      default:
+        return digest.last_error ?? "The local model could not be reached.";
+    }
+  }
+
+  /// The diagram's own failure, which is a different axis from the digest's:
+  /// a model that produced prose instead of Mermaid did answer.
+  function diagramExplanation(digest: ContentDigest): string {
+    if (digest.diagram_error) return digest.diagram_error;
+    return digestExplanation({
+      ...digest,
+      state: (digest.diagram_state ?? "model_error") as ContentDigest["state"],
+    });
+  }
+
+  function focusTerms(): string[] {
+    return focusInput
+      .split(",")
+      .map((term) => term.trim())
+      .filter(Boolean);
+  }
+
+  async function runDigest(depth: "standard" | "detailed") {
+    if (!entry || digestBusy) return;
+    digestBusy = depth;
+    digestError = null;
+    try {
+      const digest = await comms.digest(entry.source, entry.id, { depth, focus: focusTerms() });
+      entry.digest = digest;
+      // What the model was asked for is now stored; showing it back from the
+      // row rather than the input keeps the two from drifting after a reload.
+      focusInput = digest.focus.join(", ");
+    } catch (cause) {
+      digestError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      digestBusy = null;
+    }
+  }
+
+  async function runDiagram() {
+    if (!entry || digestBusy) return;
+    digestBusy = "diagram";
+    digestError = null;
+    try {
+      entry.digest = await comms.diagram(entry.source, entry.id);
+    } catch (cause) {
+      digestError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      digestBusy = null;
+    }
+  }
+
   const title = $derived(entry?.title ?? entry?.url ?? "Feed entry");
   const bodyLabel = $derived(entry?.content_label ?? "Source content");
   const readMinutes = $derived(
@@ -179,9 +277,19 @@
    *  the note is the operator's own text, stored verbatim — and saying so is
    *  more honest than borrowing feed's "Formatted source". */
   function processingLabel(item: ContentItemDetail): string {
-    if (item.source === "calendar") return item.summary ? "Summary + your note" : "Your note";
+    // "Bounded preview" alone stopped being true for mail the moment a digest
+    // could read the full message: the body on screen is still the snippet, but
+    // the digest is not made from it, and a label that hides that is the kind
+    // of quiet understatement this reader exists to avoid.
+    const digested = item.digest?.state === "generated";
+    if (item.source === "calendar") {
+      if (digested) return "Digest + your note";
+      return item.summary ? "Summary + your note" : "Your note";
+    }
+    if (item.source === "mail") return digested ? "Digest + bounded preview" : "Bounded preview";
+    if (digested) return "Digest + source";
     if (item.summary) return "Summary + source";
-    return item.source === "mail" ? "Bounded preview" : "Formatted source";
+    return "Formatted source";
   }
 
   const COMMITMENT_LABEL: Record<string, string> = {
@@ -962,15 +1070,96 @@
       {#if error}<p class="inline-error" aria-live="polite">{error}</p>{/if}
         </header>
 
-        {#if entry.summary}
+        <section class="note digest" aria-labelledby="digest-title">
+          <div class="digest-head">
+            <p class="section-label" id="digest-title">Digest</p>
+            {#if digestText}
+              <span class="digest-rung">{digestRungLabel}</span>
+            {/if}
+          </div>
+
+          {#if digestText}
+            <MarkdownDocument content={digestText} compact />
+          {:else if entry.digest}
+            <p class="digest-note">{digestExplanation(entry.digest)}</p>
+          {:else}
+            <p class="digest-note">Not generated yet.</p>
+          {/if}
+
+          {#if entry.digest?.focus?.length}
+            <p class="digest-focus">
+              Asked to focus on: {entry.digest.focus.join(", ")}
+            </p>
+          {/if}
+          {#if entry.digest && entry.digest.redactions > 0}
+            <p class="digest-redactions">
+              {entry.digest.redactions}
+              {entry.digest.redactions === 1 ? "entity was" : "entities were"} redacted before this
+              was stored — this item is Private, and a digest must not republish what the sweep
+              removed.
+            </p>
+          {/if}
+
+          <div class="digest-controls">
+            <label class="digest-field">
+              <span>Focus on</span>
+              <input
+                type="text"
+                placeholder="optional — comma-separated, e.g. cost, evaluation"
+                bind:value={focusInput}
+                disabled={digestBusy !== null}
+              />
+            </label>
+            <div class="digest-buttons">
+              <button
+                class="btn"
+                disabled={digestBusy !== null}
+                onclick={() => runDigest("standard")}
+                title="Regenerate at the rung this source's length earns"
+              >
+                {digestBusy === "standard" ? "Digesting…" : "Regenerate"}
+              </button>
+              <button
+                class="btn btn-primary"
+                disabled={digestBusy !== null}
+                onclick={() => runDigest("detailed")}
+                title="One rung further up the same ladder"
+              >
+                {digestBusy === "detailed" ? "Digesting…" : "More detail"}
+              </button>
+              <button
+                class="btn"
+                disabled={digestBusy !== null}
+                onclick={runDiagram}
+                title="Draw this item as a Mermaid diagram"
+              >
+                {digestBusy === "diagram" ? "Drawing…" : "Diagram"}
+              </button>
+            </div>
+          </div>
+
+          {#if entry.digest?.diagram}
+            <MermaidDiagram source={entry.digest.diagram} />
+          {:else if entry.digest?.diagram_state && entry.digest.diagram_state !== "generated"}
+            <p class="digest-note">No diagram: {diagramExplanation(entry.digest)}</p>
+          {/if}
+
+          {#if digestError}<p class="inline-error" aria-live="polite">{digestError}</p>{/if}
+          {#if entry.digest}
+            <p class="digest-provenance">
+              {entry.digest.source_chars.toLocaleString()} characters of source · produced by
+              <code>{entry.digest.producer}</code>
+            </p>
+          {/if}
+        </section>
+
+        <!-- `summary` is what the *source* said it is, and stays beside the
+             digest rather than being replaced by it: for a calendar entry it is
+             the only verbatim description there is. -->
+        {#if entry.summary && entry.summary !== digestText}
           <section class="note">
-            <p class="section-label">Summary</p>
+            <p class="section-label">{entry.calendar ? "As described" : "Summary"}</p>
             <MarkdownDocument content={entry.summary} compact />
-          </section>
-        {:else if entry.source === "mail"}
-          <section class="note pending-summary">
-            <p class="section-label">Summary</p>
-            <p>Not generated yet. This reader currently uses Gmail's bounded message preview; full-message enrichment waits for the sensitivity policy.</p>
           </section>
         {/if}
 
@@ -1829,12 +2018,90 @@
     border-left: 2px solid var(--primary);
   }
 
-  .pending-summary p:last-child,
+  .digest-note,
+  .digest-focus,
+  .digest-redactions,
+  .digest-provenance,
   .classification-rationale {
     margin: 0;
     color: var(--text-secondary);
     font-size: 0.8rem;
     line-height: 1.55;
+  }
+
+  .digest {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .digest-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  /* Which rung produced this, at a glance. Muted: it explains the digest, it
+     is not a second thing to read. */
+  .digest-rung {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+    letter-spacing: 0.02em;
+  }
+
+  .digest-redactions {
+    color: var(--warning);
+  }
+
+  .digest-provenance {
+    color: var(--text-tertiary);
+    font-size: 0.7rem;
+  }
+
+  .digest-provenance code {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    overflow-wrap: anywhere;
+  }
+
+  .digest-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem;
+    padding-top: 0.25rem;
+    border-top: 1px solid var(--card-border);
+  }
+
+  .digest-field {
+    display: flex;
+    flex: 1 1 16rem;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .digest-field span {
+    color: var(--text-tertiary);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .digest-field input {
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--input-border);
+    border-radius: var(--radius-sm);
+    background: var(--input-bg);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.85rem;
+  }
+
+  .digest-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
   }
 
   .classification-rationale {

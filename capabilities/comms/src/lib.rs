@@ -29,9 +29,18 @@ pub(crate) mod inference;
 #[allow(dead_code)]
 pub mod content_item;
 
+// The adaptive digest engine. It used to be `media::summarize` -- one prompt,
+// one token ceiling, reachable only from the feed ingest path. Three sources
+// want the same artifact, so the ladder, the prompt and the Mermaid gate moved
+// out where calendar can include them on the same terms.
+#[path = "../../../libs/summarize/src/lib.rs"]
+#[allow(dead_code)]
+pub mod summarize;
+
 pub mod cloud_derivative;
 pub mod cloud_dispatch;
 pub mod config;
+pub mod digest;
 pub mod evaluation;
 pub mod extraction;
 pub mod extraction_eval;

@@ -239,6 +239,33 @@ pub enum CloudAttemptClaim {
     JobUnavailable,
 }
 
+/// One row of `content_digests`, as stored.
+///
+/// The wire shape is `content_item::Digest`; this is the database's view of the
+/// same thing, kept separate so a column type change does not reach the reader
+/// contract by accident. `focus` is comma-joined here and split for the wire —
+/// it is display state read back into a text field, not something anything
+/// queries by.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredDigest {
+    pub source: String,
+    pub item_id: String,
+    pub text: Option<String>,
+    pub state: String,
+    pub shape: String,
+    pub depth: String,
+    pub focus: String,
+    pub producer: String,
+    pub source_chars: i64,
+    pub redactions: i32,
+    pub attempts: i32,
+    pub last_error: Option<String>,
+    pub diagram: Option<String>,
+    pub diagram_state: Option<String>,
+    pub diagram_error: Option<String>,
+    pub generated_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CloudDerivativeState {
     pub status: String,
@@ -533,6 +560,46 @@ impl Store {
                 evidence TEXT NOT NULL,
                 derived_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 PRIMARY KEY (feed_id, signal)
+            );
+
+            -- What the local model wrote about an item, for every source.
+            --
+            -- One table rather than a summary column on each item table.
+            -- libs/content-item keeps *storage* apart because the items have
+            -- genuinely different invariants -- calendar's exclusive ends_at,
+            -- mail's retention window -- and a merged table could enforce
+            -- neither. A digest has none of those: it is derived data with the
+            -- same axes and the same refine action everywhere, so three
+            -- migrations and three upsert paths would buy nothing but drift.
+            --
+            -- `text` is null unless `state` = 'generated'. `shape` is the rung
+            -- the length ladder landed on and `depth` records whether an
+            -- operator asked for one more; both are stored rather than
+            -- re-derived, because source_chars alone cannot tell you that a
+            -- short item was digested on purpose.
+            --
+            -- No raw source is kept here. A mail body is fetched, digested and
+            -- dropped inside one call; this row is the only thing that survives
+            -- it.
+            CREATE TABLE IF NOT EXISTS {schema}.content_digests (
+                source TEXT NOT NULL CHECK (source IN ('feed','mail','calendar')),
+                item_id TEXT NOT NULL,
+                text TEXT,
+                state TEXT NOT NULL,
+                shape TEXT NOT NULL CHECK (shape IN ('none','brief','standard','sectioned')),
+                depth TEXT NOT NULL DEFAULT 'standard' CHECK (depth IN ('standard','detailed')),
+                focus TEXT NOT NULL DEFAULT '',
+                producer TEXT NOT NULL,
+                source_chars BIGINT NOT NULL DEFAULT 0 CHECK (source_chars >= 0),
+                redactions INTEGER NOT NULL DEFAULT 0 CHECK (redactions >= 0),
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                last_error TEXT,
+                diagram TEXT,
+                diagram_state TEXT,
+                diagram_error TEXT,
+                diagram_producer TEXT,
+                generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (source, item_id)
             );
 
             -- A human-approved derivative is staged locally before a cloud job
@@ -1688,6 +1755,160 @@ impl Store {
                 .map(|value| serde_json::from_str(&value))
                 .transpose()?,
         })
+    }
+
+    /// The stored digest for one item, if it has one.
+    pub fn content_digest(
+        &self,
+        source: &str,
+        item_id: &str,
+    ) -> Result<Option<StoredDigest>, Box<dyn std::error::Error>> {
+        let mut conn = self.conn.lock().unwrap();
+        let row = conn.query_opt(
+            &format!(
+                "SELECT source, item_id, text, state, shape, depth, focus, producer,
+                        source_chars, redactions, attempts, last_error,
+                        diagram, diagram_state, diagram_error, generated_at::text
+                 FROM {}.content_digests
+                 WHERE source = $1 AND item_id = $2",
+                self.schema
+            ),
+            &[&source, &item_id],
+        )?;
+        Ok(row.map(|row| StoredDigest {
+            source: row.get(0),
+            item_id: row.get(1),
+            text: row.get(2),
+            state: row.get(3),
+            shape: row.get(4),
+            depth: row.get(5),
+            focus: row.get(6),
+            producer: row.get(7),
+            source_chars: row.get(8),
+            redactions: row.get(9),
+            attempts: row.get(10),
+            last_error: row.get(11),
+            diagram: row.get(12),
+            diagram_state: row.get(13),
+            diagram_error: row.get(14),
+            generated_at: row.get(15),
+        }))
+    }
+
+    /// Replace an item's digest.
+    ///
+    /// Replace rather than append: a digest is the current best answer, not a
+    /// history. `attempts` is carried by the caller so a failing row accumulates
+    /// its own count instead of resetting every pass.
+    pub fn upsert_content_digest(
+        &self,
+        digest: &StoredDigest,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = self.conn.lock().unwrap();
+        conn.execute(
+            &format!(
+                "INSERT INTO {}.content_digests
+                     (source, item_id, text, state, shape, depth, focus, producer,
+                      source_chars, redactions, attempts, last_error, generated_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+                 ON CONFLICT (source, item_id) DO UPDATE SET
+                     text = EXCLUDED.text,
+                     state = EXCLUDED.state,
+                     shape = EXCLUDED.shape,
+                     depth = EXCLUDED.depth,
+                     focus = EXCLUDED.focus,
+                     producer = EXCLUDED.producer,
+                     source_chars = EXCLUDED.source_chars,
+                     redactions = EXCLUDED.redactions,
+                     attempts = EXCLUDED.attempts,
+                     last_error = EXCLUDED.last_error,
+                     generated_at = now()",
+                self.schema
+            ),
+            &[
+                &digest.source,
+                &digest.item_id,
+                &digest.text,
+                &digest.state,
+                &digest.shape,
+                &digest.depth,
+                &digest.focus,
+                &digest.producer,
+                &digest.source_chars,
+                &digest.redactions,
+                &digest.attempts,
+                &digest.last_error,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Attach or clear the Mermaid diagram beside an existing digest.
+    ///
+    /// Separate from [`Store::upsert_content_digest`] because the two are
+    /// separate presses: regenerating a digest must not silently discard a
+    /// diagram the operator already asked for, and vice versa.
+    pub fn update_content_diagram(
+        &self,
+        source: &str,
+        item_id: &str,
+        diagram: Option<&str>,
+        state: &str,
+        error: Option<&str>,
+        producer: &str,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let mut conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            &format!(
+                "UPDATE {}.content_digests
+                    SET diagram = $3, diagram_state = $4, diagram_error = $5, diagram_producer = $6
+                  WHERE source = $1 AND item_id = $2",
+                self.schema
+            ),
+            &[&source, &item_id, &diagram, &state, &error, &producer],
+        )?;
+        Ok(updated)
+    }
+
+    /// Items of one source that the automatic pass should still digest.
+    ///
+    /// Three reasons a row qualifies: it has none, its producer is stale, or it
+    /// failed retryably and has attempts left. The `depth = 'standard'` guard on
+    /// the stale case is load-bearing — an operator who pressed *detailed* has
+    /// made a decision, and a model upgrade must not quietly overwrite it with
+    /// the automatic rung.
+    pub fn items_needing_digest(
+        &self,
+        source: &str,
+        producer: &str,
+        max_attempts: i32,
+        limit: i64,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let (table, order) = match source {
+            "mail" => ("triage_items", "internal_date DESC NULLS LAST"),
+            "feed" => ("feed_items", "created_at DESC"),
+            other => return Err(format!("no digest queue for source {other:?}").into()),
+        };
+        let mut conn = self.conn.lock().unwrap();
+        let rows = conn.query(
+            &format!(
+                "SELECT i.id
+                   FROM {schema}.{table} i
+                   LEFT JOIN {schema}.content_digests d
+                          ON d.source = $1 AND d.item_id = i.id
+                  WHERE d.item_id IS NULL
+                     OR (d.producer <> $2 AND d.depth = 'standard')
+                     OR (d.state IN ('http_error','model_error','empty_response','timeout')
+                         AND d.attempts < $3)
+                  ORDER BY i.{order}
+                  LIMIT $4",
+                schema = self.schema,
+                table = table,
+                order = order
+            ),
+            &[&source, &producer, &max_attempts, &limit],
+        )?;
+        Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
     }
 
     pub fn cloud_derivative_state(
@@ -4680,6 +4901,136 @@ mod tests {
             Some("Menu\n\nThe body."),
             "re-normalizing must never disturb the extractor's output"
         );
+    }
+
+    fn mk_digest(source: &str, item_id: &str, producer: &str) -> StoredDigest {
+        StoredDigest {
+            source: source.into(),
+            item_id: item_id.into(),
+            text: Some("- A point\n- Another".into()),
+            state: "generated".into(),
+            shape: "brief".into(),
+            depth: "standard".into(),
+            focus: String::new(),
+            producer: producer.into(),
+            source_chars: 1_200,
+            redactions: 0,
+            attempts: 0,
+            last_error: None,
+            diagram: None,
+            diagram_state: None,
+            diagram_error: None,
+            generated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn content_digest_round_trips_and_replaces_in_place() {
+        let (store, _schema) = open_test_store("digest_round_trip");
+        let item = mk_feed("https://example.com/digested", "article", "news");
+        store.upsert_feed(&item).unwrap();
+        assert!(store.content_digest("feed", &item.id).unwrap().is_none());
+
+        store
+            .upsert_content_digest(&mk_digest("feed", &item.id, "p1"))
+            .unwrap();
+        let stored = store.content_digest("feed", &item.id).unwrap().unwrap();
+        assert_eq!(stored.state, "generated");
+        assert_eq!(stored.shape, "brief");
+        assert!(!stored.generated_at.is_empty(), "the row stamps its own time");
+
+        // Replace in place: a refine overwrites rather than appending, and the
+        // directive that produced it comes back with it.
+        let mut refined = mk_digest("feed", &item.id, "p1");
+        refined.text = Some("## Method\n- Deeper".into());
+        refined.shape = "sectioned".into();
+        refined.depth = "detailed".into();
+        refined.focus = "cost, latency".into();
+        store.upsert_content_digest(&refined).unwrap();
+        let after = store.content_digest("feed", &item.id).unwrap().unwrap();
+        assert_eq!(after.depth, "detailed");
+        assert_eq!(after.focus, "cost, latency");
+        assert_eq!(after.text.as_deref(), Some("## Method\n- Deeper"));
+
+        // The diagram is a separate press and updates without touching the text.
+        assert_eq!(
+            store
+                .update_content_diagram(
+                    "feed",
+                    &item.id,
+                    Some("flowchart TD\n  A --> B"),
+                    "generated",
+                    None,
+                    "d1"
+                )
+                .unwrap(),
+            1
+        );
+        let with_diagram = store.content_digest("feed", &item.id).unwrap().unwrap();
+        assert_eq!(
+            with_diagram.diagram.as_deref(),
+            Some("flowchart TD\n  A --> B")
+        );
+        assert_eq!(with_diagram.text.as_deref(), Some("## Method\n- Deeper"));
+    }
+
+    /// The automatic pass must never overwrite a digest an operator asked for.
+    /// A model upgrade changes the producer on every row, and without the
+    /// `depth = 'standard'` guard that upgrade would silently throw away every
+    /// refinement in the store.
+    #[test]
+    fn the_automatic_pass_leaves_an_operators_refinement_alone() {
+        let (store, _schema) = open_test_store("digest_queue");
+        let missing = mk_feed("https://example.com/no-digest", "article", "news");
+        let stale = mk_feed("https://example.com/stale-digest", "article", "news");
+        let refined = mk_feed("https://example.com/refined-digest", "article", "news");
+        let current = mk_feed("https://example.com/current-digest", "article", "news");
+        let parked = mk_feed("https://example.com/parked-digest", "article", "news");
+        for item in [&missing, &stale, &refined, &current, &parked] {
+            store.upsert_feed(item).unwrap();
+        }
+
+        store
+            .upsert_content_digest(&mk_digest("feed", &stale.id, "old-producer"))
+            .unwrap();
+        let mut refined_row = mk_digest("feed", &refined.id, "old-producer");
+        refined_row.depth = "detailed".into();
+        store.upsert_content_digest(&refined_row).unwrap();
+        store
+            .upsert_content_digest(&mk_digest("feed", &current.id, "current-producer"))
+            .unwrap();
+        let mut parked_row = mk_digest("feed", &parked.id, "current-producer");
+        parked_row.state = "timeout".into();
+        parked_row.text = None;
+        parked_row.attempts = 3;
+        store.upsert_content_digest(&parked_row).unwrap();
+
+        let queued = store
+            .items_needing_digest("feed", "current-producer", 3, 50)
+            .unwrap();
+        assert!(queued.contains(&missing.id), "no digest at all");
+        assert!(queued.contains(&stale.id), "produced by an older model");
+        assert!(
+            !queued.contains(&refined.id),
+            "an operator's detailed digest must survive a model change"
+        );
+        assert!(!queued.contains(&current.id), "already current");
+        assert!(
+            !queued.contains(&parked.id),
+            "a row at the attempt cap is parked, not retried forever"
+        );
+
+        // One retry left brings it back.
+        parked_row.attempts = 2;
+        store.upsert_content_digest(&parked_row).unwrap();
+        assert!(store
+            .items_needing_digest("feed", "current-producer", 3, 50)
+            .unwrap()
+            .contains(&parked.id));
+
+        assert!(store
+            .items_needing_digest("scouting", "current-producer", 3, 50)
+            .is_err());
     }
 
     #[test]

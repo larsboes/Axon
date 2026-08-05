@@ -27,6 +27,7 @@
     "processing",
     "origins",
     "links",
+    "digest",
     "mail",
     "calendar"
   ],
@@ -74,6 +75,12 @@
       "type": "array",
       "description": "Named ways out of this item: the source page, the mail that carried the ticket, a map, a vault note. Shared vocabulary rather than a per-capability payload key, because every source was about to invent it separately.",
       "items": { "$ref": "#/$defs/link" }
+    },
+    "digest": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
     },
     "mail": {
       "oneOf": [
@@ -200,6 +207,71 @@
           "description": "A hint for presentation (mail, source, ticket, map, vault). Deliberately open: a reader that meets an unknown kind still renders a working link."
         },
         "url": { "type": "string", "format": "uri-reference" }
+      },
+      "additionalProperties": false
+    },
+    "digest": {
+      "type": "object",
+      "description": "What the local model wrote about this item, and what was asked of it. Distinct from summary, which is what the source itself said it is — a reader wanting the short version prefers digest.text and falls back to summary. text is null unless state is 'generated'; 'skipped_short' is a verdict about the source, not a failure.",
+      "required": [
+        "text",
+        "state",
+        "shape",
+        "depth",
+        "focus",
+        "producer",
+        "source_chars",
+        "redactions",
+        "attempts",
+        "last_error",
+        "diagram",
+        "diagram_state",
+        "diagram_error",
+        "generated_at"
+      ],
+      "properties": {
+        "text": { "type": ["string", "null"] },
+        "state": {
+          "enum": [
+            "generated",
+            "skipped_short",
+            "remote_refused",
+            "unconfigured",
+            "http_error",
+            "model_error",
+            "empty_response",
+            "timeout"
+          ]
+        },
+        "shape": {
+          "enum": ["none", "brief", "standard", "sectioned"],
+          "description": "The rung the length ladder landed on. Derived from source_chars, never chosen directly."
+        },
+        "depth": {
+          "enum": ["standard", "detailed"],
+          "description": "'detailed' moves the shape exactly one rung up the same ladder — it is not a separate instruction to the model."
+        },
+        "focus": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "The operator's focus terms, as typed, so a differently-shaped digest is explained rather than mysterious."
+        },
+        "producer": { "type": "string", "minLength": 1 },
+        "source_chars": { "type": "integer", "minimum": 0 },
+        "redactions": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Entities the deterministic redactor removed before this text was written. Non-zero only for Private content, where a digest could otherwise republish what the subject line was redacted for."
+        },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "last_error": { "type": ["string", "null"] },
+        "diagram": {
+          "type": ["string", "null"],
+          "description": "Mermaid source, validated against the known diagram headers before it was stored."
+        },
+        "diagram_state": { "type": ["string", "null"] },
+        "diagram_error": { "type": ["string", "null"] },
+        "generated_at": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },
