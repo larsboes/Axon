@@ -202,6 +202,12 @@ sh_test(
         # cooldown window; the sandbox has no gitignored axon.local.toml, which is the
         # fallback path that keeps every Bazel gate here working.
         "axon.toml",
+        # Sourced by upstream-checker for advisory_scan. Missing from the
+        # sandbox it fails open rather than loudly: the scan degrades to
+        # `advisory_scan: command not found` on stderr, every advisory
+        # assertion misses, and the gate reports nine failures none of which
+        # name the actual cause.
+        "tools/lib/advisories.sh",
         "tools/lib/paths.sh",
         "tools/lib/toml.sh",
         "tools/lib/version.sh",
@@ -273,6 +279,10 @@ sh_test(
         # unless declared, and the test passed locally without it purely because the real
         # checkout was there. The Axon#30 false-green class, caught by CI.
         "axon.toml",
+        # Same reason as upstream_declaration_test: upstream-checker sources it
+        # for advisory_scan, and its absence degrades to stderr noise rather
+        # than to a failure that names itself.
+        "tools/lib/advisories.sh",
         "tools/lib/paths.sh",
         "tools/lib/toml.sh",
         "tools/lib/version.sh",
