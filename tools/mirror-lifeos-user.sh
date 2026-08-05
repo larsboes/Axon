@@ -71,7 +71,7 @@ fi
 # under `set -euo pipefail` that non-zero propagates out of the command substitution and
 # kills the script before it can report anything. Captured once rather than re-run, so the
 # count and the listing can never disagree.
-REPORT="$(diff -rq -x '.DS_Store' -x 'CACHE' "$LIFEOS_USER_DIR" "$MIRROR" 2>/dev/null || true)"
+REPORT="$(diff -rq -x '.DS_Store' -x 'CACHE' -x 'TELOS' "$LIFEOS_USER_DIR" "$MIRROR" 2>/dev/null || true)"
 DIVERGED="$(printf '%s' "$REPORT" | grep -c . || true)"
 
 if [ "$APPLY" -eq 0 ]; then
@@ -102,7 +102,13 @@ mkdir -p "$MIRROR"
 # --delete-excluded, not just --delete: rsync PROTECTS excluded paths in the
 # destination by default, so without it the CACHE files already mirrored would
 # sit there forever, stale and never updated again — the worst of both.
-rsync -a --delete --delete-excluded --exclude '.DS_Store' --exclude 'CACHE/' "$LIFEOS_USER_DIR/" "$MIRROR/"
+# TELOS/ excluded because it is no longer a copy problem. It became overlay-native
+# on 2026-08-05 — the overlay holds the source and the live tree is a symlink to it —
+# so mirroring it would write a second copy of tracked files into the same repository.
+# That is the doubling this whole mirror exists to avoid, pointed at itself. Without
+# the exclude, `rsync -a` would also faithfully reproduce the symlink AS a symlink,
+# giving the backup a pointer where it needs content.
+rsync -a --delete --delete-excluded --exclude '.DS_Store' --exclude 'CACHE/' --exclude 'TELOS/' "$LIFEOS_USER_DIR/" "$MIRROR/"
 
 echo "✓ mirror refreshed: $DIVERGED path(s) updated → resources/backups/lifeos/USER"
 echo "  not committed — review and commit in axon-overlay when you're ready."
