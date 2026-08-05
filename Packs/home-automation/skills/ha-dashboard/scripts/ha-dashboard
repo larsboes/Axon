@@ -326,12 +326,19 @@ def cmd_list(args) -> int:
 def cmd_backup(args) -> int:
     ws = ws_client()
     try:
-        payload = {"type": "lovelace/config/get"}
+        # HA's get command is `lovelace/config`. It was `lovelace/config/get` here, which HA
+        # answers with unknown_command — so backup failed while deploy (`lovelace/config/save`,
+        # a real command) succeeded. Following SKILL.md's "back up first" then overwrote a
+        # dashboard with no copy taken.
+        payload = {"type": "lovelace/config"}
         if args.url_path:
             payload["url_path"] = args.url_path
-        config = require_result(ws.command(payload), "config/get")
+        config = require_result(ws.command(payload), "config")
     finally:
         ws.close()
+    if not config:
+        die(f"{args.url_path or '(default)'} returned no config — refusing to write an empty "
+            f"backup. An auto-generated (strategy) dashboard has no stored config to back up.")
     out = args.output
     if not out:
         tag = args.url_path or "default"
@@ -382,6 +389,37 @@ def cmd_create(args) -> int:
     return 0
 
 
+def cmd_resources(args) -> int:
+    """List or register Lovelace resources — the JS/CSS a dashboard loads before its cards.
+
+    A vendored frontend file under www/ is inert until it is registered here, so this is the
+    other half of a pinned `kind = "lovelace"` entry, not a convenience."""
+    ws = ws_client()
+    try:
+        items = require_result(ws.command({"type": "lovelace/resources"}), "resources") or []
+        if not args.url:
+            if args.json:
+                print(json.dumps(items, ensure_ascii=False, indent=2))
+            else:
+                for r in items:
+                    print(f"  {r.get('type','?'):<8} {r.get('url','')}")
+                print(f"  ---- {len(items)} resource(s)")
+            return 0
+        # Registering the same URL twice gives HA two entries for one file and the dashboard
+        # loads it twice. Say it is already there instead.
+        if any(r.get("url") == args.url for r in items):
+            print(f"Already registered: {args.url}")
+            return 0
+        require_result(
+            ws.command({"type": "lovelace/resources/create", "res_type": args.type, "url": args.url}),
+            "resources/create",
+        )
+    finally:
+        ws.close()
+    print(f"Registered {args.type}: {args.url}")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="ha-dashboard",
@@ -408,6 +446,12 @@ def main() -> int:
     cr.add_argument("--icon", help="mdi icon, e.g. mdi:home")
     cr.add_argument("--no-sidebar", action="store_true", help="don't show in the sidebar")
     cr.set_defaults(fn=cmd_create)
+
+    rs = sub.add_parser("resources", help="list dashboard resources, or register one (no URL = list)")
+    rs.add_argument("url", nargs="?", help="resource URL, e.g. /local/scheduler-card.js")
+    rs.add_argument("--type", default="module", choices=("module", "css"), help="resource type (default: module)")
+    rs.add_argument("--json", "-j", action="store_true")
+    rs.set_defaults(fn=cmd_resources)
 
     args = p.parse_args()
     try:
