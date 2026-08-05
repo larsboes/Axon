@@ -31,7 +31,15 @@ managed_volume = "true"
 # down, which for a cluster is a worse deal than a logical dump.) Coverage here can
 # only ever be a logical dump taken from inside the container:
 backup_pg_dumpall = "true"
-backup_target     = "home-automation"   # systems.toml id; private coords in overlay systems.local.toml
+# The backup ROLE, not the home-automation deployment that happens to run on the same
+# box. systems.toml draws that line deliberately -- a backup target is "separate from
+# each source host so one node failure cannot remove both live state and recovery data"
+# -- and home-assistant, pihole and vaultwarden all already name the role. postgres was
+# the lone holdout, and the difference stopped being cosmetic when SSH was restricted to
+# Tailscale: the home-automation coordinate is a bare LAN address, so every backup since
+# has hit a connect timeout while the role coordinate resolved fine. Same machine, two
+# coordinates, one of them no longer routable.
+backup_target     = "backup-target"     # systems.toml id; private coords in overlay systems.local.toml
 backup_retain     = "14"
 # Every other capability's data is a schema in this one cluster, so this cadence is the
 # whole setup's cadence, not just this container's. Daily is what the human-decision
