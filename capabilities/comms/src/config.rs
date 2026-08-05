@@ -176,6 +176,7 @@ struct FileConfig {
     api_secret_file: Option<String>,
     dashboard_origin: Option<String>,
     enrichment_drain_minutes: Option<u64>,
+    digest_drain_minutes: Option<u64>,
     gmail_maintenance_minutes: Option<u64>,
     inbox_sweep_minutes: Option<u64>,
     inbox_sweep_max_threads: Option<usize>,
@@ -214,6 +215,14 @@ pub struct Config {
     /// ingested while the inference server was unreachable stay empty forever —
     /// that is how 36 of 39 items ended up without a summary (#74).
     pub enrichment_drain_minutes: u64,
+    /// How often comms-server retries digests that failed retryably, in
+    /// minutes. `0` disables the pass, leaving digests manual-press-only.
+    ///
+    /// Separate from `enrichment_drain_minutes` because the two write different
+    /// things — that one fills `feed_items.summary`, this one fills
+    /// `content_digests` — and a machine may reasonably want one without the
+    /// other. Bounded by the same ledger: three attempts, then the row rests.
+    pub digest_drain_minutes: u64,
     /// Retry durable Gmail actions and reconcile labels on this interval. `0`
     /// disables automatic maintenance; manual reconciliation remains available.
     pub gmail_maintenance_minutes: u64,
@@ -354,6 +363,7 @@ impl Config {
             .dashboard_origin
             .unwrap_or_else(|| "http://127.0.0.1:47117".into());
         let enrichment_drain_minutes = file.enrichment_drain_minutes.unwrap_or(15);
+        let digest_drain_minutes = file.digest_drain_minutes.unwrap_or(15);
         let gmail_maintenance_minutes = file.gmail_maintenance_minutes.unwrap_or(15);
         let inbox_sweep_minutes = file.inbox_sweep_minutes.unwrap_or(0);
         let inbox_sweep_max_threads = file.inbox_sweep_max_threads.unwrap_or(25).clamp(1, 100);
@@ -389,6 +399,7 @@ impl Config {
             api_secret,
             dashboard_origin,
             enrichment_drain_minutes,
+            digest_drain_minutes,
             gmail_maintenance_minutes,
             inbox_sweep_minutes,
             inbox_sweep_max_threads,

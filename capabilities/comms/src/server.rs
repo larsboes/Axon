@@ -3247,6 +3247,62 @@ fn spawn_enrichment_drain(every_minutes: u64) {
     });
 }
 
+/// Retry feed digests that failed retryably, on an interval.
+///
+/// `Outcome::EmptyResponse` and its siblings have always been marked retryable
+/// and the ledger has always counted attempts, but nothing ever performed the
+/// retry: `digest::refresh_pending`'s only caller was an HTTP endpoint no client
+/// invoked. A digest lost to a transient failure stayed lost. Two rows sat at
+/// `empty_response`, attempt 1 of 3, after oMLX aborted them under memory
+/// pressure and the abort arrived shaped like a successful empty answer (#95).
+///
+/// **Feed only, deliberately.** `refresh_pending` for `mail` reads message
+/// bodies, and a background job that quietly pulls every body out of a mailbox
+/// is not something a machine should start doing on its own — the same reason
+/// that pass is bounded and explicit rather than timer-driven. Mail digests stay
+/// a press.
+///
+/// Bounded by the ledger rather than by anything here: `items_needing_digest`
+/// skips rows at the attempt cap or inside their backoff window, so a
+/// permanently broken item stops costing model calls and says why.
+fn spawn_digest_drain(every_minutes: u64) {
+    if every_minutes == 0 {
+        eprintln!("digest drain disabled (digest_drain_minutes = 0)");
+        return;
+    }
+
+    eprintln!("digest drain: every {every_minutes} min, feed only");
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(every_minutes * 60));
+        loop {
+            ticker.tick().await;
+            // Inspected rather than discarded, matching the enrichment drain: a
+            // panic in the blocking half would otherwise take the drain down
+            // silently, rebuilding the exact silence this exists to end.
+            let joined = tokio::task::spawn_blocking(|| {
+                let cfg = Config::load();
+                let store = match Store::open(&cfg.database_url) {
+                    Ok(store) => store,
+                    Err(error) => {
+                        eprintln!("digest drain: store unavailable: {error}");
+                        return;
+                    }
+                };
+                match digest::refresh_pending(&store, &cfg, "feed", 25) {
+                    Ok(n) if n > 0 => eprintln!("digest drain: wrote {n} digest row(s)"),
+                    Ok(_) => {}
+                    Err(error) => eprintln!("digest drain: {error}"),
+                }
+            })
+            .await;
+
+            if let Err(error) = joined {
+                eprintln!("digest drain: pass did not finish: {error}");
+            }
+        }
+    });
+}
+
 /// Expired Trash rows contain cached Gmail metadata and reviewed derivatives,
 /// so cleanup runs independently of inbox sweeps. Gmail's own retention is not
 /// modified here.
@@ -3505,6 +3561,7 @@ async fn main() {
     }
 
     spawn_enrichment_drain(cfg.enrichment_drain_minutes);
+    spawn_digest_drain(cfg.digest_drain_minutes);
     spawn_trash_cleanup();
     spawn_gmail_maintenance(cfg.gmail_maintenance_minutes);
     spawn_inbox_sweep(

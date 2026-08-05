@@ -239,6 +239,27 @@ pub enum CloudAttemptClaim {
     JobUnavailable,
 }
 
+/// The digest states a later run could plausibly do better on — the storage
+/// mirror of `summarize::Outcome::retryable`.
+///
+/// One list because two statements key on it: the query that finds work and the
+/// upsert that decides whether to arm a backoff. Two hand-maintained copies is
+/// how a state ends up retryable in one and terminal in the other, which strands
+/// rows in a way nothing reports.
+pub const RETRYABLE_DIGEST_STATES: [&str; 4] =
+    ["http_error", "model_error", "empty_response", "timeout"];
+
+/// The four states above, as a SQL literal list. Built from the const rather
+/// than typed out, so the two cannot drift. Every element is a compile-time
+/// literal, so this never carries caller input.
+fn retryable_digest_states_sql() -> String {
+    RETRYABLE_DIGEST_STATES
+        .iter()
+        .map(|state| format!("'{state}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// One row of `content_digests`, as stored.
 ///
 /// The wire shape is `content_item::Digest`; this is the database's view of the
@@ -626,6 +647,12 @@ impl Store {
                 ADD COLUMN IF NOT EXISTS chart_error TEXT;
             ALTER TABLE {schema}.content_digests
                 ADD COLUMN IF NOT EXISTS chart_producer TEXT;
+            -- Earliest time a failed digest may be retried. Null means eligible
+            -- immediately, which is exactly what every pre-existing row means:
+            -- they were written when nothing retried them at all, so the drain
+            -- should pick them up on its first pass. See RETRYABLE_DIGEST_STATES.
+            ALTER TABLE {schema}.content_digests
+                ADD COLUMN IF NOT EXISTS next_attempt TIMESTAMPTZ;
 
             -- A human-approved derivative is staged locally before a cloud job
             -- can consume it. Staging has no provider identity or side effect.
@@ -1836,10 +1863,19 @@ impl Store {
         let mut conn = self.conn.lock().unwrap();
         conn.execute(
             &format!(
-                "INSERT INTO {}.content_digests
+                // The backoff is computed here, from `now()` and the attempt
+                // count already being written, rather than passed in: the
+                // deadline must be on the database's clock, and deriving it
+                // from the row's own state is what keeps it from disagreeing
+                // with `attempts`. A non-retryable state clears it — a success
+                // or a verdict has no next attempt to schedule.
+                "INSERT INTO {schema}.content_digests
                      (source, item_id, text, state, shape, depth, focus, producer,
-                      source_chars, redactions, attempts, last_error, generated_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+                      source_chars, redactions, attempts, last_error, generated_at, next_attempt)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now(),
+                     CASE WHEN $4 IN ({retryable})
+                          THEN now() + (interval '5 minutes' * power(2, GREATEST($11 - 1, 0)))
+                          ELSE NULL END)
                  ON CONFLICT (source, item_id) DO UPDATE SET
                      text = EXCLUDED.text,
                      state = EXCLUDED.state,
@@ -1851,8 +1887,10 @@ impl Store {
                      redactions = EXCLUDED.redactions,
                      attempts = EXCLUDED.attempts,
                      last_error = EXCLUDED.last_error,
-                     generated_at = now()",
-                self.schema
+                     generated_at = now(),
+                     next_attempt = EXCLUDED.next_attempt",
+                schema = self.schema,
+                retryable = retryable_digest_states_sql()
             ),
             &[
                 &digest.source,
@@ -1928,10 +1966,15 @@ impl Store {
     /// Items of one source that the automatic pass should still digest.
     ///
     /// Three reasons a row qualifies: it has none, its producer is stale, or it
-    /// failed retryably and has attempts left. The `depth = 'standard'` guard on
-    /// the stale case is load-bearing — an operator who pressed *detailed* has
-    /// made a decision, and a model upgrade must not quietly overwrite it with
-    /// the automatic rung.
+    /// failed retryably, has attempts left, and its backoff window has elapsed.
+    /// The `depth = 'standard'` guard on the stale case is load-bearing — an
+    /// operator who pressed *detailed* has made a decision, and a model upgrade
+    /// must not quietly overwrite it with the automatic rung.
+    ///
+    /// The backoff clause is what makes a *timed* drain safe. With the attempt
+    /// cap alone, a drain every 15 minutes spends all three attempts inside
+    /// three-quarters of an hour, so an outage lasting an hour leaves the row
+    /// permanently dead — which is the failure this whole path exists to end.
     pub fn items_needing_digest(
         &self,
         source: &str,
@@ -1953,13 +1996,15 @@ impl Store {
                           ON d.source = $1 AND d.item_id = i.id
                   WHERE d.item_id IS NULL
                      OR (d.producer <> $2 AND d.depth = 'standard')
-                     OR (d.state IN ('http_error','model_error','empty_response','timeout')
-                         AND d.attempts < $3)
+                     OR (d.state IN ({retryable})
+                         AND d.attempts < $3
+                         AND (d.next_attempt IS NULL OR d.next_attempt <= now()))
                   ORDER BY i.{order}
                   LIMIT $4",
                 schema = self.schema,
                 table = table,
-                order = order
+                order = order,
+                retryable = retryable_digest_states_sql()
             ),
             &[&source, &producer, &max_attempts, &limit],
         )?;
@@ -5078,9 +5123,20 @@ mod tests {
             "a row at the attempt cap is parked, not retried forever"
         );
 
-        // One retry left brings it back.
+        // One retry left is no longer enough on its own: writing the failure
+        // arms a backoff, and the row stays parked until that window elapses.
         parked_row.attempts = 2;
         store.upsert_content_digest(&parked_row).unwrap();
+        assert!(
+            !store
+                .items_needing_digest("feed", "current-producer", 3, 50)
+                .unwrap()
+                .contains(&parked.id),
+            "a failure just written is inside its own backoff window"
+        );
+
+        // Once it has, the retry is due.
+        expire_digest_backoff(&store, "feed", &parked.id);
         assert!(store
             .items_needing_digest("feed", "current-producer", 3, 50)
             .unwrap()
@@ -5089,6 +5145,91 @@ mod tests {
         assert!(store
             .items_needing_digest("scouting", "current-producer", 3, 50)
             .is_err());
+    }
+
+    /// Move a digest's retry deadline into the past.
+    ///
+    /// Raw SQL rather than a field on `StoredDigest`: the deadline is derived
+    /// from the database's own clock at write time precisely so no caller can
+    /// set it, and adding a settable field to production code to serve tests
+    /// would give that guarantee away. Tests live inside this module, so they
+    /// can reach the connection without one.
+    fn expire_digest_backoff(store: &Store, source: &str, item_id: &str) {
+        let schema = store.schema.clone();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                &format!(
+                    "UPDATE {schema}.content_digests
+                        SET next_attempt = now() - interval '1 hour'
+                      WHERE source = $1 AND item_id = $2"
+                ),
+                &[&source, &item_id],
+            )
+            .unwrap();
+    }
+
+    /// The backoff is what makes a *timed* drain safe. With the attempt cap
+    /// alone, a drain every 15 minutes spends all three attempts inside
+    /// three-quarters of an hour, so an outage lasting an hour would leave the
+    /// row permanently dead — the exact failure the drain exists to end.
+    #[test]
+    fn a_retryable_failure_waits_out_a_growing_backoff() {
+        let (store, _schema) = open_test_store("digest_backoff");
+        let item = mk_feed("https://example.com/backoff-digest", "article", "news");
+        store.upsert_feed(&item).unwrap();
+
+        let mut row = mk_digest("feed", &item.id, "current-producer");
+        row.state = "empty_response".into();
+        row.text = None;
+
+        // Each successive failure parks the row for longer: 5, 10, then 20
+        // minutes. Read back as a delta so this asserts the ladder, not a clock.
+        let mut previous = 0_f64;
+        for attempt in 1..=3 {
+            row.attempts = attempt;
+            store.upsert_content_digest(&row).unwrap();
+            let seconds = backoff_seconds(&store, "feed", &item.id)
+                .expect("a retryable state arms a deadline");
+            assert!(
+                seconds > previous,
+                "attempt {attempt} must wait longer than the one before it \
+                 ({seconds}s vs {previous}s)"
+            );
+            previous = seconds;
+        }
+
+        // A success clears the deadline outright — there is no next attempt to
+        // schedule, and a stale one left behind would park a healthy row.
+        row.state = "generated".into();
+        row.text = Some("- A point".into());
+        row.attempts = 0;
+        store.upsert_content_digest(&row).unwrap();
+        assert!(
+            backoff_seconds(&store, "feed", &item.id).is_none(),
+            "a generated digest carries no retry deadline"
+        );
+    }
+
+    /// Seconds from now until the row's retry deadline, or None when it has none.
+    fn backoff_seconds(store: &Store, source: &str, item_id: &str) -> Option<f64> {
+        let schema = store.schema.clone();
+        let row = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_one(
+                &format!(
+                    "SELECT EXTRACT(EPOCH FROM (next_attempt - now()))::float8
+                       FROM {schema}.content_digests
+                      WHERE source = $1 AND item_id = $2"
+                ),
+                &[&source, &item_id],
+            )
+            .unwrap();
+        row.get::<_, Option<f64>>(0)
     }
 
     #[test]
