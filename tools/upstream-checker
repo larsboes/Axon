@@ -12,9 +12,13 @@
 # --strict failed on in-cooldown bumps; it never did after that inversion, and
 # saying so was worse than saying nothing.
 #
+# Published GitHub Security Advisories ARE enforced, unlike the cooldown: a pin inside an
+# advisory's affected range fails. OSV does not carry GHSA for every ecosystem, so
+# osv-scanner cannot see them and this is the only gate that can (Axon#124).
+#
 #   tools/upstream-checker            # audit the manifest, human report
 #   tools/upstream-checker --strict   # also fail on warnings (stale pins, unverified drift)
-#   tools/upstream-checker --offline  # skip the GitHub release/cooldown checks
+#   tools/upstream-checker --offline  # skip the GitHub release/cooldown/advisory checks
 #   tools/upstream-checker --json     # machine-readable report (dashboard feed); exits 0
 #
 # Exit 0 = clean, 1 = violation(s), 2 = usage error. bash 3.2-safe.
@@ -38,7 +42,7 @@ for a in "$@"; do
     --strict)  STRICT=1 ;;
     --offline) OFFLINE=1 ;;
     --json)    JSON=1 ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "upstream-checker: unknown flag '$a'" >&2; exit 2 ;;
   esac
 done
@@ -90,6 +94,38 @@ gh_latest() {
   pub="$(printf '%s' "$json" | grep -E '"published_at"' | head -1 | sed -E 's/.*"published_at":[[:space:]]*"([^"]*)".*/\1/')"
   [ -z "$tag" ] && return 1
   printf '%s\t%s\n' "$tag" "$pub"
+}
+
+# gh_advisories <owner/repo> — published advisories as `GHSA<TAB>severity<TAB>range` lines,
+# one line per affected range (an advisory naming three ranges yields three).
+#   Exit 0 = fetched (output may be empty) · 1 = fetch failed · 2 = gh unavailable.
+#
+# Axon#124: tools/upstream-checker compared pins against releases/latest and nothing else,
+# tools/audit runs osv-scanner, and neither sees GitHub Security Advisories. For at least
+# one adopted upstream OSV carries none at all -- queried for `@earendil-works/pi-coding-agent`
+# it answers `{}` while GitHub publishes four advisories against that repo, one of them
+# high severity. The scanner adopted for exactly this job is structurally blind to them.
+#
+# gh rather than curl, unlike gh_latest above: pairing an advisory's id and severity with
+# each of its nested ranges is a join, and doing that with grep over raw JSON is how a
+# parser silently attaches the wrong severity to the wrong range. gh bundles jq, so the
+# join is declarative — and its absence is reported as unchecked rather than passed.
+gh_advisories() {
+  local repo="$1" out rc
+  command -v gh >/dev/null 2>&1 || return 2
+  out="$(gh api "repos/$repo/security-advisories" --jq '
+    .[]
+    | select(.state == "published")
+    | .ghsa_id as $id
+    | .severity as $sev
+    | (.vulnerabilities // [])[]
+    | select(.vulnerable_version_range != null)
+    | [$id, $sev, .vulnerable_version_range]
+    | @tsv' 2>/dev/null)"
+  rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  printf '%s' "$out"
+  return 0
 }
 
 fail=0; warn=0; na=0; ok=0; count=0
@@ -252,6 +288,83 @@ for name in $(toml_sections "$MANIFEST"); do
       else
         emit "$note"
         entry_warn=1
+      fi
+    fi
+  fi
+
+  # 6. published GitHub Security Advisories against the pin
+  #
+  # Runs regardless of pin_kind: an image tag or a commit sha is not a release, but it is
+  # still a version somebody is running, and the advisory question is about exposure rather
+  # than about drift. Offline-skippable like check 5.
+  #
+  # CONSUMED verdicts only, and that restriction is load-bearing rather than tidy. esphome
+  # is pinned at 2026.5.3 and carries a high-severity advisory covering it -- but its
+  # verdict is `reject`: it was removed on 2026-07-26 and the pin exists precisely so a
+  # rejected thing cannot drift back in unnoticed. Failing the gate over a vulnerability in
+  # software Axon deliberately does not run would train the operator to override it, on the
+  # run where the finding was real.
+  #
+  # An in-range hit on something consumed IS a failure, not a warning.
+  # README.md#pins-and-cooldown's active-vulnerability carve-out already names this as the
+  # one reason to bump inside the cooldown hold, so the gate has to be able to say it out
+  # loud rather than leave it in a column of things merely worth a look.
+  if [ "$OFFLINE" -eq 0 ] && [ -n "$pin" ] && in_list "$verdict" "$CONSUMED_VERDICTS" \
+     && printf '%s' "$url" | grep -q 'github.com'; then
+    # Established before spending an API call: a sha pin has real advisory exposure and
+    # nothing here can map it to a version range, so asking would only produce a list of
+    # comparisons that cannot be made. Reported as `○` rather than `⚠` on purpose — it
+    # joins the release-drift n/a group instead of warning forever about a pin shape that
+    # will never become comparable.
+    if ! pin_comparable "$pin"; then
+      emit "○ advisory match n/a — pin '$pin' is not a version an advisory range can be compared against"
+    else
+      adv_repo="$(printf '%s' "$url" | sed -E 's#.*github.com/([^/]+/[^/]+).*#\1#; s#\.git$##')"
+      adv_out="$(gh_advisories "$adv_repo")"
+      adv_rc=$?
+      if [ "$adv_rc" -eq 2 ]; then
+        emit "⚠ advisories unchecked — gh is not installed, and OSV does not carry GHSA for every ecosystem"
+        entry_warn=1
+      elif [ "$adv_rc" -eq 1 ]; then
+        # Same principle as the drift check's unresolvable branch: a check that could not
+        # run is not a check that passed.
+        emit "⚠ advisories not resolvable (rate-limited or unavailable) — GHSA exposure unverified"
+        entry_warn=1
+      else
+        adv_hits=0; adv_undecided=0; adv_total=0; adv_undecided_ids=""
+        # Heredoc rather than a pipe: `while read` on the right of a pipe runs in a subshell
+        # under bash 3.2, and every counter incremented in here would be discarded at the
+        # loop's end — silently reporting zero hits over a list that had some.
+        while IFS="$(printf '\t')" read -r adv_id adv_sev adv_range; do
+          [ -n "$adv_id" ] || continue
+          adv_total=$((adv_total + 1))
+          range_contains "$pin" "$adv_range"
+          case $? in
+            0) emit "✗ $adv_id ($adv_sev) — pin $pin is inside the affected range '$adv_range'"
+               adv_hits=$((adv_hits + 1)) ;;
+            # Collected rather than printed one per line. GitHub lets an advisory carry a
+            # free-text vulnerable_version_range, and real ones behind this manifest include
+            # '2025.02 to 2026.01', '≤ 2026.5.2', '8+' and a bare '1.35.4'. Refusing to order
+            # those is correct — inventing a verdict is the failure lib/version.sh exists to
+            # prevent — but five separate warnings per entry is how a gate becomes wallpaper.
+            2) adv_undecided=$((adv_undecided + 1))
+               adv_undecided_ids="$adv_undecided_ids $adv_id" ;;
+          esac
+        done <<ADVISORIES
+$adv_out
+ADVISORIES
+        if [ "$adv_undecided" -gt 0 ]; then
+          emit "⚠ $adv_undecided advisory range(s) not comparable to pin $pin — exposure undecided:$adv_undecided_ids"
+        fi
+        if [ "$adv_hits" -gt 0 ]; then
+          entry_fail=1
+        elif [ "$adv_undecided" -gt 0 ]; then
+          entry_warn=1
+        elif [ "$adv_total" -gt 0 ]; then
+          # Said out loud rather than left to silence: "this repo publishes advisories and
+          # none of them reaches this pin" is a different fact from "nobody looked".
+          emit "✓ $adv_total published advisory range(s), none affecting pin $pin"
+        fi
       fi
     fi
   fi

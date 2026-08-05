@@ -241,6 +241,88 @@ drift_note() {
   return 1
 }
 
+# --- GitHub Security Advisory ranges --------------------------------------
+#
+# GHSA states an affected range as a comma-separated CONJUNCTION of constraints:
+# ">= 0.74.0, < 0.78.1", "< 0.79.0", "<=1.35.4". Every constraint has to hold for a
+# version to be affected. Both spacings occur in real data — vaultwarden publishes
+# "<1.35.8" and "<= 1.35.4" in the same advisory list — so the operator is read as a token
+# rather than assumed to be followed by a space.
+#
+# This lives here, beside ver_gt, rather than next to the code that fetches advisories,
+# because Axon#124 asked for exactly that: a second comparator is how two answers to "is
+# this version newer" start disagreeing, and this file already carries the scars of the
+# first one being wrong.
+#
+# Why it is needed at all: tools/audit runs osv-scanner, and OSV does not carry GHSA for
+# every ecosystem. Queried for `@earendil-works/pi-coding-agent` it returns nothing while
+# GitHub publishes four advisories against that repo, one of them high severity. The
+# scanner adopted for this job is structurally blind to them.
+
+# The rest of the ordering, all expressed through ver_gt so that "which is newer" is
+# decided in exactly one place.
+ver_ge() { [ "$1" = "$2" ] || ver_gt "$1" "$2"; }
+ver_lt() { [ "$1" != "$2" ] && ! ver_gt "$1" "$2"; }
+ver_le() { [ "$1" = "$2" ] || ver_lt "$1" "$2"; }
+
+# pin_comparable <pin> — can this pin be matched against an advisory range at all?
+#
+# The dot test is not decoration. probe_core strips leading non-digits, so a commit sha
+# like `abc1234` reduces to `1234` and would sail through ver_numeric looking like a
+# perfectly ordinary version — then get compared against real ranges and produce a verdict
+# about nothing. Shas carry no dot and versions do, and that is the only thing separating
+# them at this level. An image tag (`17.10-alpine`) or a decorated tag (`cli-v2026.7.0`)
+# keeps its dot and stays comparable, which is the point.
+pin_comparable() {
+  case "$1" in
+    *.*) ;;
+    *) return 1 ;;
+  esac
+  ver_numeric "$(probe_core "$1")"
+}
+
+# range_contains <version> <vulnerable_version_range> — is this version affected?
+#   Exit 0 = in range · 1 = outside · 2 = undecidable.
+#
+# Undecidable never collapses into "outside". An unorderable version, an operator this
+# does not know, or an empty range all mean the gate could not answer, and the caller has
+# to be able to report that rather than print a pass it did not establish. Same rule
+# drift_note already follows for tags it cannot order — the failure this file exists to
+# prevent is a verdict invented where none was available.
+range_contains() {
+  local ver="$1" range="$2" part op bound
+  ver="$(probe_core "$ver")"
+  ver_numeric "$ver" || return 2
+  [ -n "$range" ] || return 2
+
+  # Split the conjunction into this function's OWN positional parameters: local to the
+  # call, so nothing the caller is iterating over is disturbed. IFS is declared local too,
+  # which is what restores the caller's value on return.
+  local IFS=','
+  # shellcheck disable=SC2086
+  set -- $range
+  IFS="$(printf ' \t\n')"
+
+  for part in "$@"; do
+    op="$(printf '%s' "$part" | sed -E 's/^[[:space:]]*([<>=]+).*/\1/')"
+    case "$op" in
+      '>'|'>='|'<'|'<='|'=') ;;
+      *) return 2 ;;
+    esac
+    # probe_core drops the operator, any spacing and any -alpine-style suffix in one step.
+    bound="$(probe_core "$part")"
+    ver_numeric "$bound" || return 2
+    case "$op" in
+      '>=') ver_ge "$ver" "$bound" || return 1 ;;
+      '<=') ver_le "$ver" "$bound" || return 1 ;;
+      '>')  ver_gt "$ver" "$bound" || return 1 ;;
+      '<')  ver_lt "$ver" "$bound" || return 1 ;;
+      '=')  [ "$ver" = "$bound" ] || return 1 ;;
+    esac
+  done
+  return 0
+}
+
 # --- release-line identity ------------------------------------------------
 # Defensive source: normally toml.sh arrives via paths.sh, but version.sh is also sourced
 # directly by tests that never went through it. Same idiom as delta.sh.

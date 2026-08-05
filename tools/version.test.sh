@@ -139,6 +139,48 @@ check "unorderable remainder is kept"    no  dn something 1.2.3 name-vNIGHTLY 82
 # decoration must not match, or ProjectName-v1 would strip for an entry called "Project".
 check "partial name does not match"      no  dn proj 1.2.3 project-v9.9.9 82 7 14
 
+# --- GHSA affected ranges (Axon#124) --------------------------------------
+#
+# Checked against real published data rather than invented shapes. The
+# ">= 0.74.0, < 0.78.1" conjunction is earendil-works/pi's advisories, and the unspaced
+# "<1.35.8" sitting beside the spaced "<= 1.35.4" is dani-garcia/vaultwarden publishing
+# both spellings in the same list. A parser handling only the tidy form passes a synthetic
+# test and misses a live advisory.
+rc_is() {  # rc_is <description> <expected rc> <version> <range>
+  local desc="$1" expect="$2" got
+  shift 2
+  range_contains "$1" "$2"; got=$?
+  if [ "$got" != "$expect" ]; then
+    echo "FAIL: $desc (expected rc $expect, got $got)"
+    fails=$((fails + 1))
+  fi
+}
+
+# 0 = affected · 1 = not affected · 2 = undecidable.
+rc_is "inside a two-sided range"         0 0.75.0        ">= 0.74.0, < 0.78.1"
+rc_is "the lower bound is inclusive"     0 0.74.0        ">= 0.74.0, < 0.78.1"
+rc_is "the upper bound is exclusive"     1 0.78.1        ">= 0.74.0, < 0.78.1"
+rc_is "above a two-sided range"          1 0.80.10       ">= 0.74.0, < 0.78.1"
+rc_is "below a one-sided range"          0 0.78.0        "< 0.79.0"
+rc_is "at a one-sided bound"             1 0.79.0        "< 0.79.0"
+rc_is "unspaced operator still parses"   1 1.37.0        "<1.35.8"
+rc_is "<= includes its bound"            0 1.35.4        "<= 1.35.4"
+rc_is "<= excludes just past it"         1 1.35.5        "<= 1.35.4"
+rc_is "= matches exactly"                0 1.2.3         "= 1.2.3"
+rc_is "= rejects a neighbour"            1 1.2.4         "= 1.2.3"
+rc_is "> excludes its own bound"         1 1.0.0         "> 1.0.0"
+rc_is "> admits what is above it"        0 2.0.0         "> 1.0.0"
+# An image-style pin is the version underneath it: vaultwarden pins 1.37.0-alpine while
+# its advisories are written against 1.35.x.
+rc_is "a decorated pin is reduced"       1 1.37.0-alpine "<1.35.8"
+
+# Undecidable, and never quietly "not affected". Inventing a verdict where none was
+# available is the exact failure the top of this file records.
+rc_is "an unorderable version"           2 abc           "< 1.0.0"
+rc_is "an empty range"                   2 1.0.0         ""
+rc_is "an operator we do not know"       2 1.0.0         "~> 1.0"
+rc_is "a range with no operator"         2 1.0.0         "1.0.0"
+
 if [ "$fails" -gt 0 ]; then
   echo "version.sh: $fails check(s) failed"
   exit 1

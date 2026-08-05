@@ -27,11 +27,26 @@ mkdir -p "$SCRATCH/bin"
 cat > "$SCRATCH/bin/gh" <<'STUB'
 #!/bin/bash
 echo "$*" >> "$AXON_TEST_GH_CALLS"
+case "$*" in
+  *security-advisories*)
+    # The real call carries --jq, so gh performs the id/severity/range join server-side and
+    # returns TSV. The stub is handed that TSV directly: what is under test is the range
+    # comparison and the gate's verdict, not jq's ability to project JSON.
+    # UNSET (not merely empty) is the fetch-failed branch; empty means "publishes none".
+    [ -n "${GH_STUB_ADVISORIES+set}" ] || exit 1
+    [ -n "$GH_STUB_ADVISORIES" ] && printf '%s\n' "$GH_STUB_ADVISORIES"
+    exit 0
+    ;;
+esac
 [ -n "${GH_STUB_TAG:-}" ] || exit 1
 printf '{"tag_name": "%s", "published_at": "%s"}\n' "$GH_STUB_TAG" "${GH_STUB_PUBLISHED:-2000-01-01T00:00:00Z}"
 STUB
 chmod +x "$SCRATCH/bin/gh"
 export AXON_TEST_GH_CALLS="$CALLS"
+# The default for every pre-existing case below: this repo publishes no advisories. Set
+# rather than left unset, so those cases exercise the check's green path instead of its
+# "could not fetch" branch and start warning for a reason they are not about.
+export GH_STUB_ADVISORIES=""
 PATH="$SCRATCH/bin:$PATH"; export PATH
 
 fails=0
@@ -181,8 +196,86 @@ expect_out    "json payload" '"status":"na"'
 expect_out    "json payload" '"pin_kind":"image"'
 expect_out    "json payload" '"warn":0'
 
+# --- published GitHub Security Advisories (Axon#124) ----------------------------------
+#
+# osv-scanner cannot see GHSA for every ecosystem — queried for @earendil-works/pi-coding-agent
+# it returns nothing while GitHub publishes four advisories, one of them high severity. The
+# advisory data below is that repo's real ranges, so what is planted is a shape that actually
+# occurs rather than one invented to fit the parser.
+ADV_PI='GHSA-jfgx-wxx8-mp94	high	>= 0.74.0, < 0.78.1
+GHSA-mqxh-6gq7-558m	medium	< 0.79.0
+GHSA-r95r-rj6r-c39x	low	>= 0.28.0, <= 0.73.1'
+
+# A pin inside a published range FAILS. Not a warning: the active-vulnerability carve-out in
+# README.md#pins-and-cooldown treats this as the one reason to bump inside the hold, and a gate
+# that can only murmur about it cannot be what authorises that.
+GH_STUB_TAG="v0.90.0" GH_STUB_ADVISORIES="$ADV_PI"
+export GH_STUB_TAG GH_STUB_ADVISORIES
+mf="$(plant advisory_hit "$(entry pi-agent 0.75.0)")"
+run "$mf"
+expect_status "advisory hit" 1
+expect_out    "advisory hit" "✗ GHSA-jfgx-wxx8-mp94 (high)"
+expect_out    "advisory hit" "is inside the affected range '>= 0.74.0, < 0.78.1'"
+expect_out    "advisory hit" "1 fail"
+
+# The same manifest one version later is clean — proving the verdict tracks the pin rather
+# than merely the presence of advisories on the repo.
+mf="$(plant advisory_clear "$(entry pi-agent 0.90.0)")"
+run "$mf"
+expect_status "advisory cleared"  0
+expect_out    "advisory cleared"  "✓ 3 published advisory range(s), none affecting pin 0.90.0"
+expect_no_out "advisory cleared"  "✗ GHSA"
+
+# A range GitHub allows but nobody can order must not read as safe. Undecided is its own
+# state, and it warns.
+GH_STUB_ADVISORIES='GHSA-free-text-0001	high	2025.02 to 2026.01'
+export GH_STUB_ADVISORIES
+mf="$(plant advisory_undecidable "$(entry pi-agent 2026.7.4)")"
+run "$mf"
+expect_out    "undecidable range" "exposure undecided: GHSA-free-text-0001"
+expect_out    "undecidable range" "1 warn"
+expect_no_out "undecidable range" "none affecting pin"
+
+# An advisory against something Axon deliberately does NOT run is not Axon's exposure. This
+# is the esphome case: rejected 2026-07-26, pinned only so it cannot drift back in unseen.
+GH_STUB_ADVISORIES="$ADV_PI"
+export GH_STUB_ADVISORIES
+mf="$(plant advisory_rejected "$(printf '[dropped]\nurl = "https://github.com/example/dropped"\nverdict = "reject"\nlicense = "MIT"\nwhy = "removed"\npin = "0.75.0"\n')")"
+run "$mf"
+expect_status "rejected upstream" 0
+expect_no_out "rejected upstream" "✗ GHSA"
+
+# A sha cannot be compared against a version range, and must not be made to look like one:
+# probe_core reduces `abc1234` to `1234`, which would otherwise be matched as a version.
+# Reported as n/a, and no API call is spent establishing it.
+mf="$(plant advisory_sha "$(entry sha-pinned abc1234 'pin_kind = "commit"
+tracked_by = "diffing upstream default branch"')")"
+run "$mf"
+expect_status "sha pin" 0
+expect_out    "sha pin" "○ advisory match n/a"
+expect_no_out "sha pin" "✗ GHSA"
+! grep -q 'security-advisories' "$CALLS"
+check "sha pin" "no advisory call should be spent on a sha, got: $(cat "$CALLS")" $?
+
+# A fetch that failed is not a fetch that passed — same rule the drift check already follows.
+unset GH_STUB_ADVISORIES
+mf="$(plant advisory_unreachable "$(entry pi-agent 0.75.0)")"
+run "$mf"
+expect_out "advisory unreachable" "⚠ advisories not resolvable"
+expect_out "advisory unreachable" "1 warn"
+export GH_STUB_ADVISORIES="$ADV_PI"
+
+# Offline skips it entirely, like the release check: no call, and no warning invented for a
+# question that was deliberately not asked. tools/doctor spawns this mode.
+mf="$(plant advisory_offline "$(entry pi-agent 0.75.0)")"
+run "$mf" --offline
+expect_status "advisory offline" 0
+expect_no_out "advisory offline" "GHSA"
+[ ! -s "$CALLS" ]
+check "advisory offline" "gh should not be called at all, got: $(cat "$CALLS")" $?
+
 if [ "$fails" -gt 0 ]; then
   echo "upstream-checker declaration gate: $fails check(s) failed"
   exit 1
 fi
-echo "upstream-checker declaration gate: all checks passed"
+echo "upstream-checker declaration and advisory gates: all checks passed"

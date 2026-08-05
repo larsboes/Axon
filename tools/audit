@@ -13,6 +13,12 @@
 # gitleaks output is redacted by default (routine/gate usage, not triage) --
 # for full secret detail on a real finding, run gitleaks directly yourself.
 #
+# Every accepted-finding policy here is dated (trivy-ignore/*.txt, osv-scanner.toml). This
+# reports each policy's nearest expiry with the days left, warns once that date falls
+# inside axon.toml [audit] expiry_warn_days, and FAILS once it has passed. The scanners
+# enforce their own dates silently at scan time, so without this nothing ever says a date
+# is coming -- the first notice is the red build afterwards.
+#
 # Exit 0 = clean, 1 = finding(s), 2 = usage/setup error. bash 3.2-safe.
 set -u
 
@@ -31,7 +37,9 @@ for a in "$@"; do
   case "$a" in
     --sarif)   _want=sarif ;;
     --skip)    _want=skip ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    # 2,20 rather than 2,13: the old range stopped on the first line of the two-line
+    # gitleaks note, so --help ended mid-sentence.
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "audit: unknown arg '$a'" >&2; exit 2 ;;
   esac
 done
@@ -40,7 +48,121 @@ if [ -n "$SARIF_DIR" ]; then mkdir -p "$SARIF_DIR" || { echo "audit: cannot crea
 skip_has() { case " $SKIP " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 sarif_path() { [ -n "$SARIF_DIR" ] && printf '%s/%s.sarif' "$SARIF_DIR" "$1"; }
 
+# ---- the expiry clock ------------------------------------------------------
+#
+# Every accepted finding in this repo is accepted UNTIL a date: trivy-ignore/*.txt carry
+# `exp:YYYY-MM-DD` per entry, osv-scanner.toml carries `ignoreUntil`. Both scanners honour
+# their own dates and neither announces one. So a policy lapses mid-week, findings that
+# were a reviewed decision yesterday are a build failure today, and nothing connects the
+# two. On 2026-08-05 two of the three image policies were ten days from exactly that.
+#
+# Axon does not re-implement either format's matching rules -- the scanners stay the
+# authority on what an expired entry MEANS, and if the two readings ever disagree theirs
+# is the one that decides the scan. This reads only the dates already written in the
+# policy files, so that a date arrives as notice beforehand instead of a red build after.
+#
+# Read once, on first use: the gitleaks-only path in tools/audit.test.sh plants a stub
+# paths.sh with no toml_get_in, and a top-level read would break it for a value that path
+# never uses.
+_EXPIRY_WARN_DAYS=""
+expiry_warn_days() {
+  if [ -z "$_EXPIRY_WARN_DAYS" ]; then
+    _EXPIRY_WARN_DAYS="$(toml_get_in audit expiry_warn_days "$AXON_ROOT/axon.toml")"
+    [ -n "$_EXPIRY_WARN_DAYS" ] || {
+      echo "audit: axon.toml has no [audit] expiry_warn_days" >&2; exit 2; }
+  fi
+  printf '%s' "$_EXPIRY_WARN_DAYS"
+}
+
+# day_epoch <YYYY-MM-DD> — that date at midnight UTC, in epoch seconds. GNU date first,
+# BSD/macOS fallback, same shape as tools/upstream-checker's epoch_of. Both forms are
+# handed an explicit 00:00:00 because BSD `date -j -f %Y-%m-%d` fills the missing time
+# from the current clock, which moves the answer by a day depending on when the audit ran.
+day_epoch() {
+  if date --version >/dev/null 2>&1; then
+    date -u -d "$1 00:00:00" +%s 2>/dev/null
+  else
+    date -j -u -f "%Y-%m-%d %H:%M:%S" "$1 00:00:00" +%s 2>/dev/null
+  fi
+}
+
+# days_until <YYYY-MM-DD> — whole days from today to that date; negative once past.
+# Today is floored to midnight UTC for the same reason, so a policy expiring today reads
+# as 0 days rather than -1 whenever the audit happens to run in the afternoon.
+days_until() {
+  target="$(day_epoch "$1")"
+  today="$(day_epoch "$(date -u +%Y-%m-%d)")"
+  { [ -n "$target" ] && [ -n "$today" ]; } || return 1
+  echo $(( (target - today) / 86400 ))
+}
+
+# expiry_dates_trivy <file> — the exp: date of every entry that carries one.
+# Undated entries are deliberately NOT emitted; the caller knows the total and derives the
+# undated count from the difference, which is how "how many of these never expire at all"
+# stays answerable instead of silently reading as zero.
+expiry_dates_trivy() {
+  grep -Ev '^[[:space:]]*(#|$)' "$1" \
+    | grep -oE 'exp:[0-9]{4}-[0-9]{2}-[0-9]{2}' \
+    | sed 's/^exp://'
+}
+
+# expiry_dates_osv <file> / osv_ignored_count <file> — the same two facts for the
+# [[IgnoredVulns]] blocks in osv-scanner.toml. ignoreUntil is a bare TOML date, unquoted.
+expiry_dates_osv() {
+  grep -E '^[[:space:]]*ignoreUntil[[:space:]]*=' "$1" \
+    | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}'
+}
+osv_ignored_count() { grep -cE '^[[:space:]]*\[\[IgnoredVulns\]\]' "$1" | tr -d ' '; }
+
+# expiry_note <label> <total entries> <dates…> — the one status line for a policy.
+#   Exit 0 = nothing owed · 1 = needs attention · 2 = already lapsed.
+#
+# Same shape as lib/version.sh's drift_note, and for the same reason: this decides what
+# the status IS, the caller decides what it costs. Dates arrive word-split rather than on
+# stdin because a `while read` in a pipeline runs in a subshell under bash 3.2 and would
+# lose every counter it just incremented.
+expiry_note() {
+  label="$1"; total="$2"; shift 2
+  nearest=""; nearest_days=0; expired=0; dated=0
+  for d in "$@"; do
+    days="$(days_until "$d")" || continue
+    dated=$((dated + 1))
+    [ "$days" -lt 0 ] && expired=$((expired + 1))
+    if [ -z "$nearest" ] || [ "$days" -lt "$nearest_days" ]; then
+      nearest="$d"; nearest_days="$days"
+    fi
+  done
+  undated=$((total - dated))
+
+  # An undated exception is the worst state, not the quiet one: nothing will ever prompt
+  # a re-decision, so it outranks a date that is merely close.
+  if [ -z "$nearest" ]; then
+    printf '%s — %s ID(s), no entry carries a date — nothing will ever prompt a re-decision\n' \
+      "$label" "$total"
+    return 1
+  fi
+  if [ "$expired" -gt 0 ]; then
+    printf '%s — %s ID(s), ✗ EXPIRED %s (%sd ago; %s of %s dated entries) — the scanner has stopped honouring these\n' \
+      "$label" "$total" "$nearest" "$((0 - nearest_days))" "$expired" "$dated"
+    return 2
+  fi
+  if [ "$undated" -gt 0 ]; then
+    printf '%s — %s ID(s), nearest expiry %s (%sd left), ⚠ %s undated and therefore permanent\n' \
+      "$label" "$total" "$nearest" "$nearest_days" "$undated"
+    return 1
+  fi
+  if [ "$nearest_days" -le "$(expiry_warn_days)" ]; then
+    printf '%s — %s ID(s), ⚠ expires %s (%sd left, inside the %sd re-decision window)\n' \
+      "$label" "$total" "$nearest" "$nearest_days" "$(expiry_warn_days)"
+    return 1
+  fi
+  printf '%s — %s ID(s), expires %s (%sd left)\n' "$label" "$total" "$nearest" "$nearest_days"
+  return 0
+}
+
 fail=0
+EXPIRY_WARNED=""
+EXPIRY_LAPSED=""
 echo "Axon audit · $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u)"
 
 # ---- gitleaks: secret scan over Axon + the private overlay's git history ----
@@ -122,6 +244,22 @@ if skip_has osv; then
   echo; echo "▸ osv-scanner — skipped"
 else
   echo; echo "▸ osv-scanner · dependency CVEs ($AXON_ROOT)"
+  # The advisory exceptions get the same clock as the image policies. Reported before the
+  # scan rather than after it, so the line survives however much table osv-scanner prints.
+  osv_policy="$AXON_ROOT/osv-scanner.toml"
+  if [ -f "$osv_policy" ]; then
+    osv_count="$(osv_ignored_count "$osv_policy")"
+    if [ "${osv_count:-0}" -gt 0 ]; then
+      # shellcheck disable=SC2046
+      exp_note="$(expiry_note "policy: osv-scanner.toml" "$osv_count" $(expiry_dates_osv "$osv_policy"))"
+      exp_rc=$?
+      echo "  $exp_note"
+      case "$exp_rc" in
+        1) EXPIRY_WARNED="$EXPIRY_WARNED osv-scanner.toml" ;;
+        2) EXPIRY_LAPSED="$EXPIRY_LAPSED osv-scanner.toml"; fail=1 ;;
+      esac
+    fi
+  fi
   out="$(sarif_path osv-scanner)"
   base="scan source -r --config $AXON_ROOT/osv-scanner.toml"
   for d in $EXCLUDE_DIRS; do base="$base --experimental-exclude $d"; done
@@ -162,7 +300,17 @@ else
     echo "  · $cap — $ref"
     if [ -f "$ignore" ]; then
       ignore_count="$(grep -Ev '^[[:space:]]*(#|$)' "$ignore" | wc -l | tr -d ' ')"
-      echo "    policy: trivy-ignore/$cap.txt ($ignore_count expiring finding ID(s))"
+      # Unquoted on purpose: the dates are word-split into expiry_note's argv. They are
+      # ISO dates matched by a character-class grep, so there is nothing here to split on
+      # but the whitespace that is doing the work.
+      # shellcheck disable=SC2046
+      exp_note="$(expiry_note "policy: trivy-ignore/$cap.txt" "$ignore_count" $(expiry_dates_trivy "$ignore"))"
+      exp_rc=$?
+      echo "    $exp_note"
+      case "$exp_rc" in
+        1) EXPIRY_WARNED="$EXPIRY_WARNED trivy-ignore/$cap.txt" ;;
+        2) EXPIRY_LAPSED="$EXPIRY_LAPSED trivy-ignore/$cap.txt"; fail=1 ;;
+      esac
     fi
     out="$(sarif_path "trivy-$cap")"
     # same single-value --format limitation as osv-scanner above: a second
@@ -198,6 +346,17 @@ else
 fi
 
 echo
+# Repeated at the bottom because the per-policy line is one row inside whatever table the
+# scanner printed above it, and a date ten days out is the thing most worth not scrolling
+# back for.
+if [ -n "$EXPIRY_LAPSED" ]; then
+  echo "── exception policies past their date:$EXPIRY_LAPSED"
+  echo "   The scanner no longer honours them, so these findings are live again. Re-decide"
+  echo "   with fresh evidence or delete the entries — an expired policy is not a policy."
+fi
+if [ -n "$EXPIRY_WARNED" ]; then
+  echo "── exception policies needing a re-decision inside $(expiry_warn_days)d:$EXPIRY_WARNED"
+fi
 if [ "$fail" -eq 0 ]; then
   echo "── audit: clean ──"
 else
