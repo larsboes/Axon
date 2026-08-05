@@ -595,6 +595,15 @@ API adapters `euro_hackathons` (default when no sources are configured, live-ver
 `transit_fare` (live-verified, needs `--date-from` and `default_from_eva`/`default_to_eva`
 configured in transit's overlay config).
 
+Anything else exits 1 with an error listing both the declared source ids and the built-in
+names, and a disabled source is listed as disabled rather than omitted. It used to run
+`euro_hackathons`: a catch-all arm built that adapter for every unrecognized name, so
+`--adapter meetupp` fetched hackathons, printed them, and exited 0. Two nearer misses fell
+through the same hole — a declared source whose config could not build (which printed its own
+error first and then ran hackathons anyway) and a source the operator had deliberately
+disabled. A run answering the wrong question while looking healthy is worse than one that
+stops, so none of the three falls through now.
+
 ## Redactions applied during the port
 
 - `store.rs`'s hardcoded personal Postgres URL — still gone.

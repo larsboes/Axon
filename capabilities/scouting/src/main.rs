@@ -12,7 +12,7 @@ use scouting::opportunity::Opportunity;
 use scouting::pipeline::{backlog_from_store, fetch_json, run};
 use scouting::score::{load_opp_embeddings, load_telos_profiles, score, ScoredOpportunity, TelosProfile};
 use scouting::source::{SearchQuery, SourceAdapter};
-use scouting::sources::{print_sources, SourceManifest};
+use scouting::sources::{print_sources, SourceFactoryError, SourceManifest};
 use scouting::store::Store;
 use scouting::vault_linker;
 
@@ -48,28 +48,111 @@ fn set_status_and_exit(database_url: &str, id: &str, status: &str) -> ! {
 // fall back to the built-in API adapters.
 // ---------------------------------------------------------------------------
 
-/// Try to resolve an adapter by name from the source registry. Returns `None`
-/// if no source with that id exists in the config (the caller should fall back
-/// to the hardcoded API adapter list).
-fn resolve_source_adapter(
-    id: &str,
-    sources: &[SourceManifest],
-    _no_store: bool,
-) -> Option<Box<dyn SourceAdapter>> {
-    let manifest = sources.iter().find(|s| s.id == id && s.enabled)?;
+/// What `--adapter <name>` turned out to mean.
+///
+/// Three-state on purpose. This used to return `Option`, which folded "there is
+/// no such source" together with "there is one, and it did not build" — and the
+/// caller treated both as *try the built-ins next*. So a source with a broken
+/// config printed its own error and then quietly ran EuroHackathons instead.
+enum SourceLookup {
+    Found(Box<dyn SourceAdapter>),
+    /// No declared source carries this id. The caller may try the built-ins.
+    NotDeclared,
+    /// Declared, and it cannot run. Never falls through: the operator named
+    /// this source, and answering with a different one's results is worse than
+    /// answering with nothing.
+    Failed(String),
+}
+
+/// Resolve an adapter by name from the source registry.
+fn resolve_source_adapter(id: &str, sources: &[SourceManifest], _no_store: bool) -> SourceLookup {
+    let Some(manifest) = sources.iter().find(|s| s.id == id) else {
+        return SourceLookup::NotDeclared;
+    };
+    // Disabled is a decision the operator made, not an absence. Falling through
+    // here would run something they never asked for in place of something they
+    // deliberately turned off.
+    if !manifest.enabled {
+        return SourceLookup::Failed(format!(
+            "source '{id}' is declared but disabled — set \"enabled\": true in \
+             the overlay's scouting.json to run it"
+        ));
+    }
     match scouting::sources::create_adapter(manifest) {
-        Ok(adapter) => Some(adapter),
-        Err(e) => {
-            eprintln!("error creating source '{id}': {e}");
-            None
-        }
+        Ok(adapter) => SourceLookup::Found(adapter),
+        // Only the `Config` variant already names the source it came from.
+        // Prefixing unconditionally printed `source 'x': source 'x': …`, which
+        // reads like two separate failures.
+        Err(e) => SourceLookup::Failed(match &e {
+            SourceFactoryError::Config { .. } => e.to_string(),
+            _ => format!("source '{id}': {e}"),
+        }),
     }
 }
 
-/// Build an API adapter (the old hardcoded match). Returns an error message
-/// and exits if a required config is missing (e.g. transit_fare).
-fn build_api_adapter(name: &str, no_store: bool) -> Box<dyn SourceAdapter> {
-    match name {
+/// The built-in adapter names `--adapter` accepts, so the failure can list
+/// them. Kept beside `build_api_adapter`'s arms, with a test that fails if one
+/// gains a name this misses.
+const API_ADAPTERS: [&str; 6] = [
+    "euro_hackathons",
+    "luma",
+    "meetup",
+    "cfp",
+    "cfp_conferences",
+    "transit_fare",
+];
+
+/// What to print when a name matches neither a declared source nor a built-in.
+///
+/// Lists both sides, because the failure alone does not tell the operator which
+/// half they got wrong. A disabled source is named as disabled rather than
+/// omitted: leaving it out reads as "not configured" and sends them to write an
+/// entry that already exists.
+fn unknown_adapter_error(name: &str, sources: &[SourceManifest]) -> String {
+    let declared = if sources.is_empty() {
+        "(none declared)".to_string()
+    } else {
+        sources
+            .iter()
+            .map(|s| {
+                if s.enabled {
+                    s.id.clone()
+                } else {
+                    format!("{} (disabled)", s.id)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "unknown adapter '{name}'\n  declared sources: {declared}\n  built-in adapters: {}",
+        API_ADAPTERS.join(", ")
+    )
+}
+
+/// Build a built-in API adapter by name.
+///
+/// `None` means the name is not one of these, which is the caller's problem to
+/// report. It used to mean EuroHackathons: the catch-all arm ran it for
+/// *anything* unrecognized, so `--adapter meetupp` fetched hackathons and said
+/// nothing about it. A typo returning somebody else's results is the worst
+/// available answer, because it looks exactly like a working run.
+///
+/// Still exits rather than returning for a required config that is missing
+/// (`transit_fare`): that is a different failure, already reported precisely,
+/// and folding it into "unknown adapter" would make the message wrong.
+fn build_api_adapter(name: &str, no_store: bool) -> Option<Box<dyn SourceAdapter>> {
+    let adapter: Box<dyn SourceAdapter> = match name {
+        "euro_hackathons" => {
+            // The cache is a developer convenience: a directory of saved
+            // responses so a sweep can be re-run offline.
+            let cache_dir = PathBuf::from("infra/data/scouting-cache/euro_hackathons");
+            if cache_dir.exists() {
+                Box::new(EuroHackathonsAdapter::with_cache(cache_dir))
+            } else {
+                Box::new(EuroHackathonsAdapter::new())
+            }
+        }
         "luma" => Box::new(LumaAdapter::new()),
         "meetup" => Box::new(MeetupAdapter::new()),
         "cfp" | "cfp_conferences" => Box::new(CfpConferencesAdapter::new()),
@@ -93,16 +176,9 @@ fn build_api_adapter(name: &str, no_store: bool) -> Box<dyn SourceAdapter> {
             };
             Box::new(TransitFareAdapter::new(from_eva, to_eva, transit_store))
         }
-        _ => {
-            let cache_dir = PathBuf::from("infra/data/scouting-cache/euro_hackathons");
-            let a: Box<dyn SourceAdapter> = if cache_dir.exists() {
-                Box::new(EuroHackathonsAdapter::with_cache(cache_dir))
-            } else {
-                Box::new(EuroHackathonsAdapter::new())
-            };
-            a
-        }
-    }
+        _ => return None,
+    };
+    Some(adapter)
 }
 
 // ---------------------------------------------------------------------------
@@ -572,35 +648,32 @@ fn main() {
             );
         }
 
-        // Try source registry first
-        if let Some(adapter) = resolve_source_adapter(name, &cfg.sources, no_store) {
-            if emit_json {
-                match fetch_json(&*adapter, &query) {
-                    Ok(opps) => println!("{}", serde_json::to_string_pretty(&opps).unwrap_or_default()),
-                    Err(e) => eprintln!("fetch error: {e}"),
-                }
-                return;
+        // A declared source wins over a built-in of the same name, and a
+        // declared source that cannot run stops here rather than handing the
+        // question to the built-in list. One resolved adapter, one run block:
+        // the two copies this replaced were where the fallthrough hid.
+        let adapter = match resolve_source_adapter(name, &cfg.sources, no_store) {
+            SourceLookup::Found(adapter) => adapter,
+            SourceLookup::Failed(detail) => {
+                eprintln!("error: {detail}");
+                std::process::exit(1);
             }
-
-            println!("Axon Scouting — opportunity discovery\n");
-            print_run_header(&*adapter, &cfg, &opp_emb_path, &database_url);
-
-            match run_adapter(&*adapter, &query, &cfg, &opp_emb_path, &database_url, no_store, show_backlog, include_dismissed, limit) {
-                Ok(report) => {
-                    let store = Store::open(&database_url).ok();
-                    print_results(&report, store.as_ref(), include_dismissed);
+            SourceLookup::NotDeclared => match build_api_adapter(name, no_store) {
+                Some(adapter) => adapter,
+                None => {
+                    eprintln!("error: {}", unknown_adapter_error(name, &cfg.sources));
+                    std::process::exit(1);
                 }
-                Err(e) => println!("  pipeline error: {e}"),
-            }
-            return;
-        }
+            },
+        };
 
-        // Fall back to API adapter
-        let adapter = build_api_adapter(name, no_store);
         if emit_json {
             match fetch_json(&*adapter, &query) {
                 Ok(opps) => println!("{}", serde_json::to_string_pretty(&opps).unwrap_or_default()),
-                Err(e) => eprintln!("fetch error: {e}"),
+                Err(e) => {
+                    eprintln!("fetch error: {e}");
+                    std::process::exit(1);
+                }
             }
             return;
         }
@@ -673,7 +746,11 @@ fn main() {
     //    and we haven't run anything yet. If sources are configured, the user
     //    explicitly chose what to run.
     if !ran_any && enabled_sources.is_empty() {
-        let adapter = build_api_adapter("euro_hackathons", no_store);
+        // A literal this file owns, so `expect` here is a bug in this file
+        // rather than anything an operator can trigger — the API_ADAPTERS test
+        // below pins the name.
+        let adapter = build_api_adapter("euro_hackathons", no_store)
+            .expect("euro_hackathons is a built-in adapter name");
 
         if emit_json {
             match fetch_json(&*adapter, &query) {
@@ -781,5 +858,127 @@ fn run_from_file(
 
     if scored.len() > show_limit {
         println!("  ... {} more (raise --limit to see all)", scored.len() - show_limit);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scouting::sources::SourceEntry;
+
+    fn manifests(json: serde_json::Value) -> Vec<SourceManifest> {
+        serde_json::from_value::<Vec<SourceEntry>>(json)
+            .expect("source entries")
+            .iter()
+            .map(SourceEntry::resolve)
+            .collect()
+    }
+
+    fn one_enabled_and_one_disabled() -> Vec<SourceManifest> {
+        manifests(serde_json::json!([
+            { "id": "events-radar", "adapter": "rss", "url": "https://example.test/a" },
+            { "id": "old-radar", "adapter": "rss", "url": "https://example.test/b", "enabled": false }
+        ]))
+    }
+
+    /// The defect this module's catch-all used to have: any unrecognized name
+    /// built EuroHackathons, so a typo fetched hackathons and reported success.
+    /// A run that answers the wrong question while looking healthy is worse
+    /// than one that stops.
+    #[test]
+    fn an_unknown_adapter_name_builds_nothing() {
+        assert!(build_api_adapter("meetupp", true).is_none());
+        assert!(build_api_adapter("", true).is_none());
+        assert!(build_api_adapter("splash-hub", true).is_none());
+    }
+
+    #[test]
+    fn every_built_in_name_this_lists_actually_builds() {
+        for name in API_ADAPTERS {
+            // transit_fare exits rather than returning when its overlay config
+            // is absent, which is a different failure with its own message.
+            if name == "transit_fare" {
+                continue;
+            }
+            assert!(
+                build_api_adapter(name, true).is_some(),
+                "API_ADAPTERS lists '{name}' but build_api_adapter does not build it"
+            );
+        }
+    }
+
+    /// The default no-flag path calls this by literal.
+    #[test]
+    fn the_default_adapter_is_a_name_the_builder_knows() {
+        assert!(API_ADAPTERS.contains(&"euro_hackathons"));
+        assert!(build_api_adapter("euro_hackathons", true).is_some());
+    }
+
+    #[test]
+    fn a_name_no_source_declares_is_left_to_the_built_ins() {
+        assert!(matches!(
+            resolve_source_adapter("luma", &one_enabled_and_one_disabled(), true),
+            SourceLookup::NotDeclared
+        ));
+    }
+
+    #[test]
+    fn a_declared_enabled_source_resolves_to_its_own_adapter() {
+        match resolve_source_adapter("events-radar", &one_enabled_and_one_disabled(), true) {
+            SourceLookup::Found(adapter) => assert_eq!(adapter.name(), "events-radar"),
+            _ => panic!("a declared, enabled source must resolve"),
+        }
+    }
+
+    /// Disabled is a decision, not an absence. Falling through would run a
+    /// built-in in place of the thing the operator deliberately turned off.
+    #[test]
+    fn a_disabled_source_stops_rather_than_falling_through() {
+        match resolve_source_adapter("old-radar", &one_enabled_and_one_disabled(), true) {
+            SourceLookup::Failed(detail) => {
+                assert!(detail.contains("old-radar"), "got: {detail}");
+                assert!(detail.contains("disabled"), "got: {detail}");
+            }
+            _ => panic!("a disabled source must not resolve, and must not fall through"),
+        }
+    }
+
+    /// The worse half of the old bug: this case already printed its error, and
+    /// then ran EuroHackathons anyway.
+    #[test]
+    fn a_declared_source_that_cannot_build_stops_rather_than_falling_through() {
+        let broken = manifests(serde_json::json!([
+            { "id": "broken-radar", "adapter": "luma-calendar" }
+        ]));
+        match resolve_source_adapter("broken-radar", &broken, true) {
+            SourceLookup::Failed(detail) => {
+                assert!(detail.contains("broken-radar"), "got: {detail}");
+                assert_eq!(
+                    detail.matches("broken-radar").count(),
+                    1,
+                    "the source is named once; twice reads like two separate failures: {detail}"
+                );
+            }
+            _ => panic!("a source whose config cannot build must not fall through"),
+        }
+    }
+
+    #[test]
+    fn the_unknown_adapter_error_names_both_halves_of_what_it_could_have_been() {
+        let message = unknown_adapter_error("meetupp", &one_enabled_and_one_disabled());
+        assert!(message.contains("meetupp"), "the error quotes what was typed");
+        assert!(message.contains("events-radar"), "and lists declared sources");
+        assert!(
+            message.contains("old-radar (disabled)"),
+            "a disabled source is named as disabled, not omitted -- omitting it reads as \
+             'not configured' and sends the operator to write an entry that already exists"
+        );
+        assert!(message.contains("euro_hackathons"), "and lists the built-ins");
+    }
+
+    #[test]
+    fn with_nothing_declared_the_error_says_so_rather_than_showing_an_empty_list() {
+        let message = unknown_adapter_error("whatever", &[]);
+        assert!(message.contains("(none declared)"), "got: {message}");
     }
 }

@@ -107,3 +107,21 @@ rust_binary(
         "@crate_index//:tower-http",
     ],
 )
+
+# The two binary crates carry their own #[cfg(test)] modules, and until these
+# targets existed `cargo test` ran them while bazel did not — the Axon#30
+# false-green shape, one layer over. `scout`'s tests pin adapter-name
+# resolution (an unknown name must build nothing rather than quietly running
+# EuroHackathons); `scout-server`'s pin the route manifest against the router's
+# own source.
+rust_test(
+    name = "scout_test",
+    crate = ":scout",
+    size = "small",
+)
+
+rust_test(
+    name = "scout_server_test",
+    crate = ":scout-server",
+    size = "small",
+)
