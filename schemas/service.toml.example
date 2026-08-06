@@ -121,11 +121,13 @@ backup_stale_days  = "7"                  # past this age the last backup counts
                                           # different answers, and a capability whose data changes hourly and
                                           # one that changes monthly do not share either. Read from the receipt
                                           # backup.sh writes (overlay backup/receipts/<cap>.json) to decide what
-                                          # a surface shows. Declared ahead of any consumer on purpose: no
-                                          # surface reads these two fields yet — not the dashboard, which has
-                                          # no backup trigger, and not a scheduler, which does not exist. The
-                                          # declaration is here so that adding either is a new consumer rather
-                                          # than a new manifest field. No default — a capability that
+                                          # a surface shows. Declared ahead of any consumer on purpose, and
+                                          # that is still half true: the dashboard has no backup trigger yet.
+                                          # The scheduler this comment once called nonexistent now exists —
+                                          # see `schedule` below — so a capability wanting an unattended
+                                          # backup run declares it there, and these two fields stay what they
+                                          # always were: what timely MEANS, not what runs. No default — a
+                                          # capability that
                                           # declares a backup but no cadence is only ever reported as "last run
                                           # <age>", never as overdue, because nothing said what timely means.
 
@@ -166,6 +168,29 @@ backup_stale_days  = "7"                  # past this age the last backup counts
 # autostart   = "true"                      # optional. `service-runner.sh up` starts it; without it
 #                                           # the capability is on-demand — dashboard starts it when
 #                                           # you open its surface. Default: on-demand.
+# schedule    = "6h"                        # optional. Run this capability every N and let it EXIT —
+#                                           # a collector sweep, a gate, anything periodic. Accepts
+#                                           # <N>m, <N>h, <N>d and nothing else; not a cron
+#                                           # expression, because both backends want a duration
+#                                           # anyway (launchd StartInterval is seconds, systemd
+#                                           # OnUnitActiveSec is a time span) and a second scheduling
+#                                           # language in a manifest is a language to translate out
+#                                           # of. `install-persistence` renders a launchd agent with
+#                                           # StartInterval on macOS and a systemd --user timer plus
+#                                           # its oneshot on Linux. The first run comes ~1min after
+#                                           # boot rather than a whole interval later, and
+#                                           # re-installing triggers a run.
+#                                           #
+#                                           # MUTUALLY EXCLUSIVE with autostart, and refused rather
+#                                           # than resolved: a watchdog holds the process up
+#                                           # continuously, which leaves an interval nothing to
+#                                           # start. autostart = a service, schedule = a job.
+#                                           #
+#                                           # Declared in Axon because "every 6h" is a property of
+#                                           # the capability. WHETHER it runs stays a per-machine
+#                                           # fact in the overlay's enabled set, so a laptop can
+#                                           # carry the declaration switched off while a homeserver
+#                                           # runs it.
 #
 # Dashboard wiring (read by dashboard/vite.config.ts through the registry, so a port
 # literal lives in exactly one file):

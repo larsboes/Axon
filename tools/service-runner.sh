@@ -18,6 +18,9 @@ source "$TOOLS_DIR/lib/toml.sh"
 source "$TOOLS_DIR/lib/runargs.sh"
 # `does this stream contain X` without the answer depending on where the match sits (#42).
 source "$TOOLS_DIR/lib/pipe.sh"
+# The `schedule` duration parser, shared with tools/check-service-tomls.sh so the gate that
+# accepts a manifest and the runner that installs it can never disagree about what it means.
+source "$TOOLS_DIR/lib/schedule.sh"
 
 usage() {
   echo "usage: service-runner.sh <start|stop|idle-stop|restart|resume|recreate|status> <capability>" >&2
@@ -198,6 +201,11 @@ NAME="$(toml_get name "$MANIFEST")"
 KIND="$(toml_get kind "$MANIFEST")"
 [ -n "$KIND" ] || KIND="container"
 AUTOSTART="$(toml_get autostart "$MANIFEST")"
+# A periodic job: "run this every N", as opposed to autostart's "keep this up". Read here beside
+# autostart because the two are read together everywhere below — they are the two halves of one
+# question (how does this capability get started when nobody types a command), and a manifest
+# answering both at once is a contradiction this file refuses rather than picks a winner for.
+SCHEDULE="$(toml_get schedule "$MANIFEST")"
 
 container_init() {  # every container-only manifest field, read only when it applies
 IMAGE="$(toml_get image "$MANIFEST")"
@@ -759,38 +767,91 @@ status_service() {
 # Answering "is it installed, and does it still match the declaration" means being able to render
 # the unit WITHOUT loading it, which is what these three functions separate out.
 
-# persistence_applicable — 0 when this capability should have a watchdog, 1 when it should not.
-# Prints the reason on stdout either way, because "not applicable" is an answer a caller reports,
-# not an error it swallows.
+# persistence_mode — which of three declarations this manifest makes, on stdout:
+#
+#   watchdog   autostart = "true"   keep it up; restart it if it dies
+#   scheduled  schedule = "6h"      on-demand AND periodic: run it, let it exit, run it again
+#   (empty)    neither              purely on-demand; a surface or an operator starts it
+#
+# The middle case is the third thing `install_persistence` had to learn (#129), and it is not
+# "autostart, loosened". A watchdog calls `start` every 30s forever; a scheduled job is expected
+# to EXIT between runs. Declaring both is a contradiction rather than a preference — the watchdog
+# would hold the process up continuously, leaving nothing for an interval to start — so it is
+# refused here instead of silently resolved in whichever direction the code happens to check first.
+persistence_mode() {
+  if [ "$AUTOSTART" = "true" ] && [ -n "$SCHEDULE" ]; then
+    echo "service-runner.sh: '$CAP' declares autostart AND schedule = \"$SCHEDULE\"." >&2
+    echo "  A watchdog keeps the process up continuously, so an interval would never have anything to start." >&2
+    echo "  autostart is for a service, schedule is for a periodic job — declare one ($MANIFEST)." >&2
+    return 1
+  fi
+  if [ "$AUTOSTART" = "true" ]; then echo watchdog; return 0; fi
+  if [ -n "$SCHEDULE" ]; then echo scheduled; return 0; fi
+  echo ""
+}
+
+# persistence_applicable — 0 when this capability should have a supervisor unit, 1 when it should
+# not. Prints the reason on stdout either way, because "not applicable" is an answer a caller
+# reports, not an error it swallows.
 #
 # A watchdog and an on-demand capability are opposite claims about the same process. The watchdog
 # calls `start` every 30s and knows nothing about `autostart`, so installing one on a capability
 # the manifest declares on-demand keeps it up forever while the Projects page says the opposite.
 # The manifest is the authority; persistence is only meaningful for what is supposed to run.
 persistence_applicable() {
-  if [ "$AUTOSTART" != "true" ]; then
-    echo "on-demand (no autostart in the manifest) — a watchdog would defeat that"
+  local mode secs
+  if ! mode="$(persistence_mode)"; then
+    echo "contradictory manifest: autostart and schedule cannot both be declared"
     return 1
   fi
-  if [ "$KIND" = container ]; then
-    case "$AXON_CONTAINER_RUNTIME" in
-      docker|podman)
-        echo "$AXON_CONTAINER_RUNTIME restarts it natively (--restart unless-stopped) — no watchdog needed"
+  case "$mode" in
+    scheduled)
+      # No container-runtime short-circuit in this branch, deliberately. `--restart
+      # unless-stopped` answers "bring it back when it dies", which is not "run it again in six
+      # hours" — a scheduled container job needs the timer exactly as much as a process one does.
+      if ! secs="$(schedule_seconds "$SCHEDULE")"; then
+        echo "$secs"
         return 1
-        ;;
-    esac
-  fi
-  echo "autostart declared"
-  return 0
+      fi
+      echo "schedule declared — every ${secs}s"
+      return 0
+      ;;
+    watchdog)
+      if [ "$KIND" = container ]; then
+        case "$AXON_CONTAINER_RUNTIME" in
+          docker|podman)
+            echo "$AXON_CONTAINER_RUNTIME restarts it natively (--restart unless-stopped) — no watchdog needed"
+            return 1
+            ;;
+        esac
+      fi
+      echo "autostart declared"
+      return 0
+      ;;
+    *)
+      echo "on-demand (neither autostart nor schedule in the manifest) — a watchdog would defeat that"
+      return 1
+      ;;
+  esac
 }
 
 # persistence_unit_path — where this OS keeps the unit. Non-zero, with the reason on stdout, for
 # an OS with no backend. One home for the path so status, install and remove cannot disagree
 # about which file they are talking about.
 persistence_unit_path() {
+  local systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   case "$AXON_OS" in
     macos) printf '%s\n' "$HOME/Library/LaunchAgents/com.axon.$CAP.plist" ;;
-    linux) printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/axon-$CAP.service" ;;
+    linux)
+      # For a scheduled job the TIMER is the primary unit: it holds the interval, it is what gets
+      # enabled, and it is therefore what `installed` has to mean. Its oneshot companion is
+      # rendered and compared alongside — persistence_companion_path.
+      if [ "$(persistence_mode 2>/dev/null)" = scheduled ]; then
+        printf '%s\n' "$systemd_dir/axon-$CAP.timer"
+      else
+        printf '%s\n' "$systemd_dir/axon-$CAP.service"
+      fi
+      ;;
     windows)
       echo "no windows persistence backend yet"
       return 1
@@ -800,6 +861,20 @@ persistence_unit_path() {
       return 1
       ;;
   esac
+}
+
+# persistence_companion_path — the second file a scheduled systemd job needs, or non-zero when
+# this case does not have one (every other combination is a single file).
+#
+# systemd splits WHEN from WHAT: axon-<cap>.timer carries the interval, axon-<cap>.service carries
+# the command. launchd puts both in one plist, so this is the one place the two backends differ in
+# shape rather than in syntax. Named separately rather than folded into render_persistence_unit so
+# that `stale` can mean "either file drifted" — a hand-edited companion is exactly as broken as a
+# hand-edited timer, and a check that only looked at one would report green for it.
+persistence_companion_path() {
+  [ "$AXON_OS" = linux ] || return 1
+  [ "$(persistence_mode 2>/dev/null)" = scheduled ] || return 1
+  printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/axon-$CAP.service"
 }
 
 # persistence_path_dirs — the PATH the supervisor must inject.
@@ -886,15 +961,45 @@ persistence_env_block() {
 # render_persistence_unit <dst> — write the unit this machine's declaration currently implies.
 # Pure: no launchctl, no systemctl, no daemon-reload. That is what lets persistence_state render
 # to a temp file and diff, and what lets the tests cover both OS branches on one host.
+#
+# Swaps the __EXTRA_ENV__ placeholder line for the rendered block, or drops the line when nothing
+# is declared — so a machine declaring no env renders byte-for-byte what it rendered before that
+# feature existed. Reads a unit on stdin, writes it on stdout.
+#
+# Done in bash rather than sed or awk, and that is not a style choice: sed cannot substitute a
+# multi-line replacement portably (GNU accepts \n there, BSD does not), and BSD awk rejects a
+# -v value containing a newline outright — `awk: newline in string`, which is exactly how the
+# first cut of this failed on macOS while it would have passed on the Linux runner.
+expand_env_placeholder() {  # <env-block>
+  local env_block="$1" tline
+  while IFS= read -r tline || [ -n "$tline" ]; do
+    case "$tline" in
+      # `if`, not `[ -n … ] &&`: the && form makes an empty block the function's exit status
+      # whenever the placeholder is the last line it sees, which is a `set -e` failure waiting
+      # for a template whose layout changes.
+      *__EXTRA_ENV__*) if [ -n "$env_block" ]; then printf '%s\n' "$env_block"; fi ;;
+      *)               printf '%s\n' "$tline" ;;
+    esac
+  done
+}
+
 render_persistence_unit() {
-  local dst="$1" runtime_dir watchdog log_out log_err env_block tmpl tline
+  local dst="$1" runtime_dir watchdog runner log_out log_err env_block tmpl mode secs
+  mode="$(persistence_mode)" || return 1
   runtime_dir="$(persistence_path_dirs)"
   watchdog="$TOOLS_DIR/watchdog.sh"
-  log_out="/tmp/axon-$CAP-watchdog.log"
-  log_err="/tmp/axon-$CAP-watchdog.err"
+  runner="$TOOLS_DIR/service-runner.sh"
   env_block="$(persistence_env_block)" || return 1
-  case "$AXON_OS" in
-    macos)
+  # Distinct log names per mode: a scheduled run's output is not a watchdog's output, and one file
+  # holding both would make "what happened at the last tick" unanswerable.
+  if [ "$mode" = scheduled ]; then
+    secs="$(schedule_seconds "$SCHEDULE")" || return 1
+    log_out="/tmp/axon-$CAP-schedule.log"; log_err="/tmp/axon-$CAP-schedule.err"
+  else
+    log_out="/tmp/axon-$CAP-watchdog.log"; log_err="/tmp/axon-$CAP-watchdog.err"
+  fi
+  case "$AXON_OS:$mode" in
+    macos:watchdog)
       tmpl="$TOOLS_DIR/templates/launchd-watchdog.plist.tmpl"
       sed -e "s|__LABEL__|com.axon.$CAP|" \
           -e "s|__WATCHDOG_PATH__|$watchdog|" \
@@ -904,7 +1009,18 @@ render_persistence_unit() {
           -e "s|__LOG_ERR__|$log_err|" \
           "$tmpl"
       ;;
-    linux)
+    macos:scheduled)
+      tmpl="$TOOLS_DIR/templates/launchd-schedule.plist.tmpl"
+      sed -e "s|__LABEL__|com.axon.$CAP|" \
+          -e "s|__RUNNER_PATH__|$runner|" \
+          -e "s|__INTERVAL_SECONDS__|$secs|" \
+          -e "s|__PATH__|$runtime_dir:/usr/bin:/bin:/usr/sbin:/sbin|" \
+          -e "s|__CAPABILITY__|$CAP|" \
+          -e "s|__LOG_OUT__|$log_out|" \
+          -e "s|__LOG_ERR__|$log_err|" \
+          "$tmpl"
+      ;;
+    linux:watchdog)
       tmpl="$TOOLS_DIR/templates/systemd-watchdog.service.tmpl"
       sed -e "s|__WATCHDOG_PATH__|$watchdog|" \
           -e "s|__PATH__|$runtime_dir:/usr/local/bin:/usr/bin:/bin|" \
@@ -913,26 +1029,37 @@ render_persistence_unit() {
           -e "s|__LOG_ERR__|$log_err|" \
           "$tmpl"
       ;;
+    linux:scheduled)
+      # The timer carries only WHEN, so it needs neither PATH nor the declared env — those belong
+      # to the oneshot the timer activates (render_persistence_companion).
+      tmpl="$TOOLS_DIR/templates/systemd-schedule.timer.tmpl"
+      sed -e "s|__CAPABILITY__|$CAP|" \
+          -e "s|__INTERVAL_SECONDS__|$secs|" \
+          "$tmpl"
+      ;;
     *) return 1 ;;
-  esac |
-    # Swap the placeholder line for the block, or drop the line when nothing is declared — so a
-    # machine declaring no env renders byte-for-byte what it rendered before this existed.
-    #
-    # Done in bash rather than sed or awk, and that is not a style choice: sed cannot substitute a
-    # multi-line replacement portably (GNU accepts \n there, BSD does not), and BSD awk rejects a
-    # -v value containing a newline outright — `awk: newline in string`, which is exactly how the
-    # first cut of this failed on macOS while it would have passed on the Linux runner.
-    while IFS= read -r tline || [ -n "$tline" ]; do
-      case "$tline" in
-        *__EXTRA_ENV__*) [ -n "$env_block" ] && printf '%s\n' "$env_block" ;;
-        *)               printf '%s\n' "$tline" ;;
-      esac
-    done > "$dst"
+  esac | expand_env_placeholder "$env_block" > "$dst"
+}
+
+# render_persistence_companion <dst> — the oneshot systemd unit a timer activates. Same purity
+# contract as render_persistence_unit: no systemctl, no daemon-reload.
+render_persistence_companion() {
+  local dst="$1" runtime_dir env_block
+  runtime_dir="$(persistence_path_dirs)"
+  env_block="$(persistence_env_block)" || return 1
+  sed -e "s|__RUNNER_PATH__|$TOOLS_DIR/service-runner.sh|" \
+      -e "s|__PATH__|$runtime_dir:/usr/local/bin:/usr/bin:/bin|" \
+      -e "s|__CAPABILITY__|$CAP|" \
+      -e "s|__LOG_OUT__|/tmp/axon-$CAP-schedule.log|" \
+      -e "s|__LOG_ERR__|/tmp/axon-$CAP-schedule.err|" \
+      "$TOOLS_DIR/templates/systemd-schedule.service.tmpl" \
+    | expand_env_placeholder "$env_block" > "$dst"
 }
 
 # persistence_state — one line: `<state>\t<detail>`. States:
 #
 #   n/a          persistence does not apply here (on-demand, or a natively-restarting runtime)
+#   misdeclared  the manifest claims both autostart and schedule — nothing can be installed for it
 #   unsupported  this OS has no backend
 #   missing      it applies, and the unit is not there — the capability is down after a reboot
 #   stale        the unit is there but no longer matches what the declaration renders to
@@ -942,7 +1069,15 @@ render_persistence_unit() {
 # declaration implies. Whether the supervisor has actually LOADED it is a second question, asked
 # separately below, because a check that cannot be run must not be reported as one that passed.
 persistence_state() {
-  local why unit tmp
+  local why unit tmp companion
+  # A manifest declaring both autostart and schedule is not "not applicable" — it is wrong, and it
+  # can never be installed. Its own state rather than n/a, because n/a is what doctor passes over
+  # in silence: reporting a manifest error as a green is the exact failure mode this whole state
+  # machine exists to prevent.
+  if ! persistence_mode >/dev/null 2>&1; then
+    printf 'misdeclared\tautostart and schedule cannot both be declared (%s)\n' "$MANIFEST"
+    return 0
+  fi
   if ! why="$(persistence_applicable)"; then
     printf 'n/a\t%s\n' "$why"
     return 0
@@ -961,13 +1096,34 @@ persistence_state() {
     printf 'unsupported\tcannot render a unit for os %s\n' "$AXON_OS"
     return 0
   fi
-  if cmp -s "$tmp" "$unit"; then
-    rm -f "$tmp"
-    printf 'installed\t%s\n' "$unit"
-  else
+  if ! cmp -s "$tmp" "$unit"; then
     rm -f "$tmp"
     printf 'stale\t%s no longer matches the declaration — re-run install-persistence\n' "$unit"
+    return 0
   fi
+  rm -f "$tmp"
+  # A scheduled systemd job is two files, and only the timer has been checked so far. A timer that
+  # matches while its oneshot companion has drifted is still a broken declaration — reporting that
+  # as `installed` is the same false green the whole state machine exists to prevent.
+  if companion="$(persistence_companion_path)"; then
+    if [ ! -f "$companion" ]; then
+      printf 'missing\t%s — the timer is installed, the unit it activates is not\n' "$companion"
+      return 0
+    fi
+    tmp="$(mktemp)"
+    if ! render_persistence_companion "$tmp"; then
+      rm -f "$tmp"
+      printf 'unsupported\tcannot render the oneshot companion for os %s\n' "$AXON_OS"
+      return 0
+    fi
+    if ! cmp -s "$tmp" "$companion"; then
+      rm -f "$tmp"
+      printf 'stale\t%s no longer matches the declaration — re-run install-persistence\n' "$companion"
+      return 0
+    fi
+    rm -f "$tmp"
+  fi
+  printf 'installed\t%s\n' "$unit"
 }
 
 # persistence_loaded — is the supervisor actually running it? Best-effort and honest: prints
@@ -990,7 +1146,12 @@ persistence_loaded() {
     linux)
       command -v systemctl >/dev/null 2>&1 || { echo unknown; return 0; }
       [ -d /run/systemd/system ] || { echo unknown; return 0; }
-      if systemctl --user is-active --quiet "axon-$CAP.service" 2>/dev/null; then echo yes; else echo no; fi
+      # For a scheduled job the TIMER is what has to be active. Its oneshot service sits inactive
+      # between ticks by design, so asking after the service would report every healthy schedule
+      # as not-loaded except during the seconds it happens to be running.
+      local unit_name="axon-$CAP.service"
+      if [ "$(persistence_mode 2>/dev/null)" = scheduled ]; then unit_name="axon-$CAP.timer"; fi
+      if systemctl --user is-active --quiet "$unit_name" 2>/dev/null; then echo yes; else echo no; fi
       ;;
     *) echo unknown ;;
   esac
@@ -1016,13 +1177,18 @@ status_persistence() {
 }
 
 install_persistence() {
-  local why unit
+  local why unit companion
   if ! why="$(persistence_applicable)"; then
     echo "service-runner.sh: '$CAP' — $why. Not installing persistence." >&2
+    # A contradictory manifest is a declaration error, never "nothing owed". Checked before the
+    # case below, which would otherwise return 0 for it purely because it happens to say
+    # autostart = "true" — the natively-restarting exit, reached by a manifest that is broken.
+    persistence_mode >/dev/null 2>&1 || return 1
     case "$AUTOSTART" in
       true) return 0 ;;   # a natively-restarting runtime: nothing owed, so this is not a failure
       *)
-        echo "  (set autostart = \"true\" in $MANIFEST if this capability is meant to always run)" >&2
+        echo "  (in $MANIFEST: autostart = \"true\" if it is meant to always run," >&2
+        echo "   schedule = \"6h\" if it is meant to run periodically and exit)" >&2
         return 1
         ;;
     esac
@@ -1043,6 +1209,13 @@ install_persistence() {
   fi
   mkdir -p "$(dirname "$unit")"
   render_persistence_unit "$unit"
+  # Written before the timer is enabled, not after: systemd resolves the timer's Unit= at
+  # activation, and an enable that races a missing companion fails with a message about a unit
+  # nobody declared.
+  if companion="$(persistence_companion_path)"; then
+    render_persistence_companion "$companion"
+    echo "installed $companion"
+  fi
   case "$AXON_OS" in
     macos)
       launchctl unload "$unit" 2>/dev/null || true
@@ -1051,7 +1224,9 @@ install_persistence() {
       ;;
     linux)
       systemctl --user daemon-reload
-      systemctl --user enable --now "axon-$CAP.service"
+      # basename, not a hardcoded axon-$CAP.service: for a scheduled job the TIMER is what gets
+      # enabled, and enabling the oneshot instead would run it once at boot and never again.
+      systemctl --user enable --now "$(basename "$unit")"
       echo "installed $unit (systemctl --user)"
       # A --user unit only runs while the user has a session unless lingering is enabled.
       # For a capability meant to survive logout / start at boot, enable it once.
@@ -1070,24 +1245,35 @@ install_persistence() {
 # and it is deliberately NOT something disable performs on its own, because unloading a supervisor
 # unit is a machine-level side effect and capability.sh starts nothing.
 remove_persistence() {
-  local unit
+  local unit companion
   if ! unit="$(persistence_unit_path)"; then
     echo "service-runner.sh: $unit — nothing to remove" >&2
     return 0
   fi
-  if [ ! -f "$unit" ]; then
+  # The companion is resolved before the timer is deleted: persistence_companion_path answers from
+  # the manifest, not from what is on disk, but reading it first keeps the two halves of one
+  # removal from depending on the order they happen in.
+  companion="$(persistence_companion_path || true)"
+  if [ ! -f "$unit" ] && [ ! -f "${companion:-/nonexistent}" ]; then
     echo "service-runner.sh: no persistence installed for '$CAP' ($unit)"
     return 0
   fi
   case "$AXON_OS" in
     macos) launchctl unload "$unit" 2>/dev/null || true ;;
     linux)
-      systemctl --user disable --now "axon-$CAP.service" 2>/dev/null || true
+      systemctl --user disable --now "$(basename "$unit")" 2>/dev/null || true
       ;;
   esac
   rm -f "$unit"
-  [ "$AXON_OS" = linux ] && { systemctl --user daemon-reload 2>/dev/null || true; }
   echo "removed $unit"
+  # A timer without its oneshot is inert, but leaving the oneshot behind leaves an enabled-by-hand
+  # foothold that starts the capability with no schedule attached and nothing reporting it.
+  if [ -n "$companion" ] && [ -f "$companion" ]; then
+    rm -f "$companion"
+    echo "removed $companion"
+  fi
+  [ "$AXON_OS" = linux ] && { systemctl --user daemon-reload 2>/dev/null || true; }
+  return 0
 }
 
 if [ "$KIND" = process ]; then process_init; fi

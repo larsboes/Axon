@@ -1,0 +1,24 @@
+[Unit]
+Description=Axon scheduled run of __CAPABILITY__
+
+[Service]
+# oneshot, not simple: a periodic job runs to completion and exits. systemd holds the unit
+# "activating" until ExecStart returns, which is what makes the timer's OnUnitActiveSec measure
+# from the END of a run rather than its start — two runs can never overlap.
+Type=oneshot
+# Deliberately no Restart=. A watchdog's job is to outlive a failure; a scheduled job's next
+# attempt is the next tick, and restarting a failed sweep in a tight loop is how a transient
+# outage becomes a hammering one.
+ExecStart=__RUNNER_PATH__ start __CAPABILITY__
+# systemd --user hands a minimal environment that omits where container runtimes and interpreters
+# live, exactly like launchd — inject the resolved PATH (same reason as the watchdog unit).
+Environment=PATH=__PATH__
+# Machine-local values the capability declares in the overlay's machine.toml
+# ([capability.<name>] env). Empty on a machine that declares none.
+__EXTRA_ENV__
+# append: not truncate, so one tick doesn't wipe the prior tick's log.
+StandardOutput=append:__LOG_OUT__
+StandardError=append:__LOG_ERR__
+
+# No [Install]: the timer activates this unit. A scheduled job enabled on its own would run once
+# at boot and never again, which is the failure this whole pair exists to avoid.

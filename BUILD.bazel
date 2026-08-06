@@ -410,6 +410,10 @@ _MANIFEST_INPUTS = [
     # manifest_integrity reads its `capabilities = [...]` array.
     "tools/lib/paths.sh",
     "tools/lib/toml.sh",
+    # check-service-tomls.sh sources this to validate a `schedule` duration with the same
+    # parser service-runner.sh renders one with. Absent here, the gate dies in the sandbox on
+    # a file that exists everywhere else -- the Axon#30 false-green class again.
+    "tools/lib/schedule.sh",
     # scouting/transit/axon-status are their own Bazel packages (own BUILD.bazel), so the
     # capabilities/*/README.md glob below can't reach them -- reference their README.md by
     # explicit cross-package label so those capability dirs still materialize in the sandbox

@@ -64,6 +64,13 @@ _is_autostart() {  # <name> -> exit 0 when the manifest declares autostart = "tr
   [ "$(toml_get autostart "$mf")" = "true" ]
 }
 
+_has_schedule() {  # <name> -> exit 0 when the manifest declares a periodic schedule
+  local mf
+  mf="$(axon_manifest_for "$1" 2>/dev/null)" || return 1
+  [ -n "$mf" ] || return 1
+  [ -n "$(toml_get schedule "$mf")" ]
+}
+
 # A capability directory, from whichever root holds it. Separate from _manifest_for
 # because a capability is allowed to exist before it declares a service: `enable` and
 # dependency resolution ask "is this a real capability", not "does it run".
@@ -236,6 +243,12 @@ cmd_enable() {  # <name>
     echo
     echo "Next step (not run automatically — start each when ready):"
     for n in $suggested; do
+      # A scheduled capability has no useful `start` to suggest: starting it by hand runs one
+      # tick, which is not what enabling it was for. The unit IS the way it runs.
+      if _has_schedule "$n"; then
+        echo "  tools/service-runner.sh install-persistence $n   # declares a schedule — the timer IS how it runs"
+        continue
+      fi
       echo "  tools/service-runner.sh start $n"
       # A capability that declares autostart is claiming it should always be running, and
       # `start` alone does not survive a reboot. Nothing used to say so, which is how a
@@ -293,7 +306,7 @@ _emit_service() {  # <name> <manifest> <scope>
   printf '{"name": %s, "kind": %s, "scope": %s' \
     "$(_json_str "$name")" "$(_json_str "$kind")" "$(_json_str "$scope")"
   local key
-  for key in port health_path panel_port panel_path autostart proxy_api_only idle_timeout; do
+  for key in port health_path panel_port panel_path autostart schedule proxy_api_only idle_timeout; do
     printf ', "%s": %s' "$key" "$(_json_str "$(toml_get "$key" "$mf")")"
   done
   printf ', "proxy_extra": %s' "$(toml_array proxy_extra "$mf" | _json_array_from)"

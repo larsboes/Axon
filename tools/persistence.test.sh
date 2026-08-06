@@ -90,6 +90,12 @@ mkcap() {  # mkcap <name> <autostart> [extra manifest lines]
 mkcap always true
 mkcap ondemand false
 mkcap gone true
+# The third declaration (#129): on-demand AND periodic. `sched` is the interesting one; `both`
+# fixes the shape of the answer for a manifest claiming to be a service and a job at once, which
+# must be refused rather than resolved in whichever direction the code happens to check first.
+mkcap sched false 'schedule = "6h"'
+mkcap both true 'schedule = "6h"'
+mkcap badsched false 'schedule = "6 hours"'
 
 machine() {  # machine <os> <capabilities-toml-array>
   printf 'os = "%s"\ncontainer_runtime = "docker"\ncapabilities = %s\n' "$1" "$2" \
@@ -179,6 +185,92 @@ machine macos '["dockercap"]'
 expect_state "macos, docker restarts it natively" dockercap "n/a"
 machine macos '["always", "ondemand", "gone"]'
 
+# --- the third declaration: schedule (#129) --------------------------------
+# A watchdog answers "keep it up"; a schedule answers "run it again in six hours". The check that
+# used to refuse anything without autostart had to learn the difference rather than be loosened,
+# so the assertions here are as much about what a scheduled capability must NOT get (a KeepAlive
+# watchdog) as about what it must.
+machine macos '["sched", "both", "badsched"]'
+SCHED_PLIST="$FAKE_HOME/Library/LaunchAgents/com.axon.sched.plist"
+rm -f "$SCHED_PLIST"
+
+# The heart of it: on-demand, and still owed a unit. Before #129 this answered `n/a` — the
+# capability declared no autostart, so nothing was owed, so a periodic job could not be declared
+# at all.
+expect_state "macos, schedule declared but nothing installed" sched missing
+
+run sched install-persistence
+[ -f "$SCHED_PLIST" ] || fail "install-persistence did not write $SCHED_PLIST (said: $out)"
+expect_state "macos, freshly installed schedule" sched installed
+
+# 6h in the manifest, 21600 seconds in the unit — the conversion is the whole reason the manifest
+# can say something an operator reads and both backends still get what they want.
+grep -q "<integer>21600</integer>" "$SCHED_PLIST" || fail "6h did not render as a 21600s StartInterval: $(cat "$SCHED_PLIST")"
+grep -q "<key>StartInterval</key>" "$SCHED_PLIST" || fail "a scheduled job rendered without StartInterval"
+# The negative half, and the one that would silently ruin it: a KeepAlive here would hold the
+# process up continuously and the interval would never mean anything.
+grep -q "<key>KeepAlive</key>" "$SCHED_PLIST" && fail "a scheduled job must not render a KeepAlive watchdog"
+# ...and it runs the runner directly, not the 30s watchdog loop. Matched inside a <string>, not
+# anywhere in the file: the template's own comment says the word "watchdog.sh" while explaining
+# why it is not one, and an assertion that reads prose is an assertion about prose.
+grep -q "<string>[^<]*watchdog\.sh</string>" "$SCHED_PLIST" && fail "a scheduled job must not be driven by watchdog.sh"
+grep -q "<string>start</string>" "$SCHED_PLIST" || fail "the scheduled unit does not invoke 'start'"
+
+# Drift is drift for this mode too.
+printf '<!-- hand-edited -->\n' >> "$SCHED_PLIST"
+expect_state "macos, scheduled unit edited" sched stale
+run sched install-persistence
+expect_state "macos, scheduled unit re-installed" sched installed
+
+# Removal is the same explicit disposition as for a watchdog.
+run sched remove-persistence
+[ ! -f "$SCHED_PLIST" ] || fail "remove-persistence left the scheduled unit behind"
+expect_state "macos, after removing the schedule" sched missing
+
+# Both at once is a contradiction, not a preference — and it gets its own state, because `n/a` is
+# what doctor passes over in silence and a manifest error must never render as a green.
+expect_state "macos, autostart and schedule together" both misdeclared
+run both persistence-status
+case "$out" in
+  *"autostart and schedule"*) ;;
+  *) fail "the contradiction must name itself, said: $out" ;;
+esac
+# The trap this walked into once: `both` says autostart = "true", which is the value the
+# natively-restarting branch returns 0 for. A broken manifest must not exit successfully.
+run both install-persistence
+[ "$status" -ne 0 ] || fail "install-persistence on a contradictory manifest exited 0"
+
+# An unparseable duration is named, not guessed at. "6 hours" is the plausible-looking spelling.
+run badsched persistence-status
+case "$out" in
+  *"expected <N>m, <N>h or <N>d"*) ;;
+  *) fail "a malformed schedule should say what the accepted forms are, said: $out" ;;
+esac
+run badsched install-persistence
+[ "$status" -ne 0 ] || fail "install-persistence on an unparseable schedule exited 0"
+
+# Minutes and days convert too, and the unit is a whole number of seconds in both cases.
+mkcap minutely false 'schedule = "30m"'
+mkcap daily false 'schedule = "2d"'
+machine macos '["minutely", "daily"]'
+run minutely install-persistence
+grep -q "<integer>1800</integer>" "$FAKE_HOME/Library/LaunchAgents/com.axon.minutely.plist" \
+  || fail "30m did not render as 1800s"
+run daily install-persistence
+grep -q "<integer>172800</integer>" "$FAKE_HOME/Library/LaunchAgents/com.axon.daily.plist" \
+  || fail "2d did not render as 172800s"
+
+# A scheduled CONTAINER capability still owes a unit. docker's --restart answers "bring it back
+# when it dies", which is not "run it again in six hours" — so the native-restart shortcut that
+# correctly suppresses a watchdog must not suppress a timer.
+mkdir -p "$ROOT/capabilities/schedcontainer"
+printf 'kind = "container"\nname = "schedcontainer"\nimage = "x"\ntag = "1"\nschedule = "12h"\n' \
+  > "$ROOT/capabilities/schedcontainer/service.toml"
+machine macos '["schedcontainer"]'
+expect_state "macos, scheduled container is still owed a timer" schedcontainer missing
+
+machine macos '["always", "ondemand", "gone"]'
+
 # --- disabled: the unit outlives the enabled set ---------------------------
 # watchdog.sh calls `service-runner.sh start <cap>` every 30s and consults nothing about the
 # enabled set, so a unit left behind by `capability.sh disable` walks the capability back up.
@@ -221,6 +313,56 @@ expect_installed_file "linux, unit matching the declaration" always
 
 printf '# hand-edited\n' >> "$UNIT"
 expect_state "linux, unit edited" always stale
+
+# --- linux: a schedule is two files ----------------------------------------
+# systemd splits WHEN from WHAT, so a scheduled job is axon-<cap>.timer plus the oneshot it
+# activates. This is the one place the two backends differ in SHAPE rather than syntax, and the
+# case that matters is a timer matching while its companion has drifted — a check that only looked
+# at the primary unit would report that as installed.
+machine linux '["sched"]'
+SYSD="$FAKE_HOME/.config/systemd/user"
+TIMER="$SYSD/axon-sched.timer"
+ONESHOT="$SYSD/axon-sched.service"
+rm -f "$TIMER" "$ONESHOT"
+
+# The primary unit for a scheduled job is the timer — the answer must name it, not the .service,
+# because the timer is what gets enabled and what `installed` therefore has to mean.
+run sched persistence-status
+case "$out" in
+  *"axon-sched.timer"*) ;;
+  *) fail "linux, scheduled: expected the timer to be the primary unit, said: $out" ;;
+esac
+
+render_linux_sched() {  # render both files the way install would, without calling systemctl
+  sed -e "s|__CAPABILITY__|sched|" -e "s|__INTERVAL_SECONDS__|21600|" \
+      "$ROOT/tools/templates/systemd-schedule.timer.tmpl" > "$TIMER"
+  sed -e "s|__RUNNER_PATH__|$ROOT/tools/service-runner.sh|" \
+      -e "s|__PATH__|/bin:/usr/local/bin:/usr/bin:/bin|" \
+      -e "s|__CAPABILITY__|sched|" \
+      -e "s|__LOG_OUT__|/tmp/axon-sched-schedule.log|" \
+      -e "s|__LOG_ERR__|/tmp/axon-sched-schedule.err|" \
+      "$ROOT/tools/templates/systemd-schedule.service.tmpl" \
+    | grep -v '__EXTRA_ENV__' > "$ONESHOT"   # the renderer drops that line when nothing is declared (#44)
+}
+render_linux_sched
+expect_installed_file "linux, timer and its oneshot both match" sched
+
+# The interval reaches the timer, and OnUnitActiveSec (not OnUnitInactiveSec): the oneshot stays
+# "activating" for the whole run, so the interval must measure from when the run finished.
+grep -q "OnUnitActiveSec=21600s" "$TIMER" || fail "the timer did not carry the converted interval"
+grep -q "Type=oneshot" "$ONESHOT" || fail "the scheduled companion is not a oneshot"
+grep -q "^Restart=" "$ONESHOT" && fail "a scheduled oneshot must not carry a Restart= policy"
+
+# The case the single-file check could not see: timer intact, companion drifted.
+printf '# hand-edited\n' >> "$ONESHOT"
+expect_state "linux, the oneshot drifted under an intact timer" sched stale
+
+# ...and the companion missing entirely is `missing`, not `installed`.
+render_linux_sched
+rm -f "$ONESHOT"
+expect_state "linux, timer installed without its oneshot" sched missing
+
+machine linux '["always", "ondemand", "gone"]'
 
 # --- declared supervisor environment (#44) ---------------------------------
 # The templates carried exactly one variable, PATH. A capability needing another had nowhere to

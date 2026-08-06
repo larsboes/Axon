@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>__LABEL__</string>
+  <!-- `service-runner.sh start`, not watchdog.sh: a periodic job runs once per tick and is
+       expected to exit. The watchdog's 30s loop is the opposite claim about the same process. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__RUNNER_PATH__</string>
+    <string>start</string>
+    <string>__CAPABILITY__</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+__EXTRA_ENV__
+  </dict>
+  <!-- RunAtLoad pairs with the systemd timer's OnBootSec: without it the first run after a
+       reboot waits a whole interval, which for a daily job means a day of nothing. The cost is
+       that re-running install-persistence also triggers a run — stated here because it is a
+       contract, not a surprise. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>__INTERVAL_SECONDS__</integer>
+  <key>StandardOutPath</key>
+  <string>__LOG_OUT__</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_ERR__</string>
+</dict>
+</plist>

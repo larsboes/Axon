@@ -913,7 +913,7 @@ const CHECKS: Check[] = [
   // `service-runner.sh start <cap>` every 30s and consults nothing about the enabled set, so a
   // unit left behind by `capability.sh disable` walks a disabled capability back up.
   {
-    name: "Boot persistence (autostart set)",
+    name: "Boot persistence (autostart + schedule set)",
     async run(ctx) {
       const runner = join(ctx.root, "tools", "service-runner.sh");
       if (!existsSync(runner)) {
@@ -933,7 +933,16 @@ const CHECKS: Check[] = [
           case "n/a":
             break;
           case "missing":
-            ctx.bad(`'${name}' declares autostart but has no persistence installed — it will not come back after a reboot (tools/service-runner.sh install-persistence ${name})`);
+            // "owes a unit", not "declares autostart": a capability declaring `schedule` owes one
+            // too, and for that one the unit is not a safety net against reboots — it is the only
+            // thing that ever runs it.
+            ctx.bad(`'${name}' owes a supervisor unit and has none installed — it will not run after a reboot (tools/service-runner.sh install-persistence ${name})`);
+            owed++;
+            break;
+          case "misdeclared":
+            // bad, not warn: a manifest claiming both autostart and schedule can never have
+            // persistence installed at all, so there is no degraded mode to keep running in.
+            ctx.bad(`'${name}': ${detail}`);
             owed++;
             break;
           case "stale":

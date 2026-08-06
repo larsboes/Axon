@@ -11,7 +11,9 @@
 #   container (the default when `kind` is absent) -> name, image, tag; tag pinned
 #   process                                       -> name, command, port; no image/tag
 # A manifest carrying fields from both kinds is rejected rather than resolved by
-# precedence: "which half is real" must never be a guess at start time.
+# precedence: "which half is real" must never be a guess at start time. The same principle
+# covers `autostart` + `schedule`, which is the kind-independent version of the same
+# contradiction — a service and a periodic job are opposite claims about one process.
 #
 # Spine manifests (a service.toml at the repo root, today only dashboard/) are checked
 # by the same rules — the runner reads them through the same interpreter.
@@ -27,6 +29,10 @@ if [ -n "${TEST_SRCDIR:-}" ]; then
 else
   _lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
 fi
+# The one `schedule` parser, shared with tools/service-runner.sh — a gate that accepted a spec the
+# runner then refused would be worse than no gate at all. Sourced BEFORE paths.sh, which unsets
+# `_lib` on its way out (tools/lib/paths.sh:166) and would leave this reaching for "/schedule.sh".
+source "$_lib/schedule.sh"
 source "$_lib/paths.sh"
 
 fail=0
@@ -79,6 +85,23 @@ for svc in "$AXON_ROOT"/capabilities/*/service.toml "$AXON_ROOT"/*/service.toml;
       fail=1
       ;;
   esac
+
+  # Scheduling, which applies to either kind. Same rejection principle as the two field sets
+  # above: a manifest claiming to be both a service and a periodic job is refused here rather
+  # than resolved by whichever check happens to run first at install time.
+  schedule="$(toml_get schedule "$svc")"
+  if [ -n "$schedule" ]; then
+    if [ "$(toml_get autostart "$svc")" = "true" ]; then
+      echo "FAIL [$cap]: declares autostart AND schedule — a watchdog holds the process up continuously, leaving an interval nothing to start. Declare one — $svc" >&2
+      fail=1
+    fi
+    # Caught here rather than at install time: an unparseable duration is a property of the file,
+    # so it should fail in CI on the machine that wrote it, not on the host that deploys it.
+    if ! why="$(schedule_seconds "$schedule")"; then
+      echo "FAIL [$cap]: $why — $svc" >&2
+      fail=1
+    fi
+  fi
 done
 
 if [ "$found" -eq 0 ]; then

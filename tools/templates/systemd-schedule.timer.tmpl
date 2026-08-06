@@ -1,0 +1,19 @@
+[Unit]
+Description=Axon schedule for __CAPABILITY__
+
+[Timer]
+Unit=axon-__CAPABILITY__.service
+# Pairs with the launchd plist's RunAtLoad: the first run comes shortly after boot rather than a
+# whole interval later. 1min, not 0, so a cold boot isn't racing the network and every other
+# capability coming up at once.
+OnBootSec=1min
+# ...ActiveSec, not ...UnitInactiveSec: the oneshot service stays "activating" for the whole run,
+# so the interval measures from when the last run finished.
+OnUnitActiveSec=__INTERVAL_SECONDS__s
+# A laptop that was asleep through a tick runs it on wake instead of silently skipping it. The
+# launchd side does this on its own — StartInterval fires a missed job at wake — so Persistent is
+# what keeps the two backends answering the same way.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
