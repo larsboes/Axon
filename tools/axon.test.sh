@@ -2,7 +2,21 @@
 # tools/axon.test.sh — public CLI contract: discoverable without the Axon skill.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Under Bazel, sh_test relocates its entrypoint to <package>/<target-name> in the
+# runfiles tree, so this file's own dirname is no longer tools/ and `..` lands
+# outside the sources -- the same trap tools/check-architecture-fresh.sh documents.
+# TEST_SRCDIR/TEST_WORKSPACE are the standard runfiles-root env vars and are the
+# authority whenever they are set.
+#
+# The dirname fallback stays, unlike in that script, because this one is genuinely
+# useful to run by hand: it is the contract a person checks after touching the CLI,
+# and requiring `bazel test` to answer "is the entrypoint still discoverable" would
+# put the check behind the build it is meant to be independent of.
+if [ -n "${TEST_SRCDIR:-}" ] && [ -n "${TEST_WORKSPACE:-}" ]; then
+  ROOT="$TEST_SRCDIR/$TEST_WORKSPACE"
+else
+  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 AXON="$ROOT/axon"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
