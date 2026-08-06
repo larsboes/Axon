@@ -23,7 +23,7 @@
       "kind": "capability",
       "code": {
         "files": 3,
-        "nodes": 36
+        "nodes": 43
       }
     },
     {
@@ -82,8 +82,8 @@
         "port": "8087"
       },
       "code": {
-        "files": 13,
-        "nodes": 481
+        "files": 14,
+        "nodes": 537
       }
     },
     {
@@ -97,8 +97,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 44,
-        "nodes": 867
+        "files": 46,
+        "nodes": 944
       }
     },
     {
@@ -106,7 +106,7 @@
       "kind": "lib",
       "code": {
         "files": 2,
-        "nodes": 39
+        "nodes": 42
       }
     },
     {
@@ -128,8 +128,21 @@
         "port": "47117"
       },
       "code": {
-        "files": 72,
-        "nodes": 416
+        "files": 74,
+        "nodes": 447
+      }
+    },
+    {
+      "name": "foundation-models",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [],
+        "port": "8091"
+      },
+      "code": {
+        "files": 3,
+        "nodes": 30
       }
     },
     {
@@ -149,8 +162,8 @@
       "name": "home-automation",
       "kind": "pack",
       "code": {
-        "files": 21,
-        "nodes": 262
+        "files": 22,
+        "nodes": 277
       }
     },
     {
@@ -163,7 +176,11 @@
     },
     {
       "name": "host-firewall",
-      "kind": "capability"
+      "kind": "capability",
+      "code": {
+        "files": 2,
+        "nodes": 19
+      }
     },
     {
       "name": "inference",
@@ -217,11 +234,19 @@
         "kind": "process",
         "requires": [],
         "port": "9911"
+      },
+      "code": {
+        "files": 1,
+        "nodes": 4
       }
     },
     {
       "name": "markdown-root",
-      "kind": "lib"
+      "kind": "lib",
+      "code": {
+        "files": 2,
+        "nodes": 40
+      }
     },
     {
       "name": "overlay",
@@ -293,7 +318,7 @@
       "kind": "spine",
       "code": {
         "files": 5,
-        "nodes": 794
+        "nodes": 909
       }
     },
     {
@@ -307,8 +332,8 @@
         "port": "8084"
       },
       "code": {
-        "files": 27,
-        "nodes": 433
+        "files": 29,
+        "nodes": 525
       }
     },
     {
@@ -337,12 +362,16 @@
       },
       "code": {
         "files": 18,
-        "nodes": 279
+        "nodes": 275
       }
     },
     {
       "name": "summarize",
-      "kind": "lib"
+      "kind": "lib",
+      "code": {
+        "files": 3,
+        "nodes": 100
+      }
     },
     {
       "name": "tasks",
@@ -353,14 +382,18 @@
           "postgres"
         ],
         "port": "8089"
+      },
+      "code": {
+        "files": 5,
+        "nodes": 55
       }
     },
     {
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 96,
-        "nodes": 802
+        "files": 108,
+        "nodes": 911
       }
     },
     {
@@ -959,7 +992,7 @@
     {
       "name": "graphify",
       "verdict": "adopt",
-      "pin": "0.9.19"
+      "pin": "0.9.31"
     },
     {
       "name": "home-assistant",
@@ -1219,8 +1252,8 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 6686,
-    "external": 5,
+    "nodes": 7552,
+    "external": 7,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
