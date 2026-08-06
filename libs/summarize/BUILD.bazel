@@ -27,6 +27,13 @@ rust_library(
 
 rust_test(
     name = "summarize_test",
-    crate = ":summarize",
     size = "small",
+    crate = ":summarize",
+    # Repeated from the library deliberately. `crate = ":summarize"` recompiles
+    # these sources with --test and does NOT inherit the library's
+    # crate_features, so without this line the whole
+    # `#[cfg(all(test, feature = "standalone-tests"))]` mod compiles out and
+    # this target passes having executed zero tests. It did exactly that from
+    # the day it was written until 2026-08-06.
+    crate_features = ["standalone-tests"],
 )

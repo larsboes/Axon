@@ -33,4 +33,9 @@ rust_test(
     name = "axon_config_test",
     crate = ":axon-config",
     size = "small",
+    # Repeated from the library deliberately: `crate = ` recompiles these
+    # sources with --test and does NOT inherit crate_features, so without
+    # this the feature-gated test mod compiles out and the target passes
+    # having executed zero tests. See libs/summarize/BUILD.bazel.
+    crate_features = ["standalone-tests"],
 )
