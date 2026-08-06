@@ -1,0 +1,5 @@
+# See schemas/pack.toml.example for the field reference.
+name        = "cognitive-load"
+description = "Shape agent output for lower cognitive load and focused execution."
+skills      = ["attention-control"]
+license     = "MIT"

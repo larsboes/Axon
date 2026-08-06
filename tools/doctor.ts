@@ -28,7 +28,6 @@ import { basename, resolve, dirname, join } from "node:path";
 // The offline doctor path never calls it, so the report stays network-free where it must be.
 import { lookup as dnsLookup } from "node:dns/promises";
 import { defaultCodexDeployConfig, getStatuses } from "./packs-codex.ts";
-import { readAxonHarnessStatuses } from "./packs-axon.ts";
 import { resolveMachineToml, resolveOverlayRoot } from "./lib/overlay.ts";
 import { releaseTagGlob } from "./lib/release.ts";
 
@@ -885,76 +884,6 @@ const CHECKS: Check[] = [
         } else {
           ctx.warn(`${name}: ${state}${location}; ${stateSuffix}; run: tools/agent-integrations.sh status --json`);
         }
-      }
-    },
-  },
-
-  // Axon Pack deployment by harness (Codex, Claude, OpenCode). This check keeps the
-  // per-harness materialization state explicit, especially during bootstrap: each
-  // harness must have a clean, owned Axon skill copy to avoid split-brain behavior.
-  {
-    name: "Packs (Axon per harness)",
-    run(ctx) {
-      try {
-        const statuses = readAxonHarnessStatuses(defaultCodexDeployConfig()).filter((entry) =>
-          entry.rows.some((row) => row.pack === "axon")
-        );
-        if (statuses.length === 0) {
-          ctx.warn("no Axon pack statuses were returned");
-          return;
-        }
-
-        for (const status of statuses) {
-          const row = status.rows.find((entry) => entry.pack === "axon" && entry.skill === "axon");
-          if (!row) {
-            ctx.warn(`axon pack status missing for ${status.harness} (destination ${status.destination})`);
-            continue;
-          }
-
-          const location = ` (${status.destination})`;
-          const detail = row.detail ? ` — ${row.detail}` : "";
-          const harness = status.harness;
-          switch (row.status) {
-            case "current":
-              ctx.ok(`axon/${harness}: current${location}`);
-              break;
-            case "not-deployed":
-              ctx.warn(`axon/${harness}: not deployed; deploy with: tools/packs-axon deploy ${harness}`);
-              break;
-            case "outdated":
-              ctx.warn(`axon/${harness}: outdated${detail}; sync with: tools/packs-axon sync ${harness}`);
-              break;
-            case "drifted":
-              ctx.bad(`axon/${harness}: has destination-side changes; remove/repair then: tools/packs-axon sync ${harness}`);
-              break;
-            case "migration-required":
-              ctx.warn(
-                `axon/${harness}: generated-artifact migration required ` +
-                  `(tools/packs-codex migrate-generated axon --accept-current)${detail}`,
-              );
-              break;
-            case "missing":
-              ctx.bad(
-                `axon/${harness}: owned copy missing from destination${location}; ` +
-                  `repair with: tools/packs-axon sync ${harness}`,
-              );
-              break;
-            case "collision":
-              ctx.bad(
-                `axon/${harness}: destination occupied by unowned ${status.destination}/axon; ` +
-                  `resolve ownership manually before deploy`,
-              );
-              break;
-            case "invalid":
-              ctx.bad(`axon/${harness}: invalid${detail}`);
-              break;
-            default:
-              ctx.bad(`axon/${harness}: unexpected status '${row.status}'`);
-              break;
-          }
-        }
-      } catch (error) {
-        ctx.bad(`unable to read per-harness Axon pack status: ${(error as Error).message}`);
       }
     },
   },

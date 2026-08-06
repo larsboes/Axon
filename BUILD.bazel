@@ -137,6 +137,19 @@ sh_test(
     data = ["tools/check-doc-self-references.sh"],
 )
 
+# The public CLI is intentionally usable without an installed agent skill. This compact shell
+# contract catches a regression that would otherwise leave humans and harnesses with only an
+# undiscoverable tool implementation.
+sh_test(
+    name = "axon_cli_test",
+    size = "small",
+    srcs = ["tools/axon.test.sh"],
+    data = [
+        "axon",
+        "tools/axon-context",
+    ],
+)
+
 # Version ordering for tools/upstream-checker. Hermetic on purpose -- the helpers were
 # extracted into tools/lib/version.sh precisely so the comparison can be tested without
 # a network call, after treating "differs from the pin" as "newer than the pin" produced

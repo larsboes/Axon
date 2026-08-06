@@ -35,14 +35,6 @@
       }
     },
     {
-      "name": "axon",
-      "kind": "pack",
-      "code": {
-        "files": 17,
-        "nodes": 75
-      }
-    },
-    {
       "name": "axon-config",
       "kind": "lib",
       "code": {
@@ -85,6 +77,10 @@
         "files": 14,
         "nodes": 537
       }
+    },
+    {
+      "name": "cognitive-load",
+      "kind": "pack"
     },
     {
       "name": "comms",
@@ -392,8 +388,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 108,
-        "nodes": 911
+        "files": 105,
+        "nodes": 882
       }
     },
     {
@@ -1253,8 +1249,29 @@
   "graph": {
     "present": true,
     "nodes": 7552,
-    "external": 7,
-    "stale": [],
+    "external": 11,
+    "stale": [
+      "Packs/axon/README.md",
+      "Packs/axon/evals/axon-skill.test.ts",
+      "Packs/axon/skills/axon/SKILL.md",
+      "Packs/axon/skills/axon/references/on-dependencies-and-build.md",
+      "Packs/axon/skills/axon/references/on-documentation.md",
+      "Packs/axon/skills/axon/references/on-issues.md",
+      "Packs/axon/skills/axon/references/on-orientation.md",
+      "Packs/axon/skills/axon/references/on-placement.md",
+      "Packs/axon/skills/axon/references/on-verification.md",
+      "Packs/axon/skills/axon/references/shared-architecture.md",
+      "Packs/axon/skills/axon/references/shared-data-boundaries.md",
+      "Packs/axon/skills/axon/references/shared-failure-policy.md",
+      "Packs/axon/skills/axon/references/with-discovery.md",
+      "Packs/axon/skills/axon/references/with-operations.md",
+      "Packs/axon/skills/axon/scripts/axapi",
+      "Packs/axon/skills/axon/scripts/axon-context",
+      "Packs/axon/skills/axon/scripts/axon-root",
+      "tools/packs-axon",
+      "tools/packs-axon.test.ts",
+      "tools/packs-axon.ts"
+    ],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",
@@ -1266,9 +1283,7 @@
       "CONTRIBUTING.md",
       "README.md",
       "SECURITY.md",
-      "bootstrap.sh",
-      "scripts/axapi",
-      "scripts/axon-context"
+      "bootstrap.sh"
     ]
   }
 }
