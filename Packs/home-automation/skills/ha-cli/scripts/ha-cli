@@ -2,11 +2,19 @@
 """ha-cli — Home Assistant REST API CLI (pure Python 3 stdlib, no deps).
 
 Queries and controls a Home Assistant instance over its REST API. Split source of truth:
-non-secret connection facts (HA_URL, and HA_SSH + HA_CFG_PATH for the `entries` command)
-come from the committed overlay config (<overlay>/config/home-assistant.vars). The secret
-(HA_TOKEN, a long-lived access token) comes from Bitwarden at runtime — never hardcoded,
-never printed. The `entries` command fetches config entries over SSH, which the REST API
-does not expose.
+the non-secret connection fact (HA_URL) comes from the committed overlay config
+(<overlay>/config/home-assistant.vars). The secret (HA_TOKEN, a long-lived access token)
+comes from Bitwarden at runtime — never hardcoded, never printed.
+
+`entries` used to read config entries over SSH from a `.storage` path, on the belief that
+the REST API did not expose them. It does: `/api/config/config_entries/entry` answers 200
+with the full list to an admin token, verified 2026-08-06. The SSH hop and HA_CFG_PATH are
+gone with it, which is what had quietly broken the command — that path went empty in the
+overlay on 2026-07-28 and nothing noticed.
+
+The registries are the genuine exception. `/api/config/{device,entity,area}_registry/list`
+all answer 404; those live on the WebSocket API, so `--remove` opens one to say what a
+deletion takes with it. That client is shared with ha-dashboard from the Pack's lib/.
 
 Requires an unlocked Bitwarden session in $BW_SESSION (the user unlocks interactively;
 this tool never sees the master password). See SKILL.md.
@@ -18,13 +26,15 @@ Commands:
   get ENTITY_ID                full state + attributes for one entity
   automations                  automation states grouped (on / off / unavailable)
   unavailable                  every entity whose state is unavailable/unknown
-  entries                      config entries over SSH (which integrations are really set up)
+  entries [--add H|--remove ID] config entries: list, add via config flow, or remove
   call DOMAIN SERVICE [JSON]   call a service, e.g. call switch turn_on '{"entity_id":"switch.x"}'
   reload-automations           POST automation/reload (apply YAML changes without HA restart)
 """
 import argparse
 import json
 import os
+import socket
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -130,6 +140,35 @@ def ha_client() -> HA:
     return HA(url, bw_secret("HA_TOKEN"))
 
 
+# --- Shared WebSocket transport ------------------------------------------------
+#
+# Only the registries need this; everything else here is REST. `realpath`, not
+# `abspath`: skills are installed by symlinking this directory into
+# ~/.claude/skills, so the script's own path runs through that symlink and only
+# realpath resolves back into the Pack. See ../../../lib/ha_ws.py.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", "lib"))
+from ha_ws import HAWebSocket, WSError  # noqa: E402
+
+
+def ws_client() -> HAWebSocket:
+    (url,) = cfg("HA_URL")
+    ws = HAWebSocket(url, bw_secret("HA_TOKEN"))
+    try:
+        ws.connect_and_auth()
+    except WSError as e:
+        die(str(e))
+    except (socket.gaierror, socket.timeout, ConnectionError, ssl.SSLError, OSError) as e:
+        die(f"cannot reach HA over WebSocket: {e} (is HA_URL right and the host reachable?)")
+    return ws
+
+
+def require_result(msg: dict, what: str) -> dict:
+    if not msg.get("success"):
+        die(f"{what} failed: {json.dumps(msg.get('error', msg), ensure_ascii=False)}")
+    return msg.get("result")
+
+
 def cmd_config(args) -> int:
     d = ha_client().api("config")
     if args.json:
@@ -202,26 +241,125 @@ def cmd_unavailable(args) -> int:
     return 0
 
 
-def cmd_entries(args) -> int:
-    ssh, cfg_path = cfg("HA_SSH", "HA_CFG_PATH")
-    py = (
-        "import json;"
-        f"d=json.load(open('{cfg_path}'));"
-        "e=d['data']['entries'];"
-        "print('total',len(e));"
-        "[print('  %-22s %-38s' % (x['domain'],(x.get('title') or '')[:38])) "
-        "for x in sorted(e,key=lambda x:x['domain'])]"
-    )
+def _registry_owned_by(entry_id: str):
+    """Devices and entities that belong to one config entry.
+
+    WebSocket, because the registries are the one part of this command REST
+    cannot answer: `/api/config/{device,entity,area}_registry/list` all return
+    404, while config entries themselves are plain REST. Verified against a live
+    instance on 2026-08-06.
+    """
+    ws = ws_client()
     try:
-        out = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=6", "-o", "BatchMode=yes", ssh, f'python3 -c "{py}"'],
-            capture_output=True, text=True, timeout=20,
-        )
-        sys.stdout.write(out.stdout)
-        if out.returncode:
-            die(f"ssh failed: {out.stderr.strip()[:200]}")
-    except subprocess.TimeoutExpired:
-        die("ssh to the HA host timed out")
+        devices = require_result(
+            ws.command({"type": "config/device_registry/list"}), "device_registry/list")
+        entities = require_result(
+            ws.command({"type": "config/entity_registry/list"}), "entity_registry/list")
+    finally:
+        ws.close()
+    mine_dev = [d for d in devices if entry_id in (d.get("config_entries") or [])]
+    mine_ent = [e for e in entities if e.get("config_entry_id") == entry_id]
+    return mine_dev, mine_ent
+
+
+def cmd_entries(args) -> int:
+    ha = ha_client()
+    if args.list_handlers:
+        for h in sorted(ha.api("config/config_entries/flow_handlers")):
+            print(f"  {h}")
+        return 0
+    if args.add:
+        return _entries_add(ha, args)
+    if args.remove:
+        return _entries_remove(ha, args)
+
+    rows = ha.api("config/config_entries/entry")
+    if args.json:
+        print(json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+    for x in sorted(rows, key=lambda x: (x["domain"], x.get("title") or "")):
+        state = x.get("state") or ""
+        # `loaded` is the boring case and printing it on 40 lines buries the
+        # two that are not loaded, which are the only ones worth looking at.
+        flag = "" if state == "loaded" else f"  [{state}]"
+        print(f"  {x['domain']:<24} {(x.get('title') or '')[:40]:<42} {x['entry_id']}{flag}")
+    print(f"  ---- {len(rows)} config entr{'y' if len(rows) == 1 else 'ies'}")
+    return 0
+
+
+def _entries_add(ha: "HA", args) -> int:
+    """Walk a config flow far enough to finish the single-step confirm case.
+
+    Deliberately not a general form-filler. A flow that wants real input wants
+    field names, types and validation this cannot know, and guessing at them
+    produces a half-created integration that has to be cleaned up by hand. It
+    refuses and says which step it stopped on instead.
+    """
+    handlers = ha.api("config/config_entries/flow_handlers")
+    if args.add not in handlers:
+        near = [h for h in handlers if args.add in h][:8]
+        die(f"unknown handler '{args.add}'"
+            + (f"; did you mean: {', '.join(near)}" if near else
+               f" ({len(handlers)} available, try --list-handlers)"))
+
+    step = ha.api("config/config_entries/flow", "POST",
+                  {"handler": args.add, "show_advanced_options": False})
+    for _ in range(8):  # a bounded walk; no legitimate confirm flow is this deep
+        kind = step.get("type")
+        if kind == "create_entry":
+            title = step.get("title") or step.get("result", {}).get("title") or args.add
+            print(f"created: {title}")
+            return 0
+        if kind == "abort":
+            reason = step.get("reason", "unknown")
+            # already_configured is the ordinary re-run case, not a failure.
+            print(f"aborted: {reason}")
+            return 0 if reason == "already_configured" else 1
+        if kind == "form":
+            schema = step.get("data_schema") or []
+            required = [f.get("name") for f in schema if f.get("required")]
+            if required:
+                die(f"step '{step.get('step_id')}' needs input this cannot supply: "
+                    f"{', '.join(str(r) for r in required)}. Finish it in the UI.")
+            # An empty-schema form is the confirm step: submit nothing.
+            step = ha.api(f"config/config_entries/flow/{step['flow_id']}", "POST", {})
+            continue
+        die(f"unexpected flow step type: {kind}")
+    die("flow did not finish within 8 steps; finish it in the UI")
+
+
+def _entries_remove(ha: "HA", args) -> int:
+    """Delete a config entry, after saying what goes with it.
+
+    HA removes the entry's devices and entities along with it. That is the whole
+    reason this asks first: the count is usually larger than expected, and the
+    delete is not undoable from here.
+    """
+    rows = ha.api("config/config_entries/entry")
+    entry = next((x for x in rows if x["entry_id"] == args.remove), None)
+    if entry is None:
+        die(f"no config entry with id '{args.remove}' (try `ha-cli entries` for the list)")
+
+    devices, entities = _registry_owned_by(args.remove)
+    print(f"  entry:    {entry['domain']}  {entry.get('title') or ''}")
+    print(f"  state:    {entry.get('state')}")
+    print(f"  removes:  {len(devices)} device(s), {len(entities)} entit{'y' if len(entities) == 1 else 'ies'}")
+    for e in entities[:10]:
+        print(f"              {e.get('entity_id')}")
+    if len(entities) > 10:
+        print(f"              ... and {len(entities) - 10} more")
+
+    if not args.yes:
+        # Interactive by default. A destructive call that needs no confirmation
+        # is one somebody eventually makes by pressing up-arrow.
+        if not sys.stdin.isatty():
+            die("refusing to delete without a terminal to confirm at; pass --yes if you mean it")
+        if input("  delete this entry? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("  left alone")
+            return 0
+
+    ha.api(f"config/config_entries/entry/{args.remove}", "DELETE")
+    print(f"  deleted {args.remove}")
     return 0
 
 
@@ -272,7 +410,16 @@ def main() -> int:
     u.add_argument("--json", "-j", action="store_true")
     u.set_defaults(fn=cmd_unavailable)
 
-    e = sub.add_parser("entries", help="config entries over SSH (which integrations are really set up)")
+    e = sub.add_parser("entries", help="config entries: list, add via config flow, or remove")
+    e.add_argument("--add", metavar="HANDLER",
+                   help="start a config flow for HANDLER (single-step confirm flows only)")
+    e.add_argument("--remove", metavar="ENTRY_ID",
+                   help="delete a config entry, with its devices and entities")
+    e.add_argument("--yes", "-y", action="store_true",
+                   help="skip the confirmation prompt on --remove")
+    e.add_argument("--list-handlers", action="store_true",
+                   help="print every config-flow handler this instance offers")
+    e.add_argument("--json", "-j", action="store_true")
     e.set_defaults(fn=cmd_entries)
 
     cl = sub.add_parser("call", help="call a service, e.g. call switch turn_on '{\"entity_id\":\"switch.x\"}'")
