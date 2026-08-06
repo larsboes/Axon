@@ -483,6 +483,18 @@ written against the shape that endpoint still returns for an authorized caller;
 reaching it needs a registered Reddit app and an OAuth token against
 `oauth.reddit.com`, which is a secret the operator provisions (README.md#secrets). Until then a Reddit paste fails loudly instead of storing an empty item.
 
+**A site that publishes its own text is a rung nobody has built.**
+[llms.txt](https://llmstxt.org) proposes that a site expose a curated index of
+its content beside `robots.txt`, with `llms-full.txt` carrying the text itself.
+Were it adopted here it would sit ahead of the HTML rung for the sites that
+publish one, on the same argument the arXiv HTML rung already makes against the
+PDF: reading what an author curated beats reconstructing what a renderer emitted.
+
+It is an idea, not a plan. There is no `upstreams.toml` verdict, nothing is built
+on it, and the proposal's adoption in the wild is not measured here. It is
+recorded beside the routing it would change rather than in a standalone link
+file, because a link nobody re-reads is a link nobody acts on.
+
 ## Feed source collectors
 
 `feed_sources[]` is the general-awareness source registry. `github-trending`
