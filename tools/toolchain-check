@@ -7,17 +7,29 @@
 # tools/doctor (ongoing). This is NOT the upstreams audit — see toolchain.toml's header for
 # why the two manifests are separate concerns.
 #
-#   tools/toolchain-check                 # check this machine, human report
-#   tools/toolchain-check --os macos      # check as if on <os> (bootstrap, no machine.toml yet)
-#   tools/toolchain-check --runtime docker# resolve the container-runtime entry to <r>
-#   tools/toolchain-check --json          # machine-readable; exits 0 (verdict is data)
-#   tools/toolchain-check -h              # this help
+#   tools/toolchain-check                    # check this machine, human report
+#   tools/toolchain-check --workflow backup  # ...plus what that workflow needs, before running it
+#   tools/toolchain-check --os macos         # check as if on <os> (bootstrap, no machine.toml yet)
+#   tools/toolchain-check --runtime docker   # resolve the container-runtime entry to <r>
+#   tools/toolchain-check --json             # machine-readable; exits 0 (verdict is data)
+#   tools/toolchain-check -h                 # this help
+#
+# SCOPE. An entry's `needed_by` says where it applies (see toolchain.toml's header). Absent means
+# core: every machine, always. `workflow:<name>` means only when that workflow is asked about.
+# `capability-field:<field>` means only when an ENABLED capability declares that manifest field —
+# derived from machine.toml's capability list, so it follows the deployment instead of a
+# hand-maintained role list that would rot the first time a capability moved.
+#
+# An out-of-scope entry reports `n/a` naming the scope that would pull it in, and never counts
+# toward the exit code. The failure this prevents: a runtime node told to install a SAST scanner
+# it has no path to invoke, which is how a check earns being ignored.
 #
 # OS resolves from --os, else `uname`. Container runtime resolves from --runtime, else
-# machine.toml, else unknown (runtime entries skipped with a note). Exit 0 = every required
-# tool present & new enough, 1 = a required/runtime tool missing or outdated, 2 = usage error.
-# --json is the exception: a miss is data in the payload, never a non-zero exit — its one
-# caller is doctor, which wants the feed regardless. bash 3.2-safe (README.md#portable-shell).
+# machine.toml, else unknown (runtime entries skipped with a note). Exit 0 = every in-scope
+# required tool present & new enough, 1 = an in-scope required/runtime tool missing or outdated,
+# 2 = usage error. --json is the exception: a miss is data in the payload, never a non-zero exit —
+# its one caller is doctor, which wants the feed regardless.
+# bash 3.2-safe (README.md#portable-shell).
 
 set -u
 
@@ -28,20 +40,23 @@ _here="$(cd "$(dirname "$0")" && pwd)"
 . "$_here/lib/version.sh"     # norm_ver, ver_numeric, ver_gt
 MANIFEST="$AXON_ROOT/toolchain.toml"
 
-OS=""; RUNTIME=""; JSON=0; _want=""
+OS=""; RUNTIME=""; JSON=0; WORKFLOW=""; _want=""
 for a in "$@"; do
   case "$_want" in
-    os)      OS="$a"; _want=""; continue ;;
-    runtime) RUNTIME="$a"; _want=""; continue ;;
+    os)       OS="$a"; _want=""; continue ;;
+    runtime)  RUNTIME="$a"; _want=""; continue ;;
+    workflow) WORKFLOW="$a"; _want=""; continue ;;
   esac
   case "$a" in
-    --os)      _want=os ;;
-    --runtime) _want=runtime ;;
-    --json)    JSON=1 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    --os)       _want=os ;;
+    --runtime)  _want=runtime ;;
+    --workflow) _want=workflow ;;
+    --json)     JSON=1 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "toolchain-check: unknown arg '$a'" >&2; exit 2 ;;
   esac
 done
+[ -z "$_want" ] || { echo "toolchain-check: --$_want needs a value" >&2; exit 2; }
 
 # OS: flag wins; else map uname. Runtime: flag wins; else machine.toml if present.
 if [ -z "$OS" ]; then
@@ -54,6 +69,69 @@ fi
 if [ -z "$RUNTIME" ] && [ -f "$AXON_MACHINE_TOML" ]; then
   RUNTIME="$(toml_get container_runtime "$AXON_MACHINE_TOML")"
 fi
+
+# --- scope resolution -------------------------------------------------------------------
+#
+# Which capability-field scopes this machine actually satisfies, resolved ONCE. Reading the
+# enabled set is the whole point: "does anything here declare backup_sqlite" is a question about
+# the deployment, and the alternative — a list of machines that need sqlite3 — is a fact that goes
+# stale the first time a capability moves host and that nothing would notice had gone stale.
+#
+# Space-delimited rather than an array: bash 3.2 has no associative arrays, and this is a
+# membership test over a handful of strings.
+ACTIVE_FIELDS=" "
+resolve_active_fields() {
+  local cap mf field
+  [ -f "$AXON_MACHINE_TOML" ] || return 0
+  # Only fields some entry actually asks about. Reading every manifest key would make this
+  # O(capabilities x keys) for an answer nobody consumes.
+  local wanted=""
+  for _n in $(toml_sections "$MANIFEST"); do
+    for _s in $(toml_array_in "$_n" needed_by "$MANIFEST"); do
+      case "$_s" in capability-field:*) wanted="$wanted ${_s#capability-field:}" ;; esac
+    done
+  done
+  [ -n "$wanted" ] || return 0
+  for cap in $(toml_array capabilities "$AXON_MACHINE_TOML"); do
+    mf="$(axon_manifest_for "$cap" 2>/dev/null)" || continue
+    [ -n "$mf" ] && [ -f "$mf" ] || continue
+    for field in $wanted; do
+      case "$ACTIVE_FIELDS" in *" $field "*) continue ;; esac
+      # Scalar or array: a manifest field can be either (backup_sqlite is a path, backup_paths is
+      # a list), and "does this capability declare it" is the same question for both.
+      [ -n "$(toml_get "$field" "$mf" 2>/dev/null)$(toml_array "$field" "$mf" 2>/dev/null)" ] \
+        && ACTIVE_FIELDS="$ACTIVE_FIELDS$field "
+    done
+  done
+}
+resolve_active_fields
+
+# entry_scope <section> — prints "" when the entry is in scope for this run, or the reason it is
+# not. An entry with no needed_by is core and always in scope, so every pre-existing entry keeps
+# behaving exactly as it did before this field existed.
+entry_scope() {
+  local name="$1" s first="" satisfied=1
+  for s in $(toml_array_in "$name" needed_by "$MANIFEST"); do
+    [ -n "$first" ] || first="$s"
+    case "$s" in
+      workflow:*)
+        [ "${s#workflow:}" = "$WORKFLOW" ] && { satisfied=0; break; }
+        ;;
+      capability-field:*)
+        case "$ACTIVE_FIELDS" in *" ${s#capability-field:} "*) satisfied=0; break ;; esac
+        ;;
+      core) satisfied=0; break ;;
+      *)
+        # An unknown token must not silently widen or narrow the set. Treated as unsatisfied and
+        # named, so a typo surfaces as a tool that stopped being checked rather than as nothing.
+        first="unknown scope '$s'"
+        ;;
+    esac
+  done
+  [ -n "$first" ] || return 0          # no needed_by at all: core
+  [ "$satisfied" -eq 0 ] && return 0
+  printf '%s' "$first"
+}
 
 # The install hint for the current OS, falling back to whichever the entry declares.
 install_hint() {  # install_hint <section>
@@ -76,10 +154,12 @@ json_escape() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' 
 
 count=0; ok=0; miss_req=0; miss_opt=0; outdated=0; outdated_req=0; skipped=0
 JSON_ENTRIES=""
+out_of_scope=""
 
 if [ "$JSON" -eq 0 ]; then
   echo "toolchain-check · $MANIFEST"
-  echo "  os=${OS:-?}  runtime=${RUNTIME:-?}"
+  echo "  os=${OS:-?}  runtime=${RUNTIME:-?}  workflow=${WORKFLOW:-none}"
+  [ "$ACTIVE_FIELDS" = " " ] || echo "  enabled capabilities declare:${ACTIVE_FIELDS%" "}"
   echo
 fi
 
@@ -90,6 +170,17 @@ for name in $(toml_sections "$MANIFEST"); do
 
   # OS scoping: an entry pinned to another OS doesn't apply here.
   if [ -n "$entry_os" ] && [ "$entry_os" != "$OS" ]; then
+    skipped=$((skipped + 1)); continue
+  fi
+  # needed_by scoping. Reported rather than dropped: an operator seeing `n/a (workflow:audit)`
+  # learns the tool exists and what would require it, which a silent omission never teaches.
+  out_of_scope="$(entry_scope "$name")"
+  if [ -n "$out_of_scope" ]; then
+    if [ "$JSON" -eq 0 ]; then
+      printf '▸ %-16s · n/a here — needed by %s\n' "$name" "$out_of_scope"
+    else
+      JSON_ENTRIES="$JSON_ENTRIES,{\"tool\":\"$(json_escape "$name")\",\"bin\":\"$(json_escape "$bin")\",\"class\":\"$(json_escape "${required:-yes}")\",\"present\":false,\"status\":\"n/a\",\"version\":\"\",\"note\":\"$(json_escape "needed by $out_of_scope")\",\"install\":\"$(json_escape "$(install_hint "$name")")\"}"
+    fi
     skipped=$((skipped + 1)); continue
   fi
   # Runtime entries: only the machine's chosen runtime is checked; the others are
@@ -149,12 +240,14 @@ for name in $(toml_sections "$MANIFEST"); do
 done
 
 if [ "$JSON" -eq 1 ]; then
-  printf '{"os":"%s","runtime":"%s","totals":{"count":%d,"ok":%d,"missing_required":%d,"missing_optional":%d,"outdated":%d,"skipped":%d},"entries":[%s]}\n' \
-    "$(json_escape "$OS")" "$(json_escape "$RUNTIME")" "$count" "$ok" "$miss_req" "$miss_opt" "$outdated" "$skipped" "${JSON_ENTRIES#,}"
+  printf '{"os":"%s","runtime":"%s","workflow":"%s","totals":{"count":%d,"ok":%d,"missing_required":%d,"missing_optional":%d,"outdated":%d,"skipped":%d},"entries":[%s]}\n' \
+    "$(json_escape "$OS")" "$(json_escape "$RUNTIME")" "$(json_escape "$WORKFLOW")" \
+    "$count" "$ok" "$miss_req" "$miss_opt" "$outdated" "$skipped" "${JSON_ENTRIES#,}"
   exit 0
 fi
 
 echo
 echo "── $count checked · $ok ok · $miss_req missing · $outdated outdated · $miss_opt optional absent · $skipped n/a ──"
+[ -n "$WORKFLOW" ] || echo "   (scoped to this machine; add --workflow backup|restore|audit|build before running one)"
 [ $((miss_req + outdated_req)) -gt 0 ] && exit 1
 exit 0

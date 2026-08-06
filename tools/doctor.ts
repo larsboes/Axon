@@ -797,7 +797,15 @@ const CHECKS: Check[] = [
       for (const e of outdatedOpt) ctx.warn(`${e.bin} ${e.note}`);
       if (missing.length === 0 && outdatedReq.length === 0) {
         const tail = absent.length ? `, ${absent.length} optional absent` : "";
-        ctx.ok(`${data.totals?.ok ?? 0}/${data.totals?.count ?? 0} required present${tail}`);
+        // Say the count is SCOPED. Without this the number silently shrank when needed_by landed,
+        // and "8/8 present" on a machine whose manifest declares seventeen tools reads as a
+        // partial check rather than a complete one over the applicable set (#163).
+        const naCount = entries.filter((e) => e.status === "n/a").length;
+        const scope = naCount ? `, ${naCount} n/a here` : "";
+        ctx.ok(`${data.totals?.ok ?? 0}/${data.totals?.count ?? 0} required present${tail}${scope}`);
+      }
+      if (entries.some((e) => e.status === "n/a")) {
+        ctx.ok("scoped to this machine — 'tools/toolchain-check --workflow backup|restore|audit|build' before running one");
       }
     },
   },

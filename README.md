@@ -249,7 +249,7 @@ Configuration has one owner per concern:
 | `axon.toml` | Shared platform defaults and the shipped overlay fallback; never machine-specific state |
 | `axon.local.toml` | This checkout's active overlay location; gitignored and written by the installer |
 | `upstreams.toml` | External code and adopted influence: verdict, pin, license and why |
-| `toolchain.toml` | Host executables Axon commands assume, with requiredness and install hints |
+| `toolchain.toml` | Host executables Axon commands assume, with requiredness, scope and install hints |
 | `systems.toml` | Systems, services and projects that have a role in the setup |
 | `<overlay>/config/machine.toml` | OS, container runtime, enabled capabilities and state mounts for this machine. An overlay owning several machines uses `<overlay>/config/machines/<name>.toml` instead, selected by `axon.local.toml` or the hostname |
 | `<overlay>/config/deployment.env` | facts true of the whole deployment rather than one machine or one capability — today the home timezone. Declared once because several capabilities need it and independent copies drift silently (`schemas/deployment.env.example`) |
@@ -257,6 +257,19 @@ Configuration has one owner per concern:
 `tools/lib/toml.sh` is the parser for single-line scalar and array fields. More complex TOML goes
 through the shared Bun parser; no caller grows another partial parser or duplicates manifest data.
 Event sources follow the same pattern: declared configuration, never values spread through code.
+
+Host requirements are scoped, not global. `toolchain.toml`'s `needed_by` says where an entry
+applies: absent means every machine, `workflow:<name>` means only when that workflow is asked
+about, and `capability-field:<field>` derives from the enabled set so the requirement follows the
+capability when it moves host. A runtime node is therefore never told to install a scanner it has
+no path to invoke, and a tool that is out of scope is reported as `n/a` naming what would pull it
+in rather than omitted. Run the scoped check after changing what a machine is enabled to do, and
+run it for a workflow before invoking one:
+
+```sh
+tools/toolchain-check                    # this machine: core + enabled capabilities + runtime
+tools/toolchain-check --workflow restore # before a restore, not after it holds a service down
+```
 
 ### State mounts record reality
 

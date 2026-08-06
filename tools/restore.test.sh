@@ -244,6 +244,24 @@ MOCK_PG_COUNTS='0|0' expect_fail_with "empty restore is caught without a recorde
 MOCK_PG_COUNTS='25|469598' expect_pass "archive without recorded contents still restores" \
   "$RESTORE" postgres "$SCRATCH/pg-legacy.tar.gz" --destination "$SCRATCH/pg-legacy-out" --runtime docker
 
+# --- container-runtime preflight (#163) ------------------------------------------------------
+# Verifying a PostgreSQL dump runs a disposable instance. The runtime check used to live inside
+# verify_postgres, reached only after a destination was created and the archive extracted into it,
+# so the one operation whose whole purpose is proving a backup is recoverable announced its
+# missing dependency at the very end. `podman` stands in for an uninstalled runtime: this suite
+# stubs `docker` on PATH and nothing stubs podman.
+if command -v podman >/dev/null 2>&1; then
+  echo "NOTE: reduced coverage on this host — podman is installed, so it cannot stand in for an absent runtime"
+else
+  PREFLIGHT_DEST="$SCRATCH/pg-preflight-out"
+  expect_fail_with "an absent container runtime is caught before anything is created" \
+    "which is not on PATH" \
+    "$RESTORE" postgres "$SCRATCH/pg-legacy.tar.gz" --destination "$PREFLIGHT_DEST" --runtime podman
+  # The half that makes it a preflight rather than merely an earlier error message.
+  [ ! -e "$PREFLIGHT_DEST" ] || {
+    echo "FAIL: the destination was created before the dependency check ran"; fails=$((fails + 1)); }
+fi
+
 if [ "$fails" -gt 0 ]; then
   echo "restore tests: $fails failure(s)"
   exit 1

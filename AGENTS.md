@@ -8,6 +8,12 @@ Before editing, run `git status --short --branch` and `tools/doctor`. Preserve u
 changes. Derive capabilities, ports, health, issue state and architecture from Axon tools and live
 metadata rather than remembered prose.
 
+Host requirements are scoped to what a machine actually does. After changing a machine's enabled
+capabilities, re-run `tools/toolchain-check` — the requirement set is derived from that list, so it
+moves with it. Before invoking a backup, restore, audit or build, run
+`tools/toolchain-check --workflow <name>` first: a missing dependency found afterwards is one found
+with a service already held down.
+
 Keep public code and doctrine in Axon. Keep private values, machine state and secrets in the active
 overlay or Vaultwarden. Never generate, expose or change a secret without explicit authorization.
 

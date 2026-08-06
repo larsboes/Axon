@@ -167,6 +167,31 @@ OVERLAY_REAL="$(cd "$AXON_PERSONAL_ROOT" 2>/dev/null && pwd -P || true)"
 path_within "$DEST" "$AXON_REAL" && fail "destination may not be inside the Axon checkout"
 [ -n "$OVERLAY_REAL" ] && path_within "$DEST" "$OVERLAY_REAL" \
   && fail "destination may not be inside the active private overlay"
+# Container-runtime preflight, BEFORE the destination exists (#163). Verifying a PostgreSQL dump
+# means running a disposable instance to restore into, and until now the check for that runtime
+# lived inside verify_postgres — reached after a destination was created and the archive extracted
+# into it. So the one operation whose entire purpose is proving a backup is recoverable would
+# announce its missing dependency at the end, having already done the work.
+#
+# `tar -tzf` only lists. Nothing is written, and nothing is trusted from it beyond "does this
+# archive claim a pg dump"; validate_tar below is still what gates extraction. stream_matches
+# rather than `grep -q`, because -q exits at the first hit, tar dies of SIGPIPE, and `set -o
+# pipefail` turns a FOUND into a failed pipeline — the same trap documented in service-runner.sh.
+if tar -tzf "$ARCHIVE" 2>/dev/null | stream_matches -E '(^|/)pg_dumpall\.sql$'; then
+  _pre_rt="$RUNTIME"
+  if [ -z "$_pre_rt" ]; then
+    source "$TOOLS_DIR/lib/platform.sh"
+    _pre_rt="$AXON_CONTAINER_RUNTIME"
+  fi
+  case "$_pre_rt" in
+    apple-container) _pre_rt_bin="container" ;;
+    docker|podman)   _pre_rt_bin="$_pre_rt" ;;
+    *) fail "this archive carries a PostgreSQL dump, and '$_pre_rt' is not a container runtime it can be verified with" ;;
+  esac
+  command -v "$_pre_rt_bin" >/dev/null 2>&1 || fail \
+    "this archive carries a PostgreSQL dump; verifying it needs '$_pre_rt_bin', which is not on PATH (tools/toolchain-check --workflow restore)"
+fi
+
 case "$DEST_NEEDS_CREATE" in
   1) mkdir "$DEST" ;;
   2) DEST="$(mktemp -d "$DEST")"; DEST_AUTO=1 ;;

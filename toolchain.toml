@@ -25,6 +25,27 @@
 #   upstream     = the upstreams.toml section id, when this tool is also audited code.
 #   min_version / version_cmd = optional floor; checked only when BOTH are present. version_cmd's
 #                  output is scanned for the first dotted-number token, compared via version.sh.
+#   needed_by    = WHERE this tool applies, as a bare single-line array. Absent = core: needed on
+#                  every machine, always checked. Otherwise one or more of:
+#                    "workflow:<name>"          only when that workflow is invoked
+#                                               (backup, restore, audit, build)
+#                    "capability-field:<field>" only when an ENABLED capability's service.toml
+#                                               declares that field
+#
+# `required` and `needed_by` answer different questions and both are load-bearing. `required` is
+# how hard a miss is; `needed_by` is whether it is a miss HERE at all. A runtime node without a
+# SAST scanner is not a machine with a problem, and reporting it as one is how a check teaches
+# people to skim past it.
+#
+# Scope is DERIVED, never a hand-maintained machine-role list. There is no "maintainer machine"
+# concept in this file: there are workflows, and you ask about one when you are about to run it.
+# That is why `capability-field` reads the enabled set rather than naming hosts, and why the audit
+# scanners hang off `tools/audit` rather than off a box.
+#
+#   tools/toolchain-check                    # this machine: core + enabled capabilities + runtime
+#   tools/toolchain-check --workflow backup  # ...plus what a backup needs, BEFORE it holds a service
+#
+# Out-of-scope entries report as `n/a` naming the scope that would pull them in, never as missing.
 
 # ---- always required ------------------------------------------------------------------
 
@@ -77,24 +98,28 @@ install_linux = "npm i -g @bitwarden/cli   # or the pinned release in upstreams.
 
 [restic]
 required = "optional"
+needed_by = ["workflow:backup"]
 why = "encrypted 3-2-1 backups (README.md#backups-before-migrations); backup.sh needs it, nothing else does"
 install_macos = "brew install restic"
 install_linux = "apt-get install -y restic"
 
 [sqlite3]
 required = "optional"
+needed_by = ["capability-field:backup_sqlite", "workflow:restore"]
 why = "cold SQLite backup and isolated restore integrity checks; required only for capabilities declaring backup_sqlite"
 install_macos = "preinstalled — or: brew install sqlite"
 install_linux = "apt-get install -y sqlite3"
 
 [bazel]
 required = "optional"
+needed_by = ["workflow:build"]
 why = "the build spine (README.md#bazel-as-the-build-spine). Optional on a pure dev box: service-runner.sh falls back to cargo for Rust capabilities when bazel is absent (README.md#argue-bazel-per-case)"
 install_macos = "brew install bazelisk"
 install_linux = "npm i -g @bazel/bazelisk   # or https://bazel.build/install"
 
 [cargo]
 required = "optional"
+needed_by = ["workflow:build"]
 why = "Rust toolchain; the bazel-less build path for Rust capabilities (service-runner.sh README.md#argue-bazel-per-case fallback)"
 install_macos = "brew install rustup && rustup default stable   # or: brew install rust"
 install_linux = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
@@ -125,6 +150,7 @@ install_linux = "apt-get install -y podman"
 
 [semgrep]
 required = "optional"
+needed_by = ["workflow:audit"]
 upstream = "semgrep"
 why = "SAST over Axon's own code — tools/audit"
 install_macos = "brew install semgrep"
@@ -132,6 +158,7 @@ install_linux = "uv tool install semgrep   # or pipx install semgrep"
 
 [gitleaks]
 required = "optional"
+needed_by = ["workflow:audit"]
 upstream = "gitleaks"
 why = "secret scan over git history — tools/audit"
 install_macos = "brew install gitleaks"
@@ -139,6 +166,7 @@ install_linux = "apt-get install -y gitleaks   # or the pinned release in upstre
 
 [osv-scanner]
 required = "optional"
+needed_by = ["workflow:audit"]
 bin = "osv-scanner"
 upstream = "osv-scanner"
 why = "dependency-CVE scan over every lockfile — tools/audit"
@@ -147,7 +175,15 @@ install_linux = "go install github.com/google/osv-scanner/cmd/osv-scanner@<pin> 
 
 [trivy]
 required = "optional"
+needed_by = ["workflow:audit"]
 upstream = "trivy"
 why = "container/OS-package CVE scanner — tools/audit (and the future host-audit capability)"
 install_macos = "brew install trivy"
 install_linux = "apt-get install -y trivy   # or the pinned release in upstreams.toml"
+
+[rsync]
+required = "optional"
+needed_by = ["workflow:backup", "workflow:restore"]
+why = "the file-copy path for backup staging and restore placement; backup.sh refuses to start without it"
+install_macos = "preinstalled — or: brew install rsync"
+install_linux = "apt-get install -y rsync"
