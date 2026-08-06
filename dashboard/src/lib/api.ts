@@ -525,9 +525,60 @@ export interface UpstreamAudit {
   entries: UpstreamEntry[];
 }
 
+/** How a capability's last backup stands against its own declared thresholds. */
+export type BackupState =
+  /** Has a backup contract and no receipt at all. Outranks every threshold. */
+  | 'never'
+  | 'ok'
+  /** Past `advise_days`: you could take one. */
+  | 'due'
+  /** Past `stale_days`: you have a problem. */
+  | 'overdue'
+  /** The capability declares neither threshold, so nothing knows what timely means for
+   *  its data — and Axon will not invent a cadence to fill the gap. */
+  | 'unknown';
+
+/** An in-flight or finished run, as the server remembers it. Null when axon-status has
+ *  not been asked for a backup of this capability since it started. */
+export interface BackupRun {
+  state: 'running' | 'succeeded' | 'failed';
+  started_at: number;
+  finished_at?: number;
+  detail?: string;
+}
+
+/**
+ * One capability's backup standing.
+ *
+ * Note what is absent: no target, no tarball, no hash. The receipt on disk carries all
+ * three and the server drops them before answering — where a backup goes is the
+ * overlay's business, and a dashboard has no use for it.
+ */
+export interface BackupStatus {
+  capability: string;
+  state: BackupState;
+  /** A run stops this capability while it takes a cold copy. Say so before confirming. */
+  holds_service: boolean;
+  advise_days: number | null;
+  stale_days: number | null;
+  last_success: string | null;
+  age_seconds: number | null;
+  bytes: number | null;
+  contents: string | null;
+  run: BackupRun | null;
+}
+
 export const axonStatus = {
   health: () => request<AxonStatusHealth>('/axon-status/api/axon-status/health'),
   capabilities: () => request<CapabilityView[]>('/axon-status/api/axon-status/capabilities'),
+  backups: () => request<{ backups: BackupStatus[] }>('/axon-status/api/axon-status/backups'),
+  /** Accepts the run and returns — it does not wait for it. Poll `backups()` for the
+   *  outcome, which is also what lets a slow run survive a page refresh. */
+  backup: (name: string) =>
+    request<{ name: string; accepted: boolean; holds_service: boolean }>(
+      `/axon-status/api/axon-status/capabilities/${encodeURIComponent(name)}/backup`,
+      { method: 'POST' },
+    ),
   self: () => request<SelfModelResponse>('/axon-status/api/axon-status/self'),
   repos: () => request<{ repos: RepoStatus[] }>('/axon-status/api/axon-status/repos'),
   upstreams: () => request<UpstreamAudit>('/axon-status/api/axon-status/upstreams'),
@@ -949,6 +1000,9 @@ export type DigestState =
   | 'unconfigured'
   | 'http_error'
   | 'model_error'
+  /** The server took the request and then ran out of room for it. A fact about
+   *  the machine rather than the request, so it is worth retrying. */
+  | 'capacity_aborted'
   | 'empty_response'
   | 'timeout';
 

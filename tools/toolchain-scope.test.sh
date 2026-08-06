@@ -177,6 +177,27 @@ in_scope "unknown workflow still checks core" fixturecore
 out_of_scope "unknown workflow" fixturebackup
 [ "$status" -eq 0 ] || fail "an unrecognised workflow name should not be an error (exit $status)"
 
+# --- a maintainer workstation: scopes compose ------------------------------------------------
+# The third machine #163 names, and the one the cases above cannot speak for: they each exercise
+# one scope with the others cleared out. A maintainer workstation is where several are live at
+# once — it runs capabilities AND audits AND builds — so the defect it guards is scopes REPLACING
+# each other instead of adding up. Asking about a workflow must not evict what the enabled
+# capabilities already put in scope, or the operator who asks the narrower question gets the
+# narrower answer and installs half of what the next command needs.
+mkcap withdb2 'backup_sqlite = "data/withdb2/db.sqlite3"'
+machine '["plain", "withdb2"]'
+run --workflow audit
+in_scope "workstation: capability scope survives a workflow question" fixturedb
+in_scope "workstation: the asked-for workflow is in scope" fixturescan
+in_scope "workstation: core is always in scope" fixturecore
+out_of_scope "workstation: an unasked workflow stays out" fixturebackup "workflow:backup"
+
+# ...and the same machine asked about the other workflow moves only that one boundary.
+run --workflow backup
+in_scope "workstation: capability scope is not workflow-dependent" fixturedb
+in_scope "workstation: the newly asked workflow comes in" fixturebackup
+out_of_scope "workstation: the previously asked workflow goes back out" fixturescan "workflow:audit"
+
 # --- an in-scope required miss still fails --------------------------------------------------
 # The scoping must narrow WHAT is checked without weakening the verdict on what remains.
 rm -f "$STUB_BIN/fixturecore"

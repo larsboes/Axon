@@ -306,7 +306,14 @@ _emit_service() {  # <name> <manifest> <scope>
   printf '{"name": %s, "kind": %s, "scope": %s' \
     "$(_json_str "$name")" "$(_json_str "$kind")" "$(_json_str "$scope")"
   local key
-  for key in port health_path panel_port panel_path autostart schedule proxy_api_only idle_timeout; do
+  # backup_* ride the same loop rather than a block of their own: they are manifest facts
+  # leaving the shell, which is the one thing this function is for. `backup_target` is the
+  # presence signal (backup.sh refuses a run without one), `backup_sqlite` is what decides
+  # whether a run holds the capability down, and the two day fields are what timely MEANS
+  # for this data. A consumer that shows a backup surface needs all four and has no other
+  # legal way to get them — axon-status is forbidden from parsing TOML (README.md#one-manifest-per-concern).
+  for key in port health_path panel_port panel_path autostart schedule proxy_api_only idle_timeout \
+             backup_target backup_sqlite backup_advise_days backup_stale_days; do
     printf ', "%s": %s' "$key" "$(_json_str "$(toml_get "$key" "$mf")")"
   done
   printf ', "proxy_extra": %s' "$(toml_array proxy_extra "$mf" | _json_array_from)"

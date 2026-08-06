@@ -2,13 +2,70 @@
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
-  import { axonStatus, hasPanel, type CapabilityView } from "$lib/api";
+  import { axonStatus, hasPanel, type CapabilityView, type BackupStatus } from "$lib/api";
   import { capabilities } from "$lib/capabilities.svelte";
 
   let busy = $state<string | null>(null);
   let error = $state<string | null>(null);
 
-  onMount(() => capabilities.subscribe(5_000));
+  // Keyed by capability. Only the few that declare a backup contract appear, so most
+  // cards look up nothing and render no backup row at all.
+  let backups = $state<Record<string, BackupStatus>>({});
+  // Which capability is mid-confirmation, when its contract says a run holds it down.
+  let confirming = $state<string | null>(null);
+
+  // Polled rather than pushed, on the same 5s beat as the capability list. That poll is
+  // also what makes a slow run survive a page refresh: the run state lives in
+  // axon-status, so a reload re-reads it instead of losing it.
+  async function loadBackups(): Promise<void> {
+    try {
+      const r = await axonStatus.backups();
+      backups = Object.fromEntries(r.backups.map((b) => [b.capability, b]));
+    } catch {
+      // axon-status being unreachable is already reported by the capabilities poll;
+      // a second copy of the same message helps nobody.
+    }
+  }
+
+  onMount(() => {
+    const unsubscribe = capabilities.subscribe(5_000);
+    void loadBackups();
+    const timer = setInterval(() => void loadBackups(), 5_000);
+    return () => {
+      unsubscribe?.();
+      clearInterval(timer);
+    };
+  });
+
+  async function requestBackup(name: string): Promise<void> {
+    confirming = null;
+    error = null;
+    try {
+      await axonStatus.backup(name);
+    } catch (e) {
+      error = `backup ${name}: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    // Refresh either way: a rejected duplicate still means a run is in flight, and the
+    // surface should show that rather than only the error.
+    await loadBackups();
+  }
+
+  /** Coarse on purpose — "6 days ago" is the decision, the exact minute is not. */
+  function age(seconds: number | null): string {
+    if (seconds === null) return "never";
+    const days = Math.floor(seconds / 86_400);
+    if (days >= 1) return `${days}d ago`;
+    const hours = Math.floor(seconds / 3_600);
+    if (hours >= 1) return `${hours}h ago`;
+    return `${Math.max(1, Math.floor(seconds / 60))}m ago`;
+  }
+
+  /** What the badge says, spelled out rather than left as a bare state word. */
+  function backupLabel(b: BackupStatus): string {
+    if (b.state === "never") return "never backed up";
+    if (b.state === "unknown") return `backed up ${age(b.age_seconds)} · no cadence declared`;
+    return `backed up ${age(b.age_seconds)}`;
+  }
 
   async function act(name: string, action: "start" | "stop"): Promise<void> {
     busy = name;
@@ -51,6 +108,7 @@
   <ul>
     {#each capabilities.items as c (c.name)}
       {@const s = state_(c)}
+      {@const b = backups[c.name]}
       <li class="card">
         <div class="left">
           <span class="dot {s.dot}"></span>
@@ -63,10 +121,46 @@
             <p class="sub mono">
               {c.kind}{c.port ? ` · :${c.port}` : ""} · {s.label}
             </p>
+            {#if confirming === c.name}
+              <!-- The impact, before the confirmation and derived from the contract:
+                   `holds_service` is true because the manifest declares backup_sqlite,
+                   not because this page knows anything about which service it is. -->
+              <p class="impact">
+                A backup takes a cold copy, so {c.name} stops for the duration and comes
+                back on its own.
+              </p>
+            {/if}
+            {#if b?.run?.state === "failed"}
+              <!-- Terminal and readable. A locked vault is the normal way this fails, and
+                   the operator needs backup.sh's own words to know it was the vault. -->
+              <p class="failed">backup failed{b.run.detail ? `: ${b.run.detail}` : ""}</p>
+            {/if}
           </div>
         </div>
 
         <div class="actions">
+          {#if b}
+            <span class="backup {b.state}" title={b.contents ? `contents: ${b.contents}` : undefined}>
+              {backupLabel(b)}
+            </span>
+            {#if b.run?.state === "running"}
+              <span class="btn"><Icon name="loader" size={14} /> Backing up</span>
+            {:else if confirming === c.name}
+              <!-- Inline, not a confirm() dialog: a modal blocks the page, and the thing
+                   worth reading is the impact sentence, which a dialog renders worst. -->
+              <button class="btn danger" onclick={() => requestBackup(c.name)}>
+                Stop {c.name} and back up
+              </button>
+              <button class="btn" onclick={() => (confirming = null)}>Cancel</button>
+            {:else}
+              <button
+                class="btn"
+                onclick={() => (b.holds_service ? (confirming = c.name) : requestBackup(c.name))}
+              >
+                <Icon name="database" size={12} /> Back up
+              </button>
+            {/if}
+          {/if}
           {#if hasPanel(c) && c.up}
             <a class="btn" href="/projects">Project <Icon name="arrow-right" size={13} /></a>
           {/if}
@@ -154,11 +248,49 @@
     color: var(--text-tertiary);
   }
 
+  .impact,
+  .failed {
+    margin: 0.25rem 0 0;
+    font-size: 0.625rem;
+    max-width: 42ch;
+  }
+
+  .impact {
+    color: var(--text-secondary);
+  }
+
+  .failed {
+    color: var(--warning);
+  }
+
   .actions {
     display: flex;
     align-items: center;
     gap: 0.35rem;
     flex-shrink: 0;
+  }
+
+  /* Four states share one badge. `ok` and `unknown` stay tertiary — a backup that is
+     fine is not news, and a capability that never declared a cadence must not be
+     coloured as though Axon had an opinion about it. */
+  .backup {
+    font-size: 0.625rem;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+
+  .backup.due {
+    color: var(--text-secondary);
+  }
+
+  .backup.overdue,
+  .backup.never {
+    color: var(--warning);
+  }
+
+  .btn.danger {
+    color: var(--warning);
+    border-color: var(--warning);
   }
 
   .offline,
