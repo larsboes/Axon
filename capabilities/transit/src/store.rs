@@ -29,10 +29,11 @@
 
 use crate::travel::Journey;
 use postgres::{Client, NoTls};
-use std::sync::Mutex;
 
 pub struct TransitStore {
-    conn: Mutex<Client>,
+    /// Shared with every other store in this process on the same database, so
+    /// opening one is a checkout rather than a connect.
+    pool: crate::axon_store::Pool,
     schema: String,
 }
 
@@ -46,16 +47,25 @@ impl TransitStore {
     /// See `scouting::store`'s identical note for why `format!`-built DDL is
     /// safe specifically in that narrow case.
     fn open_with_schema(database_url: &str, schema: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut client = Client::connect(database_url, NoTls)?;
-        // Once per process per (database, schema), not once per open. See
-        // libs/axon-store/README.md for the deadlock that removes.
-        crate::axon_store::migrate_once(&mut client, database_url, schema, |client| {
+        // A pool checkout, not a connect, and the migration runs once per process
+        // per (database, schema) rather than once per open. Both halves of
+        // larsboes/axon-personal#139 -- libs/axon-store/README.md has the numbers.
+        let pool = crate::axon_store::open_pool(database_url, schema, |client| {
             Self::init_schema(client, schema)
         })?;
         Ok(Self {
-            conn: Mutex::new(client),
+            pool,
             schema: schema.to_string(),
         })
+    }
+
+    /// A connection from the shared pool, for the duration of one statement.
+    ///
+    /// A `Result` where this used to be `self.conn.lock().unwrap()`: that unwrap
+    /// could only fail on a poisoned mutex, whereas a checkout can genuinely fail
+    /// when the database is down or every connection is busy.
+    fn conn(&self) -> Result<crate::axon_store::PooledClient, Box<dyn std::error::Error>> {
+        Ok(self.pool.get()?)
     }
 
     fn init_schema(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -161,7 +171,7 @@ impl TransitStore {
             )
             .into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut tx = conn.transaction()?;
 
         let existing = tx.query_opt(
@@ -211,7 +221,7 @@ impl TransitStore {
     /// Reads a trip back with its legs, in leg order -- verification/test
     /// helper; no CLI command consumes this yet (see module doc).
     pub fn get_trip(&self, id: &str) -> Result<Option<(TripRow, Vec<TripLegRow>)>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let trip_row = conn.query_opt(
             &format!(
                 "SELECT id, status, origin_eva, destination_eva, trigger_reason,
@@ -264,7 +274,7 @@ impl TransitStore {
     }
 
     pub fn count(&self) -> Result<i64, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(&format!("SELECT COUNT(*) FROM {}.trips", self.schema), &[])?;
         Ok(row.try_get(0)?)
     }
@@ -296,7 +306,7 @@ impl TransitStore {
         date_end: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let cands_json = serde_json::to_string(candidates)?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let existing = conn.query_opt(
             &format!("SELECT id FROM {}.trip_sessions WHERE id = $1", self.schema),
             &[&id],
@@ -330,7 +340,7 @@ impl TransitStore {
     /// Reads a session back. `candidates` is JSON-deserialized from the
     /// stored TEXT column. Returns `Ok(None)` if the id isn't a session.
     pub fn get_session(&self, id: &str) -> Result<Option<SessionRow>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT id, origin_eva, intent, candidates, date_start, date_end, status, created_at
@@ -362,7 +372,7 @@ impl TransitStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<(TripRow, Vec<TripLegRow>)>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let trips = conn.query(
             &format!(
                 "SELECT id, status, origin_eva, destination_eva, trigger_reason,

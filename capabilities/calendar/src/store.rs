@@ -5,10 +5,9 @@
 //! postgres type features beyond what trips already uses.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use postgres::{Client, NoTls, Row};
+use postgres::{Client, Row};
 use serde_json::Value;
 
 use crate::correlate;
@@ -52,7 +51,9 @@ fn validate_schema(schema: &str) -> StoreResult<()> {
 }
 
 pub struct CalendarStore {
-    conn: Mutex<Client>,
+    /// Shared with every other store in this process on the same database, so
+    /// opening one is a checkout rather than a connect.
+    pool: crate::axon_store::Pool,
     schema: String,
 }
 
@@ -63,16 +64,25 @@ impl CalendarStore {
 
     pub fn open_in_schema(database_url: &str, schema: &str) -> StoreResult<Self> {
         validate_schema(schema)?;
-        let mut client = Client::connect(database_url, NoTls)?;
-        // Once per process per (database, schema), not once per open. See
-        // libs/axon-store/README.md for the deadlock that removes.
-        crate::axon_store::migrate_once(&mut client, database_url, schema, |conn| {
+        // A pool checkout, not a connect, and the migration runs once per process
+        // per (database, schema) rather than once per open. Both halves of
+        // larsboes/axon-personal#139 -- libs/axon-store/README.md has the numbers.
+        let pool = crate::axon_store::open_pool(database_url, schema, |conn| {
             Self::run_migration(conn, schema)
         })?;
         Ok(Self {
-            conn: Mutex::new(client),
+            pool,
             schema: schema.to_string(),
         })
+    }
+
+    /// A connection from the shared pool, for the duration of one statement.
+    ///
+    /// A `Result` where this used to be `self.conn.lock().unwrap()`: that unwrap
+    /// could only fail on a poisoned mutex, whereas a checkout can genuinely fail
+    /// when the database is down or every connection is busy.
+    fn conn(&self) -> StoreResult<crate::axon_store::PooledClient> {
+        Ok(self.pool.get()?)
     }
 
     fn run_migration(conn: &mut Client, schema: &str) -> StoreResult<()> {
@@ -176,7 +186,7 @@ impl CalendarStore {
     /// layer asks in ("is 14 Aug feasible?"); finer slicing is presentation.
     pub fn list_entries(&self, from: &str, to: &str, kinds: &[String]) -> StoreResult<Vec<Entry>> {
         let (from_boundary, to_boundary) = day_window_bounds(from, to)?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = if kinds.is_empty() {
             conn.query(
                 &format!(
@@ -208,7 +218,7 @@ impl CalendarStore {
     /// its own idea of what "waiting for review" means.
     pub fn list_google_drafts(&self, from: &str, to: &str) -> StoreResult<Vec<Entry>> {
         let (from_boundary, to_boundary) = day_window_bounds(from, to)?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT * FROM {schema}.entries \
@@ -228,7 +238,7 @@ impl CalendarStore {
     /// flow. A user-created `possible` block is intentionally not a proposal.
     pub fn list_external_proposals(&self, from: &str, to: &str) -> StoreResult<Vec<Entry>> {
         let (from_boundary, to_boundary) = day_window_bounds(from, to)?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT * FROM {schema}.entries \
@@ -278,7 +288,7 @@ impl CalendarStore {
         source: &str,
         external_id: &str,
     ) -> StoreResult<Option<Entry>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT * FROM {schema}.entries WHERE source = $1 AND external_id = $2",
@@ -290,7 +300,7 @@ impl CalendarStore {
     }
 
     pub fn get_entry(&self, id: &str) -> StoreResult<Option<Entry>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT * FROM {schema}.entries WHERE id = $1",
@@ -304,7 +314,7 @@ impl CalendarStore {
     pub fn create_entry(&self, input: &NewEntry) -> StoreResult<Entry> {
         input.validate()?;
         let entry = entry_from_input(input);
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         conn.execute(
             &format!(
                 "INSERT INTO {schema}.entries \
@@ -350,7 +360,7 @@ impl CalendarStore {
         let mut entry = entry_from_input(input);
         entry.external_id = Some(external_id.to_string());
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "INSERT INTO {schema}.entries \
@@ -430,7 +440,7 @@ impl CalendarStore {
         }
         entry_as_new(&entry).validate()?;
         entry.updated_at = now_text();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         conn.execute(
             &format!(
                 "UPDATE {schema}.entries SET kind=$2, title=$3, starts_at=$4, ends_at=$5, \
@@ -456,7 +466,7 @@ impl CalendarStore {
     }
 
     pub fn delete_entry(&self, id: &str) -> StoreResult<bool> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let count = conn.execute(
             &format!(
                 "DELETE FROM {schema}.entries WHERE id = $1",
@@ -478,7 +488,7 @@ impl CalendarStore {
         if to_day < from_day {
             return Err("to must be on or after from".into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT * FROM {schema}.contexts \
@@ -492,7 +502,7 @@ impl CalendarStore {
     }
 
     pub fn get_context(&self, id: &str) -> StoreResult<Option<Context>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT * FROM {schema}.contexts WHERE id = $1",
@@ -506,7 +516,7 @@ impl CalendarStore {
     pub fn create_context(&self, input: &NewContext) -> StoreResult<Context> {
         input.validate()?;
         let context = context_from_input(input);
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         conn.execute(
             &format!(
                 "INSERT INTO {schema}.contexts \
@@ -551,7 +561,7 @@ impl CalendarStore {
         }
         context_as_new(&context).validate()?;
         context.updated_at = now_text();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         conn.execute(
             &format!(
                 "UPDATE {schema}.contexts SET kind=$2, title=$3, details=$4, \
@@ -572,7 +582,7 @@ impl CalendarStore {
     }
 
     pub fn delete_context(&self, id: &str) -> StoreResult<bool> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let count = conn.execute(
             &format!(
                 "DELETE FROM {schema}.contexts WHERE id = $1",
@@ -607,7 +617,7 @@ impl CalendarStore {
         if calendar_id.trim().is_empty() {
             return Err("google_calendar_id is required".into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "INSERT INTO {schema}.google_exports \
@@ -624,7 +634,7 @@ impl CalendarStore {
     }
 
     pub fn opt_out_export(&self, entry_id: &str) -> StoreResult<bool> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let count = conn.execute(
             &format!(
                 "DELETE FROM {schema}.google_exports WHERE entry_id = $1",
@@ -637,7 +647,7 @@ impl CalendarStore {
 
     /// The plan an entry already belongs to, if any.
     pub fn trip_plan_for(&self, entry_id: &str) -> StoreResult<Option<String>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT plan_id FROM {schema}.trip_materializations WHERE entry_id = $1",
@@ -656,7 +666,7 @@ impl CalendarStore {
         plan_id: &str,
     ) -> StoreResult<()> {
         let now = now_text();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         for entry_id in entry_ids {
             conn.execute(
                 &format!(
@@ -673,7 +683,7 @@ impl CalendarStore {
     /// Drops ledger rows whose plan trips no longer has. Called only after
     /// trips has *said* the plan is gone, never on a failure to reach it.
     pub fn forget_trip_materialization(&self, plan_id: &str) -> StoreResult<u64> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         Ok(conn.execute(
             &format!(
                 "DELETE FROM {schema}.trip_materializations WHERE plan_id = $1",
@@ -684,7 +694,7 @@ impl CalendarStore {
     }
 
     pub fn list_export_optins(&self) -> StoreResult<Vec<ExportOptIn>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT * FROM {schema}.google_exports ORDER BY created_at",
@@ -703,7 +713,7 @@ impl CalendarStore {
     /// `row.get("created_at")` on an unaliased join takes whichever came
     /// first, which would silently stamp the entry with the opt-in's date.
     pub fn export_queue(&self) -> StoreResult<Vec<(ExportOptIn, Entry)>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT e.*, \
@@ -740,7 +750,7 @@ impl CalendarStore {
         entry_id: &str,
         google_event_id: &str,
     ) -> StoreResult<Option<ExportOptIn>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "UPDATE {schema}.google_exports \
@@ -755,7 +765,7 @@ impl CalendarStore {
     // ---- rhythms ----------------------------------------------------------
 
     pub fn list_rhythms(&self) -> StoreResult<Vec<Rhythm>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT * FROM {schema}.rhythms ORDER BY valid_from",
@@ -767,7 +777,7 @@ impl CalendarStore {
     }
 
     pub fn get_rhythm(&self, id: &str) -> StoreResult<Option<Rhythm>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT * FROM {schema}.rhythms WHERE id = $1",
@@ -796,7 +806,7 @@ impl CalendarStore {
             created_at: now_text(),
             updated_at: now_text(),
         };
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut tx = conn.transaction()?;
         tx.execute(
             &format!(
@@ -876,7 +886,7 @@ impl CalendarStore {
             &rhythm.valid_until,
         )?;
         rhythm.updated_at = now_text();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut tx = conn.transaction()?;
         tx.execute(
             &format!(
@@ -914,7 +924,7 @@ impl CalendarStore {
     /// go too; otherwise they stay (the FK sets their rhythm_id NULL) as
     /// ordinary manual-looking entries.
     pub fn delete_rhythm(&self, id: &str, delete_instances: bool) -> StoreResult<bool> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut tx = conn.transaction()?;
         if delete_instances {
             delete_future_instances(&mut tx, &self.schema, id)?;
@@ -939,7 +949,7 @@ impl CalendarStore {
             Some(_) => return Ok(Some(0)),
             None => return Ok(None),
         };
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut tx = conn.transaction()?;
         let created = insert_instances(&mut tx, &self.schema, &rhythm)?;
         tx.commit()?;

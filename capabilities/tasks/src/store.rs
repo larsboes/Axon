@@ -6,10 +6,9 @@
 //! a convention — a convention gets a duplicate the first time a sweep runs
 //! twice, and then the inbox is authoritative again and nothing was gained.
 
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use postgres::{Client, NoTls, Row};
+use postgres::{Client, Row};
 use serde::{Deserialize, Serialize};
 
 pub const STATUSES: [&str; 3] = ["open", "done", "dropped"];
@@ -78,7 +77,9 @@ where
 }
 
 pub struct Store {
-    conn: Mutex<Client>,
+    /// Shared with every other store in this process on the same database, so
+    /// opening one is a checkout rather than a connect.
+    pool: crate::axon_store::Pool,
     schema: String,
 }
 
@@ -92,16 +93,25 @@ impl Store {
         schema: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         validate_schema(schema)?;
-        let mut client = Client::connect(database_url, NoTls)?;
-        // Once per process per (database, schema), not once per open. See
-        // libs/axon-store/README.md for the deadlock that removes.
-        crate::axon_store::migrate_once(&mut client, database_url, schema, |conn| {
+        // A pool checkout, not a connect, and the migration runs once per process
+        // per (database, schema) rather than once per open. Both halves of
+        // larsboes/axon-personal#139 -- libs/axon-store/README.md has the numbers.
+        let pool = crate::axon_store::open_pool(database_url, schema, |conn| {
             Self::run_migration(conn, schema)
         })?;
         Ok(Self {
-            conn: Mutex::new(client),
+            pool,
             schema: schema.to_string(),
         })
+    }
+
+    /// A connection from the shared pool, for the duration of one statement.
+    ///
+    /// A `Result` where this used to be `self.conn.lock().unwrap()`: that unwrap
+    /// could only fail on a poisoned mutex, whereas a checkout can genuinely fail
+    /// when the database is down or every connection is busy.
+    fn conn(&self) -> Result<crate::axon_store::PooledClient, Box<dyn std::error::Error>> {
+        Ok(self.pool.get()?)
     }
 
     fn run_migration(conn: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -161,7 +171,7 @@ impl Store {
         }
 
         let id = task_id(new, title);
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "INSERT INTO {schema}.tasks
@@ -191,7 +201,7 @@ impl Store {
         capability: &str,
         source_id: &str,
     ) -> Result<Option<Task>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT {columns} FROM {schema}.tasks
@@ -205,7 +215,7 @@ impl Store {
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Task>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT {columns} FROM {schema}.tasks WHERE id = $1",
@@ -225,7 +235,7 @@ impl Store {
                 return Err(format!("invalid status '{value}'").into());
             }
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT {columns} FROM {schema}.tasks
@@ -257,7 +267,7 @@ impl Store {
             }
         }
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         // COALESCE for the plain fields, and the double option for the two
         // that can be cleared: `$n::TEXT IS NULL` cannot distinguish "leave
         // it" from "clear it", so the flag decides which the caller meant.
@@ -292,7 +302,7 @@ impl Store {
     }
 
     pub fn counts(&self) -> Result<(i64, i64), Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "SELECT COUNT(*) FILTER (WHERE status = 'open'),
@@ -389,8 +399,7 @@ mod tests {
             )
         });
         store
-            .conn
-            .lock()
+            .conn()
             .unwrap()
             .batch_execute(&format!("TRUNCATE {schema}.tasks"))
             .expect("clean slate");

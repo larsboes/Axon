@@ -204,6 +204,24 @@ pin_kind = "image"
 tracked_by = "the Docker Hub tag list for the official postgres image; the pin moves only at a deliberate rebuild, re-scanned with trivy at that point"
 why = "shared correlation data layer across scouting + transit (+ future capabilities): cross-domain correlation is the actual product thesis, not a hypothetical -- see capabilities/postgres/README.md's correlation section. One instance, per-capability Postgres schema (scouting.*, transit.*) so migrations/ownership stay per-capability, thin correlation layer on top for cross-schema joins. Reopened scouting's earlier Postgres-to-SQLite swap: scouting has since migrated back onto this shared instance (own scouting schema, see capabilities/scouting/README.md's Verdict) and is no longer on SQLite"
 
+[r2d2]
+url = "https://github.com/sfackler/r2d2"
+verdict = "adopt"
+license = "MIT OR Apache-2.0"
+pin = "0.8.10"          # published 2022-06-21; four years past any cooldown window, and the age is the point rather than a caveat
+pin_kind = "commit"
+tracked_by = "crates.io releases for r2d2; this is a finished crate rather than a maintained one -- three releases in seven years, and the check is whether a CVE appears, not whether a version does"
+why = "the generic connection pool behind r2d2_postgres below. Adopted for the second half of the Store::open problem (larsboes/axon-personal#139): libs/axon-store removed the migration from every open, but every open still built a fresh Postgres session. Measured against the live database rather than inferred: Client::connect runs 32-39 ms, a pooled open 0.20-0.30 ms. The issue estimated ~50 ms and was high -- the /feed endpoint improved ~21 ms end to end and the rest of its time turns out to scale with response size, not with connections. Chosen over deadpool/bb8 because those are async pools for tokio-postgres, and this repo's data layer is deliberately the SYNC postgres crate driven from spawn_blocking -- capabilities/comms/Cargo.toml states that choice and its reason (the CLI path carries no async runtime, only the server does). Swapping the pool would have meant swapping the client, making 134 call sites async across seven capabilities to solve a connection-reuse problem. Dependency tree is three crates (log, parking_lot, scheduled-thread-pool). Same author as the postgres client itself, which is why the two versions track each other"
+
+[r2d2_postgres]
+url = "https://github.com/sfackler/r2d2-postgres"
+verdict = "adopt"
+license = "MIT"
+pin = "0.18.2"          # published 2024-12-23; well past cooldown
+pin_kind = "commit"
+tracked_by = "crates.io releases for r2d2_postgres; it is a thin adapter whose version moves when the postgres client's major does, so the signal to watch is a postgres 0.20, not this crate"
+why = "the r2d2 manager for the postgres client, requiring postgres ^0.19 -- exactly the version all seven schema-owning capabilities already pin, so adoption changed no existing resolution. It is the adapter and nothing more: connect, is-valid, has-broken. Preferred over hand-rolling a pool behind libs/axon-store, which was the alternative considered and rejected under README.md's adopt > build preference: a pool is checkout, return, health-check, sizing and timeout, and the failure modes of a wrong one are exactly the intermittent kind this whole issue exists to remove"
+
 [bun]
 url = "https://github.com/oven-sh/bun"
 verdict = "adopt"

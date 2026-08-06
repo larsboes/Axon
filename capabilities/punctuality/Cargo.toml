@@ -40,6 +40,11 @@ arrow = "59.1.0"
 # Sync client, matching scouting/transit: this crate has no async runtime and does not
 # need one -- ingest is a batch job and the CLI is a batch job.
 postgres = "0.19"
+# The sync pool for that client; see upstreams.toml [r2d2]. Carried because
+# libs/axon-store is one #[path]-included file: its migration half and its pool
+# half arrive together.
+r2d2 = "0.8"
+r2d2_postgres = "0.18"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

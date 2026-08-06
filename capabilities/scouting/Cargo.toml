@@ -39,6 +39,10 @@ thiserror = "1.0"
 # feature above; scout's own CLI path still carries no async runtime, only
 # scout-server does (tokio below).
 postgres = "0.19"
+# The sync pool for that client. `Store::open` cost a fresh connection and its auth
+# every call; upstreams.toml [r2d2] carries the verdict and why not deadpool/bb8.
+r2d2 = "0.8"
+r2d2_postgres = "0.18"
 # One-directional: scouting depends on transit, never the reverse (no cycle).
 # adapters/transit_fare.rs implements SourceAdapter using transit::hafas +
 # transit::store -- same "implement SourceAdapter, add one match-arm in

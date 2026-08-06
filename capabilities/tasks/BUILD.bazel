@@ -20,6 +20,8 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         "@crate_index_tasks//:postgres",
+        "@crate_index_tasks//:r2d2",
+        "@crate_index_tasks//:r2d2_postgres",
         "@crate_index_tasks//:serde",
         "@crate_index_tasks//:serde_json",
     ],

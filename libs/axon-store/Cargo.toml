@@ -21,3 +21,8 @@ path = "src/lib.rs"
 # All seven store-owning capabilities already pin postgres 0.19.
 [dependencies]
 postgres = "0.19"
+# The sync pool, matching the sync client. See upstreams.toml [r2d2] for why this
+# rather than deadpool/bb8 -- those are async pools for tokio-postgres, and this
+# repo's data layer is deliberately the blocking client driven from spawn_blocking.
+r2d2 = "0.8"
+r2d2_postgres = "0.18"

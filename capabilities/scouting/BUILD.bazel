@@ -39,6 +39,8 @@ rust_library(
         # (see Cargo.toml's comment on the same dependency).
         "//capabilities/transit:transit_lib",
         "@crate_index//:postgres",
+        "@crate_index//:r2d2",
+        "@crate_index//:r2d2_postgres",
         "@crate_index//:reqwest",
         "@crate_index//:serde",
         "@crate_index//:serde_json",

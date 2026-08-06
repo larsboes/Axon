@@ -20,6 +20,10 @@ path = "src/server.rs"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 postgres = "0.19"
+# The sync pool for that client. `Store::open` cost a fresh connection and its auth
+# every call; upstreams.toml [r2d2] carries the verdict and why not deadpool/bb8.
+r2d2 = "0.8"
+r2d2_postgres = "0.18"
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }

@@ -53,16 +53,39 @@ migrated first.
 So the first `open` still migrates. A failed migration is not recorded as done, so the next
 `open` retries instead of handing out a half-built schema.
 
-## What it does not fix
+## The other half: one connection per open
 
-The other half of the same problem, and the larger half in wall-clock terms. A request that
-opens a store costs about 55 ms; the migration was never more than 2-3 ms of it. The rest is a
-fresh connection and its auth:
+The migration was never the expensive part. Every `Store::open` also opened a fresh Postgres
+session, and that is where the time went. Measured against the live database, not estimated:
 
 ```
-/feed?limit=1   0.053 - 0.089 s   <- opens a Store
-/health         0.0005 s          <- does not
+Client::connect      32-39 ms   (five consecutive runs)
+pooled Store::open   0.20-0.30 ms
 ```
 
-Connection reuse needs a pool, and a pool means adopting a crate no capability currently
-resolves. That is an upstream verdict, not a refactor, and it is tracked separately.
+`pool_for` gives a process one pool per database URL, so opening a store is a checkout. No call
+site changed: `open` still takes a URL and returns a `Store`, because a pool keyed by URL is the
+shape 43 handlers were already asking for.
+
+Two settings are deliberate rather than inherited. `min_idle(0)`, because r2d2 otherwise keeps
+`max_size` connections warm — right for a server, wrong for the CLI half of these crates, where
+`comms sweep` would open ten sessions to run one query. And a five-second checkout timeout
+instead of r2d2's thirty, because with Postgres down, thirty seconds reads as a hang rather than
+a failure and lets requests pile up behind it.
+
+## The estimate that was wrong
+
+The originating issue read `/feed` at ~76 ms against `/health` at ~2 ms and concluded that
+roughly 50 ms per request was connection setup. The connect is ~32 ms, and the remaining gap is
+not a fixed cost — it scales with the response:
+
+| Endpoint | Payload | After pooling |
+|---|---|---|
+| `/feed?days=1` | 57 KB | ~29-56 ms |
+| `/feed?days=7` | 107 KB | ~57 ms (median of 15; ~78 ms before) |
+| `/feed?days=30` | 194 KB | ~97 ms |
+
+So that endpoint improved by about 21 ms and is still dominated by per-item work and
+serialization. The pool was the right fix for the connect and was never going to be the fix for
+the other two thirds. Whatever is worth doing about those is a different piece of work, against
+a measurement rather than an inference.

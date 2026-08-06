@@ -23,6 +23,8 @@ rust_library(
         "@crate_index_punctuality//:arrow",
         "@crate_index_punctuality//:parquet",
         "@crate_index_punctuality//:postgres",
+        "@crate_index_punctuality//:r2d2",
+        "@crate_index_punctuality//:r2d2_postgres",
         "@crate_index_punctuality//:reqwest",
         "@crate_index_punctuality//:serde",
         "@crate_index_punctuality//:thiserror",

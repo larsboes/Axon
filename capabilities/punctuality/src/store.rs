@@ -9,11 +9,17 @@
 
 use crate::ingest::CellKey;
 use crate::stats::Cell;
-use postgres::{Client, NoTls};
+use postgres::Client;
 use std::collections::HashMap;
 
 pub struct Store {
-    client: Client,
+    /// Pooled like its six siblings, though this capability is the one that gains
+    /// least from it: it opens a store twice per process, not once per request. It
+    /// is here because the shared store lib is a single `#[path]`-included file, so
+    /// a consumer that wants its migration half carries its pool half too — and
+    /// carrying the dependency while hand-rolling a second connection strategy
+    /// beside it would be the worse of the two outcomes.
+    pool: crate::axon_store::Pool,
     schema: String,
 }
 
@@ -53,13 +59,22 @@ impl Store {
     /// `format!` below; that is safe because of where the name comes from, not because
     /// interpolating into SQL is safe in general.
     pub fn open_with_schema(database_url: &str, schema: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut client = Client::connect(database_url, NoTls)?;
-        // Once per process per (database, schema), not once per open. See
-        // libs/axon-store/README.md for the deadlock that removes.
-        crate::axon_store::migrate_once(&mut client, database_url, schema, |client| {
+        // A pool checkout, not a connect, and the migration runs once per process
+        // per (database, schema) rather than once per open. Both halves of
+        // larsboes/axon-personal#139 -- libs/axon-store/README.md has the numbers.
+        let pool = crate::axon_store::open_pool(database_url, schema, |client| {
             Self::init_schema(client, schema)
         })?;
-        Ok(Self { client, schema: schema.to_string() })
+        Ok(Self { pool, schema: schema.to_string() })
+    }
+
+    /// A connection from the shared pool.
+    ///
+    /// Held across a whole transaction by `replace_stats`, which is the intended
+    /// use of a checkout rather than a problem with one: the connection is this
+    /// caller's until it is dropped, and r2d2 hands the next caller a different one.
+    fn conn(&self) -> Result<crate::axon_store::PooledClient, Box<dyn std::error::Error>> {
+        Ok(self.pool.get()?)
     }
 
     fn init_schema(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -116,7 +131,8 @@ impl Store {
         stations: &HashMap<String, String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let schema = self.schema.clone();
-        let mut tx = self.client.transaction()?;
+        let mut conn = self.conn()?;
+        let mut tx = conn.transaction()?;
         tx.execute(&format!("DELETE FROM {schema}.stop_stats"), &[])?;
 
         let insert = tx.prepare(&format!(
@@ -164,7 +180,7 @@ impl Store {
         cells: i32,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let schema = &self.schema;
-        self.client.execute(
+        self.conn()?.execute(
             &format!(
                 "INSERT INTO {schema}.ingest_runs (from_month, to_month, months, rows_read, rows_skipped, cells)
                  VALUES ($1,$2,$3,$4,$5,$6)"
@@ -193,7 +209,7 @@ impl Store {
              WHERE s.eva = $1 AND ($2::text IS NULL OR s.train_type = $2) AND s.n >= $3
              ORDER BY s.train_type, s.weekend, s.hour"
         );
-        let rows = self.client.query(&sql, &[&eva, &train_type, &min_n])?;
+        let rows = self.conn()?.query(&sql, &[&eva, &train_type, &min_n])?;
         Ok(rows.iter().map(row_to_stat).collect())
     }
 
@@ -212,7 +228,7 @@ impl Store {
     ) -> Result<Option<StatRow>, Box<dyn std::error::Error>> {
         let schema = &self.schema;
         let eva = normalize_eva(eva);
-        let rows = self.client.query(
+        let rows = self.conn()?.query(
             &format!(
                 "SELECT s.eva, st.station_name, s.train_type, s.hour, s.weekend, s.n, s.canceled,
                         s.mean_delay, s.p50, s.p90, s.share_late_6, s.cancel_rate
@@ -231,7 +247,7 @@ impl Store {
     /// apart from "this train is never late".
     pub fn coverage(&mut self) -> Result<Option<(String, String, i32)>, Box<dyn std::error::Error>> {
         let schema = &self.schema;
-        let rows = self.client.query(
+        let rows = self.conn()?.query(
             &format!(
                 "SELECT from_month, to_month, cells FROM {schema}.ingest_runs
                  ORDER BY id DESC LIMIT 1"
@@ -244,7 +260,7 @@ impl Store {
     /// EVA numbers whose station name contains `needle`, case-insensitively.
     pub fn find_stations(&mut self, needle: &str) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         let schema = &self.schema;
-        let rows = self.client.query(
+        let rows = self.conn()?.query(
             &format!(
                 "SELECT eva, station_name FROM {schema}.stations
                  WHERE station_name ILIKE '%' || $1 || '%' ORDER BY station_name LIMIT 25"

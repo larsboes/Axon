@@ -23,6 +23,8 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         "@crate_index_calendar//:postgres",
+        "@crate_index_calendar//:r2d2",
+        "@crate_index_calendar//:r2d2_postgres",
         # Phase E's Google Calendar transport. Blocking client, matching the
         # synchronous `postgres` client the rest of this crate uses; only the
         # server binary carries a tokio runtime.

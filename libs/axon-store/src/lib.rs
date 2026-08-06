@@ -38,18 +38,131 @@
 //! inherits an assumption that someone else went first. A failed migration is not
 //! recorded, so the next `open` retries rather than inheriting a half-built schema.
 //!
+//! ## The other half: one connection per request
+//!
+//! Migrating once fixed the deadlock and little of the latency, because the DDL was
+//! never more than 2-3 ms of it. What every `Store::open` also did was open a fresh
+//! Postgres session, measured against the live database rather than estimated:
+//!
+//! ```text
+//! Client::connect      32-39 ms   (five runs)
+//! pooled Store::open   0.20-0.30 ms
+//! ```
+//!
+//! [`pool_for`] gives a process one pool per database URL, so `Store::open` becomes
+//! a checkout. Call sites did not change for that: `open` still takes a URL and
+//! still returns a `Store`, because a pool keyed by URL is the shape 43 handlers
+//! were already asking for without knowing it.
+//!
+//! ## What this does not make fast, and the estimate that was wrong
+//!
+//! The originating issue read `/feed` at ~76 ms against `/health` at ~2 ms and
+//! concluded roughly 50 ms per request was connection setup. That was an
+//! overestimate: the connect is ~32 ms, and the rest of the gap is not fixed cost
+//! at all. It scales with the response:
+//!
+//! ```text
+//! /feed?days=1     57 KB    ~29-56 ms
+//! /feed?days=7    107 KB    ~57 ms      (median of 15, was ~78 ms before pooling)
+//! /feed?days=30   194 KB    ~97 ms
+//! ```
+//!
+//! So the endpoint improved by about 21 ms and remains dominated by per-item work
+//! and serialization. Worth writing down rather than quietly not mentioning: a pool
+//! is the right fix for the connect, and it was never going to be the fix for the
+//! other two thirds.
+//!
 //! ## Dependency rule
 //!
 //! Compiled into consumers by `#[path]` include (see `libs/axon-config/README.md`
 //! for why), so it may only use crates **every** consumer already has: `postgres`,
-//! which all seven store-owning capabilities depend on at the same version. Adding
-//! any other dependency here silently changes a consumer's dependency resolution.
+//! `r2d2` and `r2d2_postgres`, which all seven store-owning capabilities depend on
+//! at the same versions. Adding any other dependency here silently changes a
+//! consumer's dependency resolution.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::error::Error;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
-use postgres::Client;
+use postgres::{Client, NoTls};
+use r2d2_postgres::PostgresConnectionManager;
+
+/// A pooled Postgres connection. Derefs to [`Client`], so a call site that used to
+/// hold a `MutexGuard<Client>` reads the same.
+pub type PooledClient = r2d2::PooledConnection<PostgresConnectionManager<NoTls>>;
+
+/// Shared by every `Store` in a process that talks to the same database.
+pub type Pool = r2d2::Pool<PostgresConnectionManager<NoTls>>;
+
+/// Beyond this, a checkout gives up rather than hanging.
+///
+/// r2d2's default is 30 seconds. That is a sane default for a batch job and the
+/// wrong one for an HTTP handler: with Postgres down, 30 seconds is long enough
+/// that the dashboard looks hung rather than broken, and long enough for the
+/// requests behind it to pile up. Five seconds is past any real contention on a
+/// pool this size and short enough to read as a failure.
+const CHECKOUT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// r2d2's own default, named rather than inherited so it is visible next to the
+/// two settings that are NOT defaults.
+const MAX_CONNECTIONS: u32 = 10;
+
+fn pools() -> &'static Mutex<HashMap<String, Pool>> {
+    static POOLS: OnceLock<Mutex<HashMap<String, Pool>>> = OnceLock::new();
+    POOLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The pool for `database_url` in this process, built on first ask.
+///
+/// Keyed by URL rather than by capability: two capabilities pointing at the same
+/// database should share, and a test schema is not a different database.
+///
+/// `min_idle(0)` is the setting that matters and is not a default. r2d2 otherwise
+/// keeps `max_size` connections warm, which is right for a server and actively
+/// wrong for the CLI half of these crates: `comms sweep` would open ten sessions to
+/// run one query and close nine of them on exit. Zero means the pool grows to what
+/// is actually used, so the one-shot path costs one connection and the server path
+/// still reaches ten under load.
+pub fn pool_for(database_url: &str) -> Result<Pool, Box<dyn Error>> {
+    let mut pools = pools()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Some(existing) = pools.get(database_url) {
+        return Ok(existing.clone());
+    }
+
+    let manager = PostgresConnectionManager::new(database_url.parse()?, NoTls);
+    let pool = r2d2::Pool::builder()
+        .max_size(MAX_CONNECTIONS)
+        .min_idle(Some(0))
+        .connection_timeout(CHECKOUT_TIMEOUT)
+        .build(manager)?;
+
+    pools.insert(database_url.to_string(), pool.clone());
+    Ok(pool)
+}
+
+/// Get a pool for `database_url` and make sure `schema` is migrated.
+///
+/// The checkout here is not only a probe, though it serves as one. `min_idle(0)`
+/// means `build` establishes nothing, so without it a wrong URL or a stopped
+/// database would be reported by the first query rather than by `open` — a
+/// regression against the connect-per-open behaviour this replaces, and the kind
+/// that turns "the database is down" into a confusing error deep in a handler.
+pub fn open_pool(
+    database_url: &str,
+    schema: &str,
+    ddl: impl FnOnce(&mut Client) -> Result<(), Box<dyn Error>>,
+) -> Result<Pool, Box<dyn Error>> {
+    let pool = pool_for(database_url)?;
+    let mut conn = pool.get()?;
+    migrate_once(&mut conn, database_url, schema, ddl)?;
+    drop(conn);
+    Ok(pool)
+}
 
 /// Serialises migrations across processes.
 ///

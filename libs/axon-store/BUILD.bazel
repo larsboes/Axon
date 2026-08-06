@@ -31,6 +31,8 @@ rust_library(
     # fold src/lib.rs in and resolve postgres from their own index.
     deps = [
         "@crate_index//:postgres",
+        "@crate_index//:r2d2",
+        "@crate_index//:r2d2_postgres",
     ],
 )
 

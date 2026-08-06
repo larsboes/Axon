@@ -43,6 +43,8 @@ rust_library(
         "@crate_index//:mailparse",
         "@crate_index//:pdf-extract",
         "@crate_index//:postgres",
+        "@crate_index//:r2d2",
+        "@crate_index//:r2d2_postgres",
         "@crate_index//:regex",
         "@crate_index//:reqwest",
         "@crate_index//:serde",
