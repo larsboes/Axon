@@ -487,6 +487,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: false,
+            gate: None,
         };
         assert_eq!(chart(Some(&cloud), SOURCE, false), Outcome::RemoteRefused);
     }

@@ -106,6 +106,12 @@ let target = role.map(|role| Target {
     model: role.model.clone(),
     api_key: role.bearer_key(),
     loopback: role.is_loopback(),
+    // `None` is unbounded, which is what every caller did before this existed.
+    // A loopback target should carry a `LocalGate`: it is how concurrent
+    // callers stop pushing one GPU past its memory ceiling. The mechanism is
+    // yours to supply, because this lib may not hold a database handle — see
+    // the dependency rule above.
+    gate: None,
 });
 let outcome = summarize::digest(target.as_ref(), text, &directive, allow_remote);
 ```

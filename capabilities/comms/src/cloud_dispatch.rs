@@ -113,6 +113,17 @@ pub fn analyze(role: &ResolvedRole, document: &str) -> Result<CloudContentAnalys
     }
     let body = serde_json::from_slice::<serde_json::Value>(&response_bytes)
         .map_err(|_| "cloud provider returned an invalid response envelope".to_string())?;
+    // A provider answering 200 with an error envelope was reaching the operator
+    // as "returned no analysis", dropping the one sentence that says why: rate
+    // limit, context length, content filter. Bounded to the `message` field
+    // rather than echoing the envelope — this is provider-controlled text on
+    // its way to a reader, so it gets a known shape and nothing else.
+    if let Some(error) = crate::summarize::server_error(&body) {
+        return Err(format!(
+            "cloud provider returned an error: {}",
+            error.message()
+        ));
+    }
     let content = body
         .get("choices")
         .and_then(|choices| choices.get(0))

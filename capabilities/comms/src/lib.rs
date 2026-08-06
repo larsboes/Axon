@@ -46,6 +46,7 @@ pub mod extraction;
 pub mod extraction_eval;
 pub mod google;
 pub mod intake;
+pub mod local_gate;
 pub mod media;
 pub mod normalize;
 pub mod provenance;

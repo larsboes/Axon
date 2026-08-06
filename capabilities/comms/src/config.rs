@@ -427,6 +427,25 @@ impl Config {
     pub fn summarization_role(&self) -> Option<ResolvedRole> {
         self.inference.role("summarization")
     }
+
+    /// A smaller, faster local model for the cheap rungs, if this machine has
+    /// one configured.
+    ///
+    /// Optional by design: a machine with only `summarization` behaves exactly
+    /// as it did before this existed. Where it earns its place is a host with a
+    /// second local model that is quick but small — Apple's on-device model is
+    /// 4,096 tokens and answers a Brief digest in about two seconds against
+    /// twelve to twenty for the 26B — because moving the short rungs onto it
+    /// takes them off the shared GPU budget entirely.
+    ///
+    /// The role must declare `max_input_tokens`. Without it there is no way to
+    /// tell whether a source fits, and guessing is how you get a context error
+    /// instead of a digest, so an undeclared window means the role is skipped.
+    pub fn light_summarization_role(&self) -> Option<ResolvedRole> {
+        self.inference
+            .role("summarization_light")
+            .filter(|role| role.max_input_tokens.is_some())
+    }
 }
 
 #[cfg(test)]

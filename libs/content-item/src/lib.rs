@@ -85,7 +85,8 @@ pub struct ContentItem {
 pub struct Digest {
     pub text: Option<String>,
     /// `generated` · `skipped_short` · `remote_refused` · `unconfigured` ·
-    /// `http_error` · `model_error` · `empty_response` · `timeout`.
+    /// `http_error` · `model_error` · `capacity_aborted` · `empty_response` ·
+    /// `timeout`.
     pub state: String,
     /// The rung the ladder landed on: `none` · `brief` · `standard` · `sectioned`.
     pub shape: String,

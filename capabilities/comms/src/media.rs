@@ -37,6 +37,10 @@ pub enum SummarizeOutcome {
     Unconfigured,
     HttpError(String),
     ModelError(String),
+    /// The server took the request and then ran out of room for it. Same
+    /// distinction `summarize::Outcome` draws, and for the same reason: this
+    /// one is about the machine, not the request.
+    CapacityAborted(String),
     EmptyResponse,
     Timeout,
 }
@@ -49,6 +53,7 @@ impl SummarizeOutcome {
             SummarizeOutcome::Unconfigured => "unconfigured",
             SummarizeOutcome::HttpError(_) => "http_error",
             SummarizeOutcome::ModelError(_) => "model_error",
+            SummarizeOutcome::CapacityAborted(_) => "capacity_aborted",
             SummarizeOutcome::EmptyResponse => "empty_response",
             SummarizeOutcome::Timeout => "timeout",
         }
@@ -1178,6 +1183,20 @@ pub fn summarize(text: &str, cfg: &Config) -> SummarizeOutcome {
         Ok(b) => b,
         Err(e) => return SummarizeOutcome::ModelError(e.to_string()),
     };
+    // Before `choices`, for the reason `summarize::server_error` documents: a
+    // 200 whose body is an error envelope was reaching the ledger as
+    // `empty_response`, which is both the wrong cause and the wrong advice.
+    // This path is the 15-minute enrichment drain, so it hits the same busy
+    // server the digest path does.
+    match crate::summarize::server_error(&body) {
+        Some(crate::summarize::ServerError::Capacity(message)) => {
+            return SummarizeOutcome::CapacityAborted(message)
+        }
+        Some(crate::summarize::ServerError::Other(message)) => {
+            return SummarizeOutcome::ModelError(message)
+        }
+        None => {}
+    }
     let out = body
         .get("choices")
         .and_then(|c| c.get(0))

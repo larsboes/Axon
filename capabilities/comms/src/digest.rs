@@ -49,12 +49,64 @@ pub const MAX_ATTEMPTS: i32 = 3;
 /// what an `InferenceConfig` is, so calendar can include it without also
 /// including `libs/inference`.
 pub fn target(cfg: &Config) -> Option<Target> {
-    cfg.summarization_role().map(|role| Target {
+    cfg.summarization_role().map(|role| to_target(cfg, &role))
+}
+
+/// The target for one specific piece of work.
+///
+/// `Depth::Detailed` always takes the strongest configured role. That is the
+/// press meaning "give me more", and answering it on the small model would be
+/// the one case where the ladder's promise — that a rung is a step up rather
+/// than a longer version of the same guess — stops being true.
+///
+/// Otherwise a light role is used when the source demonstrably fits its context
+/// window, input and output together. Everything else falls through to the
+/// strong role, so a machine with no light role configured, or a source too big
+/// for it, behaves exactly as it did before this existed.
+pub fn role_for(
+    cfg: &Config,
+    directive: &Directive,
+    source_chars: usize,
+) -> Option<crate::inference::ResolvedRole> {
+    let shape = directive.shape_for(source_chars);
+    if directive.depth == Depth::Standard {
+        if let Some(light) = cfg.light_summarization_role() {
+            let window = light.max_input_tokens.unwrap_or_default();
+            if summarize::fits_context(source_chars, shape, window) {
+                return Some(light);
+            }
+        }
+    }
+    cfg.summarization_role()
+}
+
+/// Every producer string this machine could currently write for a digest.
+///
+/// A list rather than one string because the role is chosen per item: a short
+/// source may be digested by the light model and a long one by the strong model
+/// on the same pass, and both are current. Checking staleness against a single
+/// producer would mark every light-model digest stale on the next sweep and
+/// re-digest it forever, which is worse than the gap it was meant to close.
+pub fn producer_revisions(cfg: &Config) -> Vec<String> {
+    [cfg.summarization_role(), cfg.light_summarization_role()]
+        .into_iter()
+        .flatten()
+        .map(|role| summarize::producer(&role.cache_key(), summarize::DIGEST_PROMPT_REVISION))
+        .collect()
+}
+
+fn to_target(cfg: &Config, role: &crate::inference::ResolvedRole) -> Target {
+    let loopback = role.is_loopback();
+    Target {
         endpoint: role.chat_completions_endpoint(),
         model: role.model.clone(),
         api_key: role.bearer_key(),
-        loopback: role.is_loopback(),
-    })
+        loopback,
+        // Only a local target gets a gate. A hosted provider queues for itself
+        // and shares no GPU with anything here, so serialising against it would
+        // cost latency and buy nothing.
+        gate: loopback.then(|| crate::local_gate::AdvisoryGate::shared(&cfg.database_url)),
+    }
 }
 
 /// The stored producer string for the current target, or `None` when no
@@ -103,7 +155,7 @@ fn source_text(store: &Store, cfg: &Config, source: &str, id: &str) -> Result<Op
     match source {
         "feed" => Ok(store
             .get_feed(id)
-            .map_err(|error| crate::CommsError::Other(error.to_string()))?
+            .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?
             .map(|item| SourceText {
                 // The transcript is the source; the stored summary is a
                 // previous answer, and digesting an answer compounds whatever
@@ -114,7 +166,7 @@ fn source_text(store: &Store, cfg: &Config, source: &str, id: &str) -> Result<Op
         "mail" => {
             let Some(item) = store
                 .get_triage(id)
-                .map_err(|error| crate::CommsError::Other(error.to_string()))?
+                .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?
             else {
                 return Ok(None);
             };
@@ -211,13 +263,22 @@ pub fn generate(
     };
     let previous = store
         .content_digest(source, id)
-        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
-    let source_chars = gathered.text.chars().count() as i64;
-    let shape = directive.shape_for(gathered.text.chars().count());
-    let producer = producer_revision(cfg).unwrap_or_else(|| "unconfigured".into());
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
+    let chars = gathered.text.chars().count();
+    let source_chars = chars as i64;
+    let shape = directive.shape_for(chars);
+    // Resolved once, so the stored producer names the role that actually ran.
+    // Deriving it separately from `summarization_role` would label a light-model
+    // digest as the strong model's work, and provenance that lies is worse than
+    // provenance that is missing.
+    let role = role_for(cfg, directive, chars);
+    let producer = role
+        .as_ref()
+        .map(|role| summarize::producer(&role.cache_key(), summarize::DIGEST_PROMPT_REVISION))
+        .unwrap_or_else(|| "unconfigured".into());
 
     let outcome = summarize::digest(
-        target(cfg).as_ref(),
+        role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
         &gathered.text,
         directive,
         gathered.allow_remote(),
@@ -265,10 +326,10 @@ pub fn generate(
     };
     store
         .upsert_content_digest(&stored)
-        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
     store
         .content_digest(source, id)
-        .map_err(|error| crate::CommsError::Other(error.to_string()))
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))
 }
 
 /// Produce and store a Mermaid diagram beside an existing digest.
@@ -288,7 +349,7 @@ pub fn generate_diagram(
     };
     let existing = store
         .content_digest(source, id)
-        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
     let input = existing
         .as_ref()
         .and_then(|row| row.text.clone())
@@ -310,13 +371,13 @@ pub fn generate_diagram(
     };
     let updated = store
         .update_content_diagram(source, id, diagram, outcome.state(), error, &producer)
-        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
     if updated == 0 {
         return Ok(None);
     }
     store
         .content_digest(source, id)
-        .map_err(|error| crate::CommsError::Other(error.to_string()))
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))
 }
 
 /// Extract and store a chartable table for one item.
@@ -336,7 +397,7 @@ pub fn generate_chart(
     };
     let existing = store
         .content_digest(source, id)
-        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
 
     let outcome = summarize::chart::chart(
         target(cfg).as_ref(),
@@ -357,13 +418,13 @@ pub fn generate_chart(
     };
     let updated = store
         .update_content_chart(source, id, chart, outcome.state(), error, &producer)
-        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
     if updated == 0 {
         return Ok(None);
     }
     store
         .content_digest(source, id)
-        .map_err(|error| crate::CommsError::Other(error.to_string()))
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))
 }
 
 /// The bounded automatic pass: digest the items of one source that still need
@@ -372,13 +433,32 @@ pub fn generate_chart(
 /// Bounded and explicit rather than timer-driven. For mail this reads message
 /// bodies, and a background job that quietly pulls every body out of a mailbox
 /// is not something a machine should start doing on its own.
+/// An error plus everything underneath it.
+///
+/// `postgres::Error` Displays as the bare string "db error" and keeps the
+/// statement, the SQLSTATE and the message on its `source()` chain, so
+/// `error.to_string()` at an error-type boundary throws away the only part
+/// worth reading. A drain that logs "digest drain: db error" every fifteen
+/// minutes reports that something is wrong and nothing about what.
+fn detail(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = error.to_string();
+    let mut cause = error.source();
+    while let Some(next) = cause {
+        out.push_str(": ");
+        out.push_str(&next.to_string());
+        cause = next.source();
+    }
+    out
+}
+
 pub fn refresh_pending(store: &Store, cfg: &Config, source: &str, limit: i64) -> Result<usize> {
-    let Some(producer) = producer_revision(cfg) else {
+    let producers = producer_revisions(cfg);
+    if producers.is_empty() {
         return Ok(0);
-    };
+    }
     let ids = store
-        .items_needing_digest(source, &producer, MAX_ATTEMPTS, limit.clamp(1, 500))
-        .map_err(|error| crate::CommsError::Other(error.to_string()))?;
+        .items_needing_digest(source, &producers, MAX_ATTEMPTS, limit.clamp(1, 500))
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
     let directive = Directive::new(Depth::Standard, []);
     let mut written = 0;
     for id in ids {
@@ -453,6 +533,12 @@ pub fn state_explanation(state: &str, shape: &str) -> &'static str {
         }
         "unconfigured" => "No summarization model is configured on this machine.",
         "timeout" => "The local model did not answer in time.",
+        // Deliberately about the machine, not the model. The server took this
+        // request and ran out of memory part-way through it; the same item
+        // digests fine once something stops holding the GPU. Saying "the model
+        // answered with nothing" here sent a reader looking at the model, the
+        // prompt and the transcript, none of which were involved.
+        "capacity_aborted" => "The local server ran out of memory part-way through. It will retry.",
         "empty_response" => "The local model answered with nothing.",
         _ => "The local model could not be reached.",
     }

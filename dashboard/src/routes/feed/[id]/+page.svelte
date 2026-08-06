@@ -173,6 +173,11 @@
         return "No summarization model is configured on this machine.";
       case "timeout":
         return "The local model did not answer in time.";
+      case "capacity_aborted":
+        // About the machine, not the model. The server accepted this request
+        // and ran out of memory part-way through; the same item digests fine
+        // once something stops holding the GPU, and the drain will try again.
+        return "The local server ran out of memory part-way through this one. It will retry on its own.";
       case "empty_response":
         return "The local model answered with nothing.";
       default:

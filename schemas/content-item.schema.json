@@ -242,6 +242,7 @@
             "unconfigured",
             "http_error",
             "model_error",
+            "capacity_aborted",
             "empty_response",
             "timeout"
           ]

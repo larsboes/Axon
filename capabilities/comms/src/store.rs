@@ -246,10 +246,15 @@ pub enum CloudAttemptClaim {
 /// upsert that decides whether to arm a backoff. Two hand-maintained copies is
 /// how a state ends up retryable in one and terminal in the other, which strands
 /// rows in a way nothing reports.
-pub const RETRYABLE_DIGEST_STATES: [&str; 4] =
-    ["http_error", "model_error", "empty_response", "timeout"];
+pub const RETRYABLE_DIGEST_STATES: [&str; 5] = [
+    "http_error",
+    "model_error",
+    "capacity_aborted",
+    "empty_response",
+    "timeout",
+];
 
-/// The four states above, as a SQL literal list. Built from the const rather
+/// The states above, as a SQL literal list. Built from the const rather
 /// than typed out, so the two cannot drift. Every element is a compile-time
 /// literal, so this never carries caller input.
 fn retryable_digest_states_sql() -> String {
@@ -430,7 +435,36 @@ impl Store {
         })
     }
 
+    /// Serialises the migration below across every process and every thread.
+    ///
+    /// `batch_execute` runs as one implicit transaction taking ACCESS EXCLUSIVE
+    /// on roughly fifteen tables, and `Store::open` runs it *every time* — every
+    /// drain tick, every HTTP handler, not once at boot. Two openers firing at
+    /// the same instant deadlock, and Postgres resolves that by killing one.
+    ///
+    /// It surfaced when the digest drain became a third fifteen-minute timer
+    /// beside the enrichment drain and Gmail maintenance, so three sessions
+    /// started migrating together and the loser logged `deadlock detected`. The
+    /// hazard predates that drain: two timers were already colliding on the same
+    /// schedule, just rarely enough to look like weather.
+    ///
+    /// Deliberately a different key from `local_gate.rs` — they guard unrelated
+    /// things, and sharing a number would make each wait on the other.
+    const MIGRATION_LOCK_KEY: i64 = 0x41_58_4F_4E_5F_4D_49_47; // "AXON_MIG"
+
     fn init_schema(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // The blocking form, not `try`: an opener that cannot migrate yet should
+        // wait for the one that is, not fail. The wait is one DDL batch against
+        // tables that already exist, so it is short.
+        client.execute("SELECT pg_advisory_lock($1)", &[&Self::MIGRATION_LOCK_KEY])?;
+        let migrated = Self::run_migration(client, schema);
+        // Released on both paths. A failed migration that kept the lock would
+        // hang every future opener behind a session that has already given up.
+        let _ = client.execute("SELECT pg_advisory_unlock($1)", &[&Self::MIGRATION_LOCK_KEY]);
+        migrated
+    }
+
+    fn run_migration(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
         client.batch_execute(&format!(
             "
             CREATE SCHEMA IF NOT EXISTS {schema};
@@ -1975,10 +2009,16 @@ impl Store {
     /// cap alone, a drain every 15 minutes spends all three attempts inside
     /// three-quarters of an hour, so an outage lasting an hour leaves the row
     /// permanently dead — which is the failure this whole path exists to end.
+    ///
+    /// `producers` is every producer string this machine could currently write,
+    /// not one: the role is chosen per item, so a short source may be digested
+    /// by a light model and a long one by the strong model on the same pass and
+    /// both are current. A row is stale only when its producer is in none of
+    /// them.
     pub fn items_needing_digest(
         &self,
         source: &str,
-        producer: &str,
+        producers: &[String],
         max_attempts: i32,
         limit: i64,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -1995,7 +2035,7 @@ impl Store {
                    LEFT JOIN {schema}.content_digests d
                           ON d.source = $1 AND d.item_id = i.id
                   WHERE d.item_id IS NULL
-                     OR (d.producer <> $2 AND d.depth = 'standard')
+                     OR (d.producer <> ALL($2) AND d.depth = 'standard')
                      OR (d.state IN ({retryable})
                          AND d.attempts < $3
                          AND (d.next_attempt IS NULL OR d.next_attempt <= now()))
@@ -2006,7 +2046,7 @@ impl Store {
                 order = order,
                 retryable = retryable_digest_states_sql()
             ),
-            &[&source, &producer, &max_attempts, &limit],
+            &[&source, &producers, &max_attempts, &limit],
         )?;
         Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
     }
@@ -5093,6 +5133,11 @@ mod tests {
             store.upsert_feed(item).unwrap();
         }
 
+        // A list, because the role is chosen per item: one machine can hold a
+        // light model for short sources and a strong one for long sources, and
+        // a digest from either is current.
+        let producers = vec!["current-producer".to_string()];
+
         store
             .upsert_content_digest(&mk_digest("feed", &stale.id, "old-producer"))
             .unwrap();
@@ -5109,7 +5154,7 @@ mod tests {
         store.upsert_content_digest(&parked_row).unwrap();
 
         let queued = store
-            .items_needing_digest("feed", "current-producer", 3, 50)
+            .items_needing_digest("feed", &producers, 3, 50)
             .unwrap();
         assert!(queued.contains(&missing.id), "no digest at all");
         assert!(queued.contains(&stale.id), "produced by an older model");
@@ -5129,7 +5174,7 @@ mod tests {
         store.upsert_content_digest(&parked_row).unwrap();
         assert!(
             !store
-                .items_needing_digest("feed", "current-producer", 3, 50)
+                .items_needing_digest("feed", &producers, 3, 50)
                 .unwrap()
                 .contains(&parked.id),
             "a failure just written is inside its own backoff window"
@@ -5138,12 +5183,12 @@ mod tests {
         // Once it has, the retry is due.
         expire_digest_backoff(&store, "feed", &parked.id);
         assert!(store
-            .items_needing_digest("feed", "current-producer", 3, 50)
+            .items_needing_digest("feed", &producers, 3, 50)
             .unwrap()
             .contains(&parked.id));
 
         assert!(store
-            .items_needing_digest("scouting", "current-producer", 3, 50)
+            .items_needing_digest("scouting", &producers, 3, 50)
             .is_err());
     }
 
@@ -5169,6 +5214,54 @@ mod tests {
                 &[&source, &item_id],
             )
             .unwrap();
+    }
+
+    /// Concurrent openers must not deadlock.
+    ///
+    /// `Store::open` migrates every time it is called, and the comms server
+    /// calls it from several timers plus every HTTP handler. Three of those
+    /// timers share a fifteen-minute period, so "two sessions migrate at the
+    /// same instant" is the normal case rather than the rare one. Before the
+    /// migration lock this produced `deadlock detected` in the drain log,
+    /// roughly every other pass.
+    ///
+    /// Eight at once against one schema, which is more than the server can
+    /// actually produce and fails reliably without the lock.
+    #[test]
+    fn concurrent_openers_do_not_deadlock() {
+        let schema = format!("comms_test_open_race_{}", std::process::id());
+        let url = test_database_url();
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let url = url.clone();
+                let schema = schema.clone();
+                // Flattened to a String inside the thread: `Box<dyn Error>` is
+                // not Send, and the detail lives on the source chain anyway —
+                // `postgres::Error` Displays as the bare words "db error", so
+                // joining the causes is the only way this failure names itself.
+                std::thread::spawn(move || {
+                    Store::open_with_schema(&url, &schema).map(|_| ()).map_err(|error| {
+                        let mut text = error.to_string();
+                        let mut cause = error.source();
+                        while let Some(next) = cause {
+                            text.push_str(&format!(": {next}"));
+                            cause = next.source();
+                        }
+                        text
+                    })
+                })
+            })
+            .collect();
+
+        let failures: Vec<String> = threads
+            .into_iter()
+            .filter_map(|t| t.join().expect("opener panicked").err())
+            .collect();
+        drop_test_schema(&schema);
+        assert!(
+            failures.is_empty(),
+            "every concurrent open must succeed, got: {failures:?}"
+        );
     }
 
     /// The backoff is what makes a *timed* drain safe. With the attempt cap

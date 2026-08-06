@@ -142,6 +142,37 @@ impl Shape {
     }
 }
 
+/// Characters per token, for sizing a prompt against a model's context window.
+///
+/// Measured rather than guessed: the 14,064-character transcript that started
+/// this work prefilled to 3,568 tokens, which is 3.94 characters per token.
+/// Three is deliberately below that. This number decides whether a small model
+/// is offered work it cannot hold, and being wrong in that direction produces a
+/// hard context error, so it sizes for denser text than the sample rather than
+/// for the sample.
+pub const CHARS_PER_TOKEN: usize = 3;
+
+/// Tokens to allow for the instruction, the focus terms and the chat envelope
+/// wrapped around the source. The prompt preamble is about 60 words; the rest
+/// is headroom.
+pub const PROMPT_OVERHEAD_TOKENS: u32 = 400;
+
+/// Whether a source of this length, digested at this rung, fits a context
+/// window of `context_tokens`.
+///
+/// Input **and** output together: a window is shared between the prompt and the
+/// answer, and a model that accepts the prompt and then has no room to reply
+/// has not helped. This is what keeps the cheap rungs on a small model and
+/// sends the long ones to a large one, rather than discovering the ceiling by
+/// hitting it.
+pub fn fits_context(source_chars: usize, shape: Shape, context_tokens: u32) -> bool {
+    let input = source_chars.min(INPUT_CAP) / CHARS_PER_TOKEN;
+    let needed = (input as u64)
+        .saturating_add(PROMPT_OVERHEAD_TOKENS as u64)
+        .saturating_add(shape.max_tokens() as u64);
+    needed <= context_tokens as u64
+}
+
 /// Whether this run is the automatic pass or an operator asking for more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Depth {
@@ -239,9 +270,63 @@ impl Directive {
     }
 }
 
+/// Admission to make one local request, released when dropped.
+///
+/// Drop rather than an explicit `release`, because [`complete`] returns from a
+/// dozen places and a permit leaked on any one of them wedges every other
+/// process for as long as the holder lives.
+pub struct Admission(Option<Box<dyn FnOnce() + Send>>);
+
+impl Admission {
+    /// Hold a permit whose release needs work — unlocking, closing, decrementing.
+    pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
+        Self(Some(Box::new(release)))
+    }
+
+    /// A permit that needs no cleanup. For gates that bound by counting an
+    /// atomic, or for tests.
+    pub fn free() -> Self {
+        Self(None)
+    }
+}
+
+impl Drop for Admission {
+    fn drop(&mut self) {
+        if let Some(release) = self.0.take() {
+            release();
+        }
+    }
+}
+
+impl std::fmt::Debug for Admission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Admission")
+    }
+}
+
+/// Bounds how many local requests may be in flight at once.
+///
+/// The mechanism is the caller's, because this lib may only use `serde_json`
+/// and blocking `reqwest` (see the dependency rule at the top of this file) and
+/// so cannot hold a database handle, a socket, or a lock file. The *policy*
+/// still lives here: [`complete`] will not make a loopback request without a
+/// permit when a gate is configured, for the same reason the `allow_remote`
+/// refusal lives here rather than in each caller.
+///
+/// Why this exists: on 2026-08-05 four concurrent prefills pushed oMLX past its
+/// hard watermark and it aborted all four. Nothing in Axon knew the others were
+/// running. An in-process semaphore would not have helped — the competing
+/// consumers are separate processes.
+pub trait LocalGate: Send + Sync {
+    /// Wait for admission, or give up and say why. Giving up is not a failure
+    /// of the request: the caller reports it as a capacity condition and the
+    /// item is retried later.
+    fn acquire(&self) -> Result<Admission, String>;
+}
+
 /// Where to send the request. Built by the caller from whatever role it
 /// resolved, so this lib never names `libs/inference`'s types.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Target {
     /// A full chat-completions URL.
     pub endpoint: String,
@@ -250,6 +335,27 @@ pub struct Target {
     /// Whether the endpoint is loopback. Mail digests must refuse anything else
     /// — see [`digest`].
     pub loopback: bool,
+    /// Admission control for loopback targets. `None` means unbounded, which is
+    /// what every caller did before this existed.
+    ///
+    /// Only consulted when `loopback` is true. A hosted provider does its own
+    /// queueing and has no shared GPU to protect, so serialising against it
+    /// would buy nothing and cost latency.
+    pub gate: Option<std::sync::Arc<dyn LocalGate>>,
+}
+
+// Hand-written because `Arc<dyn LocalGate>` is not Debug, and requiring that of
+// implementors would leak this lib's logging choices into their types.
+impl std::fmt::Debug for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Target")
+            .field("endpoint", &self.endpoint)
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("loopback", &self.loopback)
+            .field("gate", &self.gate.as_ref().map(|_| "<gate>"))
+            .finish()
+    }
 }
 
 /// Typed outcome, so a caller can tell "nothing to do" from "server down" from
@@ -265,6 +371,11 @@ pub enum Outcome {
     Unconfigured,
     HttpError(String),
     ModelError(String),
+    /// The server took the request and then ran out of room for it. Separate
+    /// from [`Outcome::ModelError`] because it is a fact about the machine
+    /// rather than about the request: the identical prompt succeeds when
+    /// something else is not holding the GPU.
+    CapacityAborted(String),
     EmptyResponse,
     Timeout,
 }
@@ -279,6 +390,7 @@ impl Outcome {
             Outcome::Unconfigured => "unconfigured",
             Outcome::HttpError(_) => "http_error",
             Outcome::ModelError(_) => "model_error",
+            Outcome::CapacityAborted(_) => "capacity_aborted",
             Outcome::EmptyResponse => "empty_response",
             Outcome::Timeout => "timeout",
         }
@@ -291,6 +403,7 @@ impl Outcome {
             self,
             Outcome::HttpError(_)
                 | Outcome::ModelError(_)
+                | Outcome::CapacityAborted(_)
                 | Outcome::EmptyResponse
                 | Outcome::Timeout
         )
@@ -299,7 +412,9 @@ impl Outcome {
     /// The message worth showing a reader, if any.
     pub fn error_detail(&self) -> Option<&str> {
         match self {
-            Outcome::HttpError(detail) | Outcome::ModelError(detail) => Some(detail),
+            Outcome::HttpError(detail)
+            | Outcome::ModelError(detail)
+            | Outcome::CapacityAborted(detail) => Some(detail),
             _ => None,
         }
     }
@@ -473,6 +588,18 @@ pub fn diagram(target: Option<&Target>, text: &str, allow_remote: bool) -> Outco
 /// One OpenAI-compatible chat completion. The only place in this lib that
 /// speaks HTTP.
 pub(crate) fn complete(target: &Target, prompt: &str, max_tokens: u32) -> Outcome {
+    // Held for the whole request and released by drop on every return path
+    // below. Loopback only: a hosted provider queues for itself and shares no
+    // GPU with anything here.
+    let _admission = match &target.gate {
+        Some(gate) if target.loopback => match gate.acquire() {
+            Ok(admission) => Some(admission),
+            // Not a failure of the request. The machine is busy, the same
+            // prompt succeeds later, and the drain will bring it back.
+            Err(reason) => return Outcome::CapacityAborted(reason),
+        },
+        _ => None,
+    };
     let http = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
@@ -501,6 +628,12 @@ pub(crate) fn complete(target: &Target, prompt: &str, max_tokens: u32) -> Outcom
         Ok(body) => body,
         Err(error) => return Outcome::ModelError(error.to_string()),
     };
+    // Before `choices` — see `server_error` for why a 200 is not an answer.
+    match server_error(&body) {
+        Some(ServerError::Capacity(message)) => return Outcome::CapacityAborted(message),
+        Some(ServerError::Other(message)) => return Outcome::ModelError(message),
+        None => {}
+    }
     let answer = body
         .get("choices")
         .and_then(|choices| choices.get(0))
@@ -514,6 +647,83 @@ pub(crate) fn complete(target: &Target, prompt: &str, max_tokens: u32) -> Outcom
     } else {
         Outcome::Ok(answer.to_string())
     }
+}
+
+/// What an OpenAI-shaped error body says, once it is known to be one.
+///
+/// Two variants because they mean different things to a reader. [`Capacity`]
+/// says nothing about the request: the identical prompt succeeds on a quieter
+/// machine, so it is worth retrying and worth reporting as a machine condition.
+/// [`Other`] is a fact about the request.
+///
+/// [`Capacity`]: ServerError::Capacity
+/// [`Other`]: ServerError::Other
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerError {
+    Capacity(String),
+    Other(String),
+}
+
+impl ServerError {
+    pub fn message(&self) -> &str {
+        match self {
+            ServerError::Capacity(message) | ServerError::Other(message) => message,
+        }
+    }
+}
+
+/// Codes that mean the server ran out of room, not that the request was wrong.
+///
+/// Matched on `code`/`omlx_code` rather than on the message, because the
+/// message is prose written for a human and carries live byte counts. Matching
+/// it would be a string comparison against something designed to change.
+const CAPACITY_CODES: [&str; 2] = ["prefill_memory_aborted", "prefill_memory_exceeded"];
+
+/// Read an OpenAI-shaped error body, if that is what this response is.
+///
+/// **Call this before reading `choices`.** A 200 does not mean the server
+/// answered: a server that streams keepalive padding while it works has already
+/// committed its status line before it knows whether the request will finish,
+/// so a failure after that point arrives as a successful response whose body
+/// holds an error and no `choices` at all. Reading `choices` first turns that
+/// into "the model answered with nothing", which names the wrong component.
+///
+/// Confirmed against oMLX on 2026-08-06: six concurrent large prefills, five
+/// returned HTTP 200 with `{"error": {...,"code":"prefill_memory_aborted"}}`
+/// and no `choices` key. Not oMLX-specific though — the error shape is the
+/// OpenAI one, and any compatible server can reach for it late.
+///
+/// A body carrying both an error and usable content is not an error response.
+/// Some servers attach a warning alongside a real answer, and discarding a
+/// finished digest over it would throw away work the model already did.
+pub fn server_error(body: &serde_json::Value) -> Option<ServerError> {
+    let has_content = body
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_str())
+        .is_some_and(|content| !content.trim().is_empty());
+    if has_content {
+        return None;
+    }
+    let detail = body.get("error")?.as_object()?;
+    let code = detail
+        .get("omlx_code")
+        .or_else(|| detail.get("code"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let message = detail
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("the server returned an error with no message")
+        .trim()
+        .to_string();
+    Some(if CAPACITY_CODES.contains(&code) {
+        ServerError::Capacity(message)
+    } else {
+        ServerError::Other(message)
+    })
 }
 
 // Gated on the standalone-tests feature rather than bare cfg(test), matching
@@ -647,6 +857,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: false,
+            gate: None,
         };
         let text = "x".repeat(1_000);
         assert_eq!(
@@ -657,6 +868,239 @@ mod tests {
             diagram(Some(&cloud), &text, false),
             Outcome::RemoteRefused
         );
+    }
+
+    /// The bodies below are verbatim from oMLX on 2026-08-06: six concurrent
+    /// large prefills, five came back HTTP **200** carrying an error and no
+    /// `choices`. Reading `choices` first classified them as `EmptyResponse`,
+    /// so the reader was told "the local model answered with nothing" about a
+    /// request the model never saw.
+    #[test]
+    fn a_two_hundred_carrying_an_error_is_not_an_empty_answer() {
+        let aborted: serde_json::Value = serde_json::from_str(
+            r#"{"error": {"message": "oMLX memory guard aborted this request mid-prefill: Request aborted: process memory limit exceeded (usage 18.2 GB, abort threshold (hard watermark) 18.0 GB, metal_cap ceiling 19.0 GB).", "type": "invalid_request_error", "param": null, "code": "prefill_memory_aborted", "omlx_code": "prefill_memory_aborted", "limit_bytes": 19381039923}, "type": "error"}"#,
+        )
+        .unwrap();
+        let rejected: serde_json::Value = serde_json::from_str(
+            r#"{"error": {"message": "oMLX prefill memory guard rejected this prompt: Prefill context too large for available memory (pre-chunk guard at 11264 tokens, kv_len=11264).", "type": "invalid_request_error", "code": "prefill_memory_exceeded", "omlx_code": "prefill_memory_exceeded"}, "type": "error"}"#,
+        )
+        .unwrap();
+
+        for (body, label) in [(&aborted, "aborted"), (&rejected, "rejected")] {
+            match server_error(body) {
+                Some(ServerError::Capacity(message)) => {
+                    assert!(message.contains("memory"), "{label}: {message}")
+                }
+                other => panic!("{label} should be a capacity error, got {other:?}"),
+            }
+        }
+    }
+
+    /// Anything else the server calls an error is still an error — just one
+    /// about the request rather than about the machine.
+    #[test]
+    fn a_non_capacity_error_stays_a_model_error() {
+        let body: serde_json::Value = serde_json::from_str(
+            r#"{"error": {"message": "context length exceeded", "code": "context_length_exceeded"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            server_error(&body),
+            Some(ServerError::Other("context length exceeded".into()))
+        );
+
+        // No code at all is still not an empty answer.
+        let bare: serde_json::Value =
+            serde_json::from_str(r#"{"error": {"message": "upstream unavailable"}}"#).unwrap();
+        assert!(matches!(server_error(&bare), Some(ServerError::Other(_))));
+
+        // And an error with no message still says something.
+        let mute: serde_json::Value = serde_json::from_str(r#"{"error": {}}"#).unwrap();
+        assert!(server_error(&mute).is_some_and(|error| !error.message().is_empty()));
+    }
+
+    /// A real answer wins over a warning riding along beside it. Discarding a
+    /// finished digest because the server attached a note would throw away work
+    /// the model already did.
+    #[test]
+    fn an_answer_with_a_warning_beside_it_is_still_an_answer() {
+        let body: serde_json::Value = serde_json::from_str(
+            r#"{"choices": [{"message": {"content": "- A real point"}}],
+                 "error": {"message": "deprecated parameter"}}"#,
+        )
+        .unwrap();
+        assert_eq!(server_error(&body), None);
+
+        // Whitespace-only content is not an answer, so the error wins.
+        let blank: serde_json::Value = serde_json::from_str(
+            r#"{"choices": [{"message": {"content": "   "}}],
+                 "error": {"message": "truncated", "code": "prefill_memory_aborted"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            server_error(&blank),
+            Some(ServerError::Capacity(_))
+        ));
+    }
+
+    /// A body with neither an error nor content is the case `EmptyResponse`
+    /// still exists for, and it must not be swallowed by the new branch.
+    #[test]
+    fn a_body_with_no_error_and_no_content_is_still_empty() {
+        for text in [
+            r#"{"choices": [{"message": {"content": ""}}]}"#,
+            r#"{"choices": []}"#,
+            r#"{}"#,
+        ] {
+            let body: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(server_error(&body), None, "{text} is not an error body");
+        }
+    }
+
+    /// A capacity abort is a fact about the machine, so it retries; and it
+    /// carries its detail to the reader rather than a generic line.
+    #[test]
+    fn a_capacity_abort_retries_and_explains_itself() {
+        let outcome = Outcome::CapacityAborted("ran out of room".into());
+        assert_eq!(outcome.state(), "capacity_aborted");
+        assert!(outcome.retryable());
+        assert_eq!(outcome.error_detail(), Some("ran out of room"));
+    }
+
+    /// A gate that refuses turns into a capacity condition rather than a
+    /// failure of the request, and the request is never sent. The endpoint here
+    /// is unroutable on purpose: if the gate leaked, this would hang or return
+    /// an HttpError instead, and the assertion would say so.
+    #[test]
+    fn a_busy_gate_stops_a_local_request_before_it_is_sent() {
+        struct AlwaysBusy;
+        impl LocalGate for AlwaysBusy {
+            fn acquire(&self) -> Result<Admission, String> {
+                Err("another local inference request held the machine".into())
+            }
+        }
+        let local = Target {
+            endpoint: "http://127.0.0.1:9/v1/chat/completions".into(),
+            model: "m".into(),
+            api_key: None,
+            loopback: true,
+            gate: Some(std::sync::Arc::new(AlwaysBusy)),
+        };
+        assert_eq!(
+            digest(Some(&local), &"x".repeat(1_000), &Directive::default(), true),
+            Outcome::CapacityAborted("another local inference request held the machine".into())
+        );
+    }
+
+    /// Anti-claim: the gate exists to protect one shared GPU. A hosted provider
+    /// has none, queues for itself, and must not be serialised behind local
+    /// work — so a non-loopback target ignores the gate even when one is set.
+    #[test]
+    fn a_cloud_target_is_never_gated() {
+        struct NeverCalled;
+        impl LocalGate for NeverCalled {
+            fn acquire(&self) -> Result<Admission, String> {
+                panic!("a non-loopback target must not consult the gate");
+            }
+        }
+        let cloud = Target {
+            endpoint: "https://api.example.com/v1/chat/completions".into(),
+            model: "m".into(),
+            api_key: None,
+            loopback: false,
+            gate: Some(std::sync::Arc::new(NeverCalled)),
+        };
+        // Refused for its data class before any gate question arises, which is
+        // itself the ordering that matters: policy first, capacity second.
+        assert_eq!(
+            digest(Some(&cloud), &"x".repeat(1_000), &Directive::default(), false),
+            Outcome::RemoteRefused
+        );
+        // And allowed through to the network without the gate panicking.
+        assert!(matches!(
+            digest(Some(&cloud), &"x".repeat(1_000), &Directive::default(), true),
+            Outcome::HttpError(_) | Outcome::Timeout | Outcome::ModelError(_)
+        ));
+    }
+
+    /// The permit is held for the whole request and released once, on the way
+    /// out. A gate that hands out a permit per call and never gets it back
+    /// deadlocks the second caller.
+    #[test]
+    fn a_permit_is_released_when_the_request_finishes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        #[derive(Default)]
+        struct Counting {
+            taken: AtomicUsize,
+            given_back: AtomicUsize,
+        }
+        impl LocalGate for Arc<Counting> {
+            fn acquire(&self) -> Result<Admission, String> {
+                self.taken.fetch_add(1, Ordering::SeqCst);
+                let me = Arc::clone(self);
+                Ok(Admission::new(move || {
+                    me.given_back.fetch_add(1, Ordering::SeqCst);
+                }))
+            }
+        }
+
+        let counting = Arc::new(Counting::default());
+        let target = Target {
+            endpoint: "http://127.0.0.1:9/v1/chat/completions".into(),
+            model: "m".into(),
+            api_key: None,
+            loopback: true,
+            gate: Some(std::sync::Arc::new(Arc::clone(&counting))),
+        };
+        // Fails at the socket, which is the point: the release must happen on
+        // the error path too, not only on a clean answer.
+        let _ = digest(Some(&target), &"x".repeat(1_000), &Directive::default(), true);
+        assert_eq!(counting.taken.load(Ordering::SeqCst), 1);
+        assert_eq!(counting.given_back.load(Ordering::SeqCst), 1);
+    }
+
+    /// The whole point of the sizing rule: Apple's on-device model is a 4,096
+    /// token window, and the source that started this work needed more than
+    /// that. It can serve the short rungs and structurally cannot serve the
+    /// long one, which is what makes it a rung-selector rather than a downgrade.
+    #[test]
+    fn a_four_thousand_token_window_takes_the_short_rungs_and_not_the_long_one() {
+        const APPLE: u32 = 4_096;
+
+        // 2,000 characters is Brief: ~667 input + 400 overhead + 200 output.
+        assert!(fits_context(2_000, Shape::Brief, APPLE));
+        // 8,000 characters is Standard: ~2,667 + 400 + 500, still inside.
+        assert!(fits_context(8_000, Shape::Standard, APPLE));
+        // The 14,064-character transcript at Sectioned is not: ~4,688 + 400 + 1,000.
+        assert!(!fits_context(14_064, Shape::Sectioned, APPLE));
+        // Nor is anything at the input cap, whatever the rung.
+        assert!(!fits_context(INPUT_CAP, Shape::Brief, APPLE));
+    }
+
+    /// Output counts against the window too. A model that accepts the prompt
+    /// and then has no room to answer has not helped, and sizing on input alone
+    /// is how you discover that at the point of use.
+    #[test]
+    fn the_answer_is_sized_against_the_window_as_well_as_the_prompt() {
+        // Input alone fits this window at every rung; only the ceiling differs.
+        let window = PROMPT_OVERHEAD_TOKENS + 1_000 + Shape::Standard.max_tokens();
+        assert!(fits_context(3_000, Shape::Standard, window));
+        assert!(
+            !fits_context(3_000, Shape::Sectioned, window),
+            "the larger rung asks for more room to finish and must not fit"
+        );
+    }
+
+    /// A large window swallows everything, which is the strong model's case and
+    /// must not accidentally exclude anything.
+    #[test]
+    fn a_large_window_fits_every_rung() {
+        for shape in [Shape::Brief, Shape::Standard, Shape::Sectioned] {
+            assert!(fits_context(INPUT_CAP, shape, 32_000), "{shape:?}");
+        }
+        assert!(!fits_context(1, Shape::Brief, 0), "a zero window fits nothing");
     }
 
     #[test]
