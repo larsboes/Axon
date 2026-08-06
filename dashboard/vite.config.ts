@@ -229,6 +229,29 @@ function guardCommsMutations(
 // every manifest in the repo; a production build has no server, no need for the
 // table, and — under Bazel — neither the script nor the manifests in its sandbox.
 // Evaluating it at config load was what kept this app out of the build graph.
+// This shell is reached over the tailnet as well as over loopback. `tailscale serve`
+// terminates TLS on the machine's own MagicDNS name and proxies to 127.0.0.1, so the Host
+// header arrives as `<machine>.<tailnet>.ts.net` and Vite's DNS-rebinding guard refuses it
+// with "Blocked request. This host is not allowed." On a phone, that message is the whole
+// page — the dashboard looks broken rather than unreachable.
+//
+// A suffix rather than this machine's name, deliberately. The specific MagicDNS name is a
+// house fact and this repo is public; `.ts.net` is a Tailscale-wide fact that identifies
+// nobody. The leading dot is Vite's own "this domain and any subdomain" form. Anything that
+// is not a tailnet name comes from the overlay through AXON_DASHBOARD_ALLOWED_HOSTS,
+// comma-separated, so a deployment fact stays in the deployment.
+//
+// What deliberately does not change: the listen address stays 127.0.0.1. Tailscale is what
+// makes this reachable and it authenticates at the tailnet layer. Binding wider to "fix"
+// the same symptom would hand this surface to whatever network the laptop joins next.
+const allowedHosts = [
+  ".ts.net",
+  ...(process.env.AXON_DASHBOARD_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((host) => host.trim())
+    .filter(Boolean),
+];
+
 export default defineConfig(({ command }) => ({
   plugins: [sveltekit(), bundleGuard(), {
     name: "top-processes",
@@ -241,9 +264,10 @@ export default defineConfig(({ command }) => ({
     host: "127.0.0.1",
     port,
     strictPort: true,
+    allowedHosts,
     ...(command === "serve" ? { proxy: buildProxy() } : {}),
   },
-  preview: { host: "127.0.0.1", port, strictPort: true },
+  preview: { host: "127.0.0.1", port, strictPort: true, allowedHosts },
   build: {
     // Vite's own warning, silenced up to the largest size bundleGuard() will actually
     // allow — otherwise it fires on every lazy renderer chunk the guard has already
