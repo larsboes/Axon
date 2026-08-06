@@ -11,7 +11,7 @@ source "$TOOLS_DIR/lib/paths.sh"
 PRIVATE_ROOT="${AXON_INFERENCE_KEY_OVERLAY:-$AXON_PERSONAL_ROOT}"
 
 usage() {
-  echo "usage: materialize-inference-key <gemini|nvidia-nim>" >&2
+  echo "usage: materialize-inference-key <gemini|nvidia-nim|opencode-go>" >&2
   exit 1
 }
 
@@ -20,6 +20,10 @@ PROVIDER="$1"
 case "$PROVIDER" in
   gemini) ITEM="inference-gemini-api-key" ;;
   nvidia-nim) ITEM="inference-nvidia-nim-api-key" ;;
+  # The PAID fallback behind nvidia-nim's free tier (systems.toml [opencode-zen-go]). Nothing
+  # about the handling differs: the bytes go from `bw get notes` into a mode-0600 file and are
+  # never printed. Only the item name is new, which is the point of keeping one bridge.
+  opencode-go) ITEM="inference-opencode-go-api-key" ;;
   *) usage ;;
 esac
 

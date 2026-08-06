@@ -134,6 +134,12 @@ kind  = "platform"
 local = "yes"
 why   = "OS-managed native embedding comparator for Comms, not the production relevance backend. Both revision-1 APIs are much lighter but failed the frozen DE/EN corpus: language-specific NLEmbedding scored 3/6 useful top-1, 0.500 pairwise and 0.699 mean nDCG at about 73 MiB runner RSS; mean-pooled shared Latin NLContextualEmbedding scored 4/6, 0.618 and 0.776 at about 85 MiB. Keep the harnesses for future macOS model revisions; E5-base through oMLX remains selected."
 
+[opencode-zen-go]
+url   = "https://opencode.ai/zen/go/v1"
+kind  = "service"
+local = "no"
+why   = "OpenAI-compatible hosted inference, the paid fallback behind nvidia-nim for tools/graphify.sh semantic extraction. NOT free despite the tier name: models.dev lists 24 models on it and zero at zero cost, cheapest gpt-5.6-luna at $0.10/M in and $0.60/M out, which is roughly eight cents for a full extraction over this repo. What it buys over the free tier is context -- several models carry 1M-token windows, so the chunk budget stops being a constraint at all. Endpoint id and model list resolved from models.dev, the same registry opencode itself reads; the account is the existing opencode-go auth. Key via Vaultwarden and tools/materialize-inference-key, never inline."
+
 [nvidia-nim]
 url   = "https://build.nvidia.com/"
 kind  = "service"
