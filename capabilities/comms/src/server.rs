@@ -2048,8 +2048,37 @@ async fn source_scan_handler(Json(body): Json<SourceScanBody>) -> (StatusCode, J
         let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
         let mut results = Vec::new();
         let mut ids = HashSet::new();
+        let mut source_errors = 0usize;
+        let selected_count = selected.len();
         for source in selected {
-            let found = sources::fetch(&source).map_err(|error| error.to_string())?;
+            // One source failing does not fail the run — the rule the extractor loop below
+            // already applies to one URL, applied one level up where it was missing. The `?` that
+            // was here meant a single upstream rate-limiting the collector took every other
+            // source down with it: arXiv answered 429, and GitHub trending, which was fine, was
+            // never asked. Invisible while a human clicked the button and retried; not invisible
+            // once capabilities/feed-sweep runs this on a timer with nobody watching.
+            let found = match sources::fetch(&source) {
+                Ok(found) => found,
+                Err(error) => {
+                    let error = error.to_string();
+                    eprintln!("source {}: {error}", source.id);
+                    source_errors += 1;
+                    // Reported per source rather than only logged, so a surface can say WHICH one
+                    // is failing. `record_run` is deliberately not called: the source did not run,
+                    // and moving its timestamp forward would make a source that has been dead for
+                    // a week look like it was collected minutes ago.
+                    results.push(json!({
+                        "source_id": source.id,
+                        "adapter": source.adapter,
+                        "discovered": 0,
+                        "fetched": 0,
+                        "new_count": 0,
+                        "failed": [],
+                        "error": error,
+                    }));
+                    continue;
+                }
+            };
             let mut new_count = 0;
             let mut failed = Vec::new();
 
@@ -2096,11 +2125,22 @@ async fn source_scan_handler(Json(body): Json<SourceScanBody>) -> (StatusCode, J
                 "failed": failed,
             }));
         }
+        if source_errors > 0 && source_errors == selected_count {
+            // Nothing was collected at all. Reported as the error it is, with the per-source
+            // reasons still in the log, rather than as a 200 carrying zeroes.
+            return Err(format!(
+                "every selected Feed source failed ({source_errors} of {selected_count}) — see the comms log for each"
+            ));
+        }
         Ok((
             json!({
                 "sources": results,
                 "fetched": results.iter().map(|result| result["fetched"].as_u64().unwrap_or(0)).sum::<u64>(),
                 "new_count": results.iter().map(|result| result["new_count"].as_u64().unwrap_or(0)).sum::<u64>(),
+                // Every source failing is still an error, and has to stay one: a caller that
+                // treats 200 as "collection happened" would otherwise read a total outage as a
+                // quiet day. It is the partial case that is now a success.
+                "source_errors": source_errors,
             }),
             ids.into_iter().collect(),
         ))

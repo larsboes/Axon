@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 # README.md is otherwise private to this package -- exported so the root
 # //:architecture_up_to_date_test can reference it across the package boundary.
@@ -18,4 +18,17 @@ rust_binary(
         "@crate_index_axon_status//:serde_json",
         "@crate_index_axon_status//:tokio",
     ],
+)
+
+# This package has carried a #[cfg(test)] module since the backup surface was built and had no
+# way to run it: every sibling declares a rust_test, this one did not, so `bazel test //...`
+# was green over tests that were never compiled. Same class as the targets fixed in 7931ded,
+# found while adding the external-reference cases and swept for across every Rust package (it
+# was the only one left). `crate = ":axon-status"` rather than a library target, because this
+# capability is a single binary crate and splitting it to gain a test target would be moving
+# code to satisfy a build file.
+rust_test(
+    name = "axon_status_test",
+    size = "small",
+    crate = ":axon-status",
 )

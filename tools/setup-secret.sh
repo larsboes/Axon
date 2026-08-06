@@ -15,6 +15,7 @@ set -euo pipefail
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 source "$TOOLS_DIR/lib/paths.sh"
 source "$TOOLS_DIR/lib/toml.sh"
+source "$TOOLS_DIR/lib/external-ref.sh"
 
 usage() {
   echo "usage: setup-secret.sh <capability> <slug> <ENV_VAR_NAME>" >&2
@@ -35,14 +36,27 @@ command -v bw >/dev/null 2>&1 || {
 }
 command -v jq >/dev/null 2>&1 || { echo "setup-secret.sh: no 'jq' on PATH" >&2; exit 1; }
 
-VW_ENV="$AXON_PERSONAL_ROOT/config/vaultwarden.env"
-[ -f "$VW_ENV" ] || {
-  echo "setup-secret.sh: no $VW_ENV — vaultwarden is the canonical secret store here," >&2
-  echo "set it up first (capabilities/vaultwarden/README.md)." >&2
+# Which Vaultwarden to write the item into. This read used to be `grep '^DOMAIN=' vaultwarden.env`
+# — the address of a vaultwarden this machine RUNS, which on a machine that only consumes the
+# vault is a server that does not exist here. Same conflation materialize-inference-key hit for
+# real; latent in this tool only because nobody had run it from the consuming machine yet.
+DOMAIN=""
+REF_RC=0
+# `|| REF_RC=$?` and not `if !`, which would report the negation's status rather than the
+# resolver's and lose the difference between "nothing declared" and "declared but unresolvable".
+DOMAIN="$(capability_endpoint vaultwarden DOMAIN)" || REF_RC=$?
+if [ "$REF_RC" -eq 2 ]; then
+  exit 1   # a dangling declaration; external-ref.sh already named the id and the file
+fi
+if [ "$REF_RC" -ne 0 ]; then
+  echo "setup-secret.sh: no Vaultwarden declared for this machine — it is the canonical" >&2
+  echo "  secret store here, so there is nothing to write the item into." >&2
+  echo "  Either declare the vault this machine uses in $AXON_MACHINE_TOML:" >&2
+  echo "    [capability.vaultwarden]" >&2
+  echo "    provided_by = \"<id>\"      # an id with a url in config/systems.local.toml" >&2
+  echo "  or set the capability up here (capabilities/vaultwarden/README.md)." >&2
   exit 1
-}
-DOMAIN="$(grep -m1 '^DOMAIN=' "$VW_ENV" | cut -d= -f2-)"
-[ -n "$DOMAIN" ] || { echo "setup-secret.sh: $VW_ENV has no DOMAIN=" >&2; exit 1; }
+fi
 
 MANIFEST="$AXON_ROOT/capabilities/$CAP/service.toml"
 if [ -f "$MANIFEST" ]; then

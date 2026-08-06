@@ -21,6 +21,10 @@ mkdir -p "$FIXTURE/tools/lib" "$FIXTURE/capabilities/vaultwarden" \
 
 cp "$ROOT/tools/backup.sh" "$FIXTURE/tools/backup.sh"
 cp "$ROOT/tools/lib/toml.sh" "$FIXTURE/tools/lib/toml.sh"
+# The real resolver, not a stub. backup.sh refuses a capability another deployment provides
+# (retired-tracker#169), and every case below depends on that refusal NOT firing — a stub that
+# always answered "local" would keep them green through a change that broke the check.
+cp "$ROOT/tools/lib/external-ref.sh" "$FIXTURE/tools/lib/external-ref.sh"
 # The skip guard: a platform-dependent assertion may be given up on a developer machine and never
 # in CI. Sourced from the real tree, not the fixture — it governs this test, not the script under
 # test.

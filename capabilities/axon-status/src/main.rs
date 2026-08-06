@@ -65,15 +65,44 @@ struct Service {
     backup_advise_days: String,
     #[serde(default)]
     backup_stale_days: String,
+    /// Set only where `scope == "external"`: the base URL of the deployment that actually
+    /// provides this capability, resolved by the active overlay (retired-tracker#169). Empty
+    /// for everything this machine runs, which is the normal case and the one that must not
+    /// change — an empty endpoint means loopback, exactly as before.
+    #[serde(default)]
+    endpoint: String,
     #[serde(default)]
     requires: Vec<String>,
 }
 
 impl Service {
+    /// A capability this machine consumes rather than runs. The registry decides this; the
+    /// question is asked here often enough that spelling the comparison out at each call site
+    /// would be four chances to spell it differently.
+    fn is_external(&self) -> bool {
+        self.scope == "external"
+    }
+
     /// `None` when the manifest declares nothing to poll — a capability without a
     /// health surface is reported as unknown rather than silently "down".
+    ///
+    /// Two shapes, and the port is what separates them. A local capability's health URL is
+    /// loopback plus the port it publishes here. An external one has no port on this machine
+    /// at all — the registry blanks it, because a port number is a fact about the host that
+    /// binds it — so its URL is the resolved endpoint plus the same path. `health_path` is the
+    /// only manifest field the two have in common, which is the whole reason it is the only
+    /// one a consuming machine inherits.
     fn health_url(&self) -> Option<String> {
-        if self.port.is_empty() || self.health_path.is_empty() {
+        if self.health_path.is_empty() {
+            return None;
+        }
+        if self.is_external() {
+            if self.endpoint.is_empty() {
+                return None;
+            }
+            return Some(format!("{}{}", self.endpoint, self.health_path));
+        }
+        if self.port.is_empty() {
             return None;
         }
         Some(format!("http://127.0.0.1:{}{}", self.port, self.health_path))
@@ -555,6 +584,21 @@ async fn lifecycle(
         ));
     };
 
+    // An external capability is in the registry so its health can be READ, and for no other
+    // reason (retired-tracker#169). Independently managed overlays stay separate operational
+    // authorities: whoever owns that host owns its lifecycle, its secrets and its backups.
+    // Refused here rather than left to fail downstream — `service-runner.sh` would look for a
+    // local process, not find one, and report something that reads like an outage on a service
+    // that is running perfectly well somewhere else.
+    if service.is_external() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": format!("'{name}' is provided by another deployment — this machine may read its health, not {action} it"),
+            })),
+        ));
+    }
+
     let root = axon_root().map_err(bad_gateway)?;
     let out = tokio::process::Command::new(root.join("tools/service-runner.sh"))
         .arg(action)
@@ -963,11 +1007,61 @@ mod backup_tests {
             backup_sqlite: String::new(),
             backup_advise_days: String::new(),
             backup_stale_days: String::new(),
+            endpoint: String::new(),
             requires: Vec::new(),
         }
     }
 
     const DAY: u64 = 86_400;
+
+    // --- externally provided capabilities (retired-tracker#169) ---------------------------
+    //
+    // The registry decides what is external and blanks every field that would be a claim of
+    // authority over another host. These assert the half that lives here: that a resolved
+    // endpoint is dialled instead of loopback, and that loopback is untouched without one.
+
+    #[test]
+    fn a_local_capability_is_polled_on_loopback() {
+        // The case that must not change. Every capability this machine runs takes this path,
+        // and it is the same string it was before external references existed.
+        let mut c = cap("transit");
+        c.port = "8085".into();
+        c.health_path = "/health".into();
+        assert_eq!(c.health_url().as_deref(), Some("http://127.0.0.1:8085/health"));
+    }
+
+    #[test]
+    fn an_external_capability_is_polled_at_its_resolved_endpoint() {
+        let mut c = cap("vaultwarden");
+        c.scope = "external".into();
+        c.endpoint = "https://vault.provider.test".into();
+        c.health_path = "/alive".into();
+        assert_eq!(c.health_url().as_deref(), Some("https://vault.provider.test/alive"));
+    }
+
+    #[test]
+    fn an_external_capability_never_falls_back_to_a_local_port() {
+        // A port would have to come from the manifest of a service running somewhere else, so
+        // dialling 127.0.0.1 with it asks this machine about a process it does not have. The
+        // registry blanks the field for exactly this reason; if that ever regresses, the URL
+        // must still not be built.
+        let mut c = cap("vaultwarden");
+        c.scope = "external".into();
+        c.port = "8080".into();
+        c.health_path = "/alive".into();
+        assert_eq!(c.health_url(), None, "an unresolved external reference has no health URL");
+    }
+
+    #[test]
+    fn an_endpoint_without_a_path_is_not_a_health_url() {
+        // Knowing where something lives is not knowing how to ask it whether it is alive.
+        // Reported as unknown, which is what a capability with no health surface has always
+        // been — not as down, which would be a false alarm about someone else's machine.
+        let mut c = cap("vaultwarden");
+        c.scope = "external".into();
+        c.endpoint = "https://vault.provider.test".into();
+        assert_eq!(c.health_url(), None);
+    }
 
     #[test]
     fn a_capability_without_a_target_has_no_backup_contract() {

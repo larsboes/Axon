@@ -256,6 +256,13 @@ Obsidian has two bounded roles:
 - The existing CLI keeper export can write a distilled reading note for an explicitly kept
   item when `keeper_export_dir` is configured. The dashboard's **Behalten** action currently
   changes status only and must not claim it wrote a Vault note.
+- `comms keep <id>` resolves a MAIL id as well. Until it did, a mail had no way out of the
+  Inbox except staying in it, so the Information lane was declared rather than real. The note
+  carries subject, sender, date, a Gmail permalink, the stream and the data class. It never
+  carries the snippet or the body, which are the raw mail this lane exists to avoid copying.
+  Every field comes from the stored row, so a Private mail exports the redacted form the intake
+  gate produced. No Gmail write happens: archiving is a mutation the doctrine permits only on
+  explicit approval, and folding it in here would archive as a side effect of filing.
 
 Neither path is the Trips importer, edits TELOS, or scans Scouting's opportunity notes.
 
@@ -396,7 +403,8 @@ a proposal in Axon changes only local state and is labelled accordingly.
 comms sweep [--limit N=25] [--dry-run]   # read-only inbox triage proposals
 comms ingest <url>                       # ingest any supported URL (see Extractors)
 comms feed [--stream news|media] [--days N=7] [--include-dismissed]
-comms keep <id> | dismiss <id>           # set a feed item's status
+comms keep <id> | dismiss <id>           # feed item: set status (+ export if configured)
+                                         # mail: write the distilled note; no Gmail write
 comms summarize --pending                # retry summaries for items that lack one
 comms --help
 ```

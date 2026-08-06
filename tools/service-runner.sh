@@ -21,6 +21,9 @@ source "$TOOLS_DIR/lib/pipe.sh"
 # The `schedule` duration parser, shared with tools/check-service-tomls.sh so the gate that
 # accepts a manifest and the runner that installs it can never disagree about what it means.
 source "$TOOLS_DIR/lib/schedule.sh"
+# Which capabilities this machine consumes rather than runs — the one thing this runner must
+# refuse to act on (retired-tracker#169).
+source "$TOOLS_DIR/lib/external-ref.sh"
 
 usage() {
   echo "usage: service-runner.sh <start|stop|idle-stop|restart|resume|recreate|status> <capability>" >&2
@@ -187,6 +190,18 @@ if [ -z "$MANIFEST" ]; then
   exit 1
 fi
 unset _mf_rc
+
+# A capability this machine CONSUMES from another overlay's deployment (retired-tracker#169) has a
+# manifest here — that is where its contracts live — but no process here to act on. Refused by
+# name, since the fan-out can never reach one: `capability.sh registry --lines` leaves external
+# rows out precisely so a whole-machine `up` never walks across a tailnet. Without this the
+# manifest would be read, a local container or binary looked for, and its absence reported as a
+# broken capability rather than as someone else's, running fine.
+if [ -n "$(capability_provider "$CAP")" ]; then
+  echo "service-runner.sh: '$CAP' is provided by another deployment — [capability.$CAP] provided_by in $AXON_MACHINE_TOML." >&2
+  echo "  This machine may read its health; its lifecycle belongs to whoever owns its host." >&2
+  exit 1
+fi
 
 # Relative paths in a manifest resolve against the root that manifest came from, so an
 # overlay capability's workdir and build output stay inside the overlay. A manifest that
@@ -470,6 +485,32 @@ start_process() {
     echo "service-runner.sh: '$CAP' is held for maintenance, not starting ($MAINT_LOCK)"
     return 0
   fi
+
+  # A scheduled job is started, not supervised: it runs, does its work and exits, and the
+  # question the caller has is "did that work", not "is it up". So it runs in the FOREGROUND and
+  # this function's exit status is the job's.
+  #
+  # Backgrounding it, which is what every other process capability wants, broke both halves of
+  # that. `nohup ... >>$PROC_LOG` sent its output to the service log while the launchd plist and
+  # the systemd unit declare /tmp/axon-<cap>-schedule.{log,err} — so the files the schedule
+  # promises stayed 0 bytes, and the run's actual output landed in a file named for a service
+  # that is not running. And `start` returned 0 the moment the fork succeeded, so a job that
+  # failed every six hours reported success to the supervisor every six hours. Found by adding
+  # the first `schedule` consumer: the first real run 400'd, and every surface said fine.
+  if [ -n "$SCHEDULE" ]; then
+    maybe_build
+    (
+      cd "$CAP_ROOT/${WORKDIR:-.}"
+      AXON_SHELL_PORT="$(toml_get port "$AXON_ROOT/dashboard/service.toml")"
+      export AXON_SHELL_PORT
+      # No redirect and no pid file on purpose: stdout and stderr are inherited so the
+      # supervisor's own capture is the one that gets them, and there is no long-lived process
+      # for a pid file to describe.
+      exec "${COMMAND[@]}"
+    )
+    return $?
+  fi
+
   if [ -n "$(running_pid)" ]; then return 0; fi   # already ours, already up
   # Something else is on the port -- a hand-started dev server, or the survivor of a
   # lost pid file. Adopting it would be a lie (this script cannot stop what it did not

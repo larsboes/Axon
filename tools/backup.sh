@@ -25,6 +25,7 @@ esac
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$TOOLS_DIR/lib/paths.sh"                 # AXON_ROOT, AXON_PERSONAL_ROOT, toml_*
 source "$TOOLS_DIR/lib/platform.sh"              # AXON_CONTAINER_RUNTIME (pg_dumpall exec)
+source "$TOOLS_DIR/lib/external-ref.sh"          # capability_provider — whose data is this?
 # Best-effort: make the vault SSH agent available even if not launched from an
 # interactive shell (shared with init.zsh). No-op if the app isn't running.
 source "$TOOLS_DIR/lib/bw-agent.sh" 2>/dev/null || true
@@ -42,6 +43,17 @@ esac
 
 MANIFEST="$AXON_ROOT/capabilities/$CAP/service.toml"
 [ -f "$MANIFEST" ] || { echo "backup.sh: no $MANIFEST" >&2; exit 1; }
+
+# Backup authority does not travel with a reference (retired-tracker#169). A capability this
+# machine consumes has its manifest here, backup contract and all, and every path in that
+# contract is overlay-relative — so a run would find an empty directory where another host's
+# live data is and write a valid, empty archive. A backup that succeeds while backing up
+# nothing is worse than one that fails: it resets "last run" and you find out at restore time.
+if [ -n "$(capability_provider "$CAP")" ]; then
+  echo "backup.sh: '$CAP' is provided by another deployment — [capability.$CAP] provided_by in $AXON_MACHINE_TOML." >&2
+  echo "  Its data lives on that host, and so does the authority to back it up. Run this there." >&2
+  exit 1
+fi
 
 TARGET_ID="$(toml_get backup_target "$MANIFEST")"
 SQLITE_REL="$(toml_get backup_sqlite "$MANIFEST")"

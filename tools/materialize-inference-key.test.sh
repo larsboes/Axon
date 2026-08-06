@@ -71,9 +71,11 @@ fi
 # was told it was "logged into a different server", with a `bw logout` instruction that would have
 # made things worse.
 #
-# systems.local.toml declares the CLIENT's vault. It must win over the capability's server config,
-# which stays the fallback for a machine that genuinely self-hosts.
-printf '[vaultwarden]\nurl = "https://client-declared.test"\n' > "$OVERLAY/config/systems.local.toml"
+# The declaration is machine.toml's, resolved through a systems id (retired-tracker#169) — the
+# generalized form of the awk lookup this file used to assert against directly. It must win over
+# the capability's server config, which stays the fallback for a machine that genuinely self-hosts.
+printf '[capability.vaultwarden]\nprovided_by = "family-vault"\n' > "$OVERLAY/config/machine.toml"
+printf '[family-vault]\nurl = "https://client-declared.test"\n' > "$OVERLAY/config/systems.local.toml"
 # The first case above already materialized this. Left in place, the next run hits the
 # "Replace the existing local key file?" prompt, `read` sees EOF under `set -e`, and the script
 # dies for a reason that has nothing to do with what is being tested here.
@@ -94,8 +96,21 @@ if PATH="$FAKE_BIN:$PATH" AXON_ROOT="$ROOT" AXON_INFERENCE_KEY_OVERLAY="$OVERLAY
   exit 1
 fi
 
-# A self-hosting machine declares no client entry and keeps the old behaviour exactly.
+# A dangling declaration — a provider named but not resolvable — must stop here rather than fall
+# back to the local DOMAIN. Falling back would point a vault client at whatever answers on this
+# host, which is the one outcome worse than refusing.
 rm -f "$OVERLAY/config/systems.local.toml" "$OVERLAY/config/runtime-secrets/inference-gemini-api-key"
+DANGLING_ERROR="$TEST_ROOT/dangling.err"
+if PATH="$FAKE_BIN:$PATH" AXON_ROOT="$ROOT" AXON_INFERENCE_KEY_OVERLAY="$OVERLAY" \
+  BW_SESSION="synthetic-session" BW_FAKE_SERVER="https://vault.test" \
+  "$ROOT/tools/materialize-inference-key" gemini >/dev/null 2>"$DANGLING_ERROR"; then
+  echo "FAIL: an unresolvable provider must not fall back to the capability's own DOMAIN" >&2
+  exit 1
+fi
+grep -q "family-vault" "$DANGLING_ERROR"
+
+# A self-hosting machine declares no provider and keeps the old behaviour exactly.
+rm -f "$OVERLAY/config/machine.toml" "$OVERLAY/config/runtime-secrets/inference-gemini-api-key"
 if ! PATH="$FAKE_BIN:$PATH" AXON_ROOT="$ROOT" AXON_INFERENCE_KEY_OVERLAY="$OVERLAY" \
   BW_SESSION="synthetic-session" BW_FAKE_SERVER="https://vault.test" \
   "$ROOT/tools/materialize-inference-key" gemini >/dev/null 2>&1; then

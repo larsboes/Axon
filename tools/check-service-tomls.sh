@@ -69,7 +69,23 @@ for svc in "$AXON_ROOT"/capabilities/*/service.toml "$AXON_ROOT"/*/service.toml;
         echo "FAIL [$cap]: kind=process needs a non-empty command = [...] — $svc" >&2
         fail=1
       fi
-      if [ -z "$(toml_get port "$svc")" ]; then
+      # A port is what the registry, the dev-server proxy and the health poll all read, so a
+      # long-running process without one is invisible to every consumer it has. A SCHEDULED
+      # process is the opposite case, and the exception: it runs, does its work and exits, so
+      # there is nothing to reach, and a port would put an entry in the proxy table aimed at a
+      # process that is not running. Stated as a pair — required without `schedule`, refused
+      # with it — because making it merely optional leaves both mistakes expressible.
+      #
+      # Found by writing the first `schedule` consumer. The field landed in c3458ee with no
+      # manifest declaring it, and this gate would have rejected the first one under a rule
+      # written before jobs existed. A feature with no consumer has an untested edge by
+      # construction; this was it.
+      if [ -n "$(toml_get schedule "$svc")" ]; then
+        if [ -n "$(toml_get port "$svc")" ]; then
+          echo "FAIL [$cap]: declares schedule AND port — a job runs and exits, so nothing can reach that port — $svc" >&2
+          fail=1
+        fi
+      elif [ -z "$(toml_get port "$svc")" ]; then
         echo "FAIL [$cap]: kind=process needs a port — the registry, the proxy and the health poll all read it — $svc" >&2
         fail=1
       fi
@@ -140,4 +156,4 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-echo "service.toml schema check passed ($(basename "$AXON_ROOT"): containers pinned with name/image/tag, processes with name/command/port, no container fields, host ports unique)."
+echo "service.toml schema check passed ($(basename "$AXON_ROOT"): containers pinned with name/image/tag, services with name/command/port, scheduled jobs with no port, no container fields, host ports unique)."

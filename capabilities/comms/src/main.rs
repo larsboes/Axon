@@ -46,9 +46,11 @@ fn print_help() {
     println!("  feed [--stream news|media]      list stored feed items grouped by day");
     println!("       [--days N] [--include-dismissed]   (default --days 7)");
     println!(
-        "  keep <id>                       mark a feed item 'keeper' (+ export if configured)"
+        "  keep <id>                       feed item -> 'keeper' (+ export if configured);"
     );
-    println!("  dismiss <id>                    mark a feed item 'dismissed'");
+    println!("                                  mail -> a distilled note in keeper_export_dir.");
+    println!("                                  Never a Gmail write: archiving stays explicit.");
+    println!("  dismiss <id>                    mark a feed item or mail 'dismissed' (local only)");
     println!("  summarize --pending             summarize feed items that still lack a summary");
     println!("  normalize --explain             print the normalization rules and what each drops");
     println!("  normalize --all                 re-run normalization over stored raw content");
@@ -301,29 +303,130 @@ fn cmd_set_status(args: &[String], cfg: &Config, status: &str) {
     };
 
     let store = open_store(cfg);
+    // `keep` names a thing, not a table. The feed first, since that is where most ids come from,
+    // then mail — which had no keep path at all, and so had no way out of the inbox except
+    // staying in it. That is the outcome the comms doctrine exists to prevent
+    // — the Information lane of the comms doctrine: a kept mail becomes a distilled statement in
+    // the system that owns it, never a second copy of the mail.
     match store.set_feed_status(id, status) {
-        Ok(true) => println!("{id} -> {status}"),
-        Ok(false) => {
-            eprintln!("error: no feed item with id '{id}'");
+        Ok(true) => {
+            println!("{id} -> {status}");
+            if status == "keeper" {
+                if let Some(dir) = &cfg.keeper_export_dir {
+                    match store.get_feed(id) {
+                        Ok(Some(item)) => match export_keeper(&item, dir) {
+                            Ok(path) => println!("exported: {}", path.display()),
+                            Err(e) => eprintln!("warning: keeper export failed: {e}"),
+                        },
+                        _ => eprintln!("warning: could not re-read item for export"),
+                    }
+                }
+            }
+        }
+        Ok(false) => keep_mail(&store, cfg, id, status),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The mail half of `keep` / `dismiss`, reached when the id is not a feed item.
+///
+/// Keeping a mail writes the distilled note and changes nothing in Gmail. Not an oversight:
+/// archiving is a mutation the doctrine permits only on explicit approval, and folding it into
+/// "the information has been extracted" would archive as a side effect. The two are printed as
+/// what they are — one done, one still yours to ask for.
+fn keep_mail(store: &Store, cfg: &Config, id: &str, status: &str) {
+    let item = match store.get_triage(id) {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            eprintln!("error: no feed item or mail with id '{id}'");
             std::process::exit(1);
         }
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
-    }
+    };
 
-    if status == "keeper" {
-        if let Some(dir) = &cfg.keeper_export_dir {
-            match store.get_feed(id) {
-                Ok(Some(item)) => match export_keeper(&item, dir) {
-                    Ok(path) => println!("exported: {}", path.display()),
-                    Err(e) => eprintln!("warning: keeper export failed: {e}"),
-                },
-                _ => eprintln!("warning: could not re-read item for export"),
+    if status != "keeper" {
+        // `dismiss` on a mail is a local status and never a Gmail write — the same word meaning
+        // the same thing on both sides of the store.
+        match store.set_triage_status(id, "dismissed") {
+            Ok(_) => println!("{id} -> dismissed (mail; Gmail untouched)"),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
             }
         }
+        return;
     }
+
+    let Some(dir) = &cfg.keeper_export_dir else {
+        eprintln!("error: keeping a mail means writing it somewhere, and keeper_export_dir is not set.");
+        eprintln!("       Set it in the overlay's comms.json (see comms.config.example.json).");
+        std::process::exit(1);
+    };
+    match export_mail_keeper(&item, dir) {
+        Ok(path) => {
+            println!("exported: {}", path.display());
+            println!("note: the mail is still in the Inbox — archiving is a separate, explicit action.");
+        }
+        Err(e) => {
+            eprintln!("error: mail export failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Write the distilled statement a kept mail leaves behind: what it was, where to find it, and
+/// why it was classified as it was. Refuses to overwrite, like its feed sibling.
+///
+/// What is deliberately NOT in here is the mail. No snippet, no body, no re-fetch — the snippet
+/// is the first couple of hundred characters of the message, which is exactly the raw mail this
+/// lane exists to avoid keeping a copy of. Subject, sender and date are carried because they are
+/// what makes the note findable, and because they are the same fields the tasks promotion edge
+/// already carries. Every one comes from the STORED row, so for a Private mail they are the
+/// redacted form the intake gate produced, and nothing here can reconstruct what it removed.
+fn export_mail_keeper(
+    item: &comms::store::TriageItem,
+    dir: &std::path::Path,
+) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let subject = item.subject.as_deref().unwrap_or("(no subject)");
+    // The stored TIMESTAMPTZ, cut at the date. `internal_date_text` is the read-side field;
+    // `internal_date_ms` is write-side only and is None here.
+    let day = item
+        .internal_date_text
+        .as_deref()
+        .and_then(|stamp| stamp.split(' ').next())
+        .filter(|day| !day.is_empty())
+        .unwrap_or("undated");
+    let path = dir.join(format!("{day}-mail-{}.md", slug(subject)));
+    if path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} already exists — refusing to overwrite", path.display()),
+        ));
+    }
+
+    // The one link back. Same shape the tasks capability already uses for a promoted mail, so a
+    // task and a note about one thread point at the same thread.
+    let permalink = format!("https://mail.google.com/mail/u/0/#all/{}", item.id);
+    let mut body = format!("# {subject}\n\n");
+    if let Some(from) = &item.from_addr {
+        body.push_str(&format!("- From: {from}\n"));
+    }
+    body.push_str(&format!("- Date: {day}\n"));
+    body.push_str(&format!("- Gmail: {permalink}\n"));
+    body.push_str(&format!("- Stream: {}\n", item.stream));
+    // The class travels with the content instead of being re-derived at the destination:
+    // re-deriving it from a redacted note would classify the redaction, not the mail.
+    body.push_str(&format!("- Class: {}\n", item.data_class));
+    body.push_str(&format!("\n## Why this was kept\n\n{}\n", item.rationale));
+    std::fs::write(&path, body)?;
+    Ok(path)
 }
 
 /// Write a distilled keeper note (title, url, date, summary — NOT the raw

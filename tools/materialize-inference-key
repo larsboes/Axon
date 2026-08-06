@@ -8,7 +8,17 @@ umask 077
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 source "$TOOLS_DIR/lib/paths.sh"
+source "$TOOLS_DIR/lib/external-ref.sh"
 PRIVATE_ROOT="${AXON_INFERENCE_KEY_OVERLAY:-$AXON_PERSONAL_ROOT}"
+if [ "$PRIVATE_ROOT" != "$AXON_OVERLAY_ROOT" ]; then
+  # An overlay override has to redirect EVERY overlay read, not only the ones this file makes
+  # by hand. external-ref.sh resolves the reference through AXON_OVERLAY_ROOT and
+  # AXON_MACHINE_TOML; leaving those pointed at the real overlay would answer with two
+  # machines' facts mixed together — the scratch overlay's vaultwarden.env and the live
+  # machine's provider declaration.
+  AXON_OVERLAY_ROOT="$PRIVATE_ROOT"
+  AXON_MACHINE_TOML="$PRIVATE_ROOT/config/machine.toml"
+fi
 
 usage() {
   echo "usage: materialize-inference-key <gemini|nvidia-nim|opencode-go>" >&2
@@ -42,26 +52,27 @@ command -v jq >/dev/null 2>&1 || {
 # locally — which surfaced as "Bitwarden CLI is logged into a different server" on a CLI that was
 # correctly logged into the vault's actual host.
 #
-# Client identity first, from the overlay's systems.local.toml; the capability's env_file only as
-# the fallback for a machine that genuinely self-hosts. Order matters: a self-hosting machine that
-# ALSO declares the client entry means the operator said something specific, and the specific
-# statement wins over the one inferred from a server config.
-SYSTEMS_LOCAL="$PRIVATE_ROOT/config/systems.local.toml"
-VW_ENV="$PRIVATE_ROOT/config/vaultwarden.env"
+# That reasoning now lives in tools/lib/external-ref.sh, generalized: a declared provider first,
+# the capability's own server config only as the fallback for a machine that genuinely self-hosts.
+# A dangling declaration is reported there and returns 2 — this tool must not soften that into a
+# local address, which is why only 1 (nothing declared at all) gets a message of its own.
 DOMAIN=""
-if [ -f "$SYSTEMS_LOCAL" ]; then
-  DOMAIN="$(awk '/^\[vaultwarden\]/{f=1;next} /^\[/{f=0} f && /^[[:space:]]*url[[:space:]]*=/{
-    sub(/^[^=]*=[[:space:]]*/,""); gsub(/"/,""); print; exit}' "$SYSTEMS_LOCAL")"
+REF_RC=0
+# `|| REF_RC=$?` rather than `if ! DOMAIN=$(...)`, which would read the status of the negation
+# instead of the resolver's and collapse "nothing declared" into "declared but broken".
+DOMAIN="$(capability_endpoint vaultwarden DOMAIN)" || REF_RC=$?
+# 2 is a dangling declaration; external-ref.sh has already said which id and which file.
+if [ "$REF_RC" -eq 2 ]; then
+  exit 1
 fi
-if [ -z "$DOMAIN" ] && [ -f "$VW_ENV" ]; then
-  DOMAIN="$(grep -m1 '^DOMAIN=' "$VW_ENV" | cut -d= -f2-)"
-fi
-[ -n "$DOMAIN" ] || {
+if [ "$REF_RC" -ne 0 ]; then
   echo "materialize-inference-key: no Vaultwarden declared for this machine." >&2
-  echo "  Add a [vaultwarden] url = ... entry to $SYSTEMS_LOCAL (the vault your bw CLI uses)," >&2
+  echo "  Declare the vault your bw CLI uses in $AXON_MACHINE_TOML:" >&2
+  echo "    [capability.vaultwarden]" >&2
+  echo "    provided_by = \"<id>\"      # an id with a url in config/systems.local.toml" >&2
   echo "  or configure the vaultwarden capability if this machine hosts it." >&2
   exit 1
-}
+fi
 
 STATUS_JSON="$(bw status 2>/dev/null || true)"
 CURRENT_SERVER="$(printf '%s' "$STATUS_JSON" | jq -r '.serverUrl // empty')"

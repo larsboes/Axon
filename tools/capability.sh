@@ -32,6 +32,10 @@ esac
 # paths.sh (not toml.sh directly) — it resolves this machine's overlay and exports
 # AXON_MACHINE_TOML, the file the enabled set lives in.
 source "$TOOLS_DIR/lib/paths.sh"
+# The enabled set answers "what does this machine RUN". A capability it CONSUMES from another
+# overlay's deployment is a different claim in a different field; external-ref.sh reads it, and
+# the registry is how it reaches every consumer that is not shell.
+source "$TOOLS_DIR/lib/external-ref.sh"
 
 CAPS_DIR="$AXON_ROOT/capabilities"
 
@@ -297,15 +301,21 @@ _json_array_from() {  # stdin: one element per line -> ["a", "b"]
 
 REGISTRY_FIRST=1
 
-_emit_service() {  # <name> <manifest> <scope>
-  local name="$1" mf="$2" scope="$3" kind
+_emit_service() {  # <name> <manifest> <scope> [endpoint]
+  local name="$1" mf="$2" scope="$3" endpoint="${4:-}" kind
   kind="$(toml_get kind "$mf")"
-  [ -n "$kind" ] || kind="container"
+  # "container" is the manifest default, but only where there is a manifest. An externally
+  # provided capability may have none here at all — its manifest lives in whichever repo owns
+  # its host — and calling that a container would be inventing a fact about someone else's
+  # deployment.
+  if [ -z "$kind" ]; then
+    if [ "$mf" = /dev/null ]; then kind="external"; else kind="container"; fi
+  fi
   [ "$REGISTRY_FIRST" -eq 1 ] || printf ',\n  '
   REGISTRY_FIRST=0
   printf '{"name": %s, "kind": %s, "scope": %s' \
     "$(_json_str "$name")" "$(_json_str "$kind")" "$(_json_str "$scope")"
-  local key
+  local key value
   # backup_* ride the same loop rather than a block of their own: they are manifest facts
   # leaving the shell, which is the one thing this function is for. `backup_target` is the
   # presence signal (backup.sh refuses a run without one), `backup_sqlite` is what decides
@@ -314,10 +324,30 @@ _emit_service() {  # <name> <manifest> <scope>
   # legal way to get them — axon-status is forbidden from parsing TOML (README.md#one-manifest-per-concern).
   for key in port health_path panel_port panel_path autostart schedule proxy_api_only idle_timeout \
              backup_target backup_sqlite backup_advise_days backup_stale_days; do
-    printf ', "%s": %s' "$key" "$(_json_str "$(toml_get "$key" "$mf")")"
+    value="$(toml_get "$key" "$mf")"
+    # A manifest says how its OWNER runs the capability. Project that onto a machine which only
+    # consumes it and every field becomes a claim of authority it does not have: `autostart`
+    # would install a watchdog for a process on another host, `backup_target` would put a backup
+    # button on someone else's database, `port` would send a proxy to a local port with nothing
+    # behind it. A client inherits `health_path` and nothing else — the one field that describes
+    # how to ASK rather than how to ACT. Blanked here rather than filtered per consumer, because
+    # a consumer that forgets is a consumer that reaches across the tailnet and stops a vault.
+    if [ "$scope" = external ] && [ "$key" != health_path ]; then value=""; fi
+    printf ', "%s": %s' "$key" "$(_json_str "$value")"
   done
-  printf ', "proxy_extra": %s' "$(toml_array proxy_extra "$mf" | _json_array_from)"
-  printf ', "requires": %s}' "$(toml_array requires "$mf" | _json_array_from)"
+  # The base URL a consumer should dial INSTEAD of loopback, and empty for every capability
+  # this machine runs itself — which is most of them, and which is why this is a field rather
+  # than a rule. A consumer seeing an empty endpoint builds 127.0.0.1:<port> exactly as before;
+  # a consumer seeing a non-empty one must not, because the port is a fact about another host.
+  printf ', "endpoint": %s' "$(_json_str "$endpoint")"
+  if [ "$scope" = external ]; then
+    # Same rule as the loop above. `requires` orders startup on the machine that starts things,
+    # and this one starts nothing; `proxy_extra` routes a dev-server proxy at a local port.
+    printf ', "proxy_extra": [], "requires": []}'
+  else
+    printf ', "proxy_extra": %s' "$(toml_array proxy_extra "$mf" | _json_array_from)"
+    printf ', "requires": %s}' "$(toml_array requires "$mf" | _json_array_from)"
+  fi
 }
 
 # The shell's own view of the same registry: whitespace-separated fields, because
@@ -359,6 +389,34 @@ cmd_registry() {  # [--lines]
     esac
     _emit "$fmt" "$n" "$_mf" "$_scope"
   done
+
+  # Capabilities this machine consumes but does not run (retired-tracker#169). JSON only, on
+  # purpose: `--lines` drives the up/down/status fan-out, and a row there would mean the runner
+  # walking over a service on another host — the exact authority a read-only reference exists
+  # NOT to grant. Consumers that aggregate rather than act read the JSON, and get `scope`
+  # "external" plus a resolved endpoint.
+  #
+  # An unresolvable reference is fatal here rather than skipped. This function is the one place
+  # manifest facts leave the shell, so a silent omission would reach every consumer as "that
+  # capability is not configured on this machine", which is precisely the wrong answer.
+  local _endpoint _rc
+  if [ "$fmt" = json ]; then
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      _rc=0
+      _endpoint="$(capability_endpoint "$n")" || _rc=$?
+      if [ "$_rc" -ne 0 ]; then
+        echo "capability.sh: cannot resolve the external provider for '$n' — see above." >&2
+        exit 1
+      fi
+      _mf="$(_manifest_for "$n")"
+      [ -n "$_mf" ] || _mf=/dev/null
+      _emit "$fmt" "$n" "$_mf" external "$_endpoint"
+    done <<EOF
+$(external_capabilities)
+EOF
+  fi
+
   # Spine last: it is the shell that consumes the capabilities, so bringing it up
   # after them means its first discovery call already sees the truth.
   while IFS= read -r n; do

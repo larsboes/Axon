@@ -6,7 +6,7 @@
 //! becomes an adapter, that adapter's glob becomes files, and those files
 //! become scored opportunities. That seam is exactly where path and glob bugs
 //! live, because it is the only place a configured string meets a real
-//! filesystem (Axon-archive#22).
+//! filesystem (retired-tracker#22).
 //!
 //! Every fixture here is built by the test and removed on drop. No vault path,
 //! no real note and no personal profile enters this file.

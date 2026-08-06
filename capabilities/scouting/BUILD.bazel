@@ -56,7 +56,7 @@ rust_test(
 
 # The seam the unit tests cannot reach: a declared source entry becoming an
 # adapter, its glob becoming files, and those files becoming scored
-# opportunities against a real directory tree (Axon-archive#22). A separate
+# opportunities against a real directory tree (retired-tracker#22). A separate
 # target rather than a `crate` test because it links the library from outside,
 # the way a caller does.
 #

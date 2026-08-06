@@ -3,7 +3,7 @@
 # surfaces it, so the re-decision is prompted before osv-scanner starts reporting these
 # again rather than after.
 #
-# Neither replacement is tracked in an issue. Axon-archive#182 used to hold both, and what
+# Neither replacement is tracked in an issue. retired-tracker#182 used to hold both, and what
 # it actually said was "review upstream-supported migration paths" with no consumer, no
 # deadline of its own, and nothing to do until an ecosystem moved. The exposure, the reason
 # it is accepted, and the date it stops being accepted all belong here, next to the entry

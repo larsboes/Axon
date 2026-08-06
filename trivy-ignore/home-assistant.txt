@@ -9,7 +9,7 @@
 # change, whichever comes first — upstream ships stable on the first Wednesday of each month, so
 # the 2026-08-15 expiry below was set expecting 2026.8 to land before it.
 #
-# Removal is deliberately not tracked in an issue. It used to be (Axon-archive#184), and that
+# Removal is deliberately not tracked in an issue. It used to be (retired-tracker#184), and that
 # issue's whole content was "re-scan when the digest changes" — a ticket restating a date this
 # file already carries, accumulating while nobody could act on it. The work is mechanical: pull
 # the new digest, re-scan, delete every ID that no longer appears, re-date what survives with the

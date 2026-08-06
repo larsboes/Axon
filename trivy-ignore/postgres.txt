@@ -11,7 +11,7 @@
 # here is not "wait for upstream" — it is to re-date on the gosu reachability argument above,
 # which is the actual reason these are accepted, and record that decision here.
 #
-# Removal is deliberately not tracked in an issue. It used to be (Axon-archive#186), and that
+# Removal is deliberately not tracked in an issue. It used to be (retired-tracker#186), and that
 # issue's whole content was "re-scan when the digest changes" — a ticket restating a date this
 # file already carries, on a schedule upstream was never going to meet. `tools/audit --expiry`
 # reads the date and tools/doctor surfaces it. Every entry expires 2026-09-01.

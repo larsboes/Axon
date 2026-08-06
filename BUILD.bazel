@@ -366,6 +366,7 @@ sh_test(
     srcs = ["tools/backup.test.sh"],
     data = [
         "tools/backup.sh",
+        "tools/lib/external-ref.sh",
         "tools/lib/test-support.sh",
         "tools/lib/toml.sh",
     ],
@@ -376,10 +377,32 @@ sh_test(
     size = "small",
     srcs = ["tools/materialize-inference-key.test.sh"],
     data = [
+        # The vaultwarden manifest is an input now: the env_file fallback reads `env_file` off
+        # it to find where DOMAIN lives, so without it in the sandbox the self-hosting case
+        # resolves nothing and the test fails for a reason unrelated to what it asserts.
         "axon.toml",
-        "tools/materialize-inference-key",
+        "capabilities/vaultwarden/service.toml",
+        "tools/lib/external-ref.sh",
         "tools/lib/paths.sh",
         "tools/lib/toml.sh",
+        "tools/materialize-inference-key",
+    ],
+)
+
+# The resolver on its own, not only through the tools that call it: a shared lookup tested
+# solely by one caller has whatever contract that caller happened to need. Its last case is a
+# class gate — nothing outside the resolver may work out a vault address by hand again — so the
+# two callers are `data` here even though this test never executes them.
+sh_test(
+    name = "external_ref_test",
+    size = "small",
+    srcs = ["tools/external-ref.test.sh"],
+    data = [
+        "capabilities/vaultwarden/service.toml",
+        "tools/lib/external-ref.sh",
+        "tools/lib/toml.sh",
+        "tools/materialize-inference-key",
+        "tools/setup-secret.sh",
     ],
 )
 

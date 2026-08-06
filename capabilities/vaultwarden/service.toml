@@ -6,6 +6,14 @@ ports    = ["127.0.0.1:8080:80"]
 volumes  = ["data/vaultwarden/data:/data", "data/vaultwarden/tls:/tls"]
 env_file = "config/vaultwarden.env"
 
+# Vaultwarden's own liveness route — verified 200 in ~70 ms against a running instance rather
+# than taken from documentation. It earns a line here because a machine that CONSUMES this vault
+# resolves an endpoint for it (retired-tracker#169) and has to know what to ask; `health_path` is
+# the only manifest field such a machine inherits, since every other one describes how the OWNER
+# runs the service. On a host that runs it nothing changes: this is a container, so it declares
+# `ports` rather than a scalar `port`, and the loopback health URL needs both.
+health_path = "/alive"
+
 # A password vault has no dashboard surface to be started from, and "your vault is down
 # until you go looking for it" is not a state worth having. Always-on, said out loud
 # rather than left to a watchdog install nobody can see from the manifest.

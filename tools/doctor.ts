@@ -951,6 +951,58 @@ const CHECKS: Check[] = [
     },
   },
 
+  // Capabilities this machine CONSUMES from another overlay's deployment (retired-tracker#169).
+  // The block above answers "what does this machine run"; this is the other half, and it lives
+  // here rather than in a Bazel gate for the same reason the enabled set does — the declaration
+  // is in the overlay, outside the hermetic sandbox.
+  //
+  // No URL is ever printed, matching the rule systems.toml already states for `doctor --online`:
+  // a private endpoint resolved from the overlay has to survive being pasted into a report. The
+  // id is enough to act on and names nothing.
+  {
+    name: "Capabilities (external references)",
+    async run(ctx) {
+      if (!ctx.machineToml || Object.keys(ctx.machineToml).length === 0) {
+        ctx.warn("skipped — no machine.toml to read");
+        return;
+      }
+      const perCapability = (ctx.machineToml.capability ?? {}) as Record<string, Record<string, unknown>>;
+      const declared = Object.entries(perCapability)
+        .filter(([, section]) => typeof section?.provided_by === "string" && section.provided_by !== "")
+        .map(([name, section]) => [name, section.provided_by as string] as const);
+
+      if (declared.length === 0) {
+        ctx.ok("none declared — every capability here is locally managed");
+        return;
+      }
+
+      const systemsPath = join(ctx.overlayPath, "config", "systems.local.toml");
+      const systems = existsSync(systemsPath) ? ((await readToml(systemsPath)) ?? {}) : null;
+      const enabled = new Set<string>(Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : []);
+
+      for (const [name, providerId] of declared) {
+        // Both at once is a contradiction rather than a preference to resolve: the runner would
+        // hold a local copy up while every client dialled the remote one, and the two would
+        // diverge in silence, each perfectly healthy on its own.
+        if (enabled.has(name)) {
+          ctx.bad(`'${name}' is enabled AND declared as provided by '${providerId}' — it cannot be both`);
+          continue;
+        }
+        if (systems === null) {
+          ctx.bad(`'${name}' names provider '${providerId}', but the overlay has no config/systems.local.toml`);
+          continue;
+        }
+        const entry = systems[providerId] as Record<string, unknown> | undefined;
+        const url = typeof entry?.url === "string" ? entry.url : "";
+        if (!url) {
+          ctx.bad(`'${name}' names provider '${providerId}', which has no url in config/systems.local.toml`);
+          continue;
+        }
+        ctx.ok(`'${name}' resolves through systems.local.toml [${providerId}]`);
+      }
+    },
+  },
+
   // Boot persistence for the autostart set. A capability could declare autostart = true, be
   // enabled, run fine all day, and simply be gone after the next reboot — because nothing ever
   // called install-persistence and nothing ever checked (#9). Delegated to service-runner.sh,

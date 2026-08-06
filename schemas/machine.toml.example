@@ -56,10 +56,43 @@ capabilities = ["home-assistant", "vaultwarden"]
 #   backup_target = "id"    read by tools/backup.sh, a systems.toml id
 #   env           = [...]   read by tools/service-runner.sh, injected into this capability's
 #                           boot-persistence unit (launchd plist / systemd unit) alongside PATH
+#   provided_by   = "id"    read by tools/lib/external-ref.sh — see the section below. Not an
+#                           override of a manifest field, but a statement that the manifest
+#                           describes a deployment this machine does not own.
 #
 # [capability.vaultwarden]
 # ports = ["127.0.0.1:8080:80"]   # localhost only; `tailscale serve` terminates TLS
 # backup_target = "some-nas"      # a systems.toml id, and never this machine itself
+#
+# --- externally provided capabilities (optional) --------------------------
+# `provided_by` says this machine CONSUMES a capability that another, independently managed
+# overlay runs on another host (retired-tracker#169). `capabilities` above stays the answer to
+# "what does this machine run", and a name must never appear in both — doctor reports that as
+# an error, because a local copy held up by the runner while every client dials the remote one
+# is two instances diverging in silence, each perfectly healthy on its own.
+#
+# The value is an id with a `url` in the overlay's config/systems.local.toml, not a URL. The
+# address already has a home there, and the indirection carries provenance: the id names WHO
+# provides it, and is free to differ from the capability name.
+#
+#   [capability.vaultwarden]
+#   provided_by = "family-vault"
+#
+#   # ...and in config/systems.local.toml:
+#   [family-vault]
+#   url = "https://vault.example.ts.net"
+#
+# What that buys, and what it deliberately does not:
+#   * `tools/capability.sh registry` emits the capability with scope = "external" and a resolved
+#     `endpoint`, so no consumer works the address out for itself. Every other manifest field is
+#     BLANKED there — a manifest describes how its OWNER runs the service, and projecting
+#     `autostart` or `backup_target` onto a client would claim authority it does not have.
+#   * axon-status polls its health at that endpoint and reports it, read-only.
+#   * `service-runner.sh`, `backup.sh` and axon-status's start/stop REFUSE it by name.
+#     Independently managed overlays stay separate operational authorities: lifecycle, secrets
+#     and backups belong to whoever owns the host.
+#   * an id that resolves to nothing is an error everywhere, never a quiet fall back to loopback
+#     — which for a vault client means dialling whatever happens to answer on this machine.
 #
 # `env` exists because a supervisor unit could carry exactly one variable, PATH, so the only way
 # to give a capability another was to hand-edit the GENERATED unit — which `service-runner.sh
