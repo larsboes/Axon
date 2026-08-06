@@ -57,6 +57,29 @@ case "$GRAPHIFY_BACKEND" in
     OPENAI_API_KEY="$_omlx_api_key"
     GRAPHIFY_MODEL="$_omlx_model"
     export OPENAI_BASE_URL OPENAI_MODEL OPENAI_API_KEY
+    # Fit the chunk to the server's context window, derived rather than guessed.
+    #
+    # graphify chunks at 60,000 INPUT tokens by default, which is a cloud-sized number. A local
+    # server declaring a 32,768-token window rejects every such chunk with `exceeded context
+    # (BadRequestError)` before the model reads a token. One window has to hold the system
+    # prompt, the chunk AND the response, so the budget is what remains after reserving for the
+    # other two; output is pinned here as well (graphify honours GRAPHIFY_MAX_OUTPUT_TOKENS) so
+    # the arithmetic is over three known numbers rather than two known and one hoped-for.
+    #
+    # NECESSARY, NOT SUFFICIENT — say this out loud, because a run that gets further looks like
+    # a run that works. Fitting the window removed the depth-0 wall and roughly tripled the chunk
+    # count, and a full-corpus run on 2026-08-06 still failed: 31 hollow responses, 8 rejections
+    # that reappeared at deeper bisections, 4 empty-choices aborts. On that machine the binding
+    # limit is the memory guard, not the window, and no chunk size fixes that. This code makes a
+    # capable local backend work; it does not make an over-sized one fit. See the graphify.env
+    # in the active overlay for how that decision was recorded.
+    _omlx_ctx="$(jq -er '.sampling.max_context_window | numbers' "$_omlx_settings" 2>/dev/null || echo 32768)"
+    GRAPHIFY_MAX_OUTPUT_TOKENS="${GRAPHIFY_MAX_OUTPUT_TOKENS:-8192}"
+    _prompt_reserve=4096
+    _fitted=$(( _omlx_ctx - GRAPHIFY_MAX_OUTPUT_TOKENS - _prompt_reserve ))
+    [ "$_fitted" -lt 2048 ] && _fitted=2048   # a window too small to chunk into is a config problem, not a reason to send 0
+    GRAPHIFY_TOKEN_BUDGET="${GRAPHIFY_TOKEN_BUDGET:-$_fitted}"
+    export GRAPHIFY_MAX_OUTPUT_TOKENS
     ;;
   nvidia)
     _real_backend="openai"
@@ -104,6 +127,10 @@ esac
 if [ "${1:-}" = "--check" ]; then
   if [ "$_use_backend" = "1" ]; then
     echo "graphify.sh: backend=$GRAPHIFY_BACKEND wire=$_real_backend model=${GRAPHIFY_MODEL:-${OPENAI_MODEL:-<provider-default>}} reachable"
+    # The chunk budget is the setting that silently emptied the semantic pass, so --check says
+    # it out loud rather than leaving it to a full run to discover.
+    [ -n "${GRAPHIFY_TOKEN_BUDGET:-}" ] \
+      && echo "graphify.sh: token-budget=$GRAPHIFY_TOKEN_BUDGET out=${GRAPHIFY_MAX_OUTPUT_TOKENS:-<default>} (fitted to a ${_omlx_ctx:-?}-token context window)"
     exit 0
   fi
   echo "graphify.sh: semantic backend unavailable; normal runs would use code-only mode" >&2
@@ -120,13 +147,17 @@ if [ "$_use_backend" = "1" ]; then
   # graphify defaults to four semantic chunks in flight, and its own --help says to set 1
   # for local LLMs. A local server answers one request at a time anyway, so four in flight
   # buys no throughput and does risk the memory guard on a machine also running the model.
-  # Not a fix for the failure observed here (see the note in tools/graphify.env.example):
-  # that one is a parse failure, and it reproduces at concurrency 1. This is upstream's
-  # documented setting for this deployment shape, correct on its own terms.
+  # Upstream's documented setting for this deployment shape, correct on its own terms.
+  #
+  # --token-budget is the one that was actually emptying the graph: graphify chunks at 60,000
+  # input tokens by default, which does not fit a 32,768-token local context window, so every
+  # chunk came back BadRequestError before the model read any of it. Passed for every local
+  # backend, from the value derived against the server's declared window above.
   _tuning_args=()
   case "$GRAPHIFY_BACKEND" in
     omlx|mlx|ollama) _tuning_args=(--max-concurrency 1) ;;
   esac
+  [ -n "${GRAPHIFY_TOKEN_BUDGET:-}" ] && _tuning_args+=(--token-budget "$GRAPHIFY_TOKEN_BUDGET")
   uv tool run --from "graphifyy[openai]==0.9.31" graphify extract . --backend "$_real_backend" "${_model_args[@]}" "${_tuning_args[@]}"
 else
   # `update`, not `extract --code-only`: the latter has a confirmed-broken --code-only
