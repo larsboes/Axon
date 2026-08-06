@@ -1803,7 +1803,16 @@ export const comms = {
     ),
   bulkTriage: (
     ids: string[],
-    action: 'dismiss' | 'categorize' | 'set-data-class' | 'archive' | 'trash',
+    action:
+      | 'dismiss'
+      | 'categorize'
+      | 'set-data-class'
+      | 'archive'
+      | 'trash'
+      // The doctrine's one state label. It only labels — it does not archive,
+      // and archiving does not set it.
+      | 'waiting'
+      | 'clear-waiting',
     stream?: MailCategory,
     data_class?: DataClass,
   ) =>

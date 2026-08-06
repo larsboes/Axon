@@ -55,7 +55,7 @@ fn print_help() {
     println!("  normalize --explain             print the normalization rules and what each drops");
     println!("  normalize --all                 re-run normalization over stored raw content");
     println!("  --help, -h                      show this help");
-    println!("\nThis CLI's Gmail sweep is READ-ONLY. Archive and Trash require an explicit authenticated dashboard action.");
+    println!("\nThis CLI's Gmail sweep is READ-ONLY. Archive, Trash and the Waiting label require an explicit authenticated dashboard action.");
 }
 
 fn main() {

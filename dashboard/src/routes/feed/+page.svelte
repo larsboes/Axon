@@ -618,7 +618,7 @@
   }
 
   async function applyBulkMailAction(
-    action: "dismiss" | "categorize" | "set-data-class" | GmailAction,
+    action: "dismiss" | "categorize" | "set-data-class" | GmailAction | "waiting" | "clear-waiting",
   ): Promise<void> {
     if (mailBusy || selectedMail.size === 0) return;
     mailBusy = "bulk";
@@ -761,6 +761,12 @@
           <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("set-data-class")}>Apply data class</button>
         </div>
         <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("dismiss")}>Dismiss from Axon</button>
+        <!-- No confirm step, unlike Archive and Trash: this adds one Gmail label
+             and removing it is the button beside it. The confirm exists for the
+             two actions that take a thread out of the inbox, and putting one on
+             a reversible label would teach the habit of clicking through it. -->
+        <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("waiting")}>Mark Waiting in Gmail</button>
+        <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("clear-waiting")}>Clear Waiting</button>
         <button class="btn" disabled={mailBusy === "bulk"} onclick={() => (confirmingBulkAction = "archive")}>Archive in Axon + Gmail</button>
         <button class="btn danger" disabled={mailBusy === "bulk"} onclick={() => (confirmingBulkAction = "trash")}>Move to Trash</button>
         <button class="btn" disabled={mailBusy === "bulk"} onclick={clearMailSelection}>Clear</button>

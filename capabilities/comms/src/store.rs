@@ -739,6 +739,15 @@ impl Store {
             ALTER TABLE {schema}.feed_evaluation_factors
                 ADD COLUMN IF NOT EXISTS context_json TEXT;
 
+            -- The doctrine's one state label, mirrored locally so the dashboard
+            -- can rank on it without asking Gmail. Gmail stays authoritative:
+            -- this is only written after its modify call succeeds, and a sweep
+            -- that sees the label gone clears it.
+            ALTER TABLE {schema}.triage_items
+                ADD COLUMN IF NOT EXISTS waiting BOOLEAN NOT NULL DEFAULT false;
+            ALTER TABLE {schema}.triage_items
+                ADD COLUMN IF NOT EXISTS waiting_at TIMESTAMPTZ;
+
             ALTER TABLE {schema}.triage_items
                 ADD COLUMN IF NOT EXISTS classification_method TEXT NOT NULL DEFAULT 'rules';
             ALTER TABLE {schema}.triage_items
@@ -1168,6 +1177,36 @@ impl Store {
                 self.schema
             ),
             &[&subject, &snippet, &id],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// Record the `Waiting` label locally, after Gmail has already accepted it.
+    ///
+    /// Ordering is the point: Gmail first, this second. A local flag written
+    /// optimistically and then a failed modify call leaves the dashboard showing
+    /// a state the mailbox does not have, and the operator's inbox is the thing
+    /// they actually look at.
+    ///
+    /// `waiting_at` is cleared rather than kept on unset. "Waiting since" is only
+    /// meaningful while it is true, and a stale timestamp on a cleared row reads
+    /// like a currently-blocked thread in any query that forgets to check the
+    /// boolean.
+    pub fn set_triage_waiting(
+        &self,
+        id: &str,
+        waiting: bool,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let mut conn = self.conn.lock().unwrap();
+        let affected = conn.execute(
+            &format!(
+                "UPDATE {}.triage_items
+                    SET waiting = $1,
+                        waiting_at = CASE WHEN $1 THEN now() ELSE NULL END
+                  WHERE id = $2",
+                self.schema
+            ),
+            &[&waiting, &id],
         )?;
         Ok(affected > 0)
     }
@@ -3875,6 +3914,51 @@ mod tests {
             !store
                 .set_triage_status("thread:missing", "dismissed")
                 .unwrap(),
+            "unknown id -> false"
+        );
+    }
+
+    /// `waiting` is its own axis, and clearing it takes the timestamp with it.
+    ///
+    /// The stale-timestamp case is the one worth pinning: a row left with
+    /// `waiting = false` but a `waiting_at` still set reads as a currently
+    /// blocked thread to any query that ranks on the timestamp and forgets the
+    /// boolean, which is exactly the query someone writes first.
+    #[test]
+    fn waiting_is_recorded_and_fully_cleared() {
+        let (store, schema) = open_test_store("triage_waiting");
+        store
+            .upsert_triage(&mk_triage("thread:w", "aktiv"))
+            .unwrap();
+
+        let waiting_at = || -> Option<String> {
+            let mut conn = store.conn.lock().unwrap();
+            conn.query_one(
+                &format!("SELECT waiting, waiting_at::TEXT FROM {}.triage_items WHERE id = $1", schema.0),
+                &[&"thread:w"],
+            )
+            .map(|row| {
+                let flag: bool = row.get(0);
+                let at: Option<String> = row.get(1);
+                assert_eq!(flag, at.is_some(), "the flag and the timestamp must agree");
+                at
+            })
+            .unwrap()
+        };
+
+        assert!(waiting_at().is_none(), "a fresh proposal is not waiting");
+
+        assert!(store.set_triage_waiting("thread:w", true).unwrap());
+        assert!(waiting_at().is_some(), "marking must stamp when");
+
+        assert!(store.set_triage_waiting("thread:w", false).unwrap());
+        assert!(
+            waiting_at().is_none(),
+            "clearing must drop the timestamp, not only the flag"
+        );
+
+        assert!(
+            !store.set_triage_waiting("thread:missing", true).unwrap(),
             "unknown id -> false"
         );
     }
