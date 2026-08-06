@@ -36,14 +36,30 @@ command -v jq >/dev/null 2>&1 || {
   exit 1
 }
 
+# Which Vaultwarden this machine's CLI talks to, which is NOT the same fact as which vaultwarden
+# capability this machine runs. A machine that only consumes the vault runs none, and reading the
+# capability's own env_file DOMAIN there compares `bw` against a server that does not exist
+# locally — which surfaced as "Bitwarden CLI is logged into a different server" on a CLI that was
+# correctly logged into the vault's actual host.
+#
+# Client identity first, from the overlay's systems.local.toml; the capability's env_file only as
+# the fallback for a machine that genuinely self-hosts. Order matters: a self-hosting machine that
+# ALSO declares the client entry means the operator said something specific, and the specific
+# statement wins over the one inferred from a server config.
+SYSTEMS_LOCAL="$PRIVATE_ROOT/config/systems.local.toml"
 VW_ENV="$PRIVATE_ROOT/config/vaultwarden.env"
-[ -f "$VW_ENV" ] || {
-  echo "materialize-inference-key: Vaultwarden is not configured in the active overlay" >&2
-  exit 1
-}
-DOMAIN="$(grep -m1 '^DOMAIN=' "$VW_ENV" | cut -d= -f2-)"
+DOMAIN=""
+if [ -f "$SYSTEMS_LOCAL" ]; then
+  DOMAIN="$(awk '/^\[vaultwarden\]/{f=1;next} /^\[/{f=0} f && /^[[:space:]]*url[[:space:]]*=/{
+    sub(/^[^=]*=[[:space:]]*/,""); gsub(/"/,""); print; exit}' "$SYSTEMS_LOCAL")"
+fi
+if [ -z "$DOMAIN" ] && [ -f "$VW_ENV" ]; then
+  DOMAIN="$(grep -m1 '^DOMAIN=' "$VW_ENV" | cut -d= -f2-)"
+fi
 [ -n "$DOMAIN" ] || {
-  echo "materialize-inference-key: Vaultwarden DOMAIN is missing" >&2
+  echo "materialize-inference-key: no Vaultwarden declared for this machine." >&2
+  echo "  Add a [vaultwarden] url = ... entry to $SYSTEMS_LOCAL (the vault your bw CLI uses)," >&2
+  echo "  or configure the vaultwarden capability if this machine hosts it." >&2
   exit 1
 }
 

@@ -63,4 +63,44 @@ if PATH="$FAKE_BIN:$PATH" AXON_ROOT="$ROOT" AXON_INFERENCE_KEY_OVERLAY="$OVERLAY
   exit 1
 fi
 
+# --- which Vaultwarden the CLI is checked against -------------------------------------------
+#
+# The observed failure: a machine that CONSUMES the vault rather than hosting it runs no
+# vaultwarden capability, so reading that capability's env_file DOMAIN compared `bw` against a
+# server that does not exist locally. The CLI was correctly logged into the vault's real host and
+# was told it was "logged into a different server", with a `bw logout` instruction that would have
+# made things worse.
+#
+# systems.local.toml declares the CLIENT's vault. It must win over the capability's server config,
+# which stays the fallback for a machine that genuinely self-hosts.
+printf '[vaultwarden]\nurl = "https://client-declared.test"\n' > "$OVERLAY/config/systems.local.toml"
+# The first case above already materialized this. Left in place, the next run hits the
+# "Replace the existing local key file?" prompt, `read` sees EOF under `set -e`, and the script
+# dies for a reason that has nothing to do with what is being tested here.
+rm -f "$OVERLAY/config/runtime-secrets/inference-gemini-api-key"
+if ! PATH="$FAKE_BIN:$PATH" AXON_ROOT="$ROOT" AXON_INFERENCE_KEY_OVERLAY="$OVERLAY" \
+  BW_SESSION="synthetic-session" BW_FAKE_SERVER="https://client-declared.test" \
+  "$ROOT/tools/materialize-inference-key" gemini >/dev/null 2>&1; then
+  echo "FAIL: a CLI matching the client-declared vault must be accepted" >&2
+  exit 1
+fi
+
+# ...and the capability's own DOMAIN must NOT decide it once a client entry exists, or a
+# consuming machine is right back where it started.
+if PATH="$FAKE_BIN:$PATH" AXON_ROOT="$ROOT" AXON_INFERENCE_KEY_OVERLAY="$OVERLAY" \
+  BW_SESSION="synthetic-session" BW_FAKE_SERVER="https://vault.test" \
+  "$ROOT/tools/materialize-inference-key" gemini >/dev/null 2>&1; then
+  echo "FAIL: the capability env DOMAIN must not override an explicit client declaration" >&2
+  exit 1
+fi
+
+# A self-hosting machine declares no client entry and keeps the old behaviour exactly.
+rm -f "$OVERLAY/config/systems.local.toml" "$OVERLAY/config/runtime-secrets/inference-gemini-api-key"
+if ! PATH="$FAKE_BIN:$PATH" AXON_ROOT="$ROOT" AXON_INFERENCE_KEY_OVERLAY="$OVERLAY" \
+  BW_SESSION="synthetic-session" BW_FAKE_SERVER="https://vault.test" \
+  "$ROOT/tools/materialize-inference-key" gemini >/dev/null 2>&1; then
+  echo "FAIL: without a client entry the capability DOMAIN must still be used" >&2
+  exit 1
+fi
+
 echo "materialize-inference-key tests passed"
