@@ -8,6 +8,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   checkStateMountCoverage,
+  classifyProbeOutcome,
+  resolveProbeTargets,
+  PROBE_TIMEOUT_MS,
   collectWhyBlocks,
   findDanglingDecisionRefs,
   extractSiblingRepoRefs,
@@ -500,5 +503,117 @@ describe("LifeOS PROJECTS.md pointers", () => {
       "/h/Developer/Projects/VBB",
       "/h/.claude",
     ])).toEqual(["/h", "/h/Developer", "/h/Developer/Projects"]);
+  });
+});
+
+// systems.toml reachability (#18). The network half is a thin wrapper; everything that decides
+// WHAT gets dialled and WHAT a failure means is pure, and that is what these hold. The failure
+// mode being guarded is a check that reports green for an endpoint it never touched, so the
+// skip reasons are asserted as carefully as the probe list.
+describe("systems reachability probe targets", () => {
+  test("a public inline http(s) url is probed as declared", () => {
+    expect(resolveProbeTargets({ pub: { url: "https://example.test/health" } }, {}))
+      .toEqual([{ id: "pub", url: "https://example.test/health", timeoutMs: PROBE_TIMEOUT_MS }]);
+  });
+
+  test("a private system resolves its url from the overlay, by the same id", () => {
+    // The whole point of the sentinel: public Axon never holds the endpoint.
+    expect(resolveProbeTargets(
+      { priv: { url: "overlay:systems.local.toml" } },
+      { priv: { url: "https://private.test" } },
+    )).toEqual([{ id: "priv", url: "https://private.test", timeoutMs: PROBE_TIMEOUT_MS }]);
+  });
+
+  test("a private system with no overlay entry is skipped, not treated as the sentinel", () => {
+    // Probing the literal string "overlay:systems.local.toml" would be a parse error at best and
+    // a request to a resolver-invented host at worst.
+    expect(resolveProbeTargets({ priv: { url: "overlay:systems.local.toml" } }, {}))
+      .toEqual([{ id: "priv", skip: "private system, no url in the overlay" }]);
+  });
+
+  test("the overlay can opt an endpoint out, and Axon ships no opinion either way", () => {
+    expect(resolveProbeTargets(
+      { thing: { url: "https://example.test" } },
+      { thing: { probe: "no", url: "https://example.test" } },
+    )).toEqual([{ id: "thing", skip: 'overlay declares probe = "no"' }]);
+  });
+
+  test('url = "local" is a role, not an endpoint', () => {
+    expect(resolveProbeTargets({ axon: { url: "local" } }, {}))
+      .toEqual([{ id: "axon", skip: 'url = "local" — not an endpoint' }]);
+  });
+
+  test("a malformed url is skipped with a reason rather than thrown on", () => {
+    expect(resolveProbeTargets({ broken: { url: "http://[not a url" } }, {}))
+      .toEqual([{ id: "broken", skip: "url is not parseable" }]);
+  });
+
+  test("a non-http scheme is named, so ssh targets do not read as unreachable", () => {
+    expect(resolveProbeTargets({ box: { url: "ssh://host.test" } }, {}))
+      .toEqual([{ id: "box", skip: "ssh endpoint — only http(s) is probed" }]);
+  });
+
+  test("a credential-bearing url is refused, and the reason never carries the value", () => {
+    const [target] = resolveProbeTargets({ leaky: { url: "https://user:pw@example.test" } }, {});
+    expect(target).toEqual({ id: "leaky", skip: "url embeds credentials — not probed" });
+    expect(JSON.stringify(target)).not.toContain("pw");
+  });
+
+  test("an entry with no url at all is skipped", () => {
+    expect(resolveProbeTargets({ bare: { kind: "service" } }, {}))
+      .toEqual([{ id: "bare", skip: "no url declared" }]);
+  });
+
+  test("the overlay can raise the timeout for one legitimately slow endpoint", () => {
+    // The measured case: build.nvidia.com answers 202 in ~9.2s. Raising it for that entry beats
+    // muting the check or slowing every probe down to the worst one.
+    expect(resolveProbeTargets(
+      { slow: { url: "https://slow.test" } },
+      { slow: { probe_timeout_ms: 12000 } },
+    )).toEqual([{ id: "slow", url: "https://slow.test", timeoutMs: 12000 }]);
+  });
+
+  test("a junk or non-positive timeout falls back rather than disabling the bound", () => {
+    // An unbounded probe would hang the whole report on one bad declaration.
+    for (const bad of ["soon", 0, -1, null]) {
+      expect(resolveProbeTargets(
+        { s: { url: "https://x.test" } },
+        { s: { probe_timeout_ms: bad } },
+      )).toEqual([{ id: "s", url: "https://x.test", timeoutMs: PROBE_TIMEOUT_MS }]);
+    }
+  });
+});
+
+describe("systems reachability failure classification", () => {
+  test("an abort from the timeout signal is a timeout, never an outage", () => {
+    expect(classifyProbeOutcome({ name: "TimeoutError" })).toBe("timeout");
+    expect(classifyProbeOutcome({ name: "AbortError" })).toBe("timeout");
+    expect(classifyProbeOutcome({ code: "ETIMEDOUT" })).toBe("timeout");
+  });
+
+  test("Bun's real refused-connection error shape is recognised, not just Node's", () => {
+    // The exact object Bun 1.3.14 throws, captured from a live HEAD to 127.0.0.1:1 on 2026-08-06.
+    // The first cut of this test asserted `{ code: "ECONNREFUSED" }` — a shape Bun never produces
+    // — so it passed while every refused connection was really being reported as `unavailable`.
+    // Live probing is what caught it; the fixture is now the captured reality.
+    expect(classifyProbeOutcome({
+      name: "Error",
+      code: "ConnectionRefused",
+      message: "Unable to connect. Is the computer able to access the url?",
+    })).toBe("refused");
+    expect(classifyProbeOutcome({ code: "ECONNREFUSED" })).toBe("refused");
+  });
+
+  test("anything else is unavailable rather than guessed at", () => {
+    expect(classifyProbeOutcome(new Error("unable to verify the first certificate"))).toBe("unavailable");
+    expect(classifyProbeOutcome(undefined)).toBe("unavailable");
+  });
+
+  test("a dead hostname is NOT classified here — that is the DNS step's answer", () => {
+    // Bun reports ConnectionRefused for a nonexistent host too, so this function would call it
+    // `refused`. That is correct as written and useless on its own, which is precisely why the
+    // caller resolves DNS before it ever gets here. Asserted so the precondition cannot be
+    // quietly dropped from the probe without a test going red.
+    expect(classifyProbeOutcome({ code: "ConnectionRefused" })).toBe("refused");
   });
 });

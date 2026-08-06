@@ -24,6 +24,9 @@
 
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { basename, resolve, dirname, join } from "node:path";
+// Only the --online reachability probe uses this, to tell a dead hostname from a stopped service.
+// The offline doctor path never calls it, so the report stays network-free where it must be.
+import { lookup as dnsLookup } from "node:dns/promises";
 import { defaultCodexDeployConfig, getStatuses } from "./packs-codex.ts";
 import { readAxonHarnessStatuses } from "./packs-axon.ts";
 import { resolveMachineToml, resolveOverlayRoot } from "./lib/overlay.ts";
@@ -463,6 +466,113 @@ export function formatFetchAge(fetchEpochSeconds: number | null, nowEpochSeconds
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `fetched ${hours} hour(s) ago`;
   return `fetched ${Math.floor(hours / 24)} day(s) ago`;
+}
+
+// How long a single reachability probe may take, absent an overlay saying otherwise. Public Axon
+// ships the default; a deployment that knows one of its endpoints is legitimately slow raises it
+// for that entry via `probe_timeout_ms` rather than muting the check or raising it for everything.
+// Measured case: build.nvidia.com answers 202 in ~9.2s, consistently, for both HEAD and GET.
+export const PROBE_TIMEOUT_MS = 5000;
+
+export type ProbeTarget =
+  | { id: string; url: string; timeoutMs: number }
+  | { id: string; skip: string };
+
+// Pure core of the reachability check: which declared systems have an endpoint worth dialling,
+// and where does its URL come from.
+//
+// Public Axon never holds a private endpoint. A private system's `url` is the literal sentinel
+// `overlay:systems.local.toml`, and the real value is looked up by the SAME id in the active
+// overlay. That indirection is the whole reason this can probe a private deployment without the
+// public repo learning a hostname, so it is resolved here rather than by pattern-matching a URL
+// shape somewhere in the section body.
+//
+// Everything that is not an http(s) endpoint is skipped WITH A REASON, never silently dropped:
+// "nothing to probe" and "probe not attempted" are different answers, and a check that conflates
+// them reports a green for an endpoint it never touched.
+export function resolveProbeTargets(
+  systemsToml: Record<string, any>,
+  overlaySystems: Record<string, any>,
+): ProbeTarget[] {
+  const targets: ProbeTarget[] = [];
+  for (const [id, entry] of Object.entries(systemsToml ?? {})) {
+    if (!entry || typeof entry !== "object") continue;
+    const overlayEntry = overlaySystems?.[id];
+    // Probe policy is the OVERLAY's call, not Axon's: whether an endpoint should be dialled at
+    // all depends on the deployment, and a public default that says "dial it" would be a
+    // deployment decision shipped in a public repo.
+    if (overlayEntry?.probe === "no") {
+      targets.push({ id, skip: "overlay declares probe = \"no\"" });
+      continue;
+    }
+    let url = typeof entry.url === "string" ? entry.url : "";
+    if (url === "overlay:systems.local.toml") {
+      const resolved = typeof overlayEntry?.url === "string" ? overlayEntry.url : "";
+      if (!resolved) {
+        targets.push({ id, skip: "private system, no url in the overlay" });
+        continue;
+      }
+      url = resolved;
+    }
+    if (!url) {
+      targets.push({ id, skip: "no url declared" });
+      continue;
+    }
+    if (url === "local") {
+      targets.push({ id, skip: "url = \"local\" — not an endpoint" });
+      continue;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      targets.push({ id, skip: "url is not parseable" });
+      continue;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      targets.push({ id, skip: `${parsed.protocol.replace(":", "")} endpoint — only http(s) is probed` });
+      continue;
+    }
+    // A URL carrying userinfo would put a credential on the wire on Axon's initiative. The
+    // declaration is the operator's, but dialling it is ours, so this one is refused rather than
+    // sent. Note the reason names the shape, never the value.
+    if (parsed.username || parsed.password) {
+      targets.push({ id, skip: "url embeds credentials — not probed" });
+      continue;
+    }
+    // A per-entry timeout is probe policy, so it comes from the overlay like the rest of it. A
+    // non-numeric or non-positive value falls back to the default rather than disabling the
+    // timeout: an unbounded probe would hang the whole report on one bad declaration.
+    const declared = Number(overlayEntry?.probe_timeout_ms);
+    const timeoutMs = Number.isFinite(declared) && declared > 0 ? declared : PROBE_TIMEOUT_MS;
+    targets.push({ id, url, timeoutMs });
+  }
+  return targets;
+}
+
+export type ProbeOutcome = "refused" | "timeout" | "unavailable";
+
+// Which failure a thrown fetch error means, GIVEN that the hostname already resolved.
+//
+// That precondition is not a detail, it is the whole reason the caller resolves DNS separately.
+// Bun's fetch reports `code: "ConnectionRefused"` for a genuinely refused socket AND for a
+// hostname that does not exist — verified against both, 2026-08-06 on Bun 1.3.14. Classifying
+// straight off the error therefore cannot tell a stopped service from a dead name, which is the
+// one distinction an operator actually acts on differently. The DNS step upstream removes the
+// ambiguity; by the time this runs, a connect failure really is a connect failure.
+//
+// Kept pure and separate so the mapping is testable without a network.
+export function classifyProbeOutcome(err: unknown): ProbeOutcome {
+  const name = (err as any)?.name ?? "";
+  if (name === "TimeoutError" || name === "AbortError") return "timeout";
+  const code = String((err as any)?.code ?? "");
+  const message = String((err as any)?.message ?? "");
+  if (code === "ETIMEDOUT" || /timed out/i.test(message)) return "timeout";
+  // Bun's spelling and Node's, because this file runs under Bun but the shape is not guaranteed.
+  if (code === "ConnectionRefused" || code === "ECONNREFUSED" || /refused|unable to connect/i.test(message)) {
+    return "refused";
+  }
+  return "unavailable";
 }
 
 async function readToml(path: string): Promise<any> {
@@ -1196,6 +1306,91 @@ const CHECKS: Check[] = [
         const mountedCount = [...systemIds].filter((id) => ctx.mounts.some((m) => m.tool === id)).length;
         ctx.ok(`${mountedCount}/${localCount} local="yes" systems have a state_mount (rest are mount-less by design — tools/services with no persisted state)`);
       }
+    },
+  },
+
+  // systems.toml reachability. The section above asks whether a system is DECLARED; this one asks
+  // whether the declared endpoint answers. Both questions matter and neither substitutes for the
+  // other: a complete manifest pointing at a dead host reports perfectly green without this.
+  //
+  // --online only, and the offline path does no network work at all — not a shortened timeout,
+  // not a DNS lookup. `tools/doctor` is the thing an operator runs on a machine with no route out,
+  // and a check that quietly dials in that state makes the whole report slow and unreliable
+  // exactly where it is most needed.
+  //
+  // What it never prints: the URL. Not for a private system, not for a public one. The result
+  // names the system id, the outcome, and the HTTP status when there was one, which is the bounded
+  // evidence the declaration is entitled to. Printing a resolved endpoint would put a private
+  // hostname into a report an operator pastes into an issue, and getting that right per-entry is a
+  // rule someone eventually forgets. Cheaper to never print any.
+  {
+    name: "Systems reachability (--online)",
+    async run(ctx) {
+      if (!ctx.online) {
+        ctx.ok("skipped — run 'tools/doctor --online' to probe declared endpoints");
+        return;
+      }
+      if (!ctx.systemsToml || Object.keys(ctx.systemsToml).length === 0) {
+        ctx.warn("no systems.toml entries — nothing to probe");
+        return;
+      }
+      let overlaySystems: Record<string, any> = {};
+      if (ctx.overlayPath) {
+        const overlaySystemsPath = join(ctx.overlayPath, "config", "systems.local.toml");
+        if (existsSync(overlaySystemsPath)) {
+          try {
+            overlaySystems = await readToml(overlaySystemsPath);
+          } catch {
+            // An unparseable overlay manifest is the overlay's finding, not this check's. Say the
+            // probe set is incomplete rather than reporting every private system as unreachable,
+            // which is the same false-red a missing file would produce.
+            ctx.warn("overlay systems.local.toml is unreadable — private endpoints not resolved");
+          }
+        }
+      }
+
+      const targets = resolveProbeTargets(ctx.systemsToml, overlaySystems);
+      const probed = targets.filter((t): t is { id: string; url: string; timeoutMs: number } => "url" in t);
+      const skipped = targets.filter((t): t is { id: string; skip: string } => "skip" in t);
+
+      // Concurrent, because these are independent network waits and a serial sweep would make the
+      // section's cost the SUM of every timeout rather than the worst one.
+      const results = await Promise.all(
+        probed.map(async ({ id, url, timeoutMs }) => {
+          // Resolve first, connect second. Bun's fetch reports the same ConnectionRefused code for
+          // a refused socket and a nonexistent hostname, so without this step "the service is
+          // stopped" and "the name is gone" arrive as one answer — and they are the two findings
+          // an operator would act on most differently. An IP literal resolves trivially, so this
+          // costs nothing for a LAN address.
+          try {
+            await dnsLookup(new URL(url).hostname);
+          } catch {
+            return { id, outcome: "unavailable" as ProbeOutcome, status: 0, timeoutMs };
+          }
+          try {
+            const res = await fetch(url, {
+              method: "HEAD",
+              redirect: "manual",
+              signal: AbortSignal.timeout(timeoutMs),
+            });
+            return { id, outcome: "reachable" as const, status: res.status, timeoutMs };
+          } catch (err) {
+            return { id, outcome: classifyProbeOutcome(err), status: 0, timeoutMs };
+          }
+        }),
+      );
+
+      for (const r of results) {
+        // Any HTTP response proves the service answered. A 401 or a 403 is a reachable service
+        // declining an unauthenticated HEAD, which is the correct behaviour for most of these and
+        // must not read as an outage — this check asks "is it up", never "am I allowed in".
+        if (r.outcome === "reachable") ctx.ok(`${r.id} — reachable (HTTP ${r.status})`);
+        else if (r.outcome === "refused") ctx.bad(`${r.id} — connection refused`);
+        else if (r.outcome === "timeout") ctx.warn(`${r.id} — no answer within ${r.timeoutMs}ms (overlay probe_timeout_ms raises it)`);
+        else ctx.bad(`${r.id} — unavailable (no route, DNS failure, or TLS error)`);
+      }
+      for (const s of skipped) ctx.ok(`${s.id} — skipped: ${s.skip}`);
+      if (probed.length === 0) ctx.warn("no probeable endpoint among the declared systems");
     },
   },
 

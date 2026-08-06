@@ -25,6 +25,18 @@
 #   local = "yes" | "no"        # runs on my LAN / device vs. hosted elsewhere
 #   why   = one line: what it's for and why it's in the setup
 #
+# `tools/doctor --online` probes every http(s) `url` here for reachability and reports the system
+# id, the outcome and the HTTP status. It never prints a URL, so a private endpoint resolved from
+# the overlay stays private in a report you paste somewhere. Two keys steer it, and both live in
+# the OVERLAY entry (`<overlay>/config/systems.local.toml`), never here, because whether and how
+# hard to dial an endpoint is a deployment decision:
+#
+#   probe            = "no"     # do not dial this one at all
+#   probe_timeout_ms = 12000    # this endpoint is legitimately slow (default 5000)
+#
+# Anything that is not an http(s) endpoint (ssh, url = "local", no url) is reported as skipped
+# with the reason rather than passed over, so "nothing to probe" never reads as "probed fine".
+#
 # Referenced from: Packs/*/pack.toml `links = [...]`, capability READMEs.
 
 # ---- reusable system roles and public projects ---------------------------
