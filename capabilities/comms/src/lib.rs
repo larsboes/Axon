@@ -37,6 +37,15 @@ pub mod content_item;
 #[allow(dead_code)]
 pub mod summarize;
 
+// When the schema migration runs, and what stops two sessions running it at
+// once. This crate is where that went wrong: 43 handlers and five timers each
+// calling `Store::open`, each running the whole migration. The mechanism moved
+// out to where the other six store-owning capabilities include it on the same
+// terms; libs/axon-store/README.md has the deadlock it removes.
+#[path = "../../../libs/axon-store/src/lib.rs"]
+#[allow(dead_code)]
+pub(crate) mod axon_store;
+
 pub mod cloud_derivative;
 pub mod cloud_dispatch;
 pub mod config;

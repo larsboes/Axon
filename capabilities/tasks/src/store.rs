@@ -92,16 +92,19 @@ impl Store {
         schema: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         validate_schema(schema)?;
-        let store = Self {
-            conn: Mutex::new(Client::connect(database_url, NoTls)?),
+        let mut client = Client::connect(database_url, NoTls)?;
+        // Once per process per (database, schema), not once per open. See
+        // libs/axon-store/README.md for the deadlock that removes.
+        crate::axon_store::migrate_once(&mut client, database_url, schema, |conn| {
+            Self::run_migration(conn, schema)
+        })?;
+        Ok(Self {
+            conn: Mutex::new(client),
             schema: schema.to_string(),
-        };
-        store.init_schema()?;
-        Ok(store)
+        })
     }
 
-    fn init_schema(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+    fn run_migration(conn: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
         conn.batch_execute(&format!(
             "
             CREATE SCHEMA IF NOT EXISTS {schema};
@@ -129,7 +132,7 @@ impl Store {
                 ON {schema}.tasks (source_capability, source_id)
                 WHERE source_capability IS NOT NULL AND source_id IS NOT NULL;
             ",
-            schema = self.schema
+            schema = schema
         ))?;
         Ok(())
     }

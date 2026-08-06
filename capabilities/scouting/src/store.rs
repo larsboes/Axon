@@ -34,7 +34,11 @@ impl Store {
     /// into SQL is safe in general.
     fn open_with_schema(database_url: &str, schema: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let mut client = Client::connect(database_url, NoTls)?;
-        Self::init_schema(&mut client, schema)?;
+        // Once per process per (database, schema), not once per open. See
+        // libs/axon-store/README.md for the deadlock that removes.
+        crate::axon_store::migrate_once(&mut client, database_url, schema, |client| {
+            Self::init_schema(client, schema)
+        })?;
         Ok(Self {
             conn: Mutex::new(client),
             schema: schema.to_string(),

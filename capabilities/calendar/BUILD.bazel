@@ -12,6 +12,8 @@ rust_library(
     # because a glob cannot cross a package boundary.
     srcs = glob(["src/**/*.rs"], exclude = ["src/server.rs"]) + [
         "//libs/axon-config:src/lib.rs",
+        # When the schema migration runs — shared by all seven schema-owning capabilities.
+        "//libs/axon-store:src/lib.rs",
         # The content-item-v1 reader contract, on the same include terms.
         "//libs/content-item:src/lib.rs",
         # Bounded reads out of a declared markdown root, for src/markdown_import.rs.

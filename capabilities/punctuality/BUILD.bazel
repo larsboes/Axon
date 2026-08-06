@@ -14,6 +14,8 @@ rust_library(
     # cross a package boundary.
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]) + [
         "//libs/axon-config:src/lib.rs",
+        # When the schema migration runs — shared by all seven schema-owning capabilities.
+        "//libs/axon-store:src/lib.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],

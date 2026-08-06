@@ -428,40 +428,16 @@ impl Store {
         schema: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut client = Client::connect(database_url, NoTls)?;
-        Self::init_schema(&mut client, schema)?;
+        // Once per process per (database, schema), not once per open. Every
+        // later open here does no DDL at all, which is what removes the
+        // deadlock rather than serialising it -- libs/axon-store/README.md.
+        crate::axon_store::migrate_once(&mut client, database_url, schema, |client| {
+            Self::run_migration(client, schema)
+        })?;
         Ok(Self {
             conn: Mutex::new(client),
             schema: schema.to_string(),
         })
-    }
-
-    /// Serialises the migration below across every process and every thread.
-    ///
-    /// `batch_execute` runs as one implicit transaction taking ACCESS EXCLUSIVE
-    /// on roughly fifteen tables, and `Store::open` runs it *every time* — every
-    /// drain tick, every HTTP handler, not once at boot. Two openers firing at
-    /// the same instant deadlock, and Postgres resolves that by killing one.
-    ///
-    /// It surfaced when the digest drain became a third fifteen-minute timer
-    /// beside the enrichment drain and Gmail maintenance, so three sessions
-    /// started migrating together and the loser logged `deadlock detected`. The
-    /// hazard predates that drain: two timers were already colliding on the same
-    /// schedule, just rarely enough to look like weather.
-    ///
-    /// Deliberately a different key from `local_gate.rs` — they guard unrelated
-    /// things, and sharing a number would make each wait on the other.
-    const MIGRATION_LOCK_KEY: i64 = 0x41_58_4F_4E_5F_4D_49_47; // "AXON_MIG"
-
-    fn init_schema(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // The blocking form, not `try`: an opener that cannot migrate yet should
-        // wait for the one that is, not fail. The wait is one DDL batch against
-        // tables that already exist, so it is short.
-        client.execute("SELECT pg_advisory_lock($1)", &[&Self::MIGRATION_LOCK_KEY])?;
-        let migrated = Self::run_migration(client, schema);
-        // Released on both paths. A failed migration that kept the lock would
-        // hang every future opener behind a session that has already given up.
-        let _ = client.execute("SELECT pg_advisory_unlock($1)", &[&Self::MIGRATION_LOCK_KEY]);
-        migrated
     }
 
     fn run_migration(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -5218,15 +5194,17 @@ mod tests {
 
     /// Concurrent openers must not deadlock.
     ///
-    /// `Store::open` migrates every time it is called, and the comms server
-    /// calls it from several timers plus every HTTP handler. Three of those
-    /// timers share a fifteen-minute period, so "two sessions migrate at the
-    /// same instant" is the normal case rather than the rare one. Before the
-    /// migration lock this produced `deadlock detected` in the drain log,
-    /// roughly every other pass.
+    /// `Store::open` used to migrate every time it was called, and the comms
+    /// server calls it from several timers plus every HTTP handler. Three of
+    /// those timers share a fifteen-minute period, so "two sessions migrate at
+    /// the same instant" was the normal case rather than the rare one, and it
+    /// produced `deadlock detected` in the drain log roughly every other pass.
     ///
-    /// Eight at once against one schema, which is more than the server can
-    /// actually produce and fails reliably without the lock.
+    /// Migration now runs once per process per (database, schema), so seven of
+    /// these eight threads do no DDL at all. Kept at eight anyway: this is the
+    /// shape that failed reliably before, and it is the only place the
+    /// in-process guard is exercised under real contention rather than in
+    /// isolation (libs/axon-store has the isolated cases).
     #[test]
     fn concurrent_openers_do_not_deadlock() {
         let schema = format!("comms_test_open_race_{}", std::process::id());
@@ -5261,6 +5239,40 @@ mod tests {
         assert!(
             failures.is_empty(),
             "every concurrent open must succeed, got: {failures:?}"
+        );
+    }
+
+    /// The second open of a schema this process already migrated does no DDL.
+    ///
+    /// Asserted by removing the schema behind the process's back: an `open` that
+    /// still migrated would put the tables straight back, and the read below
+    /// would succeed. It failing is the proof that the DDL ran exactly once.
+    ///
+    /// That is also the honest cost of the design, which is why it is pinned
+    /// rather than left implicit. Rebuilding a schema dropped underneath a live
+    /// process would mean DDL on every open again, and DDL on every open is the
+    /// deadlock this replaced.
+    #[test]
+    fn a_second_open_does_no_ddl() {
+        let schema = format!("comms_test_migrate_once_{}", std::process::id());
+        let url = test_database_url();
+
+        let first = Store::open_with_schema(&url, &schema).expect("first open migrates");
+        first
+            .list_feed(None, None, 1, false)
+            .expect("the first open must leave a usable schema behind");
+        drop(first);
+
+        drop_test_schema(&schema);
+
+        let second =
+            Store::open_with_schema(&url, &schema).expect("the second open still connects");
+        let read = second.list_feed(None, None, 1, false);
+        drop_test_schema(&schema);
+
+        assert!(
+            read.is_err(),
+            "the second open re-ran the migration; it must trust the first"
         );
     }
 

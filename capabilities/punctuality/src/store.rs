@@ -54,6 +54,15 @@ impl Store {
     /// interpolating into SQL is safe in general.
     pub fn open_with_schema(database_url: &str, schema: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let mut client = Client::connect(database_url, NoTls)?;
+        // Once per process per (database, schema), not once per open. See
+        // libs/axon-store/README.md for the deadlock that removes.
+        crate::axon_store::migrate_once(&mut client, database_url, schema, |client| {
+            Self::init_schema(client, schema)
+        })?;
+        Ok(Self { client, schema: schema.to_string() })
+    }
+
+    fn init_schema(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
         client.batch_execute(&format!(
             "
             CREATE SCHEMA IF NOT EXISTS {schema};
@@ -93,7 +102,7 @@ impl Store {
             );
             "
         ))?;
-        Ok(Self { client, schema: schema.to_string() })
+        Ok(())
     }
 
     /// Replaces the aggregate wholesale inside one transaction.
