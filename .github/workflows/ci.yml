@@ -186,6 +186,7 @@ jobs:
           bash tools/runargs.test.sh
           bash tools/persistence.test.sh
           bash tools/pipe.test.sh
+          bash tools/check-bun-install-policy.test.sh
 
   # Svelte type checks, local-only until 2026-07 and dashboard-only until now: a type
   # regression could land on main unseen (Axon#41), and a capability that grows its own UI
@@ -245,7 +246,9 @@ jobs:
           failed=""
           for dir in $(tools/discover-ui-packages --dirs); do
             echo "::group::$dir"
-            if (cd "$dir" && bun install --frozen-lockfile && bun run check); then
+            # A committed lockfile proves what we resolve, not that its lifecycle hooks are safe.
+            # UI checks do not need install scripts, so leave that attack surface closed in CI.
+            if (cd "$dir" && bun install --frozen-lockfile --ignore-scripts && bun run check); then
               echo "$dir: ok"
             else
               failed="$failed $dir"
@@ -282,6 +285,8 @@ jobs:
         run: tools/check-bazel-package-labels.sh
       - name: Publication hygiene
         run: tools/check-publication-hygiene.sh
+      - name: Bun dependency installs do not run lifecycle hooks
+        run: tools/check-bun-install-policy.sh
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
