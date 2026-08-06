@@ -65,8 +65,8 @@ impl CalendarStore {
     pub fn open_in_schema(database_url: &str, schema: &str) -> StoreResult<Self> {
         validate_schema(schema)?;
         // A pool checkout, not a connect, and the migration runs once per process
-        // per (database, schema) rather than once per open. Both halves of
-        // larsboes/axon-personal#139 -- libs/axon-store/README.md has the numbers.
+        // per (database, schema) rather than once per open. Both halves of the
+        // Store::open problem -- libs/axon-store/README.md has the numbers.
         let pool = crate::axon_store::open_pool(database_url, schema, |conn| {
             Self::run_migration(conn, schema)
         })?;

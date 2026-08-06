@@ -90,7 +90,11 @@ pub fn from_thread(meta: ThreadMeta, config_rules: &[rules::Rule]) -> Intake {
             gmail_observed_at: None,
             gmail_sync_status: None,
             gmail_sync_action: None,
+            // A freshly swept proposal is not waiting on anyone: the label is only
+            // ever set by an explicit action, never inferred from a sweep.
             gmail_sync_error: None,
+            waiting: false,
+            waiting_since: None,
             first_seen: String::new(),
             last_seen: String::new(),
         },

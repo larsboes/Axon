@@ -60,8 +60,8 @@ impl Store {
     /// interpolating into SQL is safe in general.
     pub fn open_with_schema(database_url: &str, schema: &str) -> Result<Self, Box<dyn std::error::Error>> {
         // A pool checkout, not a connect, and the migration runs once per process
-        // per (database, schema) rather than once per open. Both halves of
-        // larsboes/axon-personal#139 -- libs/axon-store/README.md has the numbers.
+        // per (database, schema) rather than once per open. Both halves of the
+        // Store::open problem -- libs/axon-store/README.md has the numbers.
         let pool = crate::axon_store::open_pool(database_url, schema, |client| {
             Self::init_schema(client, schema)
         })?;

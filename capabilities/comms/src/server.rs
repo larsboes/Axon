@@ -521,6 +521,12 @@ struct TriageOut {
     gmail_sync_status: Option<String>,
     gmail_sync_action: Option<String>,
     gmail_sync_error: Option<String>,
+    /// The doctrine's one state label. Rendered as a badge rather than folded into
+    /// `status`: status is what Axon decided about a proposal, waiting is what the
+    /// operator decided about the conversation, and collapsing them would make
+    /// "I replied and I'm blocked" indistinguishable from "Axon dismissed it".
+    waiting: bool,
+    waiting_since: Option<String>,
     first_seen: String,
     last_seen: String,
     relevance: Vec<RelevanceOut>,
@@ -551,6 +557,8 @@ impl TriageOut {
             gmail_sync_status: item.gmail_sync_status,
             gmail_sync_action: item.gmail_sync_action,
             gmail_sync_error: item.gmail_sync_error,
+            waiting: item.waiting,
+            waiting_since: item.waiting_since,
             first_seen: item.first_seen,
             last_seen: item.last_seen,
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
@@ -3876,6 +3884,8 @@ mod tests {
             gmail_sync_status: None,
             gmail_sync_action: None,
             gmail_sync_error: None,
+            waiting: false,
+            waiting_since: None,
             first_seen: "2026-08-04 09:31:00+02".into(),
             last_seen: "2026-08-04 09:31:00+02".into(),
         };

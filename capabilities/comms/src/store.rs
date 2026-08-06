@@ -175,6 +175,13 @@ pub struct TriageItem {
     /// Action owned by the current queued or attention job, if one exists.
     pub gmail_sync_action: Option<String>,
     pub gmail_sync_error: Option<String>,
+    /// The doctrine's one state label, mirrored from Gmail so the board can rank
+    /// and render it without asking Gmail per row. Gmail stays authoritative: this
+    /// is written only after its modify call succeeds.
+    pub waiting: bool,
+    /// Only meaningful while `waiting` is true, and cleared with it. "Blocked since"
+    /// is the question a Waiting list is actually asked.
+    pub waiting_since: Option<String>,
     pub first_seen: String,
     pub last_seen: String,
 }
@@ -430,8 +437,8 @@ impl Store {
         schema: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // A pool checkout, not a connect, and the migration runs once per process
-        // per (database, schema) rather than once per open. Both halves of
-        // larsboes/axon-personal#139 -- libs/axon-store/README.md has the numbers.
+        // per (database, schema) rather than once per open. Both halves of the
+        // Store::open problem -- libs/axon-store/README.md has the numbers.
         let pool = crate::axon_store::open_pool(database_url, schema, |client| {
             Self::run_migration(client, schema)
         })?;
@@ -2398,7 +2405,7 @@ impl Store {
                     (SELECT action FROM {schema}.gmail_action_jobs j
                      WHERE j.triage_id = t.id AND j.state IN ('queued','abandoned')
                      ORDER BY job_id DESC LIMIT 1),
-                    gmail_sync_error
+                    gmail_sync_error, waiting, waiting_at::text
              FROM {schema}.triage_items t",
             schema = self.schema
         );
@@ -2432,7 +2439,7 @@ impl Store {
                         (SELECT action FROM {schema}.gmail_action_jobs j
                          WHERE j.triage_id = t.id AND j.state IN ('queued','abandoned')
                          ORDER BY job_id DESC LIMIT 1),
-                        gmail_sync_error
+                        gmail_sync_error, waiting, waiting_at::text
                  FROM {schema}.triage_items t WHERE id = $1",
                 schema = self.schema
             ),
@@ -3702,6 +3709,8 @@ fn row_to_triage(r: &postgres::Row) -> TriageItem {
         gmail_sync_status: r.get(21),
         gmail_sync_action: r.get(22),
         gmail_sync_error: r.get(23),
+        waiting: r.get(24),
+        waiting_since: r.get(25),
     }
 }
 
@@ -3870,6 +3879,8 @@ mod tests {
             gmail_sync_status: None,
             gmail_sync_action: None,
             gmail_sync_error: None,
+            waiting: false,
+            waiting_since: None,
             first_seen: String::new(),
             last_seen: String::new(),
         }
