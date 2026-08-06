@@ -1,0 +1,27 @@
+# foundation-models — host process, not a container. Shape: schemas/service.toml.example.
+#
+# Apple's on-device model behind the OpenAI chat-completions shape, so Axon
+# reaches it as a backend in inference.json rather than through a binding.
+#
+# MAC ONLY, and there is no manifest field that says so. Capabilities are
+# enabled per machine, so the Pi simply never enables this one — and because
+# "never enabled" is a decision someone has to remember, the binary refuses to
+# start when the framework is missing or Apple Intelligence is off, rather than
+# binding a port and failing every request. `afm-server --check` answers the
+# same question without binding anything.
+kind        = "process"
+name        = "foundation-models"
+command     = ["capabilities/foundation-models/.build/release/afm-server"]
+build       = ["swift", "build", "-c", "release", "--package-path", "capabilities/foundation-models"]
+port        = "8091"
+health_path = "/health"
+
+# No `requires`: this talks to nothing. It reads a prompt, asks the OS, and
+# answers. The dependency runs the other way — comms names it in inference.json
+# as the `summarization_light` role, and a role that does not resolve is simply
+# not offered work.
+#
+# autostart is deliberately absent. The light role is an optimisation, not a
+# floor: a machine where this is not running digests everything on the strong
+# model exactly as it did before, so starting it is a choice rather than a
+# prerequisite.
