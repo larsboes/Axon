@@ -1,8 +1,8 @@
 # Axon agent bootstrap
 
-Use the `axon` skill for every task that operates Axon or changes this repository. Route through
-its working-with or working-on workflow and load only the references selected there. Use Graphify
-only as optional symbol-level drill-down after bounded Axon context is available.
+For Axon operations, run `axon help` or `axon search <task>` before browsing files. For Axon
+repository changes, follow this file's data-boundary, repository, and GitHub workflow rules. Use
+Graphify only as optional symbol-level drill-down after bounded Axon context is available.
 
 Before editing, run `git status --short --branch` and `tools/doctor`. Preserve unrelated worktree
 changes. Derive capabilities, ports, health, issue state and architecture from Axon tools and live

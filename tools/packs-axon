@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# Thin launcher: axon Pack materialization is implemented in packs-axon.ts because safe
-# file hashing, ownership ledgers, and destination overlays are easier to keep in one
-# typed implementation than in shell.
-_here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-exec bun run "$_here/packs-axon.ts" "$@"

@@ -74,6 +74,8 @@ export type DeploymentState = {
 
 export type DeployConfig = {
   axonRoot: string;
+  /** Ordered Pack roots. The first root is the public Axon source of truth. */
+  packRoots?: string[];
   destination: string;
   stateFile: string;
   adapter?: string;
@@ -163,9 +165,18 @@ function assertSimpleName(value: string, label: string): void {
   }
 }
 
+function packRoots(config: DeployConfig): string[] {
+  return config.packRoots?.length ? config.packRoots : [join(config.axonRoot, "Packs")];
+}
+
 function packDir(config: DeployConfig, pack: string): string {
   assertSimpleName(pack, "pack");
-  return join(config.axonRoot, "Packs", pack);
+  const matches = packRoots(config).filter((root) => existsSync(join(root, pack, "pack.toml")));
+  if (matches.length === 0) return join(packRoots(config)[0], pack);
+  if (matches.length > 1) {
+    throw new Error(`pack '${pack}' is declared in more than one Pack root: ${matches.join(", ")}`);
+  }
+  return join(matches[0], pack);
 }
 
 export function readPackSkills(config: DeployConfig, pack: string): string[] {
@@ -730,10 +741,8 @@ function profileActivePacks(config: DeployConfig, profile: Profile): string[] {
 
 // ── Discovery ───────────────────────────────────────────────────────
 
-// A pack whose manifest names a `deployer` is owned by that tool alone. Without
-// this, three mechanisms claimed ~/.claude/skills/axon at once — a packs.sh
-// symlink, this sweep, and packs-axon's ledger — and doctor reported the same
-// path as linked, as an unowned collision and as not-deployed in one run.
+// A pack whose manifest names a `deployer` is owned by that tool alone, so generic
+// harness deployment never competes with its dedicated lifecycle.
 export function packDeployer(config: DeployConfig, pack: string): string | null {
   const manifest = join(config.axonRoot, "Packs", pack, "pack.toml");
   if (!existsSync(manifest)) return null;
@@ -744,12 +753,19 @@ export function packDeployer(config: DeployConfig, pack: string): string | null 
 
 // `includeDedicated` exists so name validation can still see a dedicated pack and
 // say who owns it, instead of reporting a pack that plainly exists as unknown.
-function availablePacks(config: DeployConfig, includeDedicated = false): string[] {
-  const root = join(config.axonRoot, "Packs");
-  if (!existsSync(root)) return [];
-  return readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "pack.toml")))
-    .map((entry) => entry.name)
+export function availablePacks(config: DeployConfig, includeDedicated = false): string[] {
+  const matches = new Map<string, string[]>();
+  for (const root of packRoots(config)) {
+    if (!existsSync(root)) continue;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !existsSync(join(root, entry.name, "pack.toml"))) continue;
+      matches.set(entry.name, [...(matches.get(entry.name) ?? []), root]);
+    }
+  }
+  for (const [pack, roots] of matches) {
+    if (roots.length > 1) throw new Error(`pack '${pack}' is declared in more than one Pack root: ${roots.join(", ")}`);
+  }
+  return [...matches.keys()]
     .filter((pack) => includeDedicated || packDeployer(config, pack) === null)
     .sort();
 }

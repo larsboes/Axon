@@ -1,0 +1,209 @@
+#!/bin/bash
+# axon — the public command interface for an Axon installation.
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]:-$0}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  TARGET="$(readlink "$SOURCE")"
+  case "$TARGET" in
+    /*) SOURCE="$TARGET" ;;
+    *) SOURCE="$DIR/$TARGET" ;;
+  esac
+done
+AXON_ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage: axon <command> [arguments]
+
+Discover Axon:
+  help [command]                 Show commands or one command's usage
+  search <words...>              Search commands, capabilities, and Packs
+  doctor                          Check this Axon installation
+  context with [capability]      Emit bounded current operating context
+  context on [unit-or-path]      Emit bounded current repository context
+
+Operate capabilities:
+  capability list                List registered HTTP capability surfaces and health
+  capability health              Probe registered capability health endpoints
+  capability url <capability>    Print a registered capability's HTTP base URL
+  capability call <name> <get|post> <path> [body] [curl-args...]
+  capability ingest <url>        Ingest a URL through comms
+  capability feed [days]         Read the comms feed
+
+Manage Packs:
+  pack list [harness]            List available Packs, optionally for one harness
+  pack status <harness> [pack|--all]
+  pack deploy <harness> <pack>...
+  pack sync <harness> <pack|--all>
+  pack remove <harness> <pack>...
+
+Run 'axon help <command>' for focused help.
+EOF
+}
+
+help() {
+  case "${1:-}" in
+    "") usage ;;
+    capability) cat <<'EOF'
+Usage: axon capability <command>
+
+  list | health | url <capability>
+  call <name> <get|post> <path> [body] [curl-args...]
+  ingest <url> | feed [days]
+EOF
+      ;;
+    pack) cat <<'EOF'
+Usage: axon pack <command> <harness> ...
+
+Harnesses: claude, codex, opencode, pi
+Commands: list [harness], status, deploy, sync, remove
+EOF
+      ;;
+    context) echo "Usage: axon context with [capability] | on [unit-or-path]" ;;
+    doctor|search) echo "Usage: axon $1 ${1#doctor}" | sed 's/ $//' ;;
+    *) echo "axon: no help for '$1'" >&2; exit 1 ;;
+  esac
+}
+
+capability_rows() {
+  "$AXON_ROOT/tools/capability.sh" registry |
+    jq -r '.[] | select(.port != "") | [.name, .port, (.health_path // ""), (.health_url // "")] | @tsv'
+}
+
+capability_url() {
+  local name="$1" port
+  port="$("$AXON_ROOT/tools/capability.sh" registry | jq -r --arg name "$name" '.[] | select(.name == $name and .port != "") | .port' | head -n 1)"
+  [ -n "$port" ] || { echo "axon: capability '$name' has no registered HTTP surface" >&2; exit 1; }
+  echo "http://127.0.0.1:$port"
+}
+
+capability_list() {
+  capability_rows | while IFS="$(printf '\t')" read -r name port health_path health_url; do
+    local url="http://127.0.0.1:$port" probe="$health_url" state
+    [ -n "$probe" ] || probe="$url$health_path"
+    if [ -z "$health_path$health_url" ]; then
+      state="unknown"
+    elif [ "$(curl -sf -o /dev/null -w '%{http_code}' "$probe" 2>/dev/null || true)" = "200" ]; then
+      state="up"
+    else
+      state="down"
+    fi
+    printf '%-18s %-30s %s\n' "$name" "$url" "$state"
+  done
+}
+
+capability_health() {
+  local failed=0
+  while IFS="$(printf '\t')" read -r name port health_path health_url; do
+    [ -n "$health_path$health_url" ] || continue
+    local url="$health_url" code
+    [ -n "$url" ] || url="http://127.0.0.1:$port$health_path"
+    code="$(curl -sf -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+    if [ "$code" = "200" ]; then
+      echo "up    $name  $url"
+    else
+      echo "down  $name  $url  HTTP ${code:-unreachable}"
+      failed=1
+    fi
+  done < <(capability_rows)
+  return "$failed"
+}
+
+capability_call() {
+  local name="$1" method="$2" path="$3"
+  shift 3
+  local base
+  base="$(capability_url "$name")"
+  case "$method" in
+    get) curl -sf "$base$path" "$@" ;;
+    post)
+      local body="${1:-}"
+      [ "$#" -eq 0 ] || shift
+      curl -sf -X POST "$base$path" -H 'Content-Type: application/json' -d "$body" "$@"
+      ;;
+    *) echo "axon: method must be get or post" >&2; exit 1 ;;
+  esac
+}
+
+capability_command() {
+  local command="${1:-list}"
+  shift || true
+  case "$command" in
+    list) capability_list ;;
+    health|status) capability_health ;;
+    url) [ "$#" -eq 1 ] || { echo "usage: axon capability url <capability>" >&2; exit 1; }; capability_url "$1" ;;
+    call) [ "$#" -ge 3 ] || { echo "usage: axon capability call <name> <get|post> <path> [body] [curl-args...]" >&2; exit 1; }; capability_call "$@" ;;
+    ingest)
+      [ "$#" -eq 1 ] || { echo "usage: axon capability ingest <url>" >&2; exit 1; }
+      capability_call comms post /ingest "$(jq -nc --arg url "$1" '{url:$url}')"
+      ;;
+    feed)
+      local days="${1:-7}"
+      case "$days" in *[!0-9]*|'') echo "axon: days must be a positive integer" >&2; exit 1 ;; esac
+      capability_call comms get "/feed?days=$days"
+      ;;
+    *) echo "usage: axon capability {list|health|url|call|ingest|feed}" >&2; exit 1 ;;
+  esac
+}
+
+pack_command() {
+  local command="${1:-}" harness="${2:-}"
+  shift 2 2>/dev/null || true
+  case "$command" in
+    list)
+      case "$harness" in
+        "") bun run "$AXON_ROOT/tools/packs-opencode.ts" list ;;
+        claude) "$AXON_ROOT/tools/packs.sh" list ;;
+        codex) "$AXON_ROOT/tools/packs-codex" status --all ;;
+        opencode) bun run "$AXON_ROOT/tools/packs-opencode.ts" list ;;
+        pi) bun run "$AXON_ROOT/tools/packs-pi.ts" list ;;
+        *) echo "axon: unknown harness '$harness'" >&2; exit 1 ;;
+      esac
+      ;;
+    status|deploy|sync|remove)
+      [ -n "$harness" ] || { echo "usage: axon pack $command <harness> ..." >&2; exit 1; }
+      case "$harness" in
+        claude)
+          if [ "$command" = "status" ]; then
+            "$AXON_ROOT/tools/packs.sh" list
+          else
+            echo "axon: Claude Packs use 'axon pack list claude' and tools/packs.sh link|unlink" >&2
+            exit 1
+          fi
+          ;;
+        codex) "$AXON_ROOT/tools/packs-codex" "$command" "$@" ;;
+        opencode) bun run "$AXON_ROOT/tools/packs-opencode.ts" "$command" "$@" ;;
+        pi) bun run "$AXON_ROOT/tools/packs-pi.ts" "$command" "$@" ;;
+        *) echo "axon: unknown harness '$harness'" >&2; exit 1 ;;
+      esac
+      ;;
+    *) echo "usage: axon pack {list|status|deploy|sync|remove} ..." >&2; exit 1 ;;
+  esac
+}
+
+search() {
+  [ "$#" -gt 0 ] || { echo "usage: axon search <words...>" >&2; exit 1; }
+  local query="$*" lowered
+  lowered="$(printf '%s' "$query" | tr '[:upper:]' '[:lower:]')"
+  echo "Commands:"
+  usage | grep -iF "$query" || true
+  echo
+  echo "Capabilities:"
+  "$AXON_ROOT/tools/capability.sh" registry | jq -r '.[] | [.name, (.kind // "")] | @tsv' | grep -iF "$lowered" || true
+  echo
+  echo "Packs:"
+  bun run "$AXON_ROOT/tools/packs-opencode.ts" list | grep -iF "$lowered" || true
+}
+
+case "${1:-help}" in
+  help) shift; help "${1:-}" ;;
+  -h|--help) usage ;;
+  search) shift; search "$@" ;;
+  doctor) shift; exec "$AXON_ROOT/tools/doctor" "$@" ;;
+  context) shift; exec "$AXON_ROOT/tools/axon-context" "$@" ;;
+  capability) shift; capability_command "$@" ;;
+  pack) shift; pack_command "$@" ;;
+  *) echo "axon: unknown command '$1'" >&2; echo "Run 'axon help'." >&2; exit 1 ;;
+esac

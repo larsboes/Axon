@@ -403,6 +403,14 @@ Ports, enabled capabilities, health, issue state, test counts, graph size and ma
 from manifests and tools at runtime. Prose may keep historical measurements and constants that are
 part of an argument, but it must not claim a changing count that no gate verifies.
 
+### Public CLI
+
+`axon` is the public command interface for humans and agents. Run `axon help` to discover
+operations and `axon search <task>` to narrow the current capability and Pack surface without an
+installed agent skill. Repository policy lives in `AGENTS.md`; command help and capability or Pack
+contracts own operational detail. [`docs/axon-cli.md`](docs/axon-cli.md) defines the interface and
+installation contract.
+
 ## Releases
 
 ### The release line

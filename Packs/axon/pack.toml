@@ -1,6 +1,0 @@
-name        = "axon"
-description = "Operate Axon and work on its repository through one progressively disclosed, dynamically grounded skill."
-skills      = ["axon"]
-retired_skills = ["axon-operate"]
-license     = "MIT"
-deployer    = "packs-axon"

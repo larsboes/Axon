@@ -24,6 +24,26 @@ esac
 
 source "$TOOLS_DIR/lib/toml.sh"
 
+# `axon` is the public human/agent interface, so installation puts a stable launcher in the
+# conventional user bin directory. Never replace an unrelated command: an existing non-symlink
+# requires an explicit operator decision instead of silently changing their PATH behavior.
+AXON_BIN_DIR="$HOME/.local/bin"
+AXON_BIN="$AXON_BIN_DIR/axon"
+if [ -L "$AXON_BIN" ] && [ "$(readlink "$AXON_BIN")" = "$AXON_ROOT/axon" ]; then
+  echo "Axon CLI: $AXON_BIN already points at this checkout."
+elif [ -e "$AXON_BIN" ] || [ -L "$AXON_BIN" ]; then
+  echo "Axon CLI: $AXON_BIN already exists and is not owned by this checkout — leaving it alone."
+  echo "  Run this checkout directly: $AXON_ROOT/axon help"
+else
+  mkdir -p "$AXON_BIN_DIR"
+  ln -s "$AXON_ROOT/axon" "$AXON_BIN"
+  echo "Axon CLI: linked $AXON_BIN -> $AXON_ROOT/axon"
+fi
+case ":$PATH:" in
+  *":$AXON_BIN_DIR:"*) ;;
+  *) echo "Axon CLI: add $AXON_BIN_DIR to PATH to run 'axon' from any directory." ;;
+esac
+
 # Where THIS machine's overlay location gets recorded. Gitignored and per-machine, so a
 # second node never has to edit the tracked axon.toml — that file keeps only a neutral
 # shipped default (consumed by tools/lib/paths.sh as the fallback, not here). See
@@ -217,7 +237,8 @@ echo "Available Packs:"
 "$TOOLS_DIR/packs.sh" list
 echo "Activate for Claude Code: tools/packs.sh link <name>"
 echo "Deploy for Codex:        tools/packs-codex deploy <name>"
-echo "Deploy Axon Pack across harnesses: tools/packs-axon deploy [all|claude|codex|opencode]"
+echo "Deploy for OpenCode:     tools/packs-opencode.ts deploy <name>"
+echo "Select for Pi:           tools/packs-pi.ts deploy <name>"
 
 # 6) Deploy Axon's baseline Claude Code harness settings (auto permission mode, etc.)
 # into ~/.claude/settings.json — a general default Axon delivers on every machine, not
