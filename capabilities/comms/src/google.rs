@@ -24,6 +24,13 @@ use crate::{CommsError, Result};
 
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const THREADS_URL: &str = "https://gmail.googleapis.com/gmail/v1/users/me/threads";
+const LABELS_URL: &str = "https://gmail.googleapis.com/gmail/v1/users/me/labels";
+
+/// The only label Axon creates, and the doctrine's stated ceiling: one state
+/// label, no topic labels. `Finance`, `University`, `Newsletters` and friends
+/// are deliberately absent — a topic label is a second classification competing
+/// with the stream a thread already has, and the two drift.
+pub const WAITING_LABEL: &str = "Waiting";
 /// Courtesy pause between per-thread metadata fetches (see `thread_meta`).
 const THREAD_FETCH_PAUSE: std::time::Duration = std::time::Duration::from_millis(60);
 
@@ -506,6 +513,106 @@ pub fn apply_thread_action(token: &str, id: &str, action: ThreadAction) -> Resul
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct LabelList {
+    #[serde(default)]
+    labels: Vec<Label>,
+}
+
+#[derive(Deserialize)]
+struct Label {
+    id: String,
+    name: String,
+}
+
+/// Resolve `Waiting` to its Gmail label id, creating the label if this account
+/// has never had one.
+///
+/// Looked up by name every call rather than cached. The id is stable, but a
+/// cache would hold it across the operator deleting the label in the Gmail UI,
+/// and the next write would then fail with a 404 that reads like a bug rather
+/// than like "the label is gone". Looking it up costs one request on a path that
+/// is already an explicit, human-triggered action.
+///
+/// `labelListVisibility`/`messageListVisibility` are left at Gmail's defaults on
+/// create, so the label shows up in the sidebar. A state label nobody can see is
+/// a state nobody reviews, which is the whole point of having one.
+pub fn ensure_waiting_label(token: &str) -> Result<String> {
+    let http = client()?;
+    let response = http.get(LABELS_URL).bearer_auth(token).send()?;
+    if !response.status().is_success() {
+        return Err(CommsError::Other(format!(
+            "Gmail label list failed with HTTP {}",
+            response.status()
+        )));
+    }
+
+    if let Some(existing) = response
+        .json::<LabelList>()?
+        .labels
+        .into_iter()
+        .find(|label| label.name == WAITING_LABEL)
+    {
+        return Ok(existing.id);
+    }
+
+    let created = http
+        .post(LABELS_URL)
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "name": WAITING_LABEL }))
+        .send()?;
+    if !created.status().is_success() {
+        return Err(CommsError::Other(format!(
+            "Gmail label create failed with HTTP {}",
+            created.status()
+        )));
+    }
+    Ok(created.json::<Label>()?.id)
+}
+
+/// Add or remove `Waiting` on one thread.
+///
+/// Deliberately *only* the label. It does not archive, and archiving does not
+/// set it. They are two decisions — "this is out of my inbox" and "I am blocked
+/// on someone else" — and folding them together would archive as a side effect
+/// of marking, which is the mutation the doctrine reserves for an explicit ask.
+/// A thread can be Waiting and still sitting in the inbox; that is a valid, and
+/// common, state.
+pub fn set_thread_waiting(token: &str, id: &str, label_id: &str, waiting: bool) -> Result<()> {
+    if !valid_thread_id(id) {
+        return Err(CommsError::Other("invalid Gmail thread id".into()));
+    }
+
+    let http = client()?;
+    let response = waiting_request(&http, THREADS_URL, token, id, label_id, waiting).send()?;
+    if !response.status().is_success() {
+        return Err(CommsError::Other(format!(
+            "Gmail waiting {} failed with HTTP {}",
+            if waiting { "set" } else { "clear" },
+            response.status()
+        )));
+    }
+    Ok(())
+}
+
+fn waiting_request(
+    http: &reqwest::blocking::Client,
+    threads_url: &str,
+    token: &str,
+    id: &str,
+    label_id: &str,
+    waiting: bool,
+) -> reqwest::blocking::RequestBuilder {
+    let body = if waiting {
+        serde_json::json!({ "addLabelIds": [label_id] })
+    } else {
+        serde_json::json!({ "removeLabelIds": [label_id] })
+    };
+    http.post(format!("{threads_url}/{id}/modify"))
+        .bearer_auth(token)
+        .json(&body)
+}
+
 fn thread_action_request(
     http: &reqwest::blocking::Client,
     threads_url: &str,
@@ -675,5 +782,60 @@ mod tests {
             restore_trash.headers()[reqwest::header::CONTENT_LENGTH],
             "0"
         );
+    }
+
+    /// The `Waiting` write touches one label and nothing else.
+    ///
+    /// Asserted on the exact bytes rather than on "it calls modify", because the
+    /// failure that matters here is a body that also carries `removeLabelIds:
+    /// ["INBOX"]` — marking a thread as blocked would then archive it, and the
+    /// doctrine reserves archiving for an explicit ask.
+    #[test]
+    fn waiting_requests_touch_only_the_waiting_label() {
+        let http = client().unwrap();
+
+        let set = waiting_request(
+            &http,
+            "https://gmail.example/threads",
+            "test-token",
+            "18f17d0a9bc123ef",
+            "Label_42",
+            true,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(set.method(), reqwest::Method::POST);
+        assert!(set.url().path().ends_with("/modify"));
+        assert!(set
+            .body()
+            .and_then(reqwest::blocking::Body::as_bytes)
+            .is_some_and(|body| body == br#"{"addLabelIds":["Label_42"]}"#));
+
+        let cleared = waiting_request(
+            &http,
+            "https://gmail.example/threads",
+            "test-token",
+            "18f17d0a9bc123ef",
+            "Label_42",
+            false,
+        )
+        .build()
+        .unwrap();
+        assert!(cleared
+            .body()
+            .and_then(reqwest::blocking::Body::as_bytes)
+            .is_some_and(|body| body == br#"{"removeLabelIds":["Label_42"]}"#));
+    }
+
+    /// The doctrine's ceiling, as a test rather than as a sentence in a README.
+    #[test]
+    fn only_one_label_is_ever_created() {
+        assert_eq!(WAITING_LABEL, "Waiting");
+    }
+
+    #[test]
+    fn waiting_rejects_a_thread_id_that_is_not_one() {
+        assert!(set_thread_waiting("token", "not a thread id", "Label_42", true).is_err());
+        assert!(set_thread_waiting("token", "", "Label_42", true).is_err());
     }
 }

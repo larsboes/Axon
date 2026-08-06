@@ -521,6 +521,12 @@ struct TriageOut {
     gmail_sync_status: Option<String>,
     gmail_sync_action: Option<String>,
     gmail_sync_error: Option<String>,
+    /// The doctrine's one state label. Rendered as a badge rather than folded into
+    /// `status`: status is what Axon decided about a proposal, waiting is what the
+    /// operator decided about the conversation, and collapsing them would make
+    /// "I replied and I'm blocked" indistinguishable from "Axon dismissed it".
+    waiting: bool,
+    waiting_since: Option<String>,
     first_seen: String,
     last_seen: String,
     relevance: Vec<RelevanceOut>,
@@ -551,6 +557,8 @@ impl TriageOut {
             gmail_sync_status: item.gmail_sync_status,
             gmail_sync_action: item.gmail_sync_action,
             gmail_sync_error: item.gmail_sync_error,
+            waiting: item.waiting,
+            waiting_since: item.waiting_since,
             first_seen: item.first_seen,
             last_seen: item.last_seen,
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
@@ -2661,12 +2669,18 @@ async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> (StatusCode, J
     let selected_data_class = body.data_class;
     if !matches!(
         action.as_str(),
-        "dismiss" | "categorize" | "set-data-class" | "archive" | "trash"
+        "dismiss"
+            | "categorize"
+            | "set-data-class"
+            | "archive"
+            | "trash"
+            | "waiting"
+            | "clear-waiting"
     ) {
         return (
             StatusCode::BAD_REQUEST,
             Json(
-                json!({ "error": "action must be dismiss, categorize, set-data-class, archive, or trash" }),
+                json!({ "error": "action must be dismiss, categorize, set-data-class, archive, trash, waiting, or clear-waiting" }),
             ),
         );
     }
@@ -2691,7 +2705,16 @@ async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> (StatusCode, J
         let cfg = Config::load();
         let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
         let gmail_action = ThreadAction::parse(&action);
-        let token = gmail_action.map(|_| google::access_token(&cfg.google_env_path));
+        let waiting_action = matches!(action.as_str(), "waiting" | "clear-waiting");
+        let token = (gmail_action.is_some() || waiting_action)
+            .then(|| google::access_token(&cfg.google_env_path));
+        // Resolved once for the batch, not once per thread: the label id is the
+        // same for every id here, and looking it up a hundred times would spend
+        // a hundred requests to learn the same string.
+        let waiting_label = match (waiting_action, token.as_ref()) {
+            (true, Some(Ok(token))) => Some(google::ensure_waiting_label(token)),
+            _ => None,
+        };
         let mut succeeded = Vec::new();
         let mut failures = Vec::new();
         for id in ids {
@@ -2718,6 +2741,30 @@ async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> (StatusCode, J
                     )
                     .map_err(|error| error.to_string())
                     .map(|updated| updated.then_some(())),
+                // Not queued the way archive and trash are, deliberately.
+                // The queue exists for a mutation with a restore path and a
+                // reconcile story; applying a label has neither. It is
+                // idempotent in Gmail, carries no state to drift, and a failure
+                // leaves nothing half-done — so a retry is just pressing it
+                // again. Gmail first, store second: see `set_triage_waiting`.
+                "waiting" | "clear-waiting" => {
+                    let want = action == "waiting";
+                    match (token.as_ref(), waiting_label.as_ref()) {
+                        (Some(Ok(token)), Some(Ok(label))) => {
+                            google::set_thread_waiting(token, &id, label, want)
+                                .map_err(|error| error.to_string())
+                                .and_then(|()| {
+                                    store
+                                        .set_triage_waiting(&id, want)
+                                        .map_err(|error| error.to_string())
+                                })
+                                .map(|updated| updated.then_some(()))
+                        }
+                        (Some(Err(_)), _) => Err("Google authorization unavailable".to_string()),
+                        (_, Some(Err(error))) => Err(error.to_string()),
+                        _ => Err("Google authorization unavailable".to_string()),
+                    }
+                }
                 "archive" | "trash" => store
                     .queue_gmail_action(&id, action.as_str())
                     .map_err(|error| error.to_string())
@@ -3837,6 +3884,8 @@ mod tests {
             gmail_sync_status: None,
             gmail_sync_action: None,
             gmail_sync_error: None,
+            waiting: false,
+            waiting_since: None,
             first_seen: "2026-08-04 09:31:00+02".into(),
             last_seen: "2026-08-04 09:31:00+02".into(),
         };

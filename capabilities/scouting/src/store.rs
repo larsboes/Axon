@@ -12,10 +12,11 @@
 
 use crate::opportunity::Opportunity;
 use postgres::{Client, NoTls};
-use std::sync::Mutex;
 
 pub struct Store {
-    conn: Mutex<Client>,
+    /// Shared with every other store in this process on the same database, so
+    /// opening one is a checkout rather than a connect.
+    pool: crate::axon_store::Pool,
     schema: String,
 }
 
@@ -33,12 +34,25 @@ impl Store {
     /// always one of those two controlled cases, not because interpolation
     /// into SQL is safe in general.
     fn open_with_schema(database_url: &str, schema: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut client = Client::connect(database_url, NoTls)?;
-        Self::init_schema(&mut client, schema)?;
+        // A pool checkout, not a connect, and the migration runs once per process
+        // per (database, schema) rather than once per open. Both halves of the
+        // Store::open problem -- libs/axon-store/README.md has the numbers.
+        let pool = crate::axon_store::open_pool(database_url, schema, |client| {
+            Self::init_schema(client, schema)
+        })?;
         Ok(Self {
-            conn: Mutex::new(client),
+            pool,
             schema: schema.to_string(),
         })
+    }
+
+    /// A connection from the shared pool, for the duration of one statement.
+    ///
+    /// A `Result` where this used to be `self.conn.lock().unwrap()`: that unwrap
+    /// could only fail on a poisoned mutex, whereas a checkout can genuinely fail
+    /// when the database is down or every connection is busy.
+    fn conn(&self) -> Result<crate::axon_store::PooledClient, Box<dyn std::error::Error>> {
+        Ok(self.pool.get()?)
     }
 
     fn init_schema(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -154,7 +168,7 @@ impl Store {
             )
             .into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!("UPDATE {}.opportunities SET status = $1 WHERE id = $2", self.schema),
             &[&status, &id],
@@ -164,7 +178,7 @@ impl Store {
 
     /// Looks up a single opportunity's current status, if it exists.
     pub fn get_status(&self, id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!("SELECT status FROM {}.opportunities WHERE id = $1", self.schema),
             &[&id],
@@ -180,7 +194,7 @@ impl Store {
     /// whatever cursor was recorded last time, rather than clobbering it).
     pub fn record_run(&self, adapter_name: &str, cursor: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         let now = chrono_now();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         conn.execute(
             &format!(
                 "INSERT INTO {schema}.source_state (adapter_name, last_run_at, cursor)
@@ -198,7 +212,7 @@ impl Store {
     /// Reads back per-adapter run bookkeeping (round-trip counterpart to
     /// `record_run`).
     pub fn get_source_state(&self, adapter_name: &str) -> Result<Option<SourceState>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT adapter_name, last_run_at, cursor FROM {}.source_state WHERE adapter_name = $1",
@@ -251,7 +265,7 @@ impl Store {
         }
         let id = proposed_source_id(adapter, locator);
         let now = chrono_now();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         // `xmax = 0` is Postgres answering "this row is an insert, not an
         // update" for the row the statement just touched. Comparing the stored
         // `found_at` to `now` instead looks equivalent and is not: two
@@ -294,7 +308,7 @@ impl Store {
             )
             .into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT id, adapter, locator, label, found_by, found_at, note, status
@@ -322,7 +336,7 @@ impl Store {
     /// Take a proposal out of the inbox. `Ok(false)` means no such id, which is
     /// not an error: dismissing something twice is the same wish twice.
     pub fn dismiss_proposed_source(&self, id: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.proposed_sources SET status = 'dismissed' WHERE id = $1",
@@ -354,7 +368,7 @@ impl Store {
         let opp_type = format!("{:?}", opp.opportunity_type);
         let src_kind = format!("{:?}", opp.source_kind);
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
 
         let existing = conn.query_opt(
             &format!("SELECT id FROM {}.opportunities WHERE id = $1", self.schema),
@@ -424,7 +438,7 @@ impl Store {
     }
 
     pub fn count(&self) -> Result<i64, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(&format!("SELECT COUNT(*) FROM {}.opportunities", self.schema), &[])?;
         Ok(row.try_get(0)?)
     }
@@ -435,7 +449,7 @@ impl Store {
     /// visibility (e.g. `--backlog --include-dismissed`); `saved` and `new`
     /// always show either way.
     pub fn list_top(&self, limit: usize, include_dismissed: bool) -> Result<Vec<RankedRow>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let sql = if include_dismissed {
             format!(
                 "SELECT id, opportunity_type, source, title, city, starts_at, ends_at, location, score, matched_focus, rationale, url, vault_link, status, country_code, latitude, longitude, raw

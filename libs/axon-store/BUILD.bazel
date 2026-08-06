@@ -1,0 +1,48 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# README.md is exported so the root //:architecture_up_to_date_test can reference
+# it across the package boundary. src/lib.rs is exported because consumers compile
+# it in by `#[path]` include rather than a cargo path dependency — see
+# libs/axon-config/BUILD.bazel for the full reason.
+exports_files(["README.md", "Cargo.toml", "src/lib.rs"])
+
+# libs/axon-store -- a shared library, not a capability (no domain of its own, no
+# upstream verdict, no CLI). See README.md#three-architectural-nouns.
+#
+# Like //libs/content-item and unlike //libs/axon-config this is not std-only: the
+# cross-process gate is a Postgres advisory lock, so it needs a client to take it.
+# That is safe precisely because the file is folded into the consumer's crate and
+# all seven consumers already pin postgres 0.19. Adding any second dependency here
+# is a breaking change to every consumer's resolution -- see README.md.
+rust_library(
+    name = "axon-store",
+    crate_name = "axon_store",
+    # Globbed rather than listed, matching //libs/axon-config: the point is that
+    # the day this becomes two files is not a day anyone has to remember this
+    # file exists.
+    srcs = glob(["src/**/*.rs"]),
+    # The test mod is feature-gated (see Cargo.toml) so the standalone build
+    # enables it and :axon_store_test actually runs.
+    crate_features = ["standalone-tests"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    # Only this standalone target needs a registry, and it borrows the shared one
+    # the same way //libs/content-item does — consumers never see it, because they
+    # fold src/lib.rs in and resolve postgres from their own index.
+    deps = [
+        "@crate_index//:postgres",
+        "@crate_index//:r2d2",
+        "@crate_index//:r2d2_postgres",
+    ],
+)
+
+rust_test(
+    name = "axon_store_test",
+    crate = ":axon-store",
+    size = "small",
+    # Repeated from the library deliberately: `crate = ` recompiles these sources
+    # with --test and does NOT inherit crate_features, so without this the
+    # feature-gated test mod compiles out and the target passes having executed
+    # zero tests. See libs/summarize/BUILD.bazel.
+    crate_features = ["standalone-tests"],
+)

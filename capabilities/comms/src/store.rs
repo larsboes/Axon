@@ -10,10 +10,9 @@
 //! `upsert_preserves_status_across_refetch_*` for the proof.
 
 use postgres::types::ToSql;
-use postgres::{Client, NoTls};
+use postgres::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Mutex;
 
 use crate::evaluation::{EvaluationFactor, EvaluationFactorContext, FeedEvaluation};
 use crate::provenance::{self, StageProvenance};
@@ -21,7 +20,10 @@ use crate::quality::QualityFlag;
 use crate::relevance::RelevanceMatch;
 
 pub struct Store {
-    conn: Mutex<Client>,
+    /// Shared with every other `Store` in this process on the same database. A
+    /// `Store` is now a cheap handle rather than a connection, which is what makes
+    /// 43 handlers each opening one acceptable.
+    pool: crate::axon_store::Pool,
     schema: String,
 }
 
@@ -173,6 +175,13 @@ pub struct TriageItem {
     /// Action owned by the current queued or attention job, if one exists.
     pub gmail_sync_action: Option<String>,
     pub gmail_sync_error: Option<String>,
+    /// The doctrine's one state label, mirrored from Gmail so the board can rank
+    /// and render it without asking Gmail per row. Gmail stays authoritative: this
+    /// is written only after its modify call succeeds.
+    pub waiting: bool,
+    /// Only meaningful while `waiting` is true, and cleared with it. "Blocked since"
+    /// is the question a Waiting list is actually asked.
+    pub waiting_since: Option<String>,
     pub first_seen: String,
     pub last_seen: String,
 }
@@ -427,41 +436,26 @@ impl Store {
         database_url: &str,
         schema: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut client = Client::connect(database_url, NoTls)?;
-        Self::init_schema(&mut client, schema)?;
+        // A pool checkout, not a connect, and the migration runs once per process
+        // per (database, schema) rather than once per open. Both halves of the
+        // Store::open problem -- libs/axon-store/README.md has the numbers.
+        let pool = crate::axon_store::open_pool(database_url, schema, |client| {
+            Self::run_migration(client, schema)
+        })?;
         Ok(Self {
-            conn: Mutex::new(client),
+            pool,
             schema: schema.to_string(),
         })
     }
 
-    /// Serialises the migration below across every process and every thread.
+    /// A connection from the shared pool, for the duration of one statement.
     ///
-    /// `batch_execute` runs as one implicit transaction taking ACCESS EXCLUSIVE
-    /// on roughly fifteen tables, and `Store::open` runs it *every time* — every
-    /// drain tick, every HTTP handler, not once at boot. Two openers firing at
-    /// the same instant deadlock, and Postgres resolves that by killing one.
-    ///
-    /// It surfaced when the digest drain became a third fifteen-minute timer
-    /// beside the enrichment drain and Gmail maintenance, so three sessions
-    /// started migrating together and the loser logged `deadlock detected`. The
-    /// hazard predates that drain: two timers were already colliding on the same
-    /// schedule, just rarely enough to look like weather.
-    ///
-    /// Deliberately a different key from `local_gate.rs` — they guard unrelated
-    /// things, and sharing a number would make each wait on the other.
-    const MIGRATION_LOCK_KEY: i64 = 0x41_58_4F_4E_5F_4D_49_47; // "AXON_MIG"
-
-    fn init_schema(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // The blocking form, not `try`: an opener that cannot migrate yet should
-        // wait for the one that is, not fail. The wait is one DDL batch against
-        // tables that already exist, so it is short.
-        client.execute("SELECT pg_advisory_lock($1)", &[&Self::MIGRATION_LOCK_KEY])?;
-        let migrated = Self::run_migration(client, schema);
-        // Released on both paths. A failed migration that kept the lock would
-        // hang every future opener behind a session that has already given up.
-        let _ = client.execute("SELECT pg_advisory_unlock($1)", &[&Self::MIGRATION_LOCK_KEY]);
-        migrated
+    /// Returns a `Result` where this used to be `self.conn.lock().unwrap()`. That
+    /// unwrap could only fail on a poisoned mutex, which is to say never in
+    /// practice; a checkout can genuinely fail — the database is down, or every
+    /// connection is busy — and a store method has somewhere to put that.
+    fn conn(&self) -> Result<crate::axon_store::PooledClient, Box<dyn std::error::Error>> {
+        Ok(self.pool.get()?)
     }
 
     fn run_migration(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -763,6 +757,15 @@ impl Store {
             ALTER TABLE {schema}.feed_evaluation_factors
                 ADD COLUMN IF NOT EXISTS context_json TEXT;
 
+            -- The doctrine's one state label, mirrored locally so the dashboard
+            -- can rank on it without asking Gmail. Gmail stays authoritative:
+            -- this is only written after its modify call succeeds, and a sweep
+            -- that sees the label gone clears it.
+            ALTER TABLE {schema}.triage_items
+                ADD COLUMN IF NOT EXISTS waiting BOOLEAN NOT NULL DEFAULT false;
+            ALTER TABLE {schema}.triage_items
+                ADD COLUMN IF NOT EXISTS waiting_at TIMESTAMPTZ;
+
             ALTER TABLE {schema}.triage_items
                 ADD COLUMN IF NOT EXISTS classification_method TEXT NOT NULL DEFAULT 'rules';
             ALTER TABLE {schema}.triage_items
@@ -1017,7 +1020,7 @@ impl Store {
         // Gmail internalDate is epoch-ms; convert to fractional epoch-seconds so
         // the bound param is plain double precision for to_timestamp().
         let internal_secs: Option<f64> = item.internal_date_ms.map(|ms| ms as f64 / 1000.0);
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let existing = conn.query_opt(
             &format!("SELECT id FROM {}.triage_items WHERE id = $1", self.schema),
             &[&item.id],
@@ -1099,7 +1102,7 @@ impl Store {
             )
             .into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.triage_items SET
@@ -1127,7 +1130,7 @@ impl Store {
             )
             .into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.triage_items SET
@@ -1150,7 +1153,7 @@ impl Store {
         id: &str,
         classification: &crate::content_item::DataClass,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.triage_items SET
@@ -1185,13 +1188,43 @@ impl Store {
         subject: Option<&str>,
         snippet: Option<&str>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.triage_items SET subject = $1, snippet = $2 WHERE id = $3",
                 self.schema
             ),
             &[&subject, &snippet, &id],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// Record the `Waiting` label locally, after Gmail has already accepted it.
+    ///
+    /// Ordering is the point: Gmail first, this second. A local flag written
+    /// optimistically and then a failed modify call leaves the dashboard showing
+    /// a state the mailbox does not have, and the operator's inbox is the thing
+    /// they actually look at.
+    ///
+    /// `waiting_at` is cleared rather than kept on unset. "Waiting since" is only
+    /// meaningful while it is true, and a stale timestamp on a cleared row reads
+    /// like a currently-blocked thread in any query that forgets to check the
+    /// boolean.
+    pub fn set_triage_waiting(
+        &self,
+        id: &str,
+        waiting: bool,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let mut conn = self.conn()?;
+        let affected = conn.execute(
+            &format!(
+                "UPDATE {}.triage_items
+                    SET waiting = $1,
+                        waiting_at = CASE WHEN $1 THEN now() ELSE NULL END
+                  WHERE id = $2",
+                self.schema
+            ),
+            &[&waiting, &id],
         )?;
         Ok(affected > 0)
     }
@@ -1208,7 +1241,7 @@ impl Store {
             )
             .into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.triage_items SET status = $1 WHERE id = $2",
@@ -1229,7 +1262,7 @@ impl Store {
         if !matches!(action, "archive" | "trash" | "restore") {
             return Err("Gmail action must be archive, trash, or restore".into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = match action {
             "archive" => conn.execute(
                 &format!(
@@ -1282,7 +1315,7 @@ impl Store {
         if !matches!(action, "archive" | "trash" | "restore") {
             return Err("Gmail action must be archive, trash, or restore".into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         let row = transaction.query_opt(
             &format!(
@@ -1347,7 +1380,7 @@ impl Store {
     /// Complete both halves of local state atomically after Gmail is known to
     /// be at the requested location. Replaying a completed job is harmless.
     pub fn complete_gmail_action(&self, job_id: i64) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         let row = transaction.query_opt(
             &format!(
@@ -1425,7 +1458,7 @@ impl Store {
         error: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let bounded_error = error.chars().take(240).collect::<String>();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         let row = transaction.query_opt(
             &format!(
@@ -1469,7 +1502,7 @@ impl Store {
         &self,
         id: &str,
     ) -> Result<GmailActionJob, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         let row = transaction.query_opt(
             &format!(
@@ -1520,7 +1553,7 @@ impl Store {
         &self,
         id: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         let row = transaction.query_opt(
             &format!(
@@ -1557,7 +1590,7 @@ impl Store {
         &self,
         limit: i64,
     ) -> Result<Vec<GmailActionJob>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT job_id, triage_id, action, source_status, attempts
@@ -1584,7 +1617,7 @@ impl Store {
         &self,
         limit: i64,
     ) -> Result<Vec<GmailReconcileCandidate>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT id, status FROM {}.triage_items t
@@ -1616,7 +1649,7 @@ impl Store {
         if !matches!(location, "inbox" | "archive" | "trash") {
             return Err("Gmail location must be inbox, archive, or trash".into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.triage_items SET
@@ -1644,7 +1677,7 @@ impl Store {
     /// metadata. Any queued or attention action is closed because Gmail can no
     /// longer apply it. A Trash retention deadline, if present, remains active.
     pub fn observe_gmail_missing(&self, id: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         transaction.execute(
             &format!(
@@ -1672,7 +1705,7 @@ impl Store {
     /// Remove expired Trash content and any staged cloud copy. Gmail owns its
     /// own Trash retention; this cleanup is strictly Axon's local copy.
     pub fn purge_expired_trashed(&self) -> Result<u64, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         transaction.execute(
             &format!(
@@ -1725,7 +1758,7 @@ impl Store {
             return Err("cloud derivative must be Public or Personal".into());
         }
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "INSERT INTO {schema}.content_cloud_derivatives
@@ -1786,7 +1819,7 @@ impl Store {
         }
 
         let job_id = cloud_job_id(request);
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "WITH approved AS (
@@ -1849,7 +1882,7 @@ impl Store {
         source: &str,
         item_id: &str,
     ) -> Result<Option<StoredDigest>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT source, item_id, text, state, shape, depth, focus, producer,
@@ -1894,7 +1927,7 @@ impl Store {
         &self,
         digest: &StoredDigest,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         conn.execute(
             &format!(
                 // The backoff is computed here, from `now()` and the attempt
@@ -1958,7 +1991,7 @@ impl Store {
         error: Option<&str>,
         producer: &str,
     ) -> Result<u64, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let updated = conn.execute(
             &format!(
                 "UPDATE {}.content_digests
@@ -1984,7 +2017,7 @@ impl Store {
         error: Option<&str>,
         producer: &str,
     ) -> Result<u64, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let updated = conn.execute(
             &format!(
                 "UPDATE {}.content_digests
@@ -2027,7 +2060,7 @@ impl Store {
             "feed" => ("feed_items", "created_at DESC"),
             other => return Err(format!("no digest queue for source {other:?}").into()),
         };
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT i.id
@@ -2058,7 +2091,7 @@ impl Store {
         current_source_revision: &str,
         current_preview_hash: &str,
     ) -> Result<CloudDerivativeState, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT source_revision, preview_hash, approved_at::text
@@ -2130,7 +2163,7 @@ impl Store {
         &self,
         job_id: &str,
     ) -> Result<Option<CloudDispatchJob>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT j.job_id, j.source, j.item_id, j.source_revision,
@@ -2170,7 +2203,7 @@ impl Store {
         &self,
         provider_role: &str,
     ) -> Result<u32, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "SELECT COUNT(*)
@@ -2186,7 +2219,7 @@ impl Store {
     }
 
     pub fn utc_date(&self) -> Result<String, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         Ok(conn
             .query_one(
                 "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
@@ -2205,7 +2238,7 @@ impl Store {
         if !provider_role.starts_with("cloud_") || model.trim().is_empty() {
             return Err("cloud attempt requires a reviewed role and model".into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         // Serialize budget decisions per provider role so two jobs cannot both
         // observe the final free slot and exceed the local hard ceiling.
@@ -2273,7 +2306,7 @@ impl Store {
         result: &serde_json::Value,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let result = serde_json::to_string(result)?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         let attempt_updated = transaction.execute(
             &format!(
@@ -2311,7 +2344,7 @@ impl Store {
         error: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let error: String = error.chars().take(500).collect();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         let attempt_updated = transaction.execute(
             &format!(
@@ -2344,7 +2377,7 @@ impl Store {
         &self,
         id: &str,
     ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT status FROM {}.triage_items WHERE id = $1",
@@ -2360,7 +2393,7 @@ impl Store {
         &self,
         status: Option<&str>,
     ) -> Result<Vec<TriageItem>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let base = format!(
             "SELECT id, from_addr, subject, snippet, internal_date::text, stream, rationale,
                     status, first_seen::text, last_seen::text,
@@ -2372,7 +2405,7 @@ impl Store {
                     (SELECT action FROM {schema}.gmail_action_jobs j
                      WHERE j.triage_id = t.id AND j.state IN ('queued','abandoned')
                      ORDER BY job_id DESC LIMIT 1),
-                    gmail_sync_error
+                    gmail_sync_error, waiting, waiting_at::text
              FROM {schema}.triage_items t",
             schema = self.schema
         );
@@ -2393,7 +2426,7 @@ impl Store {
     /// category and action state stays on `triage_items`; the HTTP adapter
     /// projects it into the same content contract as a normal Feed item.
     pub fn get_triage(&self, id: &str) -> Result<Option<TriageItem>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT id, from_addr, subject, snippet, internal_date::text, stream, rationale,
@@ -2406,7 +2439,7 @@ impl Store {
                         (SELECT action FROM {schema}.gmail_action_jobs j
                          WHERE j.triage_id = t.id AND j.state IN ('queued','abandoned')
                          ORDER BY job_id DESC LIMIT 1),
-                        gmail_sync_error
+                        gmail_sync_error, waiting, waiting_at::text
                  FROM {schema}.triage_items t WHERE id = $1",
                 schema = self.schema
             ),
@@ -2423,7 +2456,7 @@ impl Store {
         triage_id: &str,
         matches: &[RelevanceMatch],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         transaction.execute(
             &format!(
@@ -2460,7 +2493,7 @@ impl Store {
         &self,
         triage_id: &str,
     ) -> Result<Vec<RelevanceMatch>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT profile_key, profile_label, score, rationale, mode, profile_revision
@@ -2491,7 +2524,7 @@ impl Store {
     /// use COALESCE so a re-ingest that lacks them never wipes a previously
     /// stored value. Returns `is_new`.
     pub fn upsert_feed(&self, item: &FeedItem) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let summary_provenance = item.summary.as_ref().map(|_| {
             item.summary_provenance
                 .clone()
@@ -2635,7 +2668,7 @@ impl Store {
     /// ingested before #86 have none — they can only be re-fetched, not
     /// re-normalized, and `renormalize_all` reports them as skipped.
     pub fn get_raw_content(&self, id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT raw FROM {}.feed_raw_content WHERE feed_id = $1",
@@ -2649,7 +2682,7 @@ impl Store {
     /// Every item that has retained raw content, oldest first. The input to a
     /// re-normalization pass.
     pub fn feed_ids_with_raw_content(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT feed_id FROM {}.feed_raw_content ORDER BY extracted_at ASC",
@@ -2669,7 +2702,7 @@ impl Store {
         transcript: Option<&str>,
         content_status: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.feed_items SET transcript = $1, content_status = $2,
@@ -2702,7 +2735,7 @@ impl Store {
             )
             .into());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.feed_items SET status = $1 WHERE id = $2",
@@ -2714,7 +2747,7 @@ impl Store {
     }
 
     pub fn get_feed_status(&self, id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT status FROM {}.feed_items WHERE id = $1",
@@ -2731,7 +2764,7 @@ impl Store {
         summary: &str,
         producer_revision: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.feed_items SET summary = $1, summary_tier = 'model',
@@ -2753,7 +2786,7 @@ impl Store {
         &self,
         id: &str,
     ) -> Result<Vec<StageProvenance>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT r.tier, r.revision, r.extracted_at::text,
@@ -2799,7 +2832,7 @@ impl Store {
         feed_id: &str,
         flags: &[QualityFlag],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         transaction.execute(
             &format!(
@@ -2827,7 +2860,7 @@ impl Store {
         &self,
         limit: usize,
     ) -> Result<Vec<QualityReviewRow>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT q.feed_id, f.title, f.url, f.status, f.content_status,
@@ -2865,7 +2898,7 @@ impl Store {
         error_class: &str,
         producer_revision: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.feed_items SET
@@ -2891,7 +2924,7 @@ impl Store {
         &self,
         producer_revision: Option<&str>,
     ) -> Result<EnrichmentCounts, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "SELECT
@@ -2922,7 +2955,7 @@ impl Store {
     pub fn feed_content_status_counts(
         &self,
     ) -> Result<ContentStatusCounts, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "SELECT
@@ -2945,7 +2978,7 @@ impl Store {
 
     /// Single item incl. transcript (server /feed/:id, keeper export).
     pub fn get_feed(&self, id: &str) -> Result<Option<FeedItem>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT id, stream, kind, title, url, author, summary, transcript, day::text, created_at::text, status,
@@ -2968,7 +3001,7 @@ impl Store {
         days: i32,
         include_dismissed: bool,
     ) -> Result<Vec<FeedItem>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut sql = format!(
             "SELECT DISTINCT f.id, f.stream, f.kind, f.title, f.url, f.author, f.summary, NULL::text, f.day::text, f.created_at::text, f.status,
                     f.content_status, f.summary_attempts, f.summary_last_error, f.summary_next_attempt::text, f.captured_via, f.transcript_source, f.created_at
@@ -3009,7 +3042,7 @@ impl Store {
         &self,
         producer_revision: Option<&str>,
     ) -> Result<Vec<FeedItem>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT id, stream, kind, title, url, author, summary, transcript, day::text, created_at::text, status,
@@ -3035,7 +3068,7 @@ impl Store {
         id: &str,
         producer_revision: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT summary IS NULL OR (summary_tier = 'model'
@@ -3057,7 +3090,7 @@ impl Store {
         days: i32,
         limit: usize,
     ) -> Result<Vec<FeedItem>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT id, stream, kind, title, url, author, summary, transcript, day::text, created_at::text, status,
@@ -3080,7 +3113,7 @@ impl Store {
         feed_id: &str,
         matches: &[RelevanceMatch],
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         let incoming_tier = matches
             .first()
@@ -3133,7 +3166,7 @@ impl Store {
         &self,
         feed_id: &str,
     ) -> Result<Vec<RelevanceMatch>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT profile_key, profile_label, score, rationale, mode, profile_revision
@@ -3162,7 +3195,7 @@ impl Store {
         &self,
         evaluation: &FeedEvaluation,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let mut transaction = conn.transaction()?;
         let tier = provenance::ranking_tier(&evaluation.mode);
         let affected = transaction.execute(
@@ -3238,7 +3271,7 @@ impl Store {
         &self,
         feed_id: &str,
     ) -> Result<Option<FeedEvaluation>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let evaluation = conn.query_opt(
             &format!(
                 "SELECT overall_score, explanation, mode, item_revision,
@@ -3287,7 +3320,7 @@ impl Store {
     }
 
     pub fn evaluation_summary(&self) -> Result<EvaluationSummary, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "SELECT COUNT(*)::bigint,
@@ -3314,7 +3347,7 @@ impl Store {
         revision: &str,
         payload: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         conn.execute(
             &format!(
                 "INSERT INTO {schema}.feed_context_snapshots
@@ -3334,7 +3367,7 @@ impl Store {
     pub fn travel_context_snapshot(
         &self,
     ) -> Result<Option<TravelContextSnapshot>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT revision, payload, refreshed_at::text
@@ -3357,7 +3390,7 @@ impl Store {
         source_ref: &str,
         label: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         conn.execute(
             &format!(
                 "INSERT INTO {schema}.feed_origins
@@ -3377,7 +3410,7 @@ impl Store {
         &self,
         feed_id: &str,
     ) -> Result<Vec<FeedOrigin>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT source_id, source_ref, label
@@ -3397,7 +3430,7 @@ impl Store {
     }
 
     pub fn list_origin_summaries(&self) -> Result<Vec<OriginSummary>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT source_id, COUNT(DISTINCT feed_id), MIN(first_seen)::text, MAX(last_seen)::text
@@ -3429,7 +3462,7 @@ impl Store {
     /// read as one, which is the failure this trades for never having to
     /// migrate a grouping decision.
     pub fn list_feed_runs(&self, days: i32) -> Result<Vec<FeedRun>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "WITH ordered AS (
@@ -3490,7 +3523,7 @@ impl Store {
         cursor: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let now = epoch_now();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         conn.execute(
             &format!(
                 "INSERT INTO {schema}.source_state (source_name, last_run_at, cursor)
@@ -3509,7 +3542,7 @@ impl Store {
         &self,
         source_name: &str,
     ) -> Result<Option<SourceState>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT source_name, last_run_at, cursor, last_success_at, last_failure_at,
@@ -3542,7 +3575,7 @@ impl Store {
         new_items: i64,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let now = epoch_now();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         conn.execute(
             &format!(
                 "INSERT INTO {schema}.source_state
@@ -3572,7 +3605,7 @@ impl Store {
         error_class: &str,
     ) -> Result<i32, Box<dyn std::error::Error>> {
         let now = epoch_now();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "INSERT INTO {schema}.source_state
@@ -3603,7 +3636,7 @@ impl Store {
         if start_hour == end_hour {
             return Ok(false);
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one("SELECT EXTRACT(HOUR FROM now())::INTEGER", &[])?;
         let hour: i32 = row.get(0);
         let (start, end) = (start_hour as i32, end_hour as i32);
@@ -3676,6 +3709,8 @@ fn row_to_triage(r: &postgres::Row) -> TriageItem {
         gmail_sync_status: r.get(21),
         gmail_sync_action: r.get(22),
         gmail_sync_error: r.get(23),
+        waiting: r.get(24),
+        waiting_since: r.get(25),
     }
 }
 
@@ -3759,6 +3794,10 @@ fn epoch_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the test helpers still connect directly: `drop_test_schema` tears down a
+    // schema outside the pool, deliberately, so it works even when the pool is
+    // exhausted or the store under test is broken.
+    use postgres::NoTls;
 
     /// The same connection the binaries use, so a rotated Postgres password
     /// can't leave the tests behind. `Config::load()` reads the overlay's
@@ -3840,6 +3879,8 @@ mod tests {
             gmail_sync_status: None,
             gmail_sync_action: None,
             gmail_sync_error: None,
+            waiting: false,
+            waiting_since: None,
             first_seen: String::new(),
             last_seen: String::new(),
         }
@@ -3899,6 +3940,51 @@ mod tests {
             !store
                 .set_triage_status("thread:missing", "dismissed")
                 .unwrap(),
+            "unknown id -> false"
+        );
+    }
+
+    /// `waiting` is its own axis, and clearing it takes the timestamp with it.
+    ///
+    /// The stale-timestamp case is the one worth pinning: a row left with
+    /// `waiting = false` but a `waiting_at` still set reads as a currently
+    /// blocked thread to any query that ranks on the timestamp and forgets the
+    /// boolean, which is exactly the query someone writes first.
+    #[test]
+    fn waiting_is_recorded_and_fully_cleared() {
+        let (store, schema) = open_test_store("triage_waiting");
+        store
+            .upsert_triage(&mk_triage("thread:w", "aktiv"))
+            .unwrap();
+
+        let waiting_at = || -> Option<String> {
+            let mut conn = store.conn().unwrap();
+            conn.query_one(
+                &format!("SELECT waiting, waiting_at::TEXT FROM {}.triage_items WHERE id = $1", schema.0),
+                &[&"thread:w"],
+            )
+            .map(|row| {
+                let flag: bool = row.get(0);
+                let at: Option<String> = row.get(1);
+                assert_eq!(flag, at.is_some(), "the flag and the timestamp must agree");
+                at
+            })
+            .unwrap()
+        };
+
+        assert!(waiting_at().is_none(), "a fresh proposal is not waiting");
+
+        assert!(store.set_triage_waiting("thread:w", true).unwrap());
+        assert!(waiting_at().is_some(), "marking must stamp when");
+
+        assert!(store.set_triage_waiting("thread:w", false).unwrap());
+        assert!(
+            waiting_at().is_none(),
+            "clearing must drop the timestamp, not only the flag"
+        );
+
+        assert!(
+            !store.set_triage_waiting("thread:missing", true).unwrap(),
             "unknown id -> false"
         );
     }
@@ -3968,7 +4054,7 @@ mod tests {
                 .unwrap();
             assert_eq!(state, if attempt == 5 { "abandoned" } else { "queued" });
             if attempt < 5 {
-                let mut conn = store.conn.lock().unwrap();
+                let mut conn = store.conn().unwrap();
                 conn.execute(
                     &format!(
                         "UPDATE {}.gmail_action_jobs SET next_attempt = now() WHERE job_id = $1",
@@ -4098,7 +4184,7 @@ mod tests {
             .record_gmail_action("thread:archive", "archive")
             .unwrap();
         {
-            let mut conn = store.conn.lock().unwrap();
+            let mut conn = store.conn().unwrap();
             conn.execute(
                 &format!(
                     "UPDATE {}.triage_items SET purge_after = now() - interval '1 second' WHERE id = $1",
@@ -4324,7 +4410,7 @@ mod tests {
         );
         assert!(store.cloud_job_for_dispatch(&job_id).unwrap().is_none());
 
-        let mut conn = store.conn.lock().unwrap();
+        let mut conn = store.conn().unwrap();
         let attempt = conn
             .query_one(
                 &format!(
@@ -4867,8 +4953,7 @@ mod tests {
 
         // Push one item's arrival two hours back: same source, different run.
         store
-            .conn
-            .lock()
+            .conn()
             .unwrap()
             .execute(
                 &format!(
@@ -5202,8 +5287,7 @@ mod tests {
     fn expire_digest_backoff(store: &Store, source: &str, item_id: &str) {
         let schema = store.schema.clone();
         store
-            .conn
-            .lock()
+            .conn()
             .unwrap()
             .execute(
                 &format!(
@@ -5218,15 +5302,17 @@ mod tests {
 
     /// Concurrent openers must not deadlock.
     ///
-    /// `Store::open` migrates every time it is called, and the comms server
-    /// calls it from several timers plus every HTTP handler. Three of those
-    /// timers share a fifteen-minute period, so "two sessions migrate at the
-    /// same instant" is the normal case rather than the rare one. Before the
-    /// migration lock this produced `deadlock detected` in the drain log,
-    /// roughly every other pass.
+    /// `Store::open` used to migrate every time it was called, and the comms
+    /// server calls it from several timers plus every HTTP handler. Three of
+    /// those timers share a fifteen-minute period, so "two sessions migrate at
+    /// the same instant" was the normal case rather than the rare one, and it
+    /// produced `deadlock detected` in the drain log roughly every other pass.
     ///
-    /// Eight at once against one schema, which is more than the server can
-    /// actually produce and fails reliably without the lock.
+    /// Migration now runs once per process per (database, schema), so seven of
+    /// these eight threads do no DDL at all. Kept at eight anyway: this is the
+    /// shape that failed reliably before, and it is the only place the
+    /// in-process guard is exercised under real contention rather than in
+    /// isolation (libs/axon-store has the isolated cases).
     #[test]
     fn concurrent_openers_do_not_deadlock() {
         let schema = format!("comms_test_open_race_{}", std::process::id());
@@ -5261,6 +5347,69 @@ mod tests {
         assert!(
             failures.is_empty(),
             "every concurrent open must succeed, got: {failures:?}"
+        );
+    }
+
+    /// Twenty opens are not twenty connections.
+    ///
+    /// The whole point of the pool, asserted against r2d2's own count rather than
+    /// against a stopwatch: a latency assertion on a shared database is a flake
+    /// generator, while "how many sessions did this open" is the thing that
+    /// actually changed.
+    ///
+    /// The bound is the pool ceiling rather than an exact number, because the test
+    /// binary runs cases in parallel against one process-wide pool per URL and the
+    /// others contribute connections too. It is still the claim that matters:
+    /// before this, twenty opens meant twenty connect-and-authenticate round trips,
+    /// and there was no ceiling at all.
+    #[test]
+    fn many_opens_share_one_pool() {
+        let (store, schema) = open_test_store("pool_shared");
+        let url = test_database_url();
+
+        let opened: Vec<Store> = (0..20)
+            .map(|_| Store::open_with_schema(&url, &schema.0).expect("open"))
+            .collect();
+        assert_eq!(opened.len(), 20);
+
+        let connections = store.pool.state().connections;
+        assert!(
+            connections <= 10,
+            "20 opens produced {connections} connections; the pool ceiling is 10"
+        );
+    }
+
+    /// The second open of a schema this process already migrated does no DDL.
+    ///
+    /// Asserted by removing the schema behind the process's back: an `open` that
+    /// still migrated would put the tables straight back, and the read below
+    /// would succeed. It failing is the proof that the DDL ran exactly once.
+    ///
+    /// That is also the honest cost of the design, which is why it is pinned
+    /// rather than left implicit. Rebuilding a schema dropped underneath a live
+    /// process would mean DDL on every open again, and DDL on every open is the
+    /// deadlock this replaced.
+    #[test]
+    fn a_second_open_does_no_ddl() {
+        let schema = format!("comms_test_migrate_once_{}", std::process::id());
+        let url = test_database_url();
+
+        let first = Store::open_with_schema(&url, &schema).expect("first open migrates");
+        first
+            .list_feed(None, None, 1, false)
+            .expect("the first open must leave a usable schema behind");
+        drop(first);
+
+        drop_test_schema(&schema);
+
+        let second =
+            Store::open_with_schema(&url, &schema).expect("the second open still connects");
+        let read = second.list_feed(None, None, 1, false);
+        drop_test_schema(&schema);
+
+        assert!(
+            read.is_err(),
+            "the second open re-ran the migration; it must trust the first"
         );
     }
 
@@ -5310,8 +5459,7 @@ mod tests {
     fn backoff_seconds(store: &Store, source: &str, item_id: &str) -> Option<f64> {
         let schema = store.schema.clone();
         let row = store
-            .conn
-            .lock()
+            .conn()
             .unwrap()
             .query_one(
                 &format!(
@@ -5347,8 +5495,7 @@ mod tests {
         legacy.summary = Some("Historical generated output".into());
         store.upsert_feed(&legacy).unwrap();
         store
-            .conn
-            .lock()
+            .conn()
             .unwrap()
             .execute(
                 &format!(

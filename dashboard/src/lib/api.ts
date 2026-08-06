@@ -949,6 +949,11 @@ export interface MailContentExtension {
   gmail_sync_status: 'synced' | 'queued' | 'retrying' | 'attention' | null;
   gmail_sync_action: 'archive' | 'trash' | 'restore' | null;
   gmail_sync_error: string | null;
+  /** The doctrine's one state label, mirrored from Gmail. Separate from `status`
+   *  on purpose: status is what Axon decided about a proposal, waiting is what you
+   *  decided about the conversation. */
+  waiting: boolean;
+  waiting_since: string | null;
 }
 
 /** Versioned reader contract shared by Feed sources and mail proposals. */
@@ -1171,6 +1176,11 @@ export interface TriageItem {
   gmail_sync_status: 'synced' | 'queued' | 'retrying' | 'attention' | null;
   gmail_sync_action: 'archive' | 'trash' | 'restore' | null;
   gmail_sync_error: string | null;
+  /** The doctrine's one state label, mirrored from Gmail. Separate from `status`
+   *  on purpose: status is what Axon decided about a proposal, waiting is what you
+   *  decided about the conversation. */
+  waiting: boolean;
+  waiting_since: string | null;
   internal_date: string | null;
   relevance: FeedRelevance[];
 }
@@ -1803,7 +1813,16 @@ export const comms = {
     ),
   bulkTriage: (
     ids: string[],
-    action: 'dismiss' | 'categorize' | 'set-data-class' | 'archive' | 'trash',
+    action:
+      | 'dismiss'
+      | 'categorize'
+      | 'set-data-class'
+      | 'archive'
+      | 'trash'
+      // The doctrine's one state label. It only labels — it does not archive,
+      // and archiving does not set it.
+      | 'waiting'
+      | 'clear-waiting',
     stream?: MailCategory,
     data_class?: DataClass,
   ) =>

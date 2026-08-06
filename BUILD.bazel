@@ -56,6 +56,7 @@ _ARCHITECTURE_INPUTS = [
     "//libs/ai-client:README.md",
     "//libs/axon-config:README.md",
     "//libs/axon-server:README.md",
+    "//libs/axon-store:README.md",
     "//libs/content-item:README.md",
     "//libs/inference:README.md",
     "//libs/markdown-root:README.md",

@@ -54,12 +54,17 @@ rust_library(
         # boundary: lib.rs declares `mod chart`, so leaving this out fails the
         # sandboxed build while `cargo` succeeds.
         "//libs/summarize:src/chart.rs",
+        # When the schema migration runs, and the advisory lock around it. Shared
+        # by all seven capabilities that own a Postgres schema.
+        "//libs/axon-store:src/lib.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
         "@crate_index_comms//:base64",
         "@crate_index_comms//:postgres",
+        "@crate_index_comms//:r2d2",
+        "@crate_index_comms//:r2d2_postgres",
         "@crate_index_comms//:reqwest",
         "@crate_index_comms//:serde",
         "@crate_index_comms//:serde_json",

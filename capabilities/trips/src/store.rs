@@ -1,8 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use postgres::{Client, NoTls, Row};
+use postgres::{Client, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -161,7 +160,9 @@ pub struct PlanDetails {
 }
 
 pub struct TripsStore {
-    conn: Mutex<Client>,
+    /// Shared with every other store in this process on the same database, so
+    /// opening one is a checkout rather than a connect.
+    pool: crate::axon_store::Pool,
     schema: String,
 }
 
@@ -244,16 +245,28 @@ impl TripsStore {
         schema: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         validate_schema(schema)?;
-        let store = Self {
-            conn: Mutex::new(Client::connect(database_url, NoTls)?),
+        // A pool checkout, not a connect, and the migration runs once per process
+        // per (database, schema) rather than once per open. Both halves of the
+        // Store::open problem -- libs/axon-store/README.md has the numbers.
+        let pool = crate::axon_store::open_pool(database_url, schema, |conn| {
+            Self::run_migration(conn, schema)
+        })?;
+        Ok(Self {
+            pool,
             schema: schema.to_string(),
-        };
-        store.init_schema()?;
-        Ok(store)
+        })
     }
 
-    fn init_schema(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+    /// A connection from the shared pool, for the duration of one statement.
+    ///
+    /// A `Result` where this used to be `self.conn.lock().unwrap()`: that unwrap
+    /// could only fail on a poisoned mutex, whereas a checkout can genuinely fail
+    /// when the database is down or every connection is busy.
+    fn conn(&self) -> Result<crate::axon_store::PooledClient, Box<dyn std::error::Error>> {
+        Ok(self.pool.get()?)
+    }
+
+    fn run_migration(conn: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
         conn.batch_execute(&format!(
             "
             CREATE SCHEMA IF NOT EXISTS {schema};
@@ -308,7 +321,7 @@ impl TripsStore {
                 ADD CONSTRAINT plan_items_item_type_check
                 CHECK (item_type IN ('journey','transport','event','activity','place','stay','image','note'));
             ",
-            schema = self.schema
+            schema = schema
         ))?;
         Ok(())
     }
@@ -337,7 +350,7 @@ impl TripsStore {
             .source
             .as_ref()
             .map(|source| source.reference.as_str());
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "INSERT INTO {schema}.plans
@@ -370,7 +383,7 @@ impl TripsStore {
     }
 
     pub fn list_plans(&self) -> Result<Vec<TripPlan>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let rows = conn.query(
             &format!(
                 "SELECT id,title,origin,destinations,date_start,date_end,interests,status,
@@ -386,7 +399,7 @@ impl TripsStore {
     }
 
     pub fn get_plan(&self, id: &str) -> Result<Option<PlanDetails>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let Some(row) = conn.query_opt(
             &format!(
                 "SELECT id,title,origin,destinations,date_start,date_end,interests,status,
@@ -479,7 +492,7 @@ impl TripsStore {
         let travelers_json = serde_json::to_string(&travelers)?;
         let transport_modes_json = serde_json::to_string(&transport_modes)?;
         let stages_json = serde_json::to_string(&stages)?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "UPDATE {schema}.plans SET
@@ -516,7 +529,7 @@ impl TripsStore {
         kind: &str,
         reference: &str,
     ) -> Result<Option<TripPlan>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
                 "SELECT id,title,origin,destinations,date_start,date_end,interests,status,
@@ -559,7 +572,7 @@ impl TripsStore {
         let id = generated_id("trip:item");
         let now = now_text();
         let payload = serde_json::to_string(&input.payload)?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(
                 "INSERT INTO {schema}.plan_items
@@ -598,7 +611,7 @@ impl TripsStore {
         plan_id: &str,
         item_id: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let count = conn.execute(
             &format!(
                 "DELETE FROM {}.plan_items WHERE plan_id = $1 AND id = $2",
@@ -610,7 +623,7 @@ impl TripsStore {
     }
 
     pub fn delete_plan(&self, plan_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn()?;
         let count = conn.execute(
             &format!("DELETE FROM {}.plans WHERE id = $1", self.schema),
             &[&plan_id],

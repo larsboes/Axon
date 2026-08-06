@@ -12,11 +12,15 @@ rust_library(
     # because a glob cannot cross a package boundary.
     srcs = glob(["src/**/*.rs"], exclude = ["src/server.rs"]) + [
         "//libs/axon-config:src/lib.rs",
+        # When the schema migration runs — shared by all seven schema-owning capabilities.
+        "//libs/axon-store:src/lib.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
         "@crate_index_trips//:postgres",
+        "@crate_index_trips//:r2d2",
+        "@crate_index_trips//:r2d2_postgres",
         "@crate_index_trips//:serde",
         "@crate_index_trips//:serde_json",
     ],

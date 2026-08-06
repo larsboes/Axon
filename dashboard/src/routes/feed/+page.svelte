@@ -618,7 +618,7 @@
   }
 
   async function applyBulkMailAction(
-    action: "dismiss" | "categorize" | "set-data-class" | GmailAction,
+    action: "dismiss" | "categorize" | "set-data-class" | GmailAction | "waiting" | "clear-waiting",
   ): Promise<void> {
     if (mailBusy || selectedMail.size === 0) return;
     mailBusy = "bulk";
@@ -761,6 +761,12 @@
           <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("set-data-class")}>Apply data class</button>
         </div>
         <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("dismiss")}>Dismiss from Axon</button>
+        <!-- No confirm step, unlike Archive and Trash: this adds one Gmail label
+             and removing it is the button beside it. The confirm exists for the
+             two actions that take a thread out of the inbox, and putting one on
+             a reversible label would teach the habit of clicking through it. -->
+        <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("waiting")}>Mark Waiting in Gmail</button>
+        <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("clear-waiting")}>Clear Waiting</button>
         <button class="btn" disabled={mailBusy === "bulk"} onclick={() => (confirmingBulkAction = "archive")}>Archive in Axon + Gmail</button>
         <button class="btn danger" disabled={mailBusy === "bulk"} onclick={() => (confirmingBulkAction = "trash")}>Move to Trash</button>
         <button class="btn" disabled={mailBusy === "bulk"} onclick={clearMailSelection}>Clear</button>
@@ -861,6 +867,11 @@
                         <span class="mail-data-class mono" data-class={proposal.data_class}>
                           {dataClassLabel(proposal.data_class)}
                         </span>
+                        {#if proposal.waiting}
+                          <span class="mail-waiting mono">
+                            Waiting{proposal.waiting_since ? ` since ${purgeDateLabel(proposal.waiting_since) ?? proposal.waiting_since}` : ""}
+                          </span>
+                        {/if}
                         {#if proposal.status === "trashed" && purgeDateLabel(proposal.purge_after)}
                           <span class="mail-purge mono">Axon copy retained until {purgeDateLabel(proposal.purge_after)}</span>
                         {/if}
@@ -1643,6 +1654,20 @@
 
   .mail-data-class[data-class="vault"] {
     color: var(--warning);
+  }
+
+  /* Its own colour rather than the data-class pill's grey: a Waiting thread is a
+     thing you are owed, and it has to be findable while scanning a long list. */
+  .mail-waiting {
+    align-self: flex-start;
+    margin-top: 0.4rem;
+    padding: 0.16rem 0.35rem;
+    border: 1px solid var(--accent, var(--card-border));
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--accent, var(--text-secondary));
+    font-size: 0.5625rem;
+    text-transform: uppercase;
   }
 
   .mail-purge {
