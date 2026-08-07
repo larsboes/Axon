@@ -23,7 +23,7 @@
 // launcher pattern (README.md#language-tooling).
 
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
-import { basename, resolve, dirname, join } from "node:path";
+import { basename, resolve, dirname, join, relative } from "node:path";
 // Only the --online reachability probe uses this, to tell a dead hostname from a stopped service.
 // The offline doctor path never calls it, so the report stays network-free where it must be.
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -42,6 +42,23 @@ const HELP = `tools/doctor — health checks for an already-set-up Axon machine.
 
 const AXON_ROOT = resolve(import.meta.dir, "..");
 const HOME = process.env.HOME ?? "";
+
+/// Discover Rust sources recursively so policy checks cover conventional
+/// multi-file binary roots such as `src/server/main.rs`, not only flat crates.
+export function findRustSources(root: string): string[] {
+  if (!existsSync(root)) return [];
+  const sources: string[] = [];
+  const pending = [root];
+  while (pending.length > 0) {
+    const dir = pending.pop()!;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile() && entry.name.endsWith(".rs")) sources.push(path);
+    }
+  }
+  return sources.sort();
+}
 
 function expandHome(p: string): string {
   return p.startsWith("~") ? HOME + p.slice(1) : p;
@@ -1514,9 +1531,8 @@ const CHECKS: Check[] = [
           if (!cap.isDirectory()) continue;
           const srcDir = join(capsDir, cap.name, "src");
           if (!existsSync(srcDir)) continue;
-          for (const f of readdirSync(srcDir)) {
-            if (!f.endsWith(".rs")) continue;
-            const path = join(srcDir, f);
+          for (const path of findRustSources(srcDir)) {
+            const sourcePath = relative(srcDir, path);
             const text = readFileSync(path, "utf8");
             const production = stripRustCfgTestItems(text);
             if (!/\bRouter::new\s*\(/.test(production)) continue; // not a server root
@@ -1524,12 +1540,12 @@ const CHECKS: Check[] = [
             const hand = findProductionListenerConstructs(text);
             if (hand.length === 0) {
               if (!/axon_server::serve_local\s*\(/.test(production)) {
-                ctx.warn(`${label}/${cap.name}/src/${f} builds a Router but neither serves it nor uses axon_server`);
+                ctx.warn(`${label}/${cap.name}/src/${sourcePath} builds a Router but neither serves it nor uses axon_server`);
               }
               continue;
             }
             offenders++;
-            ctx.bad(`${label}/${cap.name}/src/${f} binds its own listener — use axon_server::serve_local (loopback + port contract)`);
+            ctx.bad(`${label}/${cap.name}/src/${sourcePath} binds its own listener — use axon_server::serve_local (loopback + port contract)`);
           }
         }
       }

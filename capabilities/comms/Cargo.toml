@@ -21,7 +21,7 @@ path = "src/main.rs"
 # dashboard/README.md.
 [[bin]]
 name = "comms-server"
-path = "src/server.rs"
+path = "src/server/main.rs"
 
 [[bin]]
 name = "comms-extraction-eval"
