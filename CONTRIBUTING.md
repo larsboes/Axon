@@ -39,6 +39,18 @@ bun test ./tools/
 tools/check-publication-hygiene.sh
 ~~~
 
+The default Bazel command is hermetic and does not require Postgres. Store
+integration tests are deliberately manual and fail rather than skip when their
+database is absent. Run all four against a synthetic database with:
+
+~~~sh
+bazel test //:postgres_integration_tests \
+  --test_env=SCOUTING_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+  --test_env=TRANSIT_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+  --test_env=COMMS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+  --test_env=TASKS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon
+~~~
+
 Run `bun run check` in `dashboard/` when dashboard code changes. Manifest or
 generated-architecture changes also require:
 

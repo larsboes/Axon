@@ -3802,6 +3802,25 @@ fn epoch_now() -> String {
 }
 
 #[cfg(test)]
+mod unit_tests {
+    use super::{canonical_url, feed_id};
+
+    #[test]
+    fn canonical_url_and_feed_id_stable() {
+        assert_eq!(
+            canonical_url("HTTPS://YouTube.com/watch?v=abc/#t=10"),
+            "https://youtube.com/watch?v=abc"
+        );
+        // Identity is stable across trailing slash / fragment / host case.
+        assert_eq!(
+            feed_id("https://example.com/x/"),
+            feed_id("https://EXAMPLE.com/x#frag")
+        );
+        assert_eq!(feed_id("https://a.example").len(), 64);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     // Only the test helpers still connect directly: `drop_test_schema` tears down a
@@ -3919,20 +3938,6 @@ mod tests {
         f.title = Some("A Title".into());
         f.transcript = Some("some transcript".into());
         f
-    }
-
-    #[test]
-    fn canonical_url_and_feed_id_stable() {
-        assert_eq!(
-            canonical_url("HTTPS://YouTube.com/watch?v=abc/#t=10"),
-            "https://youtube.com/watch?v=abc"
-        );
-        // Identity is stable across trailing slash / fragment / host case.
-        assert_eq!(
-            feed_id("https://example.com/x/"),
-            feed_id("https://EXAMPLE.com/x#frag")
-        );
-        assert_eq!(feed_id("https://a.example").len(), 64);
     }
 
     #[test]

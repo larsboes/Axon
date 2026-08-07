@@ -27,12 +27,24 @@ rust_library(
     ],
 )
 
-# The store tests need the shared local Postgres (capabilities/postgres)
-# reachable; `cargo test` remains the day-to-day acceptance gate.
+# The server owns Tasks' hermetic route-contract tests. The library's current
+# test module is entirely Postgres-backed and belongs to the explicit target
+# below instead of making the default suite depend on a service.
 rust_test(
     name = "tasks_test",
+    crate = ":tasks-server",
+    size = "small",
+)
+
+rust_test(
+    name = "tasks_postgres_test",
+    args = ["store::tests::"],
     crate = ":tasks_lib",
     size = "small",
+    tags = [
+        "manual",
+        "postgres-integration",
+    ],
 )
 
 rust_binary(

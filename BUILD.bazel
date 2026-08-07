@@ -16,6 +16,21 @@
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
+# Database-backed Rust tests are explicit and manual so `bazel test //...`
+# stays usable in a fresh clone without a running Axon Postgres service. The
+# suite is the one public entrypoint for CI and contributors who do have the
+# synthetic test database available.
+test_suite(
+    name = "postgres_integration_tests",
+    tests = [
+        "//capabilities/comms:comms_postgres_test",
+        "//capabilities/scouting:scouting_postgres_test",
+        "//capabilities/tasks:tasks_postgres_test",
+        "//capabilities/transit:transit_postgres_test",
+    ],
+    tags = ["manual"],
+)
+
 _ARCHITECTURE_INPUTS = [
     "axon.toml",
     "upstreams.toml",

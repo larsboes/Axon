@@ -28,7 +28,7 @@
 //! `scouting::store`'s `source_state.cursor` already carries.
 
 use crate::travel::Journey;
-use postgres::{Client, NoTls};
+use postgres::Client;
 
 pub struct TransitStore {
     /// Shared with every other store in this process on the same database, so
@@ -570,9 +570,106 @@ fn chrono_now() -> String {
 }
 
 #[cfg(test)]
+mod unit_tests {
+    use super::{stable_session_id, CandidateDest};
+
+    #[test]
+    fn stable_session_id_is_deterministic_and_input_orderindependent() {
+        let cands = vec![
+            CandidateDest {
+                eva: "8300003".into(),
+                name: "Barcelona".into(),
+            },
+            CandidateDest {
+                eva: "8600206".into(),
+                name: "Valencia".into(),
+            },
+        ];
+        let id_a = stable_session_id(
+            "8000044",
+            &cands,
+            "2026-09-01",
+            "2026-09-30",
+            "Valencia or Barcelona",
+        );
+        // Candidate order should NOT change the id (the helper sorts first).
+        let reversed = vec![
+            CandidateDest {
+                eva: "8600206".into(),
+                name: "Valencia".into(),
+            },
+            CandidateDest {
+                eva: "8300003".into(),
+                name: "Barcelona".into(),
+            },
+        ];
+        let id_b = stable_session_id(
+            "8000044",
+            &reversed,
+            "2026-09-01",
+            "2026-09-30",
+            "Valencia or Barcelona",
+        );
+        assert_eq!(id_a, id_b, "candidate order must not change the session id");
+        // Intent is trimmed + lowercased so whitespace/case differences collapse.
+        let id_c = stable_session_id(
+            "8000044",
+            &cands,
+            "2026-09-01",
+            "2026-09-30",
+            "  VALENCIA or barcelona  ",
+        );
+        assert_eq!(
+            id_a, id_c,
+            "intent should be trimmed+lowercased before hashing"
+        );
+        // A different window or origin or candidate set changes the id.
+        assert_ne!(
+            id_a,
+            stable_session_id(
+                "8000044",
+                &cands,
+                "2026-10-01",
+                "2026-09-30",
+                "Valencia or Barcelona"
+            )
+        );
+        assert_ne!(
+            id_a,
+            stable_session_id(
+                "8000050",
+                &cands,
+                "2026-09-01",
+                "2026-09-30",
+                "Valencia or Barcelona"
+            )
+        );
+        let only_val = vec![CandidateDest {
+            eva: "8600206".into(),
+            name: "Valencia".into(),
+        }];
+        assert_ne!(
+            id_a,
+            stable_session_id(
+                "8000044",
+                &only_val,
+                "2026-09-01",
+                "2026-09-30",
+                "Valencia or Barcelona"
+            )
+        );
+        assert!(
+            id_a.starts_with("trip:session:"),
+            "session ids should be namespaced"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::travel::{Leg, Station};
+    use postgres::NoTls;
 
     // Same schema-per-test isolation pattern as scouting::store::tests --
     // see that module's doc comment for the full rationale.
@@ -726,31 +823,6 @@ mod tests {
             total_price: price,
             delay_risk_score: None,
         }
-    }
-
-    #[test]
-    fn stable_session_id_is_deterministic_and_input_orderindependent() {
-        let cands = vec![
-            CandidateDest { eva: "8300003".into(), name: "Barcelona".into() },
-            CandidateDest { eva: "8600206".into(), name: "Valencia".into() },
-        ];
-        let id_a = stable_session_id("8000044", &cands, "2026-09-01", "2026-09-30", "Valencia or Barcelona");
-        // Candidate order should NOT change the id (the helper sorts first).
-        let reversed = vec![
-            CandidateDest { eva: "8600206".into(), name: "Valencia".into() },
-            CandidateDest { eva: "8300003".into(), name: "Barcelona".into() },
-        ];
-        let id_b = stable_session_id("8000044", &reversed, "2026-09-01", "2026-09-30", "Valencia or Barcelona");
-        assert_eq!(id_a, id_b, "candidate order must not change the session id");
-        // Intent is trimmed + lowercased so whitespace/case differences collapse.
-        let id_c = stable_session_id("8000044", &cands, "2026-09-01", "2026-09-30", "  VALENCIA or barcelona  ");
-        assert_eq!(id_a, id_c, "intent should be trimmed+lowercased before hashing");
-        // A different window or origin or candidate set changes the id.
-        assert_ne!(id_a, stable_session_id("8000044", &cands, "2026-10-01", "2026-09-30", "Valencia or Barcelona"));
-        assert_ne!(id_a, stable_session_id("8000050", &cands, "2026-09-01", "2026-09-30", "Valencia or Barcelona"));
-        let only_val = vec![CandidateDest { eva: "8600206".into(), name: "Valencia".into() }];
-        assert_ne!(id_a, stable_session_id("8000044", &only_val, "2026-09-01", "2026-09-30", "Valencia or Barcelona"));
-        assert!(id_a.starts_with("trip:session:"), "session ids should be namespaced");
     }
 
     #[test]
