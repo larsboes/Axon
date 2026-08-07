@@ -17,7 +17,13 @@ set -uo pipefail
 fails=0
 fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 
-command -v bun >/dev/null 2>&1 || { echo "service-runner: bun not on PATH — cannot run"; exit 1; }
+# bun is what holds a real port, so the stop/start half of this file needs it and the
+# apple-container half does not. Skipped rather than fatal, matching protection-zones.test.sh:
+# under `bazel test` the sandbox has no bun on PATH, and refusing to run at all would mean the
+# runtime-gate regression below never executes in CI — which is the whole point of registering
+# this suite (#127). The skip is printed, never silent.
+HAVE_BUN=1
+command -v bun >/dev/null 2>&1 || HAVE_BUN=0
 
 SCRATCH="$(mktemp -d "${TEST_TMPDIR:-/tmp}/service-runner.XXXXXX")"
 ROOT="$SCRATCH/axon"
@@ -47,6 +53,10 @@ cp "$SRC_TOOLS/service-runner.sh" "$SRC_TOOLS/capability.sh" "$ROOT/tools/"
 cp "$SRC_TOOLS"/lib/*.sh "$ROOT/tools/lib/"
 printf 'overlay = "%s"\n' "$OVERLAY" > "$ROOT/axon.toml"
 printf 'os = "linux"\ncontainer_runtime = "docker"\ncapabilities = ["porthog"]\n' > "$OVERLAY/config/machine.toml"
+
+if [ "$HAVE_BUN" -eq 0 ]; then
+  echo "  ⊘ bun not on PATH — the stop/start port checks are skipped"
+else
 
 # A free port, taken from the kernel rather than guessed: a hardcoded number turns this test
 # into a flake on whatever machine already uses it.
@@ -148,6 +158,8 @@ esac
 if "$SR" stop porthog --nohold >/dev/null 2>&1; then
   fail "an unknown flag was accepted"
 fi
+
+fi  # HAVE_BUN
 
 # --- the runtime gate must precede every runtime call (#125) ----------------
 # apple-container's apiserver is a separate launchd XPC service. When it is down, every
