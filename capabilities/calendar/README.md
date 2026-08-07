@@ -483,9 +483,12 @@ returns the moment the rule is corrected — never data. The rule lives in
 
 The correlation layer (effectively the first half of Phase 4 as `capabilities/postgres/README.md` defines it, which
 originally described people/friends windows) is Phase C. Built in
-`src/correlate.rs`: pure functions over a slice of entries, so the verdict rules
+`src/correlate.rs`: a stable facade over pure functions, so the verdict rules
 are unit‑testable without a database and the store stays the only thing that
-queries.
+queries. Its modules follow the domain phases: `feasibility.rs` owns the impact
+policy, `events.rs` owns identity and overlap evidence, `windows.rs` owns query
+and feasible windows, and `trips.rs` owns journey clustering. Cross-phase
+contract tests remain together in `test_suite.rs` beside those modules.
 
 **Verdicts.** A candidate is a date range plus the caller's own id — a
 `scouting.opportunity` id from Feed's Discover view. Every entry overlapping
@@ -656,9 +659,11 @@ resolved file is proven inside the declared root *after* symlink resolution.
 ## Google sync contract
 
 Phase E, built in `src/google.rs` (every rule, pure and fixture‑tested),
-`src/google_sync.rs` (credential, transport, the two runs) and `src/zone.rs`
-(offsets). Google is a **contributing** calendar, never a second source of
-truth.
+`src/google_sync.rs` (the stable facade), its `auth.rs`, `transport.rs`,
+`import.rs`, and `export.rs` domain modules, and `src/zone.rs` (offsets).
+Cross-phase review, duplicate, revision, import, and export tests live beside
+them in `google_sync/test_suite.rs`. Google is a **contributing** calendar,
+never a second source of truth.
 
 ### Import
 

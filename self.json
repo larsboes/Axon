@@ -82,8 +82,8 @@
         "port": "8087"
       },
       "code": {
-        "files": 14,
-        "nodes": 538
+        "files": 24,
+        "nodes": 551
       }
     },
     {
@@ -1270,7 +1270,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 7755,
+    "nodes": 7801,
     "external": 7,
     "stale": [],
     "unmatched": [
