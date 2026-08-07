@@ -7,11 +7,6 @@ license.workspace = true
 description = "Empirical rail punctuality: aggregates published Deutsche Bahn stop history into per-station reliability statistics."
 publish = false
 
-# Temporary until Axon#111 removes the remaining axon-server and axon-store
-# source includes.
-[features]
-standalone-tests = []
-
 [lib]
 name = "punctuality"
 path = "src/lib.rs"
@@ -33,6 +28,8 @@ path = "src/server.rs"
 
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
+axon-server = { path = "../../libs/axon-server" }
+axon-store = { path = "../../libs/axon-store" }
 route-manifest = { path = "../../libs/route-manifest" }
 # arrow-rs (upstreams.toml [arrow-rs]) -- the parquet reader. Pure Rust, which is the
 # reason it is here rather than an embedded database: see
@@ -43,9 +40,8 @@ arrow = "=59.1.0"
 # Sync client, matching scouting/transit: this crate has no async runtime and does not
 # need one -- ingest is a batch job and the CLI is a batch job.
 postgres = "0.19"
-# The sync pool for that client; see upstreams.toml [r2d2]. Carried because
-# libs/axon-store is one #[path]-included file: its migration half and its pool
-# half arrive together.
+# The sync pool for that client; see upstreams.toml [r2d2]. axon-store exposes
+# both the migration gate and the pool through one explicit crate dependency.
 r2d2 = "0.8"
 r2d2_postgres = "0.18"
 reqwest = { version = "0.12", features = ["blocking", "json"] }

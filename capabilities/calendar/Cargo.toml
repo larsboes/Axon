@@ -7,11 +7,6 @@ license.workspace = true
 description = "Axon's calendar layer: availability windows, scoped rhythms, events."
 publish = false
 
-# Temporary until Axon#111 removes the remaining axon-server and axon-store
-# source includes.
-[features]
-standalone-tests = []
-
 [lib]
 name = "calendar"
 path = "src/lib.rs"
@@ -22,6 +17,8 @@ path = "src/server.rs"
 
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
+axon-server = { path = "../../libs/axon-server" }
+axon-store = { path = "../../libs/axon-store" }
 content-item = { path = "../../libs/content-item" }
 markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }

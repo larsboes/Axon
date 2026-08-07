@@ -23,10 +23,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-#[path = "../../../libs/axon-server/src/lib.rs"]
-#[allow(dead_code)]
-mod axon_server;
-
 static STARTED_AT: OnceLock<Instant> = OnceLock::new();
 
 /// One service as the registry renders it. Every field is a string because the

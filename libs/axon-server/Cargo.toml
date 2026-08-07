@@ -15,9 +15,3 @@ path = "src/lib.rs"
 axon-config = { path = "../axon-config" }
 axum = "0.7"
 tokio = { version = "1", features = ["net"] }
-
-# Same contract as libs/axon-config: the test mod runs standalone only, never
-# inside a consumer's test binary (see that crate's Cargo.toml for the why).
-[features]
-default = ["standalone-tests"]
-standalone-tests = []

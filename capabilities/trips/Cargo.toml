@@ -7,11 +7,6 @@ license.workspace = true
 description = "Persistent cross-capability trip plans and itinerary item references."
 publish = false
 
-# Temporary until Axon#111 removes the remaining axon-server and axon-store
-# source includes.
-[features]
-standalone-tests = []
-
 [lib]
 name = "trips"
 path = "src/lib.rs"
@@ -22,6 +17,8 @@ path = "src/server.rs"
 
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
+axon-server = { path = "../../libs/axon-server" }
+axon-store = { path = "../../libs/axon-store" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -11,20 +11,14 @@
 //! start and stop the machine's capabilities, correctly carries none, and a
 //! helper that silently added it would have widened that surface.
 
-//! Consumed by `#[path]` include, not as a cargo dependency: rules_rust's
-//! splicer flattens listed manifests into sibling dirs, which breaks any
-//! `../../libs/...` path dependency — and the repo's own doctrine (transit's
-//! old config comment) prefers folding small shared shapes in as a module
-//! anyway. Each consumer adds
-//! `#[path = "../../../libs/axon-server/src/lib.rs"] mod axon_server;`
-//! to its binary root and gets this compiled against its own crate universe's
-//! axum — which is also what makes the Router type compatible per consumer.
+//! This is a normal workspace crate. Cargo consumers declare a path dependency,
+//! and Bazel consumers depend on `//libs/axon-server:axon-server`; both build
+//! graphs therefore enforce the same boundary and resolve the same `axum` API.
 
 use std::net::SocketAddr;
 
-// Re-exported so a server binary that includes only axon_server still gets the
-// port contract; allow(unused_imports) because not every consumer calls it.
-#[allow(unused_imports)]
+// Re-exported so a server binary that depends only on axon-server still gets the
+// port contract.
 pub use axon_config::resolve_port;
 
 /// Loopback-only address for a capability server. 127.0.0.1 is the policy,
@@ -55,9 +49,7 @@ pub async fn serve_local(name: &str, port: u16, router: axum::Router) {
     }
 }
 
-// Feature-gated like axon-config's tests: standalone only, never compiled into
-// a consumer's test binary via the #[path] include.
-#[cfg(all(test, feature = "standalone-tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

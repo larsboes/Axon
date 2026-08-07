@@ -74,11 +74,10 @@
 //!
 //! ## Dependency rule
 //!
-//! Compiled into consumers by `#[path]` include (see `libs/axon-config/README.md`
-//! for why), so it may only use crates **every** consumer already has: `postgres`,
-//! `r2d2` and `r2d2_postgres`, which all seven store-owning capabilities depend on
-//! at the same versions. Adding any other dependency here silently changes a
-//! consumer's dependency resolution.
+//! This is a normal workspace crate with explicit Cargo and Bazel dependencies.
+//! Its dependency surface stays intentionally narrow: `postgres`, `r2d2` and
+//! `r2d2_postgres` are the complete database stack shared by store-owning
+//! capabilities.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -246,7 +245,7 @@ pub fn migrate_once(
     })
 }
 
-#[cfg(all(test, feature = "standalone-tests"))]
+#[cfg(test)]
 mod tests {
     use super::once_per_target;
     use std::cell::Cell;

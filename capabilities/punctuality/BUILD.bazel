@@ -10,15 +10,13 @@ rust_library(
     crate_root = "src/lib.rs",
     # Globbed rather than listed — see capabilities/scouting/BUILD.bazel for why the
     # hand-maintained inventory was the drift risk (Axon#13). Binary roots excluded because
-    # they are their own crates. The remaining source include belongs to Axon#111.
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]) + [
-        # When the schema migration runs — shared by all seven schema-owning capabilities.
-        "//libs/axon-store:src/lib.rs",
-    ],
+    # they are their own crates.
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]),
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
         "//libs/axon-config:axon-config",
+        "//libs/axon-store:axon-store",
         "@crate_index//:arrow",
         "@crate_index//:parquet",
         "@crate_index//:postgres",
@@ -60,12 +58,12 @@ rust_binary(
 rust_binary(
     name = "punctuality-server",
     crate_root = "src/server.rs",
-    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs"],
+    srcs = ["src/server.rs"],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
         ":punctuality_lib",
-        "//libs/axon-config:axon-config",
+        "//libs/axon-server:axon-server",
         "//libs/route-manifest:route-manifest",
         "@crate_index//:axum",
         "@crate_index//:serde",

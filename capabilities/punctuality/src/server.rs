@@ -197,10 +197,6 @@ async fn handle_station(State(state): State<AppState>, Query(p): Query<StationQu
     Ok(Json(value))
 }
 
-#[path = "../../../libs/axon-server/src/lib.rs"]
-#[allow(dead_code)]
-mod axon_server;
-
 #[tokio::main]
 async fn main() {
     let cfg = Config::load();

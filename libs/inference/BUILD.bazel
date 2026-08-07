@@ -3,10 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # README.md is otherwise private to this package -- exported so the root
 # //:architecture_up_to_date_test can reference it across the package boundary.
 # Visibility only, no effect on the Rust build. See root BUILD.bazel.
-# src/lib.rs is exported because consumers compile it in by `#[path]` include
-# rather than a cargo path dependency -- same reasoning as libs/axon-config,
-# whose BUILD.bazel carries the full story.
-exports_files(["README.md", "Cargo.toml", "src/lib.rs"])
+exports_files(["README.md", "Cargo.toml"])
 
 # libs/inference -- a shared library, not a capability (no domain of its own,
 # no upstream verdict, no CLI). See README.md#three-architectural-nouns.

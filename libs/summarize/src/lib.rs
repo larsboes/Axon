@@ -25,16 +25,12 @@
 //!
 //! ## Dependency rule
 //!
-//! Compiled into consumers by `#[path]` include, like `libs/inference` and
-//! `libs/content-item`, so it may only use crates every consumer already has:
-//! `serde_json` and blocking `reqwest`. It deliberately does **not** name
-//! `libs/inference`'s types: a consumer builds a [`Target`] from whatever it
-//! resolved, so a capability that has no inference module still compiles.
+//! This is a normal workspace crate with an intentionally narrow dependency
+//! surface: `serde_json` and blocking `reqwest`. It deliberately does **not**
+//! name `libs/inference`'s types: a consumer builds a [`Target`] from whatever
+//! it resolved, so a capability that has no inference dependency still compiles.
 
-// Non-inline submodule: rustc resolves it against this file's own directory,
-// which holds under the `#[path]` include too. Bazel globs `src/**/*.rs`, but a
-// consumer naming this lib's sources by label has to name both files.
-#[path = "chart.rs"]
+// Non-inline submodule: rustc resolves it against this file's own directory.
 pub mod chart;
 
 use std::time::Duration;
@@ -726,12 +722,7 @@ pub fn server_error(body: &serde_json::Value) -> Option<ServerError> {
     })
 }
 
-// Gated on the standalone-tests feature rather than bare cfg(test), matching
-// libs/content-item and libs/inference: this file is compiled into every
-// consumer by `#[path]` include, and a lib's own suite has no business running
-// inside each consumer's test binary. //libs/summarize:summarize_test sets the
-// feature and runs them.
-#[cfg(all(test, feature = "standalone-tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

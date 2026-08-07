@@ -15,11 +15,11 @@ use std::collections::HashMap;
 pub struct Store {
     /// Pooled like its six siblings, though this capability is the one that gains
     /// least from it: it opens a store twice per process, not once per request. It
-    /// is here because the shared store lib is a single `#[path]`-included file, so
+    /// is here because the shared axon-store crate owns both migration and pooling, so
     /// a consumer that wants its migration half carries its pool half too — and
     /// carrying the dependency while hand-rolling a second connection strategy
     /// beside it would be the worse of the two outcomes.
-    pool: crate::axon_store::Pool,
+    pool: axon_store::Pool,
     schema: String,
 }
 
@@ -62,7 +62,7 @@ impl Store {
         // A pool checkout, not a connect, and the migration runs once per process
         // per (database, schema) rather than once per open. Both halves of the
         // Store::open problem -- libs/axon-store/README.md has the numbers.
-        let pool = crate::axon_store::open_pool(database_url, schema, |client| {
+        let pool = axon_store::open_pool(database_url, schema, |client| {
             Self::init_schema(client, schema)
         })?;
         Ok(Self { pool, schema: schema.to_string() })
@@ -73,7 +73,7 @@ impl Store {
     /// Held across a whole transaction by `replace_stats`, which is the intended
     /// use of a checkout rather than a problem with one: the connection is this
     /// caller's until it is dropped, and r2d2 hands the next caller a different one.
-    fn conn(&self) -> Result<crate::axon_store::PooledClient, Box<dyn std::error::Error>> {
+    fn conn(&self) -> Result<axon_store::PooledClient, Box<dyn std::error::Error>> {
         Ok(self.pool.get()?)
     }
 

@@ -11,7 +11,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-use crate::inference::{InferenceConfig, ResolvedRole};
+use axon_inference::{InferenceConfig, ResolvedRole};
 use crate::rules::Rule;
 
 #[derive(Debug, Clone, Deserialize, Default)]

@@ -466,10 +466,6 @@ struct ImportAllObsidianTrips {
     origin: PlaceRef,
 }
 
-#[path = "../../../libs/axon-server/src/lib.rs"]
-#[allow(dead_code)]
-mod axon_server;
-
 #[tokio::main]
 async fn main() {
     let config = Config::load();

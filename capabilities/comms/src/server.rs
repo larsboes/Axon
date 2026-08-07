@@ -3303,10 +3303,6 @@ async fn triage_reconcile_handler() -> (StatusCode, Json<Value>) {
     }
 }
 
-#[path = "../../../libs/axon-server/src/lib.rs"]
-#[allow(dead_code)]
-mod axon_server;
-
 /// Drain the summary backlog on an interval, because ingest-triggered
 /// enrichment only ever reaches items that arrive while the inference server is
 /// up. Items ingested during an outage used to sit empty until someone

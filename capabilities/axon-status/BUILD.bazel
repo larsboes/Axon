@@ -7,11 +7,11 @@ exports_files(["README.md", "service.toml"])
 rust_binary(
     name = "axon-status",
     crate_root = "src/main.rs",
-    srcs = ["src/main.rs", "//libs/axon-server:src/lib.rs"],
+    srcs = ["src/main.rs"],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
-        "//libs/axon-config:axon-config",
+        "//libs/axon-server:axon-server",
         "//libs/route-manifest:route-manifest",
         "@crate_index//:axum",
         "@crate_index//:reqwest",

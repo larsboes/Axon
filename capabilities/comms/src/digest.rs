@@ -67,7 +67,7 @@ pub fn role_for(
     cfg: &Config,
     directive: &Directive,
     source_chars: usize,
-) -> Option<crate::inference::ResolvedRole> {
+) -> Option<axon_inference::ResolvedRole> {
     let shape = directive.shape_for(source_chars);
     if directive.depth == Depth::Standard {
         if let Some(light) = cfg.light_summarization_role() {
@@ -95,7 +95,7 @@ pub fn producer_revisions(cfg: &Config) -> Vec<String> {
         .collect()
 }
 
-fn to_target(cfg: &Config, role: &crate::inference::ResolvedRole) -> Target {
+fn to_target(cfg: &Config, role: &axon_inference::ResolvedRole) -> Target {
     let loopback = role.is_loopback();
     Target {
         endpoint: role.chat_completions_endpoint(),

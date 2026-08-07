@@ -563,7 +563,7 @@ dependencies = [
 name = "axon-status"
 version = "0.1.0"
 dependencies = [
- "axon-config",
+ "axon-server",
  "axum",
  "reqwest",
  "route-manifest",
@@ -834,6 +834,8 @@ name = "calendar"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-server",
+ "axon-store",
  "axum",
  "content-item",
  "markdown-root",
@@ -1002,6 +1004,10 @@ name = "comms"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-inference",
+ "axon-server",
+ "axon-store",
+ "axon-summarize",
  "axum",
  "base64 0.22.1",
  "content-item",
@@ -3511,6 +3517,8 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "axon-config",
+ "axon-server",
+ "axon-store",
  "axum",
  "parquet",
  "postgres",
@@ -4035,6 +4043,9 @@ name = "scouting"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-inference",
+ "axon-server",
+ "axon-store",
  "axum",
  "markdown-root",
  "postgres",
@@ -4323,6 +4334,7 @@ name = "soundscape"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-server",
  "axum",
  "route-manifest",
  "serde",
@@ -4519,6 +4531,8 @@ name = "tasks"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-server",
+ "axon-store",
  "axum",
  "content-item",
  "postgres",
@@ -4930,6 +4944,8 @@ name = "transit"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-server",
+ "axon-store",
  "axum",
  "html2text",
  "mailparse",
@@ -4952,6 +4968,8 @@ name = "trips"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-server",
+ "axon-store",
  "axum",
  "postgres",
  "r2d2",

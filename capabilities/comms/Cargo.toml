@@ -7,11 +7,6 @@ license.workspace = true
 description = "Mail/media pipeline: reviewed Gmail triage plus share-link media ingest (metadata + transcript + summary), Postgres-backed."
 publish = false
 
-# Temporary until Axon#111 removes the remaining runtime-heavy source includes.
-# Their unit tests hide behind this feature so they do not run in this crate.
-[features]
-standalone-tests = []
-
 [lib]
 name = "comms"
 path = "src/lib.rs"
@@ -34,6 +29,10 @@ path = "src/extraction_eval_main.rs"
 
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
+axon-inference = { path = "../../libs/inference" }
+axon-server = { path = "../../libs/axon-server" }
+axon-store = { path = "../../libs/axon-store" }
+axon-summarize = { path = "../../libs/summarize" }
 content-item = { path = "../../libs/content-item" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }

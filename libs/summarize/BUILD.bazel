@@ -1,10 +1,8 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 # README.md is exported so the root //:architecture_up_to_date_test can reference
-# it across the package boundary. src/lib.rs is exported because consumers compile
-# it in by `#[path]` include rather than a cargo path dependency -- see
-# libs/axon-config/BUILD.bazel for the full reason.
-exports_files(["README.md", "Cargo.toml", "src/lib.rs", "src/chart.rs"])
+# it across the package boundary.
+exports_files(["README.md", "Cargo.toml"])
 
 # libs/summarize -- a shared library, not a capability (no domain of its own, no
 # upstream verdict, no CLI). See README.md#three-architectural-nouns.
@@ -14,9 +12,6 @@ rust_library(
     # Globbed rather than listed, matching //libs/inference: the day this becomes
     # two files is not a day anyone has to remember this file exists.
     srcs = glob(["src/**/*.rs"]),
-    # The test mod is feature-gated (see Cargo.toml) so the standalone build
-    # enables it and :summarize_test actually runs.
-    crate_features = ["standalone-tests"],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
@@ -29,11 +24,4 @@ rust_test(
     name = "summarize_test",
     size = "small",
     crate = ":summarize",
-    # Repeated from the library deliberately. `crate = ":summarize"` recompiles
-    # these sources with --test and does NOT inherit the library's
-    # crate_features, so without this line the whole
-    # `#[cfg(all(test, feature = "standalone-tests"))]` mod compiles out and
-    # this target passes having executed zero tests. It did exactly that from
-    # the day it was written until 2026-08-06.
-    crate_features = ["standalone-tests"],
 )

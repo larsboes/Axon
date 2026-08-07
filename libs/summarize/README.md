@@ -3,8 +3,8 @@
 One home for **how much digest a thing is worth**.
 
 A shared library, not a capability: no domain of its own, no upstream verdict, no CLI
-(README.md#three-architectural-nouns). Consumers compile it in with a `#[path]` include rather
-than a cargo path dependency, for the same reason `libs/axon-config` does.
+(README.md#three-architectural-nouns). Cargo consumers declare an `axon-summarize` path
+dependency and Bazel consumers depend on `//libs/summarize:summarize`.
 
 ## Why it exists
 
@@ -93,9 +93,8 @@ a source too short to bother with. It is the right answer for most content and i
 
 ## Dependency rule
 
-`serde_json` and blocking `reqwest`, and nothing else — both consumers already carry them, so
-the `#[path]` include adds nothing to their resolution. Adding a third dependency here is a
-breaking change to every consumer.
+`serde_json` and blocking `reqwest`, and nothing else. Keeping this explicit dependency
+surface small limits the runtime and review cost inherited by every consumer.
 
 It deliberately does **not** name `libs/inference`'s types. A caller builds a `Target` from
 whatever role it resolved, so a capability that has no inference module still compiles:

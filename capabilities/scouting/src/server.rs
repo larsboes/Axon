@@ -522,10 +522,6 @@ fn internal_error(error: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
 // the transit crate (see Cargo.toml), so scouting has no HTTP-proxy need
 // toward transit in the first place.
 
-#[path = "../../../libs/axon-server/src/lib.rs"]
-#[allow(dead_code)]
-mod axon_server;
-
 #[tokio::main]
 async fn main() {
     // Config::load() at this point is plain file/env parsing, no DB

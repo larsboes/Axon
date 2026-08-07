@@ -7,10 +7,6 @@ license.workspace = true
 description = "Generic opportunity-discovery pipeline (events/scholarships/etc): scrape, embed, score against an interest profile, rank."
 publish = false
 
-# Temporary until Axon#111 removes the remaining runtime-heavy source includes.
-[features]
-standalone-tests = []
-
 [lib]
 name = "scouting"
 path = "src/lib.rs"
@@ -32,6 +28,9 @@ path = "src/server.rs"
 
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
+axon-inference = { path = "../../libs/inference" }
+axon-server = { path = "../../libs/axon-server" }
+axon-store = { path = "../../libs/axon-store" }
 markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }

@@ -3,8 +3,8 @@
 One home for **when a capability's schema migration runs**.
 
 A shared library, not a capability: no domain of its own, no upstream verdict, no CLI
-(README.md#three-architectural-nouns). Consumers compile it in with a `#[path]` include rather
-than a cargo path dependency, for the same reason `libs/axon-config` does.
+(README.md#three-architectural-nouns). Cargo consumers declare an `axon-store` path
+dependency and Bazel consumers depend on `//libs/axon-store:axon-store`.
 
 ## Why it exists
 

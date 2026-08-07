@@ -25,7 +25,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use axon_config::overlay_config;
-use crate::inference::{InferenceConfig, ResolvedRole, TextRole};
+use axon_inference::{InferenceConfig, ResolvedRole, TextRole};
 use crate::score::TelosProfile;
 
 /// The role name this capability asks for. Declared in `inference.json`.

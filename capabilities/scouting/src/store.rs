@@ -16,7 +16,7 @@ use postgres::Client;
 pub struct Store {
     /// Shared with every other store in this process on the same database, so
     /// opening one is a checkout rather than a connect.
-    pool: crate::axon_store::Pool,
+    pool: axon_store::Pool,
     schema: String,
 }
 
@@ -37,7 +37,7 @@ impl Store {
         // A pool checkout, not a connect, and the migration runs once per process
         // per (database, schema) rather than once per open. Both halves of the
         // Store::open problem -- libs/axon-store/README.md has the numbers.
-        let pool = crate::axon_store::open_pool(database_url, schema, |client| {
+        let pool = axon_store::open_pool(database_url, schema, |client| {
             Self::init_schema(client, schema)
         })?;
         Ok(Self {
@@ -51,7 +51,7 @@ impl Store {
     /// A `Result` where this used to be `self.conn.lock().unwrap()`: that unwrap
     /// could only fail on a poisoned mutex, whereas a checkout can genuinely fail
     /// when the database is down or every connection is busy.
-    fn conn(&self) -> Result<crate::axon_store::PooledClient, Box<dyn std::error::Error>> {
+    fn conn(&self) -> Result<axon_store::PooledClient, Box<dyn std::error::Error>> {
         Ok(self.pool.get()?)
     }
 

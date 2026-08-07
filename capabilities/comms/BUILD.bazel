@@ -26,25 +26,16 @@ rust_library(
     # instance: relevance.rs and vault_links.rs were hand-added in 2026-07 after scouting's
     # list had already gone stale once. Binary roots excluded because they are their own
     # crates; the //libs source stays explicit because a glob cannot cross a package
-    # boundary. Runtime-heavy shared sources remain until Axon#111.
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]) + [
-        "//libs/inference:src/lib.rs",
-        # The adaptive digest engine: the length ladder, the prompt and the
-        # Mermaid gate, shared with calendar rather than living in media.rs.
-        "//libs/summarize:src/lib.rs",
-        # Named separately because a label cannot glob across a package
-        # boundary: lib.rs declares `mod chart`, so leaving this out fails the
-        # sandboxed build while `cargo` succeeds.
-        "//libs/summarize:src/chart.rs",
-        # When the schema migration runs, and the advisory lock around it. Shared
-        # by all seven capabilities that own a Postgres schema.
-        "//libs/axon-store:src/lib.rs",
-    ],
+    # boundary.
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]),
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
         "//libs/axon-config:axon-config",
         "//libs/content-item:content-item",
+        "//libs/axon-store:axon-store",
+        "//libs/inference:inference",
+        "//libs/summarize:summarize",
         "@crate_index//:base64",
         "@crate_index//:postgres",
         "@crate_index//:r2d2",
@@ -108,12 +99,12 @@ rust_binary(
 rust_binary(
     name = "comms-server",
     crate_root = "src/server.rs",
-    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs"],
+    srcs = ["src/server.rs"],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
         ":comms",
-        "//libs/axon-config:axon-config",
+        "//libs/axon-server:axon-server",
         "//libs/route-manifest:route-manifest",
         "@crate_index//:axum",
         "@crate_index//:serde",
