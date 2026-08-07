@@ -11,10 +11,7 @@ publish = false
 name = "axon_inference"
 path = "src/lib.rs"
 
-# Unlike libs/axon-config this is not std-only -- it speaks HTTP and JSON. Every
-# consumer already carries these three, so the `#[path]` include adds nothing to
-# a capability's dependency resolution; the versions here exist for the
-# standalone build and must stay in step with the crate universe.
+# This crate owns its HTTP and JSON dependencies directly.
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

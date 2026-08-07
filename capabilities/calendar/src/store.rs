@@ -53,7 +53,7 @@ fn validate_schema(schema: &str) -> StoreResult<()> {
 pub struct CalendarStore {
     /// Shared with every other store in this process on the same database, so
     /// opening one is a checkout rather than a connect.
-    pool: crate::axon_store::Pool,
+    pool: axon_store::Pool,
     schema: String,
 }
 
@@ -67,7 +67,7 @@ impl CalendarStore {
         // A pool checkout, not a connect, and the migration runs once per process
         // per (database, schema) rather than once per open. Both halves of the
         // Store::open problem -- libs/axon-store/README.md has the numbers.
-        let pool = crate::axon_store::open_pool(database_url, schema, |conn| {
+        let pool = axon_store::open_pool(database_url, schema, |conn| {
             Self::run_migration(conn, schema)
         })?;
         Ok(Self {
@@ -81,7 +81,7 @@ impl CalendarStore {
     /// A `Result` where this used to be `self.conn.lock().unwrap()`: that unwrap
     /// could only fail on a poisoned mutex, whereas a checkout can genuinely fail
     /// when the database is down or every connection is busy.
-    fn conn(&self) -> StoreResult<crate::axon_store::PooledClient> {
+    fn conn(&self) -> StoreResult<axon_store::PooledClient> {
         Ok(self.pool.get()?)
     }
 

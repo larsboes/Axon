@@ -1255,10 +1255,6 @@ async fn markdown_import_selected(
     }
 }
 
-#[path = "../../../libs/axon-server/src/lib.rs"]
-#[allow(dead_code)]
-mod axon_server;
-
 #[cfg(test)]
 mod route_manifest_tests {
     use super::ROUTES;

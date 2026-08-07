@@ -182,10 +182,6 @@ async fn handle_list_trips(
 // dashboard names a concrete need it can't solve with a multi-target dev
 // proxy / reverse proxy on its own side.
 
-#[path = "../../../libs/axon-server/src/lib.rs"]
-#[allow(dead_code)]
-mod axon_server;
-
 #[tokio::main]
 async fn main() {
     let config = Arc::new(Config::load());

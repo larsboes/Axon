@@ -7,11 +7,6 @@ license.workspace = true
 description = "HAFAS journey search, split-ticket solver, rail-ticket confirmation extraction, and Trips/Postgres persistence."
 publish = false
 
-# Temporary until Axon#111 removes the remaining axon-server and axon-store
-# source includes.
-[features]
-standalone-tests = []
-
 [lib]
 name = "transit"
 path = "src/lib.rs"
@@ -35,6 +30,8 @@ path = "src/server.rs"
 
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
+axon-server = { path = "../../libs/axon-server" }
+axon-store = { path = "../../libs/axon-store" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

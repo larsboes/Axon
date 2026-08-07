@@ -30,9 +30,8 @@
 //! form: ordered categories get a line, everything else gets bars. One less
 //! model output to validate, and the same answer every time.
 
-// `super::`, never `crate::`. This file is compiled into its consumers through
-// the parent's `#[path]` include, where `crate` is the *consumer's* root and
-// resolves to nothing; `super` is this lib either way.
+// This is an ordinary submodule of axon-summarize; keep sibling imports grouped
+// through the parent module.
 use super::{complete, truncate, Outcome, Target, INPUT_CAP};
 
 /// Bump with any change to [`chart_prompt`] or the extraction contract.
@@ -348,7 +347,7 @@ pub fn chart(target: Option<&Target>, text: &str, allow_remote: bool) -> Outcome
     }
 }
 
-#[cfg(all(test, feature = "standalone-tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

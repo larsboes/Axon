@@ -6,7 +6,7 @@ use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 
-use crate::inference::ResolvedRole;
+use axon_inference::ResolvedRole;
 
 pub const RESULT_SCHEMA_VERSION: &str = "cloud-content-analysis-v1";
 pub const TASK_VERSION: &str = "content-analysis-v1";

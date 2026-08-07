@@ -7,18 +7,12 @@ license.workspace = true
 description = "Aggregates live health from Axon's own HTTP-surfaced capabilities (transit-server, scout-server) for dashboard. Not LifeOS Pulse -- see capabilities/axon-status/README.md."
 publish = false
 
-# Inert here, and deliberately so: libs/axon-server is `#[path]`-included, and the
-# env-mutating unit tests it re-exports hide behind this feature so they never run inside a
-# consumer's test binary. Declaring it is what stops every build printing unexpected_cfgs.
-[features]
-standalone-tests = []
-
 [[bin]]
 name = "axon-status"
 path = "src/main.rs"
 
 [dependencies]
-axon-config = { path = "../../libs/axon-config" }
+axon-server = { path = "../../libs/axon-server" }
 route-manifest = { path = "../../libs/route-manifest" }
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }

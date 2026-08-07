@@ -23,7 +23,7 @@ pub struct Store {
     /// Shared with every other `Store` in this process on the same database. A
     /// `Store` is now a cheap handle rather than a connection, which is what makes
     /// 43 handlers each opening one acceptable.
-    pool: crate::axon_store::Pool,
+    pool: axon_store::Pool,
     schema: String,
 }
 
@@ -439,7 +439,7 @@ impl Store {
         // A pool checkout, not a connect, and the migration runs once per process
         // per (database, schema) rather than once per open. Both halves of the
         // Store::open problem -- libs/axon-store/README.md has the numbers.
-        let pool = crate::axon_store::open_pool(database_url, schema, |client| {
+        let pool = axon_store::open_pool(database_url, schema, |client| {
             Self::run_migration(client, schema)
         })?;
         Ok(Self {
@@ -454,7 +454,7 @@ impl Store {
     /// unwrap could only fail on a poisoned mutex, which is to say never in
     /// practice; a checkout can genuinely fail — the database is down, or every
     /// connection is busy — and a store method has somewhere to put that.
-    fn conn(&self) -> Result<crate::axon_store::PooledClient, Box<dyn std::error::Error>> {
+    fn conn(&self) -> Result<axon_store::PooledClient, Box<dyn std::error::Error>> {
         Ok(self.pool.get()?)
     }
 

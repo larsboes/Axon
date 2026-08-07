@@ -31,13 +31,13 @@ than Bazel because every Rust capability is its own Bazel package, so a root-lev
 cannot reach these sources and a hand-maintained label list is the thing that rots
 (README.md#documentation-stays-owned-and-current, same reasoning as the decision path-rot sweep).
 
-## Bazel shape
+## Build boundary
 
-Consumed by `#[path]` include, not as a Bazel dep: each consumer lists
-`//libs/axon-server:src/lib.rs` in its **srcs** and adds the `#[path]` module to its
-binary root, so the file compiles against that consumer's own crate universe. That is
-what keeps the `axum::Router` type compatible per consumer. The `rust_library` target
-here exists to run this crate's own tests, not to be depended on.
+This is a normal workspace crate in both build graphs. Cargo consumers declare an
+`axon-server` path dependency and Bazel consumers depend on
+`//libs/axon-server:axon-server`. The shared crate universe keeps the `axum::Router`
+type identical across the library and its consumers, while dependency queries expose
+the actual architectural edge.
 
 ## Consumers
 

@@ -3,8 +3,8 @@
 One home for **which model answers which job on this machine**.
 
 A shared library, not a capability: no domain of its own, no upstream verdict, no CLI
-(README.md#three-architectural-nouns). Consumers compile it in with a `#[path]` include rather than a cargo
-path dependency, for the same reason `libs/axon-config` does.
+(README.md#three-architectural-nouns). Cargo consumers declare an `axon-inference` path
+dependency and Bazel consumers depend on `//libs/inference:inference`.
 
 ## Why it exists
 

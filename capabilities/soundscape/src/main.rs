@@ -29,10 +29,6 @@ use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 use tower_http::services::{ServeDir, ServeFile};
 
-#[path = "../../../libs/axon-server/src/lib.rs"]
-#[allow(dead_code)]
-mod axon_server;
-
 const PRESETS: [&str; 6] = ["edm", "ambient", "lofi", "focus", "relax", "sleep"];
 const SCENARIOS: [&str; 5] = ["deep-work", "reading", "reset", "wind-down", "timer"];
 const MAX_SESSION_MS: u64 = 8 * 60 * 60 * 1000;

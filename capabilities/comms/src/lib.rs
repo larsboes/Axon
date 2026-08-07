@@ -7,30 +7,8 @@
 //! archive or move-to-Trash actions for a stored proposal. Permanent deletion,
 //! sending, and arbitrary label changes are outside this capability.
 
-// Shared model-role resolution. Comms owns Feed behavior; libs/inference owns
-// which backend and model perform embedding or summarization on this machine.
-#[path = "../../../libs/inference/src/lib.rs"]
-#[allow(dead_code)]
-pub(crate) mod inference;
-
 pub use content_item;
-
-// The adaptive digest engine. It used to be `media::summarize` -- one prompt,
-// one token ceiling, reachable only from the feed ingest path. Three sources
-// want the same artifact, so the ladder, the prompt and the Mermaid gate moved
-// out where calendar can include them on the same terms.
-#[path = "../../../libs/summarize/src/lib.rs"]
-#[allow(dead_code)]
-pub mod summarize;
-
-// When the schema migration runs, and what stops two sessions running it at
-// once. This crate is where that went wrong: 43 handlers and five timers each
-// calling `Store::open`, each running the whole migration. The mechanism moved
-// out to where the other six store-owning capabilities include it on the same
-// terms; libs/axon-store/README.md has the deadlock it removes.
-#[path = "../../../libs/axon-store/src/lib.rs"]
-#[allow(dead_code)]
-pub(crate) mod axon_store;
+pub use axon_summarize as summarize;
 
 pub mod cloud_derivative;
 pub mod cloud_dispatch;

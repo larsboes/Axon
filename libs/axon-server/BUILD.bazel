@@ -2,22 +2,14 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 # README.md is otherwise private to this package -- exported so the root
 # //:architecture_up_to_date_test can reference it across the package boundary.
-# src/lib.rs is exported because consumers compile it in by `#[path]` include
-# (see the file's own header). The include gives every consumer an axon_server
-# compiled in the same crate while the root workspace keeps the external axum
-# dependency common to all consumers.
-exports_files(["README.md", "Cargo.toml", "src/lib.rs"])
+# Visibility only, no effect on the Rust build.
+exports_files(["README.md", "Cargo.toml"])
 
-# Standalone build of the shared source, compiled against the root workspace's
-# universe so the crate's own test target has an axum to link -- the
-# real consumers never depend on this target, they include the source file.
 rust_library(
     name = "axon-server",
     crate_name = "axon_server",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
-    # See Cargo.toml: the test mod runs standalone only.
-    crate_features = ["standalone-tests"],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
@@ -31,9 +23,4 @@ rust_test(
     name = "axon_server_test",
     crate = ":axon-server",
     size = "small",
-    # Repeated from the library deliberately: `crate = ` recompiles these
-    # sources with --test and does NOT inherit crate_features, so without
-    # this the feature-gated test mod compiles out and the target passes
-    # having executed zero tests. See libs/summarize/BUILD.bazel.
-    crate_features = ["standalone-tests"],
 )
