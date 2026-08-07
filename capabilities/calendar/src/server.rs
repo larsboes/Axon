@@ -1259,11 +1259,6 @@ async fn markdown_import_selected(
 #[allow(dead_code)]
 mod axon_server;
 
-// The self-describing surface, on the same include terms.
-#[path = "../../../libs/route-manifest/src/lib.rs"]
-#[allow(dead_code)]
-mod route_manifest;
-
 #[cfg(test)]
 mod route_manifest_tests {
     use super::ROUTES;
@@ -1273,7 +1268,7 @@ mod route_manifest_tests {
     /// fails here rather than shipping a surface that lies about itself.
     #[test]
     fn the_manifest_covers_every_served_route() {
-        let missing = super::route_manifest::undeclared_routes(include_str!("server.rs"), ROUTES);
+        let missing = route_manifest::undeclared_routes(include_str!("server.rs"), ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

@@ -262,7 +262,7 @@ pub struct Config {
 // One implementation, in libs/axon-config, re-exported under the name this
 // module's call sites already use. comms was the last capability still carrying
 // its own copies of these helpers.
-pub(crate) use crate::axon_config::expand_tilde;
+pub(crate) use axon_config::expand_tilde;
 
 /// Resolve an API-key reference without ever storing or logging its value.
 /// JSON files use `.auth.api_key` (the oMLX settings shape); non-JSON files use
@@ -301,7 +301,7 @@ fn config_path() -> PathBuf {
     if let Ok(p) = std::env::var("AXON_COMMS_CONFIG") {
         return expand_tilde(&p);
     }
-    if let Some(p) = crate::axon_config::overlay_config("comms.json") {
+    if let Some(p) = axon_config::overlay_config("comms.json") {
         return p;
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("comms.config.json")
@@ -316,11 +316,11 @@ fn config_path() -> PathBuf {
 /// password containing an `@`. The shared one uses `rfind` and has a test
 /// pinning that case.
 pub fn redact_database_url(url: &str) -> String {
-    crate::axon_config::redact_dsn(url)
+    axon_config::redact_dsn(url)
 }
 
 fn default_google_env_path() -> PathBuf {
-    crate::axon_config::overlay_config("comms.env").unwrap_or_else(|| PathBuf::from("comms.env"))
+    axon_config::overlay_config("comms.env").unwrap_or_else(|| PathBuf::from("comms.env"))
 }
 
 fn load_file_config() -> FileConfig {
@@ -345,7 +345,7 @@ impl Config {
         // build: the URL userinfo form mangles a base64 password containing `/`, and
         // the sibling capabilities all fall back the same way.
         let database_url = file.database_url.unwrap_or_else(|| {
-            crate::axon_config::postgres_conn_from_shared_env().unwrap_or_else(|| {
+            axon_config::postgres_conn_from_shared_env().unwrap_or_else(|| {
                 "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
             })
         });
@@ -357,7 +357,7 @@ impl Config {
 
         // The runner's port contract, resolved in one place for every capability.
         // No capability-specific escape-hatch env var here: comms never had one.
-        let port = crate::axon_config::resolve_port(None, file.port, 8083);
+        let port = axon_config::resolve_port(None, file.port, 8083);
         let api_secret = api_key_from_file(file.api_secret_file.as_deref());
         let dashboard_origin = file
             .dashboard_origin
@@ -371,7 +371,7 @@ impl Config {
             .inbox_sweep_quiet_hours
             .as_deref()
             .and_then(parse_quiet_hours);
-        let inference = InferenceConfig::load(crate::axon_config::overlay_config);
+        let inference = InferenceConfig::load(axon_config::overlay_config);
         let keeper_export_dir = file.keeper_export_dir.map(|p| expand_tilde(&p));
         let mut relevance = file.relevance.unwrap_or_default();
         relevance.profile_paths = relevance

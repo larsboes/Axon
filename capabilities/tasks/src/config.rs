@@ -5,7 +5,7 @@
 //!   2. values from `$AXON_PERSONAL_ROOT/config/postgres.env`
 //!   3. a localhost development fallback
 
-use crate::axon_config::{postgres_conn_from_shared_env, resolve_port};
+use axon_config::{postgres_conn_from_shared_env, resolve_port};
 
 #[derive(Debug, Clone)]
 pub struct Config {

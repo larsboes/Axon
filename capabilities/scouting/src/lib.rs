@@ -15,27 +15,11 @@ pub mod sources;
 pub mod store;
 pub mod vault_linker;
 
-// Shared config helpers, compiled in by #[path] include rather than a cargo
-// dependency: rules_rust's splicer flattens listed manifests and breaks
-// ../../libs path deps, and folding a small shared shape in as a module is
-// this repo's stated preference anyway (libs/axon-config/README.md).
-#[path = "../../../libs/axon-config/src/lib.rs"]
-#[allow(dead_code)]
-pub(crate) mod axon_config;
-
-// Which model answers which job on this machine. Same #[path] reasoning as
-// axon_config above; libs/inference/README.md has the shape.
+// Which model answers which job on this machine. This runtime-heavy source
+// include is migrated separately in Axon#111.
 #[path = "../../../libs/inference/src/lib.rs"]
 #[allow(dead_code)]
 pub(crate) mod inference;
-
-// Bounded reads out of a declared markdown root, on the same include terms.
-// Two resolvers used to live in this crate — one in score.rs, one in
-// sources/obsidian_md.rs — already diverged, and neither asked whether the
-// file it returned was inside the root. libs/markdown-root/README.md.
-#[path = "../../../libs/markdown-root/src/lib.rs"]
-#[allow(dead_code)]
-pub(crate) mod markdown_root;
 
 // When the schema migration runs, and the advisory lock around it. Seven
 // capabilities own a Postgres schema and all seven used to migrate on every

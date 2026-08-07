@@ -479,12 +479,10 @@
       "from": "axon-server",
       "to": "axon-config",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "libs/axon-server/BUILD.bazel",
-        "libs/axon-server/src/lib.rs"
+        "libs/axon-server/BUILD.bazel"
       ]
     },
     {
@@ -513,24 +511,20 @@
       "from": "axon-status",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/axon-status/BUILD.bazel",
-        "capabilities/axon-status/src/main.rs"
+        "capabilities/axon-status/BUILD.bazel"
       ]
     },
     {
       "from": "calendar",
       "to": "axon-config",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/calendar/BUILD.bazel",
-        "capabilities/calendar/src/lib.rs"
+        "capabilities/calendar/BUILD.bazel"
       ]
     },
     {
@@ -561,48 +555,40 @@
       "from": "calendar",
       "to": "content-item",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/calendar/BUILD.bazel",
-        "capabilities/calendar/src/lib.rs"
+        "capabilities/calendar/BUILD.bazel"
       ]
     },
     {
       "from": "calendar",
       "to": "markdown-root",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/calendar/BUILD.bazel",
-        "capabilities/calendar/src/lib.rs"
+        "capabilities/calendar/BUILD.bazel"
       ]
     },
     {
       "from": "calendar",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/calendar/BUILD.bazel",
-        "capabilities/calendar/src/server.rs"
+        "capabilities/calendar/BUILD.bazel"
       ]
     },
     {
       "from": "comms",
       "to": "axon-config",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/comms/BUILD.bazel",
-        "capabilities/comms/src/lib.rs"
+        "capabilities/comms/BUILD.bazel"
       ]
     },
     {
@@ -633,12 +619,10 @@
       "from": "comms",
       "to": "content-item",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/comms/BUILD.bazel",
-        "capabilities/comms/src/lib.rs"
+        "capabilities/comms/BUILD.bazel"
       ]
     },
     {
@@ -657,12 +641,10 @@
       "from": "comms",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/comms/BUILD.bazel",
-        "capabilities/comms/src/server.rs"
+        "capabilities/comms/BUILD.bazel"
       ]
     },
     {
@@ -681,12 +663,10 @@
       "from": "punctuality",
       "to": "axon-config",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/punctuality/BUILD.bazel",
-        "capabilities/punctuality/src/lib.rs"
+        "capabilities/punctuality/BUILD.bazel"
       ]
     },
     {
@@ -717,24 +697,20 @@
       "from": "punctuality",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/punctuality/BUILD.bazel",
-        "capabilities/punctuality/src/server.rs"
+        "capabilities/punctuality/BUILD.bazel"
       ]
     },
     {
       "from": "scouting",
       "to": "axon-config",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/scouting/BUILD.bazel",
-        "capabilities/scouting/src/lib.rs"
+        "capabilities/scouting/BUILD.bazel"
       ]
     },
     {
@@ -777,24 +753,20 @@
       "from": "scouting",
       "to": "markdown-root",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/scouting/BUILD.bazel",
-        "capabilities/scouting/src/lib.rs"
+        "capabilities/scouting/BUILD.bazel"
       ]
     },
     {
       "from": "scouting",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/scouting/BUILD.bazel",
-        "capabilities/scouting/src/server.rs"
+        "capabilities/scouting/BUILD.bazel"
       ]
     },
     {
@@ -811,12 +783,10 @@
       "from": "soundscape",
       "to": "axon-config",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/soundscape/BUILD.bazel",
-        "capabilities/soundscape/src/main.rs"
+        "capabilities/soundscape/BUILD.bazel"
       ]
     },
     {
@@ -835,24 +805,20 @@
       "from": "soundscape",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/soundscape/BUILD.bazel",
-        "capabilities/soundscape/src/main.rs"
+        "capabilities/soundscape/BUILD.bazel"
       ]
     },
     {
       "from": "tasks",
       "to": "axon-config",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/tasks/BUILD.bazel",
-        "capabilities/tasks/src/lib.rs"
+        "capabilities/tasks/BUILD.bazel"
       ]
     },
     {
@@ -883,36 +849,30 @@
       "from": "tasks",
       "to": "content-item",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/tasks/BUILD.bazel",
-        "capabilities/tasks/src/lib.rs"
+        "capabilities/tasks/BUILD.bazel"
       ]
     },
     {
       "from": "tasks",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/tasks/BUILD.bazel",
-        "capabilities/tasks/src/server.rs"
+        "capabilities/tasks/BUILD.bazel"
       ]
     },
     {
       "from": "transit",
       "to": "axon-config",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/transit/BUILD.bazel",
-        "capabilities/transit/src/lib.rs"
+        "capabilities/transit/BUILD.bazel"
       ]
     },
     {
@@ -943,24 +903,20 @@
       "from": "transit",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/transit/BUILD.bazel",
-        "capabilities/transit/src/server.rs"
+        "capabilities/transit/BUILD.bazel"
       ]
     },
     {
       "from": "trips",
       "to": "axon-config",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/trips/BUILD.bazel",
-        "capabilities/trips/src/lib.rs"
+        "capabilities/trips/BUILD.bazel"
       ]
     },
     {
@@ -991,12 +947,10 @@
       "from": "trips",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label",
-        "rust-path"
+        "bazel-label"
       ],
       "evidence": [
-        "capabilities/trips/BUILD.bazel",
-        "capabilities/trips/src/server.rs"
+        "capabilities/trips/BUILD.bazel"
       ]
     }
   ],

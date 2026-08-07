@@ -15,17 +15,13 @@ rust_library(
     name = "axon-server",
     crate_name = "axon_server",
     crate_root = "src/lib.rs",
-    # Globbed rather than listed — see capabilities/scouting/BUILD.bazel (Axon#13). The
-    # //libs/axon-config source stays explicit: a glob cannot cross a package boundary, and
-    # its presence is exactly why crate_root above is not optional.
-    srcs = glob(["src/**/*.rs"]) + [
-        "//libs/axon-config:src/lib.rs",
-    ],
+    srcs = glob(["src/**/*.rs"]),
     # See Cargo.toml: the test mod runs standalone only.
     crate_features = ["standalone-tests"],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
+        "//libs/axon-config:axon-config",
         "@crate_index//:axum",
         "@crate_index//:tokio",
     ],

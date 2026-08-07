@@ -1,19 +1,14 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 # README.md is exported so the root //:architecture_up_to_date_test can reference
-# it across the package boundary. src/lib.rs is exported because consumers compile
-# it in by `#[path]` include rather than a cargo path dependency — see
-# libs/axon-config/BUILD.bazel for the full reason.
-exports_files(["README.md", "Cargo.toml", "src/lib.rs"])
+# it across the package boundary.
+exports_files(["README.md", "Cargo.toml"])
 
 # libs/content-item -- a shared library, not a capability (no domain of its own,
 # no upstream verdict, no CLI). See README.md#three-architectural-nouns.
 #
 # Unlike //libs/axon-config this is not std-only: it needs serde to be a
-# serialization contract at all. That is safe precisely because the file is
-# folded into the consumer's crate, and both consumers (comms, calendar) already
-# depend on serde and serde_json. Adding any third dependency here is a breaking
-# change to every consumer's resolution -- see README.md.
+# serialization contract at all.
 rust_library(
     name = "content-item",
     crate_name = "content_item",
@@ -21,14 +16,8 @@ rust_library(
     # the day this becomes two files is not a day anyone has to remember this
     # file exists.
     srcs = glob(["src/**/*.rs"]),
-    # The test mod is feature-gated (see Cargo.toml) so the standalone build
-    # enables it and :content_item_test actually runs.
-    crate_features = ["standalone-tests"],
     edition = "2021",
     visibility = ["//visibility:public"],
-    # Only this standalone target needs a registry, and it borrows the shared
-    # one the same way //libs/inference does — consumers never see it, because
-    # they fold src/lib.rs in and resolve serde from their own index.
     deps = [
         "@crate_index//:serde",
         "@crate_index//:serde_json",
@@ -39,9 +28,4 @@ rust_test(
     name = "content_item_test",
     crate = ":content-item",
     size = "small",
-    # Repeated from the library deliberately: `crate = ` recompiles these
-    # sources with --test and does NOT inherit crate_features, so without
-    # this the feature-gated test mod compiles out and the target passes
-    # having executed zero tests. See libs/summarize/BUILD.bazel.
-    crate_features = ["standalone-tests"],
 )

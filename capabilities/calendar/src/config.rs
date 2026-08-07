@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::axon_config::{expand_tilde, overlay_config, postgres_conn_from_shared_env, resolve_port};
+use axon_config::{expand_tilde, overlay_config, postgres_conn_from_shared_env, resolve_port};
 
 /// Where the Google credential and the calendar to sync are named.
 #[derive(Debug, Clone, Deserialize)]
@@ -171,7 +171,7 @@ impl Config {
             // A conflict resolves to None deliberately: the caller's own
             // refuse-to-guess error then fires, which is the fail-closed direction
             // for a value that silently shifts every stored wall time when wrong.
-            home_timezone: crate::axon_config::resolve_home_timezone(
+            home_timezone: axon_config::resolve_home_timezone(
                 file.home_timezone.as_deref(),
                 "calendar.json",
             )

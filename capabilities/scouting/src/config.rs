@@ -14,7 +14,7 @@
 //! only supplies defaults; `main.rs`/`server_main.rs` override individual
 //! fields from `--flag` values where a flag exists for that field.
 
-use crate::axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
+use axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -150,7 +150,7 @@ fn config_path() -> PathBuf {
 /// replaced, it's a live credential. Thin wrapper so existing callers keep
 /// their name; the one implementation lives in `axon_config`.
 pub fn redact_database_url(url: &str) -> String {
-    crate::axon_config::redact_dsn(url)
+    axon_config::redact_dsn(url)
 }
 
 fn load_file_config() -> FileConfig {
@@ -175,7 +175,7 @@ impl Config {
             .interest_profile_dir
             .map(|p| expand_tilde(&p))
             .unwrap_or_else(|| {
-                crate::axon_config::overlay_data_dir("scouting")
+                axon_config::overlay_data_dir("scouting")
                     .map(|d| d.join("interest-profile"))
                     .unwrap_or_else(|| PathBuf::from("data/interest-profile"))
             });
@@ -216,7 +216,7 @@ impl Config {
             // implementation in axon_config so scouting and calendar cannot drift.
             // A conflict resolves to None deliberately: `--promote-calendar` then
             // refuses for its own reason rather than promoting at a guessed hour.
-            home_timezone: crate::axon_config::resolve_home_timezone(
+            home_timezone: axon_config::resolve_home_timezone(
                 file.home_timezone.as_deref(),
                 "scouting.json",
             )

@@ -22,12 +22,9 @@
 //! with no ranking leaves these empty rather than inventing a score; a `0.0`
 //! sitting on a committed event is noise that reads as a judgement.
 //!
-//! ## Dependency rule
-//!
-//! Compiled into consumers by `#[path]` include (see `libs/axon-config/README.md`
-//! for why), so it may only use crates **every** consumer already has: `serde`
-//! and `serde_json`. Adding any other dependency here silently changes a
-//! consumer's dependency resolution.
+//! Consumers link this as an ordinary crate. Capability boundaries still use
+//! the serialized contract rather than reaching into another capability's
+//! storage or implementation.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -485,12 +482,7 @@ pub struct CalendarExtension {
     pub rhythm_id: Option<String>,
 }
 
-// Gated on the standalone-tests feature, not bare cfg(test), matching
-// libs/axon-config and libs/axon-server: this file is compiled into every
-// consumer by #[path] include, and a lib's own suite has no business running
-// inside each consumer's test binary. //libs/content-item:content_item_test
-// sets the feature and runs them.
-#[cfg(all(test, feature = "standalone-tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;

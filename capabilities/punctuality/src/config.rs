@@ -2,7 +2,7 @@
 //! `scouting::config` and `transit::config`, deliberately: a fourth capability inventing
 //! a fourth way to find the shared Postgres would be a fourth thing to fix when it moves.
 
-use crate::axon_config::{expand_tilde, overlay_data_dir, postgres_conn_from_shared_env};
+use axon_config::{expand_tilde, overlay_data_dir, postgres_conn_from_shared_env};
 use std::path::PathBuf;
 
 pub struct Config {
@@ -39,7 +39,7 @@ impl Config {
 /// rfind-'@' case its tests pin) moved to `axon_config::redact_dsn`; the wrapper keeps
 /// this crate's callers and its documented invariant intact.
 pub fn redact(url: &str) -> String {
-    crate::axon_config::redact_dsn(url)
+    axon_config::redact_dsn(url)
 }
 
 #[cfg(test)]

@@ -7,27 +7,13 @@
 //! archive or move-to-Trash actions for a stored proposal. Permanent deletion,
 //! sending, and arbitrary label changes are outside this capability.
 
-// Shared config helpers, compiled in by #[path] include rather than a cargo
-// dependency: rules_rust's splicer flattens listed manifests and breaks
-// ../../libs path deps, and folding a small shared shape in as a module is
-// this repo's stated preference anyway (libs/axon-config/README.md).
-#[path = "../../../libs/axon-config/src/lib.rs"]
-#[allow(dead_code)]
-pub(crate) mod axon_config;
-
 // Shared model-role resolution. Comms owns Feed behavior; libs/inference owns
 // which backend and model perform embedding or summarization on this machine.
 #[path = "../../../libs/inference/src/lib.rs"]
 #[allow(dead_code)]
 pub(crate) mod inference;
 
-// The `content-item-v1` reader contract, on the same include terms as calendar
-// uses it. It owns data classification for every capability, mail included:
-// this module previously carried its own byte-identical copy of `DataClass` and
-// `processing_policy`, which is exactly the drift the shared lib exists to stop.
-#[path = "../../../libs/content-item/src/lib.rs"]
-#[allow(dead_code)]
-pub mod content_item;
+pub use content_item;
 
 // The adaptive digest engine. It used to be `media::summarize` -- one prompt,
 // one token ceiling, reachable only from the feed ingest path. Three sources

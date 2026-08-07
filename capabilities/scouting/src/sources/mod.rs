@@ -123,8 +123,8 @@ pub struct SourceManifest {
     pub enabled: bool,
 }
 
-use crate::axon_config::expand_tilde;
-use crate::markdown_root::MarkdownRoot;
+use axon_config::expand_tilde;
+use markdown_root::MarkdownRoot;
 
 impl SourceEntry {
     /// Resolve into a runtime manifest: expand `~`, compute absolute doc path.

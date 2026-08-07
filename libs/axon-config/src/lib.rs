@@ -160,12 +160,7 @@ pub fn redact_dsn(url: &str) -> String {
     }
 }
 
-// Gated on the standalone-tests feature, not bare cfg(test): these tests mutate
-// process-global env (HOME, AXON_PERSONAL_ROOT, AXON_PORT). Standalone that is
-// safe; compiled into a consumer via the #[path] include they would race the
-// consumer's own parallel tests reading those variables (transit's store tests
-// caught exactly that). Consumers never set the feature, so they skip this mod.
-#[cfg(all(test, feature = "standalone-tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

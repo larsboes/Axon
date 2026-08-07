@@ -554,6 +554,7 @@ dependencies = [
 name = "axon-server"
 version = "0.1.0"
 dependencies = [
+ "axon-config",
  "axum",
  "tokio",
 ]
@@ -562,8 +563,10 @@ dependencies = [
 name = "axon-status"
 version = "0.1.0"
 dependencies = [
+ "axon-config",
  "axum",
  "reqwest",
+ "route-manifest",
  "serde",
  "serde_json",
  "tokio",
@@ -830,11 +833,15 @@ dependencies = [
 name = "calendar"
 version = "0.1.0"
 dependencies = [
+ "axon-config",
  "axum",
+ "content-item",
+ "markdown-root",
  "postgres",
  "r2d2",
  "r2d2_postgres",
  "reqwest",
+ "route-manifest",
  "serde",
  "serde_json",
  "tokio",
@@ -994,12 +1001,15 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 name = "comms"
 version = "0.1.0"
 dependencies = [
+ "axon-config",
  "axum",
  "base64 0.22.1",
+ "content-item",
  "postgres",
  "r2d2",
  "r2d2_postgres",
  "reqwest",
+ "route-manifest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3500,12 +3510,14 @@ name = "punctuality"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "axon-config",
  "axum",
  "parquet",
  "postgres",
  "r2d2",
  "r2d2_postgres",
  "reqwest",
+ "route-manifest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -4022,11 +4034,14 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "scouting"
 version = "0.1.0"
 dependencies = [
+ "axon-config",
  "axum",
+ "markdown-root",
  "postgres",
  "r2d2",
  "r2d2_postgres",
  "reqwest",
+ "route-manifest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -4307,7 +4322,9 @@ dependencies = [
 name = "soundscape"
 version = "0.1.0"
 dependencies = [
+ "axon-config",
  "axum",
+ "route-manifest",
  "serde",
  "serde_json",
  "tokio",
@@ -4501,10 +4518,13 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 name = "tasks"
 version = "0.1.0"
 dependencies = [
+ "axon-config",
  "axum",
+ "content-item",
  "postgres",
  "r2d2",
  "r2d2_postgres",
+ "route-manifest",
  "serde",
  "serde_json",
  "tokio",
@@ -4909,6 +4929,7 @@ dependencies = [
 name = "transit"
 version = "0.1.0"
 dependencies = [
+ "axon-config",
  "axum",
  "html2text",
  "mailparse",
@@ -4918,6 +4939,7 @@ dependencies = [
  "r2d2_postgres",
  "regex",
  "reqwest",
+ "route-manifest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -4929,10 +4951,12 @@ dependencies = [
 name = "trips"
 version = "0.1.0"
 dependencies = [
+ "axon-config",
  "axum",
  "postgres",
  "r2d2",
  "r2d2_postgres",
+ "route-manifest",
  "serde",
  "serde_json",
  "tokio",

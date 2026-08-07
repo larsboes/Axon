@@ -7,6 +7,8 @@ license.workspace = true
 description = "Axon's calendar layer: availability windows, scoped rhythms, events."
 publish = false
 
+# Temporary until Axon#111 removes the remaining axon-server and axon-store
+# source includes.
 [features]
 standalone-tests = []
 
@@ -19,6 +21,10 @@ name = "calendar-server"
 path = "src/server.rs"
 
 [dependencies]
+axon-config = { path = "../../libs/axon-config" }
+content-item = { path = "../../libs/content-item" }
+markdown-root = { path = "../../libs/markdown-root" }
+route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 postgres = "0.19"

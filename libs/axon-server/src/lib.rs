@@ -22,9 +22,6 @@
 
 use std::net::SocketAddr;
 
-#[path = "../../axon-config/src/lib.rs"]
-#[allow(dead_code)]
-mod axon_config;
 // Re-exported so a server binary that includes only axon_server still gets the
 // port contract; allow(unused_imports) because not every consumer calls it.
 #[allow(unused_imports)]

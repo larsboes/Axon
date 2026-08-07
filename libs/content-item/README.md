@@ -31,21 +31,12 @@ calendar entry before this contract existed.
 
 ## Consumers
 
-`comms` (feed, mail) and `calendar` (entries).
+`comms` (feed, mail), `calendar` (entries), and `tasks` (inherited data class).
 
-Consumers list `//libs/content-item:src/lib.rs` in their **srcs** and add the
-`#[path]` module — not a Bazel `deps` edge, for the reason
-[axon-config's README](../axon-config/README.md#consumers) gives.
-
-Two consequences of that include model matter here:
-
-1. **The file is compiled separately into each consumer**, so `ContentItem` in
-   comms and `ContentItem` in calendar are different Rust types. That is fine
-   and intended: the boundary between them is the serialized JSON, never a
-   function call. Do not try to pass one across a capability boundary.
-2. **It may only use crates every consumer already has** — `serde` and
-   `serde_json`. Anything else silently changes a consumer's dependency
-   resolution, or fails to build in whichever consumer lacks it.
+Consumers declare the workspace path dependency in Cargo and
+`//libs/content-item:content-item` in Bazel. They share one Rust type, while
+capability-to-capability communication remains the serialized JSON contract;
+the shared crate is not permission to call into another capability's store.
 
 ## Adding a source
 

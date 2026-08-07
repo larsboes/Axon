@@ -23,14 +23,11 @@ rust_library(
     # them in would declare inputs this crate never compiles and rebuild the library
     # whenever a binary changed.
     #
-    # The //libs sources stay explicit: they belong to other Bazel packages, which a
-    # glob cannot reach by design.
+    # Runtime-heavy shared sources remain explicit until Axon#111.
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]) + [
-        "//libs/axon-config:src/lib.rs",
         # When the schema migration runs — shared by all seven schema-owning capabilities.
         "//libs/axon-store:src/lib.rs",
         "//libs/inference:src/lib.rs",
-        "//libs/markdown-root:src/lib.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],
@@ -38,6 +35,8 @@ rust_library(
         # One-directional: scouting depends on transit, never the reverse
         # (see Cargo.toml's comment on the same dependency).
         "//capabilities/transit:transit_lib",
+        "//libs/axon-config:axon-config",
+        "//libs/markdown-root:markdown-root",
         "@crate_index//:postgres",
         "@crate_index//:r2d2",
         "@crate_index//:r2d2_postgres",
@@ -110,13 +109,14 @@ rust_binary(
 rust_binary(
     name = "scout-server",
     crate_root = "src/server.rs",
-    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs",
-        "//libs/route-manifest:src/lib.rs", "//libs/axon-config:src/lib.rs"],
+    srcs = ["src/server.rs", "//libs/axon-server:src/lib.rs"],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
         ":scouting",
         "//capabilities/transit:transit_lib",
+        "//libs/axon-config:axon-config",
+        "//libs/route-manifest:route-manifest",
         "@crate_index//:axum",
         "@crate_index//:serde",
         "@crate_index//:serde_json",

@@ -7,16 +7,10 @@ license.workspace = true
 description = "Self-describing HTTP surface: what a capability answers, served as data and checked against its own router."
 publish = false
 
-[features]
-# See libs/content-item/Cargo.toml — the test mod is standalone-only so the
-# Bazel target runs it, while consumers fold the file in and just get the types.
-standalone-tests = []
-
 [lib]
 name = "route_manifest"
 path = "src/lib.rs"
 
-# Only what every consumer already has. See the dependency rule in src/lib.rs.
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

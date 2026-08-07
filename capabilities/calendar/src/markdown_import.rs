@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::date;
-use crate::markdown_root::{frontmatter, MarkdownRoot};
+use markdown_root::{frontmatter, MarkdownRoot};
 use crate::model::{Commitment, NewEntry};
 
 /// A declared source of markdown event notes.
