@@ -25,10 +25,8 @@ one interface, not two separate things:
 
 Migrated 2026-07-11 from a bulk port off the previous private hub, sitting untracked and
 un-Bazel-wired (same pattern as the original `dashboard` port —
-`dashboard/README.md`'s backstory). Real `BUILD.bazel`,
-own `crate.from_cargo` block (`@crate_index_ai_client`, per
-`MODULE.bazel's crate_index block` — no type-sharing with
-scouting/transit/axon-status). One rough edge fixed in the move: the config loader pointed at a
+`dashboard/README.md`'s backstory). Its real `BUILD.bazel` now consumes the
+root workspace's shared `@crate_index` dependency universe. One rough edge fixed in the move: the config loader pointed at a
 hardcoded `infra/config/ai_router.json` that doesn't exist in Axon's shape.
 
 **Still no named consumer.** Nothing in `capabilities/` or `dashboard` calls into this yet

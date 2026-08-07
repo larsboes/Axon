@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "capabilities/axon-status",
+    "capabilities/calendar",
+    "capabilities/comms",
+    "capabilities/punctuality",
+    "capabilities/scouting",
+    "capabilities/soundscape",
+    "capabilities/tasks",
+    "capabilities/transit",
+    "capabilities/trips",
+    "libs/ai-client",
+    "libs/axon-config",
+    "libs/axon-server",
+    "libs/axon-store",
+    "libs/content-item",
+    "libs/inference",
+    "libs/markdown-root",
+    "libs/route-manifest",
+    "libs/summarize",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+license = "MIT"

@@ -16,6 +16,10 @@
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
+# Cargo and rules_rust share these workspace inputs. Keeping them in the root
+# package makes the dependency universe's ownership explicit.
+exports_files(["Cargo.lock", "Cargo.toml", "rust-toolchain.toml"])
+
 # Database-backed Rust tests are explicit and manual so `bazel test //...`
 # stays usable in a fresh clone without a running Axon Postgres service. The
 # suite is the one public entrypoint for CI and contributors who do have the

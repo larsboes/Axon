@@ -51,15 +51,11 @@ via proleptic-Gregorian day arithmetic, soft-destination resolution through `sug
 session-summary JSON) rather than splitting them into a new module — same "one focused binary"
 shape the CLI kept through the whole rebuild.
 
-No CV generator (see Redactions). Standalone Cargo crate + `BUILD.bazel`, sharing
-`crate_index` (root `MODULE.bazel`) with `capabilities/scouting` — **not** its own separate
-registry anymore. It started that way (`crate_index_transit`, additive alongside scouting's own
-`crate_index`), which was correct while the two capabilities were fully independent. It broke the
-moment scouting started consuming `Journey` directly across a `serde` boundary
-(`scouting/src/adapters/transit_fare.rs`): two separately-resolved crate universes produce two
-binary-incompatible `Serialize` impls for "the same" crate version — a real compile error
-(`the trait bound Journey: Serialize is not satisfied`), not a style question. See `MODULE.bazel`
-and `MODULE.bazel's crate_index block`.
+No CV generator (see Redactions). Cargo resolves this package through Axon's
+root workspace and lockfile; Bazel consumes that same resolution through the
+single `@crate_index` repository. This guarantees that the `Journey` types
+shared with scouting cross the `serde` boundary using the same compiled
+dependency instances.
 
 ## Commands
 

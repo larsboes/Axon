@@ -1,7 +1,9 @@
 [package]
 name = "axon-inference"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "One home for which model answers which job on this machine: backends declared once, roles that name backend + model + input prefixes, and a machine-level backend override. Capabilities ask for a role, never a backend."
 publish = false
 

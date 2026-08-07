@@ -1,7 +1,9 @@
 [package]
 name = "axon-server"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "The one way a capability server binds: 127.0.0.1, the runner's port contract, uniform startup logging and bind-failure behavior."
 publish = false
 

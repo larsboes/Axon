@@ -110,23 +110,14 @@ Bazel now builds this: `bazel build //capabilities/scouting:scout` /
 `bazel test //capabilities/scouting/...`. Adopted now, not deferred to the next Rust port —
 more Rust capabilities are coming (`transit` landed next, likely `ai-client` after) and share
 this dependency graph, so the build spine goes in before the second crate shows up, not
-after. Root `MODULE.bazel` wires `rules_rust` (pinned `0.71.1`, see `upstreams.toml`) and a
-`crate.from_cargo` extension (`crate_index`) whose `cargo_lockfile` is this capability's own
-`Cargo.lock` — that file remains the single source of truth for dependency versions
-(README.md#one-manifest-per-concern: one manifest per concern, never duplicated); nothing re-declares crate
-versions inside `MODULE.bazel` the way LifeOS-mono's own (unaudited) `MODULE.bazel` did with
-repeated `crate.spec()` calls. **`crate_index`'s `manifests` list now also includes
-`capabilities/transit/Cargo.toml`**, not just scouting's own — this crate's `Cargo.toml` has a
-`transit = { path = "../transit" }` dependency (`adapters/transit_fare.rs`), and cargo-bazel's
-splicer needs every manifest reachable via a path dependency listed to resolve it. `transit`
-shares this same `crate_index` too, rather than keeping its own separate registry, for a
-correctness reason, not tidiness — see `capabilities/transit/README.md`'s Architecture section
-and `MODULE.bazel's crate_index block`. Both build paths are intentionally kept working side by side: plain
+after. Root `MODULE.bazel` wires `rules_rust` (pinned `0.71.1`, see
+`upstreams.toml`) and generates one `crate_index` from the root Cargo workspace
+and lockfile. Each package manifest still owns its direct dependencies; Bazel
+does not repeat their versions through manual `crate.spec()` calls. Both build
+paths are intentionally kept working side by side: plain
 `cargo build`/`cargo test` stays the fast local dev loop (and what rust-analyzer resolves
-against), Bazel is the canonical/CI-grade path going forward. A new Rust capability that has no
-reason to share types with an existing one still adds its own `BUILD.bazel` + its own
-`crate.from_cargo(name = "...", ...)` block — the merge above is specific to scouting+transit
-now genuinely interoperating, not a new default policy.
+against), while Bazel remains the canonical CI-grade path. New Rust packages
+join the root workspace and use the existing crate universe.
 
 **`scout-server` HTTP binary** (`src/server.rs`, Axum + Tokio):
 

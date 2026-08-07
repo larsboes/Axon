@@ -1,7 +1,9 @@
 [package]
 name = "axon-store"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "One home for when a capability's schema migration runs: once per process per (database, schema), behind a cross-process advisory lock."
 publish = false
 

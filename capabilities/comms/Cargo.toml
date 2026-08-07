@@ -1,7 +1,9 @@
 [package]
 name = "comms"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Mail/media pipeline: reviewed Gmail triage plus share-link media ingest (metadata + transcript + summary), Postgres-backed."
 publish = false
 
@@ -47,11 +49,11 @@ postgres = "0.19"
 r2d2 = "0.8"
 r2d2_postgres = "0.18"
 # feed_items PK is the sha256 of the canonical URL (store::feed_id). sha2 is
-# already in this workspace's resolved Cargo.lock (transitive today), so this
+# already in the root workspace's resolved Cargo.lock (transitive today), so this
 # reuses a pinned dep rather than hand-rolling SHA-256.
 sha2 = "0.10"
 # Gmail returns message bodies base64url-encoded, and the digest path is the
-# first thing here that reads one. Already resolved in this crate's Cargo.lock
+# first thing here that reads one. Already resolved in the root Cargo.lock
 # (transitive today), so naming it reuses a pinned dep rather than hand-rolling
 # a decoder -- the same reasoning as sha2 above.
 base64 = "0.22"

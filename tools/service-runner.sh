@@ -337,7 +337,8 @@ process_init() {
   # (README.md#bazel-as-the-build-spine), and service.toml declares the bazel build unconditionally because that is
   # the primary, tracked-and-shared path. But a machine can be a pure dev box with cargo
   # and no bazel (WSL, a fresh laptop), and the same crate builds identically from its
-  # own Cargo.toml + Cargo.lock — same source, same pins, a different build frontend, not
+  # own Cargo.toml plus the root workspace lockfile — same source, same pins,
+  # a different build frontend, not
   # a second build system with logic of its own. So this is the argued-per-case exception
   # README.md#argue-bazel-per-case allows, not a hole in README.md#bazel-as-the-build-spine: it fires ONLY when the declared build tool is
   # bazel AND bazel is absent AND a Cargo.toml sits beside the capability. When bazel is
@@ -349,12 +350,17 @@ process_init() {
   local _cap_dir="${MANIFEST%/service.toml}"
   if [ "${BUILD_CMD[0]:-}" = "bazel" ] && ! command -v bazel >/dev/null 2>&1 \
      && [ -f "$_cap_dir/Cargo.toml" ]; then
-    local _pkg
+    local _pkg _target_dir
     _pkg="$(toml_get_in package name "$_cap_dir/Cargo.toml")"
     _pkg="${_pkg:-$CAP}"
+    _target_dir="$(
+      cargo metadata --locked --no-deps --format-version 1 \
+        --manifest-path "$_cap_dir/Cargo.toml" |
+        jq -r '.target_directory'
+    )"
     echo "service-runner.sh: bazel not on PATH — building '$CAP' with cargo (README.md#argue-bazel-per-case fallback)" >&2
-    BUILD_CMD=(cargo build --release --manifest-path "$_cap_dir/Cargo.toml")
-    COMMAND=("$_cap_dir/target/release/$_pkg")
+    BUILD_CMD=(cargo build --locked --release --manifest-path "$_cap_dir/Cargo.toml")
+    COMMAND=("$_target_dir/release/$_pkg")
   fi
 
   # ${AXON_ROOT} and ${AXON_OVERLAY_ROOT} in any argument expand first. They exist so an

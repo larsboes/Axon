@@ -8,7 +8,7 @@ exports_files(["README.md"])
 # libs/ai-client -- a shared library, not a capability (no domain of its own, no
 # upstream verdict, no CLI). See README.md#three-architectural-nouns.
 # No type-sharing with scouting/transit/axon-status, so it gets its own crate index
-# (@crate_index_ai_client in MODULE.bazel), per
+# (@crate_index in MODULE.bazel), per
 # MODULE.bazel's crate_index block.
 rust_library(
     name = "ai-client",
@@ -19,10 +19,10 @@ rust_library(
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
-        "@crate_index_ai_client//:reqwest",
-        "@crate_index_ai_client//:serde",
-        "@crate_index_ai_client//:serde_json",
-        "@crate_index_ai_client//:tokio",
+        "@crate_index//:reqwest",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:tokio",
     ],
 )
 

@@ -33,8 +33,8 @@ name: CodeQL
 # On Rust and Bazel: #13 flagged that CodeQL's default setup relies on autobuild, which will not
 # drive `bazel build //...`. That concern does not apply once the build mode is stated: every
 # language here runs `build-mode: none`, which extracts from source instead of observing a build.
-# Bazel is never invoked, so it cannot fail to be invoked. The extractor discovers the ten
-# per-crate Cargo.toml files recursively; no workspace root is needed, and none exists here.
+# Bazel is never invoked, so it cannot fail to be invoked. The extractor discovers the root
+# Cargo workspace and its member manifests recursively.
 #
 # What the first run actually measured, because "the job is green" is not the same claim:
 #
