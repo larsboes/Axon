@@ -6,6 +6,9 @@
 // Run: bun test tools/doctor.test.ts
 
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   checkStateMountCoverage,
   classifyProbeOutcome,
@@ -23,12 +26,30 @@ import {
   formatFetchAge,
   formatVersion,
   findProductionListenerConstructs,
+  findRustSources,
   isSweepExempt,
   stripRustCfgTestItems,
   whyBlockBases,
 } from "./doctor.ts";
 
 describe("production Rust server policy", () => {
+  test("nested binary roots remain inside the bind-policy scan", () => {
+    const root = mkdtempSync(join(tmpdir(), "axon-doctor-rust-"));
+    try {
+      mkdirSync(join(root, "server"));
+      writeFileSync(join(root, "lib.rs"), "pub fn library() {}\n");
+      writeFileSync(join(root, "server", "main.rs"), "fn main() {}\n");
+      writeFileSync(join(root, "server", "notes.txt"), "not Rust\n");
+
+      expect(findRustSources(root).map((path) => path.slice(root.length + 1))).toEqual([
+        "lib.rs",
+        "server/main.rs",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("test-only listener constructs are excluded", () => {
     const source = `
 fn build_router() -> Router { Router::new() }

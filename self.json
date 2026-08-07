@@ -105,8 +105,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 46,
-        "nodes": 879
+        "files": 64,
+        "nodes": 987
       }
     },
     {
@@ -411,7 +411,7 @@
       "kind": "spine",
       "code": {
         "files": 112,
-        "nodes": 938
+        "nodes": 939
       }
     },
     {
@@ -1270,7 +1270,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 7596,
+    "nodes": 7755,
     "external": 7,
     "stale": [],
     "unmatched": [

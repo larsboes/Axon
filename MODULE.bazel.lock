@@ -534,7 +534,7 @@
           "FILE:@@//libs/axon-store/Cargo.toml 141d1c3f3b17f2ef0079549d9755bd49e5a9289038aeaa4c1f750c9cc654c0c5",
           "FILE:@@//libs/content-item/Cargo.toml 2ad1fb86aa7d68816957bd7ae84f6594564b0bd2b6e36e4331ad4557ad25b38f",
           "FILE:@@//libs/markdown-root/Cargo.toml 2314245c59614bc45df906485f37497ee3b1486626c9d4e84e5c472695b95411",
-          "FILE:@@//capabilities/comms/Cargo.toml 707317cfd0f26a951169d2477452aa86feb35d22ea3715e7abc93a318a6eb49e",
+          "FILE:@@//capabilities/comms/Cargo.toml a02f6d6119d7cb53103390435ff6ca2be303dd9543b1d00bc9942f8c3f285a1b",
           "FILE:@@//libs/inference/Cargo.toml 39adf484d127c735b26a0c23604cb22a8e2732900757a40e681cd75be2705fac",
           "FILE:@@//libs/summarize/Cargo.toml 3de4d57c5140c92508977a01bd6e5f57503fd6367dba5e3e9e31546e4b259372",
           "FILE:@@//capabilities/punctuality/Cargo.toml d0cf19f0e963c1786d941baec48454a34d6abfa2613888c42a91c4f7db572682",

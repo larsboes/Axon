@@ -27,7 +27,10 @@ rust_library(
     # list had already gone stale once. Binary roots excluded because they are their own
     # crates; the //libs source stays explicit because a glob cannot cross a package
     # boundary.
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/server.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs", "src/server/**/*.rs"],
+    ),
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
@@ -98,8 +101,8 @@ rust_binary(
 # as scout-server -- see dashboard/README.md.
 rust_binary(
     name = "comms-server",
-    crate_root = "src/server.rs",
-    srcs = ["src/server.rs"],
+    crate_root = "src/server/main.rs",
+    srcs = glob(["src/server/**/*.rs"]),
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [

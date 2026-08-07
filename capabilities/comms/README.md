@@ -519,8 +519,21 @@ second scan does not spend another model pass.
 
 ## comms-server
 
-Axum HTTP API (permissive CORS), port from `AXON_PORT` (runner-exported) → config → default **8083**. JSON
-contract consumed by a dashboard panel:
+Axum HTTP API (dashboard-origin-only CORS), port from `AXON_PORT`
+(runner-exported) → config → default **8083**. JSON contract consumed by a
+dashboard panel.
+
+`src/server/main.rs` is the composition root: configuration, route assembly,
+loopback bind, and shutdown. Its sibling modules own one reason to change each:
+`auth.rs` owns the shared-secret boundary; `contracts.rs` owns response
+projections; `error.rs` owns the stable JSON error shape; `feed.rs`,
+`content.rs`, `cloud.rs`, `source_handlers.rs`, `vault.rs`, and `triage.rs` own
+their existing HTTP contracts; and `background.rs` owns the periodic task
+lifecycle. `BackgroundServices` retains every task handle and aborts its tasks
+when the server lifecycle ends. Blocking storage, inference, and network work
+continues to cross `spawn_blocking` inside the owning workflow.
+
+Routes:
 
 - `GET /feed?stream=&days=&include_dismissed=` → feed items (no `transcript`)
 - `GET /feed/:id` → one reader item incl. `transcript`, every stored TELOS relevance match,
