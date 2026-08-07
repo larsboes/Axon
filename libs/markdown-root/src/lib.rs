@@ -73,7 +73,11 @@ impl fmt::Display for RootError {
                 write!(f, "declared root is not a directory: {}", p.display())
             }
             RootError::RootUnresolvable { path, detail } => {
-                write!(f, "cannot resolve declared root {}: {detail}", path.display())
+                write!(
+                    f,
+                    "cannot resolve declared root {}: {detail}",
+                    path.display()
+                )
             }
             RootError::PatternAbsolute(pattern) => write!(
                 f,

@@ -17,7 +17,10 @@ Defaults: --from 2025-12 (first month covering every station, not just the large
 --to the newest published month, --min-n 30.";
 
 fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 fn main() {
@@ -66,7 +69,10 @@ fn ingest_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         skipped += counts.skipped;
         eprintln!(
             "  {}  {:>11} rows  {:>8} skipped  {:>8} cells so far",
-            month.id, counts.rows, counts.skipped, cells.len()
+            month.id,
+            counts.rows,
+            counts.skipped,
+            cells.len()
         );
     }
 
@@ -110,7 +116,11 @@ fn stats_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             0 => return Err(format!("no station matching '{target}'").into()),
             _ => {
                 if hits.len() > 1 {
-                    eprintln!("punctuality: '{target}' matched {} stations, using {}", hits.len(), hits[0].1);
+                    eprintln!(
+                        "punctuality: '{target}' matched {} stations, using {}",
+                        hits.len(),
+                        hits[0].1
+                    );
                 }
                 hits[0].0.clone()
             }
@@ -128,7 +138,10 @@ fn stats_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         rows[0].eva,
         min_n
     );
-    println!("{:<6} {:>3} {:<3} {:>7} {:>7} {:>5} {:>5} {:>8} {:>8}", "typ", "std", "we", "n", "mittel", "p50", "p90", ">=6min", "ausfall");
+    println!(
+        "{:<6} {:>3} {:<3} {:>7} {:>7} {:>5} {:>5} {:>8} {:>8}",
+        "typ", "std", "we", "n", "mittel", "p50", "p90", ">=6min", "ausfall"
+    );
     for r in &rows {
         println!(
             "{:<6} {:>3} {:<3} {:>7} {:>7.1} {:>5} {:>5} {:>7.1}% {:>7.1}%",

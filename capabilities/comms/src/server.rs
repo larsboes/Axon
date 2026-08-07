@@ -62,7 +62,11 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// endpoint exists to avoid.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
-    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
+    r(
+        "GET",
+        "/ready",
+        "Readiness: liveness plus a reachable database.",
+    ),
     r("GET", "/routes", "This manifest."),
     r(
         "GET",
@@ -1171,9 +1175,7 @@ struct DigestRefreshBody {
 /// Explicit rather than timer-driven: for mail this reads message bodies, and a
 /// background job that quietly pulls every body out of a mailbox is not
 /// something a machine should start doing on its own.
-async fn digest_refresh_handler(
-    Json(body): Json<DigestRefreshBody>,
-) -> (StatusCode, Json<Value>) {
+async fn digest_refresh_handler(Json(body): Json<DigestRefreshBody>) -> (StatusCode, Json<Value>) {
     let result = tokio::task::spawn_blocking(move || -> Result<(String, usize), String> {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
@@ -3031,8 +3033,8 @@ async fn triage_redact_handler(Json(body): Json<TriageRedactBody>) -> (StatusCod
             if let Some(digest) = remediation.audit_digest.clone() {
                 digests.push(json!({ "id": item.id, "digest": digest }));
             }
-            if !dry_run
-                && store
+            if dry_run
+                || store
                     .redact_triage_review_fields(
                         &item.id,
                         remediation.subject.as_deref(),
@@ -3040,8 +3042,6 @@ async fn triage_redact_handler(Json(body): Json<TriageRedactBody>) -> (StatusCod
                     )
                     .map_err(|error| error.to_string())?
             {
-                changed += 1;
-            } else if dry_run {
                 changed += 1;
             }
         }
@@ -4011,8 +4011,7 @@ mod route_manifest_tests {
     /// here rather than shipping a surface that lies about itself.
     #[test]
     fn the_manifest_covers_every_served_route() {
-        let missing =
-            route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
+        let missing = route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

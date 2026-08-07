@@ -8,6 +8,7 @@
 //!      `tools/lib/paths.sh` / `~/.zshrc`)
 //!   3. `capabilities/scouting/scouting.config.json` next to this crate's
 //!      source (local, gitignored -- dev fallback)
+//!
 //! See `scouting.config.example.json` for the shape.
 //!
 //! CLI args always win over whatever this module resolves -- `Config::load()`
@@ -187,8 +188,9 @@ impl Config {
             .filter(|p| p.exists());
 
         let database_url = file.database_url.unwrap_or_else(|| {
-            postgres_conn_from_shared_env()
-                .unwrap_or_else(|| "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into())
+            postgres_conn_from_shared_env().unwrap_or_else(|| {
+                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
+            })
         });
 
         let opp_embeddings_path = file.opp_embeddings_path.map(|p| expand_tilde(&p));
@@ -199,9 +201,8 @@ impl Config {
         // the runner brought the whole enabled set up.
         let port = resolve_port(None, file.port, 8084);
 
-        let sources: Vec<crate::sources::SourceManifest> = file.sources.iter()
-            .map(|s| s.resolve())
-            .collect();
+        let sources: Vec<crate::sources::SourceManifest> =
+            file.sources.iter().map(|s| s.resolve()).collect();
 
         Self {
             interest_profile_dir,

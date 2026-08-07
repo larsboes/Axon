@@ -7,8 +7,8 @@
 //! archive or move-to-Trash actions for a stored proposal. Permanent deletion,
 //! sending, and arbitrary label changes are outside this capability.
 
-pub use content_item;
 pub use axon_summarize as summarize;
+pub use content_item;
 
 pub mod cloud_derivative;
 pub mod cloud_dispatch;

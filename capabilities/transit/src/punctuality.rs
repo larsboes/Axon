@@ -116,9 +116,16 @@ pub fn enrich(journeys: &mut [Journey]) {
         let Some(eva) = eva_of(&j.end_station.id).or_else(|| eva_of(&last.destination.id)) else {
             continue;
         };
-        let Some((hour, weekend)) = hour_and_weekend(&last.arrival_time) else { continue };
+        let Some((hour, weekend)) = hour_and_weekend(&last.arrival_time) else {
+            continue;
+        };
         targets.push(i);
-        stops.push(StopQuery { eva, train_type: last.train_category.clone(), hour, weekend });
+        stops.push(StopQuery {
+            eva,
+            train_type: last.train_category.clone(),
+            hour,
+            weekend,
+        });
     }
     if stops.is_empty() {
         return;
@@ -191,7 +198,7 @@ mod tests {
         // January and February take Sakamoto's previous-year branch.
         assert_eq!(hour_and_weekend("2026-01-01T00:00:00"), Some((0, false))); // Thursday
         assert_eq!(hour_and_weekend("2026-02-28T12:00:00"), Some((12, true))); // Saturday
-        // A leap year's 29 February -- 2024-02-29 was a Thursday.
+                                                                               // A leap year's 29 February -- 2024-02-29 was a Thursday.
         assert_eq!(hour_and_weekend("2024-02-29T08:00:00"), Some((8, false)));
     }
 

@@ -28,7 +28,9 @@ pub fn link_to_vault(opp: &Opportunity, events_dir: &Path) -> Option<String> {
         }
         match &best {
             None => best = Some((path.to_string_lossy().into_owned(), score)),
-            Some((_, bs)) if score > *bs => best = Some((path.to_string_lossy().into_owned(), score)),
+            Some((_, bs)) if score > *bs => {
+                best = Some((path.to_string_lossy().into_owned(), score))
+            }
             _ => {}
         }
     }

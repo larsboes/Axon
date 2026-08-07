@@ -55,7 +55,12 @@ pub struct Cell {
 
 impl Default for Cell {
     fn default() -> Self {
-        Self { counts: [0; BUCKETS], n: 0, canceled: 0, sum: 0 }
+        Self {
+            counts: [0; BUCKETS],
+            n: 0,
+            canceled: 0,
+            sum: 0,
+        }
     }
 }
 
@@ -108,7 +113,7 @@ impl Cell {
     /// bound rather than a value. Callers that print a quantile should say so.
     pub fn quantile_is_saturated(&self, q: f64) -> bool {
         let m = self.quantile(q);
-        m < MIN_MINUTE || m > MAX_MINUTE
+        !(MIN_MINUTE..=MAX_MINUTE).contains(&m)
     }
 
     /// Share of non-cancelled stops at least `minutes` late. Six is the interesting

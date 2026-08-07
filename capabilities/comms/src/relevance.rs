@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::config::RelevanceConfig;
-use axon_inference::{ResolvedRole, TextRole};
 use crate::store::FeedItem;
+use axon_inference::{ResolvedRole, TextRole};
 
 // The selected multilingual E5 model accepts 512 tokens. A conservative
 // character cap avoids sending and tokenizing long transcripts that the model

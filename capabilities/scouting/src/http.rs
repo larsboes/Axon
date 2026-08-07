@@ -19,13 +19,19 @@ use crate::source::SourceError;
 const SNIPPET_CHARS: usize = 200;
 
 /// Decide what a completed response means. Pure: no I/O, no clock.
-pub fn classify(url: &str, status: reqwest::StatusCode, body: String) -> Result<String, SourceError> {
+pub fn classify(
+    url: &str,
+    status: reqwest::StatusCode,
+    body: String,
+) -> Result<String, SourceError> {
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err(SourceError::RateLimited);
     }
     if !status.is_success() {
         let snippet: String = body.chars().take(SNIPPET_CHARS).collect();
-        return Err(SourceError::Fetch(format!("GET {url}: HTTP {status}: {snippet}")));
+        return Err(SourceError::Fetch(format!(
+            "GET {url}: HTTP {status}: {snippet}"
+        )));
     }
     Ok(body)
 }
@@ -72,8 +78,12 @@ mod tests {
     #[test]
     fn an_error_body_becomes_a_fetch_error_naming_the_status() {
         let luma_404 = "{\"message\":\"Sorry, we could not find what you were looking for.\"}";
-        let err = classify("https://example.test/x", StatusCode::NOT_FOUND, luma_404.into())
-            .expect_err("404 is not an answer");
+        let err = classify(
+            "https://example.test/x",
+            StatusCode::NOT_FOUND,
+            luma_404.into(),
+        )
+        .expect_err("404 is not an answer");
 
         match err {
             SourceError::Fetch(msg) => {
@@ -86,8 +96,12 @@ mod tests {
 
     #[test]
     fn a_server_error_is_a_fetch_error_too() {
-        let err = classify("https://example.test/x", StatusCode::BAD_GATEWAY, "<html>502</html>".into())
-            .expect_err("5xx is not an answer");
+        let err = classify(
+            "https://example.test/x",
+            StatusCode::BAD_GATEWAY,
+            "<html>502</html>".into(),
+        )
+        .expect_err("5xx is not an answer");
         assert!(matches!(err, SourceError::Fetch(_)));
     }
 
@@ -95,8 +109,12 @@ mod tests {
     /// a dead source.
     #[test]
     fn too_many_requests_is_rate_limited_not_fetch() {
-        let err = classify("https://example.test/x", StatusCode::TOO_MANY_REQUESTS, "slow down".into())
-            .expect_err("429 is not an answer");
+        let err = classify(
+            "https://example.test/x",
+            StatusCode::TOO_MANY_REQUESTS,
+            "slow down".into(),
+        )
+        .expect_err("429 is not an answer");
         assert!(matches!(err, SourceError::RateLimited), "got {err:?}");
     }
 

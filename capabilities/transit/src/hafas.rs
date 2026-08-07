@@ -106,10 +106,17 @@ impl HafasClient {
     }
 
     /// Direct journey search between two EVA station codes.
-    pub fn search_connections(&self, from_eva: &str, to_eva: &str, datetime: &str) -> Result<Vec<Journey>, HafasError> {
+    pub fn search_connections(
+        &self,
+        from_eva: &str,
+        to_eva: &str,
+        datetime: &str,
+    ) -> Result<Vec<Journey>, HafasError> {
         let payload = Self::fahrplan_payload(from_eva, to_eva, datetime);
 
-        let response = self.client.post(FAHRPLAN_URL)
+        let response = self
+            .client
+            .post(FAHRPLAN_URL)
             .header("User-Agent", BROWSER_UA)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json; charset=UTF-8")
@@ -118,18 +125,26 @@ impl HafasClient {
             .map_err(|e| HafasError::Request(e.to_string()))?;
 
         let status = response.status();
-        let text = response.text().map_err(|e| HafasError::Request(e.to_string()))?;
+        let text = response
+            .text()
+            .map_err(|e| HafasError::Request(e.to_string()))?;
         if !status.is_success() {
-            return Err(HafasError::BadStatus { status: status.as_u16(), body: text });
+            return Err(HafasError::BadStatus {
+                status: status.as_u16(),
+                body: text,
+            });
         }
 
-        let body: Value = serde_json::from_str(&text).map_err(|e| HafasError::Parse(e.to_string(), text))?;
+        let body: Value =
+            serde_json::from_str(&text).map_err(|e| HafasError::Parse(e.to_string(), text))?;
         Ok(parse_journeys_from_response(&body))
     }
 
     /// Station name -> EVA id search (autocomplete-style).
     pub fn suggest_stations(&self, query: &str) -> Result<Vec<Station>, HafasError> {
-        let response = self.client.get(ORTE_URL)
+        let response = self
+            .client
+            .get(ORTE_URL)
             .query(&[("suchbegriff", query), ("typ", "ALL"), ("limit", "10")])
             .header("User-Agent", BROWSER_UA)
             .header("Accept", "application/json")
@@ -138,10 +153,15 @@ impl HafasClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(HafasError::BadStatus { status: status.as_u16(), body: String::new() });
+            return Err(HafasError::BadStatus {
+                status: status.as_u16(),
+                body: String::new(),
+            });
         }
 
-        let list: Vec<Value> = response.json().map_err(|e| HafasError::Request(e.to_string()))?;
+        let list: Vec<Value> = response
+            .json()
+            .map_err(|e| HafasError::Request(e.to_string()))?;
         Ok(parse_suggest_response(&list))
     }
 
@@ -155,9 +175,16 @@ impl HafasClient {
     /// dependency (matching scouting's no-async-runtime precedent) is worth
     /// more than shaving a few seconds off an occasional split-ticket search.
     /// The 250ms inter-request pause is preserved.
-    pub fn search_split_tickets(&self, from_eva: &str, to_eva: &str, datetime: &str) -> Result<SplitResult, HafasError> {
+    pub fn search_split_tickets(
+        &self,
+        from_eva: &str,
+        to_eva: &str,
+        datetime: &str,
+    ) -> Result<SplitResult, HafasError> {
         let payload = Self::fahrplan_payload(from_eva, to_eva, datetime);
-        let response = self.client.post(FAHRPLAN_URL)
+        let response = self
+            .client
+            .post(FAHRPLAN_URL)
             .header("User-Agent", BROWSER_UA)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json; charset=UTF-8")
@@ -167,22 +194,34 @@ impl HafasClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(HafasError::BadStatus { status: status.as_u16(), body: String::new() });
+            return Err(HafasError::BadStatus {
+                status: status.as_u16(),
+                body: String::new(),
+            });
         }
 
-        let body: Value = response.json().map_err(|e| HafasError::Request(e.to_string()))?;
-        let verbindungen = body.get("verbindungen").and_then(|v| v.as_array())
+        let body: Value = response
+            .json()
+            .map_err(|e| HafasError::Request(e.to_string()))?;
+        let verbindungen = body
+            .get("verbindungen")
+            .and_then(|v| v.as_array())
             .ok_or_else(|| HafasError::Other("no connections found in Vendo response".into()))?;
         if verbindungen.is_empty() {
             return Err(HafasError::Other("no connection found".into()));
         }
         let v = &verbindungen[0];
-        let direct_price = v.get("angebotsPreis").and_then(|p| p.get("betrag")).and_then(|b| b.as_f64());
+        let direct_price = v
+            .get("angebotsPreis")
+            .and_then(|p| p.get("betrag"))
+            .and_then(|b| b.as_f64());
 
         let stops = extract_stops(v);
         let n = stops.len();
         if n < 2 {
-            return Err(HafasError::Other("not enough stops to perform split-ticketing".into()));
+            return Err(HafasError::Other(
+                "not enough stops to perform split-ticketing".into(),
+            ));
         }
 
         let mut prices: HashMap<(usize, usize), f64> = HashMap::new();
@@ -191,7 +230,11 @@ impl HafasClient {
         for i in 0..n {
             for j in (i + 1)..n {
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                if let Ok(journeys) = self.search_connections(&stops[i].ext_id, &stops[j].ext_id, &stops[i].departure_iso) {
+                if let Ok(journeys) = self.search_connections(
+                    &stops[i].ext_id,
+                    &stops[j].ext_id,
+                    &stops[i].departure_iso,
+                ) {
                     if let Some(first) = journeys.first() {
                         if let Some(price) = first.total_price {
                             prices.insert((i, j), price);
@@ -204,13 +247,19 @@ impl HafasClient {
 
         let (split_price, path) = cheapest_split(n, &prices).ok_or(HafasError::NoSplitFound)?;
 
-        let segments: Vec<Journey> = path.into_iter()
+        let segments: Vec<Journey> = path
+            .into_iter()
             .filter_map(|pair| segments_data.get(&pair).cloned())
             .collect();
 
         let savings = direct_price.map(|p| p - split_price).unwrap_or(0.0);
 
-        Ok(SplitResult { original_price: direct_price, split_price, savings, segments })
+        Ok(SplitResult {
+            original_price: direct_price,
+            split_price,
+            savings,
+            segments,
+        })
     }
 }
 
@@ -225,8 +274,14 @@ fn extract_stops(v: &Value) -> Vec<Stop> {
         return stops;
     };
     for section in sections {
-        let verkehrsmittel = section.get("verkehrsmittel").cloned().unwrap_or(Value::Null);
-        let typ = verkehrsmittel.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+        let verkehrsmittel = section
+            .get("verkehrsmittel")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let typ = verkehrsmittel
+            .get("typ")
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
         if typ == "WALK" {
             continue;
         }
@@ -237,13 +292,18 @@ fn extract_stops(v: &Value) -> Vec<Stop> {
             continue;
         }
         for halt in [&halte[0], halte.last().unwrap()] {
-            let Some(ext_id) = halt.get("id").or_else(|| halt.get("extId")).and_then(|id| id.as_str()) else {
+            let Some(ext_id) = halt
+                .get("id")
+                .or_else(|| halt.get("extId"))
+                .and_then(|id| id.as_str())
+            else {
                 continue;
             };
             if stops.iter().any(|s: &Stop| s.ext_id == ext_id) {
                 continue;
             }
-            let departure_iso = halt.get("abfahrt")
+            let departure_iso = halt
+                .get("abfahrt")
                 .and_then(|a| a.get("sollzeit").or_else(|| a.get("istzeit")))
                 .and_then(|t| t.as_str())
                 .or_else(|| {
@@ -253,7 +313,10 @@ fn extract_stops(v: &Value) -> Vec<Stop> {
                 })
                 .unwrap_or("")
                 .to_string();
-            stops.push(Stop { ext_id: ext_id.to_string(), departure_iso });
+            stops.push(Stop {
+                ext_id: ext_id.to_string(),
+                departure_iso,
+            });
         }
     }
     stops
@@ -265,7 +328,10 @@ fn extract_stops(v: &Value) -> Vec<Stop> {
 /// No network, no HAFAS types -- just prices in, (total, path) out. This is
 /// the actual algorithm the original evaluation flagged as "zero tests
 /// despite being the riskiest code"; see the tests below.
-pub fn cheapest_split(n: usize, segment_prices: &HashMap<(usize, usize), f64>) -> Option<(f64, Vec<(usize, usize)>)> {
+pub fn cheapest_split(
+    n: usize,
+    segment_prices: &HashMap<(usize, usize), f64>,
+) -> Option<(f64, Vec<(usize, usize)>)> {
     if n == 0 {
         return None;
     }
@@ -313,14 +379,35 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
         let mut legs = Vec::new();
         if let Some(sections) = v.get("verbindungsAbschnitte").and_then(|s| s.as_array()) {
             for section in sections {
-                let verkehrsmittel = section.get("verkehrsmittel").cloned().unwrap_or(Value::Null);
-                let name = verkehrsmittel.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                let number = verkehrsmittel.get("nummer").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                let category = verkehrsmittel.get("kategorie").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                let verkehrsmittel = section
+                    .get("verkehrsmittel")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let name = verkehrsmittel
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let number = verkehrsmittel
+                    .get("nummer")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let category = verkehrsmittel
+                    .get("kategorie")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
-                let attributes = verkehrsmittel.get("zugattribute").and_then(|a| a.as_array());
+                let attributes = verkehrsmittel
+                    .get("zugattribute")
+                    .and_then(|a| a.as_array());
                 let is_regional = attributes
-                    .map(|attrs| attrs.iter().any(|attr| attr.get("key").and_then(|k| k.as_str()) == Some("9G")))
+                    .map(|attrs| {
+                        attrs
+                            .iter()
+                            .any(|attr| attr.get("key").and_then(|k| k.as_str()) == Some("9G"))
+                    })
                     .unwrap_or(false);
 
                 if let Some(halts) = section.get("halte").and_then(|h| h.as_array()) {
@@ -329,24 +416,42 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
                         let dest_halt = halts.last().unwrap();
 
                         let origin_station = Station {
-                            id: origin_halt.get("id").and_then(|id| id.as_str()).unwrap_or("").to_string(),
-                            name: origin_halt.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                            id: origin_halt
+                                .get("id")
+                                .and_then(|id| id.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            name: origin_halt
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string(),
                             latitude: None,
                             longitude: None,
                         };
                         let dest_station = Station {
-                            id: dest_halt.get("id").and_then(|id| id.as_str()).unwrap_or("").to_string(),
-                            name: dest_halt.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                            id: dest_halt
+                                .get("id")
+                                .and_then(|id| id.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            name: dest_halt
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string(),
                             latitude: None,
                             longitude: None,
                         };
 
-                        let departure_time = origin_halt.get("abfahrt")
+                        let departure_time = origin_halt
+                            .get("abfahrt")
                             .and_then(|a| a.get("sollzeit").or_else(|| a.get("istzeit")))
                             .and_then(|t| t.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let arrival_time = dest_halt.get("ankunft")
+                        let arrival_time = dest_halt
+                            .get("ankunft")
                             .and_then(|a| a.get("sollzeit").or_else(|| a.get("istzeit")))
                             .and_then(|t| t.as_str())
                             .unwrap_or("")
@@ -360,7 +465,10 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
                             train_name: name,
                             train_number: number,
                             train_category: category,
-                            platform: section.get("gleis").and_then(|g| g.as_str()).map(|s| s.to_string()),
+                            platform: section
+                                .get("gleis")
+                                .and_then(|g| g.as_str())
+                                .map(|s| s.to_string()),
                             is_regional,
                         });
                     }
@@ -371,8 +479,14 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
         if !legs.is_empty() {
             let first_leg = &legs[0];
             let last_leg = legs.last().unwrap();
-            let price = v.get("angebotsPreis").and_then(|p| p.get("betrag")).and_then(|b| b.as_f64());
-            let duration_seconds = v.get("verbindungsDauerInSeconds").and_then(|d| d.as_u64()).unwrap_or(0);
+            let price = v
+                .get("angebotsPreis")
+                .and_then(|p| p.get("betrag"))
+                .and_then(|b| b.as_f64());
+            let duration_seconds = v
+                .get("verbindungsDauerInSeconds")
+                .and_then(|d| d.as_u64())
+                .unwrap_or(0);
             let total_duration_minutes = (duration_seconds / 60) as u32;
 
             journeys.push(Journey {
@@ -384,7 +498,11 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
                 // was tested against used "id" too (same wrong assumption in
                 // both places), so `cargo test` stayed green the whole time
                 // -- a live call was the only thing that caught it.
-                id: v.get("tripId").and_then(|id| id.as_str()).unwrap_or("").to_string(),
+                id: v
+                    .get("tripId")
+                    .and_then(|id| id.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 start_station: first_leg.origin.clone(),
                 end_station: last_leg.destination.clone(),
                 total_duration_minutes,
@@ -517,7 +635,10 @@ mod tests {
         assert_eq!(j.end_station.name, "Mannheim Hbf");
         assert_eq!(j.total_duration_minutes, 90);
         assert!((j.total_price.unwrap() - 39.90).abs() < 1e-9);
-        assert_eq!(j.delay_risk_score, None, "ONNX prediction not ported -- always None");
+        assert_eq!(
+            j.delay_risk_score, None,
+            "ONNX prediction not ported -- always None"
+        );
         assert_eq!(j.legs.len(), 1);
         assert_eq!(j.legs[0].train_name, "ICE 691");
         assert_eq!(j.legs[0].platform.as_deref(), Some("7"));
@@ -542,14 +663,20 @@ mod tests {
 
         let journeys = parse_journeys_from_response(&body);
         assert_eq!(journeys.len(), 1);
-        assert_eq!(journeys[0].id, "", "\"id\" is not a real field on this endpoint -- must not be read as one");
+        assert_eq!(
+            journeys[0].id, "",
+            "\"id\" is not a real field on this endpoint -- must not be read as one"
+        );
     }
 
     #[test]
     fn detects_regional_attribute_9g() {
         let body = fixture_journey(true);
         let journeys = parse_journeys_from_response(&body);
-        assert!(journeys[0].legs[0].is_regional, "zugattribute key '9G' should set is_regional");
+        assert!(
+            journeys[0].legs[0].is_regional,
+            "zugattribute key '9G' should set is_regional"
+        );
     }
 
     #[test]

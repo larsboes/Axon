@@ -122,9 +122,8 @@ pub fn diagram_producer_revision(cfg: &Config) -> Option<String> {
 }
 
 pub fn chart_producer_revision(cfg: &Config) -> Option<String> {
-    cfg.summarization_role().map(|role| {
-        summarize::producer(&role.cache_key(), summarize::chart::CHART_PROMPT_REVISION)
-    })
+    cfg.summarization_role()
+        .map(|role| summarize::producer(&role.cache_key(), summarize::chart::CHART_PROMPT_REVISION))
 }
 
 /// What a source hands the model, and under which policy.
@@ -312,7 +311,10 @@ pub fn generate(
         focus: directive.focus_text(),
         producer,
         source_chars,
-        redactions: redactions.iter().map(|finding| finding.count).sum::<usize>() as i32,
+        redactions: redactions
+            .iter()
+            .map(|finding| finding.count)
+            .sum::<usize>() as i32,
         attempts,
         last_error: outcome.error_detail().map(str::to_string),
         // The diagram is a separate press and survives a regenerated digest.
@@ -510,12 +512,14 @@ pub fn to_contract(row: &StoredDigest) -> content_item::Digest {
 /// Parse a reader's refine request. An unknown depth is rejected rather than
 /// defaulted: a button that silently does something else than it says is worse
 /// than one that reports it could not.
-pub fn parse_directive(depth: Option<&str>, focus: Vec<String>) -> std::result::Result<Directive, String> {
+pub fn parse_directive(
+    depth: Option<&str>,
+    focus: Vec<String>,
+) -> std::result::Result<Directive, String> {
     let depth = match depth {
         None => Depth::Standard,
-        Some(value) => Depth::parse(value).ok_or_else(|| {
-            format!("depth must be \"standard\" or \"detailed\", not {value:?}")
-        })?,
+        Some(value) => Depth::parse(value)
+            .ok_or_else(|| format!("depth must be \"standard\" or \"detailed\", not {value:?}"))?,
     };
     Ok(Directive::new(depth, focus))
 }

@@ -29,19 +29,55 @@ use scouting::store::Store;
 /// endpoint exists to avoid.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
-    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
+    r(
+        "GET",
+        "/ready",
+        "Readiness: liveness plus a reachable database.",
+    ),
     r("GET", "/routes", "This manifest."),
-    r("GET", "/discover", "Ranked opportunities for the Discover view."),
-    r("GET", "/sources", "Declared opportunity sources and their state."),
-    r("GET", "/opportunities", "Stored opportunities. Optional include_dismissed."),
-    r("POST", "/opportunities/:id/status", "Set an opportunity's status (saved, dismissed)."),
-    r("POST", "/sources/proposed", "Record a candidate source. Never runs it. Requires adapter + locator."),
-    r("POST", "/sources/proposed/:id/dismiss", "Take a candidate source out of the inbox."),
+    r(
+        "GET",
+        "/discover",
+        "Ranked opportunities for the Discover view.",
+    ),
+    r(
+        "GET",
+        "/sources",
+        "Declared opportunity sources and their state.",
+    ),
+    r(
+        "GET",
+        "/opportunities",
+        "Stored opportunities. Optional include_dismissed.",
+    ),
+    r(
+        "POST",
+        "/opportunities/:id/status",
+        "Set an opportunity's status (saved, dismissed).",
+    ),
+    r(
+        "POST",
+        "/sources/proposed",
+        "Record a candidate source. Never runs it. Requires adapter + locator.",
+    ),
+    r(
+        "POST",
+        "/sources/proposed/:id/dismiss",
+        "Take a candidate source out of the inbox.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
-const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
-    route_manifest::Route { method, path, summary }
+const fn r(
+    method: &'static str,
+    path: &'static str,
+    summary: &'static str,
+) -> route_manifest::Route {
+    route_manifest::Route {
+        method,
+        path,
+        summary,
+    }
 }
 
 async fn routes() -> Json<Value> {
@@ -561,8 +597,7 @@ mod route_manifest_tests {
     /// here rather than shipping a surface that lies about itself.
     #[test]
     fn the_manifest_covers_every_served_route() {
-        let missing =
-            route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
+        let missing = route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

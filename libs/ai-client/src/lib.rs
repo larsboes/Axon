@@ -42,8 +42,12 @@ pub trait LlmRouter {
         }
 
         let res = self.generate(req_schema).await?;
-        let parsed: T = serde_json::from_str(&res.text)
-            .map_err(|e| format!("Failed to parse structured JSON response: {}. Raw response: {}", e, res.text))?;
+        let parsed: T = serde_json::from_str(&res.text).map_err(|e| {
+            format!(
+                "Failed to parse structured JSON response: {}. Raw response: {}",
+                e, res.text
+            )
+        })?;
         Ok(parsed)
     }
 }

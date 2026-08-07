@@ -45,9 +45,7 @@ fn print_help() {
     println!("  ingest <url>                    ingest a YouTube/Instagram/podcast/article URL");
     println!("  feed [--stream news|media]      list stored feed items grouped by day");
     println!("       [--days N] [--include-dismissed]   (default --days 7)");
-    println!(
-        "  keep <id>                       feed item -> 'keeper' (+ export if configured);"
-    );
+    println!("  keep <id>                       feed item -> 'keeper' (+ export if configured);");
     println!("                                  mail -> a distilled note in keeper_export_dir.");
     println!("                                  Never a Gmail write: archiving stays explicit.");
     println!("  dismiss <id>                    mark a feed item or mail 'dismissed' (local only)");
@@ -364,14 +362,18 @@ fn keep_mail(store: &Store, cfg: &Config, id: &str, status: &str) {
     }
 
     let Some(dir) = &cfg.keeper_export_dir else {
-        eprintln!("error: keeping a mail means writing it somewhere, and keeper_export_dir is not set.");
+        eprintln!(
+            "error: keeping a mail means writing it somewhere, and keeper_export_dir is not set."
+        );
         eprintln!("       Set it in the overlay's comms.json (see comms.config.example.json).");
         std::process::exit(1);
     };
     match export_mail_keeper(&item, dir) {
         Ok(path) => {
             println!("exported: {}", path.display());
-            println!("note: the mail is still in the Inbox — archiving is a separate, explicit action.");
+            println!(
+                "note: the mail is still in the Inbox — archiving is a separate, explicit action."
+            );
         }
         Err(e) => {
             eprintln!("error: mail export failed: {e}");

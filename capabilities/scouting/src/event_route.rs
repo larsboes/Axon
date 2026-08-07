@@ -262,7 +262,7 @@ fn valid_coordinate(latitude: f64, longitude: f64) -> bool {
 }
 
 fn haversine_km(from_lat: f64, from_lng: f64, to_lat: f64, to_lng: f64) -> f64 {
-    const EARTH_RADIUS_KM: f64 = 6_371.0088;
+    const EARTH_RADIUS_KM: f64 = 6_371.008_8;
     let from_lat = from_lat.to_radians();
     let to_lat = to_lat.to_radians();
     let delta_lat = to_lat - from_lat;

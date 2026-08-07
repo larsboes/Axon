@@ -30,6 +30,8 @@
 use crate::travel::Journey;
 use postgres::Client;
 
+pub type TripWithLegs = (TripRow, Vec<TripLegRow>);
+
 pub struct TransitStore {
     /// Shared with every other store in this process on the same database, so
     /// opening one is a checkout rather than a connect.
@@ -46,7 +48,10 @@ impl TransitStore {
     /// `open()`) or a test-generated name (see `tests`) -- never user input.
     /// See `scouting::store`'s identical note for why `format!`-built DDL is
     /// safe specifically in that narrow case.
-    fn open_with_schema(database_url: &str, schema: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    fn open_with_schema(
+        database_url: &str,
+        schema: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // A pool checkout, not a connect, and the migration runs once per process
         // per (database, schema) rather than once per open. Both halves of the
         // Store::open problem -- libs/axon-store/README.md has the numbers.
@@ -220,7 +225,7 @@ impl TransitStore {
 
     /// Reads a trip back with its legs, in leg order -- verification/test
     /// helper; no CLI command consumes this yet (see module doc).
-    pub fn get_trip(&self, id: &str) -> Result<Option<(TripRow, Vec<TripLegRow>)>, Box<dyn std::error::Error>> {
+    pub fn get_trip(&self, id: &str) -> Result<Option<TripWithLegs>, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let trip_row = conn.query_opt(
             &format!(
@@ -371,7 +376,7 @@ impl TransitStore {
     pub fn list_session_trips(
         &self,
         session_id: &str,
-    ) -> Result<Vec<(TripRow, Vec<TripLegRow>)>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<TripWithLegs>, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let trips = conn.query(
             &format!(
@@ -688,8 +693,12 @@ mod tests {
 
     fn open_test_store(name: &str) -> (TransitStore, TestSchema) {
         let schema = format!("transit_test_{name}_{}", std::process::id());
-        let store = TransitStore::open_with_schema(&test_database_url(), &schema)
-            .unwrap_or_else(|e| panic!("could not open test store (is capabilities/postgres running? see README): {e}"));
+        let store =
+            TransitStore::open_with_schema(&test_database_url(), &schema).unwrap_or_else(|e| {
+                panic!(
+                    "could not open test store (is capabilities/postgres running? see README): {e}"
+                )
+            });
         (store, TestSchema(schema))
     }
 
@@ -722,8 +731,18 @@ mod tests {
     }
 
     fn mk_journey(id: &str) -> Journey {
-        let bonn = Station { id: "8000044".into(), name: "Bonn Hbf".into(), latitude: None, longitude: None };
-        let berlin = Station { id: "8098160".into(), name: "Berlin Hbf".into(), latitude: None, longitude: None };
+        let bonn = Station {
+            id: "8000044".into(),
+            name: "Bonn Hbf".into(),
+            latitude: None,
+            longitude: None,
+        };
+        let berlin = Station {
+            id: "8098160".into(),
+            name: "Berlin Hbf".into(),
+            latitude: None,
+            longitude: None,
+        };
         Journey {
             id: id.into(),
             start_station: bonn.clone(),
@@ -750,18 +769,31 @@ mod tests {
         let (store, _schema) = open_test_store("idempotent");
 
         let journey = mk_journey("journey:test:1");
-        let is_new1 = store.record_journey(&journey, "8000044", "8098160", "auto", None).unwrap();
+        let is_new1 = store
+            .record_journey(&journey, "8000044", "8098160", "auto", None)
+            .unwrap();
         assert!(is_new1, "first record should be new");
-        let is_new2 = store.record_journey(&journey, "8000044", "8098160", "auto", None).unwrap();
-        assert!(!is_new2, "re-recording the same journey id should not be new");
+        let is_new2 = store
+            .record_journey(&journey, "8000044", "8098160", "auto", None)
+            .unwrap();
+        assert!(
+            !is_new2,
+            "re-recording the same journey id should not be new"
+        );
 
         assert_eq!(store.count().unwrap(), 1);
 
-        let (trip, legs) = store.get_trip("journey:test:1").unwrap().expect("trip should exist");
+        let (trip, legs) = store
+            .get_trip("journey:test:1")
+            .unwrap()
+            .expect("trip should exist");
         assert_eq!(trip.origin_eva, "8000044");
         assert_eq!(trip.destination_eva, "8098160");
         assert_eq!(trip.trigger_reason, "auto");
-        assert_eq!(trip.status, "new", "freshly recorded trip defaults to 'new'");
+        assert_eq!(
+            trip.status, "new",
+            "freshly recorded trip defaults to 'new'"
+        );
         assert_eq!(trip.total_duration_minutes, Some(240));
         assert!((trip.total_price.unwrap() - 79.90).abs() < 1e-9);
 
@@ -769,7 +801,6 @@ mod tests {
         assert_eq!(legs[0].train_number, "691");
         assert_eq!(legs[0].platform.as_deref(), Some("3"));
         assert!(!legs[0].is_regional);
-
     }
 
     #[test]
@@ -777,18 +808,25 @@ mod tests {
         let (store, _schema) = open_test_store("replace_legs");
 
         let mut journey = mk_journey("journey:test:2");
-        store.record_journey(&journey, "8000044", "8098160", "manual", None).unwrap();
+        store
+            .record_journey(&journey, "8000044", "8098160", "manual", None)
+            .unwrap();
 
         // Re-recording with a different leg set should leave exactly the new
         // legs, not the old ones appended alongside them.
         journey.legs.push(journey.legs[0].clone());
         journey.total_duration_minutes = 300;
-        store.record_journey(&journey, "8000044", "8098160", "manual", None).unwrap();
+        store
+            .record_journey(&journey, "8000044", "8098160", "manual", None)
+            .unwrap();
 
         let (trip, legs) = store.get_trip("journey:test:2").unwrap().unwrap();
         assert_eq!(trip.total_duration_minutes, Some(300));
-        assert_eq!(legs.len(), 2, "leg set should be fully replaced, not appended to");
-
+        assert_eq!(
+            legs.len(),
+            2,
+            "leg set should be fully replaced, not appended to"
+        );
     }
 
     #[test]
@@ -796,14 +834,33 @@ mod tests {
         let (store, _schema) = open_test_store("invalid_trigger");
         let journey = mk_journey("journey:test:3");
         let result = store.record_journey(&journey, "8000044", "8098160", "scheduled", None);
-        assert!(result.is_err(), "an unrecognized trigger_reason must error, not silently accept");
+        assert!(
+            result.is_err(),
+            "an unrecognized trigger_reason must error, not silently accept"
+        );
     }
 
     // ── Phase 3: trip sessions ───────────────────────────────────────────
 
-    fn mk_session_journey(id: &str, dest_eva: &str, dest_name: &str, price: Option<f64>, dur: u32) -> Journey {
-        let bonn = Station { id: "8000044".into(), name: "Bonn Hbf".into(), latitude: None, longitude: None };
-        let dest = Station { id: dest_eva.into(), name: dest_name.into(), latitude: None, longitude: None };
+    fn mk_session_journey(
+        id: &str,
+        dest_eva: &str,
+        dest_name: &str,
+        price: Option<f64>,
+        dur: u32,
+    ) -> Journey {
+        let bonn = Station {
+            id: "8000044".into(),
+            name: "Bonn Hbf".into(),
+            latitude: None,
+            longitude: None,
+        };
+        let dest = Station {
+            id: dest_eva.into(),
+            name: dest_name.into(),
+            latitude: None,
+            longitude: None,
+        };
         Journey {
             id: id.into(),
             start_station: bonn.clone(),
@@ -829,42 +886,130 @@ mod tests {
     fn upsert_session_is_idempotent_and_round_trips() {
         let (store, _schema) = open_test_store("session_upsert");
         let cands = vec![
-            CandidateDest { eva: "8600206".into(), name: "Valencia".into() },
-            CandidateDest { eva: "8300003".into(), name: "Barcelona".into() },
+            CandidateDest {
+                eva: "8600206".into(),
+                name: "Valencia".into(),
+            },
+            CandidateDest {
+                eva: "8300003".into(),
+                name: "Barcelona".into(),
+            },
         ];
-        let id = stable_session_id("8000044", &cands, "2026-09-01", "2026-09-30", "Valencia or Barcelona");
-        let is_new1 = store.upsert_session(&id, "8000044", "Valencia or Barcelona", &cands, "2026-09-01", "2026-09-30").unwrap();
+        let id = stable_session_id(
+            "8000044",
+            &cands,
+            "2026-09-01",
+            "2026-09-30",
+            "Valencia or Barcelona",
+        );
+        let is_new1 = store
+            .upsert_session(
+                &id,
+                "8000044",
+                "Valencia or Barcelona",
+                &cands,
+                "2026-09-01",
+                "2026-09-30",
+            )
+            .unwrap();
         assert!(is_new1, "first upsert of a session should be new");
         // Tweaked intent (same shape) should UPDATE, not create a second row.
-        let is_new2 = store.upsert_session(&id, "8000044", "Valencia or Barcelona, open to nearby", &cands, "2026-09-01", "2026-09-30").unwrap();
-        assert!(!is_new2, "re-upserting the same session id should update, not insert");
+        let is_new2 = store
+            .upsert_session(
+                &id,
+                "8000044",
+                "Valencia or Barcelona, open to nearby",
+                &cands,
+                "2026-09-01",
+                "2026-09-30",
+            )
+            .unwrap();
+        assert!(
+            !is_new2,
+            "re-upserting the same session id should update, not insert"
+        );
 
-        let s = store.get_session(&id).unwrap().expect("session should exist");
+        let s = store
+            .get_session(&id)
+            .unwrap()
+            .expect("session should exist");
         assert_eq!(s.origin_eva, "8000044");
         assert_eq!(s.intent, "Valencia or Barcelona, open to nearby");
         assert_eq!(s.date_start, "2026-09-01");
         assert_eq!(s.date_end, "2026-09-30");
         assert_eq!(s.status, "new");
         assert_eq!(s.candidates.len(), 2);
-        assert!(s.candidates.iter().any(|c| c.eva == "8600206" && c.name == "Valencia"));
-        assert!(s.candidates.iter().any(|c| c.eva == "8300003" && c.name == "Barcelona"));
+        assert!(s
+            .candidates
+            .iter()
+            .any(|c| c.eva == "8600206" && c.name == "Valencia"));
+        assert!(s
+            .candidates
+            .iter()
+            .any(|c| c.eva == "8300003" && c.name == "Barcelona"));
     }
 
     #[test]
     fn session_journeys_are_tagged_owned_and_ranked_by_price() {
         let (store, _schema) = open_test_store("session_rank");
-        let cands = vec![ CandidateDest { eva: "8600206".into(), name: "Valencia".into() } ];
-        let sid = stable_session_id("8000044", &cands, "2026-09-01", "2026-09-30", "Valencia in Sept");
-        store.upsert_session(&sid, "8000044", "Valencia in Sept", &cands, "2026-09-01", "2026-09-30").unwrap();
+        let cands = vec![CandidateDest {
+            eva: "8600206".into(),
+            name: "Valencia".into(),
+        }];
+        let sid = stable_session_id(
+            "8000044",
+            &cands,
+            "2026-09-01",
+            "2026-09-30",
+            "Valencia in Sept",
+        );
+        store
+            .upsert_session(
+                &sid,
+                "8000044",
+                "Valencia in Sept",
+                &cands,
+                "2026-09-01",
+                "2026-09-30",
+            )
+            .unwrap();
 
         // Three found journeys -- record them session-scoped, prices mixed
         // so the ranking order is provably cheapest-first, not insert order.
-        store.record_journey(&mk_session_journey("j:expensive", "8600206", "Valencia", Some(129.50), 360), "8000044", "8600206", "session", Some(&sid)).unwrap();
-        store.record_journey(&mk_session_journey("j:cheap", "8600206", "Valencia", Some(49.90), 380), "8000044", "8600206", "session", Some(&sid)).unwrap();
-        store.record_journey(&mk_session_journey("j:mid", "8600206", "Valencia", Some(89.00), 340), "8000044", "8600206", "session", Some(&sid)).unwrap();
+        store
+            .record_journey(
+                &mk_session_journey("j:expensive", "8600206", "Valencia", Some(129.50), 360),
+                "8000044",
+                "8600206",
+                "session",
+                Some(&sid),
+            )
+            .unwrap();
+        store
+            .record_journey(
+                &mk_session_journey("j:cheap", "8600206", "Valencia", Some(49.90), 380),
+                "8000044",
+                "8600206",
+                "session",
+                Some(&sid),
+            )
+            .unwrap();
+        store
+            .record_journey(
+                &mk_session_journey("j:mid", "8600206", "Valencia", Some(89.00), 340),
+                "8000044",
+                "8600206",
+                "session",
+                Some(&sid),
+            )
+            .unwrap();
 
         let trips = store.list_session_trips(&sid).unwrap();
-        assert_eq!(trips.len(), 3, "all three session journeys should be owned by the session");
+        assert_eq!(
+            trips.len(),
+            3,
+            "all three session journeys should be owned by the session"
+        );
         // Cheapest-first.
         assert_eq!(trips[0].0.id, "j:cheap");
         assert!((trips[0].0.total_price.unwrap() - 49.90).abs() < 1e-9);
@@ -884,11 +1029,25 @@ mod tests {
         // the price/duration refresh, but a hand-set 'saved' status survives
         // -- same invariant scouting::store::upsert_preserves_status guards.
         let (store, schema) = open_test_store("session_refresh");
-        let cands = vec![ CandidateDest { eva: "8600206".into(), name: "Valencia".into() } ];
+        let cands = vec![CandidateDest {
+            eva: "8600206".into(),
+            name: "Valencia".into(),
+        }];
         let sid = stable_session_id("8000044", &cands, "2026-09-01", "2026-09-30", "Valencia");
-        store.upsert_session(&sid, "8000044", "Valencia", &cands, "2026-09-01", "2026-09-30").unwrap();
+        store
+            .upsert_session(
+                &sid,
+                "8000044",
+                "Valencia",
+                &cands,
+                "2026-09-01",
+                "2026-09-30",
+            )
+            .unwrap();
         let j = mk_session_journey("j:refresh", "8600206", "Valencia", Some(70.00), 360);
-        store.record_journey(&j, "8000044", "8600206", "session", Some(&sid)).unwrap();
+        store
+            .record_journey(&j, "8000044", "8600206", "session", Some(&sid))
+            .unwrap();
 
         // Hand-mark saved out-of-band (there's no CLI for it yet -- direct SQL
         // is the test seam; same pattern scouting::store::tests uses to test
@@ -896,9 +1055,13 @@ mod tests {
         {
             let mut conn = Client::connect(&test_database_url(), NoTls).unwrap();
             conn.execute(
-                &format!("UPDATE {}.trips SET status='saved' WHERE id='j:refresh'", schema),
+                &format!(
+                    "UPDATE {}.trips SET status='saved' WHERE id='j:refresh'",
+                    schema
+                ),
                 &[],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let (trip, _) = store.get_trip("j:refresh").unwrap().unwrap();
         assert_eq!(trip.status, "saved");
@@ -906,11 +1069,16 @@ mod tests {
         // Re-plan: same journey id, cheaper fare now.
         let mut j2 = j.clone();
         j2.total_price = Some(55.00);
-        store.record_journey(&j2, "8000044", "8600206", "session", Some(&sid)).unwrap();
+        store
+            .record_journey(&j2, "8000044", "8600206", "session", Some(&sid))
+            .unwrap();
 
         let (trip2, _) = store.get_trip("j:refresh").unwrap().unwrap();
         assert_eq!(trip2.status, "saved", "status must survive a fare refresh");
-        assert!((trip2.total_price.unwrap() - 55.00).abs() < 1e-9, "price should refresh");
+        assert!(
+            (trip2.total_price.unwrap() - 55.00).abs() < 1e-9,
+            "price should refresh"
+        );
     }
 
     #[test]
@@ -920,16 +1088,54 @@ mod tests {
         // trips -- the session_id filter is what keeps query #2's results
         // separate from #1's background-scan results.
         let (store, _schema) = open_test_store("session_isolation");
-        let cands = vec![ CandidateDest { eva: "8600206".into(), name: "Valencia".into() } ];
+        let cands = vec![CandidateDest {
+            eva: "8600206".into(),
+            name: "Valencia".into(),
+        }];
         let sid = stable_session_id("8000044", &cands, "2026-09-01", "2026-09-30", "Valencia");
-        store.upsert_session(&sid, "8000044", "Valencia", &cands, "2026-09-01", "2026-09-30").unwrap();
+        store
+            .upsert_session(
+                &sid,
+                "8000044",
+                "Valencia",
+                &cands,
+                "2026-09-01",
+                "2026-09-30",
+            )
+            .unwrap();
 
-        store.record_journey(&mk_session_journey("j:manual", "8600206", "Valencia", Some(70.00), 360), "8000044", "8600206", "manual", None).unwrap();
-        store.record_journey(&mk_session_journey("j:session", "8600206", "Valencia", Some(70.00), 360), "8000044", "8600206", "session", Some(&sid)).unwrap();
+        store
+            .record_journey(
+                &mk_session_journey("j:manual", "8600206", "Valencia", Some(70.00), 360),
+                "8000044",
+                "8600206",
+                "manual",
+                None,
+            )
+            .unwrap();
+        store
+            .record_journey(
+                &mk_session_journey("j:session", "8600206", "Valencia", Some(70.00), 360),
+                "8000044",
+                "8600206",
+                "session",
+                Some(&sid),
+            )
+            .unwrap();
 
         let trips = store.list_session_trips(&sid).unwrap();
-        assert_eq!(trips.len(), 1, "manual trip must not leak into the session list");
+        assert_eq!(
+            trips.len(),
+            1,
+            "manual trip must not leak into the session list"
+        );
         assert_eq!(trips[0].0.id, "j:session");
-        assert!(store.get_trip("j:manual").unwrap().unwrap().0.session_id.is_none());
+        assert!(store
+            .get_trip("j:manual")
+            .unwrap()
+            .unwrap()
+            .0
+            .session_id
+            .is_none());
     }
 }

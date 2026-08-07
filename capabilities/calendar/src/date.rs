@@ -39,7 +39,10 @@ pub fn weekday(days: i64) -> u32 {
 pub const WEEKDAY_TOKENS: [&str; 7] = ["mo", "tu", "we", "th", "fr", "sa", "su"];
 
 pub fn parse_weekday(token: &str) -> Option<u32> {
-    WEEKDAY_TOKENS.iter().position(|t| *t == token).map(|i| i as u32)
+    WEEKDAY_TOKENS
+        .iter()
+        .position(|t| *t == token)
+        .map(|i| i as u32)
 }
 
 /// Strictly parse "YYYY-MM-DD" into a day count; rejects impossible dates
@@ -149,7 +152,11 @@ mod tests {
         let end = days_from_civil(2130, 12, 31);
         while days <= end {
             let (y, m, d) = civil_from_days(days);
-            assert_eq!(days_from_civil(y, m, d), days, "round-trip failed for {days}");
+            assert_eq!(
+                days_from_civil(y, m, d),
+                days,
+                "round-trip failed for {days}"
+            );
             days += 97;
         }
     }
@@ -191,7 +198,10 @@ mod tests {
 
     #[test]
     fn parse_instant_accepts_dates_and_wall_times() {
-        assert_eq!(parse_instant("2026-08-14"), Some((parse_date("2026-08-14").unwrap(), None)));
+        assert_eq!(
+            parse_instant("2026-08-14"),
+            Some((parse_date("2026-08-14").unwrap(), None))
+        );
         let (days, time) = parse_instant("2026-08-14T18:30").unwrap();
         assert_eq!(time, Some((18, 30)));
         assert_eq!(days, parse_date("2026-08-14").unwrap());

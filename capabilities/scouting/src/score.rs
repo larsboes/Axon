@@ -65,7 +65,6 @@ impl TelosProfile {
     }
 }
 
-
 /// Loads interest profiles from the legacy `interest_profile_dir` AND from all
 /// configured source manifests that declare a `profiles_glob`. Profiles from both
 /// sources are merged into a single list (sources take precedence on name collision).
@@ -90,58 +89,59 @@ pub fn load_telos_profiles(
 
     // Helper: read profiles from a directory or one exact file, separating
     // cached vs. unembedded.
-    let mut collect_from_path = |path: &Path, vectors_cache: Option<&Path>, declared: Option<OpportunityType>| {
-        if !path.is_dir() && !path.is_file() {
-            return;
-        }
-
-        // Try pre-computed vectors from cache, but only this model's
-        if let (Some(cache_path), Some(producer)) = (vectors_cache, producer.as_deref()) {
-            if cache_path.exists() {
-                for mut p in load_real_e5_vectors(cache_path, producer) {
-                    // The cache is written per directory, so a cached profile
-                    // takes the type of the source asking for it now.
-                    p.opportunity_type = p.opportunity_type.or(declared);
-                    if seen_names.insert(p.focus_name.clone()) {
-                        profiles.push(p);
-                    }
-                }
-                return; // cache covered everything in this directory
+    let mut collect_from_path =
+        |path: &Path, vectors_cache: Option<&Path>, declared: Option<OpportunityType>| {
+            if !path.is_dir() && !path.is_file() {
+                return;
             }
-        }
 
-        // No cache — hash-fallback profiles, but collect texts for embedding
-        let paths: Vec<PathBuf> = if path.is_file() {
-            vec![path.to_path_buf()]
-        } else {
-            match fs::read_dir(path) {
-                Ok(entries) => entries.flatten().map(|entry| entry.path()).collect(),
-                Err(_) => return,
+            // Try pre-computed vectors from cache, but only this model's
+            if let (Some(cache_path), Some(producer)) = (vectors_cache, producer.as_deref()) {
+                if cache_path.exists() {
+                    for mut p in load_real_e5_vectors(cache_path, producer) {
+                        // The cache is written per directory, so a cached profile
+                        // takes the type of the source asking for it now.
+                        p.opportunity_type = p.opportunity_type.or(declared);
+                        if seen_names.insert(p.focus_name.clone()) {
+                            profiles.push(p);
+                        }
+                    }
+                    return; // cache covered everything in this directory
+                }
+            }
+
+            // No cache — hash-fallback profiles, but collect texts for embedding
+            let paths: Vec<PathBuf> = if path.is_file() {
+                vec![path.to_path_buf()]
+            } else {
+                match fs::read_dir(path) {
+                    Ok(entries) => entries.flatten().map(|entry| entry.path()).collect(),
+                    Err(_) => return,
+                }
+            };
+            for path in paths {
+                if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+                let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if name == "Focus" {
+                    continue;
+                } // MOC hub, skip
+                if seen_names.contains(name) {
+                    continue;
+                }
+                seen_names.insert(name.to_string());
+
+                let Ok(text) = fs::read_to_string(&path) else {
+                    continue;
+                };
+                let memo = extract_memo(&text);
+                let affinity = parse_category_affinity(&text);
+                unembedded.push((name.to_string(), memo, affinity, declared));
             }
         };
-        for path in paths {
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            if name == "Focus" {
-                continue;
-            } // MOC hub, skip
-            if seen_names.contains(name) {
-                continue;
-            }
-            seen_names.insert(name.to_string());
-
-            let Ok(text) = fs::read_to_string(&path) else {
-                continue;
-            };
-            let memo = extract_memo(&text);
-            let affinity = parse_category_affinity(&text);
-            unembedded.push((name.to_string(), memo, affinity, declared));
-        }
-    };
 
     // 1. Legacy interest_profile_dir
     let legacy_dir = Path::new(interest_profile_dir);
@@ -695,18 +695,35 @@ mod tests {
         let centre = batch_centre(&items).expect("ten is enough to average");
 
         let spread = |xs: &[f32]| {
-            xs.iter().cloned().fold(f32::MIN, f32::max) - xs.iter().cloned().fold(f32::MAX, f32::min)
+            xs.iter().cloned().fold(f32::MIN, f32::max)
+                - xs.iter().cloned().fold(f32::MAX, f32::min)
         };
-        let before = spread(&items.iter().map(|v| cosine(&profile, v)).collect::<Vec<_>>());
+        let before = spread(
+            &items
+                .iter()
+                .map(|v| cosine(&profile, v))
+                .collect::<Vec<_>>(),
+        );
         let after = spread(
             &items
                 .iter()
-                .map(|v| cosine(&centred(&profile, Some(&centre)), &centred(v, Some(&centre))))
+                .map(|v| {
+                    cosine(
+                        &centred(&profile, Some(&centre)),
+                        &centred(v, Some(&centre)),
+                    )
+                })
                 .collect::<Vec<_>>(),
         );
 
-        assert!(before < 0.001, "the shared axis should flatten everything: {before}");
-        assert!(after > 0.5, "centring should expose the difference: {after}");
+        assert!(
+            before < 0.001,
+            "the shared axis should flatten everything: {before}"
+        );
+        assert!(
+            after > 0.5,
+            "centring should expose the difference: {after}"
+        );
     }
 
     /// A mean over three points is noise, not a common component.
@@ -715,7 +732,11 @@ mod tests {
         let few = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
         assert!(batch_centre(&few).is_none());
         let v = vec![1.0, 2.0];
-        assert_eq!(centred(&v, None), v, "no centre means the raw vector stands");
+        assert_eq!(
+            centred(&v, None),
+            v,
+            "no centre means the raw vector stands"
+        );
     }
 
     /// The defect this filter exists for: the scholarship profile took the
@@ -806,7 +827,11 @@ mod tests {
         );
         let opposite = vec![-1.0, 0.0, 0.0];
         assert!((cosine(&a, &opposite) + 1.0).abs() < 1e-6);
-        assert_eq!(cosine(&a, &[0.0, 0.0, 0.0]), 0.0, "no signal, no similarity");
+        assert_eq!(
+            cosine(&a, &[0.0, 0.0, 0.0]),
+            0.0,
+            "no signal, no similarity"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -845,7 +870,11 @@ mod tests {
         }
     }
 
-    fn entry(path: Option<&Path>, profile_path: Option<&Path>, glob: Option<&str>) -> SourceManifest {
+    fn entry(
+        path: Option<&Path>,
+        profile_path: Option<&Path>,
+        glob: Option<&str>,
+    ) -> SourceManifest {
         let json = serde_json::json!({
             "id": "events-radar",
             "adapter": "obsidian-markdown",
@@ -924,7 +953,10 @@ mod tests {
         let detail = manifest
             .profile_location()
             .expect_err("neither root is declared");
-        assert!(detail.contains("events-radar"), "the error names the source");
+        assert!(
+            detail.contains("events-radar"),
+            "the error names the source"
+        );
         assert!(detail.contains("profile_path"), "and the way out");
     }
 

@@ -22,6 +22,22 @@ env:
   BUN_VERSION: "1.3.14"
 
 jobs:
+  # Cargo owns Rust source quality even though Bazel remains the polyglot build
+  # spine. rust-toolchain.toml pins both the compiler and these two components,
+  # so local contributor commands and CI cannot silently lint with different
+  # releases. Clippy compiles tests and feature-gated paths without running the
+  # database-backed suites; those retain their explicit job below.
+  rust-quality:
+    name: cargo fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Axon
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+      - name: cargo clippy (strict workspace)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
   bazel-unit:
     name: bazel test //... (hermetic)
     runs-on: ubuntu-latest

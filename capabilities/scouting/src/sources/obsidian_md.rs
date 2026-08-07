@@ -24,11 +24,11 @@
 //! Description is extracted from the `## About` section of the body, or the first
 //! non-heading paragraph if no `## About` exists.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use markdown_root::MarkdownRoot;
 use crate::opportunity::{Opportunity, OpportunityType, SourceKind};
 use crate::source::{SearchQuery, SourceAdapter, SourceError};
+use markdown_root::MarkdownRoot;
 
 #[allow(dead_code)]
 pub struct ObsidianMarkdownSource {
@@ -97,7 +97,7 @@ impl SourceAdapter for ObsidianMarkdownSource {
 // ---------------------------------------------------------------------------
 
 fn parse_opportunity_file(
-    path: &PathBuf,
+    path: &Path,
     expected_type: OpportunityType,
 ) -> Result<Option<Opportunity>, String> {
     let body = std::fs::read_to_string(path)
@@ -202,7 +202,7 @@ fn parse_opportunity_file(
 
 fn scholarship_is_actionable(
     frontmatter: &std::collections::HashMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> bool {
     if frontmatter.get("eligibility").map(String::as_str) != Some("eligible") {
         return false;

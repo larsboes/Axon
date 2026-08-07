@@ -23,6 +23,8 @@ pub struct Store {
     schema: String,
 }
 
+pub type Coverage = (String, String, i32);
+
 /// The dataset writes EVA numbers zero-padded to eight digits (`08000044`); HAFAS, and
 /// therefore `capabilities/transit`, returns them unpadded (`8000044`). Joining the two
 /// without this returns zero rows and looks exactly like "we have no data for that
@@ -58,14 +60,20 @@ impl Store {
     /// parametrized-identifier syntax for DDL, so schema-qualified names are built with
     /// `format!` below; that is safe because of where the name comes from, not because
     /// interpolating into SQL is safe in general.
-    pub fn open_with_schema(database_url: &str, schema: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn open_with_schema(
+        database_url: &str,
+        schema: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // A pool checkout, not a connect, and the migration runs once per process
         // per (database, schema) rather than once per open. Both halves of the
         // Store::open problem -- libs/axon-store/README.md has the numbers.
         let pool = axon_store::open_pool(database_url, schema, |client| {
             Self::init_schema(client, schema)
         })?;
-        Ok(Self { pool, schema: schema.to_string() })
+        Ok(Self {
+            pool,
+            schema: schema.to_string(),
+        })
     }
 
     /// A connection from the shared pool.
@@ -245,7 +253,7 @@ impl Store {
     /// The window the current aggregate covers, from the most recent ingest run.
     /// `None` means nothing has been ingested — which a caller must be able to tell
     /// apart from "this train is never late".
-    pub fn coverage(&mut self) -> Result<Option<(String, String, i32)>, Box<dyn std::error::Error>> {
+    pub fn coverage(&mut self) -> Result<Option<Coverage>, Box<dyn std::error::Error>> {
         let schema = &self.schema;
         let rows = self.conn()?.query(
             &format!(
@@ -258,7 +266,10 @@ impl Store {
     }
 
     /// EVA numbers whose station name contains `needle`, case-insensitively.
-    pub fn find_stations(&mut self, needle: &str) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    pub fn find_stations(
+        &mut self,
+        needle: &str,
+    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         let schema = &self.schema;
         let rows = self.conn()?.query(
             &format!(

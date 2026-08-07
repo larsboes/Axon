@@ -21,16 +21,32 @@ use transit::store::TransitStore;
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
     r("GET", "/routes", "This manifest."),
-    r("GET", "/api/health", "Liveness under the API prefix. Same handler as /health."),
+    r(
+        "GET",
+        "/api/health",
+        "Liveness under the API prefix. Same handler as /health.",
+    ),
     r("GET", "/api/suggest", "Station suggestions for a query."),
-    r("GET", "/api/search", "Fare search between two stations on a date."),
+    r(
+        "GET",
+        "/api/search",
+        "Fare search between two stations on a date.",
+    ),
     r("GET", "/api/split", "Split-ticket options for a search."),
     r("GET", "/api/trips", "Saved trip searches."),
 ];
 
 /// Shorthand so the table above reads as a table.
-const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
-    route_manifest::Route { method, path, summary }
+const fn r(
+    method: &'static str,
+    path: &'static str,
+    summary: &'static str,
+) -> route_manifest::Route {
+    route_manifest::Route {
+        method,
+        path,
+        summary,
+    }
 }
 
 async fn routes() -> Json<Value> {
@@ -53,7 +69,10 @@ struct RouteQuery {
 /// client unwraps exactly that field, and without it a reader saw the raw JSON of a
 /// failure, or worse, a bare sentence that is not JSON at all. These handlers returned
 /// `e.to_string()` and were the one surface in the repo still breaking that contract.
-fn fail(status: axum::http::StatusCode, message: impl std::fmt::Display) -> (axum::http::StatusCode, String) {
+fn fail(
+    status: axum::http::StatusCode,
+    message: impl std::fmt::Display,
+) -> (axum::http::StatusCode, String) {
     (status, json!({ "error": message.to_string() }).to_string())
 }
 
@@ -225,8 +244,7 @@ mod route_manifest_tests {
     /// here rather than shipping a surface that lies about itself.
     #[test]
     fn the_manifest_covers_every_served_route() {
-        let missing =
-            route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
+        let missing = route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

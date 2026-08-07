@@ -86,7 +86,10 @@ impl LocalGate for AdvisoryGate {
         let deadline = Instant::now() + WAIT_TIMEOUT;
         loop {
             let got: bool = client
-                .query_one("SELECT pg_try_advisory_lock($1)", &[&LOCAL_INFERENCE_LOCK_KEY])
+                .query_one(
+                    "SELECT pg_try_advisory_lock($1)",
+                    &[&LOCAL_INFERENCE_LOCK_KEY],
+                )
                 .map_err(|error| format!("local inference gate: {error}"))?
                 .get(0);
             if got {
@@ -166,9 +169,11 @@ mod tests {
             i64::from_be_bytes(*b"AXON_GPU"),
             "the advisory key must stay byte-identical across every process"
         );
-        assert!(
-            LOCAL_INFERENCE_LOCK_KEY > 0,
-            "a negative key still works but reads as a mistake in pg_locks"
-        );
+        const {
+            assert!(
+                LOCAL_INFERENCE_LOCK_KEY > 0,
+                "a negative key still works but reads as a mistake in pg_locks"
+            );
+        }
     }
 }

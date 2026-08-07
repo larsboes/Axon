@@ -329,7 +329,9 @@ mod tests {
         let (_g, root) = with_deployment_env(Some("AXON_HOME_TIMEZONE=Europe/Berlin\n"));
         assert_eq!(deployment_home_timezone().as_deref(), Some("Europe/Berlin"));
         assert_eq!(
-            resolve_home_timezone(None, "calendar.json").unwrap().as_deref(),
+            resolve_home_timezone(None, "calendar.json")
+                .unwrap()
+                .as_deref(),
             Some("Europe/Berlin")
         );
         let _ = std::fs::remove_dir_all(root);
@@ -341,7 +343,9 @@ mod tests {
         let (_g, root) = with_deployment_env(None);
         assert_eq!(deployment_home_timezone(), None);
         assert_eq!(
-            resolve_home_timezone(Some("UTC"), "scouting.json").unwrap().as_deref(),
+            resolve_home_timezone(Some("UTC"), "scouting.json")
+                .unwrap()
+                .as_deref(),
             Some("UTC")
         );
         let _ = std::fs::remove_dir_all(root);
@@ -370,7 +374,10 @@ mod tests {
         let (_g, root) = with_deployment_env(None);
         assert_eq!(resolve_home_timezone(None, "calendar.json").unwrap(), None);
         // An empty or whitespace value is absent, not a zone named "".
-        assert_eq!(resolve_home_timezone(Some("  "), "calendar.json").unwrap(), None);
+        assert_eq!(
+            resolve_home_timezone(Some("  "), "calendar.json").unwrap(),
+            None
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

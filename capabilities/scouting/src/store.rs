@@ -33,7 +33,10 @@ impl Store {
     /// file; that's safe specifically because the schema name's origin is
     /// always one of those two controlled cases, not because interpolation
     /// into SQL is safe in general.
-    fn open_with_schema(database_url: &str, schema: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    fn open_with_schema(
+        database_url: &str,
+        schema: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // A pool checkout, not a connect, and the migration runs once per process
         // per (database, schema) rather than once per open. Both halves of the
         // Store::open problem -- libs/axon-store/README.md has the numbers.
@@ -180,7 +183,10 @@ impl Store {
         }
         let mut conn = self.conn()?;
         let affected = conn.execute(
-            &format!("UPDATE {}.opportunities SET status = $1 WHERE id = $2", self.schema),
+            &format!(
+                "UPDATE {}.opportunities SET status = $1 WHERE id = $2",
+                self.schema
+            ),
             &[&status, &id],
         )?;
         Ok(affected > 0)
@@ -190,7 +196,10 @@ impl Store {
     pub fn get_status(&self, id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let row = conn.query_opt(
-            &format!("SELECT status FROM {}.opportunities WHERE id = $1", self.schema),
+            &format!(
+                "SELECT status FROM {}.opportunities WHERE id = $1",
+                self.schema
+            ),
             &[&id],
         )?;
         match row {
@@ -202,7 +211,11 @@ impl Store {
     /// Upserts per-adapter run bookkeeping: `last_run_at` is always bumped to
     /// now; `cursor` is only overwritten when `Some` (passing `None` preserves
     /// whatever cursor was recorded last time, rather than clobbering it).
-    pub fn record_run(&self, adapter_name: &str, cursor: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn record_run(
+        &self,
+        adapter_name: &str,
+        cursor: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let now = chrono_now();
         let mut conn = self.conn()?;
         conn.execute(
@@ -221,7 +234,10 @@ impl Store {
 
     /// Reads back per-adapter run bookkeeping (round-trip counterpart to
     /// `record_run`).
-    pub fn get_source_state(&self, adapter_name: &str) -> Result<Option<SourceState>, Box<dyn std::error::Error>> {
+    pub fn get_source_state(
+        &self,
+        adapter_name: &str,
+    ) -> Result<Option<SourceState>, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let row = conn.query_opt(
             &format!(
@@ -449,7 +465,10 @@ impl Store {
 
     pub fn count(&self) -> Result<i64, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let row = conn.query_one(&format!("SELECT COUNT(*) FROM {}.opportunities", self.schema), &[])?;
+        let row = conn.query_one(
+            &format!("SELECT COUNT(*) FROM {}.opportunities", self.schema),
+            &[],
+        )?;
         Ok(row.try_get(0)?)
     }
 
@@ -458,7 +477,11 @@ impl Store {
     /// they were fresh. Pass `include_dismissed = true` for debugging/
     /// visibility (e.g. `--backlog --include-dismissed`); `saved` and `new`
     /// always show either way.
-    pub fn list_top(&self, limit: usize, include_dismissed: bool) -> Result<Vec<RankedRow>, Box<dyn std::error::Error>> {
+    pub fn list_top(
+        &self,
+        limit: usize,
+        include_dismissed: bool,
+    ) -> Result<Vec<RankedRow>, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let sql = if include_dismissed {
             format!(
@@ -634,8 +657,9 @@ mod tests {
 
     fn open_test_store(name: &str) -> (Store, TestSchema) {
         let schema = format!("scouting_test_{name}_{}", std::process::id());
-        let store = Store::open_with_schema(&test_database_url(), &schema)
-            .unwrap_or_else(|e| panic!("could not open test store (is capabilities/postgres running? see README): {e}"));
+        let store = Store::open_with_schema(&test_database_url(), &schema).unwrap_or_else(|e| {
+            panic!("could not open test store (is capabilities/postgres running? see README): {e}")
+        });
         (store, TestSchema(schema))
     }
 
@@ -710,20 +734,33 @@ mod tests {
         let (store, _schema) = open_test_store("idempotent");
 
         let opp = mk_opp("evt:test:1", "Test Hack");
-        let new1 = store.upsert(&opp, 0.5, Some("Polymath"), "match", None).unwrap();
+        let new1 = store
+            .upsert(&opp, 0.5, Some("Polymath"), "match", None)
+            .unwrap();
         assert!(new1, "first insert should be new");
 
-        let new2 = store.upsert(&opp, 0.6, Some("Polymath"), "match v2", None).unwrap();
+        let new2 = store
+            .upsert(&opp, 0.6, Some("Polymath"), "match v2", None)
+            .unwrap();
         assert!(!new2, "second insert should NOT be new (dedupe by id)");
 
-        assert_eq!(store.count().unwrap(), 1, "only 1 row after upsert of same id");
+        assert_eq!(
+            store.count().unwrap(),
+            1,
+            "only 1 row after upsert of same id"
+        );
 
         let rows = store.list_top(10, false).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title, "Test Hack");
-        assert!((rows[0].score - 0.6).abs() < 1e-9, "score should be updated to 0.6");
-        assert_eq!(rows[0].status, "new", "freshly upserted opportunity defaults to 'new'");
-
+        assert!(
+            (rows[0].score - 0.6).abs() < 1e-9,
+            "score should be updated to 0.6"
+        );
+        assert_eq!(
+            rows[0].status, "new",
+            "freshly upserted opportunity defaults to 'new'"
+        );
     }
 
     #[test]
@@ -733,8 +770,12 @@ mod tests {
         let opp_a = mk_opp("evt:test:a", "Event A");
         let opp_b = mk_opp("evt:test:b", "Event B");
 
-        store.upsert(&opp_a, 0.7, Some("Polymath"), "a match", None).unwrap();
-        store.upsert(&opp_b, 0.3, Some("Career"), "b match", None).unwrap();
+        store
+            .upsert(&opp_a, 0.7, Some("Polymath"), "a match", None)
+            .unwrap();
+        store
+            .upsert(&opp_b, 0.3, Some("Career"), "b match", None)
+            .unwrap();
 
         assert_eq!(store.count().unwrap(), 2);
         let rows = store.list_top(10, false).unwrap();
@@ -742,7 +783,6 @@ mod tests {
         assert_eq!(rows[1].title, "Event B");
         assert_eq!(rows[0].matched_focus, "Polymath");
         assert_eq!(rows[1].matched_focus, "Career");
-
     }
 
     #[test]
@@ -756,7 +796,6 @@ mod tests {
 
         let rows = store.list_top(10, false).unwrap();
         assert_eq!(rows[0].status, "saved");
-
     }
 
     #[test]
@@ -765,7 +804,6 @@ mod tests {
 
         let matched = store.set_status("evt:does-not-exist", "dismissed").unwrap();
         assert!(!matched, "no row should match a nonexistent id");
-
     }
 
     // -----------------------------------------------------------------------
@@ -812,7 +850,13 @@ mod tests {
             .clone();
 
         let again = store
-            .propose_source("splash-hub", "142966", Some("Now with a name"), "sweep", None)
+            .propose_source(
+                "splash-hub",
+                "142966",
+                Some("Now with a name"),
+                "sweep",
+                None,
+            )
             .unwrap();
         assert!(!again, "the second sighting is not new");
 
@@ -890,11 +934,11 @@ mod tests {
     fn a_proposal_knows_when_a_declared_source_already_covers_it() {
         use crate::sources::SourceEntry;
 
-        let declared: Vec<crate::sources::SourceManifest> = serde_json::from_value::<Vec<SourceEntry>>(
-            serde_json::json!([
-                { "id": "claude-community", "adapter": "luma-calendar", "url": "cal-TOpA5LAFfuDeFpu" }
-            ]),
-        )
+        let declared: Vec<crate::sources::SourceManifest> = serde_json::from_value::<
+            Vec<SourceEntry>,
+        >(serde_json::json!([
+            { "id": "claude-community", "adapter": "luma-calendar", "url": "cal-TOpA5LAFfuDeFpu" }
+        ]))
         .unwrap()
         .iter()
         .map(SourceEntry::resolve)
@@ -920,12 +964,14 @@ mod tests {
         store.upsert(&opp, 0.5, None, "match", None).unwrap();
 
         let result = store.set_status("evt:test:status2", "archived");
-        assert!(result.is_err(), "an unrecognized status string must error, not silently no-op");
+        assert!(
+            result.is_err(),
+            "an unrecognized status string must error, not silently no-op"
+        );
 
         // Confirm the typo didn't silently do nothing to the actual status.
         let rows = store.list_top(10, false).unwrap();
         assert_eq!(rows[0].status, "new");
-
     }
 
     /// The critical Phase 1 correctness fix: a human's dismiss/save decision
@@ -936,7 +982,9 @@ mod tests {
         let (store, _schema) = open_test_store("preserve_status");
 
         let opp = mk_opp("evt:test:refetch", "Refetched Hack");
-        store.upsert(&opp, 0.4, Some("Polymath"), "first sighting", None).unwrap();
+        store
+            .upsert(&opp, 0.4, Some("Polymath"), "first sighting", None)
+            .unwrap();
         store.set_status("evt:test:refetch", "dismissed").unwrap();
 
         // Simulate the adapter re-fetching the "same" opportunity tomorrow --
@@ -944,17 +992,25 @@ mod tests {
         // re-run produces.
         let mut refetched = mk_opp("evt:test:refetch", "Refetched Hack");
         refetched.fetched_at = "999".into();
-        let is_new = store.upsert(&refetched, 0.9, Some("Career"), "re-scored higher", None).unwrap();
+        let is_new = store
+            .upsert(&refetched, 0.9, Some("Career"), "re-scored higher", None)
+            .unwrap();
         assert!(!is_new, "still the same id, not a new row");
 
         let status_after = store.get_status("evt:test:refetch").unwrap();
-        assert_eq!(status_after.as_deref(), Some("dismissed"), "dismiss decision must survive re-fetch");
+        assert_eq!(
+            status_after.as_deref(),
+            Some("dismissed"),
+            "dismiss decision must survive re-fetch"
+        );
 
         // Other fields legitimately DO update on re-fetch (score, rationale) --
         // only status is protected.
         let rows = store.list_top(10, true).unwrap();
-        assert!((rows[0].score - 0.9).abs() < 1e-9, "score should still update on re-fetch");
-
+        assert!(
+            (rows[0].score - 0.9).abs() < 1e-9,
+            "score should still update on re-fetch"
+        );
     }
 
     #[test]
@@ -973,18 +1029,27 @@ mod tests {
 
         let all_rows = store.list_top(10, true).unwrap();
         assert_eq!(all_rows.len(), 2, "include_dismissed=true shows both");
-        assert!(all_rows.iter().any(|r| r.title == "Hidden Event" && r.status == "dismissed"));
-
+        assert!(all_rows
+            .iter()
+            .any(|r| r.title == "Hidden Event" && r.status == "dismissed"));
     }
 
     #[test]
     fn record_run_source_state_round_trip() {
         let (store, _schema) = open_test_store("source_state");
 
-        assert!(store.get_source_state("euro_hackathons").unwrap().is_none(), "nothing recorded yet");
+        assert!(
+            store.get_source_state("euro_hackathons").unwrap().is_none(),
+            "nothing recorded yet"
+        );
 
-        store.record_run("euro_hackathons", Some("cursor-abc")).unwrap();
-        let state = store.get_source_state("euro_hackathons").unwrap().expect("should exist now");
+        store
+            .record_run("euro_hackathons", Some("cursor-abc"))
+            .unwrap();
+        let state = store
+            .get_source_state("euro_hackathons")
+            .unwrap()
+            .expect("should exist now");
         assert_eq!(state.adapter_name, "euro_hackathons");
         assert_eq!(state.cursor.as_deref(), Some("cursor-abc"));
         assert!(!state.last_run_at.is_empty());
@@ -992,9 +1057,15 @@ mod tests {
         // A later run with cursor=None preserves the previously recorded cursor.
         store.record_run("euro_hackathons", None).unwrap();
         let state2 = store.get_source_state("euro_hackathons").unwrap().unwrap();
-        assert_eq!(state2.cursor.as_deref(), Some("cursor-abc"), "cursor preserved when not given");
-        assert!(state2.last_run_at >= state.last_run_at, "last_run_at should be bumped");
-
+        assert_eq!(
+            state2.cursor.as_deref(),
+            Some("cursor-abc"),
+            "cursor preserved when not given"
+        );
+        assert!(
+            state2.last_run_at >= state.last_run_at,
+            "last_run_at should be bumped"
+        );
     }
 
     /// The case `CREATE TABLE IF NOT EXISTS` cannot cover on its own: a
@@ -1009,8 +1080,9 @@ mod tests {
         let schema = format!("scouting_test_retrofit_{}", std::process::id());
         let _guard = TestSchema(schema.clone());
 
-        let mut client = Client::connect(&test_database_url(), NoTls)
-            .unwrap_or_else(|e| panic!("could not connect (is capabilities/postgres running? see README): {e}"));
+        let mut client = Client::connect(&test_database_url(), NoTls).unwrap_or_else(|e| {
+            panic!("could not connect (is capabilities/postgres running? see README): {e}")
+        });
         client
             .batch_execute(&format!(
                 "
@@ -1047,16 +1119,34 @@ mod tests {
             .expect("opening a store against the old table shape should retrofit, not fail");
 
         store
-            .upsert(&mk_opp("evt:test:retrofit", "After The Retrofit"), 0.5, Some("Polymath"), "match", None)
+            .upsert(
+                &mk_opp("evt:test:retrofit", "After The Retrofit"),
+                0.5,
+                Some("Polymath"),
+                "match",
+                None,
+            )
             .expect("insert with coordinates should work once the columns are retrofitted");
 
         let rows = store.list_top(10, true).unwrap();
-        let fresh = rows.iter().find(|r| r.id == "evt:test:retrofit").expect("new row present");
+        let fresh = rows
+            .iter()
+            .find(|r| r.id == "evt:test:retrofit")
+            .expect("new row present");
         assert_eq!(fresh.latitude, Some(52.52));
         assert_eq!(fresh.longitude, Some(13.405));
 
-        let legacy = rows.iter().find(|r| r.id == "evt:legacy:1").expect("pre-existing row survived");
-        assert_eq!(legacy.latitude, None, "a row written before the columns existed reads as unlocated");
-        assert_eq!(legacy.status, "saved", "and its human decision survived the migration");
+        let legacy = rows
+            .iter()
+            .find(|r| r.id == "evt:legacy:1")
+            .expect("pre-existing row survived");
+        assert_eq!(
+            legacy.latitude, None,
+            "a row written before the columns existed reads as unlocated"
+        );
+        assert_eq!(
+            legacy.status, "saved",
+            "and its human decision survived the migration"
+        );
     }
 }

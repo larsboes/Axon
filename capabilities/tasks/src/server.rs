@@ -17,13 +17,33 @@ use tasks::store::{NewTask, Store, TaskPatch};
 /// What this capability answers, served as data beside `/health`.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
-    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
+    r(
+        "GET",
+        "/ready",
+        "Readiness: liveness plus a reachable database.",
+    ),
     r("GET", "/routes", "This manifest."),
-    r("GET", "/api/tasks", "Every task. Optional status filter: open, done, dropped."),
-    r("POST", "/api/tasks", "Create a task, or return the one this source already owns."),
+    r(
+        "GET",
+        "/api/tasks",
+        "Every task. Optional status filter: open, done, dropped.",
+    ),
+    r(
+        "POST",
+        "/api/tasks",
+        "Create a task, or return the one this source already owns.",
+    ),
     r("GET", "/api/tasks/:id", "One task."),
-    r("PATCH", "/api/tasks/:id", "Patch a task's title, status, due date or note."),
-    r("GET", "/api/counts", "Open and overdue counts, for a badge."),
+    r(
+        "PATCH",
+        "/api/tasks/:id",
+        "Patch a task's title, status, due date or note.",
+    ),
+    r(
+        "GET",
+        "/api/counts",
+        "Open and overdue counts, for a badge.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -150,7 +170,10 @@ async fn list_tasks(State(state): State<AppState>, Query(query): Query<ListQuery
 /// would push it into checking-then-creating, which races.
 async fn create_task(State(state): State<AppState>, Json(body): Json<NewTask>) -> ApiResponse {
     match with_store(&state, move |store| store.create(&body)).await {
-        Ok((task, true)) => ok(StatusCode::CREATED, json!({ "task": task, "created": true })),
+        Ok((task, true)) => ok(
+            StatusCode::CREATED,
+            json!({ "task": task, "created": true }),
+        ),
         Ok((task, false)) => ok(StatusCode::OK, json!({ "task": task, "created": false })),
         Err(response) => response,
     }
@@ -227,7 +250,10 @@ mod readiness_tests {
 
         // The control: liveness is deliberately unaffected, because the process is fine.
         let Json(live) = health().await;
-        assert_eq!(live["status"], "ok", "liveness must not depend on the database");
+        assert_eq!(
+            live["status"], "ok",
+            "liveness must not depend on the database"
+        );
     }
 }
 
@@ -238,8 +264,7 @@ mod route_manifest_tests {
     /// fails here rather than shipping a surface that lies about itself.
     #[test]
     fn the_manifest_covers_every_served_route() {
-        let missing =
-            route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
+        let missing = route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

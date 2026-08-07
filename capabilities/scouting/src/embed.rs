@@ -24,9 +24,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::score::TelosProfile;
 use axon_config::overlay_config;
 use axon_inference::{InferenceConfig, ResolvedRole, TextRole};
-use crate::score::TelosProfile;
 
 /// The role name this capability asks for. Declared in `inference.json`.
 pub const EMBEDDING_ROLE: &str = "embedding";
@@ -172,7 +172,10 @@ fn write_cache(path: &Path, telos: &[TelosProfile], producer: &str) {
     match serde_json::to_string_pretty(&cache) {
         Ok(json) => {
             if let Err(error) = std::fs::write(path, &json) {
-                eprintln!("  embed: could not write cache to {}: {error}", path.display());
+                eprintln!(
+                    "  embed: could not write cache to {}: {error}",
+                    path.display()
+                );
             }
         }
         Err(error) => eprintln!("  embed: could not serialize cache: {error}"),

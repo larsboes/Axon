@@ -31,12 +31,18 @@ impl MeetupAdapter {
     }
 
     pub fn with_cache(cache_dir: PathBuf) -> Self {
-        Self { cache_dir: Some(cache_dir) }
+        Self {
+            cache_dir: Some(cache_dir),
+        }
     }
 
     fn fetch_page(&self, city: &str, keyword: &str) -> Result<String, SourceError> {
         let loc = format!("de--{city}");
-        let query = if keyword.is_empty() { "events".to_string() } else { keyword.to_string() };
+        let query = if keyword.is_empty() {
+            "events".to_string()
+        } else {
+            keyword.to_string()
+        };
         let url = format!("{FIND_URL}?source=EVENTS&keywords={query}&location={loc}");
 
         if let Some(ref dir) = self.cache_dir {
@@ -73,11 +79,23 @@ impl MeetupAdapter {
     fn normalize(&self, ev: &Value, fetched_at: &str) -> Option<Opportunity> {
         let id = ev.get("id")?.as_str()?;
         let title = ev.get("title")?.as_str()?;
-        let date_time = ev.get("dateTime").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let event_url = ev.get("eventUrl").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let event_type = ev.get("eventType").and_then(|v| v.as_str()).unwrap_or("PHYSICAL");
+        let date_time = ev
+            .get("dateTime")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let event_url = ev
+            .get("eventUrl")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let event_type = ev
+            .get("eventType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("PHYSICAL");
 
-        let city = ev.pointer("/venue/city").and_then(|v| v.as_str())
+        let city = ev
+            .pointer("/venue/city")
+            .and_then(|v| v.as_str())
             .or_else(|| {
                 ev.pointer("/group/name").and_then(|v| {
                     let n = v.as_str()?;
@@ -90,8 +108,12 @@ impl MeetupAdapter {
         let group_name = ev.pointer("/group/name").and_then(|v| v.as_str());
 
         let mut text_parts = vec![title.to_string()];
-        if let Some(g) = group_name { text_parts.push(g.to_string()); }
-        if let Some(v) = venue_name { text_parts.push(v.to_string()); }
+        if let Some(g) = group_name {
+            text_parts.push(g.to_string());
+        }
+        if let Some(v) = venue_name {
+            text_parts.push(v.to_string());
+        }
         let search_text = text_parts.join(" ");
 
         let raw_value = serde_json::json!({
@@ -107,7 +129,11 @@ impl MeetupAdapter {
 
         let opportunity_id = format!("evt:meetup:{id}");
         let location = city.map(|c| {
-            if let Some(cc) = country { format!("{c}, {cc}") } else { c.to_string() }
+            if let Some(cc) = country {
+                format!("{c}, {cc}")
+            } else {
+                c.to_string()
+            }
         });
         let city_str = city.map(|c| c.to_string());
 
@@ -137,9 +163,9 @@ fn extract_json(html: &str) -> Result<String, SourceError> {
         SourceError::Parse("no __NEXT_DATA__ JSON block found in Meetup SSR page".into())
     })?;
     let content_start = start + marker.len();
-    let end = html[content_start..].find("</script>").ok_or_else(|| {
-        SourceError::Parse("JSON block not terminated".into())
-    })?;
+    let end = html[content_start..]
+        .find("</script>")
+        .ok_or_else(|| SourceError::Parse("JSON block not terminated".into()))?;
     Ok(html[content_start..content_start + end].to_string())
 }
 
@@ -150,7 +176,8 @@ fn extract_events(apollo: &Value) -> Vec<Value> {
     };
 
     let search_key = rq.and_then(|map| {
-        map.keys().find(|k| k.starts_with("eventSearch"))
+        map.keys()
+            .find(|k| k.starts_with("eventSearch"))
             .or_else(|| map.keys().find(|k| k.starts_with("recommendedEvents")))
     });
 
@@ -205,7 +232,11 @@ impl SourceAdapter for MeetupAdapter {
     fn search(&self, query: &SearchQuery) -> Result<Vec<Opportunity>, SourceError> {
         let fetched_at = chrono_now();
         let city = query.location.as_deref().unwrap_or("berlin");
-        let keyword = if query.query.is_empty() { "events" } else { &query.query };
+        let keyword = if query.query.is_empty() {
+            "events"
+        } else {
+            &query.query
+        };
         let body = self.fetch_page(city, keyword)?;
         let root: Value = serde_json::from_str(&body)
             .map_err(|e| SourceError::Parse(format!("JSON decode: {e}")))?;
@@ -249,7 +280,8 @@ mod tests {
 
     #[test]
     fn extract_events_from_apollo() {
-        let apollo: Value = serde_json::from_str(r#"{
+        let apollo: Value = serde_json::from_str(
+            r#"{
             "ROOT_QUERY": {
                 "eventSearch:xyz": {
                     "edges": [
@@ -260,7 +292,9 @@ mod tests {
             },
             "Event:1": {"__typename": "Event", "id": "1", "title": "Alpha"},
             "Event:2": {"__typename": "Event", "id": "2", "title": "Beta"}
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let events = extract_events(&apollo);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["title"].as_str(), Some("Alpha"));

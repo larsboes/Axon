@@ -7,6 +7,7 @@
 //!      `tools/lib/paths.sh` / `~/.zshrc`)
 //!   3. `capabilities/transit/transit.config.json` next to this crate's
 //!      source (local, gitignored -- dev fallback)
+//!
 //! See `transit.config.example.json` for the shape.
 //!
 //! CLI args always win over whatever this module resolves -- `Config::load()`
@@ -83,8 +84,9 @@ impl Config {
     pub fn load() -> Self {
         let file = load_file_config();
         let database_url = file.database_url.unwrap_or_else(|| {
-            postgres_conn_from_shared_env()
-                .unwrap_or_else(|| "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into())
+            postgres_conn_from_shared_env().unwrap_or_else(|| {
+                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
+            })
         });
         Self {
             default_from_eva: file.default_from_eva,

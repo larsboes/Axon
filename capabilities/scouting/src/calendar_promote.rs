@@ -129,8 +129,12 @@ fn build_entry(
     if row.ends_at.trim().is_empty() {
         return Err("no end time on the opportunity".into());
     }
-    let starts_at = tz.wall_time(&row.starts_at).map_err(|e| format!("start: {e}"))?;
-    let ends_at = tz.wall_time(&row.ends_at).map_err(|e| format!("end: {e}"))?;
+    let starts_at = tz
+        .wall_time(&row.starts_at)
+        .map_err(|e| format!("start: {e}"))?;
+    let ends_at = tz
+        .wall_time(&row.ends_at)
+        .map_err(|e| format!("end: {e}"))?;
     if ends_at <= starts_at {
         return Err(format!(
             "end {ends_at} is not after start {starts_at} (calendar ends are exclusive)"
@@ -191,7 +195,10 @@ pub fn promote_saved_luma(
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("Axon-Scouting/", env!("CARGO_PKG_VERSION")))
         .build()?;
-    let url = format!("{}/api/entries/external", calendar_base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/entries/external",
+        calendar_base_url.trim_end_matches('/')
+    );
 
     for row in candidates {
         let Some(event_route) = classify_ranked(&row, geo) else {
@@ -278,7 +285,11 @@ pub fn promote_saved_luma(
 }
 
 pub fn print_report(report: &PromotionReport, calendar_base_url: &str, tz: &HomeTimezone) {
-    let mode = if report.dry_run { " (dry run — nothing written)" } else { "" };
+    let mode = if report.dry_run {
+        " (dry run — nothing written)"
+    } else {
+        ""
+    };
     println!(
         "  calendar   : {calendar_base_url} · home timezone {}{mode}",
         tz.name()
@@ -380,7 +391,10 @@ mod tests {
 
     #[test]
     fn external_id_is_lumas_own_id_not_the_namespaced_one() {
-        assert_eq!(luma_event_id("evt:luma:evt-E8mj424DVKBXFb4"), Some("evt-E8mj424DVKBXFb4"));
+        assert_eq!(
+            luma_event_id("evt:luma:evt-E8mj424DVKBXFb4"),
+            Some("evt-E8mj424DVKBXFb4")
+        );
         assert_eq!(luma_event_id("evt:obsidian:something"), None);
         assert_eq!(luma_event_id("evt:luma:"), None);
     }
@@ -388,7 +402,11 @@ mod tests {
     #[test]
     fn builds_a_calendar_entry_in_local_wall_time() {
         let (external_id, body) = build_entry(
-            &row("evt:luma:evt-E8mj424DVKBXFb4", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z"),
+            &row(
+                "evt:luma:evt-E8mj424DVKBXFb4",
+                "2026-07-30T16:00:00.000Z",
+                "2026-07-30T19:00:00.000Z",
+            ),
             &berlin(),
             &local_route(),
         )
@@ -415,7 +433,11 @@ mod tests {
     #[test]
     fn a_promoted_event_carries_no_ranking_fields() {
         let (_, body) = build_entry(
-            &row("evt:luma:evt-E8mj424DVKBXFb4", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z"),
+            &row(
+                "evt:luma:evt-E8mj424DVKBXFb4",
+                "2026-07-30T16:00:00.000Z",
+                "2026-07-30T19:00:00.000Z",
+            ),
             &berlin(),
             &local_route(),
         )
@@ -435,7 +457,11 @@ mod tests {
     fn the_request_body_is_byte_stable_across_runs() {
         // Idempotency is only real if a repeat promotion sends the same bytes;
         // a timestamp in the payload would make every run an update.
-        let r = row("evt:luma:evt-A", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z");
+        let r = row(
+            "evt:luma:evt-A",
+            "2026-07-30T16:00:00.000Z",
+            "2026-07-30T19:00:00.000Z",
+        );
         let first = build_entry(&r, &berlin(), &local_route()).unwrap().1;
         let second = build_entry(&r, &berlin(), &local_route()).unwrap().1;
         assert_eq!(first, second);
@@ -466,7 +492,11 @@ mod tests {
     #[test]
     fn refuses_a_non_utc_instant_rather_than_assuming_a_zone() {
         let err = build_entry(
-            &row("evt:luma:evt-A", "2026-07-30T16:00:00", "2026-07-30T19:00:00"),
+            &row(
+                "evt:luma:evt-A",
+                "2026-07-30T16:00:00",
+                "2026-07-30T19:00:00",
+            ),
             &berlin(),
             &local_route(),
         )
@@ -477,7 +507,11 @@ mod tests {
     #[test]
     fn refuses_a_zero_length_or_inverted_window() {
         let err = build_entry(
-            &row("evt:luma:evt-A", "2026-07-30T19:00:00.000Z", "2026-07-30T16:00:00.000Z"),
+            &row(
+                "evt:luma:evt-A",
+                "2026-07-30T19:00:00.000Z",
+                "2026-07-30T16:00:00.000Z",
+            ),
             &berlin(),
             &local_route(),
         )
@@ -487,7 +521,11 @@ mod tests {
 
     #[test]
     fn falls_back_to_city_when_there_is_no_street_address() {
-        let mut r = row("evt:luma:evt-A", "2026-07-30T16:00:00.000Z", "2026-07-30T19:00:00.000Z");
+        let mut r = row(
+            "evt:luma:evt-A",
+            "2026-07-30T16:00:00.000Z",
+            "2026-07-30T19:00:00.000Z",
+        );
         r.location = "  ".into();
         let (_, body) = build_entry(&r, &berlin(), &local_route()).unwrap();
         assert_eq!(body["location"], "Berlin");

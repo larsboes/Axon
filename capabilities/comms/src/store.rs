@@ -3993,7 +3993,10 @@ mod tests {
         let waiting_at = || -> Option<String> {
             let mut conn = store.conn().unwrap();
             conn.query_one(
-                &format!("SELECT waiting, waiting_at::TEXT FROM {}.triage_items WHERE id = $1", schema.0),
+                &format!(
+                    "SELECT waiting, waiting_at::TEXT FROM {}.triage_items WHERE id = $1",
+                    schema.0
+                ),
                 &[&"thread:w"],
             )
             .map(|row| {
@@ -5198,7 +5201,10 @@ mod tests {
         let stored = store.content_digest("feed", &item.id).unwrap().unwrap();
         assert_eq!(stored.state, "generated");
         assert_eq!(stored.shape, "brief");
-        assert!(!stored.generated_at.is_empty(), "the row stamps its own time");
+        assert!(
+            !stored.generated_at.is_empty(),
+            "the row stamps its own time"
+        );
 
         // Replace in place: a refine overwrites rather than appending, and the
         // directive that produced it comes back with it.
@@ -5359,15 +5365,17 @@ mod tests {
                 // `postgres::Error` Displays as the bare words "db error", so
                 // joining the causes is the only way this failure names itself.
                 std::thread::spawn(move || {
-                    Store::open_with_schema(&url, &schema).map(|_| ()).map_err(|error| {
-                        let mut text = error.to_string();
-                        let mut cause = error.source();
-                        while let Some(next) = cause {
-                            text.push_str(&format!(": {next}"));
-                            cause = next.source();
-                        }
-                        text
-                    })
+                    Store::open_with_schema(&url, &schema)
+                        .map(|_| ())
+                        .map_err(|error| {
+                            let mut text = error.to_string();
+                            let mut cause = error.source();
+                            while let Some(next) = cause {
+                                text.push_str(&format!(": {next}"));
+                                cause = next.source();
+                            }
+                            text
+                        })
                 })
             })
             .collect();
@@ -5594,7 +5602,10 @@ mod tests {
         assert_eq!(ok.consecutive_failures, 0);
         assert!(ok.last_error.is_none());
 
-        assert_eq!(store.record_sweep_failure("gmail-inbox", "auth").unwrap(), 1);
+        assert_eq!(
+            store.record_sweep_failure("gmail-inbox", "auth").unwrap(),
+            1
+        );
         assert_eq!(
             store.record_sweep_failure("gmail-inbox", "quota").unwrap(),
             2
@@ -5611,7 +5622,10 @@ mod tests {
 
         store.record_sweep_success("gmail-inbox", 25, 0).unwrap();
         let recovered = store.get_source_state("gmail-inbox").unwrap().unwrap();
-        assert_eq!(recovered.consecutive_failures, 0, "success clears the streak");
+        assert_eq!(
+            recovered.consecutive_failures, 0,
+            "success clears the streak"
+        );
         assert!(recovered.last_error.is_none(), "and clears the error class");
         assert!(
             recovered.last_failure_at.is_some(),
