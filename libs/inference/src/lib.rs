@@ -39,6 +39,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -246,7 +247,7 @@ impl InferenceConfig {
 
     pub fn from_path(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(text) => match Self::from_str(&text) {
+            Ok(text) => match text.parse::<Self>() {
                 Ok(mut config) => {
                     config.resolve_relative_key_files(path.parent().unwrap_or(Path::new(".")));
                     config
@@ -261,10 +262,6 @@ impl InferenceConfig {
             },
             Err(_) => Self::default(),
         }
-    }
-
-    pub fn from_str(text: &str) -> Result<Self, String> {
-        serde_json::from_str(text).map_err(|error| error.to_string())
     }
 
     fn resolve_relative_key_files(&mut self, config_directory: &Path) {
@@ -348,6 +345,14 @@ impl InferenceConfig {
                 .then_with(|| left_name.cmp(right_name))
         });
         roles
+    }
+}
+
+impl FromStr for InferenceConfig {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(text).map_err(|error| error.to_string())
     }
 }
 
@@ -778,7 +783,7 @@ mod tests {
     }"#;
 
     fn config() -> InferenceConfig {
-        InferenceConfig::from_str(SAMPLE).expect("sample parses")
+        SAMPLE.parse::<InferenceConfig>().expect("sample parses")
     }
 
     fn write_temp_key(name: &str, content: &str) -> PathBuf {

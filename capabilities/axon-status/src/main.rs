@@ -263,8 +263,8 @@ fn manifest_key(root: &std::path::Path) -> Option<Vec<(PathBuf, SystemTime)>> {
     )
 }
 
-static REGISTRY_CACHE: OnceLock<Mutex<Option<(Vec<(PathBuf, SystemTime)>, Vec<Service>)>>> =
-    OnceLock::new();
+type RegistrySnapshot = (Vec<(PathBuf, SystemTime)>, Vec<Service>);
+static REGISTRY_CACHE: OnceLock<Mutex<Option<RegistrySnapshot>>> = OnceLock::new();
 
 // The offline upstream check still starts a shell/Bun process and walks the complete manifest.
 // That is useful work when a maintainer asks for a fresh audit, but wasteful for every visit to

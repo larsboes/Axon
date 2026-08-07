@@ -169,9 +169,11 @@ mod tests {
             i64::from_be_bytes(*b"AXON_GPU"),
             "the advisory key must stay byte-identical across every process"
         );
-        assert!(
-            LOCAL_INFERENCE_LOCK_KEY > 0,
-            "a negative key still works but reads as a mistake in pg_locks"
-        );
+        const {
+            assert!(
+                LOCAL_INFERENCE_LOCK_KEY > 0,
+                "a negative key still works but reads as a mistake in pg_locks"
+            );
+        }
     }
 }

@@ -46,9 +46,16 @@ Rust change, verify the workspace view and Cargo build alongside Bazel:
 
 ~~~sh
 cargo metadata --locked --no-deps --format-version 1
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo check --workspace --locked
 bazel test //...
 ~~~
+
+Run the format and Clippy commands from the repository root. They use the exact
+toolchain and components pinned in `rust-toolchain.toml`; do not replace a finding
+with a workspace-wide allowance. A narrow allowance belongs beside the affected
+item and must explain the invariant that makes the lint inapplicable.
 
 The default Bazel command is hermetic and does not require Postgres. Store
 integration tests are deliberately manual and fail rather than skip when their

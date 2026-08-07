@@ -7,6 +7,7 @@
 //!      `tools/lib/paths.sh` / `~/.zshrc`)
 //!   3. `capabilities/transit/transit.config.json` next to this crate's
 //!      source (local, gitignored -- dev fallback)
+//!
 //! See `transit.config.example.json` for the shape.
 //!
 //! CLI args always win over whatever this module resolves -- `Config::load()`

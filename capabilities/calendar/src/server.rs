@@ -44,7 +44,11 @@ fn response<T: serde::Serialize>(status: StatusCode, value: T) -> ApiResponse {
 /// and discovering that from a 400 is the thing this endpoint exists to avoid.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
-    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
+    r(
+        "GET",
+        "/ready",
+        "Readiness: liveness plus a reachable database.",
+    ),
     r("GET", "/routes", "This manifest."),
     r(
         "GET",
@@ -1351,20 +1355,6 @@ async fn markdown_import_selected(
     }
 }
 
-#[cfg(test)]
-mod route_manifest_tests {
-    use super::ROUTES;
-
-    /// A stale manifest is worse than none, because it gets believed. This
-    /// reads the router's own source, so adding a `.route()` without a summary
-    /// fails here rather than shipping a surface that lies about itself.
-    #[test]
-    fn the_manifest_covers_every_served_route() {
-        let missing = route_manifest::undeclared_routes(include_str!("server.rs"), ROUTES);
-        assert!(missing.is_empty(), "served but undocumented: {missing:?}");
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let config = Config::load();
@@ -1416,4 +1406,18 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .with_state(state);
     axon_server::serve_local("calendar-server", port, app).await;
+}
+
+#[cfg(test)]
+mod route_manifest_tests {
+    use super::ROUTES;
+
+    /// A stale manifest is worse than none, because it gets believed. This
+    /// reads the router's own source, so adding a `.route()` without a summary
+    /// fails here rather than shipping a surface that lies about itself.
+    #[test]
+    fn the_manifest_covers_every_served_route() {
+        let missing = route_manifest::undeclared_routes(include_str!("server.rs"), ROUTES);
+        assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
 }

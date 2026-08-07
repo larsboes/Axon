@@ -195,40 +195,45 @@ fn build_api_adapter(name: &str, no_store: bool) -> Option<Box<dyn SourceAdapter
 // ---------------------------------------------------------------------------
 
 /// Common run for one adapter. Returns the pipeline report.
-fn run_adapter(
-    adapter: &dyn SourceAdapter,
-    query: &SearchQuery,
-    cfg: &Config,
-    opp_emb_path: &Option<String>,
-    database_url: &str,
+#[derive(Clone, Copy)]
+struct RunOptions<'a> {
+    opp_embeddings_path: Option<&'a str>,
+    database_url: &'a str,
     no_store: bool,
     show_backlog: bool,
     include_dismissed: bool,
     limit: usize,
+}
+
+fn run_adapter(
+    adapter: &dyn SourceAdapter,
+    query: &SearchQuery,
+    cfg: &Config,
+    options: RunOptions<'_>,
 ) -> Result<scouting::pipeline::PipelineReport, Box<dyn std::error::Error>> {
     let telos = load_telos_profiles(&cfg.interest_profile_dir.to_string_lossy(), &cfg.sources);
     let events_dir = cfg.events_dir.as_deref();
-    let opp_embeddings = opp_emb_path.as_ref().map(|p| load_opp_embeddings(p));
+    let opp_embeddings = options.opp_embeddings_path.map(load_opp_embeddings);
 
-    let mut store: Option<Store> = if show_backlog || !no_store {
-        Store::open(database_url).ok()
+    let mut store: Option<Store> = if options.show_backlog || !options.no_store {
+        Store::open(options.database_url).ok()
     } else {
         None
     };
 
     // For backlog view, we don't run the pipeline — just show the store.
-    if show_backlog {
+    if options.show_backlog {
         match &store {
             Some(st) => {
                 println!(
                     "Axon Scouting — stored backlog{}\n",
-                    if include_dismissed {
+                    if options.include_dismissed {
                         " (including dismissed)"
                     } else {
                         ""
                     }
                 );
-                let rows = backlog_from_store(st, limit, include_dismissed)?;
+                let rows = backlog_from_store(st, options.limit, options.include_dismissed)?;
                 if rows.is_empty() {
                     println!("  store is empty");
                 } else {
@@ -258,7 +263,7 @@ fn run_adapter(
             }
             None => eprintln!(
                 "  could not open store at {}",
-                redact_database_url(database_url)
+                redact_database_url(options.database_url)
             ),
         }
         // Return an empty report — we already printed everything.
@@ -331,12 +336,14 @@ fn run_merged_sources(
             &*adapter,
             query,
             cfg,
-            opp_emb_path,
-            database_url,
-            no_store,
-            false,
-            include_dismissed,
-            limit,
+            RunOptions {
+                opp_embeddings_path: opp_emb_path.as_deref(),
+                database_url,
+                no_store,
+                show_backlog: false,
+                include_dismissed,
+                limit,
+            },
         ) {
             Ok(report) => {
                 new_count += report.new_count;
@@ -382,7 +389,7 @@ fn print_run_header(
         scouting::score::load_opp_embeddings(p)
             .into_iter()
             .next()
-            .and_then(|_| Some(p.clone()))
+            .map(|_| p.clone())
     }) {
         println!("  embeddings : pre-computed e5 vectors from {}", emb);
     } else if let Some(role) = scouting::embed::embedding_role() {
@@ -775,12 +782,14 @@ fn main() {
             &adapter,
             &query,
             &cfg,
-            &opp_emb_path,
-            &database_url,
-            no_store,
-            show_backlog,
-            include_dismissed,
-            limit,
+            RunOptions {
+                opp_embeddings_path: opp_emb_path.as_deref(),
+                database_url: &database_url,
+                no_store,
+                show_backlog,
+                include_dismissed,
+                limit,
+            },
         ) {
             Ok(report) => {
                 let store = Store::open(&database_url).ok();
@@ -842,12 +851,14 @@ fn main() {
             &*adapter,
             &query,
             &cfg,
-            &opp_emb_path,
-            &database_url,
-            no_store,
-            show_backlog,
-            include_dismissed,
-            limit,
+            RunOptions {
+                opp_embeddings_path: opp_emb_path.as_deref(),
+                database_url: &database_url,
+                no_store,
+                show_backlog,
+                include_dismissed,
+                limit,
+            },
         ) {
             Ok(report) => {
                 let store = Store::open(&database_url).ok();
@@ -913,12 +924,14 @@ fn main() {
             &*adapter,
             &query,
             &cfg,
-            &opp_emb_path,
-            &database_url,
-            no_store,
-            show_backlog,
-            include_dismissed,
-            limit,
+            RunOptions {
+                opp_embeddings_path: opp_emb_path.as_deref(),
+                database_url: &database_url,
+                no_store,
+                show_backlog,
+                include_dismissed,
+                limit,
+            },
         ) {
             Ok(report) => {
                 let store = Store::open(&database_url).ok();
@@ -956,12 +969,14 @@ fn main() {
             &*adapter,
             &query,
             &cfg,
-            &opp_emb_path,
-            &database_url,
-            no_store,
-            show_backlog,
-            include_dismissed,
-            limit,
+            RunOptions {
+                opp_embeddings_path: opp_emb_path.as_deref(),
+                database_url: &database_url,
+                no_store,
+                show_backlog,
+                include_dismissed,
+                limit,
+            },
         ) {
             Ok(report) => {
                 let store = Store::open(&database_url).ok();
@@ -1019,11 +1034,8 @@ fn run_from_file(
     if store.is_some() {
         println!("  store      : {}", redact_database_url(database_url));
     }
-    if events_dir.is_some() {
-        println!(
-            "  event link : {} (annotate-only)",
-            events_dir.unwrap().display()
-        );
+    if let Some(events_dir) = events_dir {
+        println!("  event link : {} (annotate-only)", events_dir.display());
     }
     println!();
 

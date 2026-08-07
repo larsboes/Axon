@@ -23,6 +23,8 @@ pub struct Store {
     schema: String,
 }
 
+pub type Coverage = (String, String, i32);
+
 /// The dataset writes EVA numbers zero-padded to eight digits (`08000044`); HAFAS, and
 /// therefore `capabilities/transit`, returns them unpadded (`8000044`). Joining the two
 /// without this returns zero rows and looks exactly like "we have no data for that
@@ -251,9 +253,7 @@ impl Store {
     /// The window the current aggregate covers, from the most recent ingest run.
     /// `None` means nothing has been ingested — which a caller must be able to tell
     /// apart from "this train is never late".
-    pub fn coverage(
-        &mut self,
-    ) -> Result<Option<(String, String, i32)>, Box<dyn std::error::Error>> {
+    pub fn coverage(&mut self) -> Result<Option<Coverage>, Box<dyn std::error::Error>> {
         let schema = &self.schema;
         let rows = self.conn()?.query(
             &format!(

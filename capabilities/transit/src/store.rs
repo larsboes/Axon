@@ -30,6 +30,8 @@
 use crate::travel::Journey;
 use postgres::Client;
 
+pub type TripWithLegs = (TripRow, Vec<TripLegRow>);
+
 pub struct TransitStore {
     /// Shared with every other store in this process on the same database, so
     /// opening one is a checkout rather than a connect.
@@ -223,10 +225,7 @@ impl TransitStore {
 
     /// Reads a trip back with its legs, in leg order -- verification/test
     /// helper; no CLI command consumes this yet (see module doc).
-    pub fn get_trip(
-        &self,
-        id: &str,
-    ) -> Result<Option<(TripRow, Vec<TripLegRow>)>, Box<dyn std::error::Error>> {
+    pub fn get_trip(&self, id: &str) -> Result<Option<TripWithLegs>, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let trip_row = conn.query_opt(
             &format!(
@@ -377,7 +376,7 @@ impl TransitStore {
     pub fn list_session_trips(
         &self,
         session_id: &str,
-    ) -> Result<Vec<(TripRow, Vec<TripLegRow>)>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<TripWithLegs>, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let trips = conn.query(
             &format!(

@@ -134,12 +134,12 @@ fn parse_feed_items(xml: &str) -> Result<Vec<FeedItem>, SourceError> {
 
     if is_atom {
         for block in extract_blocks(xml, "<entry", "</entry>") {
-            let title = extract_tag(&block, "title");
-            let link = extract_atom_link(&block);
+            let title = extract_tag(block, "title");
+            let link = extract_atom_link(block);
             let description =
-                extract_tag(&block, "summary").or_else(|| extract_tag(&block, "content"));
+                extract_tag(block, "summary").or_else(|| extract_tag(block, "content"));
             let pub_date =
-                extract_tag(&block, "published").or_else(|| extract_tag(&block, "updated"));
+                extract_tag(block, "published").or_else(|| extract_tag(block, "updated"));
             items.push(FeedItem {
                 title,
                 link,
@@ -149,10 +149,10 @@ fn parse_feed_items(xml: &str) -> Result<Vec<FeedItem>, SourceError> {
         }
     } else {
         for block in extract_blocks(xml, "<item", "</item>") {
-            let title = extract_tag(&block, "title");
-            let link = extract_tag(&block, "link");
-            let description = extract_tag(&block, "description");
-            let pub_date = extract_tag(&block, "pubdate");
+            let title = extract_tag(block, "title");
+            let link = extract_tag(block, "link");
+            let description = extract_tag(block, "description");
+            let pub_date = extract_tag(block, "pubdate");
             items.push(FeedItem {
                 title,
                 link,

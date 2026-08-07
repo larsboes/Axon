@@ -806,7 +806,7 @@ mod tests {
         );
 
         let refused = claim_host(State(app.clone()), Json(claim_of("dashboard", false))).await;
-        let (status, _) = refused.err().expect("second claim is refused");
+        let (status, _) = refused.expect_err("second claim is refused");
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(app.host().expect("still held").id, "panel");
     }
@@ -931,7 +931,7 @@ mod tests {
         }))
         .expect("patch shape");
         let result = post_state(State(app), Json(patch)).await;
-        let (status, _) = result.err().expect("unknown session rejected");
+        let (status, _) = result.expect_err("unknown session rejected");
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 

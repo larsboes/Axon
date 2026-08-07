@@ -62,7 +62,11 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// endpoint exists to avoid.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
-    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
+    r(
+        "GET",
+        "/ready",
+        "Readiness: liveness plus a reachable database.",
+    ),
     r("GET", "/routes", "This manifest."),
     r(
         "GET",
@@ -3029,8 +3033,8 @@ async fn triage_redact_handler(Json(body): Json<TriageRedactBody>) -> (StatusCod
             if let Some(digest) = remediation.audit_digest.clone() {
                 digests.push(json!({ "id": item.id, "digest": digest }));
             }
-            if !dry_run
-                && store
+            if dry_run
+                || store
                     .redact_triage_review_fields(
                         &item.id,
                         remediation.subject.as_deref(),
@@ -3038,8 +3042,6 @@ async fn triage_redact_handler(Json(body): Json<TriageRedactBody>) -> (StatusCod
                     )
                     .map_err(|error| error.to_string())?
             {
-                changed += 1;
-            } else if dry_run {
                 changed += 1;
             }
         }

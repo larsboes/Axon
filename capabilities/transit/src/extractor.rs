@@ -132,7 +132,7 @@ fn extract_email_text(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error 
             }
         });
 
-    let is_html = ct.as_deref().map_or(false, |v| v.contains("text/html"));
+    let is_html = ct.as_deref().is_some_and(|v| v.contains("text/html"));
 
     let body = if is_html {
         let html = parsed.get_body()?;

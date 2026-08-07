@@ -158,9 +158,7 @@ fn normalize_instant(text: &str) -> Option<String> {
     };
     // A '-' can only be an offset sign here — the date half is already split
     // off — so cutting at the first of these leaves the bare wall time.
-    let cut = time
-        .find(|c: char| matches!(c, 'Z' | 'z' | '+' | '-' | '.'))
-        .unwrap_or(time.len());
+    let cut = time.find(['Z', 'z', '+', '-', '.']).unwrap_or(time.len());
     let normalized = format!("{day}T{}", &time[..cut]);
     date::parse_instant(&normalized).map(|_| normalized)
 }

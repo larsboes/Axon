@@ -23,7 +23,11 @@ use trips::store::{
 /// endpoint exists to avoid.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
-    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
+    r(
+        "GET",
+        "/ready",
+        "Readiness: liveness plus a reachable database.",
+    ),
     r("GET", "/routes", "This manifest."),
     r("GET", "/api/plans", "Every trip plan."),
     r("POST", "/api/plans", "Create a trip plan."),

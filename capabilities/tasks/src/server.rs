@@ -17,7 +17,11 @@ use tasks::store::{NewTask, Store, TaskPatch};
 /// What this capability answers, served as data beside `/health`.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
-    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
+    r(
+        "GET",
+        "/ready",
+        "Readiness: liveness plus a reachable database.",
+    ),
     r("GET", "/routes", "This manifest."),
     r(
         "GET",
@@ -246,7 +250,10 @@ mod readiness_tests {
 
         // The control: liveness is deliberately unaffected, because the process is fine.
         let Json(live) = health().await;
-        assert_eq!(live["status"], "ok", "liveness must not depend on the database");
+        assert_eq!(
+            live["status"], "ok",
+            "liveness must not depend on the database"
+        );
     }
 }
 
