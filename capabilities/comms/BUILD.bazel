@@ -79,14 +79,30 @@ rust_library(
     ],
 )
 
-# Runs the same #[cfg(test)] modules `cargo test` exercises (28 tests across
-# config/rules/store/google/media). The store tests need the shared local
-# Postgres (capabilities/postgres) reachable.
+# Runs every hermetic #[cfg(test)] module. The store module is filtered here
+# and selected by comms_postgres_test below, so the two targets compile the
+# same crate but make different service requirements explicit.
 rust_test(
     name = "comms_test",
+    args = [
+        "--skip",
+        "store::tests::",
+    ],
     crate = ":comms",
     data = glob(["eval/**"]),
     size = "small",
+)
+
+rust_test(
+    name = "comms_postgres_test",
+    args = ["store::tests::"],
+    crate = ":comms",
+    data = glob(["eval/**"]),
+    size = "small",
+    tags = [
+        "manual",
+        "postgres-integration",
+    ],
 )
 
 # Bazel forbids a binary and library sharing one target name (cargo allows it),

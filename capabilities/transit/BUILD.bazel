@@ -53,12 +53,27 @@ rust_library(
     ],
 )
 
-# Runs the same #[cfg(test)] modules `cargo test` already exercises (extractor
-# parsing, HAFAS response parsing + split-ticket DP, config resolution).
+# Runs the hermetic #[cfg(test)] modules. The Postgres-backed store module is
+# selected by transit_postgres_test below.
 rust_test(
     name = "transit_test",
+    args = [
+        "--skip",
+        "store::tests::",
+    ],
     crate = ":transit_lib",
     size = "small",
+)
+
+rust_test(
+    name = "transit_postgres_test",
+    args = ["store::tests::"],
+    crate = ":transit_lib",
+    size = "small",
+    tags = [
+        "manual",
+        "postgres-integration",
+    ],
 )
 
 rust_binary(

@@ -22,29 +22,9 @@ env:
   BUN_VERSION: "1.3.14"
 
 jobs:
-  bazel:
-    name: bazel test //...
+  bazel-unit:
+    name: bazel test //... (hermetic)
     runs-on: ubuntu-latest
-
-    # Four targets (scouting/transit/comms/tasks) carry store integration tests that
-    # resolve the same connection the binaries use, on purpose -- "so a rotated
-    # password can't leave the tests behind". They panic rather than skip when
-    # the database is absent, so CI brings a real one instead of excluding them.
-    # Tag pinned to capabilities/postgres/service.toml, never :latest (README.md#pins-and-cooldown).
-    services:
-      postgres:
-        image: postgres:17.10-alpine
-        env:
-          POSTGRES_USER: axon
-          POSTGRES_PASSWORD: axon
-          POSTGRES_DB: axon
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U axon -d axon"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
 
     steps:
       - name: Check out Axon
@@ -74,19 +54,14 @@ jobs:
           restore-keys: |
             bazel-disk-${{ runner.os }}-
 
-      # bazel is bazelisk on GitHub's ubuntu image; it reads .bazelversion (9.1.1).
-      # The four *_TEST_DATABASE_URL vars are set explicitly rather than left to
-      # each crate's config fallback chain, so the tests never depend on how
-      # Config::load() resolves inside a sandbox with no overlay present.
-      - name: bazel test //...
+      # Manual targets include service-backed integration suites and are not
+      # selected by //.... This command therefore proves the default checkout
+      # is testable without Postgres or an Axon overlay.
+      - name: bazel test //... (hermetic)
         run: |
           bazel test //... \
             --repository_cache="$HOME/.cache/bazel-repo" \
             --disk_cache="$HOME/.cache/bazel-disk" \
-            --test_env=SCOUTING_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-            --test_env=TRANSIT_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-            --test_env=COMMS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-            --test_env=TASKS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
             --test_output=errors
 
       # Crate-root ambiguity (Axon#46). Here rather than in the repo-gates job because it
@@ -100,6 +75,63 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Rust crate roots are explicit where srcs are ambiguous
         run: tools/check-rust-crate-roots
+
+  bazel-postgres:
+    name: bazel test //:postgres_integration_tests
+    needs: bazel-unit
+    runs-on: ubuntu-latest
+
+    # These four targets resolve the same connection their binaries use. They
+    # fail rather than skip when the database is absent, so only this explicit
+    # integration job starts the pinned synthetic service.
+    services:
+      postgres:
+        image: postgres:17.10-alpine
+        env:
+          POSTGRES_USER: axon
+          POSTGRES_PASSWORD: axon
+          POSTGRES_DB: axon
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U axon -d axon"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out Axon
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # The hermetic job has already populated these exact per-commit keys.
+      # Restoring them keeps the explicit integration boundary from paying for
+      # a second compilation of the same Rust crates.
+      - name: Cache Bazel repository cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/bazel-repo
+          key: bazel-repo-${{ runner.os }}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', '**/Cargo.lock') }}
+          restore-keys: |
+            bazel-repo-${{ runner.os }}-
+
+      - name: Cache Bazel disk cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-
+
+      - name: bazel test //:postgres_integration_tests
+        run: |
+          bazel test //:postgres_integration_tests \
+            --repository_cache="$HOME/.cache/bazel-repo" \
+            --disk_cache="$HOME/.cache/bazel-disk" \
+            --test_env=SCOUTING_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+            --test_env=TRANSIT_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+            --test_env=COMMS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+            --test_env=TASKS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+            --test_output=all
 
   # tools/doctor.test.ts + tools/packs-codex.test.ts and the Axon skill/bootstrap evals are deliberately NOT Bazel
   # targets (README.md#argue-bazel-per-case argues doctor out of Bazel), but "not a Bazel

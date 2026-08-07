@@ -48,14 +48,27 @@ rust_library(
     ],
 )
 
-# Runs the same #[cfg(test)] modules `cargo test` already exercises
-# (store/score/vault_linker/opportunity/adapters/config/localtime/
-# calendar_promote — `cargo test -- --list` is the current count, per
-# README.md#documentation-stays-owned-and-current).
+# Runs the hermetic #[cfg(test)] modules. The Postgres-backed store module is
+# selected by scouting_postgres_test below.
 rust_test(
     name = "scouting_test",
+    args = [
+        "--skip",
+        "store::tests::",
+    ],
     crate = ":scouting",
     size = "small",
+)
+
+rust_test(
+    name = "scouting_postgres_test",
+    args = ["store::tests::"],
+    crate = ":scouting",
+    size = "small",
+    tags = [
+        "manual",
+        "postgres-integration",
+    ],
 )
 
 # The seam the unit tests cannot reach: a declared source entry becoming an

@@ -11,7 +11,7 @@
 //! twice. See README Verdict for the full reasoning.
 
 use crate::opportunity::Opportunity;
-use postgres::{Client, NoTls};
+use postgres::Client;
 
 pub struct Store {
     /// Shared with every other store in this process on the same database, so
@@ -609,6 +609,7 @@ fn chrono_now() -> String {
 mod tests {
     use super::*;
     use crate::opportunity::{Opportunity, OpportunityType, SourceKind};
+    use postgres::NoTls;
 
     // Each test gets its own schema inside the same local Postgres instance
     // (capabilities/postgres must be running -- see README), named from a
