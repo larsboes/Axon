@@ -35,7 +35,7 @@ Directly, for a build or the type check:
 
 ```bash
 cd dashboard
-bun install
+bun install --frozen-lockfile --ignore-scripts
 bun run dev      # or: bun run build / bun run check
 ```
 

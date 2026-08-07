@@ -73,7 +73,10 @@ def _bun_deps_impl(rctx):
     rctx.execute(["chmod", "+x", "bun"])
 
     result = rctx.execute(
-        ["./bun", "install", "--frozen-lockfile", "--no-progress"],
+        # A lockfile makes resolution reproducible but cannot make lifecycle code trustworthy.
+        # Frontend dependencies are fetched only to populate the Bazel external repository; no
+        # install hook is needed to produce it, so keep hooks disabled at the trust boundary.
+        ["./bun", "install", "--frozen-lockfile", "--ignore-scripts", "--no-progress"],
         timeout = 600,
     )
     if result.return_code != 0:
