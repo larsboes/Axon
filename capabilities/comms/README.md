@@ -671,6 +671,13 @@ the DB connection string is redacted before any display.
 
 ## Schema (`comms` schema, shared instance)
 
+`src/store.rs` is the stable `Store` facade and owns the public persistence
+types. Its implementation lives in workflow modules under `src/store/`:
+migrations and pool access; triage and Gmail actions; reviewed cloud jobs and
+digests; feed ingest and relevance; evaluation and travel context; capture
+origins; collector state; and database-row mapping. SQL stays beside the
+workflow that owns it, while callers continue to depend only on `Store`.
+
 - `triage_items` — one row per inbox thread: `id` (gmail thread id) PK,
   `from_addr`, `subject`, `snippet`, `internal_date`, `stream` (CHECK), `rationale`,
   `status` (`proposed`/`approved`/`archived`/`trashed`/`missing`/`dismissed`; `executed` is retained
