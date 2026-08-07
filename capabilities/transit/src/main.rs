@@ -5,12 +5,19 @@ use transit::extractor;
 use transit::hafas::HafasClient;
 
 fn get_flag(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 /// CLI flag wins; falls back to the overlay config value; errors with a
 /// clear message (not a silent personal default) if neither is set.
-fn require(flag_value: Option<String>, config_value: Option<String>, flag: &str, config_field: &str) -> Result<String, String> {
+fn require(
+    flag_value: Option<String>,
+    config_value: Option<String>,
+    flag: &str,
+    config_field: &str,
+) -> Result<String, String> {
     flag_value.or(config_value).ok_or_else(|| {
         format!(
             "missing {flag} and no {config_field} configured -- pass {flag} <value> or set {config_field} in transit.config.json (see transit.config.example.json)"
@@ -26,11 +33,17 @@ fn print_usage() {
     eprintln!("  transit split   --from <EVA> --to <EVA> --time <ISO datetime>");
     eprintln!("  transit import  <file>");
     eprintln!("  transit plan    --from <EVA> --destinations <city,city,...> --date-from <YYYY-MM-DD> --date-to <YYYY-MM-DD>");
-    eprintln!("                 [--intent <text>] [--time HH:MM] [--step-days N] [--max-queries N]");
+    eprintln!(
+        "                 [--intent <text>] [--time HH:MM] [--step-days N] [--max-queries N]"
+    );
     eprintln!("                 [--candidates-per-dest N] [--dry-run] [--show <session-id>]");
-    eprintln!("  transit plan    --from <EVA> --destinations <city,city,...> --dates <YYYY-MM-DD,...>");
+    eprintln!(
+        "  transit plan    --from <EVA> --destinations <city,city,...> --dates <YYYY-MM-DD,...>"
+    );
     eprintln!("                 (same options; --dates searches exactly those days instead of");
-    eprintln!("                  sampling a window -- mutually exclusive with --date-from/--date-to)");
+    eprintln!(
+        "                  sampling a window -- mutually exclusive with --date-from/--date-to)"
+    );
     eprintln!();
     eprintln!("--from/--to/--time fall back to default_from_eva/default_to_eva/default_time");
     eprintln!("in the overlay config if set (see transit.config.example.json); otherwise all");
@@ -200,14 +213,20 @@ fn resolve_candidates(
                     continue;
                 }
                 for s in stations.into_iter().take(per_dest.max(1)) {
-                    out.push(transit::store::CandidateDest { eva: s.id, name: s.name });
+                    out.push(transit::store::CandidateDest {
+                        eva: s.id,
+                        name: s.name,
+                    });
                 }
             }
             Err(e) => return Err(format!("could not resolve \"{name}\": {e}")),
         }
     }
     if out.is_empty() {
-        return Err("no destinations resolved -- pass at least one resolvable city in --destinations".into());
+        return Err(
+            "no destinations resolved -- pass at least one resolvable city in --destinations"
+                .into(),
+        );
     }
     Ok(out)
 }
@@ -225,7 +244,10 @@ fn main() {
             };
             let client = HafasClient::new();
             match client.suggest_stations(&query) {
-                Ok(stations) => println!("{}", serde_json::to_string_pretty(&stations).unwrap_or_default()),
+                Ok(stations) => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&stations).unwrap_or_default()
+                ),
                 Err(e) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);
@@ -233,21 +255,36 @@ fn main() {
             }
         }
         "search" | "split" => {
-            let from = match require(get_flag(&args, "--from"), cfg.default_from_eva.clone(), "--from", "default_from_eva") {
+            let from = match require(
+                get_flag(&args, "--from"),
+                cfg.default_from_eva.clone(),
+                "--from",
+                "default_from_eva",
+            ) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
             };
-            let to = match require(get_flag(&args, "--to"), cfg.default_to_eva.clone(), "--to", "default_to_eva") {
+            let to = match require(
+                get_flag(&args, "--to"),
+                cfg.default_to_eva.clone(),
+                "--to",
+                "default_to_eva",
+            ) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
             };
-            let time = match require(get_flag(&args, "--time"), cfg.default_time.clone(), "--time", "default_time") {
+            let time = match require(
+                get_flag(&args, "--time"),
+                cfg.default_time.clone(),
+                "--time",
+                "default_time",
+            ) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -259,16 +296,24 @@ fn main() {
             if cmd == "search" {
                 eprintln!("Searching direct connections from {from} to {to} at {time}...");
                 match client.search_connections(&from, &to, &time) {
-                    Ok(journeys) => println!("{}", serde_json::to_string_pretty(&journeys).unwrap_or_default()),
+                    Ok(journeys) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&journeys).unwrap_or_default()
+                    ),
                     Err(e) => {
                         eprintln!("error: {e}");
                         std::process::exit(1);
                     }
                 }
             } else {
-                eprintln!("Calculating cheapest split-ticket connection from {from} to {to} at {time}...");
+                eprintln!(
+                    "Calculating cheapest split-ticket connection from {from} to {to} at {time}..."
+                );
                 match client.search_split_tickets(&from, &to, &time) {
-                    Ok(result) => println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default()),
+                    Ok(result) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&result).unwrap_or_default()
+                    ),
                     Err(e) => {
                         eprintln!("error: {e}");
                         std::process::exit(1);
@@ -295,7 +340,10 @@ fn main() {
                 .unwrap_or(&path)
                 .to_string();
             match extractor::extract_from_bytes(&bytes, &file_name) {
-                Ok(extracted) => println!("{}", serde_json::to_string_pretty(&extracted).unwrap_or_default()),
+                Ok(extracted) => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&extracted).unwrap_or_default()
+                ),
                 Err(e) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);
@@ -345,12 +393,20 @@ fn run_plan(args: &[String], cfg: &Config) {
                 std::process::exit(1);
             }
         };
-        println!("{}", serde_json::to_string_pretty(&session_summary(&session, &trips)).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&session_summary(&session, &trips)).unwrap_or_default()
+        );
         return;
     }
 
     // Required: origin + destinations + a date window.
-    let from = match require(get_flag(args, "--from"), cfg.default_from_eva.clone(), "--from", "default_from_eva") {
+    let from = match require(
+        get_flag(args, "--from"),
+        cfg.default_from_eva.clone(),
+        "--from",
+        "default_from_eva",
+    ) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: {e}");
@@ -366,7 +422,9 @@ fn run_plan(args: &[String], cfg: &Config) {
     // Mutually exclusive on purpose -- a silent precedence rule between "the
     // whole of September" and "these four days" would hide which one ran.
     let dates_flag = get_flag(args, "--dates");
-    if dates_flag.is_some() && (get_flag(args, "--date-from").is_some() || get_flag(args, "--date-to").is_some()) {
+    if dates_flag.is_some()
+        && (get_flag(args, "--date-from").is_some() || get_flag(args, "--date-to").is_some())
+    {
         eprintln!("error: --dates and --date-from/--date-to are mutually exclusive -- pass the explicit days or the window, not both");
         std::process::exit(1);
     }
@@ -394,7 +452,9 @@ fn run_plan(args: &[String], cfg: &Config) {
                 std::process::exit(1);
             };
             let Some(date_to_raw) = get_flag(args, "--date-to") else {
-                eprintln!("error: --date-to <YYYY-MM-DD> is required (or pass --dates <YYYY-MM-DD,...>)");
+                eprintln!(
+                    "error: --date-to <YYYY-MM-DD> is required (or pass --dates <YYYY-MM-DD,...>)"
+                );
                 std::process::exit(1);
             };
             let Some(date_from) = parse_date_days(&date_from_raw) else {
@@ -406,7 +466,9 @@ fn run_plan(args: &[String], cfg: &Config) {
                 std::process::exit(1);
             };
             if date_to < date_from {
-                eprintln!("error: --date-to ({date_to_raw}) is before --date-from ({date_from_raw})");
+                eprintln!(
+                    "error: --date-to ({date_to_raw}) is before --date-from ({date_from_raw})"
+                );
                 std::process::exit(1);
             }
             (date_from, date_to, date_from_raw, date_to_raw)
@@ -415,9 +477,15 @@ fn run_plan(args: &[String], cfg: &Config) {
 
     let intent = get_flag(args, "--intent").unwrap_or_else(|| dests_csv.clone());
     let time_of_day = get_flag(args, "--time").unwrap_or_else(|| "08:00".into());
-    let step_days: i64 = get_flag(args, "--step-days").and_then(|s| s.parse().ok()).unwrap_or(7);
-    let max_queries: usize = get_flag(args, "--max-queries").and_then(|s| s.parse().ok()).unwrap_or(20);
-    let per_dest: usize = get_flag(args, "--candidates-per-dest").and_then(|s| s.parse().ok()).unwrap_or(1);
+    let step_days: i64 = get_flag(args, "--step-days")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7);
+    let max_queries: usize = get_flag(args, "--max-queries")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
+    let per_dest: usize = get_flag(args, "--candidates-per-dest")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
     let dry_run = args.iter().any(|a| a == "--dry-run");
 
     let client = HafasClient::new();
@@ -447,9 +515,18 @@ fn run_plan(args: &[String], cfg: &Config) {
         std::process::exit(1);
     }
 
-    let session_id = transit::store::stable_session_id(&from, &candidates, &date_from_raw, &date_to_raw, &intent);
+    let session_id = transit::store::stable_session_id(
+        &from,
+        &candidates,
+        &date_from_raw,
+        &date_to_raw,
+        &intent,
+    );
     eprintln!("plan: intent \"{intent}\"");
-    eprintln!("plan: origin EVA {from} -> {} candidate destination(s):", candidates.len());
+    eprintln!(
+        "plan: origin EVA {from} -> {} candidate destination(s):",
+        candidates.len()
+    );
     for c in &candidates {
         eprintln!("    {}  {}", c.eva, c.name);
     }
@@ -497,7 +574,14 @@ fn run_plan(args: &[String], cfg: &Config) {
             std::process::exit(1);
         }
     };
-    if let Err(e) = store.upsert_session(&session_id, &from, &intent, &candidates, &date_from_raw, &date_to_raw) {
+    if let Err(e) = store.upsert_session(
+        &session_id,
+        &from,
+        &intent,
+        &candidates,
+        &date_from_raw,
+        &date_to_raw,
+    ) {
         eprintln!("error: could not record session: {e}");
         std::process::exit(1);
     }
@@ -515,7 +599,13 @@ fn run_plan(args: &[String], cfg: &Config) {
             match client.search_connections(&from, &cand.eva, &departure) {
                 Ok(journeys) => {
                     for j in &journeys {
-                        match store.record_journey(j, &from, &cand.eva, "session", Some(&session_id)) {
+                        match store.record_journey(
+                            j,
+                            &from,
+                            &cand.eva,
+                            "session",
+                            Some(&session_id),
+                        ) {
                             Ok(_) => found += 1,
                             Err(e) => {
                                 eprintln!("warning: could not record journey {}: {e}", j.id);
@@ -524,11 +614,17 @@ fn run_plan(args: &[String], cfg: &Config) {
                         }
                     }
                     if journeys.is_empty() {
-                        eprintln!("    {} {} -> no journeys found at {}", cand.eva, cand.name, departure);
+                        eprintln!(
+                            "    {} {} -> no journeys found at {}",
+                            cand.eva, cand.name, departure
+                        );
                     }
                 }
                 Err(e) => {
-                    eprintln!("warning: search {} -> {} at {} failed: {e}", from, cand.eva, departure);
+                    eprintln!(
+                        "warning: search {} -> {} at {} failed: {e}",
+                        from, cand.eva, departure
+                    );
                     errors += 1;
                 }
             }
@@ -536,18 +632,25 @@ fn run_plan(args: &[String], cfg: &Config) {
     }
     eprintln!("plan: recorded {found} journey/journeys across the session ({errors} error/s)");
 
-    let session = store.get_session(&session_id).ok().flatten().unwrap_or_else(|| transit::store::SessionRow {
-        id: session_id.clone(),
-        origin_eva: from.clone(),
-        intent: intent.clone(),
-        candidates: candidates.clone(),
-        date_start: date_from_raw.clone(),
-        date_end: date_to_raw.clone(),
-        status: "new".into(),
-        created_at: String::new(),
-    });
+    let session = store
+        .get_session(&session_id)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| transit::store::SessionRow {
+            id: session_id.clone(),
+            origin_eva: from.clone(),
+            intent: intent.clone(),
+            candidates: candidates.clone(),
+            date_start: date_from_raw.clone(),
+            date_end: date_to_raw.clone(),
+            status: "new".into(),
+            created_at: String::new(),
+        });
     let trips = store.list_session_trips(&session_id).unwrap_or_default();
-    println!("{}", serde_json::to_string_pretty(&session_summary(&session, &trips)).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&session_summary(&session, &trips)).unwrap_or_default()
+    );
 }
 
 fn open_store(cfg: &Config) -> Result<transit::store::TransitStore, String> {
@@ -597,16 +700,29 @@ mod tests {
 
     #[test]
     fn parse_date_days_round_trips_and_rejects_garbage() {
-        assert_eq!(parse_date_days("2026-09-01"), Some(days_from_civil(2026, 9, 1)));
-        assert_eq!(fmt_date(parse_date_days("2026-09-01").unwrap()), "2026-09-01");
+        assert_eq!(
+            parse_date_days("2026-09-01"),
+            Some(days_from_civil(2026, 9, 1))
+        );
+        assert_eq!(
+            fmt_date(parse_date_days("2026-09-01").unwrap()),
+            "2026-09-01"
+        );
         // Leap day survives the round trip.
-        assert_eq!(fmt_date(parse_date_days("2024-02-29").unwrap()), "2024-02-29");
+        assert_eq!(
+            fmt_date(parse_date_days("2024-02-29").unwrap()),
+            "2024-02-29"
+        );
         // Malformed inputs -> None, never panic.
         assert_eq!(parse_date_days("not-a-date"), None);
         // Non-padded components parse leniently (integer parsing doesn't
         // care about zero-padding) -- friendlier for a fuzzy CLI than rigid
         // ISO enforcement. The separator discipline catches real garbage:
-        assert_eq!(parse_date_days("2026/09/01"), None, "wrong separator must be rejected");
+        assert_eq!(
+            parse_date_days("2026/09/01"),
+            None,
+            "wrong separator must be rejected"
+        );
         assert_eq!(parse_date_days("2026-13-01"), None, "month out of range");
         assert_eq!(parse_date_days("2026-09-32"), None, "day out of range");
         assert_eq!(parse_date_days("2026-09-01-extra"), None);
@@ -618,8 +734,16 @@ mod tests {
         let df = parse_date_days("2026-09-01").unwrap();
         let dt = parse_date_days("2026-09-30").unwrap();
         let dates = sample_dates(df, dt, 7, 10);
-        assert_eq!(dates.first().copied(), Some(df), "window start must be sampled");
-        assert_eq!(dates.last().copied(), Some(dt), "window end must be sampled even if step doesn't land on it");
+        assert_eq!(
+            dates.first().copied(),
+            Some(df),
+            "window start must be sampled"
+        );
+        assert_eq!(
+            dates.last().copied(),
+            Some(dt),
+            "window end must be sampled even if step doesn't land on it"
+        );
         // Monotonic non-decreasing, no duplicates that matter for price sampling.
         assert!(dates.windows(2).all(|w| w[0] <= w[1]));
         assert!(dates.len() <= 10, "should respect max_points cap");
@@ -640,7 +764,10 @@ mod tests {
         let df = parse_date_days("2026-09-01").unwrap();
         let dt = parse_date_days("2026-09-30").unwrap();
         let dates = sample_dates(df, dt, 1, 4);
-        assert!(dates.len() <= 4, "max_points caps the count even for a fine step");
+        assert!(
+            dates.len() <= 4,
+            "max_points caps the count even for a fine step"
+        );
         assert!(dates.len() >= 2, "start + end always present");
     }
 
@@ -655,12 +782,17 @@ mod tests {
         // Trailing separators are the shape a shell pipeline produces.
         assert_eq!(parse_dates("2026-08-14,").unwrap().len(), 1);
         assert!(parse_dates("2026-08-14,tuesday").is_err());
-        assert!(parse_dates("").is_err(), "an empty list is a mistake, not a no-op");
+        assert!(
+            parse_dates("").is_err(),
+            "an empty list is a mistake, not a no-op"
+        );
     }
 
     #[test]
     fn pick_dates_thins_to_the_query_budget_keeping_both_ends() {
-        let days: Vec<i64> = (0..30).map(|i| parse_date_days("2026-08-01").unwrap() + i).collect();
+        let days: Vec<i64> = (0..30)
+            .map(|i| parse_date_days("2026-08-01").unwrap() + i)
+            .collect();
         let picked = pick_dates(&days, 4);
         assert_eq!(picked.len(), 4);
         assert_eq!(picked.first(), days.first());

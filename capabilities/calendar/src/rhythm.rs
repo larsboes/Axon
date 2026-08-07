@@ -36,9 +36,11 @@ pub fn instance_entries(rhythm: &Rhythm, not_before: i64) -> Result<Vec<NewEntry
         .map(|day| {
             let date = date::format_date(day);
             let (starts_at, ends_at, all_day) = match (&rhythm.start_time, &rhythm.end_time) {
-                (Some(start), Some(end)) => {
-                    (format!("{date}T{start}:00"), format!("{date}T{end}:00"), false)
-                }
+                (Some(start), Some(end)) => (
+                    format!("{date}T{start}:00"),
+                    format!("{date}T{end}:00"),
+                    false,
+                ),
                 _ => (date.clone(), date::format_date(day + 1), true),
             };
             Ok(NewEntry {
@@ -75,7 +77,7 @@ mod tests {
             byweekday: vec!["tu".into(), "th".into()],
             start_time: None,
             end_time: None,
-            valid_from: "2026-08-03".into(), // a Monday
+            valid_from: "2026-08-03".into(),  // a Monday
             valid_until: "2026-08-16".into(), // a Sunday
             active: true,
             created_at: "0".into(),
@@ -98,7 +100,11 @@ mod tests {
         let rhythm = office_rhythm();
         let horizon = date::parse_date("2026-08-06").unwrap();
         let days = materialize_dates(&rhythm, horizon).unwrap();
-        assert_eq!(date::format_date(days[0]), "2026-08-06", "horizon day itself is kept");
+        assert_eq!(
+            date::format_date(days[0]),
+            "2026-08-06",
+            "horizon day itself is kept"
+        );
         assert_eq!(days.len(), 3);
         let past_end = date::parse_date("2026-09-01").unwrap();
         assert!(materialize_dates(&rhythm, past_end).unwrap().is_empty());

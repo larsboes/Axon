@@ -20,7 +20,9 @@ impl CfpConferencesAdapter {
     }
 
     pub fn with_cache(cache_dir: PathBuf) -> Self {
-        Self { cache_dir: Some(cache_dir) }
+        Self {
+            cache_dir: Some(cache_dir),
+        }
     }
 
     fn fetch(&self) -> Result<String, SourceError> {
@@ -52,7 +54,10 @@ impl CfpConferencesAdapter {
                     entries.push(ConferenceEntry::from_map(&current));
                     current.clear();
                 }
-                let val = line.trim_start_matches("- title:").trim().trim_matches('\'');
+                let val = line
+                    .trim_start_matches("- title:")
+                    .trim()
+                    .trim_matches('\'');
                 current.insert("title".into(), val.to_string());
             } else if let Some((key, value)) = line.split_once(':') {
                 let k = key.trim();
@@ -70,9 +75,16 @@ impl CfpConferencesAdapter {
     }
 
     fn normalize(&self, conf: &ConferenceEntry, fetched_at: &str) -> Opportunity {
-        let id = format!("cfp:conference:{}", conf.id.as_deref().unwrap_or(&conf.title));
+        let id = format!(
+            "cfp:conference:{}",
+            conf.id.as_deref().unwrap_or(&conf.title)
+        );
         let deadline = conf.deadline.clone();
-        let date_str = format!("{} {}", conf.start.as_deref().unwrap_or(""), conf.end.as_deref().unwrap_or(""));
+        let date_str = format!(
+            "{} {}",
+            conf.start.as_deref().unwrap_or(""),
+            conf.end.as_deref().unwrap_or("")
+        );
         let place = conf.place.as_deref().unwrap_or("Online/Unknown");
         let sub = conf.sub.as_deref().unwrap_or("ML");
         let url = conf.link.as_deref().unwrap_or("").to_string();
@@ -172,18 +184,29 @@ impl SourceAdapter for CfpConferencesAdapter {
             let q = query.query.to_lowercase();
             confs.retain(|c| {
                 c.title.to_lowercase().contains(&q)
-                    || c.sub.as_deref().map(|s| s.to_lowercase().contains(&q)).unwrap_or(false)
+                    || c.sub
+                        .as_deref()
+                        .map(|s| s.to_lowercase().contains(&q))
+                        .unwrap_or(false)
             });
         }
         if let Some(ref loc) = query.location {
             let l = loc.to_lowercase();
-            confs.retain(|c| c.place.as_deref().map(|p| p.to_lowercase().contains(&l)).unwrap_or(false));
+            confs.retain(|c| {
+                c.place
+                    .as_deref()
+                    .map(|p| p.to_lowercase().contains(&l))
+                    .unwrap_or(false)
+            });
         }
         if confs.len() > query.limit {
             confs.truncate(query.limit);
         }
 
-        Ok(confs.into_iter().map(|c| self.normalize(&c, &fetched_at)).collect())
+        Ok(confs
+            .into_iter()
+            .map(|c| self.normalize(&c, &fetched_at))
+            .collect())
     }
 }
 

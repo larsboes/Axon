@@ -20,7 +20,9 @@ impl Config {
         let database_url = std::env::var("AXON_PUNCTUALITY_DATABASE_URL")
             .ok()
             .or_else(postgres_conn_from_shared_env)
-            .unwrap_or_else(|| "host=127.0.0.1 port=5432 user=postgres dbname=postgres".to_string());
+            .unwrap_or_else(|| {
+                "host=127.0.0.1 port=5432 user=postgres dbname=postgres".to_string()
+            });
 
         let raw_dir = std::env::var("AXON_PUNCTUALITY_RAW_DIR")
             .ok()
@@ -28,7 +30,10 @@ impl Config {
             .or_else(|| overlay_data_dir("punctuality").map(|d| d.join("raw")))
             .unwrap_or_else(|| PathBuf::from("data/punctuality/raw"));
 
-        Self { database_url, raw_dir }
+        Self {
+            database_url,
+            raw_dir,
+        }
     }
 }
 
@@ -55,7 +60,10 @@ mod tests {
 
     #[test]
     fn a_url_without_credentials_is_left_alone() {
-        assert_eq!(redact("postgresql://127.0.0.1:5432/axon"), "postgresql://127.0.0.1:5432/axon");
+        assert_eq!(
+            redact("postgresql://127.0.0.1:5432/axon"),
+            "postgresql://127.0.0.1:5432/axon"
+        );
         assert_eq!(redact("not a url"), "not a url");
     }
 

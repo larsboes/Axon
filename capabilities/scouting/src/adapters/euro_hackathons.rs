@@ -128,8 +128,16 @@ impl SourceAdapter for EuroHackathonsAdapter {
         if let Some(ref loc) = query.location {
             let loc = loc.to_lowercase();
             filtered.retain(|h| {
-                h.city.as_deref().unwrap_or("").to_lowercase().contains(&loc)
-                    || h.country_code.as_deref().unwrap_or("").to_lowercase().contains(&loc)
+                h.city
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&loc)
+                    || h.country_code
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&loc)
             });
         }
         if filtered.len() > query.limit {

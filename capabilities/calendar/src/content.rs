@@ -225,11 +225,16 @@ mod tests {
         let item = from_entry(&entry());
         assert_eq!(item.source, "calendar");
         assert_eq!(item.schema_version, "content-item-v1");
-        assert_eq!(item.kind, "event", "the kind is the discriminator, not 'calendar'");
+        assert_eq!(
+            item.kind, "event",
+            "the kind is the discriminator, not 'calendar'"
+        );
         assert_eq!(item.day, "2026-08-10");
         assert_eq!(item.status, "committed");
         assert_eq!(item.url, "/calendar?date=2026-08-10&entry=cal:entry:abc");
-        let extension = item.calendar.expect("a calendar item carries its extension");
+        let extension = item
+            .calendar
+            .expect("a calendar item carries its extension");
         assert_eq!(extension.ends_at, "2026-08-10T19:00:00");
         assert!(!extension.all_day);
         assert_eq!(extension.commitment, "committed");
@@ -243,7 +248,10 @@ mod tests {
         let mut noisy = entry();
         noisy.payload = json!({ "score": 0.0, "matched_focus": "some-interest-profile", "rationale": "low fit" });
         let item = from_entry(&noisy);
-        assert!(item.relevance.is_empty(), "calendar ranks by commitment, never by score");
+        assert!(
+            item.relevance.is_empty(),
+            "calendar ranks by commitment, never by score"
+        );
         assert!(item.evaluation.is_none());
     }
 
@@ -259,11 +267,18 @@ mod tests {
             ]
         });
         let item = from_entry(&rich);
-        assert_eq!(item.links.len(), 3, "the entry with no url is dropped, the rest survive");
+        assert_eq!(
+            item.links.len(),
+            3,
+            "the entry with no url is dropped, the rest survive"
+        );
         assert_eq!(item.links[0].label, "Source", "payload.url leads");
         assert_eq!(item.links[0].url, "https://www.phantasialand.de/");
         assert_eq!(item.links[1].kind, "mail");
-        assert_eq!(item.links[2].label, "Link", "a missing label falls back rather than dropping the link");
+        assert_eq!(
+            item.links[2].label, "Link",
+            "a missing label falls back rather than dropping the link"
+        );
         assert_eq!(item.links[2].kind, "source");
     }
 
@@ -284,7 +299,10 @@ mod tests {
         rich.payload = json!({ "about": "A theme park in Brühl." });
         let item = from_entry(&rich);
         assert_eq!(item.summary.as_deref(), Some("A theme park in Brühl."));
-        assert_eq!(item.content.as_deref(), Some("Dated ticket, valid only on 10.08."));
+        assert_eq!(
+            item.content.as_deref(),
+            Some("Dated ticket, valid only on 10.08.")
+        );
         assert_eq!(item.content_status, "full");
 
         // ...and an entry with neither says so rather than showing an empty box.
@@ -321,7 +339,10 @@ mod tests {
         let origins = from_entry(&promoted).origins;
         assert_eq!(origins.len(), 1);
         assert_eq!(origins[0].source_id, "luma");
-        assert_eq!(origins[0].source_ref, "evt-abc", "the provider's own dedupe key");
+        assert_eq!(
+            origins[0].source_ref, "evt-abc",
+            "the provider's own dedupe key"
+        );
         assert_eq!(origins[0].label.as_deref(), Some("Theresienstraße 6"));
 
         // A hand-made entry has no provider, so it claims none.
@@ -347,7 +368,10 @@ mod tests {
         let item = from_entry(&entry());
         assert_eq!(item.data_class.value, "personal");
         assert_eq!(item.data_class.label, "Personal");
-        assert_eq!(item.processing_policy.cloud_handling, "pseudonymization_required");
+        assert_eq!(
+            item.processing_policy.cloud_handling,
+            "pseudonymization_required"
+        );
         assert_eq!(item.cloud_processing.provider_calls, 0);
     }
 
@@ -361,6 +385,9 @@ mod tests {
         assert_eq!(item.day, "2026-09-15");
         let extension = item.calendar.unwrap();
         assert!(extension.all_day);
-        assert_eq!(extension.ends_at, "2026-09-16", "carried verbatim, never re-derived");
+        assert_eq!(
+            extension.ends_at, "2026-09-16",
+            "carried verbatim, never re-derived"
+        );
     }
 }

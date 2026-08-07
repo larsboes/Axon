@@ -46,44 +46,140 @@ const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
     r("GET", "/ready", "Readiness: liveness plus a reachable database."),
     r("GET", "/routes", "This manifest."),
-    r("GET", "/api/entries", "Entries overlapping a day window. Requires from, to; optional kind (CSV)."),
+    r(
+        "GET",
+        "/api/entries",
+        "Entries overlapping a day window. Requires from, to; optional kind (CSV).",
+    ),
     r("POST", "/api/entries", "Create an entry."),
     r("GET", "/api/entries/:id", "One entry."),
-    r("PATCH", "/api/entries/:id", "Patch an entry. Any patch detaches it from its rhythm."),
+    r(
+        "PATCH",
+        "/api/entries/:id",
+        "Patch an entry. Any patch detaches it from its rhythm.",
+    ),
     r("DELETE", "/api/entries/:id", "Delete an entry."),
-    r("PUT", "/api/entries/external", "Idempotent provider contribution. Requires source + external_id."),
-    r("GET", "/api/content/:source/:id", "The entry as content-item-v1. :source is always 'calendar'."),
-    r("GET", "/api/proposals", "Un-adopted external entries awaiting a decision. Requires from, to."),
-    r("GET", "/api/google/drafts", "Unreviewed Google imports. Requires from, to."),
-    r("GET", "/api/contexts", "Planning contexts overlapping a window. Requires from, to."),
+    r(
+        "PUT",
+        "/api/entries/external",
+        "Idempotent provider contribution. Requires source + external_id.",
+    ),
+    r(
+        "GET",
+        "/api/content/:source/:id",
+        "The entry as content-item-v1. :source is always 'calendar'.",
+    ),
+    r(
+        "GET",
+        "/api/proposals",
+        "Un-adopted external entries awaiting a decision. Requires from, to.",
+    ),
+    r(
+        "GET",
+        "/api/google/drafts",
+        "Unreviewed Google imports. Requires from, to.",
+    ),
+    r(
+        "GET",
+        "/api/contexts",
+        "Planning contexts overlapping a window. Requires from, to.",
+    ),
     r("POST", "/api/contexts", "Create a planning context."),
     r("PATCH", "/api/contexts/:id", "Patch a planning context."),
     r("DELETE", "/api/contexts/:id", "Delete a planning context."),
     r("GET", "/api/rhythms", "Every rhythm."),
-    r("POST", "/api/rhythms", "Create a rhythm and materialize its future instances."),
+    r(
+        "POST",
+        "/api/rhythms",
+        "Create a rhythm and materialize its future instances.",
+    ),
     r("GET", "/api/rhythms/:id", "One rhythm."),
     r("PATCH", "/api/rhythms/:id", "Patch a rhythm."),
     r("DELETE", "/api/rhythms/:id", "Delete a rhythm."),
-    r("POST", "/api/rhythms/:id/materialize", "Re-materialize a rhythm's future instances."),
-    r("POST", "/api/verdicts", "Feasibility verdicts for a batch of dated candidates."),
-    r("GET", "/api/windows", "Runs of days where travel is possible. Requires from, to."),
-    r("GET", "/api/trip-drafts", "Events clustered by city and time proximity. Requires from, to."),
-    r("POST", "/api/trip-drafts/materialize", "Turn a draft into a trips.plan."),
-    r("POST", "/api/google/import", "Import Google events as non-blocking drafts."),
-    r("POST", "/api/google/import-preview", "Read-only review of what an import would write."),
-    r("POST", "/api/google/import-selected", "Import an explicit selection, rejecting changed revisions."),
-    r("POST", "/api/google/export", "Push opted-in entries to Google."),
+    r(
+        "POST",
+        "/api/rhythms/:id/materialize",
+        "Re-materialize a rhythm's future instances.",
+    ),
+    r(
+        "POST",
+        "/api/verdicts",
+        "Feasibility verdicts for a batch of dated candidates.",
+    ),
+    r(
+        "GET",
+        "/api/windows",
+        "Runs of days where travel is possible. Requires from, to.",
+    ),
+    r(
+        "GET",
+        "/api/trip-drafts",
+        "Events clustered by city and time proximity. Requires from, to.",
+    ),
+    r(
+        "POST",
+        "/api/trip-drafts/materialize",
+        "Turn a draft into a trips.plan.",
+    ),
+    r(
+        "POST",
+        "/api/google/import",
+        "Import Google events as non-blocking drafts.",
+    ),
+    r(
+        "POST",
+        "/api/google/import-preview",
+        "Read-only review of what an import would write.",
+    ),
+    r(
+        "POST",
+        "/api/google/import-selected",
+        "Import an explicit selection, rejecting changed revisions.",
+    ),
+    r(
+        "POST",
+        "/api/google/export",
+        "Push opted-in entries to Google.",
+    ),
     r("GET", "/api/google/exports", "The export opt-in ledger."),
-    r("PUT", "/api/entries/:id/google-export", "Opt an entry in to export."),
-    r("DELETE", "/api/entries/:id/google-export", "Opt an entry out. The Google event is left alone."),
-    r("GET", "/api/markdown/sources", "Declared markdown event sources."),
-    r("POST", "/api/markdown/preview", "Read-only scan of a markdown source. Requires source."),
-    r("POST", "/api/markdown/import", "Import an explicit selection of scanned notes. Requires source and external_ids."),
+    r(
+        "PUT",
+        "/api/entries/:id/google-export",
+        "Opt an entry in to export.",
+    ),
+    r(
+        "DELETE",
+        "/api/entries/:id/google-export",
+        "Opt an entry out. The Google event is left alone.",
+    ),
+    r(
+        "GET",
+        "/api/markdown/sources",
+        "Declared markdown event sources.",
+    ),
+    r(
+        "POST",
+        "/api/markdown/preview",
+        "Read-only scan of a markdown source. Requires source.",
+    ),
+    r(
+        "POST",
+        "/api/markdown/import",
+        "Import an explicit selection of scanned notes. Requires source and external_ids.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
-const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
-    route_manifest::Route { method, path, summary }
+const fn r(
+    method: &'static str,
+    path: &'static str,
+    summary: &'static str,
+) -> route_manifest::Route {
+    route_manifest::Route {
+        method,
+        path,
+        summary,
+    }
 }
 
 async fn routes() -> Json<Value> {

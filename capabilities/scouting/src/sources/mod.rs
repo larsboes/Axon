@@ -253,14 +253,17 @@ pub fn create_adapter(
                 .clone()
                 .ok_or_else(|| SourceFactoryError::Config {
                     id: manifest.id.clone(),
-                    detail: "luma-calendar adapter requires 'url' set to the calendar's 'cal-…' api id".into(),
+                    detail:
+                        "luma-calendar adapter requires 'url' set to the calendar's 'cal-…' api id"
+                            .into(),
                 })?;
-            let adapter = crate::adapters::luma::LumaAdapter::for_calendar(api_id).map_err(|e| {
-                SourceFactoryError::Config {
-                    id: manifest.id.clone(),
-                    detail: e.to_string(),
-                }
-            })?;
+            let adapter =
+                crate::adapters::luma::LumaAdapter::for_calendar(api_id).map_err(|e| {
+                    SourceFactoryError::Config {
+                        id: manifest.id.clone(),
+                        detail: e.to_string(),
+                    }
+                })?;
             Ok(Box::new(adapter.with_source_id(manifest.id.clone())))
         }
         // One adapter covers every brand on Splash That, because the platform
@@ -337,24 +340,44 @@ mod tests {
     /// row because both answered "rss".
     #[test]
     fn two_sources_of_one_adapter_type_have_distinct_names() {
-        let a = create_adapter(&manifest("conference-rss", "rss", Some("https://example.test/a")))
-            .expect("rss adapter builds from a url");
-        let b = create_adapter(&manifest("hackathon-rss", "rss", Some("https://example.test/b")))
-            .expect("rss adapter builds from a url");
+        let a = create_adapter(&manifest(
+            "conference-rss",
+            "rss",
+            Some("https://example.test/a"),
+        ))
+        .expect("rss adapter builds from a url");
+        let b = create_adapter(&manifest(
+            "hackathon-rss",
+            "rss",
+            Some("https://example.test/b"),
+        ))
+        .expect("rss adapter builds from a url");
 
         assert_eq!(a.name(), "conference-rss");
         assert_eq!(b.name(), "hackathon-rss");
-        assert_ne!(a.name(), b.name(), "one cursor row per source, not per adapter type");
+        assert_ne!(
+            a.name(),
+            b.name(),
+            "one cursor row per source, not per adapter type"
+        );
     }
 
     /// Same property for the other config-built network adapter: two tracked
     /// calendars are two sources.
     #[test]
     fn two_luma_calendars_have_distinct_names() {
-        let a = create_adapter(&manifest("berlin-events", "luma-calendar", Some("cal-aaa111")))
-            .expect("luma adapter builds from a cal- id");
-        let b = create_adapter(&manifest("bonn-events", "luma-calendar", Some("cal-bbb222")))
-            .expect("luma adapter builds from a cal- id");
+        let a = create_adapter(&manifest(
+            "berlin-events",
+            "luma-calendar",
+            Some("cal-aaa111"),
+        ))
+        .expect("luma adapter builds from a cal- id");
+        let b = create_adapter(&manifest(
+            "bonn-events",
+            "luma-calendar",
+            Some("cal-bbb222"),
+        ))
+        .expect("luma adapter builds from a cal- id");
 
         assert_eq!(a.name(), "berlin-events");
         assert_eq!(b.name(), "bonn-events");

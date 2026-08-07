@@ -1171,9 +1171,7 @@ struct DigestRefreshBody {
 /// Explicit rather than timer-driven: for mail this reads message bodies, and a
 /// background job that quietly pulls every body out of a mailbox is not
 /// something a machine should start doing on its own.
-async fn digest_refresh_handler(
-    Json(body): Json<DigestRefreshBody>,
-) -> (StatusCode, Json<Value>) {
+async fn digest_refresh_handler(Json(body): Json<DigestRefreshBody>) -> (StatusCode, Json<Value>) {
     let result = tokio::task::spawn_blocking(move || -> Result<(String, usize), String> {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
@@ -4011,8 +4009,7 @@ mod route_manifest_tests {
     /// here rather than shipping a surface that lies about itself.
     #[test]
     fn the_manifest_covers_every_served_route() {
-        let missing =
-            route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
+        let missing = route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

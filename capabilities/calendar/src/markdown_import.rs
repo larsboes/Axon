@@ -44,8 +44,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::date;
-use markdown_root::{frontmatter, MarkdownRoot};
 use crate::model::{Commitment, NewEntry};
+use markdown_root::{frontmatter, MarkdownRoot};
 
 /// A declared source of markdown event notes.
 ///
@@ -123,8 +123,8 @@ impl Preview {
 /// a [`Refusal`] inside an otherwise successful preview, because one broken
 /// note is not a reason to refuse the other hundred.
 pub fn scan(source: &MarkdownSource) -> Result<Preview, String> {
-    let root = MarkdownRoot::declare(&source.path)
-        .map_err(|e| format!("source '{}': {e}", source.id))?;
+    let root =
+        MarkdownRoot::declare(&source.path).map_err(|e| format!("source '{}': {e}", source.id))?;
     let files = root
         .markdown_files(&source.events_glob)
         .map_err(|e| format!("source '{}': {e}", source.id))?;
@@ -187,7 +187,10 @@ pub fn plan<'a>(preview: &'a Preview, selection: &[String]) -> Result<Vec<&'a Ca
         .iter()
         .map(|id| {
             by_id.get(id.as_str()).copied().ok_or_else(|| {
-                format!("'{id}' is not a candidate in this scan of source '{}'", preview.source)
+                format!(
+                    "'{id}' is not a candidate in this scan of source '{}'",
+                    preview.source
+                )
             })
         })
         .collect()
@@ -230,9 +233,7 @@ fn candidate_from_note(
         Some(raw) => {
             let (end, end_timed) = instant(&raw)?;
             if end_timed != start_timed {
-                return Err(
-                    "start and end disagree about whether this is an all-day entry".into(),
-                );
+                return Err("start and end disagree about whether this is an all-day entry".into());
             }
             if start_timed {
                 (end, false)
@@ -280,7 +281,11 @@ fn candidate_from_note(
 /// lands on `possible`, which is exactly right — visible as evidence, blocking
 /// nothing.
 fn commitment_from_status(status: Option<&str>) -> Commitment {
-    match status.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+    match status
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("confirmed") | Some("completed") => Commitment::Committed,
         Some("planned") => Commitment::Planned,
         _ => Commitment::Possible,
@@ -293,7 +298,11 @@ fn commitment_from_status(status: Option<&str>) -> Commitment {
 /// owns the structured event and the note keeps the prose — duplicating the
 /// prose into a database column would recreate the two-stores problem this is
 /// meant to end.
-fn provenance(source_id: &str, external_id: &str, fm: &HashMap<String, String>) -> serde_json::Value {
+fn provenance(
+    source_id: &str,
+    external_id: &str,
+    fm: &HashMap<String, String>,
+) -> serde_json::Value {
     json!({
         "schema_version": "calendar-markdown-import-v1",
         "source": source_id,
@@ -378,9 +387,10 @@ mod tests {
     /// The one value this importer converts rather than carries.
     #[test]
     fn an_inclusive_end_date_becomes_an_exclusive_one() {
-        let single = note("---\ntype: event\nsummary: One day\nstart: 2026-02-03\nend: 2026-02-03\n---\n")
-            .unwrap()
-            .unwrap();
+        let single =
+            note("---\ntype: event\nsummary: One day\nstart: 2026-02-03\nend: 2026-02-03\n---\n")
+                .unwrap()
+                .unwrap();
         assert_eq!(single.entry.starts_at, "2026-02-03");
         assert_eq!(
             single.entry.ends_at, "2026-02-04",
@@ -388,9 +398,11 @@ mod tests {
         );
         assert!(single.entry.all_day);
 
-        let span = note("---\ntype: event\nsummary: Three days\nstart: 2026-02-03\nend: 2026-02-05\n---\n")
-            .unwrap()
-            .unwrap();
+        let span = note(
+            "---\ntype: event\nsummary: Three days\nstart: 2026-02-03\nend: 2026-02-05\n---\n",
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(span.entry.ends_at, "2026-02-06");
     }
 
@@ -445,17 +457,19 @@ mod tests {
 
     #[test]
     fn a_half_timed_note_is_refused_rather_than_flattened() {
-        let reason = note("---\ntype: event\nsummary: Mixed\nstart: 2026-02-03\nend: 2026-02-04T12:00\n---\n")
-            .expect_err("one side timed, one not");
+        let reason = note(
+            "---\ntype: event\nsummary: Mixed\nstart: 2026-02-03\nend: 2026-02-04T12:00\n---\n",
+        )
+        .expect_err("one side timed, one not");
         assert!(reason.contains("all-day"), "got: {reason}");
     }
 
     #[test]
     fn an_end_before_its_start_is_refused_by_calendars_own_rule() {
-        assert!(
-            note("---\ntype: event\nsummary: Backwards\nstart: 2026-02-05\nend: 2026-02-03\n---\n")
-                .is_err()
-        );
+        assert!(note(
+            "---\ntype: event\nsummary: Backwards\nstart: 2026-02-05\nend: 2026-02-03\n---\n"
+        )
+        .is_err());
     }
 
     #[test]
@@ -470,7 +484,11 @@ mod tests {
     fn a_note_that_is_not_an_event_is_skipped_quietly() {
         assert_eq!(note("---\ntype: moc\nsummary: Hub\n---\n").unwrap(), None);
         assert_eq!(note("---\ntype: note\n---\n").unwrap(), None);
-        assert_eq!(note("# just prose\n").unwrap(), None, "no frontmatter at all");
+        assert_eq!(
+            note("# just prose\n").unwrap(),
+            None,
+            "no frontmatter at all"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -479,8 +497,14 @@ mod tests {
 
     #[test]
     fn only_a_status_claiming_it_happens_reaches_committed() {
-        assert_eq!(commitment_from_status(Some("confirmed")), Commitment::Committed);
-        assert_eq!(commitment_from_status(Some("completed")), Commitment::Committed);
+        assert_eq!(
+            commitment_from_status(Some("confirmed")),
+            Commitment::Committed
+        );
+        assert_eq!(
+            commitment_from_status(Some("completed")),
+            Commitment::Committed
+        );
         assert_eq!(commitment_from_status(Some("planned")), Commitment::Planned);
     }
 
@@ -517,10 +541,13 @@ mod tests {
 
     #[test]
     fn a_note_with_no_summary_falls_back_to_its_filename() {
-        let candidate =
-            candidate_from_note("vault_events", "Atlas/Events/Cloud Forum.md", "---\ntype: event\nstart: 2026-02-03\n---\n")
-                .unwrap()
-                .unwrap();
+        let candidate = candidate_from_note(
+            "vault_events",
+            "Atlas/Events/Cloud Forum.md",
+            "---\ntype: event\nstart: 2026-02-03\n---\n",
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(candidate.entry.title, "Cloud Forum");
     }
 
@@ -547,9 +574,11 @@ mod tests {
         let preview = Preview {
             source: "vault_events".into(),
             root: "/somewhere".into(),
-            candidates: vec![note("---\ntype: event\nsummary: A\nstart: 2026-02-03\n---\n")
-                .unwrap()
-                .unwrap()],
+            candidates: vec![
+                note("---\ntype: event\nsummary: A\nstart: 2026-02-03\n---\n")
+                    .unwrap()
+                    .unwrap(),
+            ],
             refused: vec![],
         };
         assert!(plan(&preview, &["Atlas/Events/A Note.md".into()]).is_ok());

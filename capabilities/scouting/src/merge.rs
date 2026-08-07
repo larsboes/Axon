@@ -62,11 +62,14 @@ pub fn merge(per_source: Vec<(String, Vec<ScoredOpportunity>)>) -> Vec<MergedEnt
                     }
                 }
                 None => {
-                    by_key.insert(key, MergedEntry {
-                        scored,
-                        normalized_score: norm,
-                        sources: vec![source_id.clone()],
-                    });
+                    by_key.insert(
+                        key,
+                        MergedEntry {
+                            scored,
+                            normalized_score: norm,
+                            sources: vec![source_id.clone()],
+                        },
+                    );
                 }
             }
         }
@@ -88,11 +91,17 @@ fn normalize_scores(batch: &[ScoredOpportunity]) -> Vec<f64> {
         return Vec::new();
     }
     let min = batch.iter().map(|s| s.score).fold(f64::INFINITY, f64::min);
-    let max = batch.iter().map(|s| s.score).fold(f64::NEG_INFINITY, f64::max);
+    let max = batch
+        .iter()
+        .map(|s| s.score)
+        .fold(f64::NEG_INFINITY, f64::max);
     if (max - min).abs() < f64::EPSILON {
         return vec![0.5; batch.len()];
     }
-    batch.iter().map(|s| (s.score - min) / (max - min)).collect()
+    batch
+        .iter()
+        .map(|s| (s.score - min) / (max - min))
+        .collect()
 }
 
 /// Conservative dedup key: normalized title + calendar date. Missing dates
@@ -159,13 +168,22 @@ mod tests {
         // Raw-score sorting would put all of A above all of B; per-source
         // min-max puts each source's best at 1.0 and worst at 0.0.
         let merged = merge(vec![
-            ("a".into(), vec![scored("a-top", None, 0.9), scored("a-low", None, 0.1)]),
-            ("b".into(), vec![scored("b-top", None, 0.09), scored("b-low", None, 0.01)]),
+            (
+                "a".into(),
+                vec![scored("a-top", None, 0.9), scored("a-low", None, 0.1)],
+            ),
+            (
+                "b".into(),
+                vec![scored("b-top", None, 0.09), scored("b-low", None, 0.01)],
+            ),
         ]);
         assert_eq!(merged.len(), 4);
         assert!((merged[0].normalized_score - 1.0).abs() < 1e-9);
         assert!((merged[1].normalized_score - 1.0).abs() < 1e-9);
-        let top_titles: Vec<&str> = merged[..2].iter().map(|m| m.scored.opportunity.title.as_str()).collect();
+        let top_titles: Vec<&str> = merged[..2]
+            .iter()
+            .map(|m| m.scored.opportunity.title.as_str())
+            .collect();
         assert!(top_titles.contains(&"a-top"));
         assert!(top_titles.contains(&"b-top")); // b-top outranks a-low despite raw 0.09 < 0.1
         assert!((merged[2].normalized_score - 0.0).abs() < 1e-9);
@@ -175,8 +193,18 @@ mod tests {
     #[test]
     fn same_normalized_title_and_date_across_sources_merges_to_one() {
         let merged = merge(vec![
-            ("rss".into(), vec![scored("AI  Hackathon — Berlin!", Some("2026-09-01T09:00:00Z"), 0.8)]),
-            ("obsidian".into(), vec![scored("ai hackathon berlin", Some("2026-09-01"), 0.3)]),
+            (
+                "rss".into(),
+                vec![scored(
+                    "AI  Hackathon — Berlin!",
+                    Some("2026-09-01T09:00:00Z"),
+                    0.8,
+                )],
+            ),
+            (
+                "obsidian".into(),
+                vec![scored("ai hackathon berlin", Some("2026-09-01"), 0.3)],
+            ),
         ]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].sources.len(), 2);
@@ -188,11 +216,17 @@ mod tests {
     fn different_events_are_kept_apart() {
         // Same title, different date → two entries. Different title → two entries.
         let merged = merge(vec![
-            ("rss".into(), vec![
-                scored("AI Hackathon Berlin", Some("2026-09-01"), 0.8),
-                scored("Rust Meetup Bonn", Some("2026-09-01"), 0.5),
-            ]),
-            ("obsidian".into(), vec![scored("AI Hackathon Berlin", Some("2026-10-01"), 0.3)]),
+            (
+                "rss".into(),
+                vec![
+                    scored("AI Hackathon Berlin", Some("2026-09-01"), 0.8),
+                    scored("Rust Meetup Bonn", Some("2026-09-01"), 0.5),
+                ],
+            ),
+            (
+                "obsidian".into(),
+                vec![scored("AI Hackathon Berlin", Some("2026-10-01"), 0.3)],
+            ),
         ]);
         assert_eq!(merged.len(), 3);
     }
@@ -200,8 +234,14 @@ mod tests {
     #[test]
     fn missing_date_only_merges_with_missing_date() {
         let merged = merge(vec![
-            ("rss".into(), vec![scored("AI Hackathon Berlin", Some("2026-09-01"), 0.8)]),
-            ("obsidian".into(), vec![scored("AI Hackathon Berlin", None, 0.3)]),
+            (
+                "rss".into(),
+                vec![scored("AI Hackathon Berlin", Some("2026-09-01"), 0.8)],
+            ),
+            (
+                "obsidian".into(),
+                vec![scored("AI Hackathon Berlin", None, 0.3)],
+            ),
         ]);
         assert_eq!(merged.len(), 2);
     }
@@ -211,10 +251,18 @@ mod tests {
         // Single item and all-equal batches carry no scale info → 0.5.
         let merged = merge(vec![
             ("solo".into(), vec![scored("only event", None, 0.7)]),
-            ("flat".into(), vec![scored("x", None, 0.4), scored("y", None, 0.4)]),
+            (
+                "flat".into(),
+                vec![scored("x", None, 0.4), scored("y", None, 0.4)],
+            ),
         ]);
         for m in &merged {
-            assert!((m.normalized_score - 0.5).abs() < 1e-9, "{}: {}", m.scored.opportunity.title, m.normalized_score);
+            assert!(
+                (m.normalized_score - 0.5).abs() < 1e-9,
+                "{}: {}",
+                m.scored.opportunity.title,
+                m.normalized_score
+            );
         }
     }
 }

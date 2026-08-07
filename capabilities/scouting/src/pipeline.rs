@@ -53,7 +53,8 @@ pub fn run(
     let mut vault_links = 0;
 
     for s in &mut scored {
-        let vault_link = events_dir.and_then(|dir| vault_linker::link_to_vault(&s.opportunity, dir));
+        let vault_link =
+            events_dir.and_then(|dir| vault_linker::link_to_vault(&s.opportunity, dir));
         if let Some(ref vl) = vault_link {
             vault_links += 1;
             s.rationale = format!("{}\n     vault link: {vl}", s.rationale);
@@ -97,6 +98,10 @@ pub fn fetch_json(
         .collect())
 }
 
-pub fn backlog_from_store(store: &Store, limit: usize, include_dismissed: bool) -> Result<Vec<RankedRow>, Box<dyn std::error::Error>> {
+pub fn backlog_from_store(
+    store: &Store,
+    limit: usize,
+    include_dismissed: bool,
+) -> Result<Vec<RankedRow>, Box<dyn std::error::Error>> {
     store.list_top(limit, include_dismissed)
 }

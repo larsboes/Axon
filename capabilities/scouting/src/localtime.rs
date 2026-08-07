@@ -78,7 +78,10 @@ impl HomeTimezone {
                 EU_WESTERN.join(", ")
             ));
         };
-        Ok(Self { name: trimmed.to_string(), rule })
+        Ok(Self {
+            name: trimmed.to_string(),
+            rule,
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -295,31 +298,58 @@ mod tests {
     #[test]
     fn honours_the_eu_dst_boundaries() {
         // 2026: forward 29 Mar, back 25 Oct — both at 01:00 UTC.
-        assert_eq!(berlin().wall_time("2026-03-29T00:59:00Z").unwrap(), "2026-03-29T01:59:00");
-        assert_eq!(berlin().wall_time("2026-03-29T01:00:00Z").unwrap(), "2026-03-29T03:00:00");
-        assert_eq!(berlin().wall_time("2026-10-25T00:59:00Z").unwrap(), "2026-10-25T02:59:00");
-        assert_eq!(berlin().wall_time("2026-10-25T01:00:00Z").unwrap(), "2026-10-25T02:00:00");
+        assert_eq!(
+            berlin().wall_time("2026-03-29T00:59:00Z").unwrap(),
+            "2026-03-29T01:59:00"
+        );
+        assert_eq!(
+            berlin().wall_time("2026-03-29T01:00:00Z").unwrap(),
+            "2026-03-29T03:00:00"
+        );
+        assert_eq!(
+            berlin().wall_time("2026-10-25T00:59:00Z").unwrap(),
+            "2026-10-25T02:59:00"
+        );
+        assert_eq!(
+            berlin().wall_time("2026-10-25T01:00:00Z").unwrap(),
+            "2026-10-25T02:00:00"
+        );
     }
 
     #[test]
     fn london_is_an_hour_behind_berlin() {
         let london = HomeTimezone::parse("Europe/London").unwrap();
-        assert_eq!(london.wall_time("2026-07-30T16:00:00.000Z").unwrap(), "2026-07-30T17:00:00");
-        assert_eq!(london.wall_time("2026-01-15T16:00:00.000Z").unwrap(), "2026-01-15T16:00:00");
+        assert_eq!(
+            london.wall_time("2026-07-30T16:00:00.000Z").unwrap(),
+            "2026-07-30T17:00:00"
+        );
+        assert_eq!(
+            london.wall_time("2026-01-15T16:00:00.000Z").unwrap(),
+            "2026-01-15T16:00:00"
+        );
     }
 
     #[test]
     fn accepts_utc_and_fixed_offsets() {
         assert_eq!(
-            HomeTimezone::parse("UTC").unwrap().wall_time("2026-07-30T16:00:00Z").unwrap(),
+            HomeTimezone::parse("UTC")
+                .unwrap()
+                .wall_time("2026-07-30T16:00:00Z")
+                .unwrap(),
             "2026-07-30T16:00:00"
         );
         assert_eq!(
-            HomeTimezone::parse("+05:30").unwrap().wall_time("2026-07-30T16:00:00Z").unwrap(),
+            HomeTimezone::parse("+05:30")
+                .unwrap()
+                .wall_time("2026-07-30T16:00:00Z")
+                .unwrap(),
             "2026-07-30T21:30:00"
         );
         assert_eq!(
-            HomeTimezone::parse("-08:00").unwrap().wall_time("2026-07-30T16:00:00Z").unwrap(),
+            HomeTimezone::parse("-08:00")
+                .unwrap()
+                .wall_time("2026-07-30T16:00:00Z")
+                .unwrap(),
             "2026-07-30T08:00:00"
         );
     }

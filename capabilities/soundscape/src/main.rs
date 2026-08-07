@@ -78,7 +78,9 @@ impl Session {
             && self.duration_ms > 0
             && self.duration_ms <= MAX_SESSION_MS
             && self.elapsed_ms <= self.duration_ms
-            && self.running_since_ms.is_none_or(|started| started <= now.saturating_add(60_000))
+            && self
+                .running_since_ms
+                .is_none_or(|started| started <= now.saturating_add(60_000))
     }
 
     fn pause_at(&mut self, now: u64) {
@@ -314,16 +316,36 @@ fn now_ms() -> u64 {
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
     r("GET", "/routes", "This manifest."),
-    r("GET", "/api/soundscape/health", "Liveness under the panel prefix. Same handler as /health."),
+    r(
+        "GET",
+        "/api/soundscape/health",
+        "Liveness under the panel prefix. Same handler as /health.",
+    ),
     r("GET", "/api/soundscape/state", "Current playback state."),
     r("GET", "/api/soundscape/stream", "The audio stream."),
-    r("POST", "/api/soundscape/host/claim", "Claim playback host for this browser."),
-    r("POST", "/api/soundscape/host/release", "Release the playback host."),
+    r(
+        "POST",
+        "/api/soundscape/host/claim",
+        "Claim playback host for this browser.",
+    ),
+    r(
+        "POST",
+        "/api/soundscape/host/release",
+        "Release the playback host.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
-const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
-    route_manifest::Route { method, path, summary }
+const fn r(
+    method: &'static str,
+    path: &'static str,
+    summary: &'static str,
+) -> route_manifest::Route {
+    route_manifest::Route {
+        method,
+        path,
+        summary,
+    }
 }
 
 async fn routes() -> axum::Json<serde_json::Value> {
@@ -518,7 +540,9 @@ async fn post_state(
 
 /// The current state first, then every change. A client that connects mid-session
 /// must not have to also GET /state to know where it is.
-async fn stream(State(app): State<App>) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+async fn stream(
+    State(app): State<App>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
     // No origin: the opening frame is the state as it stands, not anyone's edit,
     // so every client applies it including the one that last changed it.
     let initial = tokio_stream::once(Change {
@@ -527,7 +551,8 @@ async fn stream(State(app): State<App>) -> Sse<impl tokio_stream::Stream<Item = 
     });
     let updates = BroadcastStream::new(app.changes.subscribe()).filter_map(Result::ok);
 
-    app.surfaces.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    app.surfaces
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let guard = StreamGuard(app.surfaces.clone());
 
     let events = initial.chain(updates).map(move |change| {
@@ -575,7 +600,10 @@ fn load_scape() -> Scape {
     match restore(&body) {
         Ok(scape) => scape,
         Err(err) => {
-            eprintln!("[soundscape] ignoring unreadable state at {}: {err}", path.display());
+            eprintln!(
+                "[soundscape] ignoring unreadable state at {}: {err}",
+                path.display()
+            );
             Scape::default()
         }
     }
@@ -674,7 +702,9 @@ async fn main() {
 
     match state_path() {
         Some(path) => spawn_persister(&app, path),
-        None => eprintln!("[soundscape] no AXON_PERSONAL_ROOT: state is in-memory and will not survive a restart"),
+        None => eprintln!(
+            "[soundscape] no AXON_PERSONAL_ROOT: state is in-memory and will not survive a restart"
+        ),
     }
 
     let dir = ui_dir();
@@ -686,8 +716,14 @@ async fn main() {
         .route("/api/soundscape/health", get(health))
         .route("/api/soundscape/state", get(get_state).post(post_state))
         .route("/api/soundscape/stream", get(stream))
-        .route("/api/soundscape/host/claim", axum::routing::post(claim_host))
-        .route("/api/soundscape/host/release", axum::routing::post(release_host))
+        .route(
+            "/api/soundscape/host/claim",
+            axum::routing::post(claim_host),
+        )
+        .route(
+            "/api/soundscape/host/release",
+            axum::routing::post(release_host),
+        )
         .with_state(app)
         // SPA fallback: the bundle has one entry point and routes client-side, so
         // an unknown path is a route, not a 404.
@@ -764,7 +800,10 @@ mod tests {
         let Json(view) = claim_host(State(app.clone()), Json(claim_of("panel", false)))
             .await
             .expect("first claim wins");
-        assert_eq!(view.host.expect("claim is reflected in the state").id, "panel");
+        assert_eq!(
+            view.host.expect("claim is reflected in the state").id,
+            "panel"
+        );
 
         let refused = claim_host(State(app.clone()), Json(claim_of("dashboard", false))).await;
         let (status, _) = refused.err().expect("second claim is refused");
@@ -800,7 +839,10 @@ mod tests {
                 .expect("clock has enough history");
         }
 
-        assert!(app.host().is_none(), "a silent tab does not hold the output");
+        assert!(
+            app.host().is_none(),
+            "a silent tab does not hold the output"
+        );
         // And the seat is free without anyone having to release it.
         let Json(view) = claim_host(State(app.clone()), Json(claim_of("dashboard", false)))
             .await
@@ -815,14 +857,21 @@ mod tests {
             .await
             .expect("claim wins");
 
-        let Json(view) = release_host(State(app.clone()), Json(Release { id: "dashboard".into() })).await;
+        let Json(view) = release_host(
+            State(app.clone()),
+            Json(Release {
+                id: "dashboard".into(),
+            }),
+        )
+        .await;
         assert_eq!(
             view.host.expect("still held").id,
             "panel",
             "a stale client must not silence the one that took over"
         );
 
-        let Json(view) = release_host(State(app.clone()), Json(Release { id: "panel".into() })).await;
+        let Json(view) =
+            release_host(State(app.clone()), Json(Release { id: "panel".into() })).await;
         assert!(view.host.is_none());
     }
 
@@ -833,7 +882,8 @@ mod tests {
             preset: "sleep".into(),
             ..Scape::default()
         };
-        let restored = restore(&serde_json::to_string(&saved).expect("serializes")).expect("restores");
+        let restored =
+            restore(&serde_json::to_string(&saved).expect("serializes")).expect("restores");
         assert!(!restored.playing, "restart cannot resume sound, only state");
         assert_eq!(restored.preset, "sleep", "everything else survives");
     }
@@ -842,7 +892,8 @@ mod tests {
     fn an_older_saved_scape_without_a_session_still_restores() {
         let mut value = serde_json::to_value(Scape::default()).expect("serializes");
         value.as_object_mut().expect("object").remove("session");
-        let restored = restore(&serde_json::to_string(&value).expect("serializes")).expect("restores");
+        let restored =
+            restore(&serde_json::to_string(&value).expect("serializes")).expect("restores");
         assert!(restored.session.is_none());
     }
 
@@ -859,7 +910,8 @@ mod tests {
             }),
             ..Scape::default()
         };
-        let restored = restore(&serde_json::to_string(&saved).expect("serializes")).expect("restores");
+        let restored =
+            restore(&serde_json::to_string(&saved).expect("serializes")).expect("restores");
         let session = restored.session.expect("session survives");
         assert!(session.running_since_ms.is_none());
         assert!((14_000..=16_000).contains(&session.elapsed_ms));
@@ -925,8 +977,7 @@ mod route_manifest_tests {
     /// here rather than shipping a surface that lies about itself.
     #[test]
     fn the_manifest_covers_every_served_route() {
-        let missing =
-            route_manifest::undeclared_routes(include_str!("main.rs"), super::ROUTES);
+        let missing = route_manifest::undeclared_routes(include_str!("main.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

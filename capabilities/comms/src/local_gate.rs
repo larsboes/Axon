@@ -86,7 +86,10 @@ impl LocalGate for AdvisoryGate {
         let deadline = Instant::now() + WAIT_TIMEOUT;
         loop {
             let got: bool = client
-                .query_one("SELECT pg_try_advisory_lock($1)", &[&LOCAL_INFERENCE_LOCK_KEY])
+                .query_one(
+                    "SELECT pg_try_advisory_lock($1)",
+                    &[&LOCAL_INFERENCE_LOCK_KEY],
+                )
                 .map_err(|error| format!("local inference gate: {error}"))?
                 .get(0);
             if got {

@@ -25,7 +25,12 @@ pub enum IngestError {
     #[error("{file}: column `{column}` is missing — upstream schema changed (see upstreams.toml [deutsche-bahn-data], which records one such break in 2026-05)")]
     MissingColumn { file: String, column: String },
     #[error("{file}: column `{column}` has type {actual}, expected {expected}")]
-    WrongType { file: String, column: String, actual: String, expected: String },
+    WrongType {
+        file: String,
+        column: String,
+        actual: String,
+        expected: String,
+    },
 }
 
 /// A station/type/hour/weekend bucket.
@@ -68,14 +73,19 @@ fn column<'a, T: 'static>(
     let idx = batch
         .schema()
         .index_of(name)
-        .map_err(|_| IngestError::MissingColumn { file: file.into(), column: name.into() })?;
+        .map_err(|_| IngestError::MissingColumn {
+            file: file.into(),
+            column: name.into(),
+        })?;
     let col = batch.column(idx);
-    col.as_any().downcast_ref::<T>().ok_or_else(|| IngestError::WrongType {
-        file: file.into(),
-        column: name.into(),
-        actual: format!("{:?}", col.data_type()),
-        expected: expected.into(),
-    })
+    col.as_any()
+        .downcast_ref::<T>()
+        .ok_or_else(|| IngestError::WrongType {
+            file: file.into(),
+            column: name.into(),
+            actual: format!("{:?}", col.data_type()),
+            expected: expected.into(),
+        })
 }
 
 /// Folds one monthly file into `cells`, adding to whatever is already there.
@@ -84,7 +94,11 @@ pub fn fold_file(
     cells: &mut HashMap<CellKey, Cell>,
     stations: &mut HashMap<String, String>,
 ) -> Result<Counts, IngestError> {
-    let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let file = std::fs::File::open(path).map_err(|e| IngestError::Open(name.clone(), e))?;
 
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
@@ -113,7 +127,8 @@ pub fn fold_file(
         let train_type = column::<StringArray>(&batch, &name, "train_type", "Utf8")?;
         let delay = column::<Int32Array>(&batch, &name, "delay_in_min", "Int32")?;
         let canceled = column::<BooleanArray>(&batch, &name, "is_canceled", "Boolean")?;
-        let time = column::<TimestampNanosecondArray>(&batch, &name, "time", "Timestamp(Nanosecond)")?;
+        let time =
+            column::<TimestampNanosecondArray>(&batch, &name, "time", "Timestamp(Nanosecond)")?;
         let station_name = column::<StringArray>(&batch, &name, "station_name", "Utf8")?;
 
         for row in 0..batch.num_rows() {
@@ -136,10 +151,14 @@ pub fn fold_file(
                 hour,
                 weekend,
             };
-            cells
-                .entry(key)
-                .or_default()
-                .record(if delay.is_null(row) { 0 } else { delay.value(row) }, is_canceled);
+            cells.entry(key).or_default().record(
+                if delay.is_null(row) {
+                    0
+                } else {
+                    delay.value(row)
+                },
+                is_canceled,
+            );
 
             if !station_name.is_null(row) {
                 stations

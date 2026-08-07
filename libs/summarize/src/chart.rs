@@ -152,7 +152,9 @@ pub fn value_appears_in(value: f64, source: &str) -> bool {
             candidates.push(group_thousands(&integer, ' '));
         }
     }
-    candidates.iter().any(|candidate| source.contains(candidate))
+    candidates
+        .iter()
+        .any(|candidate| source.contains(candidate))
 }
 
 fn group_thousands(digits: &str, separator: char) -> String {
@@ -218,7 +220,9 @@ fn json_object(answer: &str) -> Result<serde_json::Value, String> {
         None => answer,
     };
     let start = body.find('{').ok_or_else(|| "no JSON object".to_string())?;
-    let end = body.rfind('}').ok_or_else(|| "no JSON object".to_string())?;
+    let end = body
+        .rfind('}')
+        .ok_or_else(|| "no JSON object".to_string())?;
     if end <= start {
         return Err("no JSON object".into());
     }
@@ -361,7 +365,10 @@ mod tests {
         assert!(value_appears_in(36.2, SOURCE));
         assert!(value_appears_in(60.0, SOURCE));
         assert!(value_appears_in(1204.0, SOURCE), "thousands separator");
-        assert!(value_appears_in(12.3, "der Wert lag bei 12,3 Prozent"), "decimal comma");
+        assert!(
+            value_appears_in(12.3, "der Wert lag bei 12,3 Prozent"),
+            "decimal comma"
+        );
     }
 
     /// The whole point. A model that reports a plausible number nobody wrote
@@ -396,7 +403,10 @@ mod tests {
             "measure_label":"Count","unit":null,"note":"n",
             "rows":[{"category":"2024","value":10},{"category":"2025","value":20},
                     {"category":"2026","value":30}]}"#;
-        assert_eq!(parse_chart(answer, source).unwrap().unwrap().mark, Mark::Line);
+        assert_eq!(
+            parse_chart(answer, source).unwrap().unwrap().mark,
+            Mark::Line
+        );
     }
 
     /// Two ordered points are a comparison, not a trend; a line through two dots
@@ -407,7 +417,10 @@ mod tests {
         let answer = r#"{"has_data":true,"title":"t","category_label":"Year",
             "measure_label":"Count","unit":null,"note":"n",
             "rows":[{"category":"2025","value":10},{"category":"2026","value":30}]}"#;
-        assert_eq!(parse_chart(answer, source).unwrap().unwrap().mark, Mark::Bar);
+        assert_eq!(
+            parse_chart(answer, source).unwrap().unwrap().mark,
+            Mark::Bar
+        );
     }
 
     #[test]
@@ -425,7 +438,9 @@ mod tests {
     /// train the operator to ignore the state entirely.
     #[test]
     fn no_data_is_a_verdict_not_a_failure() {
-        assert!(parse_chart(r#"{"has_data": false}"#, SOURCE).unwrap().is_none());
+        assert!(parse_chart(r#"{"has_data": false}"#, SOURCE)
+            .unwrap()
+            .is_none());
         assert!(parse_chart("```json\n{\"has_data\": false}\n```", SOURCE)
             .unwrap()
             .is_none());
@@ -450,7 +465,11 @@ mod tests {
             "rows":[{{"category":"basic","value":23.8}},{{"category":"expert","value":36.2}}]}}"#
         );
         let data = parse_chart(&answer, SOURCE).unwrap().unwrap();
-        assert!(data.note.ends_with("independently."), "cut short: {}", data.note);
+        assert!(
+            data.note.ends_with("independently."),
+            "cut short: {}",
+            data.note
+        );
         assert!(data.note.chars().count() > MAX_LABEL_CHARS);
     }
 

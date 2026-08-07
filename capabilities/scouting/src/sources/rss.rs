@@ -64,7 +64,9 @@ impl SourceAdapter for RssFeedSource {
             let pub_date = item.pub_date.unwrap_or_default();
 
             let dedup_key = format!("{}|{}", link, title);
-            if seen.contains_key(&dedup_key) { continue; }
+            if seen.contains_key(&dedup_key) {
+                continue;
+            }
             seen.insert(dedup_key, true);
 
             let id = if !link.is_empty() && link.starts_with("http") {
@@ -134,10 +136,16 @@ fn parse_feed_items(xml: &str) -> Result<Vec<FeedItem>, SourceError> {
         for block in extract_blocks(xml, "<entry", "</entry>") {
             let title = extract_tag(&block, "title");
             let link = extract_atom_link(&block);
-            let description = extract_tag(&block, "summary").or_else(|| extract_tag(&block, "content"));
-            let pub_date = extract_tag(&block, "published")
-                .or_else(|| extract_tag(&block, "updated"));
-            items.push(FeedItem { title, link, description, pub_date });
+            let description =
+                extract_tag(&block, "summary").or_else(|| extract_tag(&block, "content"));
+            let pub_date =
+                extract_tag(&block, "published").or_else(|| extract_tag(&block, "updated"));
+            items.push(FeedItem {
+                title,
+                link,
+                description,
+                pub_date,
+            });
         }
     } else {
         for block in extract_blocks(xml, "<item", "</item>") {
@@ -145,7 +153,12 @@ fn parse_feed_items(xml: &str) -> Result<Vec<FeedItem>, SourceError> {
             let link = extract_tag(&block, "link");
             let description = extract_tag(&block, "description");
             let pub_date = extract_tag(&block, "pubdate");
-            items.push(FeedItem { title, link, description, pub_date });
+            items.push(FeedItem {
+                title,
+                link,
+                description,
+                pub_date,
+            });
         }
     }
 
@@ -270,12 +283,18 @@ fn extract_atom_link(block: &str) -> Option<String> {
     let value_start = href_start + 6;
     let href_end = rest[value_start..].find('"')?;
     let val = rest[value_start..value_start + href_end].to_string();
-    if val.is_empty() { None } else { Some(val) }
+    if val.is_empty() {
+        None
+    } else {
+        Some(val)
+    }
 }
 
 fn normalize_rss_date(date: &str) -> Option<String> {
     let d = date.trim();
-    if d.is_empty() { return None; }
+    if d.is_empty() {
+        return None;
+    }
     Some(d.to_string())
 }
 
@@ -322,7 +341,10 @@ mod tests {
         let items = parse_feed_items(xml).unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].title.as_deref(), Some("AI Hackathon Berlin"));
-        assert_eq!(items[0].link.as_deref(), Some("https://example.com/ai-berlin"));
+        assert_eq!(
+            items[0].link.as_deref(),
+            Some("https://example.com/ai-berlin")
+        );
         assert_eq!(items[1].title.as_deref(), Some("Munich Tech Meetup"));
     }
 

@@ -55,7 +55,12 @@ pub struct Cell {
 
 impl Default for Cell {
     fn default() -> Self {
-        Self { counts: [0; BUCKETS], n: 0, canceled: 0, sum: 0 }
+        Self {
+            counts: [0; BUCKETS],
+            n: 0,
+            canceled: 0,
+            sum: 0,
+        }
     }
 }
 

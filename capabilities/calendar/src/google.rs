@@ -149,7 +149,11 @@ pub fn map_event(event: &GoogleEvent, tz: &HomeTimezone) -> Result<NewEntry, Str
                 .date
                 .as_deref()
                 .ok_or("all-day event has a start date but no end date")?;
-            (start_date.trim().to_string(), end_date.trim().to_string(), true)
+            (
+                start_date.trim().to_string(),
+                end_date.trim().to_string(),
+                true,
+            )
         }
         (None, Some(start_instant)) => {
             let end_instant = event
@@ -157,7 +161,9 @@ pub fn map_event(event: &GoogleEvent, tz: &HomeTimezone) -> Result<NewEntry, Str
                 .date_time
                 .as_deref()
                 .ok_or("timed event has a start but no end")?;
-            let start_wall = tz.wall_time(start_instant).map_err(|e| format!("start: {e}"))?;
+            let start_wall = tz
+                .wall_time(start_instant)
+                .map_err(|e| format!("start: {e}"))?;
             let end_wall = tz.wall_time(end_instant).map_err(|e| format!("end: {e}"))?;
             // The one shape naive local storage genuinely cannot hold: an
             // event running through the autumn fall-back covers real time the
@@ -479,7 +485,10 @@ mod tests {
         assert_eq!(entry.ends_at, "2026-08-14T11:00:00");
         assert!(!entry.all_day);
         assert_eq!(entry.title, "Team sync");
-        assert_eq!(entry.location.as_deref(), Some("Example City, Central Square"));
+        assert_eq!(
+            entry.location.as_deref(),
+            Some("Example City, Central Square")
+        );
         assert_eq!(entry.notes.as_deref(), Some("Weekly, agenda in the doc"));
     }
 
@@ -573,12 +582,20 @@ mod tests {
         // time and render as the same clock face. Both import — and the
         // payload is the only thing that still tells them apart.
         let first = map_event(
-            &timed("dst-first", "2026-10-25T02:30:00+02:00", "2026-10-25T02:45:00+02:00"),
+            &timed(
+                "dst-first",
+                "2026-10-25T02:30:00+02:00",
+                "2026-10-25T02:45:00+02:00",
+            ),
             &berlin(),
         )
         .unwrap();
         let second = map_event(
-            &timed("dst-second", "2026-10-25T02:30:00+01:00", "2026-10-25T02:45:00+01:00"),
+            &timed(
+                "dst-second",
+                "2026-10-25T02:30:00+01:00",
+                "2026-10-25T02:45:00+01:00",
+            ),
             &berlin(),
         )
         .unwrap();
@@ -605,7 +622,11 @@ mod tests {
         // cannot hold that, and the refusal has to say why rather than
         // bottoming out in the generic exclusive-end check.
         let error = map_event(
-            &timed("dst-through", "2026-10-25T02:30:00+02:00", "2026-10-25T03:30:00+02:00"),
+            &timed(
+                "dst-through",
+                "2026-10-25T02:30:00+02:00",
+                "2026-10-25T03:30:00+02:00",
+            ),
             &berlin(),
         )
         .unwrap_err();
@@ -618,7 +639,11 @@ mod tests {
         // The mirror case: one real hour, 01:30 CET → 03:30 CEST, reads as two
         // hours locally because 02:00–03:00 never happens. That one stores.
         let entry = map_event(
-            &timed("spring", "2026-03-29T01:30:00+01:00", "2026-03-29T03:30:00+02:00"),
+            &timed(
+                "spring",
+                "2026-03-29T01:30:00+01:00",
+                "2026-03-29T03:30:00+02:00",
+            ),
             &berlin(),
         )
         .unwrap();

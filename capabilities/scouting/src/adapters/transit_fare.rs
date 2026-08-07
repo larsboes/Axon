@@ -40,7 +40,11 @@ pub struct TransitFareAdapter {
 
 impl TransitFareAdapter {
     pub fn new(from_eva: String, to_eva: String, store: Option<TransitStore>) -> Self {
-        Self { from_eva, to_eva, store }
+        Self {
+            from_eva,
+            to_eva,
+            store,
+        }
     }
 }
 
@@ -74,14 +78,18 @@ impl SourceAdapter for TransitFareAdapter {
 
         if let Some(store) = &self.store {
             for j in &journeys {
-                if let Err(e) = store.record_journey(j, &self.from_eva, &self.to_eva, "auto", None) {
+                if let Err(e) = store.record_journey(j, &self.from_eva, &self.to_eva, "auto", None)
+                {
                     eprintln!("warning: transit_fare could not record trip {}: {e}", j.id);
                 }
             }
         }
 
         let fetched_at = chrono_now();
-        Ok(journeys.iter().map(|j| journey_to_opportunity(j, &fetched_at)).collect())
+        Ok(journeys
+            .iter()
+            .map(|j| journey_to_opportunity(j, &fetched_at))
+            .collect())
     }
 }
 
@@ -89,8 +97,14 @@ impl SourceAdapter for TransitFareAdapter {
 /// (scouting's shape), so a fare-search result flows through the exact same
 /// score/rank/dismiss/save pipeline every other source already does.
 pub fn journey_to_opportunity(j: &Journey, fetched_at: &str) -> Opportunity {
-    let price = j.total_price.map(|p| format!("€{p:.2}")).unwrap_or_else(|| "price unknown".into());
-    let title = format!("{} → {} ({price})", j.start_station.name, j.end_station.name);
+    let price = j
+        .total_price
+        .map(|p| format!("€{p:.2}"))
+        .unwrap_or_else(|| "price unknown".into());
+    let title = format!(
+        "{} → {} ({price})",
+        j.start_station.name, j.end_station.name
+    );
 
     Opportunity {
         id: format!("trip:transit_fare:{}", j.id),
@@ -126,8 +140,18 @@ mod tests {
     use transit::travel::{Leg, Station};
 
     fn mk_journey() -> Journey {
-        let bonn = Station { id: "8000044".into(), name: "Bonn Hbf".into(), latitude: None, longitude: None };
-        let berlin = Station { id: "8098160".into(), name: "Berlin Hbf".into(), latitude: None, longitude: None };
+        let bonn = Station {
+            id: "8000044".into(),
+            name: "Bonn Hbf".into(),
+            latitude: None,
+            longitude: None,
+        };
+        let berlin = Station {
+            id: "8098160".into(),
+            name: "Berlin Hbf".into(),
+            latitude: None,
+            longitude: None,
+        };
         Journey {
             id: "journey:abc".into(),
             start_station: bonn.clone(),
@@ -178,6 +202,9 @@ mod tests {
         let adapter = TransitFareAdapter::new("8000044".into(), "8098160".into(), None);
         let query = SearchQuery::default();
         let result = adapter.search(&query);
-        assert!(result.is_err(), "no date_from should error, not silently guess a date");
+        assert!(
+            result.is_err(),
+            "no date_from should error, not silently guess a date"
+        );
     }
 }

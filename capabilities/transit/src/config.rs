@@ -83,8 +83,9 @@ impl Config {
     pub fn load() -> Self {
         let file = load_file_config();
         let database_url = file.database_url.unwrap_or_else(|| {
-            postgres_conn_from_shared_env()
-                .unwrap_or_else(|| "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into())
+            postgres_conn_from_shared_env().unwrap_or_else(|| {
+                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
+            })
         });
         Self {
             default_from_eva: file.default_from_eva,

@@ -227,8 +227,13 @@ pub fn access_token(env_path: &Path) -> SyncResult<String> {
 /// can be exercised against recorded payloads: everything below this line is
 /// transport, and transport is the one thing a test cannot have.
 pub trait CalendarApi {
-    fn list_events(&self, calendar_id: &str, from: &str, to: &str, max: usize)
-        -> SyncResult<Vec<GoogleEvent>>;
+    fn list_events(
+        &self,
+        calendar_id: &str,
+        from: &str,
+        to: &str,
+        max: usize,
+    ) -> SyncResult<Vec<GoogleEvent>>;
     /// Returns the created event's id.
     fn insert_event(&self, calendar_id: &str, body: &Value) -> SyncResult<String>;
     fn patch_event(&self, calendar_id: &str, event_id: &str, body: &Value) -> SyncResult<String>;
@@ -511,10 +516,10 @@ pub struct SelectedGoogleEvent {
 }
 
 fn review_window(from: &str, to: &str) -> SyncResult<(String, String)> {
-    let from_days = date::parse_date(from)
-        .ok_or_else(|| "from must be a valid YYYY-MM-DD date".to_string())?;
-    let to_days = date::parse_date(to)
-        .ok_or_else(|| "to must be a valid YYYY-MM-DD date".to_string())?;
+    let from_days =
+        date::parse_date(from).ok_or_else(|| "from must be a valid YYYY-MM-DD date".to_string())?;
+    let to_days =
+        date::parse_date(to).ok_or_else(|| "to must be a valid YYYY-MM-DD date".to_string())?;
     let days = to_days - from_days;
     if days <= 0 {
         return Err("to must be after from".into());
@@ -552,7 +557,11 @@ fn duplicate_key(candidate: &ImportCandidate) -> Option<String> {
     ))
 }
 
-fn candidate_for(event: &GoogleEvent, existing: Option<&Entry>, tz: &HomeTimezone) -> ImportCandidate {
+fn candidate_for(
+    event: &GoogleEvent,
+    existing: Option<&Entry>,
+    tz: &HomeTimezone,
+) -> ImportCandidate {
     let mut candidate = ImportCandidate {
         google_event_id: event.id.clone(),
         google_updated: event.updated.clone(),
@@ -581,12 +590,14 @@ fn candidate_for(event: &GoogleEvent, existing: Option<&Entry>, tz: &HomeTimezon
         }
         Action::RefreshDraft | Action::KeepAxonVersion => {
             candidate.status = ReviewStatus::AlreadyInAxon;
-            candidate.reason = Some(match google::decide(event, existing) {
-                Action::RefreshDraft => "Already imported as an Axon draft",
-                Action::KeepAxonVersion => "Already adopted in Axon; Axon keeps its version",
-                _ => unreachable!("handled above"),
-            }
-            .into());
+            candidate.reason = Some(
+                match google::decide(event, existing) {
+                    Action::RefreshDraft => "Already imported as an Axon draft",
+                    Action::KeepAxonVersion => "Already adopted in Axon; Axon keeps its version",
+                    _ => unreachable!("handled above"),
+                }
+                .into(),
+            );
         }
         Action::Create => match google::map_event(event, tz) {
             Ok(mapped) => {
@@ -610,7 +621,11 @@ fn review_events(
 ) -> SyncResult<Vec<ImportCandidate>> {
     let mut candidates = Vec::with_capacity(events.len());
     for event in events {
-        candidates.push(candidate_for(event, store.existing(event.id.trim())?.as_ref(), tz));
+        candidates.push(candidate_for(
+            event,
+            store.existing(event.id.trim())?.as_ref(),
+            tz,
+        ));
     }
 
     let mut grouped: HashMap<String, Vec<usize>> = HashMap::new();
@@ -626,9 +641,8 @@ fn review_events(
         for index in indexes {
             candidates[*index].status = ReviewStatus::LikelyDuplicate;
             candidates[*index].duplicate_group = Some(group.clone());
-            candidates[*index].reason = Some(
-                "Same normalized title and exact time range as another Google event".into(),
-            );
+            candidates[*index].reason =
+                Some("Same normalized title and exact time range as another Google event".into());
         }
     }
     Ok(candidates)
@@ -695,13 +709,20 @@ pub fn import_selected(
         &time_max,
         settings.google.max_events,
     )?;
-    let by_id: HashMap<&str, &GoogleEvent> = events.iter().map(|event| (event.id.as_str(), event)).collect();
+    let by_id: HashMap<&str, &GoogleEvent> = events
+        .iter()
+        .map(|event| (event.id.as_str(), event))
+        .collect();
     for (id, updated) in &expected {
         let Some(event) = by_id.get(id.as_str()) else {
-            return Err(format!("Google event {id} is no longer in this review window; review again"));
+            return Err(format!(
+                "Google event {id} is no longer in this review window; review again"
+            ));
         };
         if event.updated != *updated {
-            return Err(format!("Google event {id} changed since the preview; review it again"));
+            return Err(format!(
+                "Google event {id} changed since the preview; review it again"
+            ));
         }
     }
 
@@ -715,8 +736,13 @@ pub fn import_selected(
         let candidate = candidates
             .get(id.as_str())
             .ok_or_else(|| format!("Google event {id} could not be reviewed"))?;
-        if !matches!(candidate.status, ReviewStatus::Importable | ReviewStatus::LikelyDuplicate) {
-            return Err(format!("Google event {id} is no longer importable; review again"));
+        if !matches!(
+            candidate.status,
+            ReviewStatus::Importable | ReviewStatus::LikelyDuplicate
+        ) {
+            return Err(format!(
+                "Google event {id} is no longer importable; review again"
+            ));
         }
         if let Some(group) = &candidate.duplicate_group {
             if !duplicate_groups.insert(group) {
@@ -727,7 +753,12 @@ pub fn import_selected(
 
     let chosen: Vec<GoogleEvent> = selected
         .iter()
-        .filter_map(|selection| by_id.get(selection.google_event_id.trim()).copied().cloned())
+        .filter_map(|selection| {
+            by_id
+                .get(selection.google_event_id.trim())
+                .copied()
+                .cloned()
+        })
         .collect();
     import_events(store, &chosen, settings, &time_min, &time_max, false)
 }
@@ -797,7 +828,10 @@ fn import_events(
                 report.kept_axon_version += 1;
                 report.outcomes.push(ImportOutcome {
                     google_event_id: event.id.clone(),
-                    title: existing.as_ref().map(|e| e.title.clone()).unwrap_or_default(),
+                    title: existing
+                        .as_ref()
+                        .map(|e| e.title.clone())
+                        .unwrap_or_default(),
                     action: Action::KeepCancelledAxonVersion,
                     entry_id: existing.as_ref().map(|e| e.id.clone()),
                     google_says: Some(serde_json::json!({ "status": "cancelled" })),
@@ -1041,7 +1075,13 @@ mod tests {
     }
 
     impl CalendarApi for FixtureApi {
-        fn list_events(&self, _: &str, _: &str, _: &str, max: usize) -> SyncResult<Vec<GoogleEvent>> {
+        fn list_events(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            max: usize,
+        ) -> SyncResult<Vec<GoogleEvent>> {
             Ok(self.events.iter().take(max).cloned().collect())
         }
         fn insert_event(&self, calendar_id: &str, body: &Value) -> SyncResult<String> {
@@ -1050,10 +1090,17 @@ mod tests {
                 .push((calendar_id.into(), None, body.clone()));
             Ok(format!("g-inserted-{}", self.pushes.borrow().len()))
         }
-        fn patch_event(&self, calendar_id: &str, event_id: &str, body: &Value) -> SyncResult<String> {
-            self.pushes
-                .borrow_mut()
-                .push((calendar_id.into(), Some(event_id.into()), body.clone()));
+        fn patch_event(
+            &self,
+            calendar_id: &str,
+            event_id: &str,
+            body: &Value,
+        ) -> SyncResult<String> {
+            self.pushes.borrow_mut().push((
+                calendar_id.into(),
+                Some(event_id.into()),
+                body.clone(),
+            ));
             Ok(event_id.to_string())
         }
     }
@@ -1171,7 +1218,13 @@ mod tests {
     #[test]
     fn every_imported_event_arrives_as_a_neutral_draft() {
         let store = FakeStore::default();
-        import(&store, &FixtureApi::new(fixture_events()), &settings(), false).unwrap();
+        import(
+            &store,
+            &FixtureApi::new(fixture_events()),
+            &settings(),
+            false,
+        )
+        .unwrap();
         for entry in store.by_external.borrow().values() {
             assert_eq!(
                 entry.commitment,
@@ -1212,12 +1265,18 @@ mod tests {
         assert_eq!(report.unchanged, 1);
 
         let axon = store.get("3q7l9v1c8m2p4t6y0x5z");
-        assert_eq!(axon.starts_at, "2026-08-14T10:00:00", "Axon wins the collision");
+        assert_eq!(
+            axon.starts_at, "2026-08-14T10:00:00",
+            "Axon wins the collision"
+        );
         assert_eq!(axon.title, "Sprint-Review (verschoben)");
         assert_eq!(axon.kind, "work_onsite");
 
         let draft = store.get("base9x7v5t3r1p_20260819T063000Z");
-        assert_eq!(draft.starts_at, "2026-08-19T09:30:00", "an unadopted draft follows Google");
+        assert_eq!(
+            draft.starts_at, "2026-08-19T09:30:00",
+            "an unadopted draft follows Google"
+        );
 
         // The divergence is reported, not swallowed.
         let kept = report
@@ -1261,10 +1320,20 @@ mod tests {
     #[test]
     fn a_dry_run_writes_nothing() {
         let store = FakeStore::default();
-        let report = import(&store, &FixtureApi::new(fixture_events()), &settings(), true).unwrap();
+        let report = import(
+            &store,
+            &FixtureApi::new(fixture_events()),
+            &settings(),
+            true,
+        )
+        .unwrap();
         assert_eq!(report.created, 3);
         assert!(report.dry_run);
-        assert_eq!(store.count(), 0, "a dry run reports what it would do, and does not");
+        assert_eq!(
+            store.count(),
+            0,
+            "a dry run reports what it would do, and does not"
+        );
     }
 
     #[test]
@@ -1291,7 +1360,9 @@ mod tests {
             .filter(|candidate| candidate.duplicate_group.is_some())
             .collect();
         assert_eq!(twins.len(), 2);
-        assert!(twins.iter().all(|candidate| candidate.status == ReviewStatus::LikelyDuplicate));
+        assert!(twins
+            .iter()
+            .all(|candidate| candidate.status == ReviewStatus::LikelyDuplicate));
         assert_eq!(twins[0].duplicate_group, twins[1].duplicate_group);
     }
 
@@ -1411,7 +1482,11 @@ mod tests {
         assert_eq!(report.created, 3);
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].google_event_id, "broken");
-        assert!(report.skipped[0].reason.contains("no end"), "{:?}", report.skipped[0]);
+        assert!(
+            report.skipped[0].reason.contains("no end"),
+            "{:?}",
+            report.skipped[0]
+        );
         assert_eq!(store.count(), 3);
     }
 
@@ -1422,7 +1497,10 @@ mod tests {
         let report = export(&store, &api, &settings(), false).unwrap();
         assert_eq!(report.opted_in, 0);
         assert_eq!(report.inserted, 0);
-        assert!(api.pushes.borrow().is_empty(), "an empty ledger pushes nothing");
+        assert!(
+            api.pushes.borrow().is_empty(),
+            "an empty ledger pushes nothing"
+        );
     }
 
     #[test]
@@ -1523,7 +1601,10 @@ mod tests {
     fn a_missing_credential_file_names_the_path_and_the_keys() {
         let missing = std::env::temp_dir().join("axon-calendar-does-not-exist.env");
         let error = read_env_key(&missing, "GOOGLE_CLIENT_ID").unwrap_err();
-        assert!(error.contains("axon-calendar-does-not-exist.env"), "{error}");
+        assert!(
+            error.contains("axon-calendar-does-not-exist.env"),
+            "{error}"
+        );
         assert!(error.contains("GOOGLE_REFRESH_TOKEN"), "{error}");
         assert!(error.contains("never part of this repo"), "{error}");
     }

@@ -26,9 +26,9 @@
 
 use std::path::PathBuf;
 
-use markdown_root::MarkdownRoot;
 use crate::opportunity::{Opportunity, OpportunityType, SourceKind};
 use crate::source::{SearchQuery, SourceAdapter, SourceError};
+use markdown_root::MarkdownRoot;
 
 #[allow(dead_code)]
 pub struct ObsidianMarkdownSource {

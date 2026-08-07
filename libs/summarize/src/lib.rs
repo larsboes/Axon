@@ -825,7 +825,11 @@ mod tests {
     #[test]
     fn the_prompt_carries_the_rung_the_language_and_the_focus() {
         let directive = Directive::new(Depth::Standard, ["evaluation".into()]);
-        let prompt = digest_prompt("Ein deutschsprachiger Quelltext.", Shape::Sectioned, &directive);
+        let prompt = digest_prompt(
+            "Ein deutschsprachiger Quelltext.",
+            Shape::Sectioned,
+            &directive,
+        );
         assert!(prompt.contains("at most four short headings"));
         assert!(prompt.contains("Write in English"));
         assert!(prompt.contains("- evaluation"));
@@ -855,10 +859,7 @@ mod tests {
             digest(Some(&cloud), &text, &Directive::default(), false),
             Outcome::RemoteRefused
         );
-        assert_eq!(
-            diagram(Some(&cloud), &text, false),
-            Outcome::RemoteRefused
-        );
+        assert_eq!(diagram(Some(&cloud), &text, false), Outcome::RemoteRefused);
     }
 
     /// The bodies below are verbatim from oMLX on 2026-08-06: six concurrent
@@ -978,7 +979,12 @@ mod tests {
             gate: Some(std::sync::Arc::new(AlwaysBusy)),
         };
         assert_eq!(
-            digest(Some(&local), &"x".repeat(1_000), &Directive::default(), true),
+            digest(
+                Some(&local),
+                &"x".repeat(1_000),
+                &Directive::default(),
+                true
+            ),
             Outcome::CapacityAborted("another local inference request held the machine".into())
         );
     }
@@ -1004,12 +1010,22 @@ mod tests {
         // Refused for its data class before any gate question arises, which is
         // itself the ordering that matters: policy first, capacity second.
         assert_eq!(
-            digest(Some(&cloud), &"x".repeat(1_000), &Directive::default(), false),
+            digest(
+                Some(&cloud),
+                &"x".repeat(1_000),
+                &Directive::default(),
+                false
+            ),
             Outcome::RemoteRefused
         );
         // And allowed through to the network without the gate panicking.
         assert!(matches!(
-            digest(Some(&cloud), &"x".repeat(1_000), &Directive::default(), true),
+            digest(
+                Some(&cloud),
+                &"x".repeat(1_000),
+                &Directive::default(),
+                true
+            ),
             Outcome::HttpError(_) | Outcome::Timeout | Outcome::ModelError(_)
         ));
     }
@@ -1047,7 +1063,12 @@ mod tests {
         };
         // Fails at the socket, which is the point: the release must happen on
         // the error path too, not only on a clean answer.
-        let _ = digest(Some(&target), &"x".repeat(1_000), &Directive::default(), true);
+        let _ = digest(
+            Some(&target),
+            &"x".repeat(1_000),
+            &Directive::default(),
+            true,
+        );
         assert_eq!(counting.taken.load(Ordering::SeqCst), 1);
         assert_eq!(counting.given_back.load(Ordering::SeqCst), 1);
     }
@@ -1091,7 +1112,10 @@ mod tests {
         for shape in [Shape::Brief, Shape::Standard, Shape::Sectioned] {
             assert!(fits_context(INPUT_CAP, shape, 32_000), "{shape:?}");
         }
-        assert!(!fits_context(1, Shape::Brief, 0), "a zero window fits nothing");
+        assert!(
+            !fits_context(1, Shape::Brief, 0),
+            "a zero window fits nothing"
+        );
     }
 
     #[test]
@@ -1116,10 +1140,7 @@ mod tests {
     #[test]
     fn a_fenced_diagram_is_unwrapped() {
         let answer = "Here you go:\n```mermaid\nflowchart TD\n  A --> B\n```\nHope that helps.";
-        assert_eq!(
-            extract_mermaid(answer).unwrap(),
-            "flowchart TD\n  A --> B"
-        );
+        assert_eq!(extract_mermaid(answer).unwrap(), "flowchart TD\n  A --> B");
     }
 
     #[test]

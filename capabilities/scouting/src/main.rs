@@ -10,7 +10,9 @@ use scouting::event_route::classify_ranked;
 use scouting::merge::{merge, MergedEntry};
 use scouting::opportunity::Opportunity;
 use scouting::pipeline::{backlog_from_store, fetch_json, run};
-use scouting::score::{load_opp_embeddings, load_telos_profiles, score, ScoredOpportunity, TelosProfile};
+use scouting::score::{
+    load_opp_embeddings, load_telos_profiles, score, ScoredOpportunity, TelosProfile,
+};
 use scouting::source::{SearchQuery, SourceAdapter};
 use scouting::sources::{print_sources, SourceFactoryError, SourceManifest};
 use scouting::store::Store;
@@ -23,7 +25,10 @@ fn set_status_and_exit(database_url: &str, id: &str, status: &str) -> ! {
     let store = match Store::open(database_url) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("error: could not open store at {}: {e}", redact_database_url(database_url));
+            eprintln!(
+                "error: could not open store at {}: {e}",
+                redact_database_url(database_url)
+            );
             std::process::exit(1);
         }
     };
@@ -158,7 +163,10 @@ fn build_api_adapter(name: &str, no_store: bool) -> Option<Box<dyn SourceAdapter
         "cfp" | "cfp_conferences" => Box::new(CfpConferencesAdapter::new()),
         "transit_fare" => {
             let tcfg = transit::config::Config::load();
-            let (from_eva, to_eva) = match (tcfg.default_from_eva.clone(), tcfg.default_to_eva.clone()) {
+            let (from_eva, to_eva) = match (
+                tcfg.default_from_eva.clone(),
+                tcfg.default_to_eva.clone(),
+            ) {
                 (Some(f), Some(t)) => (f, t),
                 _ => {
                     eprintln!(
@@ -212,7 +220,14 @@ fn run_adapter(
     if show_backlog {
         match &store {
             Some(st) => {
-                println!("Axon Scouting — stored backlog{}\n", if include_dismissed { " (including dismissed)" } else { "" });
+                println!(
+                    "Axon Scouting — stored backlog{}\n",
+                    if include_dismissed {
+                        " (including dismissed)"
+                    } else {
+                        ""
+                    }
+                );
                 let rows = backlog_from_store(st, limit, include_dismissed)?;
                 if rows.is_empty() {
                     println!("  store is empty");
@@ -241,7 +256,10 @@ fn run_adapter(
                     }
                 }
             }
-            None => eprintln!("  could not open store at {}", redact_database_url(database_url)),
+            None => eprintln!(
+                "  could not open store at {}",
+                redact_database_url(database_url)
+            ),
         }
         // Return an empty report — we already printed everything.
         return Ok(scouting::pipeline::PipelineReport {
@@ -264,7 +282,10 @@ fn run_adapter(
     if let Ok(ref _report) = result {
         if let Some(st) = store.as_ref() {
             if let Err(e) = st.record_run(adapter.name(), None) {
-                eprintln!("warning: failed to record run for '{}': {e}", adapter.name());
+                eprintln!(
+                    "warning: failed to record run for '{}': {e}",
+                    adapter.name()
+                );
             }
         }
     }
@@ -286,7 +307,10 @@ fn run_merged_sources(
     include_dismissed: bool,
     limit: usize,
 ) {
-    println!("Axon Scouting — opportunity discovery (merged, {} sources)\n", enabled_sources.len());
+    println!(
+        "Axon Scouting — opportunity discovery (merged, {} sources)\n",
+        enabled_sources.len()
+    );
 
     let mut per_source: Vec<(String, Vec<ScoredOpportunity>)> = Vec::new();
     let mut new_count = 0;
@@ -303,7 +327,17 @@ fn run_merged_sources(
         };
 
         println!("  source     : {} ({})", manifest.id, manifest.adapter);
-        match run_adapter(&*adapter, query, cfg, opp_emb_path, database_url, no_store, false, include_dismissed, limit) {
+        match run_adapter(
+            &*adapter,
+            query,
+            cfg,
+            opp_emb_path,
+            database_url,
+            no_store,
+            false,
+            include_dismissed,
+            limit,
+        ) {
             Ok(report) => {
                 new_count += report.new_count;
                 vault_links += report.vault_links;
@@ -324,12 +358,32 @@ fn run_merged_sources(
 // Display helpers
 // ---------------------------------------------------------------------------
 
-fn print_run_header(adapter: &dyn SourceAdapter, cfg: &Config, opp_emb_path: &Option<String>, database_url: &str) {
-    println!("  adapter    : {} ({})", adapter.name(), adapter.opportunity_type().as_str());
-    println!("  interests  : {} profiles from {}", 
-        scouting::score::load_telos_profiles(&cfg.interest_profile_dir.to_string_lossy(), &cfg.sources).len(),
-        cfg.interest_profile_dir.display());
-    if let Some(ref emb) = opp_emb_path.as_ref().and_then(|p| scouting::score::load_opp_embeddings(p).into_iter().next().and_then(|_| Some(p.clone()))) {
+fn print_run_header(
+    adapter: &dyn SourceAdapter,
+    cfg: &Config,
+    opp_emb_path: &Option<String>,
+    database_url: &str,
+) {
+    println!(
+        "  adapter    : {} ({})",
+        adapter.name(),
+        adapter.opportunity_type().as_str()
+    );
+    println!(
+        "  interests  : {} profiles from {}",
+        scouting::score::load_telos_profiles(
+            &cfg.interest_profile_dir.to_string_lossy(),
+            &cfg.sources
+        )
+        .len(),
+        cfg.interest_profile_dir.display()
+    );
+    if let Some(ref emb) = opp_emb_path.as_ref().and_then(|p| {
+        scouting::score::load_opp_embeddings(p)
+            .into_iter()
+            .next()
+            .and_then(|_| Some(p.clone()))
+    }) {
         println!("  embeddings : pre-computed e5 vectors from {}", emb);
     } else if let Some(role) = scouting::embed::embedding_role() {
         // Reports what will actually run, not just whether a file was passed.
@@ -339,7 +393,11 @@ fn print_run_header(adapter: &dyn SourceAdapter, cfg: &Config, opp_emb_path: &Op
         // "configured", not "live": this line prints before any request is
         // made, so it cannot know whether the backend answers. The per-entry
         // rationale carries what actually produced each vector.
-        println!("  embeddings : konfiguriert {} ({})", role.cache_key(), role.backend.base_url);
+        println!(
+            "  embeddings : konfiguriert {} ({})",
+            role.cache_key(),
+            role.backend.base_url
+        );
     } else {
         println!("  embeddings : none (hash-fallback -- no 'embedding' role for this machine)");
     }
@@ -355,13 +413,17 @@ fn print_run_header(adapter: &dyn SourceAdapter, cfg: &Config, opp_emb_path: &Op
 fn print_help() {
     println!("Axon Scouting — opportunity discovery\n");
     println!("usage: scout [flags]\n");
-    println!("  --adapter <name>         run one source (registry id from --list-sources, or built-in:");
+    println!(
+        "  --adapter <name>         run one source (registry id from --list-sources, or built-in:"
+    );
     println!("                           luma, meetup, cfp, transit_fare, euro_hackathons)");
     println!("  --query <text>           search query text");
     println!("  --location <loc>         location filter");
     println!("  --date-from <date>       earliest start date");
     println!("  --limit <n>              max results per source (default 20)");
-    println!("  --no-merge               with multiple configured sources: print per-source blocks");
+    println!(
+        "  --no-merge               with multiple configured sources: print per-source blocks"
+    );
     println!("                           instead of the default merged cross-source ranking");
     println!("  --emit-json              print raw opportunities as JSON, no scoring");
     println!("  --opp-embeddings <path>  pre-computed opportunity embedding vectors");
@@ -405,10 +467,23 @@ fn resolve_home_timezone(
 /// Merged variant of `print_results`: one cross-source ranked list, scores
 /// normalized per source (see merge.rs for the method), source ids shown per
 /// entry. Raw cosine stays visible inside each rationale line.
-fn print_merged(entries: &[MergedEntry], store: Option<&Store>, new_count: usize, vault_links: usize, store_total: i64) {
+fn print_merged(
+    entries: &[MergedEntry],
+    store: Option<&Store>,
+    new_count: usize,
+    vault_links: usize,
+    store_total: i64,
+) {
     let visible: Vec<_> = match store {
-        Some(st) => entries.iter()
-            .filter(|m| st.get_status(&m.scored.opportunity.id).ok().flatten().as_deref() != Some("dismissed"))
+        Some(st) => entries
+            .iter()
+            .filter(|m| {
+                st.get_status(&m.scored.opportunity.id)
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    != Some("dismissed")
+            })
             .collect(),
         None => entries.iter().collect(),
     };
@@ -425,26 +500,50 @@ fn print_merged(entries: &[MergedEntry], store: Option<&Store>, new_count: usize
         return;
     }
 
-    println!("  merged ranked backlog ({} entries, {} new, {} vault links, {} in store):\n",
-        visible.len(), new_count, vault_links, store_total);
+    println!(
+        "  merged ranked backlog ({} entries, {} new, {} vault links, {} in store):\n",
+        visible.len(),
+        new_count,
+        vault_links,
+        store_total
+    );
 
     for (i, m) in visible.iter().enumerate() {
         let s = &m.scored;
         let focus = s.matched_focus.as_deref().unwrap_or("none");
         let dates = s.opportunity.starts_at.as_deref().unwrap_or("TBD");
         let loc = s.opportunity.city.as_deref().unwrap_or("Unknown");
-        println!("  {}. [{:.3}] {}", i + 1, m.normalized_score, s.opportunity.title);
-        println!("     {} · {} · focus: {} · sources: {}", dates, loc, focus, m.sources.join(", "));
+        println!(
+            "  {}. [{:.3}] {}",
+            i + 1,
+            m.normalized_score,
+            s.opportunity.title
+        );
+        println!(
+            "     {} · {} · focus: {} · sources: {}",
+            dates,
+            loc,
+            focus,
+            m.sources.join(", ")
+        );
         println!("     {}", s.rationale);
         println!("     {}", s.opportunity.url);
         println!();
     }
 }
 
-fn print_results(report: &scouting::pipeline::PipelineReport, store: Option<&Store>, _include_dismissed: bool) {
+fn print_results(
+    report: &scouting::pipeline::PipelineReport,
+    store: Option<&Store>,
+    _include_dismissed: bool,
+) {
     let visible: Vec<_> = match store {
-        Some(st) => report.scored.iter()
-            .filter(|s| st.get_status(&s.opportunity.id).ok().flatten().as_deref() != Some("dismissed"))
+        Some(st) => report
+            .scored
+            .iter()
+            .filter(|s| {
+                st.get_status(&s.opportunity.id).ok().flatten().as_deref() != Some("dismissed")
+            })
             .collect(),
         None => report.scored.iter().collect(),
     };
@@ -461,8 +560,13 @@ fn print_results(report: &scouting::pipeline::PipelineReport, store: Option<&Sto
         return;
     }
 
-    println!("  ranked backlog ({} entries, {} new, {} vault links, {} in store):\n",
-        visible.len(), report.new_count, report.vault_links, report.store_total);
+    println!(
+        "  ranked backlog ({} entries, {} new, {} vault links, {} in store):\n",
+        visible.len(),
+        report.new_count,
+        report.vault_links,
+        report.store_total
+    );
 
     for (i, s) in visible.iter().enumerate() {
         let focus = s.matched_focus.as_deref().unwrap_or("none");
@@ -488,43 +592,73 @@ fn main() {
     }
 
     let cfg = Config::load();
-    let limit: usize = args.iter().position(|a| a == "--limit")
+    let limit: usize = args
+        .iter()
+        .position(|a| a == "--limit")
         .and_then(|i| args.get(i + 1)?.parse().ok())
         .unwrap_or(20);
-    let loc = args.iter().position(|a| a == "--location")
+    let loc = args
+        .iter()
+        .position(|a| a == "--location")
         .and_then(|i| args.get(i + 1).cloned());
     let emit_json = args.iter().any(|a| a == "--emit-json");
-    let opp_emb_path = args.iter().position(|a| a == "--opp-embeddings")
+    let opp_emb_path = args
+        .iter()
+        .position(|a| a == "--opp-embeddings")
         .and_then(|i| args.get(i + 1).cloned())
-        .or_else(|| cfg.opp_embeddings_path.as_ref().map(|p| p.to_string_lossy().into_owned()));
-    let database_url = args.iter().position(|a| a == "--database-url")
+        .or_else(|| {
+            cfg.opp_embeddings_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+        });
+    let database_url = args
+        .iter()
+        .position(|a| a == "--database-url")
         .and_then(|i| args.get(i + 1).cloned())
         .unwrap_or_else(|| cfg.database_url.clone());
     let no_store = args.iter().any(|a| a == "--no-store");
     let show_backlog = args.iter().any(|a| a == "--backlog");
     let list_sources = args.iter().any(|a| a == "--list-sources");
-    let from_file = args.iter().position(|a| a == "--from-file")
+    let from_file = args
+        .iter()
+        .position(|a| a == "--from-file")
         .and_then(|i| args.get(i + 1).cloned());
-    let query_text = args.iter().position(|a| a == "--query")
+    let query_text = args
+        .iter()
+        .position(|a| a == "--query")
         .and_then(|i| args.get(i + 1).cloned())
         .unwrap_or_default();
-    let date_from = args.iter().position(|a| a == "--date-from")
+    let date_from = args
+        .iter()
+        .position(|a| a == "--date-from")
         .and_then(|i| args.get(i + 1).cloned());
-    let adapter_name = args.iter().position(|a| a == "--adapter")
+    let adapter_name = args
+        .iter()
+        .position(|a| a == "--adapter")
         .and_then(|i| args.get(i + 1).cloned());
     let include_dismissed = args.iter().any(|a| a == "--include-dismissed");
     let no_merge = args.iter().any(|a| a == "--no-merge");
-    let dismiss_id = args.iter().position(|a| a == "--dismiss")
+    let dismiss_id = args
+        .iter()
+        .position(|a| a == "--dismiss")
         .and_then(|i| args.get(i + 1).cloned());
-    let save_id = args.iter().position(|a| a == "--save")
+    let save_id = args
+        .iter()
+        .position(|a| a == "--save")
         .and_then(|i| args.get(i + 1).cloned());
-    let luma_calendar = args.iter().position(|a| a == "--luma-calendar")
+    let luma_calendar = args
+        .iter()
+        .position(|a| a == "--luma-calendar")
         .and_then(|i| args.get(i + 1).cloned());
     let promote_calendar = args.iter().any(|a| a == "--promote-calendar");
     let dry_run = args.iter().any(|a| a == "--dry-run");
-    let timezone_flag = args.iter().position(|a| a == "--timezone")
+    let timezone_flag = args
+        .iter()
+        .position(|a| a == "--timezone")
         .and_then(|i| args.get(i + 1).cloned());
-    let calendar_url = args.iter().position(|a| a == "--calendar-url")
+    let calendar_url = args
+        .iter()
+        .position(|a| a == "--calendar-url")
         .and_then(|i| args.get(i + 1).cloned())
         .unwrap_or_else(|| cfg.calendar_base_url.clone());
 
@@ -553,7 +687,14 @@ fn main() {
             }
         };
         println!("Axon Scouting — promote saved luma events into calendar\n");
-        match scouting::calendar_promote::promote_saved_luma(&store, &calendar_url, &tz, limit.max(100), dry_run, cfg.geo.as_ref()) {
+        match scouting::calendar_promote::promote_saved_luma(
+            &store,
+            &calendar_url,
+            &tz,
+            limit.max(100),
+            dry_run,
+            cfg.geo.as_ref(),
+        ) {
             Ok(report) => {
                 scouting::calendar_promote::print_report(&report, &calendar_url, &tz);
                 if !report.skipped.is_empty() {
@@ -615,7 +756,10 @@ fn main() {
         };
         if emit_json {
             match fetch_json(&adapter, &query) {
-                Ok(opps) => println!("{}", serde_json::to_string_pretty(&opps).unwrap_or_default()),
+                Ok(opps) => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&opps).unwrap_or_default()
+                ),
                 Err(e) => {
                     eprintln!("fetch error: {e}");
                     std::process::exit(1);
@@ -627,7 +771,17 @@ fn main() {
         println!("Axon Scouting — opportunity discovery\n");
         print_run_header(&adapter, &cfg, &opp_emb_path, &database_url);
 
-        match run_adapter(&adapter, &query, &cfg, &opp_emb_path, &database_url, no_store, show_backlog, include_dismissed, limit) {
+        match run_adapter(
+            &adapter,
+            &query,
+            &cfg,
+            &opp_emb_path,
+            &database_url,
+            no_store,
+            show_backlog,
+            include_dismissed,
+            limit,
+        ) {
             Ok(report) => {
                 let store = Store::open(&database_url).ok();
                 print_results(&report, store.as_ref(), include_dismissed);
@@ -669,7 +823,10 @@ fn main() {
 
         if emit_json {
             match fetch_json(&*adapter, &query) {
-                Ok(opps) => println!("{}", serde_json::to_string_pretty(&opps).unwrap_or_default()),
+                Ok(opps) => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&opps).unwrap_or_default()
+                ),
                 Err(e) => {
                     eprintln!("fetch error: {e}");
                     std::process::exit(1);
@@ -681,7 +838,17 @@ fn main() {
         println!("Axon Scouting — opportunity discovery\n");
         print_run_header(&*adapter, &cfg, &opp_emb_path, &database_url);
 
-        match run_adapter(&*adapter, &query, &cfg, &opp_emb_path, &database_url, no_store, show_backlog, include_dismissed, limit) {
+        match run_adapter(
+            &*adapter,
+            &query,
+            &cfg,
+            &opp_emb_path,
+            &database_url,
+            no_store,
+            show_backlog,
+            include_dismissed,
+            limit,
+        ) {
             Ok(report) => {
                 let store = Store::open(&database_url).ok();
                 print_results(&report, store.as_ref(), include_dismissed);
@@ -699,8 +866,14 @@ fn main() {
     // --emit-json and --backlog keep their existing per-source semantics.
     if !no_merge && enabled_sources.len() > 1 && !emit_json && !show_backlog {
         run_merged_sources(
-            &enabled_sources, &query, &cfg, &opp_emb_path, &database_url,
-            no_store, include_dismissed, limit,
+            &enabled_sources,
+            &query,
+            &cfg,
+            &opp_emb_path,
+            &database_url,
+            no_store,
+            include_dismissed,
+            limit,
         );
         return;
     }
@@ -719,7 +892,10 @@ fn main() {
 
         if emit_json {
             match fetch_json(&*adapter, &query) {
-                Ok(opps) => println!("{}", serde_json::to_string_pretty(&opps).unwrap_or_default()),
+                Ok(opps) => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&opps).unwrap_or_default()
+                ),
                 Err(_e) => eprintln!("fetch error ({})", manifest.id),
             }
             continue;
@@ -733,7 +909,17 @@ fn main() {
         println!("  ── source: {} ({}) ──", manifest.id, manifest.adapter);
         print_run_header(&*adapter, &cfg, &opp_emb_path, &database_url);
 
-        match run_adapter(&*adapter, &query, &cfg, &opp_emb_path, &database_url, no_store, show_backlog, include_dismissed, limit) {
+        match run_adapter(
+            &*adapter,
+            &query,
+            &cfg,
+            &opp_emb_path,
+            &database_url,
+            no_store,
+            show_backlog,
+            include_dismissed,
+            limit,
+        ) {
             Ok(report) => {
                 let store = Store::open(&database_url).ok();
                 print_results(&report, store.as_ref(), include_dismissed);
@@ -754,7 +940,10 @@ fn main() {
 
         if emit_json {
             match fetch_json(&*adapter, &query) {
-                Ok(opps) => println!("{}", serde_json::to_string_pretty(&opps).unwrap_or_default()),
+                Ok(opps) => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&opps).unwrap_or_default()
+                ),
                 Err(e) => eprintln!("fetch error: {e}"),
             }
             return;
@@ -763,7 +952,17 @@ fn main() {
         println!("Axon Scouting — opportunity discovery\n");
         print_run_header(&*adapter, &cfg, &opp_emb_path, &database_url);
 
-        match run_adapter(&*adapter, &query, &cfg, &opp_emb_path, &database_url, no_store, show_backlog, include_dismissed, limit) {
+        match run_adapter(
+            &*adapter,
+            &query,
+            &cfg,
+            &opp_emb_path,
+            &database_url,
+            no_store,
+            show_backlog,
+            include_dismissed,
+            limit,
+        ) {
             Ok(report) => {
                 let store = Store::open(&database_url).ok();
                 print_results(&report, store.as_ref(), include_dismissed);
@@ -787,7 +986,8 @@ fn run_from_file(
     database_url: &str,
     no_store: &bool,
 ) {
-    let telos: Vec<TelosProfile> = load_telos_profiles(&cfg.interest_profile_dir.to_string_lossy(), &cfg.sources);
+    let telos: Vec<TelosProfile> =
+        load_telos_profiles(&cfg.interest_profile_dir.to_string_lossy(), &cfg.sources);
     let events_dir = cfg.events_dir.as_deref();
 
     let body = std::fs::read_to_string(path).unwrap_or_else(|e| {
@@ -800,11 +1000,19 @@ fn run_from_file(
     });
 
     let opp_embeddings = opp_emb_path.as_ref().map(|p| load_opp_embeddings(p));
-    let mut store: Option<Store> = if *no_store { None } else { Store::open(database_url).ok() };
+    let mut store: Option<Store> = if *no_store {
+        None
+    } else {
+        Store::open(database_url).ok()
+    };
 
     println!("Axon Scouting — past-event retro calibration (deprecated --from-file)\n");
     println!("  source     : {path} ({} opportunities)", opps.len());
-    println!("  interests  : {} profiles from {}", telos.len(), cfg.interest_profile_dir.display());
+    println!(
+        "  interests  : {} profiles from {}",
+        telos.len(),
+        cfg.interest_profile_dir.display()
+    );
     if let Some(ref emb) = opp_embeddings {
         println!("  embeddings : {} pre-computed e5 vectors", emb.len());
     }
@@ -812,7 +1020,10 @@ fn run_from_file(
         println!("  store      : {}", redact_database_url(database_url));
     }
     if events_dir.is_some() {
-        println!("  event link : {} (annotate-only)", events_dir.unwrap().display());
+        println!(
+            "  event link : {} (annotate-only)",
+            events_dir.unwrap().display()
+        );
     }
     println!();
 
@@ -821,43 +1032,68 @@ fn run_from_file(
     let mut vault_links = 0;
 
     for s in &mut scored {
-        let vault_link = events_dir.and_then(|dir| vault_linker::link_to_vault(&s.opportunity, dir));
+        let vault_link =
+            events_dir.and_then(|dir| vault_linker::link_to_vault(&s.opportunity, dir));
         if let Some(ref vl) = vault_link {
             vault_links += 1;
             s.rationale = format!("{}\n     vault link: {vl}", s.rationale);
         }
         if let Some(st) = store.as_mut() {
-            let is_new = st.upsert(
-                &s.opportunity,
-                s.score,
-                s.matched_focus.as_deref(),
-                &s.rationale,
-                vault_link.as_deref(),
-            ).unwrap_or(false);
-            if is_new { new_count += 1; }
+            let is_new = st
+                .upsert(
+                    &s.opportunity,
+                    s.score,
+                    s.matched_focus.as_deref(),
+                    &s.rationale,
+                    vault_link.as_deref(),
+                )
+                .unwrap_or(false);
+            if is_new {
+                new_count += 1;
+            }
         }
     }
 
-    let store_total = match &store { Some(st) => st.count().unwrap_or(0), None => 0 };
+    let store_total = match &store {
+        Some(st) => st.count().unwrap_or(0),
+        None => 0,
+    };
     let show_limit = (*limit).min(scored.len());
 
-    println!("  ranked backlog ({} of {} scored, {} new, {} vault links, {} in store):\n",
-        show_limit, scored.len(), new_count, vault_links, store_total);
+    println!(
+        "  ranked backlog ({} of {} scored, {} new, {} vault links, {} in store):\n",
+        show_limit,
+        scored.len(),
+        new_count,
+        vault_links,
+        store_total
+    );
 
     for (i, s) in scored.iter().take(show_limit).enumerate() {
         let focus = s.matched_focus.as_deref().unwrap_or("none");
         let dates = s.opportunity.starts_at.as_deref().unwrap_or("TBD");
         let loc = s.opportunity.city.as_deref().unwrap_or("Unknown");
-        let raw_cat = s.opportunity.raw.get("category").and_then(|v| v.as_str()).unwrap_or("");
+        let raw_cat = s
+            .opportunity
+            .raw
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         println!("  {}. [{:.3}] {}", i + 1, s.score, s.opportunity.title);
-        println!("     {} · {} · focus: {} · category: {}", dates, loc, focus, raw_cat);
+        println!(
+            "     {} · {} · focus: {} · category: {}",
+            dates, loc, focus, raw_cat
+        );
         println!("     {}", s.rationale);
         println!("     {}", s.opportunity.url);
         println!();
     }
 
     if scored.len() > show_limit {
-        println!("  ... {} more (raise --limit to see all)", scored.len() - show_limit);
+        println!(
+            "  ... {} more (raise --limit to see all)",
+            scored.len() - show_limit
+        );
     }
 }
 
@@ -966,14 +1202,23 @@ mod tests {
     #[test]
     fn the_unknown_adapter_error_names_both_halves_of_what_it_could_have_been() {
         let message = unknown_adapter_error("meetupp", &one_enabled_and_one_disabled());
-        assert!(message.contains("meetupp"), "the error quotes what was typed");
-        assert!(message.contains("events-radar"), "and lists declared sources");
+        assert!(
+            message.contains("meetupp"),
+            "the error quotes what was typed"
+        );
+        assert!(
+            message.contains("events-radar"),
+            "and lists declared sources"
+        );
         assert!(
             message.contains("old-radar (disabled)"),
             "a disabled source is named as disabled, not omitted -- omitting it reads as \
              'not configured' and sends the operator to write an entry that already exists"
         );
-        assert!(message.contains("euro_hackathons"), "and lists the built-ins");
+        assert!(
+            message.contains("euro_hackathons"),
+            "and lists the built-ins"
+        );
     }
 
     #[test]

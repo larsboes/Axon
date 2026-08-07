@@ -321,7 +321,11 @@ mod tests {
         once_per_target(&url("db-a"), "same", bump).unwrap();
         once_per_target(&url("db-b"), "same", bump).unwrap();
 
-        assert_eq!(runs.get(), 2, "the same schema in two databases is two targets");
+        assert_eq!(
+            runs.get(),
+            2,
+            "the same schema in two databases is two targets"
+        );
     }
 
     /// The separator matters: without it ("…/ab", "c") and ("…/a", "bc") collide,

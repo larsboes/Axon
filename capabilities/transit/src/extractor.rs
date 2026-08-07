@@ -58,8 +58,10 @@ static TRAIN_RE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     ]
 });
 
-static DATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{2})\.(\d{2})\.(\d{4})").unwrap());
-static ISO_DATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4})-(\d{2})-(\d{2})").unwrap());
+static DATE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\d{2})\.(\d{2})\.(\d{4})").unwrap());
+static ISO_DATE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\d{4})-(\d{2})-(\d{2})").unwrap());
 static TIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{2}):(\d{2})").unwrap());
 
 static CONFIRMATION_RE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -73,12 +75,10 @@ static CONFIRMATION_RE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 static VON_NACH_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:von|from|ab)\s+([A-Za-zÄÖÜäöüß\s.\-()]+?)\s+(?:nach|to|an|um)\s+([A-Za-zÄÖÜäöüß\s.\-()]+?)(?:\s+(?:am|um|ab|\d)|$)").unwrap()
 });
-static FROM_TO_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:From|Ab|Start|Origin)\s*:\s*(.+)$").unwrap()
-});
-static TO_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:To|Nach|End|Destination)\s*:\s*(.+)$").unwrap()
-});
+static FROM_TO_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:From|Ab|Start|Origin)\s*:\s*(.+)$").unwrap());
+static TO_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:To|Nach|End|Destination)\s*:\s*(.+)$").unwrap());
 
 static PRICE_RE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
@@ -101,7 +101,10 @@ pub fn extract_from_bytes(bytes: &[u8], file_name: &str) -> Result<ExtractedTick
         "eml" => extract_email_text(bytes).map_err(|e| format!("Email extraction failed: {e}"))?,
         "txt" | "text" | "html" | "htm" => String::from_utf8_lossy(bytes).to_string(),
         "png" | "jpg" | "jpeg" | "gif" | "webp" => {
-            return Err("Image files require OCR - not yet supported. Convert to PDF or text first.".to_string());
+            return Err(
+                "Image files require OCR - not yet supported. Convert to PDF or text first."
+                    .to_string(),
+            );
         }
         _ => String::from_utf8_lossy(bytes).to_string(),
     };
@@ -116,11 +119,17 @@ fn extract_pdf_text(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error + 
 
 fn extract_email_text(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let parsed = mailparse::parse_mail(bytes)?;
-    let ct = parsed.headers.iter()
+    let ct = parsed
+        .headers
+        .iter()
         .find(|h| h.get_key().eq_ignore_ascii_case("content-type"))
         .and_then(|h| {
             let val = h.get_value();
-            if val.is_empty() { None } else { Some(val) }
+            if val.is_empty() {
+                None
+            } else {
+                Some(val)
+            }
         });
 
     let is_html = ct.as_deref().map_or(false, |v| v.contains("text/html"));
@@ -132,11 +141,15 @@ fn extract_email_text(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error 
         parsed.get_body()?
     };
 
-    let subject = parsed.headers.iter()
+    let subject = parsed
+        .headers
+        .iter()
         .find(|h| h.get_key().eq_ignore_ascii_case("subject"))
         .map(|h| h.get_value());
 
-    let from = parsed.headers.iter()
+    let from = parsed
+        .headers
+        .iter()
         .find(|h| h.get_key().eq_ignore_ascii_case("from"))
         .map(|h| h.get_value());
 
@@ -164,19 +177,23 @@ fn parse_ticket_text(text: &str, file_name: &str) -> ExtractedTicket {
     let confirmation = parse_confirmation(text);
     let price = parse_price(text);
 
-    let legs = if !trains.is_empty() && stations.origin.is_some() && stations.destination.is_some() {
+    let legs = if !trains.is_empty() && stations.origin.is_some() && stations.destination.is_some()
+    {
         let default_time = format!("{}T00:00:00", chrono_now_date());
         let dep = departure.as_deref().unwrap_or(&default_time).to_string();
         let arr = arrival.as_deref().unwrap_or(&dep).to_string();
 
-        trains.iter().map(|train| ExtractedLeg {
-            origin_name: stations.origin.clone().unwrap_or_default(),
-            destination_name: stations.destination.clone().unwrap_or_default(),
-            train_number: Some(train.clone()),
-            departure_time: dep.clone(),
-            arrival_time: arr.clone(),
-            price,
-        }).collect()
+        trains
+            .iter()
+            .map(|train| ExtractedLeg {
+                origin_name: stations.origin.clone().unwrap_or_default(),
+                destination_name: stations.destination.clone().unwrap_or_default(),
+                train_number: Some(train.clone()),
+                departure_time: dep.clone(),
+                arrival_time: arr.clone(),
+                price,
+            })
+            .collect()
     } else {
         vec![]
     };
@@ -238,24 +255,33 @@ fn parse_stations(text: &str) -> StationPair {
         }
     }
 
-    StationPair { origin, destination }
+    StationPair {
+        origin,
+        destination,
+    }
 }
 
 fn parse_date_time(text: &str) -> (Option<String>, Option<String>) {
-    let dates: Vec<String> = DATE_RE.captures_iter(text)
+    let dates: Vec<String> = DATE_RE
+        .captures_iter(text)
         .map(|c| format!("{}-{}-{}", &c[3], &c[2], &c[1]))
         .chain(
-            ISO_DATE_RE.captures_iter(text)
-                .map(|c| format!("{}-{}-{}", &c[1], &c[2], &c[3]))
+            ISO_DATE_RE
+                .captures_iter(text)
+                .map(|c| format!("{}-{}-{}", &c[1], &c[2], &c[3])),
         )
         .collect();
 
-    let times: Vec<String> = TIME_RE.captures_iter(text)
+    let times: Vec<String> = TIME_RE
+        .captures_iter(text)
         .map(|c| format!("{}:{}", &c[1], &c[2]))
         .collect();
 
     let departure = dates.first().map(|d| {
-        let t = times.first().map(|t| format!("T{t}:00")).unwrap_or_else(|| "T00:00:00".into());
+        let t = times
+            .first()
+            .map(|t| format!("T{t}:00"))
+            .unwrap_or_else(|| "T00:00:00".into());
         format!("{d}{t}")
     });
 

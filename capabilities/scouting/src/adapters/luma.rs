@@ -212,7 +212,11 @@ impl LumaAdapter {
         known.sort_unstable();
         Err(SourceError::Fetch(format!(
             "'{city}' is not a Luma discover place. Known places: {}",
-            if known.is_empty() { "(bootstrap unavailable)".to_string() } else { known.join(", ") }
+            if known.is_empty() {
+                "(bootstrap unavailable)".to_string()
+            } else {
+                known.join(", ")
+            }
         )))
     }
 
@@ -232,7 +236,12 @@ impl LumaAdapter {
 
     /// Pages through one list endpoint. Both scopes share this: the response
     /// envelope (`entries`/`has_more`/`next_cursor`) is identical.
-    fn fetch_paginated(&self, base_url: &str, cache_key: &str, limit: usize) -> Result<Vec<EventInfo>, SourceError> {
+    fn fetch_paginated(
+        &self,
+        base_url: &str,
+        cache_key: &str,
+        limit: usize,
+    ) -> Result<Vec<EventInfo>, SourceError> {
         if let Some(ref dir) = self.cache_dir {
             let path = dir.join(format!("luma_{cache_key}.json"));
             if path.exists() {
@@ -289,7 +298,10 @@ impl LumaAdapter {
         let opportunity_id = format!("evt:luma:{}", ev.api_id);
         let (city, country) = match ev.geo_address_info {
             Some(ref geo) => (
-                geo.city.clone().filter(|c| !c.is_empty()).or_else(|| non_empty(fallback_city)),
+                geo.city
+                    .clone()
+                    .filter(|c| !c.is_empty())
+                    .or_else(|| non_empty(fallback_city)),
                 geo.country.clone(),
             ),
             None => (non_empty(fallback_city), None),
@@ -300,7 +312,10 @@ impl LumaAdapter {
             .and_then(|geo| geo.address.clone())
             .filter(|a| !a.is_empty())
             .or_else(|| city.clone());
-        let coordinate = ev.geo_address_info.as_ref().and_then(|geo| geo.place_coordinate.as_ref());
+        let coordinate = ev
+            .geo_address_info
+            .as_ref()
+            .and_then(|geo| geo.place_coordinate.as_ref());
         let (latitude, longitude) = match coordinate {
             // Half a pair is not a location. Luma has not been seen sending
             // one, but taking only the complete pair means a consumer never
@@ -391,7 +406,9 @@ impl SourceAdapter for LumaAdapter {
                 let city = query.location.as_deref().unwrap_or("berlin");
                 let city_id = self.resolve_city_id(city)?;
                 (
-                    format!("{API_BASE}/discover/get-paginated-events?discover_place_api_id={city_id}"),
+                    format!(
+                        "{API_BASE}/discover/get-paginated-events?discover_place_api_id={city_id}"
+                    ),
                     city_id,
                     city.to_string(),
                 )
@@ -492,7 +509,11 @@ mod tests {
     fn keeps_the_coordinate_when_luma_sends_one() {
         let adapter = LumaAdapter::for_calendar("cal-TOpA5LAFfuDeFpu").unwrap();
         let events = LumaAdapter::parse_events_response(LIVE_ENTRY_WITH_COORDINATE).unwrap();
-        let opp = adapter.normalize(events.into_iter().next().unwrap(), "", "2026-08-01T00:00:00Z");
+        let opp = adapter.normalize(
+            events.into_iter().next().unwrap(),
+            "",
+            "2026-08-01T00:00:00Z",
+        );
         assert_eq!(opp.latitude, Some(33.0247756));
         assert_eq!(opp.longitude, Some(-117.0774447));
     }
@@ -501,8 +522,16 @@ mod tests {
     fn an_event_without_a_coordinate_stays_unlocated() {
         let adapter = LumaAdapter::for_calendar("cal-TOpA5LAFfuDeFpu").unwrap();
         let events = LumaAdapter::parse_events_response(LIVE_ENTRY).unwrap();
-        let opp = adapter.normalize(events.into_iter().next().unwrap(), "", "2026-08-01T00:00:00Z");
-        assert_eq!(opp.city.as_deref(), Some("Berlin"), "the address half still parses");
+        let opp = adapter.normalize(
+            events.into_iter().next().unwrap(),
+            "",
+            "2026-08-01T00:00:00Z",
+        );
+        assert_eq!(
+            opp.city.as_deref(),
+            Some("Berlin"),
+            "the address half still parses"
+        );
         assert_eq!(opp.latitude, None, "no coordinate is None, never a zero");
         assert_eq!(opp.longitude, None);
     }

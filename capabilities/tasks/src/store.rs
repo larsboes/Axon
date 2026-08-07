@@ -451,13 +451,18 @@ mod tests {
     fn one_mail_yields_exactly_one_task() {
         let (store, _schema) = open_test_store("one_per_source");
 
-        let (first, created) = store.create(&from_mail("thread-1", "Reply to the landlord")).unwrap();
+        let (first, created) = store
+            .create(&from_mail("thread-1", "Reply to the landlord"))
+            .unwrap();
         assert!(created);
 
         let (second, created_again) = store
             .create(&from_mail("thread-1", "Reply to the landlord"))
             .unwrap();
-        assert!(!created_again, "a second promote must not create a second task");
+        assert!(
+            !created_again,
+            "a second promote must not create a second task"
+        );
         assert_eq!(first.id, second.id);
         assert_eq!(store.list(None).unwrap().len(), 1);
     }
@@ -467,7 +472,9 @@ mod tests {
     #[test]
     fn a_repromote_does_not_overwrite_an_edited_title() {
         let (store, _schema) = open_test_store("repromote");
-        let (task, _) = store.create(&from_mail("thread-2", "Re: Fwd: RE: invoice??")).unwrap();
+        let (task, _) = store
+            .create(&from_mail("thread-2", "Re: Fwd: RE: invoice??"))
+            .unwrap();
         store
             .patch(
                 &task.id,
@@ -478,7 +485,9 @@ mod tests {
             )
             .unwrap();
 
-        let (again, created) = store.create(&from_mail("thread-2", "Re: Fwd: RE: invoice??")).unwrap();
+        let (again, created) = store
+            .create(&from_mail("thread-2", "Re: Fwd: RE: invoice??"))
+            .unwrap();
         assert!(!created);
         assert_eq!(again.title, "Pay the January invoice");
     }
@@ -509,7 +518,9 @@ mod tests {
     #[test]
     fn completing_stamps_a_time_and_reopening_clears_it() {
         let (store, _schema) = open_test_store("completion");
-        let (task, _) = store.create(&from_mail("thread-3", "Send the form")).unwrap();
+        let (task, _) = store
+            .create(&from_mail("thread-3", "Send the form"))
+            .unwrap();
         assert!(task.completed_at.is_none());
 
         let done = store
@@ -611,7 +622,12 @@ mod tests {
             )
             .unwrap();
 
-        let titles: Vec<String> = store.list(None).unwrap().into_iter().map(|t| t.title).collect();
+        let titles: Vec<String> = store
+            .list(None)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
         assert_eq!(titles, vec!["Sooner", "Later", "Undated"]);
         assert_eq!(store.list(Some("open")).unwrap().len(), 2);
         assert!(store.list(Some("bogus")).is_err());

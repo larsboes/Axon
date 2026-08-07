@@ -38,8 +38,16 @@ const ROUTES: &[route_manifest::Route] = &[
 ];
 
 /// Shorthand so the table above reads as a table.
-const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
-    route_manifest::Route { method, path, summary }
+const fn r(
+    method: &'static str,
+    path: &'static str,
+    summary: &'static str,
+) -> route_manifest::Route {
+    route_manifest::Route {
+        method,
+        path,
+        summary,
+    }
 }
 
 async fn routes() -> Json<Value> {
@@ -121,7 +129,10 @@ fn fail(e: impl std::fmt::Display) -> (axum::http::StatusCode, String) {
 async fn handle_health(State(state): State<AppState>) -> ApiResult {
     let store = state.store;
     let covered = tokio::task::spawn_blocking(move || {
-        store.lock().map_err(|e| e.to_string()).and_then(|mut s| s.coverage().map_err(|e| e.to_string()))
+        store
+            .lock()
+            .map_err(|e| e.to_string())
+            .and_then(|mut s| s.coverage().map_err(|e| e.to_string()))
     })
     .await
     .map_err(fail)?
@@ -188,7 +199,10 @@ async fn handle_station(State(state): State<AppState>, Query(p): Query<StationQu
         let rows = store
             .station_stats(&eva, p.train_type.as_deref(), MIN_SAMPLE)
             .map_err(|e| e.to_string())?;
-        Ok(json!(rows.into_iter().map(StopStats::from).collect::<Vec<_>>()))
+        Ok(json!(rows
+            .into_iter()
+            .map(StopStats::from)
+            .collect::<Vec<_>>()))
     })
     .await
     .map_err(fail)?
@@ -207,18 +221,23 @@ async fn main() {
     // The error is stringified inside the closure because Box<dyn Error> is not Send
     // and so cannot cross the spawn_blocking boundary.
     let url = cfg.database_url.clone();
-    let store = match tokio::task::spawn_blocking(move || Store::open(&url).map_err(|e| e.to_string())).await {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            eprintln!("punctuality-server: cannot reach the database: {e}");
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("punctuality-server: store construction panicked: {e}");
-            std::process::exit(1);
-        }
+    let store =
+        match tokio::task::spawn_blocking(move || Store::open(&url).map_err(|e| e.to_string()))
+            .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                eprintln!("punctuality-server: cannot reach the database: {e}");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("punctuality-server: store construction panicked: {e}");
+                std::process::exit(1);
+            }
+        };
+    let state = AppState {
+        store: Arc::new(Mutex::new(store)),
     };
-    let state = AppState { store: Arc::new(Mutex::new(store)) };
 
     // AXON_PORT is what service-runner.sh exports from the manifest, so the port lives
     // in one file rather than two -- resolution itself lives in axon_server.
@@ -246,8 +265,7 @@ mod route_manifest_tests {
     /// here rather than shipping a surface that lies about itself.
     #[test]
     fn the_manifest_covers_every_served_route() {
-        let missing =
-            route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
+        let missing = route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

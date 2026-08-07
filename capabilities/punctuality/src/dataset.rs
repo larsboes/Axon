@@ -48,7 +48,10 @@ pub struct Month {
 
 impl Month {
     pub fn url(&self) -> String {
-        format!("https://huggingface.co/datasets/{REPO}/resolve/main/{}", self.remote_path)
+        format!(
+            "https://huggingface.co/datasets/{REPO}/resolve/main/{}",
+            self.remote_path
+        )
     }
 
     pub fn local_path(&self, raw_dir: &Path) -> PathBuf {
@@ -82,14 +85,23 @@ pub fn list_months(client: &reqwest::blocking::Client) -> Result<Vec<Month>, Dat
 
     let mut months: Vec<Month> = entries
         .into_iter()
-        .filter_map(|e| month_id(&e.path).map(|id| Month { id, remote_path: e.path }))
+        .filter_map(|e| {
+            month_id(&e.path).map(|id| Month {
+                id,
+                remote_path: e.path,
+            })
+        })
         .collect();
     // Ids are zero-padded YYYY-MM, so lexical order is chronological order.
     months.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(months)
 }
 
-pub fn select(months: Vec<Month>, from: &str, to: Option<&str>) -> Result<Vec<Month>, DatasetError> {
+pub fn select(
+    months: Vec<Month>,
+    from: &str,
+    to: Option<&str>,
+) -> Result<Vec<Month>, DatasetError> {
     let total = months.len();
     let upper = to.unwrap_or("9999-99").to_string();
     let picked: Vec<Month> = months
@@ -174,7 +186,8 @@ fn fetch_to(
     response
         .copy_to(&mut file)
         .map_err(|e| DatasetError::Download(month.id.clone(), e))?;
-    file.flush().map_err(|e| DatasetError::Write(partial.to_path_buf(), e))?;
+    file.flush()
+        .map_err(|e| DatasetError::Write(partial.to_path_buf(), e))?;
     Ok(())
 }
 
@@ -184,7 +197,10 @@ mod tests {
 
     #[test]
     fn month_ids_come_only_from_monthly_release_names() {
-        assert_eq!(month_id("monthly_processed_data/data-2026-06.parquet").as_deref(), Some("2026-06"));
+        assert_eq!(
+            month_id("monthly_processed_data/data-2026-06.parquet").as_deref(),
+            Some("2026-06")
+        );
         assert_eq!(month_id("data-2024-07.parquet").as_deref(), Some("2024-07"));
         // Upstream also ships raw_data/ and a README; neither is a monthly release.
         assert_eq!(month_id("monthly_processed_data/README.md"), None);
@@ -204,14 +220,30 @@ mod tests {
 
     #[test]
     fn selection_is_inclusive_on_both_ends() {
-        let picked = select(months(&["2025-10", "2025-11", "2025-12", "2026-01"]), "2025-11", Some("2025-12")).unwrap();
-        assert_eq!(picked.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["2025-11", "2025-12"]);
+        let picked = select(
+            months(&["2025-10", "2025-11", "2025-12", "2026-01"]),
+            "2025-11",
+            Some("2025-12"),
+        )
+        .unwrap();
+        assert_eq!(
+            picked.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["2025-11", "2025-12"]
+        );
     }
 
     #[test]
     fn an_open_upper_bound_takes_everything_after_from() {
-        let picked = select(months(&["2025-10", "2025-12", "2026-06"]), FIRST_FULL_COVERAGE_MONTH, None).unwrap();
-        assert_eq!(picked.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["2025-12", "2026-06"]);
+        let picked = select(
+            months(&["2025-10", "2025-12", "2026-06"]),
+            FIRST_FULL_COVERAGE_MONTH,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            picked.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["2025-12", "2026-06"]
+        );
     }
 
     #[test]

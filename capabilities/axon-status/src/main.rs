@@ -124,7 +124,8 @@ impl Service {
     /// through an outage that made every query behind them fail (#126). A capability that
     /// declares no `ready_path` still behaves exactly as it did.
     fn readiness_url(&self) -> Option<String> {
-        self.probe_url(&self.ready_path).or_else(|| self.health_url())
+        self.probe_url(&self.ready_path)
+            .or_else(|| self.health_url())
     }
 
     /// How long this panel may go unread, when it says so at all.
@@ -237,7 +238,9 @@ fn manifest_key(root: &std::path::Path) -> Option<Vec<(PathBuf, SystemTime)>> {
         dirs.push(PathBuf::from(overlay_caps));
     }
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let manifest = entry.path().join("service.toml");
             if manifest.is_file() {
@@ -300,8 +303,16 @@ const ROUTES: &[route_manifest::Route] = &[
 ];
 
 /// Shorthand so the table above reads as a table.
-const fn r(method: &'static str, path: &'static str, summary: &'static str) -> route_manifest::Route {
-    route_manifest::Route { method, path, summary }
+const fn r(
+    method: &'static str,
+    path: &'static str,
+    summary: &'static str,
+) -> route_manifest::Route {
+    route_manifest::Route {
+        method,
+        path,
+        summary,
+    }
 }
 
 async fn routes() -> axum::Json<serde_json::Value> {
@@ -333,8 +344,8 @@ async fn registry() -> Result<Vec<Service>, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let services: Vec<Service> =
-        serde_json::from_slice(&out.stdout).map_err(|e| format!("registry is not valid JSON: {e}"))?;
+    let services: Vec<Service> = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("registry is not valid JSON: {e}"))?;
 
     if let Some(key) = key {
         if let Ok(mut cache) = REGISTRY_CACHE.get_or_init(|| Mutex::new(None)).lock() {
@@ -474,7 +485,9 @@ async fn axon_status_health_handler() -> Result<Json<AxonStatusHealth>, (StatusC
     for svc in &services {
         // The URL reported beside `up` is the one `up` was judged on, so the two cannot
         // disagree about which surface was asked.
-        let Some(url) = svc.readiness_url() else { continue };
+        let Some(url) = svc.readiness_url() else {
+            continue;
+        };
         capabilities.insert(
             svc.name.clone(),
             CapabilityStatus {
@@ -601,7 +614,9 @@ async fn lifecycle(
     let Some(service) = services.into_iter().find(|s| s.name == name) else {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": format!("'{name}' is not an enabled capability on this machine") })),
+            Json(
+                json!({ "error": format!("'{name}' is not an enabled capability on this machine") }),
+            ),
         ));
     };
 
@@ -657,7 +672,10 @@ async fn stop_handler(Path(name): Path<String>) -> Result<Json<Value>, (StatusCo
 }
 
 fn bad_gateway(msg: impl Into<String>) -> (StatusCode, Json<Value>) {
-    (StatusCode::BAD_GATEWAY, Json(json!({ "error": msg.into() })))
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(json!({ "error": msg.into() })),
+    )
 }
 
 // --- backups ------------------------------------------------------------------------
@@ -788,13 +806,20 @@ async fn backups_handler() -> Result<Json<Value>, (StatusCode, Json<Value>)> {
 
     let mut out = Vec::new();
     for service in services {
-        let Some(contract) = service.backup_contract() else { continue };
-        let receipt: Option<Receipt> =
-            std::fs::read_to_string(overlay.join("backup/receipts").join(format!("{}.json", service.name)))
-                .ok()
-                .and_then(|raw| serde_json::from_str(&raw).ok());
+        let Some(contract) = service.backup_contract() else {
+            continue;
+        };
+        let receipt: Option<Receipt> = std::fs::read_to_string(
+            overlay
+                .join("backup/receipts")
+                .join(format!("{}.json", service.name)),
+        )
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok());
 
-        let last = receipt.as_ref().and_then(|r| parse_receipt_ts(&r.completed_at));
+        let last = receipt
+            .as_ref()
+            .and_then(|r| parse_receipt_ts(&r.completed_at));
         // saturating: a receipt dated in the future is a clock problem, not a negative
         // age, and it must not wrap into "overdue by 500 years".
         let age = last.map(|t| now.saturating_sub(t));
@@ -821,12 +846,16 @@ async fn backups_handler() -> Result<Json<Value>, (StatusCode, Json<Value>)> {
 /// byte count — minutes, not one HTTP request. The response says the run was accepted;
 /// `GET /api/axon-status/backups` says how it went, and keeps saying so across a page
 /// refresh because the state lives here rather than in the page.
-async fn backup_handler(Path(name): Path<String>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+async fn backup_handler(
+    Path(name): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let services = registry().await.map_err(bad_gateway)?;
     let Some(service) = services.into_iter().find(|s| s.name == name) else {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": format!("'{name}' is not an enabled capability on this machine") })),
+            Json(
+                json!({ "error": format!("'{name}' is not an enabled capability on this machine") }),
+            ),
         ));
     };
     if service.backup_contract().is_none() {
@@ -855,7 +884,12 @@ async fn backup_handler(Path(name): Path<String>) -> Result<Json<Value>, (Status
         }
         runs.insert(
             name.clone(),
-            BackupRun { state: "running", started_at: started, finished_at: None, detail: String::new() },
+            BackupRun {
+                state: "running",
+                started_at: started,
+                finished_at: None,
+                detail: String::new(),
+            },
         );
     }
 
@@ -867,13 +901,21 @@ async fn backup_handler(Path(name): Path<String>) -> Result<Json<Value>, (Status
             .await;
         let (state, detail) = match out {
             Ok(o) if o.status.success() => ("succeeded", String::new()),
-            Ok(o) => ("failed", String::from_utf8_lossy(&o.stderr).trim().to_string()),
+            Ok(o) => (
+                "failed",
+                String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            ),
             Err(e) => ("failed", format!("could not run tools/backup.sh: {e}")),
         };
         let mut runs = backup_runs().lock().unwrap();
         runs.insert(
             task_name,
-            BackupRun { state, started_at: started, finished_at: Some(now_epoch()), detail },
+            BackupRun {
+                state,
+                started_at: started,
+                finished_at: Some(now_epoch()),
+                detail,
+            },
         );
     });
 
@@ -906,7 +948,11 @@ async fn panel_idle_seconds(client: &reqwest::Client, svc: &Service) -> Option<u
     if !res.status().is_success() {
         return None;
     }
-    res.json::<Value>().await.ok()?.get("idle_seconds")?.as_u64()
+    res.json::<Value>()
+        .await
+        .ok()?
+        .get("idle_seconds")?
+        .as_u64()
 }
 
 /// Stop panels nobody is looking at.
@@ -916,13 +962,19 @@ async fn panel_idle_seconds(client: &reqwest::Client, svc: &Service) -> Option<u
 /// hold here would make the panel un-startable by anything except the dashboard's
 /// resume button until it expired.
 async fn reap_idle_panels(client: &reqwest::Client, root: &std::path::Path) {
-    let Ok(services) = registry().await else { return };
+    let Ok(services) = registry().await else {
+        return;
+    };
     for svc in services {
-        let Some(timeout) = svc.idle_timeout_secs() else { continue };
+        let Some(timeout) = svc.idle_timeout_secs() else {
+            continue;
+        };
         if !is_up(client, &svc).await {
             continue;
         }
-        let Some(idle) = panel_idle_seconds(client, &svc).await else { continue };
+        let Some(idle) = panel_idle_seconds(client, &svc).await else {
+            continue;
+        };
         if idle < timeout {
             continue;
         }
@@ -933,7 +985,10 @@ async fn reap_idle_panels(client: &reqwest::Client, root: &std::path::Path) {
             .await;
         match out {
             Ok(o) if o.status.success() => {
-                println!("reaped {} after {idle}s idle (timeout {timeout}s)", svc.name)
+                println!(
+                    "reaped {} after {idle}s idle (timeout {timeout}s)",
+                    svc.name
+                )
             }
             Ok(o) => eprintln!(
                 "idle-stop {} failed: {}",
@@ -1044,7 +1099,10 @@ mod backup_tests {
         let mut c = cap("transit");
         c.port = "8085".into();
         c.health_path = "/health".into();
-        assert_eq!(c.health_url().as_deref(), Some("http://127.0.0.1:8085/health"));
+        assert_eq!(
+            c.health_url().as_deref(),
+            Some("http://127.0.0.1:8085/health")
+        );
     }
 
     #[test]
@@ -1053,7 +1111,10 @@ mod backup_tests {
         c.scope = "external".into();
         c.endpoint = "https://vault.provider.test".into();
         c.health_path = "/alive".into();
-        assert_eq!(c.health_url().as_deref(), Some("https://vault.provider.test/alive"));
+        assert_eq!(
+            c.health_url().as_deref(),
+            Some("https://vault.provider.test/alive")
+        );
     }
 
     #[test]
@@ -1066,7 +1127,11 @@ mod backup_tests {
         c.scope = "external".into();
         c.port = "8080".into();
         c.health_path = "/alive".into();
-        assert_eq!(c.health_url(), None, "an unresolved external reference has no health URL");
+        assert_eq!(
+            c.health_url(),
+            None,
+            "an unresolved external reference has no health URL"
+        );
     }
 
     #[test]
@@ -1179,7 +1244,11 @@ mod backup_tests {
 
     #[test]
     fn state_walks_ok_then_due_then_overdue() {
-        let contract = BackupContract { holds_service: false, advise_days: Some(1), stale_days: Some(7) };
+        let contract = BackupContract {
+            holds_service: false,
+            advise_days: Some(1),
+            stale_days: Some(7),
+        };
         assert_eq!(backup_state(Some(0), &contract), "ok");
         assert_eq!(backup_state(Some(23 * 3_600), &contract), "ok");
         assert_eq!(backup_state(Some(DAY), &contract), "due");
@@ -1192,8 +1261,16 @@ mod backup_tests {
     fn no_receipt_is_never_whatever_the_thresholds_say() {
         // Outranks the thresholds deliberately: a contract with nothing behind it is the
         // worst state this surface can report, and it is not reachable by ageing.
-        let declared = BackupContract { holds_service: false, advise_days: Some(1), stale_days: Some(7) };
-        let silent = BackupContract { holds_service: false, advise_days: None, stale_days: None };
+        let declared = BackupContract {
+            holds_service: false,
+            advise_days: Some(1),
+            stale_days: Some(7),
+        };
+        let silent = BackupContract {
+            holds_service: false,
+            advise_days: None,
+            stale_days: None,
+        };
         assert_eq!(backup_state(None, &declared), "never");
         assert_eq!(backup_state(None, &silent), "never");
     }
@@ -1202,11 +1279,19 @@ mod backup_tests {
     fn undeclared_thresholds_never_invent_a_cadence() {
         // Axon ships no personal schedule. A capability whose owner never said what timely
         // means gets `unknown` — not a red badge derived from a number Axon made up.
-        let silent = BackupContract { holds_service: false, advise_days: None, stale_days: None };
+        let silent = BackupContract {
+            holds_service: false,
+            advise_days: None,
+            stale_days: None,
+        };
         assert_eq!(backup_state(Some(900 * DAY), &silent), "unknown");
 
         // ...and half a declaration still only answers the half it declared.
-        let advise_only = BackupContract { holds_service: false, advise_days: Some(1), stale_days: None };
+        let advise_only = BackupContract {
+            holds_service: false,
+            advise_days: Some(1),
+            stale_days: None,
+        };
         assert_eq!(backup_state(Some(900 * DAY), &advise_only), "due");
     }
 
@@ -1251,7 +1336,12 @@ mod backup_tests {
         let mut runs: HashMap<String, BackupRun> = HashMap::new();
         runs.insert(
             "vaultwarden".into(),
-            BackupRun { state: "running", started_at: 100, finished_at: None, detail: String::new() },
+            BackupRun {
+                state: "running",
+                started_at: 100,
+                finished_at: None,
+                detail: String::new(),
+            },
         );
         assert_eq!(runs["vaultwarden"].state, "running");
 
@@ -1291,7 +1381,10 @@ mod backup_tests {
         }))
         .unwrap();
         for private in ["home-automation", "tarball", "sha256", "deadbeef"] {
-            assert!(!rendered.contains(private), "projection leaked {private}: {rendered}");
+            assert!(
+                !rendered.contains(private),
+                "projection leaked {private}: {rendered}"
+            );
         }
     }
 }
@@ -1303,8 +1396,7 @@ mod route_manifest_tests {
     /// here rather than shipping a surface that lies about itself.
     #[test]
     fn the_manifest_covers_every_served_route() {
-        let missing =
-            route_manifest::undeclared_routes(include_str!("main.rs"), super::ROUTES);
+        let missing = route_manifest::undeclared_routes(include_str!("main.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }
