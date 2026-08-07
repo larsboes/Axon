@@ -634,10 +634,19 @@ qualified_image() {
 # path is genuinely silent, which is what makes honest logging affordable.
 # Idempotent: resume_service reaches start_service, and container_init appends to
 # arrays, so calling it twice would build a doubled argv.
+#
+# ensure_runtime belongs here, not at each verb, and specifically between resolve_runtime
+# and container_init. It needs $RUNTIME_BIN, which resolve_runtime sets; and container_init
+# issues the first runtime CLI call of the process -- `container volume create` for a
+# managed_volume capability. With `set -e`, that call failing against a dead apiserver
+# aborted start_service before the ensure_runtime that would have revived it, so a Mac whose
+# apiserver went down never recovered on its own (#125). One gate in front of every caller
+# is what makes that ordering impossible to get wrong again.
 CONTAINER_READY=0
 container_prepare() {
   if [ "$CONTAINER_READY" -eq 1 ]; then return 0; fi
   resolve_runtime
+  ensure_runtime
   container_init
   CONTAINER_READY=1
 }
@@ -648,7 +657,6 @@ start_service() {
     echo "service-runner.sh: '$CAP' is held for maintenance, not starting ($MAINT_LOCK)"
     return 0
   fi
-  ensure_runtime
   case "$AXON_CONTAINER_RUNTIME" in
     apple-container)
       if "$RUNTIME_BIN" list --format json 2>/dev/null | stream_matches "\"id\":\"$NAME\""; then
@@ -687,7 +695,6 @@ start_service() {
 # `start` or `restart` does on its own.
 recreate_service() {
   container_prepare
-  ensure_runtime
   echo "service-runner.sh: recreating '$CAP' — declared state mounts survive, undeclared in-container state does not"
   "$RUNTIME_BIN" stop "$NAME" >/dev/null 2>&1 || true
   "$RUNTIME_BIN" rm "$NAME" >/dev/null 2>&1 || "$RUNTIME_BIN" delete "$NAME" >/dev/null 2>&1 || true
@@ -700,7 +707,6 @@ recreate_service() {
 stop_service() {  # [hold|nohold]
   container_prepare
   if [ "${1:-hold}" = hold ]; then : > "$MAINT_LOCK"; fi
-  ensure_runtime
   "$RUNTIME_BIN" stop "$NAME" >/dev/null 2>&1 || true
 }
 
@@ -715,7 +721,7 @@ resume_service() {
 # environment, so writing it to $TMPDIR to answer a drift question would put every credential the
 # capability holds on disk. One call per drift report, reused across all five classes.
 inspect_json() {
-  ensure_runtime
+  container_prepare
   case "$AXON_CONTAINER_RUNTIME" in
     apple-container) "$RUNTIME_BIN" list -a --format json 2>/dev/null ;;
     docker|podman)   "$RUNTIME_BIN" inspect "$NAME" --format '{{json .}}' 2>/dev/null ;;
