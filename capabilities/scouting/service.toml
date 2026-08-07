@@ -8,6 +8,7 @@ build       = ["bazel", "build", "//capabilities/scouting:scout-server"]
 # reads this number back through AXON_PORT, so this line is the only place it lives.
 port        = "8084"
 health_path = "/health"
+ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)
 
 # scout-server serves /discover at the root; the dashboard has always called it there.
 proxy_extra = ["/discover"]

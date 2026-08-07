@@ -23,6 +23,7 @@ use trips::store::{
 /// endpoint exists to avoid.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
+    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
     r("GET", "/routes", "This manifest."),
     r("GET", "/api/plans", "Every trip plan."),
     r("POST", "/api/plans", "Create a trip plan."),
@@ -68,6 +69,34 @@ async fn health() -> Json<Value> {
         "ok": true,
         "capability": "trips"
     }))
+}
+
+/// Readiness: whether this capability can actually serve, which liveness does not answer.
+///
+/// `health` is a literal and cannot observe the database, so during a Postgres outage this
+/// capability reported itself up while every query behind it failed (#126). Availability is
+/// judged here instead.
+async fn ready(State(state): State<AppState>) -> ApiResponse {
+    let database_url = state.database_url.clone();
+    match tokio::task::spawn_blocking(move || {
+        TripsStore::open(&database_url)
+            .and_then(|store| store.ping())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(())) => response(StatusCode::OK, json!({ "ok": true, "capability": "trips" })),
+        // 503, not 500: the request was fine, the dependency is not, and a caller that retries
+        // should be told to come back rather than to fix its input.
+        Ok(Err(error)) => response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "ok": false, "capability": "trips", "error": error }),
+        ),
+        Err(_) => response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "ok": false, "capability": "trips", "error": "readiness check failed" }),
+        ),
+    }
 }
 
 async fn list_plans(State(state): State<AppState>) -> ApiResponse {
@@ -451,6 +480,7 @@ async fn main() {
     let app = Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/api/plans", get(list_plans).post(create_plan))
         .route(
             "/api/plans/:id",
@@ -472,6 +502,37 @@ async fn main() {
 #[path = "../../../libs/route-manifest/src/lib.rs"]
 #[allow(dead_code)]
 mod route_manifest;
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    /// The contract the dashboard depends on: an unreachable database is reported as
+    /// unavailable rather than as a healthy service (#126). Before the split, the only
+    /// surface axon-status polled was `health`, which is a literal and answers 200 here.
+    #[tokio::test]
+    async fn readiness_fails_when_the_database_is_unreachable() {
+        // Port 1 is reserved and nothing listens there — the stopped-container case.
+        let state = AppState {
+            database_url: Arc::new(
+                "host=127.0.0.1 port=1 user=axon password=axon dbname=axon".to_string(),
+            ),
+            obsidian: None,
+        };
+
+        let (status, Json(body)) = ready(State(state)).await;
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "an unreachable database was reported as ready: {body}"
+        );
+        assert_eq!(body["ok"], false);
+
+        // The control: liveness is deliberately unaffected, because the process is fine.
+        let Json(live) = health().await;
+        assert_eq!(live["ok"], true, "liveness must not depend on the database");
+    }
+}
 
 #[cfg(test)]
 mod route_manifest_tests {

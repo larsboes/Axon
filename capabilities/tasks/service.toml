@@ -5,6 +5,7 @@ command     = ["bazel-bin/capabilities/tasks/tasks-server"]
 build       = ["bazel", "build", "//capabilities/tasks:tasks-server"]
 port        = "8089"
 health_path = "/health"
+ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)
 # `/tasks` is a dashboard route, so only `/tasks/api` reaches this process —
 # the same split trips needed for the same reason. Every server route already
 # lives under `/api`.

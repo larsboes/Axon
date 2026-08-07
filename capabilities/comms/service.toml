@@ -5,6 +5,7 @@ command     = ["bazel-bin/capabilities/comms/comms-server"]
 build       = ["bazel", "build", "//capabilities/comms:comms-server"]
 port        = "8083"
 health_path = "/health"
+ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)
 
 # No proxy_extra: comms-server serves bare paths (/feed, /triage) precisely so its
 # contract stays dashboard-independent, and the uniform stripped /comms prefix is

@@ -44,6 +44,7 @@ fn response<T: serde::Serialize>(status: StatusCode, value: T) -> ApiResponse {
 /// and discovering that from a 400 is the thing this endpoint exists to avoid.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
+    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
     r("GET", "/routes", "This manifest."),
     r("GET", "/api/entries", "Entries overlapping a day window. Requires from, to; optional kind (CSV)."),
     r("POST", "/api/entries", "Create an entry."),
@@ -94,6 +95,37 @@ async fn health() -> Json<Value> {
         "ok": true,
         "capability": "calendar"
     }))
+}
+
+/// Readiness: whether this capability can actually serve, which liveness does not answer.
+///
+/// `health` is a literal and cannot observe the database, so during a Postgres outage this
+/// capability reported itself up while every query behind it failed (#126). Availability is
+/// judged here instead.
+async fn ready(State(state): State<AppState>) -> ApiResponse {
+    let database_url = state.database_url.clone();
+    match tokio::task::spawn_blocking(move || {
+        CalendarStore::open(&database_url)
+            .and_then(|store| store.ping())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(())) => response(
+            StatusCode::OK,
+            json!({ "ok": true, "capability": "calendar" }),
+        ),
+        // 503, not 400: the request was fine, the dependency is not, and a caller that retries
+        // should be told to come back rather than to fix its input.
+        Ok(Err(error)) => response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "ok": false, "capability": "calendar", "error": error }),
+        ),
+        Err(_) => response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "ok": false, "capability": "calendar", "error": "readiness check failed" }),
+        ),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1256,6 +1288,7 @@ async fn main() {
     };
     let app = Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/routes", get(routes))
         .route("/api/entries", get(list_entries).post(create_entry))
         .route("/api/google/drafts", get(list_google_drafts))

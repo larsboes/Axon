@@ -164,7 +164,18 @@ backup_stale_days  = "7"                  # past this age the last backup counts
 #                                           # capability's own config.
 # health_path = "/health"                   # optional; the runner polls http://127.0.0.1:<port><path>
 #                                           # to decide when a start actually succeeded, instead of
-#                                           # trusting that a spawned pid means a listening server
+#                                           # trusting that a spawned pid means a listening server.
+#                                           # LIVENESS: is the process there. Answer it without
+#                                           # touching a dependency, or a start never completes.
+# ready_path  = "/ready"                    # optional; READINESS: can it actually serve. Declare it
+#                                           # when the capability needs something it does not control
+#                                           # — a database, an external API — and answer it by
+#                                           # touching that thing. axon-status judges availability on
+#                                           # this where it exists and falls back to health_path
+#                                           # where it does not, so adding one changes what the
+#                                           # dashboard reports and omitting one changes nothing.
+#                                           # Not polled by the runner at startup: a capability that
+#                                           # starts before its database is still a successful start.
 # autostart   = "true"                      # optional. `service-runner.sh up` starts it; without it
 #                                           # the capability is on-demand — dashboard starts it when
 #                                           # you open its surface. Default: on-demand.

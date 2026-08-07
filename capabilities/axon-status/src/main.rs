@@ -38,6 +38,12 @@ struct Service {
     scope: String,
     port: String,
     health_path: String,
+    /// Liveness answers "is the process there", which is not what an availability surface
+    /// is asking. A capability that reaches a database declares this too, and answers it by
+    /// touching that database. Empty for everything that has no dependency worth checking —
+    /// and an empty one means this surface keeps polling `health_path`, exactly as before.
+    #[serde(default)]
+    ready_path: String,
     panel_port: String,
     panel_path: String,
     autostart: String,
@@ -83,29 +89,46 @@ impl Service {
         self.scope == "external"
     }
 
-    /// `None` when the manifest declares nothing to poll — a capability without a
-    /// health surface is reported as unknown rather than silently "down".
+    /// Where to reach one of this capability's probe paths, or `None` when there is nothing
+    /// to poll — a capability without such a surface is reported as unknown rather than
+    /// silently "down".
     ///
-    /// Two shapes, and the port is what separates them. A local capability's health URL is
-    /// loopback plus the port it publishes here. An external one has no port on this machine
-    /// at all — the registry blanks it, because a port number is a fact about the host that
-    /// binds it — so its URL is the resolved endpoint plus the same path. `health_path` is the
-    /// only manifest field the two have in common, which is the whole reason it is the only
-    /// one a consuming machine inherits.
-    fn health_url(&self) -> Option<String> {
-        if self.health_path.is_empty() {
+    /// Two shapes, and the port is what separates them. A local capability's URL is loopback
+    /// plus the port it publishes here. An external one has no port on this machine at all —
+    /// the registry blanks it, because a port number is a fact about the host that binds it —
+    /// so its URL is the resolved endpoint plus the same path. The probe paths are the only
+    /// manifest fields the two have in common, which is the whole reason they are the only
+    /// ones a consuming machine inherits.
+    fn probe_url(&self, path: &str) -> Option<String> {
+        if path.is_empty() {
             return None;
         }
         if self.is_external() {
             if self.endpoint.is_empty() {
                 return None;
             }
-            return Some(format!("{}{}", self.endpoint, self.health_path));
+            return Some(format!("{}{}", self.endpoint, path));
         }
         if self.port.is_empty() {
             return None;
         }
-        Some(format!("http://127.0.0.1:{}{}", self.port, self.health_path))
+        Some(format!("http://127.0.0.1:{}{}", self.port, path))
+    }
+
+    fn health_url(&self) -> Option<String> {
+        self.probe_url(&self.health_path)
+    }
+
+    /// What availability should be judged on: readiness where a capability declares it,
+    /// liveness everywhere else.
+    ///
+    /// The fallback is the compatibility contract. Until 2026-08-07 this surface polled
+    /// `health_path` for every capability, and five database-backed ones answered it from a
+    /// stateless handler that could not observe their database — so they reported themselves up
+    /// through an outage that made every query behind them fail (#126). A capability that
+    /// declares no `ready_path` still behaves exactly as it did.
+    fn readiness_url(&self) -> Option<String> {
+        self.probe_url(&self.ready_path).or_else(|| self.health_url())
     }
 
     /// How long this panel may go unread, when it says so at all.
@@ -326,7 +349,7 @@ async fn registry() -> Result<Vec<Service>, String> {
 }
 
 async fn is_up(client: &reqwest::Client, svc: &Service) -> bool {
-    let Some(url) = svc.health_url() else {
+    let Some(url) = svc.readiness_url() else {
         return false;
     };
     client
@@ -435,7 +458,7 @@ async fn self_model_handler() -> Result<Json<Value>, (StatusCode, Json<Value>)> 
     let client = reqwest::Client::new();
     let mut live = serde_json::Map::new();
     for service in &services {
-        let up = match service.health_url() {
+        let up = match service.readiness_url() {
             Some(_) => Some(is_up(&client, service).await),
             None => None,
         };
@@ -453,7 +476,9 @@ async fn axon_status_health_handler() -> Result<Json<AxonStatusHealth>, (StatusC
 
     let mut capabilities = HashMap::new();
     for svc in &services {
-        let Some(url) = svc.health_url() else { continue };
+        // The URL reported beside `up` is the one `up` was judged on, so the two cannot
+        // disagree about which surface was asked.
+        let Some(url) = svc.readiness_url() else { continue };
         capabilities.insert(
             svc.name.clone(),
             CapabilityStatus {
@@ -505,7 +530,7 @@ async fn capabilities_handler() -> Result<Json<Vec<CapabilityView>>, (StatusCode
 
     let mut views = Vec::with_capacity(services.len());
     for service in services {
-        let up = match service.health_url() {
+        let up = match service.readiness_url() {
             Some(_) => Some(is_up(&client, &service).await),
             None => None,
         };
@@ -999,6 +1024,7 @@ mod backup_tests {
             scope: "capability".into(),
             port: String::new(),
             health_path: String::new(),
+            ready_path: String::new(),
             panel_port: String::new(),
             panel_path: String::new(),
             autostart: String::new(),
@@ -1061,6 +1087,59 @@ mod backup_tests {
         c.scope = "external".into();
         c.endpoint = "https://vault.provider.test".into();
         assert_eq!(c.health_url(), None);
+    }
+
+    // --- readiness vs liveness (#126) -----------------------------------------------------
+    //
+    // Availability is judged on readiness where a capability declares it. The fallback is the
+    // compatibility contract, and the reason this surface reported five database-backed
+    // capabilities as up through a Postgres outage.
+
+    #[test]
+    fn readiness_is_preferred_over_liveness() {
+        let mut c = cap("tasks");
+        c.port = "8089".into();
+        c.health_path = "/health".into();
+        c.ready_path = "/ready".into();
+        assert_eq!(
+            c.readiness_url().as_deref(),
+            Some("http://127.0.0.1:8089/ready")
+        );
+    }
+
+    #[test]
+    fn liveness_still_answers_for_a_capability_without_readiness() {
+        // The case that must not change: every capability that declares no ready_path is
+        // polled exactly where it was before.
+        let mut c = cap("macmon");
+        c.port = "9911".into();
+        c.health_path = "/json".into();
+        assert_eq!(
+            c.readiness_url().as_deref(),
+            Some("http://127.0.0.1:9911/json")
+        );
+    }
+
+    #[test]
+    fn readiness_reaches_an_external_capability_at_its_endpoint() {
+        // ready_path is a "how to ask" field, so it crosses the machine boundary with
+        // health_path rather than being blanked with the fields that describe how to act.
+        let mut c = cap("vaultwarden");
+        c.scope = "external".into();
+        c.endpoint = "https://vault.provider.test".into();
+        c.health_path = "/alive".into();
+        c.ready_path = "/ready".into();
+        assert_eq!(
+            c.readiness_url().as_deref(),
+            Some("https://vault.provider.test/ready")
+        );
+    }
+
+    #[test]
+    fn a_capability_with_neither_path_has_nothing_to_poll() {
+        let mut c = cap("feed-sweep");
+        c.port = "8090".into();
+        assert_eq!(c.readiness_url(), None);
     }
 
     #[test]
