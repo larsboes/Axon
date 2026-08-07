@@ -33,10 +33,6 @@ use tower_http::services::{ServeDir, ServeFile};
 #[allow(dead_code)]
 mod axon_server;
 
-#[path = "../../../libs/axon-config/src/lib.rs"]
-#[allow(dead_code)]
-mod axon_config;
-
 const PRESETS: [&str; 6] = ["edm", "ambient", "lofi", "focus", "relax", "sleep"];
 const SCENARIOS: [&str; 5] = ["deep-work", "reading", "reset", "wind-down", "timer"];
 const MAX_SESSION_MS: u64 = 8 * 60 * 60 * 1000;
@@ -926,11 +922,6 @@ mod tests {
     }
 }
 
-// The self-describing surface, on the same include terms as the other libs.
-#[path = "../../../libs/route-manifest/src/lib.rs"]
-#[allow(dead_code)]
-mod route_manifest;
-
 #[cfg(test)]
 mod route_manifest_tests {
     /// A stale manifest is worse than none, because it gets believed. This reads
@@ -939,7 +930,7 @@ mod route_manifest_tests {
     #[test]
     fn the_manifest_covers_every_served_route() {
         let missing =
-            super::route_manifest::undeclared_routes(include_str!("main.rs"), super::ROUTES);
+            route_manifest::undeclared_routes(include_str!("main.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

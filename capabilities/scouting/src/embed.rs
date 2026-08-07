@@ -24,7 +24,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::axon_config::overlay_config;
+use axon_config::overlay_config;
 use crate::inference::{InferenceConfig, ResolvedRole, TextRole};
 use crate::score::TelosProfile;
 

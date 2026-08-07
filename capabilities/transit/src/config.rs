@@ -22,7 +22,7 @@
 //! `--to` explicitly, erroring with a clear message rather than silently
 //! defaulting to someone else's stations.
 
-use crate::axon_config::{expand_tilde, postgres_conn_from_shared_env};
+use axon_config::{expand_tilde, postgres_conn_from_shared_env};
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -76,7 +76,7 @@ fn load_file_config() -> FileConfig {
 /// make was right at two copies and wrong at six -- see that crate's README.
 /// Redaction stays exported under its old name so callers don't churn.
 pub fn redact_database_url(url: &str) -> String {
-    crate::axon_config::redact_dsn(url)
+    axon_config::redact_dsn(url)
 }
 
 impl Config {

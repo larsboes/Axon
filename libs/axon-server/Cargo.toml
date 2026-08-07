@@ -12,6 +12,7 @@ name = "axon_server"
 path = "src/lib.rs"
 
 [dependencies]
+axon-config = { path = "../axon-config" }
 axum = "0.7"
 tokio = { version = "1", features = ["net"] }
 

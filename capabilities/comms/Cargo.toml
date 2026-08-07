@@ -7,10 +7,8 @@ license.workspace = true
 description = "Mail/media pipeline: reviewed Gmail triage plus share-link media ingest (metadata + transcript + summary), Postgres-backed."
 publish = false
 
-# Inert here, and deliberately so: libs/axon-config and libs/axon-server are
-# `#[path]`-included, and their env-mutating unit tests hide behind this feature
-# so they never run inside a consumer's test binary. Declaring it is what stops
-# every build printing unexpected_cfgs.
+# Temporary until Axon#111 removes the remaining runtime-heavy source includes.
+# Their unit tests hide behind this feature so they do not run in this crate.
 [features]
 standalone-tests = []
 
@@ -35,6 +33,9 @@ name = "comms-extraction-eval"
 path = "src/extraction_eval_main.rs"
 
 [dependencies]
+axon-config = { path = "../../libs/axon-config" }
+content-item = { path = "../../libs/content-item" }
+route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.12", features = ["json", "gzip", "blocking"] }

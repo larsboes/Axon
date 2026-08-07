@@ -21,12 +21,7 @@ capability's dependency resolution, and it needs no crate universe of its own.
 
 ## Consumers
 
-Every Rust capability: `scouting`, `transit`, `trips`, `punctuality`, `calendar` and
-`comms` for config resolution, `axon-status` transitively through `axon-server`'s
-re-export of the port contract.
-
-Consumers list `//libs/axon-config:src/lib.rs` in their **srcs** and add the `#[path]`
-module — not a Bazel `deps` edge. One consequence worth knowing before adding a public
-type here: the file is compiled separately into each consumer, so a struct defined here
-is a *different* type in each of them and cannot be passed across a capability boundary.
-Shared types go in the capability that owns them (the way scouting consumes transit's).
+Every Rust capability uses this directly or through the server helper. Consumers
+declare the workspace path dependency in Cargo and
+`//libs/axon-config:axon-config` in Bazel. The library is compiled once per
+build graph, so its API is an ordinary crate boundary rather than copied source.

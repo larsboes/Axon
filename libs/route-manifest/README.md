@@ -52,9 +52,6 @@ A *served* path nobody documented is the failure worth failing on.
 
 Every Rust capability with an HTTP server.
 
-Consumers list `//libs/route-manifest:src/lib.rs` in their **srcs** and add the
-`#[path]` module — not a Bazel `deps` edge, for the reason
-[axon-config's README](../axon-config/README.md#consumers) gives. As with
-`libs/content-item`, the file is compiled separately into each consumer, so
-`Route` in calendar and `Route` in comms are different Rust types. The boundary
-between them is the served JSON.
+Consumers declare the workspace path dependency in Cargo and
+`//libs/route-manifest:route-manifest` in Bazel. The served JSON remains the
+external contract; the crate gives every server one implementation of it.

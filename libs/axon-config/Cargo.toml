@@ -14,12 +14,3 @@ path = "src/lib.rs"
 # Deliberately zero dependencies: everything here is std-only, so consuming this
 # crate never changes any capability's dependency resolution.
 [dependencies]
-
-# The unit tests mutate process-global env (HOME, AXON_PERSONAL_ROOT, AXON_PORT).
-# Run standalone (default here, crate_features in BUILD.bazel) that is fine; compiled
-# into a consumer via the #[path] include it would race the consumer's own parallel
-# tests reading those variables -- so the test mod is feature-gated and consumers,
-# who never set the feature, skip it.
-[features]
-default = ["standalone-tests"]
-standalone-tests = []

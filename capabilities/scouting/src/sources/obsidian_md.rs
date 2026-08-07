@@ -26,7 +26,7 @@
 
 use std::path::PathBuf;
 
-use crate::markdown_root::MarkdownRoot;
+use markdown_root::MarkdownRoot;
 use crate::opportunity::{Opportunity, OpportunityType, SourceKind};
 use crate::source::{SearchQuery, SourceAdapter, SourceError};
 
@@ -260,7 +260,7 @@ fn scholarship_is_actionable(
 /// importer needed the same format read the same way. The fields below are
 /// still this adapter's own — the lib knows what a frontmatter block is, never
 /// what `eligibility` means.
-use crate::markdown_root::frontmatter as parse_frontmatter;
+use markdown_root::frontmatter as parse_frontmatter;
 
 fn parse_location(location: &Option<String>) -> (Option<String>, Option<String>) {
     match location {

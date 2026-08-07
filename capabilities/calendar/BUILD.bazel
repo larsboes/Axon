@@ -8,20 +8,18 @@ rust_library(
     crate_root = "src/lib.rs",
     # Globbed rather than listed — see capabilities/scouting/BUILD.bazel for why the
     # hand-maintained inventory was the drift risk (Axon#13). src/server.rs is excluded
-    # because it is the server binary's own crate root; the //libs source stays explicit
-    # because a glob cannot cross a package boundary.
+    # because it is the server binary's own crate root. The remaining source
+    # include belongs to the runtime-heavy migration in Axon#111.
     srcs = glob(["src/**/*.rs"], exclude = ["src/server.rs"]) + [
-        "//libs/axon-config:src/lib.rs",
         # When the schema migration runs — shared by all seven schema-owning capabilities.
         "//libs/axon-store:src/lib.rs",
-        # The content-item-v1 reader contract, on the same include terms.
-        "//libs/content-item:src/lib.rs",
-        # Bounded reads out of a declared markdown root, for src/markdown_import.rs.
-        "//libs/markdown-root:src/lib.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
+        "//libs/axon-config:axon-config",
+        "//libs/content-item:content-item",
+        "//libs/markdown-root:markdown-root",
         "@crate_index//:postgres",
         "@crate_index//:r2d2",
         "@crate_index//:r2d2_postgres",
@@ -46,13 +44,13 @@ rust_binary(
     srcs = [
         "src/server.rs",
         "//libs/axon-server:src/lib.rs",
-        "//libs/axon-config:src/lib.rs",
-        "//libs/route-manifest:src/lib.rs",
     ],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
         ":calendar_lib",
+        "//libs/axon-config:axon-config",
+        "//libs/route-manifest:route-manifest",
         "@crate_index//:axum",
         "@crate_index//:reqwest",
         "@crate_index//:serde",

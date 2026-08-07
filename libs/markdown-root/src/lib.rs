@@ -26,8 +26,8 @@
 //!
 //! Not a glob engine. The patterns in play are `Some/Dir/*.md` and one exact
 //! `Some/File.md`, which is what the config shape has ever declared; a real
-//! matcher would be a dependency, and this crate is std-only so folding it into
-//! a consumer never changes that consumer's dependency resolution.
+//! matcher would be a dependency, and these two shapes cover every declared
+//! contract without one.
 //!
 //! Not a reader of *meaning*. `frontmatter()` below owns the format — which
 //! lines are frontmatter at all, and what a YAML list flattens to. Which keys
@@ -351,10 +351,7 @@ pub fn frontmatter(md: &str) -> Result<HashMap<String, String>, String> {
     Ok(map)
 }
 
-// Gated the same way //libs/content-item gates its own: consumers fold this
-// file in by `#[path]` include and want the types, not a second copy of the
-// tests. The standalone build sets the feature, so :markdown_root_test runs.
-#[cfg(all(test, feature = "standalone-tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

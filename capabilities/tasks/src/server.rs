@@ -205,11 +205,6 @@ async fn main() {
     axon_server::serve_local("tasks-server", config.port, app).await;
 }
 
-// The self-describing surface, on the same include terms as the other libs.
-#[path = "../../../libs/route-manifest/src/lib.rs"]
-#[allow(dead_code)]
-mod route_manifest;
-
 #[cfg(test)]
 mod readiness_tests {
     use super::*;
@@ -248,7 +243,7 @@ mod route_manifest_tests {
     #[test]
     fn the_manifest_covers_every_served_route() {
         let missing =
-            super::route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
+            route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
     }
 }

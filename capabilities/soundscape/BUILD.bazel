@@ -8,9 +8,7 @@ rust_binary(
     name = "soundscape",
     srcs = [
         "src/main.rs",
-        "//libs/axon-config:src/lib.rs",
         "//libs/axon-server:src/lib.rs",
-        "//libs/route-manifest:src/lib.rs",
     ],
     crate_root = "src/main.rs",
     edition = "2021",
@@ -19,6 +17,8 @@ rust_binary(
     version = "0.1.0",
     visibility = ["//visibility:public"],
     deps = [
+        "//libs/axon-config:axon-config",
+        "//libs/route-manifest:route-manifest",
         "@crate_index//:axum",
         "@crate_index//:serde",
         "@crate_index//:serde_json",

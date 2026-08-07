@@ -40,8 +40,8 @@ than one place, diverging, in a way no one decided.
 
 **Not a glob engine.** The patterns in play are `Some/Dir/*.md` and one exact
 `Some/File.md`, which is all the config shape has ever declared. A real matcher
-would be a dependency, and this crate is std-only so that folding it into a
-consumer never changes that consumer's dependency resolution.
+would be a dependency, and this crate stays std-only because those two shapes
+cover the declared contracts.
 
 **Not a parser.** What a markdown file *means* — frontmatter, an event, an
 interest profile — belongs to the capability that declared the root.

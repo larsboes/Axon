@@ -22,10 +22,8 @@
 //! time via `include_str!` and reports anything the router serves that the
 //! manifest does not mention, so the test fails instead of the manifest lying.
 //!
-//! ## Dependency rule
-//!
-//! Compiled into consumers by `#[path]` include (see `libs/axon-config/README.md`),
-//! so it may only use crates every consumer already has: `serde` and `serde_json`.
+//! Consumers link this as an ordinary crate and serve its JSON as the external
+//! contract.
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -97,12 +95,7 @@ fn served_paths(source: &str) -> Vec<String> {
     paths
 }
 
-// Gated on the standalone-tests feature, not bare cfg(test), matching
-// libs/axon-config and libs/axon-server: this file is compiled into every
-// consumer by #[path] include, and a lib's own suite has no business running
-// inside each consumer's test binary. //libs/route-manifest:route_manifest_test
-// sets the feature and runs them.
-#[cfg(all(test, feature = "standalone-tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
