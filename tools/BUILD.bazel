@@ -194,6 +194,20 @@ sh_test(
     ],
 )
 
+# The one sh_test here that takes `glob` rather than a named list, and the test says why:
+# it copies the WHOLE lib directory into its scratch root because service-runner.sh sources
+# seven of these today and "a list here would silently rot into a No such file the next time
+# it picks up a fourth". A named `data` list would be exactly that list, one layer down.
+sh_test(
+    name = "service_runner_test",
+    size = "small",
+    srcs = ["service-runner.test.sh"],
+    data = [
+        "capability.sh",
+        "service-runner.sh",
+    ] + glob(["lib/*.sh"]),
+)
+
 sh_test(
     name = "restore_test",
     size = "small",
