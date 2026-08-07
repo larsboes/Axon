@@ -1,24 +1,30 @@
-# Originally empty (required so rules_rust's crate_universe bzlmod extension can resolve the
-# workspace root directory via a Label at analysis time) -- now also home to the two targets
-# below. They live here, in the root package, rather than in a tools/BUILD.bazel, specifically
-# so glob() can reach every capability's README.md/service.toml and every Pack's pack.toml in
-# one call: those files belong to THIS package (capabilities/ and Packs/ have no BUILD.bazel
-# of their own to cut them into subpackages), so a glob from tools/ couldn't see them at all.
+# The root package owns only repository-wide gates and entrypoints whose inputs
+# cross package boundaries. Architecture, manifest, publication, and audit rules
+# stay here so their globs can see root-owned capability and Pack metadata. Tool
+# regression tests live in //tools; compatibility aliases below preserve their
+# established root labels without returning their implementation ownership here.
 #
-# capabilities/scouting, capabilities/transit, and libs/ai-client ARE their own
-# Bazel packages (their own BUILD.bazel, Rust crates), so glob() from this package can't
-# reach their README.md -- referenced as explicit cross-package labels below instead.
-# dashboard/ (the spine shell) has no BUILD.bazel (dashboard/README.md/
-# README.md), so it's still part of this package and glob() reaches it fine.
+# Rust capabilities, libraries, dashboard, and tools are separate packages, so
+# the repository-wide gates name their exported cross-package inputs explicitly.
 # See README.md, "Generated architecture" and "Argue Bazel per case", for why these
 # targets exist in Bazel at all.
 
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
-# Cargo and rules_rust share these workspace inputs. Keeping them in the root
-# package makes the dependency universe's ownership explicit.
-exports_files(["Cargo.lock", "Cargo.toml", "rust-toolchain.toml"])
+# Cargo and rules_rust share the workspace inputs here. The remaining exports are
+# root-owned public configuration or fixtures consumed by //tools tests.
+exports_files([
+    "Cargo.lock",
+    "Cargo.toml",
+    "axon.toml",
+    "bootstrap.sh",
+    "capabilities/home-assistant/service.toml",
+    "capabilities/postgres/service.toml",
+    "capabilities/vaultwarden/service.toml",
+    "rust-toolchain.toml",
+    "upstreams.toml",
+])
 
 # Database-backed Rust tests are explicit and manual so `bazel test //...`
 # stays usable in a fresh clone without a running Axon Postgres service. The
@@ -39,8 +45,8 @@ _ARCHITECTURE_INPUTS = [
     "axon.toml",
     "upstreams.toml",
     "systems.toml",
-    "tools/lib/paths.sh",
-    "tools/lib/toml.sh",
+    "//tools:lib/paths.sh",
+    "//tools:lib/toml.sh",
     # Every subpackage capability needs BOTH labels. README.md feeds the What column;
     # service.toml feeds Service, Port and Panel. Only calendar's service.toml was listed
     # here until 2026-07-30, so the six below were invisible to the generator inside the
@@ -105,17 +111,17 @@ _ARCHITECTURE_INPUTS = [
 
 sh_binary(
     name = "generate_architecture",
-    srcs = ["tools/generate-architecture.sh"],
+    srcs = ["//tools:generate-architecture.sh"],
     data = _ARCHITECTURE_INPUTS,
 )
 
 sh_test(
     name = "architecture_up_to_date_test",
     size = "small",
-    srcs = ["tools/check-architecture-fresh.sh"],
+    srcs = ["//tools:check-architecture-fresh.sh"],
     data = _ARCHITECTURE_INPUTS + [
         "ARCHITECTURE.md",
-        "tools/generate-architecture.sh",
+        "//tools:generate-architecture.sh",
     ],
 )
 
@@ -125,10 +131,10 @@ sh_test(
 # tools/graphify.sh.
 sh_binary(
     name = "graphify",
-    srcs = ["tools/graphify.sh"],
+    srcs = ["//tools:graphify.sh"],
     data = [
-        "tools/lib/paths.sh",
-        "tools/lib/toml.sh",
+        "//tools:lib/paths.sh",
+        "//tools:lib/toml.sh",
     ],
 )
 
@@ -139,22 +145,11 @@ sh_binary(
 sh_test(
     name = "doc_self_reference_test",
     size = "small",
-    srcs = ["tools/check-doc-self-references.sh"],
+    srcs = ["//tools:check-doc-self-references.sh"],
     data = _ARCHITECTURE_INPUTS + glob([
         "Packs/*/README.md",
         "Packs/*/skills/*/SKILL.md",
     ]),
-)
-
-# The gate above over planted trees rather than real docs, because its `data` is
-# repo docs only: until 2026-08-02 the red path had never run in CI, and it was
-# wrong in both directions -- silently green on a path containing a space, and
-# falsely red on a doc naming a longer path that merely starts with its own.
-sh_test(
-    name = "doc_self_reference_regression_test",
-    size = "small",
-    srcs = ["tools/check-doc-self-references.test.sh"],
-    data = ["tools/check-doc-self-references.sh"],
 )
 
 # The public CLI is intentionally usable without an installed agent skill. This compact shell
@@ -163,28 +158,10 @@ sh_test(
 sh_test(
     name = "axon_cli_test",
     size = "small",
-    srcs = ["tools/axon.test.sh"],
+    srcs = ["//tools:axon.test.sh"],
     data = [
         "axon",
-        "tools/axon-context",
-    ],
-)
-
-# Version ordering for tools/upstream-checker. Hermetic on purpose -- the helpers were
-# extracted into tools/lib/version.sh precisely so the comparison can be tested without
-# a network call, after treating "differs from the pin" as "newer than the pin" produced
-# a cooldown warning telling the operator not to adopt a version they were already ahead
-# of (arrow-rs, 2026-07-28).
-sh_test(
-    name = "version_compare_test",
-    size = "small",
-    srcs = ["tools/version.test.sh"],
-    # toml.sh too: version.sh reads the release-tag glob from axon.toml, so its one
-    # dependency travels with it into the sandbox. The test builds its own axon.toml
-    # fixture rather than reading the tracked one, so that file is deliberately absent.
-    data = [
-        "tools/lib/toml.sh",
-        "tools/lib/version.sh",
+        "//tools:axon-context",
     ],
 )
 
@@ -195,7 +172,7 @@ sh_test(
 sh_test(
     name = "bun_pin_equality_test",
     size = "small",
-    srcs = ["tools/check-bun-pin.sh"],
+    srcs = ["//tools:check-bun-pin.sh"],
     data = [
         ".github/workflows/ci.yml",
         "upstreams.toml",
@@ -203,140 +180,26 @@ sh_test(
     ],
 )
 
-# The gate above over planted trees: its own `data` is the three real homes, which
-# agree, so on its own it can only ever prove the green path.
-sh_test(
-    name = "bun_pin_regression_test",
-    size = "small",
-    srcs = ["tools/check-bun-pin.test.sh"],
-    data = ["tools/check-bun-pin.sh"],
-)
-
-# The overlay's mirror hook, over planted repos. What it guards is a commit BOUNDARY, not
-# the mirror's content: the hook shipped ending in a blanket `git add`, so a path-scoped
-# commit silently grew. The added bytes were legitimate every time, which is why only an
-# assertion on how many files land can catch it.
-sh_test(
-    name = "lifeos_mirror_hook_test",
-    size = "small",
-    srcs = ["tools/pre-commit-lifeos-mirror.test.sh"],
-    data = ["tools/templates/hooks/pre-commit-lifeos-mirror.tmpl"],
-)
-
-# The release-drift declaration in upstreams.toml (#38). The tracked manifest can only ever
-# show the states it happens to be in, so this plants its own via AXON_UPSTREAMS_MANIFEST and
-# stubs `gh` on PATH -- which makes the drift block itself hermetic, not merely skipped.
-sh_test(
-    name = "upstream_declaration_test",
-    size = "small",
-    srcs = ["tools/upstream-checker.test.sh"],
-    data = [
-        # axon.toml because paths.sh reads the overlay from it and the checker reads the
-        # cooldown window; the sandbox has no gitignored axon.local.toml, which is the
-        # fallback path that keeps every Bazel gate here working.
-        "axon.toml",
-        # Sourced by upstream-checker for advisory_scan. Missing from the
-        # sandbox it fails open rather than loudly: the scan degrades to
-        # `advisory_scan: command not found` on stderr, every advisory
-        # assertion misses, and the gate reports nine failures none of which
-        # name the actual cause.
-        "tools/lib/advisories.sh",
-        "tools/lib/paths.sh",
-        "tools/lib/toml.sh",
-        "tools/lib/version.sh",
-        "tools/upstream-checker",
-    ],
-)
-
-# Copies both libs into a scratch root, so paths.sh self-locates there rather than into
-# the real checkout. Hermetic: a temp dir, no git, no network.
-sh_test(
-    name = "manifest_resolution_test",
-    size = "small",
-    srcs = ["tools/manifest-resolution.test.sh"],
-    data = [
-        "tools/lib/paths.sh",
-        "tools/lib/toml.sh",
-    ],
-)
-
-# Same scratch-root technique, for the other half of resolution: which of an overlay's
-# machines this host is. Reads the real hostname, writes nothing outside the temp dir.
-sh_test(
-    name = "machine_resolution_test",
-    size = "small",
-    srcs = ["tools/machine-resolution.test.sh"],
-    data = [
-        "tools/lib/paths.sh",
-        "tools/lib/toml.sh",
-    ],
-)
-
-sh_test(
-    name = "publication_hygiene_test",
-    size = "small",
-    srcs = ["tools/check-publication-hygiene.test.sh"],
-    data = ["tools/check-publication-hygiene.sh"],
-)
-
-# Both install profiles of update.sh --check against clones the test makes itself. The
-# usage profile's breakage lived in `git clone --depth 1 --branch <tag>` producing a
-# tag-only refspec and therefore no origin/main, which is a property of real cloning that
-# no fixture reproduces — so this one runs git rather than asserting against a directory.
-# It builds its own scratch remote from these sources, touches no network, and never reads
-# the developer's own worktree state.
-sh_test(
-    name = "update_profiles_test",
-    size = "medium",
-    srcs = ["tools/update-profiles.test.sh"],
-    data = [
-        "axon.toml",
-        "tools/lib/delta.sh",
-        "tools/lib/paths.sh",
-        "tools/lib/toml.sh",
-        "tools/lib/version.sh",
-        "tools/update.sh",
-    ],
-)
-
-# The pin-vs-installed check over planted manifests and planted binaries. The tracked
-# manifest can only show the state this machine happens to be in, so every red path --
-# disagreeing, absent, unprobeable, and an unsafe probe -- needs a fixture. Hermetic: it
-# plants its own PATH, and the --offline flag keeps the network out.
-sh_test(
-    name = "installed_probe_test",
-    size = "small",
-    srcs = ["tools/installed-probe.test.sh"],
-    data = [
-        # upstream-checker sources paths.sh, which reads axon.toml — absent from the sandbox
-        # unless declared, and the test passed locally without it purely because the real
-        # checkout was there. The Axon#30 false-green class, caught by CI.
-        "axon.toml",
-        # Same reason as upstream_declaration_test: upstream-checker sources it
-        # for advisory_scan, and its absence degrades to stderr noise rather
-        # than to a failure that names itself.
-        "tools/lib/advisories.sh",
-        "tools/lib/paths.sh",
-        "tools/lib/toml.sh",
-        "tools/lib/version.sh",
-        "tools/upstream-checker",
-    ],
-)
-
-# The one-line installer against a scratch remote it clones for real. Two of its properties
-# cannot be checked by reading the script: that no truncated prefix executes anything (it
-# runs every prefix with a git that records being called), and that the two profiles produce
-# the two clone shapes, which is git refspec behaviour rather than anything this file states.
-sh_test(
-    name = "bootstrap_test",
-    size = "medium",
-    srcs = ["tools/bootstrap.test.sh"],
-    data = [
-        "bootstrap.sh",
-        "tools/install.sh",
-        "tools/lib/toml.sh",
-    ],
-)
+# Compatibility names for tests now owned by //tools. Existing CI commands and
+# contributor muscle memory keep working, while each implementation and its
+# runfiles are declared in the package that owns them.
+alias(name = "agent_integrations_test", actual = "//tools:agent_integrations_test")
+alias(name = "backup_test", actual = "//tools:backup_test")
+alias(name = "bootstrap_test", actual = "//tools:bootstrap_test")
+alias(name = "bun_pin_regression_test", actual = "//tools:bun_pin_regression_test")
+alias(name = "doc_self_reference_regression_test", actual = "//tools:doc_self_reference_regression_test")
+alias(name = "expiry_classification_test", actual = "//tools:expiry_classification_test")
+alias(name = "external_ref_test", actual = "//tools:external_ref_test")
+alias(name = "installed_probe_test", actual = "//tools:installed_probe_test")
+alias(name = "lifeos_mirror_hook_test", actual = "//tools:lifeos_mirror_hook_test")
+alias(name = "machine_resolution_test", actual = "//tools:machine_resolution_test")
+alias(name = "manifest_resolution_test", actual = "//tools:manifest_resolution_test")
+alias(name = "materialize_inference_key_test", actual = "//tools:materialize_inference_key_test")
+alias(name = "publication_hygiene_test", actual = "//tools:publication_hygiene_test")
+alias(name = "restore_test", actual = "//tools:restore_test")
+alias(name = "update_profiles_test", actual = "//tools:update_profiles_test")
+alias(name = "upstream_declaration_test", actual = "//tools:upstream_declaration_test")
+alias(name = "version_compare_test", actual = "//tools:version_compare_test")
 
 # tools/persistence-orphans.test.sh is deliberately NOT an sh_test. It runs the whole
 # tools/doctor, which reads far more of the tree than a hermetic sandbox should have to
@@ -352,109 +215,19 @@ sh_test(
 sh_test(
     name = "audit_policy_test",
     size = "small",
-    srcs = ["tools/audit.test.sh"],
+    srcs = ["//tools:audit.test.sh"],
     data = [
         "axon.toml",
-        "tools/audit",
+        "//tools:audit",
         # expiry.sh because tools/audit sources it relative to itself on every path,
         # including the gitleaks-only one that skips the scanners entirely.
-        "tools/lib/expiry.sh",
-        "tools/lib/paths.sh",
-        "tools/lib/toml.sh",
+        "//tools:lib/expiry.sh",
+        "//tools:lib/paths.sh",
+        "//tools:lib/toml.sh",
     ] + glob([
         "capabilities/*/service.toml",
         "trivy-ignore/*.txt",
     ]),
-)
-
-# The expiry classification alone, with no fixture root and no mocked scanner. The test above
-# proves the wiring, the exit codes and the summary lines; this proves the matrix -- window
-# boundaries, which of several dates governs, undated and malformed entries, and that the
-# helpers leak nothing into the caller's scope. Hermetic, and every fixture date is generated
-# at run time: a date written as a literal passes today and fails on its own expiry, which is
-# the bug under test wearing a different hat.
-sh_test(
-    name = "expiry_classification_test",
-    size = "small",
-    srcs = ["tools/expiry.test.sh"],
-    data = ["tools/lib/expiry.sh"],
-)
-
-sh_test(
-    name = "backup_test",
-    size = "small",
-    srcs = ["tools/backup.test.sh"],
-    data = [
-        "tools/backup.sh",
-        "tools/lib/external-ref.sh",
-        "tools/lib/test-support.sh",
-        "tools/lib/toml.sh",
-    ],
-)
-
-sh_test(
-    name = "materialize_inference_key_test",
-    size = "small",
-    srcs = ["tools/materialize-inference-key.test.sh"],
-    data = [
-        # The vaultwarden manifest is an input now: the env_file fallback reads `env_file` off
-        # it to find where DOMAIN lives, so without it in the sandbox the self-hosting case
-        # resolves nothing and the test fails for a reason unrelated to what it asserts.
-        "axon.toml",
-        "capabilities/vaultwarden/service.toml",
-        "tools/lib/external-ref.sh",
-        "tools/lib/paths.sh",
-        "tools/lib/toml.sh",
-        "tools/materialize-inference-key",
-    ],
-)
-
-# The resolver on its own, not only through the tools that call it: a shared lookup tested
-# solely by one caller has whatever contract that caller happened to need. Its last case is a
-# class gate — nothing outside the resolver may work out a vault address by hand again — so the
-# two callers are `data` here even though this test never executes them.
-sh_test(
-    name = "external_ref_test",
-    size = "small",
-    srcs = ["tools/external-ref.test.sh"],
-    data = [
-        "capabilities/vaultwarden/service.toml",
-        "tools/lib/external-ref.sh",
-        "tools/lib/toml.sh",
-        "tools/materialize-inference-key",
-        "tools/setup-secret.sh",
-    ],
-)
-
-sh_test(
-    name = "agent_integrations_test",
-    size = "small",
-    srcs = ["tools/agent-integrations.test.sh"],
-    data = [
-        "axon.toml",
-        "tools/agent-integrations.sh",
-        "tools/lib/paths.sh",
-        "tools/lib/toml.sh",
-        "upstreams.toml",
-    ],
-)
-
-sh_test(
-    name = "restore_test",
-    size = "small",
-    srcs = ["tools/restore.test.sh"],
-    data = [
-        "axon.toml",
-        "capabilities/home-assistant/service.toml",
-        "capabilities/postgres/service.toml",
-        "capabilities/vaultwarden/service.toml",
-        "tools/lib/paths.sh",
-        # restore.sh sources this for its runtime-status check (#42); without it the sandbox
-        # fails at the source line, which is how this list is kept honest.
-        "tools/lib/pipe.sh",
-        "tools/lib/toml.sh",
-        "tools/restore.sh",
-    ],
 )
 
 # Capability-manifest schema + referential-integrity gates. Both scripts source
@@ -464,12 +237,12 @@ sh_test(
 _MANIFEST_INPUTS = [
     "axon.toml",  # explicit (non-empty anchor); paths.sh reads `overlay` from it, and
     # manifest_integrity reads its `capabilities = [...]` array.
-    "tools/lib/paths.sh",
-    "tools/lib/toml.sh",
+    "//tools:lib/paths.sh",
+    "//tools:lib/toml.sh",
     # check-service-tomls.sh sources this to validate a `schedule` duration with the same
     # parser service-runner.sh renders one with. Absent here, the gate dies in the sandbox on
     # a file that exists everywhere else -- the Axon#30 false-green class again.
-    "tools/lib/schedule.sh",
+    "//tools:lib/schedule.sh",
     # scouting/transit/axon-status are their own Bazel packages (own BUILD.bazel), so the
     # capabilities/*/README.md glob below can't reach them -- reference their README.md by
     # explicit cross-package label so those capability dirs still materialize in the sandbox
@@ -507,13 +280,13 @@ _MANIFEST_INPUTS = [
 sh_test(
     name = "service_toml_schema_test",
     size = "small",
-    srcs = ["tools/check-service-tomls.sh"],
+    srcs = ["//tools:check-service-tomls.sh"],
     data = _MANIFEST_INPUTS,
 )
 
 sh_test(
     name = "manifest_integrity_test",
     size = "small",
-    srcs = ["tools/check-manifest-integrity.sh"],
+    srcs = ["//tools:check-manifest-integrity.sh"],
     data = _MANIFEST_INPUTS,
 )
