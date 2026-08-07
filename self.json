@@ -60,7 +60,15 @@
       },
       "code": {
         "files": 2,
-        "nodes": 36
+        "nodes": 64
+      }
+    },
+    {
+      "name": "axon-store",
+      "kind": "lib",
+      "code": {
+        "files": 2,
+        "nodes": 20
       }
     },
     {
@@ -75,12 +83,16 @@
       },
       "code": {
         "files": 14,
-        "nodes": 537
+        "nodes": 538
       }
     },
     {
       "name": "cognitive-load",
-      "kind": "pack"
+      "kind": "pack",
+      "code": {
+        "files": 4,
+        "nodes": 23
+      }
     },
     {
       "name": "comms",
@@ -94,7 +106,7 @@
       },
       "code": {
         "files": 46,
-        "nodes": 944
+        "nodes": 958
       }
     },
     {
@@ -124,8 +136,18 @@
         "port": "47117"
       },
       "code": {
-        "files": 74,
-        "nodes": 447
+        "files": 75,
+        "nodes": 450
+      }
+    },
+    {
+      "name": "feed-sweep",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "comms"
+        ]
       }
     },
     {
@@ -298,7 +320,7 @@
       },
       "code": {
         "files": 10,
-        "nodes": 109
+        "nodes": 111
       }
     },
     {
@@ -329,7 +351,7 @@
       },
       "code": {
         "files": 29,
-        "nodes": 525
+        "nodes": 526
       }
     },
     {
@@ -358,7 +380,7 @@
       },
       "code": {
         "files": 18,
-        "nodes": 275
+        "nodes": 279
       }
     },
     {
@@ -381,15 +403,15 @@
       },
       "code": {
         "files": 5,
-        "nodes": 55
+        "nodes": 56
       }
     },
     {
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 105,
-        "nodes": 882
+        "files": 112,
+        "nodes": 938
       }
     },
     {
@@ -404,7 +426,7 @@
       },
       "code": {
         "files": 10,
-        "nodes": 171
+        "nodes": 172
       }
     },
     {
@@ -419,7 +441,7 @@
       },
       "code": {
         "files": 6,
-        "nodes": 93
+        "nodes": 94
       }
     },
     {
@@ -525,6 +547,18 @@
     },
     {
       "from": "calendar",
+      "to": "axon-store",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/calendar/BUILD.bazel",
+        "capabilities/calendar/src/lib.rs"
+      ]
+    },
+    {
+      "from": "calendar",
       "to": "content-item",
       "kinds": [
         "bazel-label",
@@ -581,6 +615,18 @@
       "evidence": [
         "capabilities/comms/BUILD.bazel",
         "capabilities/comms/src/server.rs"
+      ]
+    },
+    {
+      "from": "comms",
+      "to": "axon-store",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/comms/BUILD.bazel",
+        "capabilities/comms/src/lib.rs"
       ]
     },
     {
@@ -657,6 +703,18 @@
     },
     {
       "from": "punctuality",
+      "to": "axon-store",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/punctuality/BUILD.bazel",
+        "capabilities/punctuality/src/lib.rs"
+      ]
+    },
+    {
+      "from": "punctuality",
       "to": "route-manifest",
       "kinds": [
         "bazel-label",
@@ -689,6 +747,18 @@
       "evidence": [
         "capabilities/scouting/BUILD.bazel",
         "capabilities/scouting/src/server.rs"
+      ]
+    },
+    {
+      "from": "scouting",
+      "to": "axon-store",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/scouting/BUILD.bazel",
+        "capabilities/scouting/src/lib.rs"
       ]
     },
     {
@@ -799,6 +869,18 @@
     },
     {
       "from": "tasks",
+      "to": "axon-store",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/tasks/BUILD.bazel",
+        "capabilities/tasks/src/lib.rs"
+      ]
+    },
+    {
+      "from": "tasks",
       "to": "content-item",
       "kinds": [
         "bazel-label",
@@ -847,6 +929,18 @@
     },
     {
       "from": "transit",
+      "to": "axon-store",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/transit/BUILD.bazel",
+        "capabilities/transit/src/lib.rs"
+      ]
+    },
+    {
+      "from": "transit",
       "to": "route-manifest",
       "kinds": [
         "bazel-label",
@@ -879,6 +973,18 @@
       "evidence": [
         "capabilities/trips/BUILD.bazel",
         "capabilities/trips/src/server.rs"
+      ]
+    },
+    {
+      "from": "trips",
+      "to": "axon-store",
+      "kinds": [
+        "bazel-label",
+        "rust-path"
+      ],
+      "evidence": [
+        "capabilities/trips/BUILD.bazel",
+        "capabilities/trips/src/lib.rs"
       ]
     },
     {
@@ -1126,6 +1232,16 @@
       "pin": "17.10-alpine"
     },
     {
+      "name": "r2d2",
+      "verdict": "adopt",
+      "pin": "0.8.10"
+    },
+    {
+      "name": "r2d2_postgres",
+      "verdict": "adopt",
+      "pin": "0.18.2"
+    },
+    {
       "name": "research-paper-writing-skills",
       "verdict": "quarry",
       "pin": ""
@@ -1248,30 +1364,9 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 7552,
-    "external": 11,
-    "stale": [
-      "Packs/axon/README.md",
-      "Packs/axon/evals/axon-skill.test.ts",
-      "Packs/axon/skills/axon/SKILL.md",
-      "Packs/axon/skills/axon/references/on-dependencies-and-build.md",
-      "Packs/axon/skills/axon/references/on-documentation.md",
-      "Packs/axon/skills/axon/references/on-issues.md",
-      "Packs/axon/skills/axon/references/on-orientation.md",
-      "Packs/axon/skills/axon/references/on-placement.md",
-      "Packs/axon/skills/axon/references/on-verification.md",
-      "Packs/axon/skills/axon/references/shared-architecture.md",
-      "Packs/axon/skills/axon/references/shared-data-boundaries.md",
-      "Packs/axon/skills/axon/references/shared-failure-policy.md",
-      "Packs/axon/skills/axon/references/with-discovery.md",
-      "Packs/axon/skills/axon/references/with-operations.md",
-      "Packs/axon/skills/axon/scripts/axapi",
-      "Packs/axon/skills/axon/scripts/axon-context",
-      "Packs/axon/skills/axon/scripts/axon-root",
-      "tools/packs-axon",
-      "tools/packs-axon.test.ts",
-      "tools/packs-axon.ts"
-    ],
+    "nodes": 7631,
+    "external": 7,
+    "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",
@@ -1283,7 +1378,9 @@
       "CONTRIBUTING.md",
       "README.md",
       "SECURITY.md",
-      "bootstrap.sh"
+      "axon",
+      "bootstrap.sh",
+      "docs/axon-cli.md"
     ]
   }
 }
