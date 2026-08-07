@@ -16,6 +16,12 @@ It knows no capability names. `tools/capability.sh registry` renders the
 `tools/lib/toml.sh` stays the only TOML parser (README.md#one-manifest-per-concern) and a port
 literal lives in exactly one file.
 
+`src/main.rs` is the composition root for configuration, route assembly, bind,
+and shutdown. The `src/status/` modules own registry/cache invalidation, health
+aggregation and HTTP projection, lifecycle commands, backup contracts/run
+state, and idle-panel reaping. The reaper retains its task handle and stops
+with the server instead of becoming detached process work.
+
 ## Port and binding
 
 Default: `8082`. Resolution order: `AXON_PORT` (exported by tools/service-runner.sh from

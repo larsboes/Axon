@@ -7,7 +7,7 @@ exports_files(["README.md", "service.toml"])
 rust_binary(
     name = "axon-status",
     crate_root = "src/main.rs",
-    srcs = ["src/main.rs"],
+    srcs = glob(["src/**/*.rs"]),
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
