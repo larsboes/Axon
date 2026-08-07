@@ -193,7 +193,7 @@ url = "https://github.com/bazelbuild/rules_rust"
 verdict = "adopt"
 license = "Apache-2.0"
 pin = "0.71.1"          # 2026-06-26, 14d old as of 2026-07-10 -- exactly cleared the cooldown; 0.71.2 (2026-06-28) and 0.71.3 (2026-07-02, 8d old) are still inside/at the edge of the 7-14d window, not adopted yet
-why = "Rust build spine, adopted now (not deferred) because more Rust capabilities are coming (transit next, likely ai-client after) and will share this dependency graph. Uses crate.from_cargo (bzlmod crate_universe) pointed at each capability's own Cargo.toml/Cargo.lock as the single source of truth -- README.md#one-manifest-per-concern forbids duplicating that dependency list into MODULE.bazel via manual crate.spec() calls, which is what LifeOS-mono's own (unaudited) MODULE.bazel did"
+why = "Rust build spine. Cargo owns one root workspace and lockfile while each member manifest owns its direct dependencies; crate.from_cargo consumes those root inputs to generate Bazel's single dependency universe without duplicating versions through manual crate.spec() calls"
 
 [postgres]
 url = "https://github.com/docker-library/postgres"

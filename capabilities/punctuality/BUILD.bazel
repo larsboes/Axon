@@ -2,7 +2,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 # README.md is otherwise private to this package -- exported so the root
 # //:architecture_up_to_date_test can reference it across the package boundary.
-exports_files(["README.md", "Cargo.toml", "Cargo.lock", "service.toml"])
+exports_files(["README.md", "Cargo.toml", "service.toml"])
 
 rust_library(
     name = "punctuality_lib",
@@ -20,14 +20,14 @@ rust_library(
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
-        "@crate_index_punctuality//:arrow",
-        "@crate_index_punctuality//:parquet",
-        "@crate_index_punctuality//:postgres",
-        "@crate_index_punctuality//:r2d2",
-        "@crate_index_punctuality//:r2d2_postgres",
-        "@crate_index_punctuality//:reqwest",
-        "@crate_index_punctuality//:serde",
-        "@crate_index_punctuality//:thiserror",
+        "@crate_index//:arrow",
+        "@crate_index//:parquet",
+        "@crate_index//:postgres",
+        "@crate_index//:r2d2",
+        "@crate_index//:r2d2_postgres",
+        "@crate_index//:reqwest",
+        "@crate_index//:serde",
+        "@crate_index//:thiserror",
     ],
 )
 
@@ -51,7 +51,7 @@ rust_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":punctuality_lib",
-        "@crate_index_punctuality//:reqwest",
+        "@crate_index//:reqwest",
     ],
 )
 
@@ -67,10 +67,10 @@ rust_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":punctuality_lib",
-        "@crate_index_punctuality//:axum",
-        "@crate_index_punctuality//:serde",
-        "@crate_index_punctuality//:serde_json",
-        "@crate_index_punctuality//:tokio",
-        "@crate_index_punctuality//:tower-http",
+        "@crate_index//:axum",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:tokio",
+        "@crate_index//:tower-http",
     ],
 )

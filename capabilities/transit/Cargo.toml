@@ -1,7 +1,9 @@
 [package]
 name = "transit"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "HAFAS journey search, split-ticket solver, rail-ticket confirmation extraction, and Trips/Postgres persistence."
 publish = false
 

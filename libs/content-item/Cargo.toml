@@ -1,7 +1,9 @@
 [package]
 name = "content-item"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "The canonical Axon content-item-v1 reader contract, shared by every capability that emits one."
 publish = false
 

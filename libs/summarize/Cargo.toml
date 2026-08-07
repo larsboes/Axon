@@ -1,7 +1,9 @@
 [package]
 name = "axon-summarize"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "One adaptive digest engine: the shape follows the source's length, 'more detailed' is a rung on that same ladder, and a Mermaid answer is validated before it is stored."
 publish = false
 

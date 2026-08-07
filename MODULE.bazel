@@ -7,135 +7,25 @@ module(name = "axon")
 bazel_dep(name = "rules_rust", version = "0.71.1")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-rust.toolchain(edition = "2021")
+rust.toolchain(
+    edition = "2021",
+    versions = ["1.96.0"],
+)
 use_repo(rust, "rust_toolchains")
 
 register_toolchains("@rust_toolchains//:all")
 
-# crate.from_cargo originally pointed one-per-capability, each at its own
-# Cargo.toml/Cargo.lock, back when scouting and transit were fully
-# independent (README.md#one-manifest-per-concern: one manifest per concern). That broke once
-# scouting started consuming transit's types directly across a serde
-# boundary (adapters/transit_fare.rs, Journey -> Opportunity) -- two
-# separately-resolved crate universes produce two binary-incompatible
-# `serde::Serialize` impls for "the same" crate version, a real compile
-# error (`the trait bound Journey: Serialize is not satisfied`), not a style
-# preference. See README.md#three-architectural-nouns.
-# One registry now for both: `cargo_lockfile` still
-# pins from scouting's own Cargo.lock (single source of truth for
-# versions), but `manifests` includes transit's Cargo.toml too so
-# cargo-bazel's splicer can resolve the `transit = { path = "../transit" }`
-# dependency scouting's Cargo.toml declares. A capability with no
-# cross-crate type sharing with anything else still gets its own
-# crate.from_cargo block -- this merge is specific to scouting+transit now
-# actually needing to interoperate, not a new default policy.
+# Cargo and Bazel resolve the same root workspace and lockfile. One generated
+# repository keeps shared Rust types and dependency versions identical across
+# every capability and library while each package still declares its direct
+# dependencies in its own manifest.
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(
     name = "crate_index",
-    cargo_lockfile = "//capabilities/scouting:Cargo.lock",
-    manifests = [
-        "//capabilities/scouting:Cargo.toml",
-        "//capabilities/transit:Cargo.toml",
-    ],
+    cargo_lockfile = "//:Cargo.lock",
+    manifests = ["//:Cargo.toml"],
 )
 use_repo(crate, "crate_index")
-
-# One shared crate_index only where types genuinely cross a trait boundary (scouting+transit),
-# never a blanket "one global registry for every Rust capability". axon-status shares no types
-# with them -- just independent HTTP health checks -- so it gets its own crate.from_cargo block
-# below. A third capability that starts sharing types with scouting or transit extends
-# crate_index's `manifests` above; it does not get a fourth registry. README.md#three-architectural-nouns.
-crate_axon_status = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-crate_axon_status.from_cargo(
-    name = "crate_index_axon_status",
-    cargo_lockfile = "//capabilities/axon-status:Cargo.lock",
-    manifests = ["//capabilities/axon-status:Cargo.toml"],
-)
-use_repo(crate_axon_status, "crate_index_axon_status")
-
-# capabilities/comms -- shares no types across a trait boundary with any other
-# capability (contract deps only), so its own crate.from_cargo block per
-# README.md#three-architectural-nouns.
-crate_comms = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-crate_comms.from_cargo(
-    name = "crate_index_comms",
-    cargo_lockfile = "//capabilities/comms:Cargo.lock",
-    manifests = ["//capabilities/comms:Cargo.toml"],
-)
-use_repo(crate_comms, "crate_index_comms")
-
-# libs/ai-client -- a shared library, not a capability (no domain of its own: no
-# upstream verdict, no external system, no CLI), see
-# README.md#three-architectural-nouns. Shares no types across a
-# trait boundary with scouting/transit/axon-status, so its own crate.from_cargo block per
-# README.md#three-architectural-nouns.
-crate_ai_client = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-crate_ai_client.from_cargo(
-    name = "crate_index_ai_client",
-    cargo_lockfile = "//libs/ai-client:Cargo.lock",
-    manifests = ["//libs/ai-client:Cargo.toml"],
-)
-use_repo(crate_ai_client, "crate_index_ai_client")
-
-# capabilities/punctuality -- shares no types across a trait boundary with any other
-# capability (it publishes statistics through Postgres and, later, HTTP), so its own
-# crate.from_cargo block per README.md#three-architectural-nouns.
-crate_punctuality = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-crate_punctuality.from_cargo(
-    name = "crate_index_punctuality",
-    cargo_lockfile = "//capabilities/punctuality:Cargo.lock",
-    manifests = ["//capabilities/punctuality:Cargo.toml"],
-)
-use_repo(crate_punctuality, "crate_index_punctuality")
-
-# capabilities/trips owns persisted trip intent and itinerary items. It composes
-# with transit and scouting over HTTP rather than sharing Rust types, so it keeps
-# an independent crate universe like other contract-only capabilities.
-crate_trips = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-crate_trips.from_cargo(
-    name = "crate_index_trips",
-    cargo_lockfile = "//capabilities/trips:Cargo.lock",
-    manifests = ["//capabilities/trips:Cargo.toml"],
-)
-use_repo(crate_trips, "crate_index_trips")
-
-# capabilities/tasks owns the record that something needs doing, plus a way back
-# to whatever observed it. Like trips it shares no Rust types across a trait
-# boundary with another capability -- comms promotes a mail over HTTP, it does
-# not link against this -- so it gets its own crate_universe repo.
-crate_tasks = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-crate_tasks.from_cargo(
-    name = "crate_index_tasks",
-    cargo_lockfile = "//capabilities/tasks:Cargo.lock",
-    manifests = ["//capabilities/tasks:Cargo.toml"],
-)
-use_repo(crate_tasks, "crate_index_tasks")
-
-# capabilities/soundscape owns what should be playing -- preset, params, mix, seed --
-# while the browser owns the synth and the clock it runs on. It shares no Rust types
-# across a trait boundary with any other capability (its contract is HTTP plus the UI
-# bundle), so its own crate.from_cargo block per README.md#three-architectural-nouns.
-crate_soundscape = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-crate_soundscape.from_cargo(
-    name = "crate_index_soundscape",
-    cargo_lockfile = "//capabilities/soundscape:Cargo.lock",
-    manifests = ["//capabilities/soundscape:Cargo.toml"],
-)
-use_repo(crate_soundscape, "crate_index_soundscape")
-
-# capabilities/calendar owns the personal calendar layer (availability windows,
-# scoped rhythms, events). Composes with its siblings over HTTP/Postgres (the
-# correlation layer joins across schemas), no shared Rust types across a trait
-# boundary, so its own crate.from_cargo block per README.md#three-architectural-nouns. Its
-# Cargo.lock mirrors trips' pins exactly -- same vetted dependency set, no new
-# upstream.
-crate_calendar = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-crate_calendar.from_cargo(
-    name = "crate_index_calendar",
-    cargo_lockfile = "//capabilities/calendar:Cargo.lock",
-    manifests = ["//capabilities/calendar:Cargo.toml"],
-)
-use_repo(crate_calendar, "crate_index_calendar")
 
 # platforms: needed directly (not just transitively via rules_rust) now that
 # tools/bazel/bun/BUILD.bazel declares toolchain() targets with

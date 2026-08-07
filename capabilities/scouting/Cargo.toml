@@ -1,7 +1,9 @@
 [package]
 name = "scouting"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Generic opportunity-discovery pipeline (events/scholarships/etc): scrape, embed, score against an interest profile, rank."
 publish = false
 

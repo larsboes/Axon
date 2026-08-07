@@ -1,7 +1,9 @@
 [package]
 name = "axon-status"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Aggregates live health from Axon's own HTTP-surfaced capabilities (transit-server, scout-server) for dashboard. Not LifeOS Pulse -- see capabilities/axon-status/README.md."
 publish = false
 

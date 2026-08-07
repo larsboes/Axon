@@ -30,7 +30,7 @@ jobs:
       - name: Check out Axon
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      # Fetched artifacts: crates.io for seven crate universes, the rules_rust
+      # Fetched artifacts: crates.io for the shared Rust crate universe, the rules_rust
       # toolchain, and all four bun platform archives (//... builds every
       # bun_toolchain target, not just the host's). Keyed on the lockfiles that
       # determine them, so it is saved exactly when they change.
@@ -38,7 +38,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/bazel-repo
-          key: bazel-repo-${{ runner.os }}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', '**/Cargo.lock') }}
+          key: bazel-repo-${{ runner.os }}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', 'Cargo.lock') }}
           restore-keys: |
             bazel-repo-${{ runner.os }}-
 
@@ -110,7 +110,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/bazel-repo
-          key: bazel-repo-${{ runner.os }}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', '**/Cargo.lock') }}
+          key: bazel-repo-${{ runner.os }}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', 'Cargo.lock') }}
           restore-keys: |
             bazel-repo-${{ runner.os }}-
 

@@ -39,6 +39,17 @@ bun test ./tools/
 tools/check-publication-hygiene.sh
 ~~~
 
+Rust packages are members of the root `Cargo.toml` workspace and share the
+root `Cargo.lock`. Keep each package's direct dependencies in that package's
+manifest; do not add nested lockfiles or another Bazel crate universe. For a
+Rust change, verify the workspace view and Cargo build alongside Bazel:
+
+~~~sh
+cargo metadata --locked --no-deps --format-version 1
+cargo check --workspace --locked
+bazel test //...
+~~~
+
 The default Bazel command is hermetic and does not require Postgres. Store
 integration tests are deliberately manual and fail rather than skip when their
 database is absent. Run all four against a synthetic database with:

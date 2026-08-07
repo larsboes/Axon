@@ -5,14 +5,8 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 # Visibility only, no effect on the Rust build. See root BUILD.bazel.
 exports_files(["README.md", "service.toml"])
 
-# Deps come from @crate_index (scouting's registry, shared with this crate),
-# not a separate @crate_index_transit -- once scouting started consuming
-# transit's types directly (adapters/transit_fare.rs, Journey -> Opportunity
-# via serde), two independently-resolved crate universes meant two distinct,
-# binary-incompatible `serde::Serialize` impls for the "same" crate version,
-# a real compile error, not a style preference. See MODULE.bazel and
-# MODULE.bazel's crate_index block for the full
-# reasoning; @crate_index_transit is retired, not merely unused.
+# Deps come from @crate_index, generated from the root Cargo workspace and
+# lockfile so every capability links the same resolved dependency instances.
 #
 # Library target is "transit_lib" (not "transit") with an explicit crate_name
 # override, unlike scouting's BUILD.bazel (which could just name the library

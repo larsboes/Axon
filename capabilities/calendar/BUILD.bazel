@@ -22,15 +22,15 @@ rust_library(
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
-        "@crate_index_calendar//:postgres",
-        "@crate_index_calendar//:r2d2",
-        "@crate_index_calendar//:r2d2_postgres",
+        "@crate_index//:postgres",
+        "@crate_index//:r2d2",
+        "@crate_index//:r2d2_postgres",
         # Phase E's Google Calendar transport. Blocking client, matching the
         # synchronous `postgres` client the rest of this crate uses; only the
         # server binary carries a tokio runtime.
-        "@crate_index_calendar//:reqwest",
-        "@crate_index_calendar//:serde",
-        "@crate_index_calendar//:serde_json",
+        "@crate_index//:reqwest",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
     ],
 )
 
@@ -53,11 +53,11 @@ rust_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":calendar_lib",
-        "@crate_index_calendar//:axum",
-        "@crate_index_calendar//:reqwest",
-        "@crate_index_calendar//:serde",
-        "@crate_index_calendar//:serde_json",
-        "@crate_index_calendar//:tokio",
-        "@crate_index_calendar//:tower-http",
+        "@crate_index//:axum",
+        "@crate_index//:reqwest",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:tokio",
+        "@crate_index//:tower-http",
     ],
 )
