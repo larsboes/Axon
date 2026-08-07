@@ -62,6 +62,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// endpoint exists to avoid.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
+    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
     r("GET", "/routes", "This manifest."),
     r(
         "GET",
@@ -767,6 +768,45 @@ async fn health_handler() -> Json<Value> {
         "service": "comms",
         "version": env!("CARGO_PKG_VERSION")
     }))
+}
+
+/// Readiness: whether this capability can actually serve, which liveness does not answer.
+///
+/// `health_handler` is a literal and cannot observe the database, so during a Postgres outage
+/// this capability reported itself up while every query behind it failed (#126). Availability
+/// is judged here instead.
+///
+/// A read route, like `/health`: an availability probe that needed the shared secret would
+/// make every consumer hold a credential to ask whether the feed is up.
+///
+/// 503, not 500: the request was fine, the dependency is not, and a caller that retries should
+/// be told to come back rather than to fix its input.
+async fn ready_handler() -> (StatusCode, Json<Value>) {
+    let probe = tokio::task::spawn_blocking(|| {
+        let cfg = Config::load();
+        Store::open(&cfg.database_url)
+            .and_then(|store| store.ping())
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    match probe {
+        Ok(Ok(())) => (
+            StatusCode::OK,
+            Json(json!({ "status": "ready", "service": "comms" })),
+        ),
+        Ok(Err(error)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "status": "unavailable", "service": "comms", "error": error })),
+        ),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "unavailable",
+                "service": "comms",
+                "error": "readiness check failed"
+            })),
+        ),
+    }
 }
 
 async fn feed_handler(Query(params): Query<FeedParams>) -> Json<Value> {
@@ -3574,6 +3614,7 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
     let read_routes = Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .route("/feed", get(feed_handler))
         .route("/feed/origins", get(feed_origins_handler))
         .route("/feed/runs", get(feed_runs_handler))

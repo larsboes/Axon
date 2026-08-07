@@ -5,6 +5,7 @@ command     = ["bazel-bin/capabilities/trips/trips-server"]
 build       = ["bazel", "build", "//capabilities/trips:trips-server"]
 port        = "8086"
 health_path = "/health"
+ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)
 # `/trips` is a dashboard route (the redirect stub to `/travel`), so only
 # `/trips/api` is proxied to this process. Without this the uniform rule in
 # vite.config.ts claims the whole `/trips` prefix, the SvelteKit page becomes

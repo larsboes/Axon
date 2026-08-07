@@ -85,6 +85,16 @@ impl CalendarStore {
         Ok(self.pool.get()?)
     }
 
+    /// The cheapest statement that proves this store can actually reach its database.
+    ///
+    /// A checkout from the pool is not enough on its own — the point is to fail exactly when a
+    /// real query would, which is what the readiness surface promises its caller (#126).
+    pub fn ping(&self) -> StoreResult<()> {
+        let mut conn = self.conn()?;
+        conn.query_one("SELECT 1", &[])?;
+        Ok(())
+    }
+
     fn run_migration(conn: &mut Client, schema: &str) -> StoreResult<()> {
         conn.batch_execute(&format!(
             "
@@ -1169,6 +1179,18 @@ mod tests {
     fn schema_names_are_restricted() {
         assert!(validate_schema("calendar_test").is_ok());
         assert!(validate_schema("calendar; DROP SCHEMA public").is_err());
+    }
+
+    /// The readiness handler turns exactly this failure into a 503, instead of the 200 the
+    /// stateless liveness handler answers through a Postgres outage (#126).
+    #[test]
+    fn a_store_cannot_be_opened_against_an_unreachable_database() {
+        // Port 1 is reserved and nothing listens there — the stopped-container case.
+        assert!(
+            CalendarStore::open("host=127.0.0.1 port=1 user=axon password=axon dbname=axon")
+                .is_err(),
+            "an unreachable database opened anyway"
+        );
     }
 
     #[test]

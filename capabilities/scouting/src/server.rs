@@ -29,6 +29,7 @@ use scouting::store::Store;
 /// endpoint exists to avoid.
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
+    r("GET", "/ready", "Readiness: liveness plus a reachable database."),
     r("GET", "/routes", "This manifest."),
     r("GET", "/discover", "Ranked opportunities for the Discover view."),
     r("GET", "/sources", "Declared opportunity sources and their state."),
@@ -234,6 +235,42 @@ async fn health_handler() -> Json<Value> {
         "service": "scouting",
         "version": env!("CARGO_PKG_VERSION")
     }))
+}
+
+/// Readiness: whether this capability can actually serve, which liveness does not answer.
+///
+/// `health_handler` is a literal and cannot observe the database, so during a Postgres outage
+/// this capability reported itself up while every query behind it failed (#126). Availability
+/// is judged here instead.
+///
+/// 503, not 500: the request was fine, the dependency is not, and a caller that retries should
+/// be told to come back rather than to fix its input.
+async fn ready_handler() -> (StatusCode, Json<Value>) {
+    let probe = tokio::task::spawn_blocking(|| {
+        let cfg = Config::load();
+        Store::open(&cfg.database_url)
+            .and_then(|store| store.ping())
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    match probe {
+        Ok(Ok(())) => (
+            StatusCode::OK,
+            Json(json!({ "status": "ready", "service": "scouting" })),
+        ),
+        Ok(Err(error)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "status": "unavailable", "service": "scouting", "error": error })),
+        ),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "unavailable",
+                "service": "scouting",
+                "error": "readiness check failed"
+            })),
+        ),
+    }
 }
 
 /// Returns the list of configured sources (from scouting.json's `sources[]`),
@@ -499,6 +536,7 @@ async fn main() {
     let app = Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .route("/discover", get(discover_handler))
         .route("/sources", get(sources_handler))
         .route("/opportunities", get(opportunities_handler))

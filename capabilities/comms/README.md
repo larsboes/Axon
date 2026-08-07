@@ -622,7 +622,10 @@ contract consumed by a dashboard panel:
   attachments. Gmail 404/410 becomes an explicit Missing state that retains Axon's local record;
   a Trash cleanup deadline remains active. The server runs the same bounded maintenance on its
   configured interval.
-- `GET /health`
+- `GET /health` → liveness. Answers from the process alone, so a start completes without a
+  database and a Postgres outage does not read as a crash.
+- `GET /ready` → readiness: liveness plus a reachable database, `503` when it is not. This is
+  what `axon-status` judges availability on, and what the dashboard reports.
 
 Binds `127.0.0.1`, not `0.0.0.0`: `/ingest` makes the server fetch a URL on
 request, so anything that can reach the port can use it to reach whatever the

@@ -458,6 +458,16 @@ impl Store {
         Ok(self.pool.get()?)
     }
 
+    /// The cheapest statement that proves this store can actually reach its database.
+    ///
+    /// A checkout from the pool is not enough on its own — the point is to fail exactly when a
+    /// real query would, which is what the readiness surface promises its caller (#126).
+    pub fn ping(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = self.conn()?;
+        conn.query_one("SELECT 1", &[])?;
+        Ok(())
+    }
+
     fn run_migration(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
         client.batch_execute(&format!(
             "
@@ -3824,6 +3834,24 @@ mod tests {
             )
         });
         (store, TestSchema(schema))
+    }
+
+    /// The readiness probe has to reach the database, not merely hold a pool handle —
+    /// a check that passes without touching Postgres is the bug #126 is about.
+    #[test]
+    fn ping_reaches_the_database() {
+        let (store, _schema) = open_test_store("ping");
+        store.ping().expect("a live store answers its own ping");
+    }
+
+    #[test]
+    fn a_store_cannot_be_opened_against_an_unreachable_database() {
+        // Port 1 is reserved and nothing listens there, so this fails the way a stopped
+        // Postgres container does. The readiness handler turns exactly this into a 503.
+        assert!(
+            Store::open("host=127.0.0.1 port=1 user=axon password=axon dbname=axon").is_err(),
+            "an unreachable database opened anyway"
+        );
     }
 
     /// Drops the schema when it goes out of scope, including on unwind.

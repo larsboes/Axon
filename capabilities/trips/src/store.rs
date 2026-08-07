@@ -266,6 +266,16 @@ impl TripsStore {
         Ok(self.pool.get()?)
     }
 
+    /// The cheapest statement that proves this store can actually reach its database.
+    ///
+    /// A checkout from the pool is not enough on its own — the point is to fail exactly when a
+    /// real query would, which is what the readiness surface promises its caller (#126).
+    pub fn ping(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = self.conn()?;
+        conn.query_one("SELECT 1", &[])?;
+        Ok(())
+    }
+
     fn run_migration(conn: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
         conn.batch_execute(&format!(
             "
