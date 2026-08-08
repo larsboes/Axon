@@ -2013,6 +2013,9 @@ export interface InvestmentCsvMapping {
   date_column: string;
   instrument_column: string;
   quantity_column: string;
+  activity_type_column?: string | null;
+  position_activity_values: string[];
+  non_position_activity_values: string[];
   reference_column?: string | null;
   price_column?: string | null;
   currency_column?: string | null;

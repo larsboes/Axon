@@ -18,12 +18,17 @@
   let error = $state<string | null>(null);
   let result = $state<InvestmentPreview | null>(null);
   let confirmed = $state(false);
+  let positionActivityValues = $state("");
+  let nonPositionActivityValues = $state("");
   let mapping = $state<InvestmentCsvMapping>({
     delimiter: ";",
     decimal_separator: ",",
     date_column: "Date",
     instrument_column: "Instrument",
     quantity_column: "Quantity",
+    activity_type_column: null,
+    position_activity_values: [],
+    non_position_activity_values: [],
     reference_column: "Reference",
     price_column: "Price",
     currency_column: "Currency",
@@ -55,6 +60,8 @@
     const profile = profiles[Number(selectedProfile)];
     if (profile) {
       mapping = structuredClone(profile.mapping);
+      positionActivityValues = mapping.position_activity_values.join(", ");
+      nonPositionActivityValues = mapping.non_position_activity_values.join(", ");
       result = null;
       confirmed = false;
     }
@@ -63,6 +70,9 @@
   function normalizedMapping(): InvestmentCsvMapping {
     return {
       ...mapping,
+      activity_type_column: mapping.activity_type_column?.trim() || null,
+      position_activity_values: positionActivityValues.split(",").map((value) => value.trim()).filter(Boolean),
+      non_position_activity_values: nonPositionActivityValues.split(",").map((value) => value.trim()).filter(Boolean),
       reference_column: mapping.reference_column?.trim() || null,
       price_column: mapping.price_column?.trim() || null,
       currency_column: mapping.currency_column?.trim() || null,
@@ -141,6 +151,9 @@
       <label>Date column<input bind:value={mapping.date_column} /></label>
       <label>Instrument column<input bind:value={mapping.instrument_column} /></label>
       <label>Quantity column<input bind:value={mapping.quantity_column} /></label>
+      <label>Activity type column<input bind:value={mapping.activity_type_column} placeholder="optional" /></label>
+      <label>Position activity values<input bind:value={positionActivityValues} placeholder="BUY, SELL" /></label>
+      <label>Non-position activity values<input bind:value={nonPositionActivityValues} placeholder="DIVIDEND" /></label>
       <label>Reference column<input bind:value={mapping.reference_column} placeholder="optional" /></label>
       <label>Price column<input bind:value={mapping.price_column} placeholder="optional" /></label>
       <label>Currency column<input bind:value={mapping.currency_column} placeholder="optional" /></label>

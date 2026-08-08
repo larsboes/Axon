@@ -201,6 +201,9 @@ mod tests {
                     "date_column": "Date",
                     "instrument_column": "Instrument",
                     "quantity_column": "Quantity",
+                    "activity_type_column": "Type",
+                    "position_activity_values": ["BUY", "SELL"],
+                    "non_position_activity_values": ["DIVIDEND"],
                     "reference_column": "Reference",
                     "price_column": "Price",
                     "currency_column": "Currency",
@@ -220,6 +223,12 @@ mod tests {
         assert_eq!(
             config.investment_csv_mappings[0].mapping.instrument_aliases["source-1"],
             "ACME"
+        );
+        assert_eq!(
+            config.investment_csv_mappings[0]
+                .mapping
+                .position_activity_values,
+            ["BUY", "SELL"]
         );
     }
 }

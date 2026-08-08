@@ -14,8 +14,8 @@
 <section class="portfolio">
   <div class="heading">
     <div>
-      <h2>Portfolio holdings</h2>
-      {#if snapshot}<p>Reviewed {snapshot.reviewed_at}; prices are from the latest activity, not a live quote.</p>{/if}
+      <h2>Reviewed holdings</h2>
+      {#if snapshot}<p>Only confirmed imports are included. Reviewed {snapshot.reviewed_at}; prices are from the latest activity, not a live quote.</p>{/if}
     </div>
     {#if snapshot}<strong>{snapshot.holdings.length} open</strong>{/if}
   </div>

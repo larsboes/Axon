@@ -22,6 +22,12 @@ pub struct InvestmentCsvMapping {
     pub instrument_column: String,
     pub quantity_column: String,
     #[serde(default)]
+    pub activity_type_column: Option<String>,
+    #[serde(default)]
+    pub position_activity_values: Vec<String>,
+    #[serde(default)]
+    pub non_position_activity_values: Vec<String>,
+    #[serde(default)]
     pub reference_column: Option<String>,
     #[serde(default)]
     pub price_column: Option<String>,
@@ -101,6 +107,7 @@ pub fn preview_csv(
     let date = column(&headers, &mapping.date_column)?;
     let instrument = column(&headers, &mapping.instrument_column)?;
     let quantity = column(&headers, &mapping.quantity_column)?;
+    let activity_type = optional_column(&headers, mapping.activity_type_column.as_deref())?;
     let reference = optional_column(&headers, mapping.reference_column.as_deref())?;
     let price = optional_column(&headers, mapping.price_column.as_deref())?;
     let currency = optional_column(&headers, mapping.currency_column.as_deref())?;
@@ -121,6 +128,26 @@ pub fn preview_csv(
         if quantity.mantissa == 0 {
             ignored_non_position_rows += 1;
             continue;
+        }
+        if let Some(index) = activity_type {
+            let value = record.get(index).unwrap_or_default().trim();
+            if mapping
+                .non_position_activity_values
+                .iter()
+                .any(|candidate| candidate == value)
+            {
+                ignored_non_position_rows += 1;
+                continue;
+            }
+            if !mapping
+                .position_activity_values
+                .iter()
+                .any(|candidate| candidate == value)
+            {
+                return Err(ImportError(
+                    "a nonzero quantity activity type is not classified".into(),
+                ));
+            }
         }
         if raw_instrument.is_empty() {
             return Err(ImportError(
@@ -347,6 +374,41 @@ fn validate_mapping(mapping: &InvestmentCsvMapping) -> ImportResult<()> {
         ));
     }
     validate_currency(&mapping.default_currency.to_ascii_uppercase())?;
+    match mapping.activity_type_column.as_deref() {
+        Some(column) if column.trim().is_empty() => {
+            return Err(ImportError("activity type column cannot be empty".into()));
+        }
+        Some(_) if mapping.position_activity_values.is_empty() => {
+            return Err(ImportError(
+                "position activity values are required with an activity type column".into(),
+            ));
+        }
+        None if !mapping.position_activity_values.is_empty()
+            || !mapping.non_position_activity_values.is_empty() =>
+        {
+            return Err(ImportError(
+                "activity values require an activity type column".into(),
+            ));
+        }
+        _ => {}
+    }
+    let mut activity_values = HashSet::new();
+    for value in mapping
+        .position_activity_values
+        .iter()
+        .chain(&mapping.non_position_activity_values)
+    {
+        if value.trim().is_empty() || value.trim() != value {
+            return Err(ImportError(
+                "activity values must be nonempty and trimmed".into(),
+            ));
+        }
+        if !activity_values.insert(value) {
+            return Err(ImportError(
+                "activity values must be unique across classifications".into(),
+            ));
+        }
+    }
     for alias in mapping.instrument_aliases.values() {
         validate_instrument(alias)?;
     }
@@ -564,6 +626,9 @@ mod tests {
             date_column: "Date".into(),
             instrument_column: "Instrument".into(),
             quantity_column: "Quantity".into(),
+            activity_type_column: None,
+            position_activity_values: Vec::new(),
+            non_position_activity_values: Vec::new(),
             reference_column: Some("Reference".into()),
             price_column: Some("Price".into()),
             currency_column: Some("Currency".into()),
@@ -618,6 +683,35 @@ mod tests {
         let preview = preview_csv(csv, &mapping()).unwrap();
         assert_eq!(preview.ignored_non_position_rows, 1);
         assert_eq!(preview.activity_count, 1);
+    }
+
+    #[test]
+    fn classified_non_position_quantities_do_not_inflate_holdings() {
+        let mut mapping = mapping();
+        mapping.activity_type_column = Some("Type".into());
+        mapping.position_activity_values = vec!["BUY".into(), "SELL".into()];
+        mapping.non_position_activity_values = vec!["DIVIDEND".into()];
+        let csv = b"Date;Instrument;Quantity;Type;Reference;Price;Currency\n2026-01-02;ACME;2,0;BUY;one;10,00;EUR\n2026-02-03;ACME;2,0;DIVIDEND;two;;EUR\n2026-03-04;ACME;-2,0;SELL;three;12,00;EUR\n";
+
+        let preview = preview_csv(csv, &mapping).unwrap();
+        assert_eq!(preview.activity_count, 2);
+        assert_eq!(preview.ignored_non_position_rows, 1);
+        assert_eq!(preview.closed_positions, 1);
+        assert!(preview.holdings.is_empty());
+    }
+
+    #[test]
+    fn nonzero_quantities_with_unknown_activity_types_fail_closed() {
+        let mut mapping = mapping();
+        mapping.activity_type_column = Some("Type".into());
+        mapping.position_activity_values = vec!["BUY".into(), "SELL".into()];
+        mapping.non_position_activity_values = vec!["DIVIDEND".into()];
+        let csv = b"Date;Instrument;Quantity;Type;Reference;Price;Currency\n2026-01-02;ACME;1,0;NEW_POSITION_EVENT;one;10,00;EUR\n";
+
+        assert_eq!(
+            preview_csv(csv, &mapping).unwrap_err().0,
+            "a nonzero quantity activity type is not classified"
+        );
     }
 
     #[test]

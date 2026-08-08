@@ -28,9 +28,11 @@ accounting-engine policy.
   currencies and symbolic source accounts. It emits SHA-256-addressed
   `TransactionCandidate` values and discards the raw rows.
 - A separate investment activity preview maps signed quantities, source references
-  and optional exact-decimal unit prices. Preview is read-only; explicit confirmation
-  re-runs the adapter and atomically stores only aggregate holdings in a private
-  snapshot. Instrument aliases remain private mapping data.
+  and optional exact-decimal unit prices. Private profiles can explicitly classify
+  position-changing and non-position activity values; an unclassified nonzero
+  quantity fails closed rather than inflating holdings. Preview is read-only;
+  explicit confirmation re-runs the adapter and atomically stores only aggregate
+  holdings in a private snapshot. Instrument aliases remain private mapping data.
 - Candidates stay pending until the local UI confirms or rejects them. Confirmation
   validates the prospective journal, appends once, and atomically rebuilds the
   Postgres transaction projection. A retry cannot duplicate the posting.
