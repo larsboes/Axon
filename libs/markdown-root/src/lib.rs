@@ -38,6 +38,10 @@
 //! Not tilde expansion: `axon_config::expand_tilde` owns that, and the caller
 //! applies it before declaring a root.
 
+pub mod region;
+
+pub use region::{apply, find, FoundRegion, RegionError, RegionOutcome, RegionSpec};
+
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};

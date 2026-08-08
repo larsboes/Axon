@@ -48,3 +48,38 @@ interest profile — belongs to the capability that declared the root.
 
 **Not tilde expansion.** `axon_config::expand_tilde` owns that; the caller
 applies it before declaring a root.
+
+## Writing back: the marked region
+
+`region.rs` is the other half, added for #138. `capabilities/trips/README.md`
+specified it in prose a month earlier and nothing implemented it: regenerate only
+a marked Axon-owned section, preserve everything outside it, and record a conflict
+rather than choosing between two changed revisions.
+
+```text
+<!-- axon:begin owner=finance v=1 sha=1a2b3c4d5e6f7890 -->
+anything the machine generated
+<!-- axon:end owner=finance -->
+```
+
+HTML comments, so Obsidian renders them as nothing. The owner sits on both markers,
+which lets two capabilities hold a region each in one note without knowing about
+each other.
+
+The hash lives in the marker so the file is self-describing: the only input the
+"did a human touch this" check needs is the file itself, not a sidecar that can go
+missing or come back from an older backup. It is FNV-1a, because the question is
+change detection and not forgery, and a cryptographic digest would be a dependency
+this crate exists to avoid.
+
+`apply()` is a pure function from string to string. The caller keeps the read, the
+write, and the decision about what a conflict should do to the run. Two changed
+revisions produce `RegionOutcome::Conflict` carrying both. Picking one silently is
+the exact failure this was built to prevent.
+
+## Why the writer lives here rather than in its own lib
+
+This crate already owns more than root resolution: `frontmatter()` has been here
+since the extraction. A writer also needs a containment-proven path before it
+touches anything, so splitting them would put one concern in two crates and leave
+the writer depending on the reader regardless.
