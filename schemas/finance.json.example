@@ -21,7 +21,26 @@
       }
     }
   ],
+  "investment_csv_mappings": [
+    {
+      "label": "Synthetic investment activity",
+      "mapping": {
+        "delimiter": ";",
+        "decimal_separator": ",",
+        "date_column": "Date",
+        "instrument_column": "Instrument",
+        "quantity_column": "Quantity",
+        "reference_column": "Reference",
+        "price_column": "Price",
+        "currency_column": "Currency",
+        "default_currency": "EUR",
+        "instrument_aliases": {
+          "synthetic-source-id": "ACME"
+        }
+      }
+    }
+  ],
   "budgets": [],
   "_budget_note": "Budget entries have account, monthly_cents and optional currency. They belong only in this private overlay file; schemas/finance-journal.example remains the public synthetic data contract.",
-  "_mapping_note": "Only this synthetic profile belongs in Axon. Real profile labels, column mappings and symbolic source accounts stay in the private overlay."
+  "_mapping_note": "Only synthetic profiles belong in Axon. Real profile labels, column mappings, instrument aliases and symbolic source accounts stay in the private overlay."
 }

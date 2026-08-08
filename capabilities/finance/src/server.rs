@@ -13,8 +13,9 @@ use tower_http::cors::CorsLayer;
 
 use finance::accounting::AccountingEngine;
 use finance::analytics::{self, AnalyticsFilter, BudgetTarget};
-use finance::config::{Config, CsvMappingProfile, ObsidianConfig};
+use finance::config::{Config, CsvMappingProfile, InvestmentCsvMappingProfile, ObsidianConfig};
 use finance::import::{self, CandidateState, CsvMapping};
+use finance::investment::{self, InvestmentCsvMapping};
 use finance::obsidian::{self, WriteBack};
 use finance::store::FinanceStore;
 use finance::subscription::{burn_at, cents_to_decimal, PricePoint, StateChange};
@@ -78,6 +79,16 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r(
         "GET",
+        "/api/import/investments/mappings",
+        "Named investment CSV mapping profiles loaded from the private overlay.",
+    ),
+    r(
+        "POST",
+        "/api/import/investments/preview",
+        "Reconstruct holdings from signed investment activity without persisting source rows or writing the journal.",
+    ),
+    r(
+        "GET",
         "/api/import/candidates",
         "List normalized transaction candidates and their review state.",
     ),
@@ -126,6 +137,7 @@ struct AppState {
     journal: Option<std::path::PathBuf>,
     budgets: Arc<Vec<BudgetTarget>>,
     csv_mappings: Arc<Vec<CsvMappingProfile>>,
+    investment_csv_mappings: Arc<Vec<InvestmentCsvMappingProfile>>,
     journal_write: Arc<std::sync::Mutex<()>>,
 }
 
@@ -227,6 +239,28 @@ async fn list_candidates(State(state): State<AppState>) -> ApiResponse {
 
 async fn list_csv_mappings(State(state): State<AppState>) -> Json<Vec<CsvMappingProfile>> {
     Json(state.csv_mappings.as_ref().clone())
+}
+
+#[derive(Debug, Deserialize)]
+struct InvestmentPreviewRequest {
+    content: String,
+    mapping: InvestmentCsvMapping,
+}
+
+async fn preview_investments(Json(request): Json<InvestmentPreviewRequest>) -> ApiResponse {
+    match investment::preview_csv(request.content.as_bytes(), &request.mapping) {
+        Ok(preview) => response(StatusCode::OK, preview),
+        Err(error) => response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn list_investment_mappings(
+    State(state): State<AppState>,
+) -> Json<Vec<InvestmentCsvMappingProfile>> {
+    Json(state.investment_csv_mappings.as_ref().clone())
 }
 
 #[derive(Debug, Deserialize)]
@@ -787,6 +821,7 @@ async fn main() {
         journal: config.journal,
         budgets: Arc::new(config.budgets),
         csv_mappings: Arc::new(config.csv_mappings),
+        investment_csv_mappings: Arc::new(config.investment_csv_mappings),
         journal_write: Arc::new(std::sync::Mutex::new(())),
     };
     let app = Router::new()
@@ -802,6 +837,11 @@ async fn main() {
         .route("/api/writeback", post(writeback))
         .route("/api/import/csv", post(import_csv))
         .route("/api/import/csv/mappings", get(list_csv_mappings))
+        .route(
+            "/api/import/investments/mappings",
+            get(list_investment_mappings),
+        )
+        .route("/api/import/investments/preview", post(preview_investments))
         .route("/api/import/candidates", get(list_candidates))
         .route("/api/import/candidates/:id/review", post(review_candidate))
         .route("/api/ledger/check", get(check_ledger))
@@ -873,6 +913,8 @@ mod tests {
             "/api/import/obsidian",
             "/api/writeback",
             "/api/import/csv/mappings",
+            "/api/import/investments/mappings",
+            "/api/import/investments/preview",
         ] {
             assert!(
                 ROUTES.iter().any(|r| r.path == path),
@@ -903,10 +945,42 @@ mod tests {
             journal: None,
             budgets: Arc::new(Vec::new()),
             csv_mappings: Arc::new(vec![profile.clone()]),
+            investment_csv_mappings: Arc::new(Vec::new()),
             journal_write: Arc::new(std::sync::Mutex::new(())),
         };
 
         let Json(returned) = list_csv_mappings(State(state)).await;
+        assert_eq!(returned, vec![profile]);
+    }
+
+    #[tokio::test]
+    async fn investment_mapping_endpoint_returns_private_profiles_without_mutating_them() {
+        let profile = InvestmentCsvMappingProfile {
+            label: "Synthetic activity export".into(),
+            mapping: InvestmentCsvMapping {
+                delimiter: ';',
+                decimal_separator: ',',
+                date_column: "Date".into(),
+                instrument_column: "Instrument".into(),
+                quantity_column: "Quantity".into(),
+                reference_column: Some("Reference".into()),
+                price_column: Some("Price".into()),
+                currency_column: Some("Currency".into()),
+                default_currency: "EUR".into(),
+                instrument_aliases: Default::default(),
+            },
+        };
+        let state = AppState {
+            database_url: Arc::new(String::new()),
+            obsidian: None,
+            journal: None,
+            budgets: Arc::new(Vec::new()),
+            csv_mappings: Arc::new(Vec::new()),
+            investment_csv_mappings: Arc::new(vec![profile.clone()]),
+            journal_write: Arc::new(std::sync::Mutex::new(())),
+        };
+
+        let Json(returned) = list_investment_mappings(State(state)).await;
         assert_eq!(returned, vec![profile]);
     }
 }

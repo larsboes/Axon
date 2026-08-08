@@ -27,6 +27,9 @@ accounting-engine policy.
 - A configurable CSV adapter handles column names, delimiters, decimal marks,
   currencies and symbolic source accounts. It emits SHA-256-addressed
   `TransactionCandidate` values and discards the raw rows.
+- A separate investment activity preview maps signed quantities, source references
+  and optional exact-decimal unit prices, then reconstructs open holdings without
+  storing rows or writing the journal. Instrument aliases remain private mapping data.
 - Candidates stay pending until the local UI confirms or rejects them. Confirmation
   validates the prospective journal, appends once, and atomically rebuilds the
   Postgres transaction projection. A retry cannot duplicate the posting.
@@ -93,6 +96,7 @@ On the manifest-declared port. `GET /routes` serves the full manifest.
 - `POST /api/writeback`
 - `GET /api/import/csv/mappings`
 - `POST /api/import/csv` · `GET /api/import/candidates`
+- `GET /api/import/investments/mappings` · `POST /api/import/investments/preview`
 - `POST /api/import/candidates/:id/review`
 - `GET /api/ledger/check` · `POST /api/ledger/rebuild`
 - `GET /api/dashboard?start=&end=&account=&category=&currency=`
@@ -107,6 +111,8 @@ also be set with `AXON_FINANCE_JOURNAL`. `schemas/finance.json.example` document
 shape without carrying private deployment values. Named `csv_mappings` also live in
 that private file; the loopback API supplies them to the local review UI, where the
 operator can still edit every field before staging.
+Named `investment_csv_mappings` supply the corresponding preview-only adapter. The
+source identifier to symbolic commodity mapping belongs there rather than in Axon.
 
 Budget entries have `account`, `monthly_cents` and an optional `currency`. Accounts
 stay symbolic. Real account numbers and the mapping from a symbol to an institution

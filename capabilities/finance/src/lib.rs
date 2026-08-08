@@ -11,6 +11,7 @@ pub mod accounting;
 pub mod analytics;
 pub mod config;
 pub mod import;
+pub mod investment;
 pub mod obsidian;
 pub mod store;
 pub mod subscription;

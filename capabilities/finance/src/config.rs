@@ -11,6 +11,7 @@
 
 use crate::analytics::BudgetTarget;
 use crate::import::CsvMapping;
+use crate::investment::InvestmentCsvMapping;
 use axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -30,6 +31,12 @@ pub struct CsvMappingProfile {
     pub mapping: CsvMapping,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvestmentCsvMappingProfile {
+    pub label: String,
+    pub mapping: InvestmentCsvMapping,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -38,6 +45,7 @@ pub struct Config {
     pub journal: Option<PathBuf>,
     pub budgets: Vec<BudgetTarget>,
     pub csv_mappings: Vec<CsvMappingProfile>,
+    pub investment_csv_mappings: Vec<InvestmentCsvMappingProfile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +56,8 @@ struct FinanceFileConfig {
     budgets: Vec<BudgetTarget>,
     #[serde(default)]
     csv_mappings: Vec<CsvMappingProfile>,
+    #[serde(default)]
+    investment_csv_mappings: Vec<InvestmentCsvMappingProfile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +112,10 @@ impl Config {
             .as_ref()
             .map(|config| config.csv_mappings.clone())
             .unwrap_or_default();
+        let investment_csv_mappings = personal
+            .as_ref()
+            .map(|config| config.investment_csv_mappings.clone())
+            .unwrap_or_default();
         let journal = std::env::var("AXON_FINANCE_JOURNAL")
             .ok()
             .map(|path| expand_tilde(&path))
@@ -118,6 +132,7 @@ impl Config {
             journal,
             budgets,
             csv_mappings,
+            investment_csv_mappings,
         }
     }
 }
@@ -160,5 +175,34 @@ mod tests {
     fn csv_mapping_profiles_are_optional() {
         let config: FinanceFileConfig = serde_json::from_str("{}").unwrap();
         assert!(config.csv_mappings.is_empty());
+        assert!(config.investment_csv_mappings.is_empty());
+    }
+
+    #[test]
+    fn private_investment_mapping_profiles_parse_as_typed_config() {
+        let config: FinanceFileConfig = serde_json::from_value(serde_json::json!({
+            "investment_csv_mappings": [{
+                "label": "Synthetic activity export",
+                "mapping": {
+                    "delimiter": ";",
+                    "decimal_separator": ",",
+                    "date_column": "Date",
+                    "instrument_column": "Instrument",
+                    "quantity_column": "Quantity",
+                    "reference_column": "Reference",
+                    "price_column": "Price",
+                    "currency_column": "Currency",
+                    "default_currency": "EUR",
+                    "instrument_aliases": {"source-1": "ACME"}
+                }
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(config.investment_csv_mappings.len(), 1);
+        assert_eq!(
+            config.investment_csv_mappings[0].mapping.instrument_aliases["source-1"],
+            "ACME"
+        );
     }
 }
