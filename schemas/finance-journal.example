@@ -1,0 +1,88 @@
+; Example hledger journal showing the account tree and the conventions
+; capabilities/finance expects. Every name here is generic on purpose: the real
+; journal lives in the private overlay and this file is published.
+;
+; Validate with:  hledger -f schemas/finance-journal.example check
+;
+; ---------------------------------------------------------------------------
+; The account tree
+; ---------------------------------------------------------------------------
+;
+;   assets:bank:<account>              a bank account, named symbolically
+;   assets:broker:<broker>:cash        uninvested cash at a broker
+;   assets:investments:<broker>:<SYM>  a position, held in its own commodity
+;   assets:p2p:<platform>              lending platforms and similar
+;   liabilities:card:<issuer>          a credit card
+;   income:salary                      employment income
+;   income:dividends                   distributions
+;   expenses:subscriptions:<slug>      the slug matches the vault note's name
+;   expenses:<category>                everything else
+;   equity:opening-balances            where a journal starts
+;
+; Accounts are SYMBOLIC. No IBAN, no account number, no card number, ever, in an
+; account name or a comment. Git history is permanent and the knowledge-boundary
+; requires that forgetting stay possible; the mapping from a symbolic name to a
+; real account lives in Vaultwarden.
+;
+; ---------------------------------------------------------------------------
+; Trip attribution
+; ---------------------------------------------------------------------------
+;
+; A trip expense is also a food expense, so the trip is a posting TAG rather than
+; a branch of the tree. Duplicating the category tree under a trip prefix would
+; make "what did I spend on food this year" answerable only by remembering to
+; union two subtrees.
+;
+;   hledger -f <journal> balance tag:trip=lisbon-2026
+;
+; The slug matches the trips capability's plan, which is how the two agree without
+; either reading the other's store.
+
+decimal-mark ,
+commodity 1.000,00 EUR
+
+account assets:bank:checking
+account assets:bank:savings
+account assets:broker:cash
+account assets:investments:ACME
+account expenses:food
+account expenses:subscriptions:example-service
+account expenses:transport
+account income:salary
+account equity:opening-balances
+
+2026-01-01 opening balances
+    assets:bank:checking                   1.500,00 EUR
+    assets:bank:savings                    5.000,00 EUR
+    equity:opening-balances
+
+2026-01-31 employer
+    assets:bank:checking                   1.200,00 EUR
+    income:salary
+
+; A subscription posting. The account slug is the vault note's name, which is how
+; observed charges reconcile against what the note claims the price is.
+2026-02-01 example service
+    expenses:subscriptions:example-service    20,00 EUR
+    assets:bank:checking
+
+; Buying a position. The commodity is the ticker, so hledger tracks the share
+; count and the cost basis rather than a euro figure that stops meaning anything
+; the moment the price moves.
+2026-03-14 buy ACME
+    assets:investments:ACME                     10 ACME @ 42,50 EUR
+    assets:broker:cash
+
+; A market price. pricehist emits these; they are what `-V` and `roi` value a
+; position against.
+P 2026-08-08 ACME 51,20 EUR
+
+; Trip-tagged spending. Two different categories, one trip, and the tag is what
+; joins them.
+2026-06-12 dinner  ; trip: lisbon-2026
+    expenses:food                             34,80 EUR
+    assets:bank:checking
+
+2026-06-12 metro  ; trip: lisbon-2026
+    expenses:transport                         6,40 EUR
+    assets:bank:checking

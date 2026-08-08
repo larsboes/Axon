@@ -110,6 +110,15 @@ why = "cold SQLite backup and isolated restore integrity checks; required only f
 install_macos = "preinstalled — or: brew install sqlite"
 install_linux = "apt-get install -y sqlite3"
 
+[hledger]
+required = "optional"
+needed_by = ["capability-field:ledger"]
+why = "the double-entry engine under capabilities/finance. Axon owns the layer above the journal and reimplements none of it: hledger roi already computes IRR and TWR, and the journal stays plain text under git so an agent's postings are reviewable in a diff"
+install_macos = "brew install hledger"
+install_linux = "apt-get install -y hledger"
+min_version = "1.32"
+version_cmd = "hledger --version"
+
 [bazel]
 required = "optional"
 needed_by = ["workflow:build"]
