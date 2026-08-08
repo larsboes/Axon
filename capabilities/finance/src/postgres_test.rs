@@ -1,7 +1,9 @@
 use finance::accounting::{Amount, JournalTransaction, Posting};
 use finance::analytics::{project, TransactionRow};
 use finance::import::{parse_csv, CandidateState, CsvMapping};
-use finance::investment::{Holding, Quantity, ReviewedHoldingsSnapshot};
+use finance::investment::{
+    Holding, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource,
+};
 use finance::FinanceStore;
 use postgres::{Client, NoTls};
 
@@ -102,7 +104,7 @@ fn reviewed_holdings_replace_atomically_and_preserve_an_empty_review() {
     let (store, _schema) = store("holdings");
     assert_eq!(store.holding_projection().unwrap(), None);
     let snapshot = ReviewedHoldingsSnapshot {
-        schema_version: 1,
+        schema_version: 2,
         snapshot_id: "synthetic-snapshot".into(),
         reviewed_at: "2026-08-09".into(),
         holdings: vec![Holding {
@@ -117,15 +119,25 @@ fn reviewed_holdings_replace_atomically_and_preserve_an_empty_review() {
             }),
             currency: "EUR".into(),
         }],
+        sources: vec![ReviewedHoldingsSource {
+            source_key: "synthetic-broker".into(),
+            snapshot_id: "synthetic-source-snapshot".into(),
+            reviewed_at: "2026-08-09".into(),
+        }],
     };
     store.replace_holding_projection(&snapshot).unwrap();
     assert_eq!(store.holding_projection().unwrap(), Some(snapshot));
 
     let empty = ReviewedHoldingsSnapshot {
-        schema_version: 1,
+        schema_version: 2,
         snapshot_id: "synthetic-empty".into(),
         reviewed_at: "2026-08-10".into(),
         holdings: vec![],
+        sources: vec![ReviewedHoldingsSource {
+            source_key: "synthetic-broker".into(),
+            snapshot_id: "synthetic-empty-source".into(),
+            reviewed_at: "2026-08-10".into(),
+        }],
     };
     store.replace_holding_projection(&empty).unwrap();
     assert_eq!(store.holding_projection().unwrap(), Some(empty));

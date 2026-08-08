@@ -118,10 +118,15 @@ shape without carrying private deployment values. Named `csv_mappings` also live
 that private file; the loopback API supplies them to the local review UI, where the
 operator can still edit every field before staging.
 Named `investment_csv_mappings` supply the corresponding preview-only adapter. The
-source identifier to symbolic commodity mapping belongs there rather than in Axon.
-`investment_snapshot` names the private canonical aggregate written after review;
-raw CSV rows and mapping values are never written to it. Prices shown in Overview are
-latest activity prices, not live quotes or a claim about current market value.
+stable source key and source identifier to symbolic commodity mapping belong there
+rather than in Axon. `investment_snapshot` names the private canonical collection
+written after review. Reconfirming one source replaces only that source; Overview
+derives its aggregate and review coverage from every confirmed source. A provider
+without an export can use a privately authored current-position CSV with one dated
+row per open position. Raw CSV rows and mapping values are never written to the
+canonical collection. When one instrument spans sources, its activity price is
+suppressed rather than selecting an arbitrary source. Other prices shown in Overview
+are latest activity prices, not live quotes or a claim about current market value.
 
 Budget entries have `account`, `monthly_cents` and an optional `currency`. Accounts
 stay symbolic. Real account numbers and the mapping from a symbol to an institution

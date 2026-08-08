@@ -33,6 +33,7 @@ pub struct CsvMappingProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvestmentCsvMappingProfile {
+    pub source_key: String,
     pub label: String,
     pub mapping: InvestmentCsvMapping,
 }
@@ -194,6 +195,7 @@ mod tests {
     fn private_investment_mapping_profiles_parse_as_typed_config() {
         let config: FinanceFileConfig = serde_json::from_value(serde_json::json!({
             "investment_csv_mappings": [{
+                "source_key": "synthetic-broker",
                 "label": "Synthetic activity export",
                 "mapping": {
                     "delimiter": ";",
@@ -216,6 +218,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.investment_csv_mappings.len(), 1);
+        assert_eq!(
+            config.investment_csv_mappings[0].source_key,
+            "synthetic-broker"
+        );
         assert_eq!(
             config.investment_snapshot.as_deref(),
             Some("/private/state/holdings.json")
