@@ -1973,6 +1973,80 @@ export interface WritebackResult {
   not_imported: string[];
 }
 
+export type FinanceTransactionKind = 'income' | 'expense' | 'transfer';
+export type CandidateState = 'pending' | 'confirmed' | 'rejected';
+
+export interface TransactionCandidate {
+  id: string;
+  fingerprint: string;
+  booked_at: string;
+  description: string;
+  amount_cents: number;
+  currency: string;
+  source_account: string;
+  source_reference: string | null;
+  proposed_account: string;
+  confidence_basis_points: number;
+  state: CandidateState;
+}
+
+export interface CsvMapping {
+  delimiter: string;
+  decimal_separator: string;
+  date_column: string;
+  amount_column: string;
+  description_column: string;
+  reference_column?: string | null;
+  currency_column?: string | null;
+  default_currency: string;
+  source_account: string;
+}
+
+export interface FinanceTransaction {
+  id: string;
+  date: string;
+  description: string;
+  kind: FinanceTransactionKind;
+  account: string;
+  category: string;
+  amount_cents: number;
+  currency: string;
+}
+
+export interface FinanceDashboard {
+  summary: {
+    income_cents: number;
+    expense_cents: number;
+    net_cash_flow_cents: number;
+    savings_rate_percent: number | null;
+    budget_cents: number;
+    budget_variance_cents: number;
+    currency: string;
+  };
+  trend: Array<{
+    month: string;
+    income_cents: number;
+    expense_cents: number;
+    net_cash_flow_cents: number;
+  }>;
+  budgets: Array<{
+    account: string;
+    budget_cents: number;
+    actual_cents: number;
+    variance_cents: number;
+  }>;
+  transactions: FinanceTransaction[];
+  sankey: Array<{
+    source: string;
+    target: string;
+    amount_cents: number;
+    account: string;
+    category: string;
+  }>;
+  accounts: string[];
+  categories: string[];
+}
+
 export const finance = {
   subscriptions: (signal?: AbortSignal) =>
     request<Subscription[]>('/finance/api/subscriptions', signal ? { signal } : undefined),
@@ -2000,4 +2074,31 @@ export const finance = {
     ),
   /** Conflicts come back named, never resolved — the caller shows them. */
   writeback: () => request<WritebackResult>('/finance/api/writeback', { method: 'POST' }),
+  dashboard: (filters: {
+    start?: string;
+    end?: string;
+    account?: string;
+    category?: string;
+    currency?: string;
+  } = {}, signal?: AbortSignal) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value);
+    return request<FinanceDashboard>(
+      `/finance/api/dashboard${query.size ? `?${query}` : ''}`,
+      signal ? { signal } : undefined,
+    );
+  },
+  rebuildLedger: () =>
+    request<{ ok: boolean; rows: number }>('/finance/api/ledger/rebuild', { method: 'POST' }),
+  candidates: () => request<TransactionCandidate[]>('/finance/api/import/candidates'),
+  importCsv: (content: string, mapping: CsvMapping) =>
+    request<{ ok: boolean; created: number; already_present: number }>(
+      '/finance/api/import/csv',
+      jsonInit('POST', { content, mapping }),
+    ),
+  reviewCandidate: (id: string, decision: 'confirm' | 'reject', account?: string) =>
+    request<{ ok: boolean; id: string; state: CandidateState; journal_written: boolean }>(
+      `/finance/api/import/candidates/${encodeURIComponent(id)}/review`,
+      jsonInit('POST', { decision, account }),
+    ),
 };

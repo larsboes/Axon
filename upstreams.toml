@@ -45,6 +45,14 @@ license = "n/a (docs)"
 pin = ""
 why = "the style bar for capability READMEs and an operations quarry for local inference: budget/decision-tree framing, mirrored model storage, read-only weight mounts, separation of inference and agent sandboxes, power limiting and measured interconnect tuning. Its 2x3090 route is a CUDA lab alternative, not Axon's low-energy 128GB production target"
 
+[hledger]
+url = "https://github.com/simonmichael/hledger"
+verdict = "adopt"
+license = "GPL-3.0-or-later"
+pin = "1.52.1"
+installed_probe = "hledger --version"
+why = "separately installed double-entry engine behind capabilities/finance's engine-neutral Rust contract. Axon invokes the executable with --no-conf and parses normalized reports; it does not vendor, link, or redistribute hledger, and the canonical journal remains plaintext. The GPL applies to hledger itself rather than changing Axon's MIT license. A native Rust engine can later replace it by implementing the same check, transaction, register, balance, budget, cash-flow and ROI contract"
+
 [paperless-ngx]
 url = "https://github.com/paperless-ngx/paperless-ngx"
 verdict = "inspiration"

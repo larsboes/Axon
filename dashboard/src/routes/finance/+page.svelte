@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
+  import FinanceDashboard from "$lib/finance/FinanceDashboard.svelte";
   import {
     finance,
     type Burn,
@@ -10,6 +11,9 @@
     type SubscriptionState,
     type WritebackResult,
   } from "$lib/api";
+
+  type View = "overview" | "budget" | "transactions" | "subscriptions";
+  let view = $state<View>("overview");
 
   // The date picker is the point of this page rather than a convenience on it. A
   // subscription's price is an append-only series, so "what am I paying" and "what
@@ -276,11 +280,19 @@
 
 <PageHeader
   badge="Finance"
-  title="Subscriptions"
-  desc="What recurring spending costs, on a date you choose. Price is a series, so the answer moves."
+  title="Money, as a system"
+  desc="Cash flow, budgets, reviewed transactions and recurring commitments from one journal-backed projection."
 />
 
-{#if error}
+<nav aria-label="Finance views">
+  {#each ["overview", "budget", "transactions", "subscriptions"] as item (item)}
+    <button class:active={view === item} onclick={() => view = item as View}>{item}</button>
+  {/each}
+</nav>
+
+{#if view !== "subscriptions"}
+  <FinanceDashboard mode={view} />
+{:else if error}
   <p class="err"><Icon name="alert" size={14} /> {error}</p>
 {:else if !loaded}
   <p class="muted">Loading…</p>
@@ -452,6 +464,30 @@
 {/if}
 
 <style>
+  nav {
+    display: flex;
+    gap: 0.2rem;
+    margin: -0.25rem 0 1.25rem;
+    border-bottom: 1px solid var(--border, #333);
+  }
+
+  nav button {
+    border: 0;
+    border-bottom: 2px solid transparent;
+    padding: 0.55rem 0.75rem;
+    background: transparent;
+    color: var(--muted, #888);
+    font: inherit;
+    font-size: 0.78rem;
+    text-transform: capitalize;
+    cursor: pointer;
+  }
+
+  nav button.active {
+    color: inherit;
+    border-bottom-color: var(--primary);
+  }
+
   .bar {
     display: flex;
     flex-wrap: wrap;

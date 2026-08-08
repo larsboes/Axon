@@ -1,8 +1,10 @@
 {
-  "_note": "Private overlay template for <overlay>/config/finance.json. Replace <knowledge-base-root> with this deployment's absolute or home-relative knowledge-store path, or set AXON_FINANCE_OBSIDIAN_ROOT instead. Nothing in this file may name a real institution, account or figure — those live in Vaultwarden and in the overlay's own private journal.",
+  "_note": "Private overlay template for <overlay>/config/finance.json. Replace placeholders locally. Public code never names an institution, account identifier or personal figure.",
   "obsidian": {
     "root": "<knowledge-base-root>",
     "subscriptions_dir": "Atlas/Finance/Subscriptions"
   },
-  "_ledger_note": "The journal root is deliberately absent until the importer reads it (spec phase 3). A config key nothing consumes is a manifest that has started lying. When it lands it will be a path to a directory of hledger journals inside the overlay, shaped like schemas/finance-journal.example."
+  "journal": "<finance-journal-path>",
+  "budgets": [],
+  "_budget_note": "Budget entries have account, monthly_cents and optional currency. They belong only in this private overlay file; schemas/finance-journal.example remains the public synthetic data contract."
 }

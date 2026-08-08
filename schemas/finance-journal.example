@@ -2,7 +2,7 @@
 ; capabilities/finance expects. Every name here is generic on purpose: the real
 ; journal lives in the private overlay and this file is published.
 ;
-; Validate with:  hledger -f schemas/finance-journal.example check
+; Validate with:  hledger --no-conf -f schemas/finance-journal.example check
 ;
 ; ---------------------------------------------------------------------------
 ; The account tree
