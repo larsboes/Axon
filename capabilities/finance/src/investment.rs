@@ -1,14 +1,16 @@
-//! Broker-neutral investment activity preview.
+//! Broker-neutral investment activity preview and reviewed aggregate snapshot.
 //!
-//! This module stops at a deterministic holdings reconstruction. It does not
-//! persist source rows or write the journal; that remains a separate reviewed
-//! decision, just as it is for cash imports.
+//! Raw rows stop at `preview_csv`. Confirmation re-runs that function and writes
+//! only the aggregate holdings below; source identifiers, mappings and CSV bytes
+//! never enter the canonical snapshot or the disposable database projection.
 
 use crate::import::{normalize_date, ImportError, ImportResult};
 use csv::StringRecord;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
+use std::io::Write;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvestmentCsvMapping {
@@ -33,7 +35,10 @@ pub struct InvestmentCsvMapping {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Quantity {
-    #[serde(serialize_with = "serialize_i64_as_string")]
+    #[serde(
+        serialize_with = "serialize_i64_as_string",
+        deserialize_with = "deserialize_i64_from_string"
+    )]
     pub mantissa: i64,
     pub scale: u32,
 }
@@ -48,10 +53,19 @@ pub struct Holding {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvestmentPreview {
+    pub snapshot_id: String,
     pub activity_count: usize,
     pub duplicate_rows: usize,
     pub ignored_non_position_rows: usize,
     pub closed_positions: usize,
+    pub holdings: Vec<Holding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewedHoldingsSnapshot {
+    pub schema_version: u32,
+    pub snapshot_id: String,
+    pub reviewed_at: String,
     pub holdings: Vec<Holding>,
 }
 
@@ -201,7 +215,7 @@ pub fn preview_csv(
         .values()
         .filter(|position| position.quantity.mantissa == 0)
         .count();
-    let holdings = positions
+    let holdings: Vec<Holding> = positions
         .into_iter()
         .filter(|(_, position)| position.quantity.mantissa != 0)
         .map(|(instrument, position)| Holding {
@@ -211,13 +225,116 @@ pub fn preview_csv(
             currency: position.currency,
         })
         .collect();
+    let snapshot_id = holdings_identity(&holdings);
     Ok(InvestmentPreview {
+        snapshot_id,
         activity_count: activities.len(),
         duplicate_rows,
         ignored_non_position_rows,
         closed_positions,
         holdings,
     })
+}
+
+pub fn reviewed_snapshot(
+    preview: &InvestmentPreview,
+    mapping: &InvestmentCsvMapping,
+    reviewed_at: &str,
+) -> ImportResult<ReviewedHoldingsSnapshot> {
+    let approved_aliases: HashSet<_> = mapping.instrument_aliases.values().collect();
+    if preview
+        .holdings
+        .iter()
+        .any(|holding| !approved_aliases.contains(&holding.instrument))
+    {
+        return Err(ImportError(
+            "every confirmed instrument requires an explicit private alias".into(),
+        ));
+    }
+    Ok(ReviewedHoldingsSnapshot {
+        schema_version: 1,
+        snapshot_id: preview.snapshot_id.clone(),
+        reviewed_at: reviewed_at.to_string(),
+        holdings: preview.holdings.clone(),
+    })
+}
+
+pub fn read_reviewed_snapshot(path: &Path) -> ImportResult<Option<ReviewedHoldingsSnapshot>> {
+    let body = match std::fs::read_to_string(path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ImportError("holdings snapshot could not be read".into())),
+    };
+    let snapshot: ReviewedHoldingsSnapshot = serde_json::from_str(&body)
+        .map_err(|_| ImportError("holdings snapshot has an unsupported shape".into()))?;
+    validate_snapshot(&snapshot)?;
+    if snapshot.snapshot_id != holdings_identity(&snapshot.holdings) {
+        return Err(ImportError(
+            "holdings snapshot failed its integrity check".into(),
+        ));
+    }
+    Ok(Some(snapshot))
+}
+
+/// Atomically replace the canonical private aggregate. Reconfirming the same
+/// identity is a no-op, including its original review timestamp.
+pub fn write_reviewed_snapshot(
+    path: &Path,
+    snapshot: &ReviewedHoldingsSnapshot,
+) -> ImportResult<bool> {
+    validate_snapshot(snapshot)?;
+    if snapshot.snapshot_id != holdings_identity(&snapshot.holdings) {
+        return Err(ImportError(
+            "holdings snapshot failed its integrity check".into(),
+        ));
+    }
+    if read_reviewed_snapshot(path)?
+        .is_some_and(|existing| existing.snapshot_id == snapshot.snapshot_id)
+    {
+        return Ok(false);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| ImportError("holdings snapshot has no parent directory".into()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|_| ImportError("holdings snapshot directory could not be created".into()))?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary = parent.join(format!(
+        ".axon-finance-holdings-{}-{nonce}",
+        std::process::id()
+    ));
+    let body = serde_json::to_vec_pretty(snapshot)
+        .map_err(|_| ImportError("holdings snapshot could not be serialized".into()))?;
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|_| {
+                ImportError("holdings snapshot temporary file could not be created".into())
+            })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| {
+                    ImportError("holdings snapshot permissions could not be set".into())
+                })?;
+        }
+        file.write_all(&body)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| ImportError("holdings snapshot could not be written".into()))?;
+        std::fs::rename(&temporary, path)
+            .map_err(|_| ImportError("holdings snapshot could not be replaced".into()))?;
+        Ok(true)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn validate_mapping(mapping: &InvestmentCsvMapping) -> ImportResult<()> {
@@ -328,6 +445,75 @@ where
     S: Serializer,
 {
     serializer.serialize_str(&value.to_string())
+}
+
+fn deserialize_i64_from_string<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    value.parse().map_err(serde::de::Error::custom)
+}
+
+fn holdings_identity(holdings: &[Holding]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"axon-finance-holdings-v1");
+    for holding in holdings {
+        hash.update(holding.instrument.as_bytes());
+        hash.update([0xff]);
+        hash.update(holding.quantity.mantissa.to_string().as_bytes());
+        hash.update([0xff]);
+        hash.update(holding.quantity.scale.to_string().as_bytes());
+        hash.update([0xff]);
+        if let Some(price) = &holding.latest_unit_price {
+            hash.update(price.mantissa.to_string().as_bytes());
+            hash.update([0xff]);
+            hash.update(price.scale.to_string().as_bytes());
+        }
+        hash.update([0xff]);
+        hash.update(holding.currency.as_bytes());
+        hash.update([0xfe]);
+    }
+    let mut encoded = String::with_capacity(64);
+    for byte in hash.finalize() {
+        use std::fmt::Write;
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+fn validate_snapshot(snapshot: &ReviewedHoldingsSnapshot) -> ImportResult<()> {
+    if snapshot.schema_version != 1
+        || normalize_date(&snapshot.reviewed_at)? != snapshot.reviewed_at
+    {
+        return Err(ImportError(
+            "holdings snapshot has an unsupported shape".into(),
+        ));
+    }
+    let mut previous: Option<&str> = None;
+    for holding in &snapshot.holdings {
+        validate_instrument(&holding.instrument)?;
+        validate_currency(&holding.currency)?;
+        if holding.quantity.mantissa == 0 || holding.quantity.scale > 12 {
+            return Err(ImportError(
+                "holdings snapshot has an invalid quantity".into(),
+            ));
+        }
+        if holding
+            .latest_unit_price
+            .as_ref()
+            .is_some_and(|price| price.scale > 12)
+        {
+            return Err(ImportError("holdings snapshot has an invalid price".into()));
+        }
+        if previous.is_some_and(|previous| previous >= holding.instrument.as_str()) {
+            return Err(ImportError(
+                "holdings snapshot instruments are not uniquely sorted".into(),
+            ));
+        }
+        previous = Some(&holding.instrument);
+    }
+    Ok(())
 }
 
 fn column(headers: &StringRecord, name: &str) -> ImportResult<usize> {
@@ -451,5 +637,61 @@ mod tests {
         let csv = b"Date;Instrument;Quantity;Reference;Price;Currency\n2026-01-02;source-1;1,0;one;10,00;EUR\n";
         let preview = preview_csv(csv, &mapping).unwrap();
         assert_eq!(preview.holdings[0].instrument, "ACME");
+    }
+
+    #[test]
+    fn snapshot_identity_tracks_the_reviewed_aggregate() {
+        let csv = b"Date;Instrument;Quantity;Reference;Price;Currency\n2026-01-02;ACME;1,0;one;10,1234;EUR\n";
+        let first = preview_csv(csv, &mapping()).unwrap();
+        let second = preview_csv(csv, &mapping()).unwrap();
+        assert_eq!(first.snapshot_id, second.snapshot_id);
+
+        let changed = b"Date;Instrument;Quantity;Reference;Price;Currency\n2026-01-02;ACME;2,0;one;10,1234;EUR\n";
+        assert_ne!(
+            first.snapshot_id,
+            preview_csv(changed, &mapping()).unwrap().snapshot_id
+        );
+    }
+
+    #[test]
+    fn reviewed_snapshot_round_trips_without_source_rows() {
+        let mut mapping = mapping();
+        mapping
+            .instrument_aliases
+            .insert("private-source-id".into(), "ACME".into());
+        let csv = b"Date;Instrument;Quantity;Reference;Price;Currency\n2026-01-02;private-source-id;1,0;private-reference;10,1234;EUR\n";
+        let preview = preview_csv(csv, &mapping).unwrap();
+        let snapshot = reviewed_snapshot(&preview, &mapping, "2026-08-09").unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("axon-finance-holdings-test-{}", std::process::id()));
+        let path = directory.join("holdings.json");
+        let _ = std::fs::remove_dir_all(&directory);
+
+        assert!(write_reviewed_snapshot(&path, &snapshot).unwrap());
+        let reconfirmed = ReviewedHoldingsSnapshot {
+            reviewed_at: "2026-08-10".into(),
+            ..snapshot.clone()
+        };
+        assert!(!write_reviewed_snapshot(&path, &reconfirmed).unwrap());
+        assert_eq!(read_reviewed_snapshot(&path).unwrap(), Some(snapshot));
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(!body.contains("private-source-id"));
+        assert!(!body.contains("private-reference"));
+        assert!(body.contains("\"mantissa\": \"10\""));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn confirmation_requires_an_explicit_alias_for_every_holding() {
+        let csv = b"Date;Instrument;Quantity;Reference;Price;Currency\n2026-01-02;ACME;1,0;one;10,00;EUR\n";
+        let mapping = mapping();
+        let preview = preview_csv(csv, &mapping).unwrap();
+        assert_eq!(
+            reviewed_snapshot(&preview, &mapping, "2026-08-09")
+                .unwrap_err()
+                .0,
+            "every confirmed instrument requires an explicit private alias"
+        );
     }
 }

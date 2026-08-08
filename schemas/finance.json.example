@@ -5,6 +5,7 @@
     "subscriptions_dir": "Atlas/Finance/Subscriptions"
   },
   "journal": "<finance-journal-path>",
+  "investment_snapshot": "<finance-investment-snapshot-path>",
   "csv_mappings": [
     {
       "label": "Synthetic semicolon export",

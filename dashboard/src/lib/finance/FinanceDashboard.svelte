@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import ImportReview from "$lib/finance/ImportReview.svelte";
+  import HoldingsPanel from "$lib/finance/HoldingsPanel.svelte";
   import InvestmentPreview from "$lib/finance/InvestmentPreview.svelte";
   import TransactionTable from "$lib/finance/TransactionTable.svelte";
   import { finance, type FinanceDashboard } from "$lib/api";
@@ -151,6 +152,8 @@
     </section>
   </div>
 
+  <HoldingsPanel snapshot={data.investment} />
+
   <section class="panel recent">
     <h2>Recent transactions</h2>
     <TransactionTable rows={data.transactions.slice(0, 8)} />
@@ -174,7 +177,7 @@
     <TransactionTable rows={data.transactions} />
   </section>
   <ImportReview onchanged={load} />
-  <InvestmentPreview />
+  <InvestmentPreview onchanged={load} />
 {/if}
 
 <style>

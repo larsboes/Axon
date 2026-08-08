@@ -8,6 +8,8 @@
     type InvestmentPreview,
   } from "$lib/api";
 
+  let { onchanged = () => {} }: { onchanged?: () => void } = $props();
+
   let profiles = $state<InvestmentCsvMappingProfile[]>([]);
   let selectedProfile = $state("");
   let content = $state("");
@@ -15,6 +17,7 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let result = $state<InvestmentPreview | null>(null);
+  let confirmed = $state(false);
   let mapping = $state<InvestmentCsvMapping>({
     delimiter: ";",
     decimal_separator: ",",
@@ -43,13 +46,27 @@
     filename = file.name;
     content = await file.text();
     result = null;
+    confirmed = false;
   }
 
   function selectMapping(event: Event) {
     selectedProfile = (event.currentTarget as HTMLSelectElement).value;
     if (!selectedProfile) return;
     const profile = profiles[Number(selectedProfile)];
-    if (profile) mapping = structuredClone(profile.mapping);
+    if (profile) {
+      mapping = structuredClone(profile.mapping);
+      result = null;
+      confirmed = false;
+    }
+  }
+
+  function normalizedMapping(): InvestmentCsvMapping {
+    return {
+      ...mapping,
+      reference_column: mapping.reference_column?.trim() || null,
+      price_column: mapping.price_column?.trim() || null,
+      currency_column: mapping.currency_column?.trim() || null,
+    };
   }
 
   async function preview() {
@@ -57,12 +74,28 @@
     busy = true;
     error = null;
     try {
-      result = await finance.previewInvestments(content, {
-        ...mapping,
-        reference_column: mapping.reference_column?.trim() || null,
-        price_column: mapping.price_column?.trim() || null,
-        currency_column: mapping.currency_column?.trim() || null,
-      });
+      result = await finance.previewInvestments(content, normalizedMapping());
+      confirmed = false;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function confirm() {
+    if (!content || !result) return;
+    busy = true;
+    error = null;
+    try {
+      const response = await finance.confirmInvestments(
+        content,
+        normalizedMapping(),
+        result.snapshot_id,
+      );
+      confirmed = true;
+      result = { ...result, holdings: response.snapshot.holdings };
+      onchanged();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -123,6 +156,12 @@
       {result.closed_positions} closed · {result.ignored_non_position_rows} non-position rows ignored ·
       {result.duplicate_rows} duplicates
     </p>
+    <div class="review">
+      <button disabled={busy || confirmed} onclick={confirm}>
+        {confirmed ? "Reviewed snapshot confirmed" : "Confirm reviewed snapshot"}
+      </button>
+      <span>Confirmation requires an explicit private alias for every instrument. Only aggregate aliases, quantities and prices are retained.</span>
+    </div>
     {#if result.holdings.length > 0}
       <table>
         <thead><tr><th>Instrument</th><th class="num">Quantity</th><th class="num">Latest activity price</th></tr></thead>
@@ -157,6 +196,8 @@
   button:disabled { opacity: .45; cursor: default; }
   .error { color: var(--danger, #b44); }
   .summary { margin: 1rem 0 .65rem; }
+  .review { display: flex; align-items: center; gap: .65rem; margin-bottom: .65rem; }
+  .review span { color: var(--muted, #888); font-size: .7rem; }
   table { width: 100%; border-collapse: collapse; font-size: .78rem; }
   th, td { padding: .55rem .4rem; border-bottom: 1px solid var(--border, #333); text-align: left; }
   .num { text-align: right; font-variant-numeric: tabular-nums; }

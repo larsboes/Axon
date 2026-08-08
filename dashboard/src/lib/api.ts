@@ -2033,10 +2033,18 @@ export interface InvestmentHolding {
 }
 
 export interface InvestmentPreview {
+  snapshot_id: string;
   activity_count: number;
   duplicate_rows: number;
   ignored_non_position_rows: number;
   closed_positions: number;
+  holdings: InvestmentHolding[];
+}
+
+export interface ReviewedHoldingsSnapshot {
+  schema_version: number;
+  snapshot_id: string;
+  reviewed_at: string;
   holdings: InvestmentHolding[];
 }
 
@@ -2083,6 +2091,7 @@ export interface FinanceDashboard {
   }>;
   accounts: string[];
   categories: string[];
+  investment: ReviewedHoldingsSnapshot | null;
 }
 
 export const finance = {
@@ -2136,6 +2145,19 @@ export const finance = {
     request<InvestmentPreview>(
       '/finance/api/import/investments/preview',
       jsonInit('POST', { content, mapping }),
+    ),
+  confirmInvestments: (
+    content: string,
+    mapping: InvestmentCsvMapping,
+    expectedSnapshotId: string,
+  ) =>
+    request<{ ok: boolean; created: boolean; snapshot: ReviewedHoldingsSnapshot }>(
+      '/finance/api/import/investments/confirm',
+      jsonInit('POST', {
+        content,
+        mapping,
+        expected_snapshot_id: expectedSnapshotId,
+      }),
     ),
   candidates: () => request<TransactionCandidate[]>('/finance/api/import/candidates'),
   importCsv: (content: string, mapping: CsvMapping) =>
