@@ -184,7 +184,7 @@
 />
 
 {#if error}
-  <p class="err"><Icon name="alert" size={14} /> finance unavailable — {error}</p>
+  <p class="err"><Icon name="alert" size={14} /> {error}</p>
 {:else if !loaded}
   <p class="muted">Loading…</p>
 {:else}

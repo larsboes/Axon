@@ -22,11 +22,41 @@ function errorMessage(body: string): string {
   return body;
 }
 
+/**
+ * The capability a proxied path belongs to. Every capability call goes through
+ * `/<name>/…`, which is the dev proxy's uniform rule, so the first segment is the
+ * name without anything having to declare it twice.
+ */
+function capabilityFrom(path: string): string | null {
+  const segment = path.replace(/^\/+/, '').split(/[/?#]/)[0];
+  return segment && !segment.startsWith('api') ? segment : null;
+}
+
+/**
+ * What to show a reader when a request fails.
+ *
+ * The case worth naming: when a capability's process is not running, the dev proxy
+ * cannot reach it and answers with a bare 5xx and an empty, non-JSON body. Every
+ * page then rendered `Request failed (500)`, which says nothing at all — it reads
+ * as a bug in the page rather than as a service that was never started, and it
+ * sends the reader looking in the wrong place. There is nothing wrong in that
+ * situation except that nobody started the thing, so it says so, with the command.
+ */
+export function describeFailure(status: number, body: string, path: string): string {
+  const capability = capabilityFrom(path);
+  const named = errorMessage(body).trim();
+  if (named) return capability ? `${capability}: ${named}` : named;
+  if (capability && status >= 500) {
+    return `${capability} is not running — start it with: tools/service-runner.sh start ${capability}`;
+  }
+  return capability ? `${capability}: request failed (${status})` : `Request failed (${status})`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new ApiError(res.status, errorMessage(body) || `Request failed (${res.status})`);
+    throw new ApiError(res.status, describeFailure(res.status, body, path));
   }
   const text = await res.text();
   const parsed = text ? JSON.parse(text) : undefined;
