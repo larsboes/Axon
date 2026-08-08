@@ -1538,6 +1538,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "finance"
+version = "0.1.0"
+dependencies = [
+ "axon-config",
+ "axon-server",
+ "axon-store",
+ "axum",
+ "markdown-root",
+ "postgres",
+ "r2d2",
+ "r2d2_postgres",
+ "route-manifest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http 0.5.2",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"

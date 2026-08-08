@@ -57,7 +57,9 @@ _ARCHITECTURE_INPUTS = [
     # same labels also appear in //:service_toml_schema_test's data below, and satisfying
     # that target proves nothing about this one.
     "//capabilities/comms:README.md",
+    "//capabilities/finance:README.md",
     "//capabilities/comms:service.toml",
+    "//capabilities/finance:service.toml",
     "//capabilities/scouting:README.md",
     "//capabilities/scouting:service.toml",
     "//capabilities/transit:README.md",
@@ -249,6 +251,7 @@ _MANIFEST_INPUTS = [
     # (manifest_integrity's dir-existence check needs every enabled capability's dir present).
     # Same reasoning as _ARCHITECTURE_INPUTS above.
     "//capabilities/comms:README.md",
+    "//capabilities/finance:README.md",
     "//capabilities/scouting:README.md",
     "//capabilities/transit:README.md",
     "//capabilities/axon-status:README.md",
@@ -257,6 +260,7 @@ _MANIFEST_INPUTS = [
     # this package cannot cross a package boundary, and a manifest the sandbox cannot
     # see is a manifest the gates silently never check.
     "//capabilities/comms:service.toml",
+    "//capabilities/finance:service.toml",
     "//capabilities/punctuality:service.toml",
     "//capabilities/scouting:service.toml",
     "//capabilities/transit:service.toml",

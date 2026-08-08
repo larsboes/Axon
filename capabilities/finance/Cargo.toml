@@ -1,0 +1,31 @@
+[package]
+name = "finance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Subscriptions as contracts with append-only price and state history, and the decision layer above the ledger."
+publish = false
+
+[lib]
+name = "finance"
+path = "src/lib.rs"
+
+[[bin]]
+name = "finance-server"
+path = "src/server.rs"
+
+[dependencies]
+axon-config = { path = "../../libs/axon-config" }
+axon-server = { path = "../../libs/axon-server" }
+axon-store = { path = "../../libs/axon-store" }
+markdown-root = { path = "../../libs/markdown-root" }
+route-manifest = { path = "../../libs/route-manifest" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+postgres = "0.19"
+r2d2 = "0.8"
+r2d2_postgres = "0.18"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }

@@ -1,0 +1,10 @@
+# finance — subscriptions, and later the decision layer over the hledger journal.
+kind        = "process"
+name        = "finance"
+command     = ["bazel-bin/capabilities/finance/finance-server"]
+build       = ["bazel", "build", "//capabilities/finance:finance-server"]
+port        = "8090"
+health_path = "/health"
+ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)
+
+requires = ["postgres"]
