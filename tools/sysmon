@@ -9,6 +9,10 @@
 #                               thermal pressure. arm64 only.
 #   tools/sysmon report        one-shot text snapshot (load, top CPU/mem, memory, swap, disk) --
 #                               for cron, hooks, or piping into a notification
+#   tools/sysmon storage       what is filling the disk and what is reclaimable --
+#                               delegates to tools/storage, which reads the overlay's
+#                               storage-policy.toml. `report` answers "am I full",
+#                               this answers "what is filling me".
 #   tools/sysmon -h            this help
 #
 # Neither binary is installed by this script. Install per upstreams.toml's pin:
@@ -26,6 +30,7 @@ HELP="tools/sysmon — system resource overview.
   tools/sysmon              interactive TUI (bottom) — CPU/mem/disk/net/proc
   tools/sysmon power         Apple Silicon power/thermal TUI (macmon), arm64 only
   tools/sysmon report        one-shot text snapshot — load, top CPU/mem, memory, swap, disk
+  tools/sysmon storage       what is filling the disk and what is reclaimable
   tools/sysmon -h            this help
 "
 
@@ -36,8 +41,6 @@ need_bin() {  # need_bin <bin-on-PATH> <upstream-name-in-upstreams.toml>
     exit 1
   fi
 }
-
-bytes_h() { awk -v b="$1" 'BEGIN { printf "%.1fG", b / 1073741824 }'; }
 
 report() {
   echo "Axon sysmon report · $(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -55,15 +58,46 @@ report() {
   ps aux -m | head -6 | tail -5 | awk '{printf "  %5s%%  %-8s %s\n", $4, $2, $11}'
   echo
 
-  page_size="$(vm_stat | head -1 | grep -oE '[0-9]+' || echo 4096)"
-  free_pages="$(vm_stat | awk -F'[^0-9]+' '/Pages free/ {print $2}')"
-  total_bytes="$(sysctl -n hw.memsize)"
-  free_bytes=$((free_pages * page_size))
-  used_bytes=$((total_bytes - free_bytes))
+  # "Pages free" is not the opposite of used. On a warm macOS it sits near zero
+  # because inactive and file-backed pages hold cached data the kernel hands back on
+  # demand -- so total-minus-free reported 99% used on a machine memory_pressure
+  # called 79% free. Use Activity Monitor's own decomposition instead:
+  # used = app (anonymous minus purgeable) + wired + compressed, with cached files
+  # shown separately because they are reclaimable, not consumed.
+  #
+  # Every field is read as $NF with non-digits stripped: vm_stat pads its columns
+  # differently per field and ends each with a period, so a fixed column index is
+  # the fragile choice. Absent fields stay 0, which keeps this working on macOS
+  # versions predating "Anonymous pages".
   echo "Memory"
-  printf "  used %s / %s (%d%%)\n" \
-    "$(bytes_h "$used_bytes")" "$(bytes_h "$total_bytes")" \
-    "$((used_bytes * 100 / total_bytes))"
+  vm_stat | awk \
+    -v total="$(sysctl -n hw.memsize)" \
+    -v praw="$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 1)" '
+    function num(s) { gsub(/[^0-9]/, "", s); return s + 0 }
+    function h(b)   { return sprintf("%.1fG", b / 1073741824) }
+    BEGIN { ps = 4096 }
+    /page size of/ {
+      if (match($0, /page size of [0-9]+/)) ps = substr($0, RSTART + 13, RLENGTH - 13) + 0
+      next
+    }
+    /^Pages wired down:/             { wired = num($NF); next }
+    /^Pages purgeable:/              { purge = num($NF); next }
+    /^Anonymous pages:/              { anon  = num($NF); next }
+    /^File-backed pages:/            { filed = num($NF); next }
+    /^Pages occupied by compressor:/ { comp  = num($NF); next }
+    END {
+      app    = (anon - purge) * ps
+      wiredb = wired * ps
+      compb  = comp * ps
+      cached = (filed + purge) * ps
+      used   = app + wiredb + compb
+      label  = (praw >= 4) ? "critical" : (praw >= 2) ? "warn" : "normal"
+      printf "  used %s / %s (%d%%) — app %s, wired %s, compressed %s\n", \
+        h(used), h(total), used * 100 / total, h(app), h(wiredb), h(compb)
+      printf "  cached files %s (reclaimable on demand, not consumed)\n", h(cached)
+      printf "  pressure %s\n", label
+    }
+  '
   echo
 
   echo "Swap"
@@ -98,6 +132,13 @@ case "$cmd" in
     ;;
   report|snapshot)
     report
+    ;;
+  storage|disk)
+    # Delegates rather than reimplements: storage needs real TOML parsing for the
+    # overlay policy, which is why it is TS. Pass the remaining args through so
+    # `sysmon storage --apply` and `--json` reach it unchanged.
+    shift
+    exec "$_here/storage" "$@"
     ;;
   *)
     echo "sysmon: unknown command '$cmd'" >&2
