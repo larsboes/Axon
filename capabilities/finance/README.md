@@ -100,6 +100,31 @@ a dependency bought for `<=`.
 Weekly converts at 52/12, not four weeks a month. Four-week months are eleven
 months of the year, and the error runs toward under-reporting what you spend.
 
+## The ledger, when it lands
+
+Phase 3 adds the journal underneath all of this. The account tree, the trip tag and
+the conventions are already fixed and validated as
+[`schemas/finance-journal.example`](../../schemas/finance-journal.example), because
+the shape of the tree is a foreclosing call and writing it down after the importer
+exists means writing it around the importer's accidents.
+
+Two decisions in there worth naming:
+
+**Accounts are symbolic.** `assets:bank:checking`, never an IBAN. Git history is
+permanent and the knowledge-boundary requires that forgetting stay possible, so the
+mapping from a symbolic name to a real account lives in Vaultwarden. This holds for
+comments and commit messages too.
+
+**A trip is a posting tag, not a branch.** A trip expense is also a food expense.
+Duplicating the category tree under a trip prefix would make "what did I spend on
+food this year" answerable only by remembering to union two subtrees. `hledger
+balance tag:trip=<slug>` is the join, and the slug matches the trips capability's
+plan, which is how the two agree without either reading the other's store.
+
+`hledger` is declared in `toolchain.toml` as optional, scoped to a capability
+declaring `ledger` in its `service.toml`. Nothing declares it yet, so the checker
+correctly reports it out of scope rather than missing.
+
 ## Related tools and why this is not them
 
 | Tool | Good at | Relationship |
