@@ -1890,3 +1890,82 @@ export const tasks = {
       signal ? { signal } : undefined,
     ),
 };
+
+// ─── Finance ─────────────────────────────────────────────────────────────────
+
+export type BillingCycle = 'weekly' | 'monthly' | 'quarterly' | 'yearly' | 'one_off';
+export type SubscriptionState = 'considering' | 'trial' | 'active' | 'paused' | 'cancelled';
+
+/** Append-only. A price change adds one of these; it never edits the one before. */
+export interface PricePoint {
+  valid_from: string;
+  amount_cents: number;
+  currency: string;
+  cycle: BillingCycle;
+  reason: string;
+}
+
+/** Append-only, same reasoning. `paused → active` is two rows, not an edit. */
+export interface StateChange {
+  effective: string;
+  state: SubscriptionState;
+  note: string;
+}
+
+export interface Subscription {
+  id: string;
+  name: string;
+  source_path: string;
+  category: string | null;
+  value_rating: number | null;
+  prices: PricePoint[];
+  states: StateChange[];
+}
+
+/** Computed from the series at a date, never read from a stored total. */
+export interface Burn {
+  at: string;
+  monthly_cents: number;
+  annual_cents: number;
+  monthly: string;
+  annual: string;
+  billing_count: number;
+  total_count: number;
+}
+
+export interface WritebackResult {
+  ok: boolean;
+  written: number;
+  unchanged: number;
+  conflicts: string[];
+  not_imported: string[];
+}
+
+export const finance = {
+  subscriptions: (signal?: AbortSignal) =>
+    request<Subscription[]>('/finance/api/subscriptions', signal ? { signal } : undefined),
+  /** `at` is the whole point: the price series makes "what will this cost in
+   *  October" a different answer from "what does it cost today". */
+  burn: (at?: string, signal?: AbortSignal) =>
+    request<Burn>(
+      `/finance/api/subscriptions/burn${at ? `?at=${encodeURIComponent(at)}` : ''}`,
+      signal ? { signal } : undefined,
+    ),
+  appendPrice: (id: string, price: Omit<PricePoint, 'reason'> & { reason: string }) =>
+    request<{ ok: boolean; id: string }>(
+      `/finance/api/subscriptions/${encodeURIComponent(id)}/price`,
+      jsonInit('POST', price),
+    ),
+  appendState: (id: string, change: StateChange) =>
+    request<{ ok: boolean; id: string }>(
+      `/finance/api/subscriptions/${encodeURIComponent(id)}/state`,
+      jsonInit('POST', change),
+    ),
+  importVault: () =>
+    request<{ ok: boolean; created: number; already_present: number }>(
+      '/finance/api/import/obsidian',
+      { method: 'POST' },
+    ),
+  /** Conflicts come back named, never resolved — the caller shows them. */
+  writeback: () => request<WritebackResult>('/finance/api/writeback', { method: 'POST' }),
+};
