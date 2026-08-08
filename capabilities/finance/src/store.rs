@@ -12,6 +12,8 @@
 
 use postgres::{Client, Row};
 
+use crate::analytics::{TransactionKind, TransactionRow};
+use crate::import::{CandidateState, TransactionCandidate};
 use crate::obsidian::ScannedNote;
 use crate::subscription::{BillingCycle, PricePoint, State, StateChange, Subscription};
 
@@ -120,6 +122,37 @@ impl FinanceStore {
                 ON {schema}.price_points(subscription_id, valid_from);
             CREATE INDEX IF NOT EXISTS idx_state_changes_sub
                 ON {schema}.state_changes(subscription_id, effective);
+
+            CREATE TABLE IF NOT EXISTS {schema}.transaction_candidates (
+                id TEXT PRIMARY KEY,
+                fingerprint TEXT NOT NULL UNIQUE,
+                booked_at TEXT NOT NULL,
+                description TEXT NOT NULL,
+                amount_cents BIGINT NOT NULL,
+                currency TEXT NOT NULL,
+                source_account TEXT NOT NULL,
+                source_reference TEXT,
+                proposed_account TEXT NOT NULL,
+                confidence_basis_points SMALLINT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('pending','confirmed','rejected')),
+                created_at TEXT NOT NULL,
+                reviewed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_transaction_candidates_state
+                ON {schema}.transaction_candidates(state, booked_at DESC);
+
+            CREATE TABLE IF NOT EXISTS {schema}.transaction_projection (
+                id TEXT PRIMARY KEY,
+                booked_at TEXT NOT NULL,
+                description TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('income','expense','transfer')),
+                account TEXT NOT NULL,
+                category TEXT NOT NULL,
+                amount_cents BIGINT NOT NULL CHECK (amount_cents >= 0),
+                currency TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_transaction_projection_date
+                ON {schema}.transaction_projection(booked_at DESC);
             "
         ))?;
         Ok(())
@@ -261,6 +294,144 @@ impl FinanceStore {
             .get(0);
         Ok((prices, states))
     }
+
+    /// Stage normalized candidates. The CSV bytes never reach this store; the
+    /// fingerprint makes importing the same export again a counted no-op.
+    pub fn stage_candidates(
+        &self,
+        candidates: &[TransactionCandidate],
+        today: &str,
+    ) -> Fallible<(usize, usize)> {
+        let schema = &self.schema;
+        let mut conn = self.conn()?;
+        let (mut created, mut existing) = (0, 0);
+        for candidate in candidates {
+            let confidence = i16::try_from(candidate.confidence_basis_points)?;
+            let inserted = conn.execute(
+                &format!(
+                    "INSERT INTO {schema}.transaction_candidates
+                        (id, fingerprint, booked_at, description, amount_cents, currency,
+                         source_account, source_reference, proposed_account,
+                         confidence_basis_points, state, created_at)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                     ON CONFLICT (fingerprint) DO NOTHING"
+                ),
+                &[
+                    &candidate.id,
+                    &candidate.fingerprint,
+                    &candidate.booked_at,
+                    &candidate.description,
+                    &candidate.amount_cents,
+                    &candidate.currency,
+                    &candidate.source_account,
+                    &candidate.source_reference,
+                    &candidate.proposed_account,
+                    &confidence,
+                    &candidate.state.as_str(),
+                    &today,
+                ],
+            )?;
+            if inserted == 1 {
+                created += 1;
+            } else {
+                existing += 1;
+            }
+        }
+        Ok((created, existing))
+    }
+
+    pub fn list_candidates(&self) -> Fallible<Vec<TransactionCandidate>> {
+        let schema = &self.schema;
+        let mut conn = self.conn()?;
+        Ok(conn
+            .query(
+                &format!(
+                    "SELECT id, fingerprint, booked_at, description, amount_cents,
+                            currency, source_account, source_reference, proposed_account,
+                            confidence_basis_points, state
+                     FROM {schema}.transaction_candidates
+                     ORDER BY booked_at DESC, id"
+                ),
+                &[],
+            )?
+            .iter()
+            .filter_map(row_to_candidate)
+            .collect())
+    }
+
+    pub fn candidate(&self, id: &str) -> Fallible<Option<TransactionCandidate>> {
+        Ok(self
+            .list_candidates()?
+            .into_iter()
+            .find(|candidate| candidate.id == id))
+    }
+
+    pub fn review_candidate(
+        &self,
+        id: &str,
+        state: CandidateState,
+        account: &str,
+        today: &str,
+    ) -> Fallible<bool> {
+        let schema = &self.schema;
+        let mut conn = self.conn()?;
+        Ok(conn.execute(
+            &format!(
+                "UPDATE {schema}.transaction_candidates
+                 SET state = $2, proposed_account = $3, reviewed_at = $4
+                 WHERE id = $1"
+            ),
+            &[&id, &state.as_str(), &account, &today],
+        )? == 1)
+    }
+
+    /// Replace the disposable index in one database transaction. The journal is
+    /// canonical, so a half-rebuilt projection is never observable.
+    pub fn replace_transaction_projection(&self, rows: &[TransactionRow]) -> Fallible<()> {
+        let schema = &self.schema;
+        let mut conn = self.conn()?;
+        let mut transaction = conn.transaction()?;
+        transaction.execute(&format!("DELETE FROM {schema}.transaction_projection"), &[])?;
+        for row in rows {
+            transaction.execute(
+                &format!(
+                    "INSERT INTO {schema}.transaction_projection
+                        (id, booked_at, description, kind, account, category, amount_cents, currency)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)"
+                ),
+                &[
+                    &row.id,
+                    &row.date,
+                    &row.description,
+                    &row.kind.as_str(),
+                    &row.account,
+                    &row.category,
+                    &row.amount_cents,
+                    &row.currency,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn transaction_projection(&self) -> Fallible<Vec<TransactionRow>> {
+        let schema = &self.schema;
+        let mut conn = self.conn()?;
+        Ok(conn
+            .query(
+                &format!(
+                    "SELECT id, booked_at, description, kind, account, category,
+                            amount_cents, currency
+                     FROM {schema}.transaction_projection
+                     ORDER BY booked_at DESC, id"
+                ),
+                &[],
+            )?
+            .iter()
+            .filter_map(row_to_transaction)
+            .collect())
+    }
 }
 
 fn insert_price(
@@ -378,6 +549,36 @@ fn row_to_state(row: &Row) -> Option<StateChange> {
         effective: row.get("effective"),
         state: State::parse(row.get::<_, String>("state").as_str())?,
         note: row.get("note"),
+    })
+}
+
+fn row_to_candidate(row: &Row) -> Option<TransactionCandidate> {
+    let confidence: i16 = row.get("confidence_basis_points");
+    Some(TransactionCandidate {
+        id: row.get("id"),
+        fingerprint: row.get("fingerprint"),
+        booked_at: row.get("booked_at"),
+        description: row.get("description"),
+        amount_cents: row.get("amount_cents"),
+        currency: row.get("currency"),
+        source_account: row.get("source_account"),
+        source_reference: row.get("source_reference"),
+        proposed_account: row.get("proposed_account"),
+        confidence_basis_points: confidence.try_into().ok()?,
+        state: CandidateState::parse(row.get::<_, String>("state").as_str())?,
+    })
+}
+
+fn row_to_transaction(row: &Row) -> Option<TransactionRow> {
+    Some(TransactionRow {
+        id: row.get("id"),
+        date: row.get("booked_at"),
+        description: row.get("description"),
+        kind: TransactionKind::parse(row.get::<_, String>("kind").as_str())?,
+        account: row.get("account"),
+        category: row.get("category"),
+        amount_cents: row.get("amount_cents"),
+        currency: row.get("currency"),
     })
 }
 

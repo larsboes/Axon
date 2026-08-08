@@ -137,7 +137,7 @@
       },
       "code": {
         "files": 77,
-        "nodes": 462
+        "nodes": 468
       }
     },
     {
@@ -162,7 +162,7 @@
       },
       "code": {
         "files": 7,
-        "nodes": 133
+        "nodes": 153
       }
     },
     {
@@ -1068,6 +1068,11 @@
       "pin": "0.9.31"
     },
     {
+      "name": "hledger",
+      "verdict": "adopt",
+      "pin": "1.52.1"
+    },
+    {
       "name": "home-assistant",
       "verdict": "adopt",
       "pin": "2026.7.4"
@@ -1335,7 +1340,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 8293,
+    "nodes": 8358,
     "external": 7,
     "stale": [],
     "unmatched": [

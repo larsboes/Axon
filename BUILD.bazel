@@ -34,6 +34,7 @@ test_suite(
     name = "postgres_integration_tests",
     tests = [
         "//capabilities/comms:comms_postgres_test",
+        "//capabilities/finance:finance_postgres_test",
         "//capabilities/scouting:scouting_postgres_test",
         "//capabilities/tasks:tasks_postgres_test",
         "//capabilities/transit:transit_postgres_test",

@@ -9,13 +9,13 @@
 //!   2. values from `$AXON_PERSONAL_ROOT/config/postgres.env`
 //!   3. a localhost development fallback
 
+use crate::analytics::BudgetTarget;
 use axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
 use serde::Deserialize;
 use std::path::PathBuf;
 
-/// Where the subscription notes live. The journal root is deliberately absent:
-/// phase 3 adds it, and declaring a config key before anything reads it is how a
-/// manifest starts lying.
+/// Where subscription notes live. Journal and budget configuration are separate
+/// because neither requires an Obsidian vault.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ObsidianConfig {
     pub root: PathBuf,
@@ -27,11 +27,16 @@ pub struct Config {
     pub database_url: String,
     pub port: u16,
     pub obsidian: Option<ObsidianConfig>,
+    pub journal: Option<PathBuf>,
+    pub budgets: Vec<BudgetTarget>,
 }
 
 #[derive(Debug, Deserialize)]
 struct FinanceFileConfig {
     obsidian: Option<FinanceFileObsidian>,
+    journal: Option<String>,
+    #[serde(default)]
+    budgets: Vec<BudgetTarget>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,16 +50,11 @@ fn default_subscriptions_dir() -> String {
     "Atlas/Finance/Subscriptions".into()
 }
 
-fn obsidian_from_personal_config() -> Option<ObsidianConfig> {
+fn file_config() -> Option<FinanceFileConfig> {
     let overlay = std::env::var("AXON_PERSONAL_ROOT").ok()?;
     let path = expand_tilde(&overlay).join("config").join("finance.json");
     let body = std::fs::read_to_string(path).ok()?;
-    let config: FinanceFileConfig = serde_json::from_str(&body).ok()?;
-    let obsidian = config.obsidian?;
-    Some(ObsidianConfig {
-        root: expand_tilde(&obsidian.root),
-        subscriptions_dir: PathBuf::from(obsidian.subscriptions_dir),
-    })
+    serde_json::from_str(&body).ok()
 }
 
 impl Config {
@@ -66,6 +66,7 @@ impl Config {
                 "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
             });
         let port = resolve_port(None, None, 8090);
+        let personal = file_config();
         let obsidian = match std::env::var("AXON_FINANCE_OBSIDIAN_ROOT") {
             Ok(root) => Some(ObsidianConfig {
                 root: expand_tilde(&root),
@@ -74,12 +75,28 @@ impl Config {
                         .unwrap_or_else(|_| default_subscriptions_dir()),
                 ),
             }),
-            Err(_) => obsidian_from_personal_config(),
+            Err(_) => personal
+                .as_ref()
+                .and_then(|config| config.obsidian.as_ref())
+                .map(|obsidian| ObsidianConfig {
+                    root: expand_tilde(&obsidian.root),
+                    subscriptions_dir: PathBuf::from(&obsidian.subscriptions_dir),
+                }),
         };
+        let budgets = personal
+            .as_ref()
+            .map(|config| config.budgets.clone())
+            .unwrap_or_default();
+        let journal = std::env::var("AXON_FINANCE_JOURNAL")
+            .ok()
+            .map(|path| expand_tilde(&path))
+            .or_else(|| personal.and_then(|config| config.journal.map(|path| expand_tilde(&path))));
         Self {
             database_url,
             port,
             obsidian,
+            journal,
+            budgets,
         }
     }
 }

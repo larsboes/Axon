@@ -1,4 +1,4 @@
-# finance — subscriptions, and later the decision layer over the hledger journal.
+# finance — reviewed imports, journal projections, budgets and subscriptions.
 kind        = "process"
 name        = "finance"
 command     = ["bazel-bin/capabilities/finance/finance-server"]
@@ -10,5 +10,9 @@ ready_path  = "/ready"   # availability is judged on this, not on liveness (#126
 # Without this the uniform rule in vite.config.ts claims the whole `/finance` prefix and
 # the page becomes unreachable — the same trap trips documented (#136).
 proxy_api_only = "true"
+
+# Selects the separately installed accounting engine. This scalar is also the
+# toolchain scope: hosts that enable Finance must provide the pinned engine.
+ledger = "hledger"
 
 requires = ["postgres"]
