@@ -13,7 +13,7 @@ use tower_http::cors::CorsLayer;
 
 use finance::accounting::AccountingEngine;
 use finance::analytics::{self, AnalyticsFilter, BudgetTarget};
-use finance::config::{Config, ObsidianConfig};
+use finance::config::{Config, CsvMappingProfile, ObsidianConfig};
 use finance::import::{self, CandidateState, CsvMapping};
 use finance::obsidian::{self, WriteBack};
 use finance::store::FinanceStore;
@@ -73,6 +73,11 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r(
         "GET",
+        "/api/import/csv/mappings",
+        "Named CSV mapping profiles loaded from the private overlay.",
+    ),
+    r(
+        "GET",
         "/api/import/candidates",
         "List normalized transaction candidates and their review state.",
     ),
@@ -120,6 +125,7 @@ struct AppState {
     obsidian: Option<ObsidianConfig>,
     journal: Option<std::path::PathBuf>,
     budgets: Arc<Vec<BudgetTarget>>,
+    csv_mappings: Arc<Vec<CsvMappingProfile>>,
     journal_write: Arc<std::sync::Mutex<()>>,
 }
 
@@ -217,6 +223,10 @@ async fn list_candidates(State(state): State<AppState>) -> ApiResponse {
         Ok(Err(error)) => failed(error),
         Err(_) => failed("task panicked".into()),
     }
+}
+
+async fn list_csv_mappings(State(state): State<AppState>) -> Json<Vec<CsvMappingProfile>> {
+    Json(state.csv_mappings.as_ref().clone())
 }
 
 #[derive(Debug, Deserialize)]
@@ -776,6 +786,7 @@ async fn main() {
         obsidian: config.obsidian,
         journal: config.journal,
         budgets: Arc::new(config.budgets),
+        csv_mappings: Arc::new(config.csv_mappings),
         journal_write: Arc::new(std::sync::Mutex::new(())),
     };
     let app = Router::new()
@@ -790,6 +801,7 @@ async fn main() {
         .route("/api/import/obsidian", post(import_vault))
         .route("/api/writeback", post(writeback))
         .route("/api/import/csv", post(import_csv))
+        .route("/api/import/csv/mappings", get(list_csv_mappings))
         .route("/api/import/candidates", get(list_candidates))
         .route("/api/import/candidates/:id/review", post(review_candidate))
         .route("/api/ledger/check", get(check_ledger))
@@ -860,11 +872,41 @@ mod tests {
             "/api/import/obsidian/scan",
             "/api/import/obsidian",
             "/api/writeback",
+            "/api/import/csv/mappings",
         ] {
             assert!(
                 ROUTES.iter().any(|r| r.path == path),
                 "{path} is served but undeclared"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn csv_mapping_endpoint_returns_private_profiles_without_mutating_them() {
+        let profile = CsvMappingProfile {
+            label: "Synthetic semicolon export".into(),
+            mapping: CsvMapping {
+                delimiter: ';',
+                decimal_separator: ',',
+                date_column: "Date".into(),
+                amount_column: "Amount".into(),
+                description_column: "Description".into(),
+                reference_column: Some("Reference".into()),
+                currency_column: Some("Currency".into()),
+                default_currency: "EUR".into(),
+                source_account: "assets:bank:checking".into(),
+            },
+        };
+        let state = AppState {
+            database_url: Arc::new(String::new()),
+            obsidian: None,
+            journal: None,
+            budgets: Arc::new(Vec::new()),
+            csv_mappings: Arc::new(vec![profile.clone()]),
+            journal_write: Arc::new(std::sync::Mutex::new(())),
+        };
+
+        let Json(returned) = list_csv_mappings(State(state)).await;
+        assert_eq!(returned, vec![profile]);
     }
 }

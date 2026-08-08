@@ -91,6 +91,7 @@ On the manifest-declared port. `GET /routes` serves the full manifest.
   idempotently, and the response says whether a new history point was created
 - `GET /api/import/obsidian/scan` · `POST /api/import/obsidian`
 - `POST /api/writeback`
+- `GET /api/import/csv/mappings`
 - `POST /api/import/csv` · `GET /api/import/candidates`
 - `POST /api/import/candidates/:id/review`
 - `GET /api/ledger/check` · `POST /api/ledger/rebuild`
@@ -103,7 +104,9 @@ Database from `$AXON_FINANCE_DATABASE_URL`, else the overlay's
 the overlay's `config/finance.json`, or `AXON_FINANCE_OBSIDIAN_ROOT` for
 development. `journal` and `budgets` live in that same private file; the journal can
 also be set with `AXON_FINANCE_JOURNAL`. `schemas/finance.json.example` documents the
-shape without carrying private deployment values.
+shape without carrying private deployment values. Named `csv_mappings` also live in
+that private file; the loopback API supplies them to the local review UI, where the
+operator can still edit every field before staging.
 
 Budget entries have `account`, `monthly_cents` and an optional `currency`. Accounts
 stay symbolic. Real account numbers and the mapping from a symbol to an institution

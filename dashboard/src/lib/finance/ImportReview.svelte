@@ -1,6 +1,12 @@
 <script lang="ts">
   import Icon from "$lib/Icon.svelte";
-  import { finance, type CsvMapping, type TransactionCandidate } from "$lib/api";
+  import {
+    finance,
+    type CsvMapping,
+    type CsvMappingProfile,
+    type TransactionCandidate,
+  } from "$lib/api";
+  import { selectedCsvMapping } from "$lib/finance/csv-mapping";
 
   let { onchanged }: { onchanged?: () => void } = $props();
   let candidates = $state<TransactionCandidate[]>([]);
@@ -10,6 +16,8 @@
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
   let accounts = $state<Record<string, string>>({});
+  let mappingProfiles = $state<CsvMappingProfile[]>([]);
+  let selectedProfile = $state("");
   let mapping = $state<CsvMapping>({
     delimiter: ";",
     decimal_separator: ",",
@@ -24,8 +32,13 @@
 
   async function load() {
     try {
-      candidates = await finance.candidates();
-      accounts = Object.fromEntries(candidates.map((candidate) => [
+      const [nextCandidates, nextProfiles] = await Promise.all([
+        finance.candidates(),
+        finance.csvMappings(),
+      ]);
+      candidates = nextCandidates;
+      mappingProfiles = nextProfiles;
+      accounts = Object.fromEntries(nextCandidates.map((candidate) => [
         candidate.id,
         accounts[candidate.id] ?? candidate.proposed_account,
       ]));
@@ -41,6 +54,12 @@
     if (!file) return;
     filename = file.name;
     content = await file.text();
+  }
+
+  function selectMapping(event: Event) {
+    selectedProfile = (event.currentTarget as HTMLSelectElement).value;
+    const selected = selectedCsvMapping(mappingProfiles, selectedProfile);
+    if (selected) mapping = selected;
   }
 
   async function stage() {
@@ -104,6 +123,16 @@
 
   {#if content}
     <div class="mapping">
+      {#if mappingProfiles.length > 0}
+        <label class="profile">Mapping profile
+          <select value={selectedProfile} onchange={selectMapping}>
+            <option value="">Manual entry</option>
+            {#each mappingProfiles as profile, index}
+              <option value={index}>{profile.label}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
       <label>Delimiter<input maxlength="1" bind:value={mapping.delimiter} /></label>
       <label>Decimal separator<input maxlength="1" bind:value={mapping.decimal_separator} /></label>
       <label>Date column<input bind:value={mapping.date_column} /></label>
@@ -160,8 +189,8 @@
   .file input { display: none; }
   .mapping { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .65rem; margin: 1rem 0; padding: .8rem; background: var(--card-bg, rgba(127,127,127,.05)); border-radius: 8px; }
   .mapping label { display: flex; flex-direction: column; gap: .2rem; color: var(--muted, #888); font-size: .68rem; }
-  input { min-width: 0; border: 1px solid var(--border, #333); border-radius: 5px; padding: .35rem .45rem; font: inherit; font-size: .78rem; background: transparent; color: inherit; }
-  .mapping .account { grid-column: span 2; }
+  input, select { min-width: 0; border: 1px solid var(--border, #333); border-radius: 5px; padding: .35rem .45rem; font: inherit; font-size: .78rem; background: transparent; color: inherit; }
+  .mapping .profile, .mapping .account { grid-column: span 2; }
   .mapping button { align-self: end; justify-content: center; }
   .candidate-list { display: grid; gap: .4rem; margin-top: 1rem; }
   article { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .65rem .75rem; border: 1px solid var(--border, #333); border-radius: 7px; }

@@ -2002,6 +2002,11 @@ export interface CsvMapping {
   source_account: string;
 }
 
+export interface CsvMappingProfile {
+  label: string;
+  mapping: CsvMapping;
+}
+
 export interface FinanceTransaction {
   id: string;
   date: string;
@@ -2090,6 +2095,8 @@ export const finance = {
   },
   rebuildLedger: () =>
     request<{ ok: boolean; rows: number }>('/finance/api/ledger/rebuild', { method: 'POST' }),
+  csvMappings: () =>
+    request<CsvMappingProfile[]>('/finance/api/import/csv/mappings'),
   candidates: () => request<TransactionCandidate[]>('/finance/api/import/candidates'),
   importCsv: (content: string, mapping: CsvMapping) =>
     request<{ ok: boolean; created: number; already_present: number }>(
