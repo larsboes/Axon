@@ -6,6 +6,7 @@ build       = ["bazel", "build", "//capabilities/finance:finance-server"]
 port        = "8090"
 health_path = "/health"
 ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)
+autostart   = "true"
 # `/finance` is a dashboard route, so only `/finance/api` is proxied to this process.
 # Without this the uniform rule in vite.config.ts claims the whole `/finance` prefix and
 # the page becomes unreachable — the same trap trips documented (#136).
