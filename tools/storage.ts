@@ -159,7 +159,9 @@ export async function main() {
 
   const policyPath = `${overlayRoot()}/config/storage-policy.toml`;
   if (!existsSync(policyPath)) {
-    console.error(`storage: no policy at ${policyPath}\nSee axon-personal#142 for the expected shape.`);
+    console.error(
+      `storage: no policy at ${policyPath}\nSee schemas/storage-policy.toml.example for the expected shape.`,
+    );
     process.exit(2);
   }
   const policy = Bun.TOML.parse(await Bun.file(policyPath).text()) as Policy;

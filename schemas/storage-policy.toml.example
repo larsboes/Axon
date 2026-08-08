@@ -1,0 +1,64 @@
+# Private overlay template for <overlay>/config/storage-policy.toml.
+#
+# tools/storage knows no path on this machine. What counts as a reclaimable class,
+# what is protected, and what "low on space" means are all deployment facts, so they
+# live here rather than in core Axon (README.md#generic-in-axon-specific-in-the-overlay).
+#
+# Replace every <placeholder> and delete the classes this host does not have.
+
+[thresholds]
+# Exit 1 when free space drops below free_critical_gb; warn below free_warn_gb.
+free_warn_gb = 100
+free_critical_gb = 40
+# Classes at or above this size are flagged in the report.
+class_flag_gb = 5
+
+# One [[class]] per thing that accumulates. `paths` accepts ~ and a single `*` segment.
+#
+# `reclaim` is the command --apply runs, and `apply` is what licenses it. Both are
+# required together: `apply = true` with no `reclaim` is rejected as a policy bug
+# rather than guessed at. Omit `apply` to keep a class report-only.
+#
+# The rule that keeps --apply safe: never `rm -rf` what a tool can clean itself. A
+# named tool's own verb runs verbatim; the literal string `rm -rf` is special-cased
+# to delete only the paths tools/storage measured, never a path the policy named.
+
+[[class]]
+name = "package manager cache"
+paths = ["~/<cache-dir>"]
+reclaim = "<package-manager> cleanup --prune=all"
+apply = true
+regrows = true
+note = "Refills on the next install. Safe to clear on any schedule."
+
+[[class]]
+name = "orphaned build output"
+paths = ["<projects-root>/*/target"]
+# No owning tool left to ask, so the recursive delete is the fallback. Opt in per
+# class, never by default.
+reclaim = "rm -rf"
+apply = true
+
+[[class]]
+name = "<model-server> KV cache"
+paths = ["~/<cache-dir>"]
+reclaim = "<curl-the-servers-own-cache-clear-endpoint>"
+apply = true
+note = "Unbounded by default in some versions; check the server's own config first."
+
+[[class]]
+name = "<something-large-you-only-want-to-see>"
+paths = ["<path>"]
+note = "No reclaim and no apply: reported, never touched."
+
+# Paths that are measured and shown but never applied against, whatever a class says.
+[[protected]]
+path = "<path-holding-state-you-cannot-regenerate>"
+reason = "<why losing this would be unrecoverable>"
+
+# Long-running services this host expects to find. Reported so a cache that belongs
+# to a service that is no longer installed is visible as an orphan.
+[[expected_service]]
+name = "<service>"
+kind = "<launchd|systemd|container>"
+note = "<what it owns on disk>"

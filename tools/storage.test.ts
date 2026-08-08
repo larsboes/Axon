@@ -123,13 +123,13 @@ describe("expandGlob", () => {
 
 describe("expandHome", () => {
   test("expands ~/ and bare ~, leaves absolute paths alone", () => {
-    expect(expandHome("~/.omlx/cache", "/Users/fixture")).toBe("/Users/fixture/.omlx/cache");
-    expect(expandHome("~", "/Users/fixture")).toBe("/Users/fixture");
-    expect(expandHome("/var/log", "/Users/fixture")).toBe("/var/log");
+    expect(expandHome("~/.omlx/cache", "/home/runner")).toBe("/home/runner/.omlx/cache");
+    expect(expandHome("~", "/home/runner")).toBe("/home/runner");
+    expect(expandHome("/var/log", "/home/runner")).toBe("/var/log");
   });
 
   test("a path merely starting with ~ is not a home reference", () => {
-    expect(expandHome("~backup/data", "/Users/fixture")).toBe("~backup/data");
+    expect(expandHome("~backup/data", "/home/runner")).toBe("~backup/data");
   });
 });
 
