@@ -28,8 +28,11 @@ accounting-engine policy.
   currencies and symbolic source accounts. It emits SHA-256-addressed
   `TransactionCandidate` values and discards the raw rows.
 - A separate investment activity preview maps signed quantities, source references
-  and optional exact-decimal unit prices, then reconstructs open holdings without
-  storing rows or writing the journal. Instrument aliases remain private mapping data.
+  and optional exact-decimal unit prices. Private profiles can explicitly classify
+  position-changing and non-position activity values; an unclassified nonzero
+  quantity fails closed rather than inflating holdings. Preview is read-only;
+  explicit confirmation re-runs the adapter and atomically stores only aggregate
+  holdings in a private snapshot. Instrument aliases remain private mapping data.
 - Candidates stay pending until the local UI confirms or rejects them. Confirmation
   validates the prospective journal, appends once, and atomically rebuilds the
   Postgres transaction projection. A retry cannot duplicate the posting.
@@ -72,6 +75,8 @@ collapsing the two into one field wrong.
 | Confirmed postings | private plaintext journal | this capability, after explicit review |
 | Import candidates and transaction projection | Postgres | this capability, rebuildable |
 | Budget targets | private `config/finance.json` | the human |
+| Reviewed aggregate holdings | private configured snapshot | this capability, after explicit review |
+| Holdings dashboard projection | Postgres | this capability, rebuildable from the private snapshot |
 
 Writeback goes through `libs/markdown-root`'s region writer, which preserves every
 byte outside the markers and refuses to overwrite a region a human edited. Nothing
@@ -97,6 +102,7 @@ On the manifest-declared port. `GET /routes` serves the full manifest.
 - `GET /api/import/csv/mappings`
 - `POST /api/import/csv` · `GET /api/import/candidates`
 - `GET /api/import/investments/mappings` · `POST /api/import/investments/preview`
+- `POST /api/import/investments/confirm`
 - `POST /api/import/candidates/:id/review`
 - `GET /api/ledger/check` · `POST /api/ledger/rebuild`
 - `GET /api/dashboard?start=&end=&account=&category=&currency=`
@@ -113,6 +119,9 @@ that private file; the loopback API supplies them to the local review UI, where 
 operator can still edit every field before staging.
 Named `investment_csv_mappings` supply the corresponding preview-only adapter. The
 source identifier to symbolic commodity mapping belongs there rather than in Axon.
+`investment_snapshot` names the private canonical aggregate written after review;
+raw CSV rows and mapping values are never written to it. Prices shown in Overview are
+latest activity prices, not live quotes or a claim about current market value.
 
 Budget entries have `account`, `monthly_cents` and an optional `currency`. Accounts
 stay symbolic. Real account numbers and the mapping from a symbol to an institution

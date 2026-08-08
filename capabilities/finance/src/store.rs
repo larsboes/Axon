@@ -14,6 +14,7 @@ use postgres::{Client, Row};
 
 use crate::analytics::{TransactionKind, TransactionRow};
 use crate::import::{CandidateState, TransactionCandidate};
+use crate::investment::{Holding, Quantity, ReviewedHoldingsSnapshot};
 use crate::obsidian::ScannedNote;
 use crate::subscription::{BillingCycle, PricePoint, State, StateChange, Subscription};
 
@@ -153,6 +154,22 @@ impl FinanceStore {
             );
             CREATE INDEX IF NOT EXISTS idx_transaction_projection_date
                 ON {schema}.transaction_projection(booked_at DESC);
+
+            CREATE TABLE IF NOT EXISTS {schema}.holding_projection_state (
+                singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+                snapshot_id TEXT NOT NULL,
+                reviewed_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS {schema}.holding_projection (
+                instrument TEXT PRIMARY KEY,
+                quantity_mantissa BIGINT NOT NULL,
+                quantity_scale INTEGER NOT NULL CHECK (quantity_scale BETWEEN 0 AND 12),
+                price_mantissa BIGINT,
+                price_scale INTEGER CHECK (price_scale BETWEEN 0 AND 12),
+                currency TEXT NOT NULL,
+                CHECK ((price_mantissa IS NULL) = (price_scale IS NULL))
+            );
             "
         ))?;
         Ok(())
@@ -431,6 +448,121 @@ impl FinanceStore {
             .iter()
             .filter_map(row_to_transaction)
             .collect())
+    }
+
+    /// Replace the disposable holdings index and its review marker together. The
+    /// marker makes a reviewed empty portfolio distinguishable from no snapshot.
+    pub fn replace_holding_projection(&self, snapshot: &ReviewedHoldingsSnapshot) -> Fallible<()> {
+        let schema = &self.schema;
+        let mut conn = self.conn()?;
+        let mut transaction = conn.transaction()?;
+        transaction.execute(&format!("DELETE FROM {schema}.holding_projection"), &[])?;
+        transaction.execute(
+            &format!("DELETE FROM {schema}.holding_projection_state"),
+            &[],
+        )?;
+        transaction.execute(
+            &format!(
+                "INSERT INTO {schema}.holding_projection_state
+                    (singleton, snapshot_id, reviewed_at) VALUES (TRUE, $1, $2)"
+            ),
+            &[&snapshot.snapshot_id, &snapshot.reviewed_at],
+        )?;
+        for holding in &snapshot.holdings {
+            let quantity_scale = i32::try_from(holding.quantity.scale)?;
+            let (price_mantissa, price_scale) = holding
+                .latest_unit_price
+                .as_ref()
+                .map(|price| {
+                    Ok::<_, Box<dyn std::error::Error>>((
+                        Some(price.mantissa),
+                        Some(i32::try_from(price.scale)?),
+                    ))
+                })
+                .transpose()?
+                .unwrap_or((None, None));
+            transaction.execute(
+                &format!(
+                    "INSERT INTO {schema}.holding_projection
+                        (instrument, quantity_mantissa, quantity_scale,
+                         price_mantissa, price_scale, currency)
+                     VALUES ($1,$2,$3,$4,$5,$6)"
+                ),
+                &[
+                    &holding.instrument,
+                    &holding.quantity.mantissa,
+                    &quantity_scale,
+                    &price_mantissa,
+                    &price_scale,
+                    &holding.currency,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn clear_holding_projection(&self) -> Fallible<()> {
+        let schema = &self.schema;
+        let mut conn = self.conn()?;
+        let mut transaction = conn.transaction()?;
+        transaction.execute(&format!("DELETE FROM {schema}.holding_projection"), &[])?;
+        transaction.execute(
+            &format!("DELETE FROM {schema}.holding_projection_state"),
+            &[],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn holding_projection(&self) -> Fallible<Option<ReviewedHoldingsSnapshot>> {
+        let schema = &self.schema;
+        let mut conn = self.conn()?;
+        let Some(state) = conn.query_opt(
+            &format!(
+                "SELECT snapshot_id, reviewed_at
+                 FROM {schema}.holding_projection_state WHERE singleton = TRUE"
+            ),
+            &[],
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut holdings = Vec::new();
+        for row in conn.query(
+            &format!(
+                "SELECT instrument, quantity_mantissa, quantity_scale,
+                        price_mantissa, price_scale, currency
+                 FROM {schema}.holding_projection ORDER BY instrument"
+            ),
+            &[],
+        )? {
+            let price_mantissa: Option<i64> = row.get("price_mantissa");
+            let price_scale: Option<i32> = row.get("price_scale");
+            let latest_unit_price = match (price_mantissa, price_scale) {
+                (Some(mantissa), Some(scale)) => Some(Quantity {
+                    mantissa,
+                    scale: scale.try_into()?,
+                }),
+                (None, None) => None,
+                _ => return Err("holding projection price is incomplete".into()),
+            };
+            holdings.push(Holding {
+                instrument: row.get("instrument"),
+                quantity: Quantity {
+                    mantissa: row.get("quantity_mantissa"),
+                    scale: row.get::<_, i32>("quantity_scale").try_into()?,
+                },
+                latest_unit_price,
+                currency: row.get("currency"),
+            });
+        }
+        Ok(Some(ReviewedHoldingsSnapshot {
+            schema_version: 1,
+            snapshot_id: state.get("snapshot_id"),
+            reviewed_at: state.get("reviewed_at"),
+            holdings,
+        }))
     }
 }
 

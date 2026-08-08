@@ -88,6 +88,11 @@ const ROUTES: &[route_manifest::Route] = &[
         "Reconstruct holdings from signed investment activity without persisting source rows or writing the journal.",
     ),
     r(
+        "POST",
+        "/api/import/investments/confirm",
+        "Recompute and confirm an unchanged holdings preview into the configured private aggregate snapshot.",
+    ),
+    r(
         "GET",
         "/api/import/candidates",
         "List normalized transaction candidates and their review state.",
@@ -138,7 +143,9 @@ struct AppState {
     budgets: Arc<Vec<BudgetTarget>>,
     csv_mappings: Arc<Vec<CsvMappingProfile>>,
     investment_csv_mappings: Arc<Vec<InvestmentCsvMappingProfile>>,
+    investment_snapshot: Option<std::path::PathBuf>,
     journal_write: Arc<std::sync::Mutex<()>>,
+    projection_write: Arc<std::sync::Mutex<()>>,
 }
 
 type ApiResponse = (StatusCode, Json<Value>);
@@ -257,6 +264,59 @@ async fn preview_investments(Json(request): Json<InvestmentPreviewRequest>) -> A
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct InvestmentConfirmRequest {
+    content: String,
+    mapping: InvestmentCsvMapping,
+    expected_snapshot_id: String,
+}
+
+async fn confirm_investments(
+    State(state): State<AppState>,
+    Json(request): Json<InvestmentConfirmRequest>,
+) -> ApiResponse {
+    let Some(path) = state.investment_snapshot.clone() else {
+        return response(
+            StatusCode::CONFLICT,
+            json!({ "error": "no private holdings snapshot is configured" }),
+        );
+    };
+    let database_url = state.database_url.clone();
+    let projection_write = state.projection_write.clone();
+    let reviewed_at = today();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let preview = investment::preview_csv(request.content.as_bytes(), &request.mapping)
+            .map_err(|error| error.to_string())?;
+        if preview.snapshot_id != request.expected_snapshot_id {
+            return Err("investment preview changed before confirmation".into());
+        }
+        let snapshot = investment::reviewed_snapshot(&preview, &request.mapping, &reviewed_at)
+            .map_err(|error| error.to_string())?;
+        let _write_guard = projection_write
+            .lock()
+            .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
+        let created = investment::write_reviewed_snapshot(&path, &snapshot)
+            .map_err(|error| error.to_string())?;
+        let canonical = investment::read_reviewed_snapshot(&path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "holdings snapshot disappeared after confirmation".to_string())?;
+        FinanceStore::open(&database_url)
+            .and_then(|store| store.replace_holding_projection(&canonical))
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "ok": true,
+            "created": created,
+            "snapshot": canonical,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(StatusCode::OK, body),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
 async fn list_investment_mappings(
     State(state): State<AppState>,
 ) -> Json<Vec<InvestmentCsvMappingProfile>> {
@@ -286,7 +346,9 @@ async fn review_candidate(
     };
     let database_url = state.database_url.clone();
     let budgets = state.budgets.clone();
+    let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
+    let projection_write = state.projection_write.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
@@ -345,7 +407,15 @@ async fn review_candidate(
                 store
                     .review_candidate(&id, CandidateState::Confirmed, account, &now)
                     .map_err(|error| error.to_string())?;
-                rebuild_projection(&database_url, &journal, &budgets)?;
+                let _projection_guard = projection_write
+                    .lock()
+                    .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
+                rebuild_projection(
+                    &database_url,
+                    &journal,
+                    &budgets,
+                    investment_snapshot.as_deref(),
+                )?;
                 Ok(json!({
                     "ok": true,
                     "id": id,
@@ -409,8 +479,20 @@ async fn rebuild_ledger(State(state): State<AppState>) -> ApiResponse {
     };
     let database_url = state.database_url.clone();
     let budgets = state.budgets.clone();
-    match tokio::task::spawn_blocking(move || rebuild_projection(&database_url, &journal, &budgets))
-        .await
+    let investment_snapshot = state.investment_snapshot.clone();
+    let projection_write = state.projection_write.clone();
+    match tokio::task::spawn_blocking(move || {
+        let _projection_guard = projection_write
+            .lock()
+            .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
+        rebuild_projection(
+            &database_url,
+            &journal,
+            &budgets,
+            investment_snapshot.as_deref(),
+        )
+    })
+    .await
     {
         Ok(Ok(count)) => response(StatusCode::OK, json!({ "ok": true, "rows": count })),
         Ok(Err(error)) => response(
@@ -425,6 +507,7 @@ fn rebuild_projection(
     database_url: &str,
     journal: &std::path::Path,
     budgets: &[BudgetTarget],
+    investment_snapshot: Option<&std::path::Path>,
 ) -> Result<usize, String> {
     let engine = HledgerEngine::new(journal);
     engine.check().map_err(|error| error.to_string())?;
@@ -435,9 +518,25 @@ fn rebuild_projection(
         .iter()
         .flat_map(|currency| analytics::project(&transactions, currency))
         .collect();
-    FinanceStore::open(database_url)
-        .and_then(|store| store.replace_transaction_projection(&rows))
+    let store = FinanceStore::open(database_url).map_err(|error| error.to_string())?;
+    store
+        .replace_transaction_projection(&rows)
         .map_err(|error| error.to_string())?;
+    match investment_snapshot {
+        Some(path) => {
+            match investment::read_reviewed_snapshot(path).map_err(|error| error.to_string())? {
+                Some(snapshot) => store
+                    .replace_holding_projection(&snapshot)
+                    .map_err(|error| error.to_string())?,
+                None => store
+                    .clear_holding_projection()
+                    .map_err(|error| error.to_string())?,
+            }
+        }
+        None => store
+            .clear_holding_projection()
+            .map_err(|error| error.to_string())?,
+    }
     Ok(rows.len())
 }
 
@@ -447,11 +546,20 @@ async fn dashboard_projection(
 ) -> ApiResponse {
     let database_url = state.database_url.clone();
     let budgets = state.budgets.clone();
+    let projection_write = state.projection_write.clone();
     match tokio::task::spawn_blocking(move || {
-        FinanceStore::open(&database_url)
-            .and_then(|store| store.transaction_projection())
-            .map(|rows| analytics::dashboard(&rows, &budgets, &filter))
-            .map_err(|error| error.to_string())
+        let _projection_guard = projection_write
+            .lock()
+            .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
+        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let rows = store
+            .transaction_projection()
+            .map_err(|error| error.to_string())?;
+        let mut view = analytics::dashboard(&rows, &budgets, &filter);
+        view.investment = store
+            .holding_projection()
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(view)
     })
     .await
     {
@@ -822,7 +930,9 @@ async fn main() {
         budgets: Arc::new(config.budgets),
         csv_mappings: Arc::new(config.csv_mappings),
         investment_csv_mappings: Arc::new(config.investment_csv_mappings),
+        investment_snapshot: config.investment_snapshot,
         journal_write: Arc::new(std::sync::Mutex::new(())),
+        projection_write: Arc::new(std::sync::Mutex::new(())),
     };
     let app = Router::new()
         .route("/routes", get(routes))
@@ -842,6 +952,7 @@ async fn main() {
             get(list_investment_mappings),
         )
         .route("/api/import/investments/preview", post(preview_investments))
+        .route("/api/import/investments/confirm", post(confirm_investments))
         .route("/api/import/candidates", get(list_candidates))
         .route("/api/import/candidates/:id/review", post(review_candidate))
         .route("/api/ledger/check", get(check_ledger))
@@ -915,6 +1026,7 @@ mod tests {
             "/api/import/csv/mappings",
             "/api/import/investments/mappings",
             "/api/import/investments/preview",
+            "/api/import/investments/confirm",
         ] {
             assert!(
                 ROUTES.iter().any(|r| r.path == path),
@@ -946,7 +1058,9 @@ mod tests {
             budgets: Arc::new(Vec::new()),
             csv_mappings: Arc::new(vec![profile.clone()]),
             investment_csv_mappings: Arc::new(Vec::new()),
+            investment_snapshot: None,
             journal_write: Arc::new(std::sync::Mutex::new(())),
+            projection_write: Arc::new(std::sync::Mutex::new(())),
         };
 
         let Json(returned) = list_csv_mappings(State(state)).await;
@@ -963,6 +1077,9 @@ mod tests {
                 date_column: "Date".into(),
                 instrument_column: "Instrument".into(),
                 quantity_column: "Quantity".into(),
+                activity_type_column: None,
+                position_activity_values: Vec::new(),
+                non_position_activity_values: Vec::new(),
                 reference_column: Some("Reference".into()),
                 price_column: Some("Price".into()),
                 currency_column: Some("Currency".into()),
@@ -977,10 +1094,49 @@ mod tests {
             budgets: Arc::new(Vec::new()),
             csv_mappings: Arc::new(Vec::new()),
             investment_csv_mappings: Arc::new(vec![profile.clone()]),
+            investment_snapshot: None,
             journal_write: Arc::new(std::sync::Mutex::new(())),
+            projection_write: Arc::new(std::sync::Mutex::new(())),
         };
 
         let Json(returned) = list_investment_mappings(State(state)).await;
         assert_eq!(returned, vec![profile]);
+    }
+
+    #[tokio::test]
+    async fn investment_confirmation_requires_a_private_snapshot_path() {
+        let state = AppState {
+            database_url: Arc::new(String::new()),
+            obsidian: None,
+            journal: None,
+            budgets: Arc::new(Vec::new()),
+            csv_mappings: Arc::new(Vec::new()),
+            investment_csv_mappings: Arc::new(Vec::new()),
+            investment_snapshot: None,
+            journal_write: Arc::new(std::sync::Mutex::new(())),
+            projection_write: Arc::new(std::sync::Mutex::new(())),
+        };
+        let request = InvestmentConfirmRequest {
+            content: String::new(),
+            mapping: InvestmentCsvMapping {
+                delimiter: ';',
+                decimal_separator: ',',
+                date_column: "Date".into(),
+                instrument_column: "Instrument".into(),
+                quantity_column: "Quantity".into(),
+                activity_type_column: None,
+                position_activity_values: Vec::new(),
+                non_position_activity_values: Vec::new(),
+                reference_column: None,
+                price_column: None,
+                currency_column: None,
+                default_currency: "EUR".into(),
+                instrument_aliases: Default::default(),
+            },
+            expected_snapshot_id: String::new(),
+        };
+
+        let (status, _) = confirm_investments(State(state), Json(request)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
     }
 }

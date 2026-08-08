@@ -1,6 +1,7 @@
 use finance::accounting::{Amount, JournalTransaction, Posting};
 use finance::analytics::{project, TransactionRow};
 use finance::import::{parse_csv, CandidateState, CsvMapping};
+use finance::investment::{Holding, Quantity, ReviewedHoldingsSnapshot};
 use finance::FinanceStore;
 use postgres::{Client, NoTls};
 
@@ -94,4 +95,40 @@ fn candidate_staging_is_idempotent_and_review_is_explicit() {
         )
         .unwrap();
     assert_eq!(store.list_candidates().unwrap()[0].state, CandidateState::Rejected);
+}
+
+#[test]
+fn reviewed_holdings_replace_atomically_and_preserve_an_empty_review() {
+    let (store, _schema) = store("holdings");
+    assert_eq!(store.holding_projection().unwrap(), None);
+    let snapshot = ReviewedHoldingsSnapshot {
+        schema_version: 1,
+        snapshot_id: "synthetic-snapshot".into(),
+        reviewed_at: "2026-08-09".into(),
+        holdings: vec![Holding {
+            instrument: "ACME".into(),
+            quantity: Quantity {
+                mantissa: 1250,
+                scale: 3,
+            },
+            latest_unit_price: Some(Quantity {
+                mantissa: 101234,
+                scale: 4,
+            }),
+            currency: "EUR".into(),
+        }],
+    };
+    store.replace_holding_projection(&snapshot).unwrap();
+    assert_eq!(store.holding_projection().unwrap(), Some(snapshot));
+
+    let empty = ReviewedHoldingsSnapshot {
+        schema_version: 1,
+        snapshot_id: "synthetic-empty".into(),
+        reviewed_at: "2026-08-10".into(),
+        holdings: vec![],
+    };
+    store.replace_holding_projection(&empty).unwrap();
+    assert_eq!(store.holding_projection().unwrap(), Some(empty));
+    store.clear_holding_projection().unwrap();
+    assert_eq!(store.holding_projection().unwrap(), None);
 }

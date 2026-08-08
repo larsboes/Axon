@@ -5,6 +5,7 @@
     "subscriptions_dir": "Atlas/Finance/Subscriptions"
   },
   "journal": "<finance-journal-path>",
+  "investment_snapshot": "<finance-investment-snapshot-path>",
   "csv_mappings": [
     {
       "label": "Synthetic semicolon export",
@@ -30,6 +31,9 @@
         "date_column": "Date",
         "instrument_column": "Instrument",
         "quantity_column": "Quantity",
+        "activity_type_column": "Type",
+        "position_activity_values": ["BUY", "SELL"],
+        "non_position_activity_values": ["DIVIDEND"],
         "reference_column": "Reference",
         "price_column": "Price",
         "currency_column": "Currency",

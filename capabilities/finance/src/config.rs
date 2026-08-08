@@ -43,6 +43,7 @@ pub struct Config {
     pub port: u16,
     pub obsidian: Option<ObsidianConfig>,
     pub journal: Option<PathBuf>,
+    pub investment_snapshot: Option<PathBuf>,
     pub budgets: Vec<BudgetTarget>,
     pub csv_mappings: Vec<CsvMappingProfile>,
     pub investment_csv_mappings: Vec<InvestmentCsvMappingProfile>,
@@ -52,6 +53,7 @@ pub struct Config {
 struct FinanceFileConfig {
     obsidian: Option<FinanceFileObsidian>,
     journal: Option<String>,
+    investment_snapshot: Option<String>,
     #[serde(default)]
     budgets: Vec<BudgetTarget>,
     #[serde(default)]
@@ -125,11 +127,21 @@ impl Config {
                     .and_then(|config| config.journal.as_ref())
                     .map(|path| expand_tilde(path))
             });
+        let investment_snapshot = std::env::var("AXON_FINANCE_INVESTMENT_SNAPSHOT")
+            .ok()
+            .map(|path| expand_tilde(&path))
+            .or_else(|| {
+                personal
+                    .as_ref()
+                    .and_then(|config| config.investment_snapshot.as_ref())
+                    .map(|path| expand_tilde(path))
+            });
         Self {
             database_url,
             port,
             obsidian,
             journal,
+            investment_snapshot,
             budgets,
             csv_mappings,
             investment_csv_mappings,
@@ -189,20 +201,34 @@ mod tests {
                     "date_column": "Date",
                     "instrument_column": "Instrument",
                     "quantity_column": "Quantity",
+                    "activity_type_column": "Type",
+                    "position_activity_values": ["BUY", "SELL"],
+                    "non_position_activity_values": ["DIVIDEND"],
                     "reference_column": "Reference",
                     "price_column": "Price",
                     "currency_column": "Currency",
                     "default_currency": "EUR",
                     "instrument_aliases": {"source-1": "ACME"}
                 }
-            }]
+            }],
+            "investment_snapshot": "/private/state/holdings.json"
         }))
         .unwrap();
 
         assert_eq!(config.investment_csv_mappings.len(), 1);
         assert_eq!(
+            config.investment_snapshot.as_deref(),
+            Some("/private/state/holdings.json")
+        );
+        assert_eq!(
             config.investment_csv_mappings[0].mapping.instrument_aliases["source-1"],
             "ACME"
+        );
+        assert_eq!(
+            config.investment_csv_mappings[0]
+                .mapping
+                .position_activity_values,
+            ["BUY", "SELL"]
         );
     }
 }
