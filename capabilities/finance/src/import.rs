@@ -275,7 +275,7 @@ fn optional_column(headers: &StringRecord, name: Option<&str>) -> ImportResult<O
     name.map(|name| column(headers, name)).transpose()
 }
 
-fn normalize_date(value: &str) -> ImportResult<String> {
+pub(crate) fn normalize_date(value: &str) -> ImportResult<String> {
     let value = value.trim();
     let normalized = if value.len() == 10 && value.as_bytes().get(2) == Some(&b'.') {
         format!("{}-{}-{}", &value[6..10], &value[3..5], &value[0..2])

@@ -2007,6 +2007,39 @@ export interface CsvMappingProfile {
   mapping: CsvMapping;
 }
 
+export interface InvestmentCsvMapping {
+  delimiter: string;
+  decimal_separator: string;
+  date_column: string;
+  instrument_column: string;
+  quantity_column: string;
+  reference_column?: string | null;
+  price_column?: string | null;
+  currency_column?: string | null;
+  default_currency: string;
+  instrument_aliases: Record<string, string>;
+}
+
+export interface InvestmentCsvMappingProfile {
+  label: string;
+  mapping: InvestmentCsvMapping;
+}
+
+export interface InvestmentHolding {
+  instrument: string;
+  quantity: { mantissa: string; scale: number };
+  latest_unit_price: { mantissa: string; scale: number } | null;
+  currency: string;
+}
+
+export interface InvestmentPreview {
+  activity_count: number;
+  duplicate_rows: number;
+  ignored_non_position_rows: number;
+  closed_positions: number;
+  holdings: InvestmentHolding[];
+}
+
 export interface FinanceTransaction {
   id: string;
   date: string;
@@ -2097,6 +2130,13 @@ export const finance = {
     request<{ ok: boolean; rows: number }>('/finance/api/ledger/rebuild', { method: 'POST' }),
   csvMappings: () =>
     request<CsvMappingProfile[]>('/finance/api/import/csv/mappings'),
+  investmentMappings: () =>
+    request<InvestmentCsvMappingProfile[]>('/finance/api/import/investments/mappings'),
+  previewInvestments: (content: string, mapping: InvestmentCsvMapping) =>
+    request<InvestmentPreview>(
+      '/finance/api/import/investments/preview',
+      jsonInit('POST', { content, mapping }),
+    ),
   candidates: () => request<TransactionCandidate[]>('/finance/api/import/candidates'),
   importCsv: (content: string, mapping: CsvMapping) =>
     request<{ ok: boolean; created: number; already_present: number }>(

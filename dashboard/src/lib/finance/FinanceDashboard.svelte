@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import ImportReview from "$lib/finance/ImportReview.svelte";
+  import InvestmentPreview from "$lib/finance/InvestmentPreview.svelte";
   import TransactionTable from "$lib/finance/TransactionTable.svelte";
   import { finance, type FinanceDashboard } from "$lib/api";
 
@@ -173,6 +174,7 @@
     <TransactionTable rows={data.transactions} />
   </section>
   <ImportReview onchanged={load} />
+  <InvestmentPreview />
 {/if}
 
 <style>
