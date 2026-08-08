@@ -10,8 +10,9 @@
 //!   3. a localhost development fallback
 
 use crate::analytics::BudgetTarget;
+use crate::import::CsvMapping;
 use axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Where subscription notes live. Journal and budget configuration are separate
@@ -22,6 +23,13 @@ pub struct ObsidianConfig {
     pub subscriptions_dir: PathBuf,
 }
 
+/// A reusable import shape whose values come only from the private overlay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CsvMappingProfile {
+    pub label: String,
+    pub mapping: CsvMapping,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -29,6 +37,7 @@ pub struct Config {
     pub obsidian: Option<ObsidianConfig>,
     pub journal: Option<PathBuf>,
     pub budgets: Vec<BudgetTarget>,
+    pub csv_mappings: Vec<CsvMappingProfile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +46,8 @@ struct FinanceFileConfig {
     journal: Option<String>,
     #[serde(default)]
     budgets: Vec<BudgetTarget>,
+    #[serde(default)]
+    csv_mappings: Vec<CsvMappingProfile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,16 +98,26 @@ impl Config {
             .as_ref()
             .map(|config| config.budgets.clone())
             .unwrap_or_default();
+        let csv_mappings = personal
+            .as_ref()
+            .map(|config| config.csv_mappings.clone())
+            .unwrap_or_default();
         let journal = std::env::var("AXON_FINANCE_JOURNAL")
             .ok()
             .map(|path| expand_tilde(&path))
-            .or_else(|| personal.and_then(|config| config.journal.map(|path| expand_tilde(&path))));
+            .or_else(|| {
+                personal
+                    .as_ref()
+                    .and_then(|config| config.journal.as_ref())
+                    .map(|path| expand_tilde(path))
+            });
         Self {
             database_url,
             port,
             obsidian,
             journal,
             budgets,
+            csv_mappings,
         }
     }
 }
@@ -108,5 +129,36 @@ mod tests {
     #[test]
     fn the_default_directory_matches_where_the_notes_already_live() {
         assert_eq!(default_subscriptions_dir(), "Atlas/Finance/Subscriptions");
+    }
+
+    #[test]
+    fn private_csv_mapping_profiles_parse_as_typed_config() {
+        let config: FinanceFileConfig = serde_json::from_value(serde_json::json!({
+            "csv_mappings": [{
+                "label": "Synthetic semicolon export",
+                "mapping": {
+                    "delimiter": ";",
+                    "decimal_separator": ",",
+                    "date_column": "Date",
+                    "amount_column": "Amount",
+                    "description_column": "Description",
+                    "reference_column": "Reference",
+                    "currency_column": "Currency",
+                    "default_currency": "EUR",
+                    "source_account": "assets:bank:checking"
+                }
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(config.csv_mappings.len(), 1);
+        assert_eq!(config.csv_mappings[0].label, "Synthetic semicolon export");
+        assert_eq!(config.csv_mappings[0].mapping.date_column, "Date");
+    }
+
+    #[test]
+    fn csv_mapping_profiles_are_optional() {
+        let config: FinanceFileConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.csv_mappings.is_empty());
     }
 }

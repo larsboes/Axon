@@ -5,6 +5,23 @@
     "subscriptions_dir": "Atlas/Finance/Subscriptions"
   },
   "journal": "<finance-journal-path>",
+  "csv_mappings": [
+    {
+      "label": "Synthetic semicolon export",
+      "mapping": {
+        "delimiter": ";",
+        "decimal_separator": ",",
+        "date_column": "Date",
+        "amount_column": "Amount",
+        "description_column": "Description",
+        "reference_column": "Reference",
+        "currency_column": "Currency",
+        "default_currency": "EUR",
+        "source_account": "assets:bank:checking"
+      }
+    }
+  ],
   "budgets": [],
-  "_budget_note": "Budget entries have account, monthly_cents and optional currency. They belong only in this private overlay file; schemas/finance-journal.example remains the public synthetic data contract."
+  "_budget_note": "Budget entries have account, monthly_cents and optional currency. They belong only in this private overlay file; schemas/finance-journal.example remains the public synthetic data contract.",
+  "_mapping_note": "Only this synthetic profile belongs in Axon. Real profile labels, column mappings and symbolic source accounts stay in the private overlay."
 }
