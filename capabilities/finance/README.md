@@ -71,7 +71,8 @@ On the manifest-declared port. `GET /routes` serves the full manifest.
 - `GET /health` · `GET /ready` (liveness and a reachable database, judged separately)
 - `GET /api/subscriptions`
 - `GET /api/subscriptions/burn?at=YYYY-MM-DD`
-- `POST /api/subscriptions/:id/price` · `POST /api/subscriptions/:id/state`
+- `POST /api/subscriptions/:id/price` · `POST /api/subscriptions/:id/state` — idempotent appends;
+  the response says whether a new history point was created
 - `GET /api/import/obsidian/scan` · `POST /api/import/obsidian`
 - `POST /api/writeback`
 

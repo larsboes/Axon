@@ -1932,6 +1932,8 @@ export interface PricePoint {
   amount_cents: number;
   currency: string;
   cycle: BillingCycle;
+  /** Which tier: "Pro", "Max", "2TB". Absent for a subscription with only one. */
+  plan?: string | null;
   reason: string;
 }
 
@@ -1981,13 +1983,13 @@ export const finance = {
       `/finance/api/subscriptions/burn${at ? `?at=${encodeURIComponent(at)}` : ''}`,
       signal ? { signal } : undefined,
     ),
-  appendPrice: (id: string, price: Omit<PricePoint, 'reason'> & { reason: string }) =>
-    request<{ ok: boolean; id: string }>(
+  appendPrice: (id: string, price: PricePoint) =>
+    request<{ ok: boolean; id: string; created: boolean }>(
       `/finance/api/subscriptions/${encodeURIComponent(id)}/price`,
       jsonInit('POST', price),
     ),
   appendState: (id: string, change: StateChange) =>
-    request<{ ok: boolean; id: string }>(
+    request<{ ok: boolean; id: string; created: boolean }>(
       `/finance/api/subscriptions/${encodeURIComponent(id)}/state`,
       jsonInit('POST', change),
     ),

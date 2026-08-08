@@ -144,6 +144,10 @@ pub fn seed_from_note(note: &ScannedNote, today: &str) -> Subscription {
                 amount_cents,
                 currency: "EUR".into(),
                 cycle,
+                plan: f
+                    .get("plan")
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty()),
                 reason: "seeded from the vault note".into(),
             }]
         })
@@ -194,6 +198,9 @@ pub fn render_block(sub: &Subscription, today: &str) -> String {
                 cents_to_decimal(p.cycle.monthly_cents(p.amount_cents)),
                 p.currency
             ));
+            if let Some(plan) = &p.plan {
+                out.push_str(&format!("> **Plan:** {plan}\n"));
+            }
         }
         None => out.push_str("> **Current price:** not recorded yet\n"),
     }
@@ -229,7 +236,11 @@ pub fn render_block(sub: &Subscription, today: &str) -> String {
         .min_by(|a, b| a.valid_from.cmp(&b.valid_from))
     {
         out.push_str(&format!(
-            "> **Scheduled:** {} {} / {} from {}\n",
+            "> **Scheduled:** {}{} {} / {} from {}\n",
+            next.plan
+                .as_deref()
+                .map(|p| format!("{p}, "))
+                .unwrap_or_default(),
             cents_to_decimal(next.amount_cents),
             next.currency,
             cycle_word(next.cycle),
@@ -380,6 +391,7 @@ mod tests {
                     amount_cents: 2000,
                     currency: "EUR".into(),
                     cycle: BillingCycle::Monthly,
+                    plan: None,
                     reason: String::new(),
                 },
                 PricePoint {
@@ -387,6 +399,7 @@ mod tests {
                     amount_cents: 2500,
                     currency: "EUR".into(),
                     cycle: BillingCycle::Monthly,
+                    plan: None,
                     reason: "provider raised it".into(),
                 },
             ],
@@ -438,6 +451,7 @@ mod tests {
                     amount_cents: 2000,
                     currency: "EUR".into(),
                     cycle: BillingCycle::Monthly,
+                    plan: None,
                     reason: String::new(),
                 },
                 PricePoint {
@@ -445,6 +459,7 @@ mod tests {
                     amount_cents: 10_000,
                     currency: "EUR".into(),
                     cycle: BillingCycle::Monthly,
+                    plan: Some("Max".into()),
                     reason: "upgrade".into(),
                 },
             ],
@@ -457,7 +472,8 @@ mod tests {
 
         let block = render_block(&sub, "2026-08-08");
         assert!(!block.contains("drift"), "nothing has drifted yet");
-        assert!(block.contains("**Scheduled:** 100.00 EUR / month from 2026-10-01"));
+        // The plan rides along, so the line answers "to what" as well as "to how much".
+        assert!(block.contains("**Scheduled:** Max, 100.00 EUR / month from 2026-10-01"));
         assert!(block.contains("**Current price:** 20.00 EUR / month"));
 
         // Once it lands, it is drift and there is nothing left to schedule.

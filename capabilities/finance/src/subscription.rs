@@ -121,6 +121,16 @@ pub struct PricePoint {
     pub amount_cents: i64,
     pub currency: String,
     pub cycle: BillingCycle,
+    /// Which tier of the product this is: "Pro", "Max", "2TB". Optional, because
+    /// plenty of subscriptions have exactly one.
+    ///
+    /// It is a field rather than something to read out of `reason` because moving
+    /// from Pro to Max is two facts, not one: the price changed *and* what you are
+    /// on changed. Folding the second into free text makes "when was I on Max" a
+    /// string search over prose, which is the kind of answer that quietly stops
+    /// being right.
+    #[serde(default)]
+    pub plan: Option<String>,
     /// Why it changed. "initial" for the first, then whatever the provider did.
     #[serde(default)]
     pub reason: String,
@@ -170,6 +180,11 @@ impl Subscription {
             .iter()
             .filter(|p| p.valid_from.as_str() <= date)
             .max_by(|a, b| a.valid_from.cmp(&b.valid_from))
+    }
+
+    /// Which tier was in force on `date`, if the series records one.
+    pub fn plan_at(&self, date: &str) -> Option<&str> {
+        self.price_at(date)?.plan.as_deref()
     }
 
     /// The state in force on `date`. Absent history reads as `Considering`: a note
@@ -285,6 +300,7 @@ mod tests {
             amount_cents: cents,
             currency: "EUR".into(),
             cycle,
+            plan: None,
             reason: String::new(),
         }
     }
@@ -334,6 +350,28 @@ mod tests {
             .price_drift_cents("2026-08-08", "2026-10-01")
             .unwrap();
         assert_eq!(drift, 8000, "20.00 to 100.00 is 80.00 of drift");
+    }
+
+    #[test]
+    fn a_tier_change_is_a_price_point_that_also_remembers_what_you_switched_to() {
+        // Claude Pro at 20 and Max at 100 are the same subscription on two plans.
+        // The money is in amount_cents, the identity is in plan, and neither is
+        // recoverable from the other.
+        let mut sub = two_price_points();
+        sub.prices[0].plan = Some("Pro".into());
+        sub.prices[1].plan = Some("Max".into());
+
+        assert_eq!(sub.plan_at("2026-08-08"), Some("Pro"));
+        assert_eq!(sub.plan_at("2026-10-01"), Some("Max"));
+        assert_eq!(sub.plan_at("2026-01-01"), None, "before the first point");
+        // ...and the money still moves with it.
+        assert_eq!(sub.monthly_cents_at("2026-08-08"), 2000);
+        assert_eq!(sub.monthly_cents_at("2026-10-01"), 10_000);
+    }
+
+    #[test]
+    fn a_subscription_with_one_tier_records_no_plan_rather_than_a_placeholder() {
+        assert_eq!(two_price_points().plan_at("2026-08-08"), None);
     }
 
     #[test]

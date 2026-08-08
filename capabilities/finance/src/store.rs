@@ -99,6 +99,10 @@ impl FinanceStore {
                 recorded_at TEXT NOT NULL,
                 UNIQUE (subscription_id, valid_from, reason)
             );
+            -- Added after the table shipped, so it arrives as an ALTER rather than
+            -- in the CREATE: a database that already holds price points must keep
+            -- them. Nullable because most subscriptions have exactly one tier.
+            ALTER TABLE {schema}.price_points ADD COLUMN IF NOT EXISTS plan TEXT;
 
             CREATE TABLE IF NOT EXISTS {schema}.state_changes (
                 id BIGSERIAL PRIMARY KEY,
@@ -143,7 +147,7 @@ impl FinanceStore {
             sub.prices = conn
                 .query(
                     &format!(
-                        "SELECT valid_from, amount_cents, currency, cycle, reason
+                        "SELECT valid_from, amount_cents, currency, cycle, plan, reason
                          FROM {schema}.price_points
                          WHERE subscription_id = $1 ORDER BY valid_from"
                     ),
@@ -221,19 +225,21 @@ impl FinanceStore {
     }
 
     /// Append a price point. Never updates: that is the guarantee.
-    pub fn append_price(&self, id: &str, price: &PricePoint, today: &str) -> Fallible<()> {
+    pub fn append_price(&self, id: &str, price: &PricePoint, today: &str) -> Fallible<bool> {
         let schema = self.schema.clone();
         let mut conn = self.conn()?;
-        insert_price(&mut conn, &schema, id, price, today)?;
-        touch(&mut conn, &schema, id, today)
+        let created = insert_price(&mut conn, &schema, id, price, today)?;
+        touch(&mut conn, &schema, id, today)?;
+        Ok(created)
     }
 
     /// Append a state change. Never updates: that is the guarantee.
-    pub fn append_state(&self, id: &str, change: &StateChange, today: &str) -> Fallible<()> {
+    pub fn append_state(&self, id: &str, change: &StateChange, today: &str) -> Fallible<bool> {
         let schema = self.schema.clone();
         let mut conn = self.conn()?;
-        insert_state(&mut conn, &schema, id, change, today)?;
-        touch(&mut conn, &schema, id, today)
+        let created = insert_state(&mut conn, &schema, id, change, today)?;
+        touch(&mut conn, &schema, id, today)?;
+        Ok(created)
     }
 
     /// How many rows each series holds. Exists for the append-only regression test,
@@ -263,12 +269,12 @@ fn insert_price(
     id: &str,
     price: &PricePoint,
     today: &str,
-) -> Fallible<()> {
-    conn.execute(
+) -> Fallible<bool> {
+    let inserted = conn.execute(
         &format!(
             "INSERT INTO {schema}.price_points
-                (subscription_id, valid_from, amount_cents, currency, cycle, reason, recorded_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7)
+                (subscription_id, valid_from, amount_cents, currency, cycle, plan, reason, recorded_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
              ON CONFLICT (subscription_id, valid_from, reason) DO NOTHING"
         ),
         &[
@@ -277,11 +283,12 @@ fn insert_price(
             &price.amount_cents,
             &price.currency,
             &cycle_str(price.cycle),
+            &price.plan,
             &price.reason,
             &today,
         ],
     )?;
-    Ok(())
+    Ok(inserted == 1)
 }
 
 fn insert_state(
@@ -290,8 +297,8 @@ fn insert_state(
     id: &str,
     change: &StateChange,
     today: &str,
-) -> Fallible<()> {
-    conn.execute(
+) -> Fallible<bool> {
+    let inserted = conn.execute(
         &format!(
             "INSERT INTO {schema}.state_changes
                 (subscription_id, effective, state, note, recorded_at)
@@ -306,7 +313,7 @@ fn insert_state(
             &today,
         ],
     )?;
-    Ok(())
+    Ok(inserted == 1)
 }
 
 /// `updated_at` on the parent row is the one thing that does get updated, and it
@@ -357,6 +364,7 @@ fn row_to_price(row: &Row) -> PricePoint {
         amount_cents: row.get("amount_cents"),
         currency: row.get("currency"),
         cycle: cycle_from_str(row.get::<_, String>("cycle").as_str()),
+        plan: row.get("plan"),
         reason: row.get("reason"),
     }
 }
