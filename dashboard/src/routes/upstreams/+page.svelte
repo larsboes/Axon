@@ -66,7 +66,7 @@
 />
 
 {#if error}
-  <p class="err"><Icon name="alert" size={14} /> axon-status unavailable — {error}</p>
+  <p class="err"><Icon name="alert" size={14} /> {error}</p>
 {:else if !data}
   <p class="loading"><Icon name="loader" size={14} /> Checking dependencies…</p>
 {:else}

@@ -191,7 +191,7 @@
 
 {#if error}
   <p class="err">
-    <Icon name="alert" size={14} /> axon-status unavailable — {error}
+    <Icon name="alert" size={14} /> {error}
   </p>
 {:else if !model}
   <p class="loading"><Icon name="loader" size={14} /> loading…</p>
