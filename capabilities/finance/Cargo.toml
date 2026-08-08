@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Subscriptions as contracts with append-only price and state history, and the decision layer above the ledger."
+description = "Reviewed finance imports, journal projections, budgets, cash flow, and append-only subscriptions."
 publish = false
 
 [lib]
@@ -29,3 +29,5 @@ r2d2_postgres = "0.18"
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
+csv = "1.4"
+sha2 = "0.10"

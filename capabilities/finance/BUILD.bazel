@@ -9,18 +9,20 @@ rust_library(
     # Globbed rather than listed — see capabilities/scouting/BUILD.bazel for why the
     # hand-maintained inventory was the drift risk (Axon#13). src/server.rs is excluded
     # because it is the server binary's own crate root.
-    srcs = glob(["src/**/*.rs"], exclude = ["src/server.rs"]),
+    srcs = glob(["src/**/*.rs"], exclude = ["src/postgres_test.rs", "src/server.rs"]),
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
         "//libs/axon-config:axon-config",
         "//libs/axon-store:axon-store",
         "//libs/markdown-root:markdown-root",
+        "@crate_index//:csv",
         "@crate_index//:postgres",
         "@crate_index//:r2d2",
         "@crate_index//:r2d2_postgres",
         "@crate_index//:serde",
         "@crate_index//:serde_json",
+        "@crate_index//:sha2",
     ],
 )
 
@@ -28,6 +30,22 @@ rust_test(
     name = "finance_test",
     crate = ":finance_lib",
     size = "small",
+)
+
+rust_test(
+    name = "finance_postgres_test",
+    crate_root = "src/postgres_test.rs",
+    srcs = ["src/postgres_test.rs"],
+    edition = "2021",
+    size = "small",
+    tags = [
+        "manual",
+        "postgres-integration",
+    ],
+    deps = [
+        ":finance_lib",
+        "@crate_index//:postgres",
+    ],
 )
 
 rust_binary(

@@ -1,27 +1,40 @@
 # finance
 
-Subscriptions as contracts with append-only price and state history, and the
-decision layer above the ledger.
+Journal-backed cash flow, budgets, reviewed bank imports and subscriptions with
+append-only price and state history.
 
 ## Why a capability
 
-hledger owns the ledger and Postgres owns the index over it. This owns everything
-above both: what a subscription has cost over its life, what a trip actually cost,
-whether a position crossed its exit rule.
+hledger is the first accounting engine. The private plaintext journal is canonical,
+Postgres holds a disposable index, and this capability owns the review path and the
+product above both.
 
 The split is not a compromise between build and adopt. A plaintext journal under
 git satisfies the knowledge-boundary's V1 and an index rebuilt from it satisfies
 V2, so choosing the storage format did the boundary work rather than a rule someone
 has to remember. What gets built here is the layer nothing off the shelf does well.
-Double-entry posting, lot accounting, CSV rule engines, price feeds and return math
-are not built here at all: `hledger roi` already computes IRR and TWR, and
-`pricehist` already emits `P` directives.
+Double-entry semantics, lot accounting, price feeds and return math are not built
+here: `hledger roi` already computes IRR and TWR, and `pricehist` already emits `P`
+directives. Source parsing is different. Axon owns the typed CSV adapter, duplicate
+detection, explicit review and journal write because those are product policy, not
+accounting-engine policy.
 
 ## What exists today
 
-Phase 2 of the spec: subscriptions, and no ledger. That ordering is deliberate. The
-vault notes already carry the frontmatter, so the whole loop can be proven end to
-end before the first bank export is parsed.
+- `AccountingEngine` defines check, transaction, register, balance, budget, cash-flow
+  and ROI reports without exposing hledger syntax. `HledgerEngine` invokes hledger
+  with `--no-conf` and normalizes its output.
+- A configurable CSV adapter handles column names, delimiters, decimal marks,
+  currencies and symbolic source accounts. It emits SHA-256-addressed
+  `TransactionCandidate` values and discards the raw rows.
+- Candidates stay pending until the local UI confirms or rejects them. Confirmation
+  validates the prospective journal, appends once, and atomically rebuilds the
+  Postgres transaction projection. A retry cannot duplicate the posting.
+- `/finance` has Overview, Budget, Transactions and Subscriptions. KPI cards, monthly
+  cash flow, budget variance, the table and the interactive Sankey all use the same
+  Rust projection. Internal transfers are excluded by default.
+- Subscription prices and states remain append-only, with conflict-safe Obsidian
+  writeback through `libs/markdown-root`.
 
 ## A subscription is not a row with a price
 
@@ -53,6 +66,9 @@ collapsing the two into one field wrong.
 | Why I pay for this, value check, alternatives | the vault note's prose | the human |
 | Price history, state history, computed burn | Postgres | this capability |
 | Current price, monthly equivalent, drift | the vault note, marked region | this capability, regenerable |
+| Confirmed postings | private plaintext journal | this capability, after explicit review |
+| Import candidates and transaction projection | Postgres | this capability, rebuildable |
+| Budget targets | private `config/finance.json` | the human |
 
 Writeback goes through `libs/markdown-root`'s region writer, which preserves every
 byte outside the markers and refuses to overwrite a region a human edited. Nothing
@@ -71,20 +87,27 @@ On the manifest-declared port. `GET /routes` serves the full manifest.
 - `GET /health` · `GET /ready` (liveness and a reachable database, judged separately)
 - `GET /api/subscriptions`
 - `GET /api/subscriptions/burn?at=YYYY-MM-DD`
-- `POST /api/subscriptions/:id/price` · `POST /api/subscriptions/:id/state` — idempotent appends;
-  the response says whether a new history point was created
+- `POST /api/subscriptions/:id/price` · `POST /api/subscriptions/:id/state`; both append
+  idempotently, and the response says whether a new history point was created
 - `GET /api/import/obsidian/scan` · `POST /api/import/obsidian`
 - `POST /api/writeback`
+- `POST /api/import/csv` · `GET /api/import/candidates`
+- `POST /api/import/candidates/:id/review`
+- `GET /api/ledger/check` · `POST /api/ledger/rebuild`
+- `GET /api/dashboard?start=&end=&account=&category=&currency=`
 
 ## Configuration
 
 Database from `$AXON_FINANCE_DATABASE_URL`, else the overlay's
 `config/postgres.env`, else a localhost development fallback. Vault location from
 the overlay's `config/finance.json`, or `AXON_FINANCE_OBSIDIAN_ROOT` for
-development. No path, institution or figure appears in this repository.
+development. `journal` and `budgets` live in that same private file; the journal can
+also be set with `AXON_FINANCE_JOURNAL`. `schemas/finance.json.example` documents the
+shape without carrying private deployment values.
 
-The journal root is deliberately not a config key yet. Phase 3 adds it, and
-declaring a key before anything reads it is how a manifest starts lying.
+Budget entries have `account`, `monthly_cents` and an optional `currency`. Accounts
+stay symbolic. Real account numbers and the mapping from a symbol to an institution
+belong in Vaultwarden, never in the journal or public config.
 
 ## Two representation choices
 
@@ -101,10 +124,9 @@ a dependency bought for `<=`.
 Weekly converts at 52/12, not four weeks a month. Four-week months are eleven
 months of the year, and the error runs toward under-reporting what you spend.
 
-## The ledger, when it lands
+## Ledger and engine boundary
 
-Phase 3 adds the journal underneath all of this. The account tree, the trip tag and
-the conventions are already fixed and validated as
+The account tree, trip tag and public conventions are fixed and validated as
 [`schemas/finance-journal.example`](../../schemas/finance-journal.example), because
 the shape of the tree is a foreclosing call and writing it down after the importer
 exists means writing it around the importer's accidents.
@@ -122,9 +144,14 @@ food this year" answerable only by remembering to union two subtrees. `hledger
 balance tag:trip=<slug>` is the join, and the slug matches the trips capability's
 plan, which is how the two agree without either reading the other's store.
 
-`hledger` is declared in `toolchain.toml` as optional, scoped to a capability
-declaring `ledger` in its `service.toml`. Nothing declares it yet, so the checker
-correctly reports it out of scope rather than missing.
+`service.toml` declares `ledger = "hledger"`. That makes the existing scoped
+toolchain check require hledger only on machines that enable Finance. Version 1.52.1
+is pinned in `upstreams.toml` with its GPL-3.0-or-later licence. It remains a
+separately installed executable. Axon invokes it but does not ship it with the MIT source.
+
+Replacement is a measured decision. A native Rust engine can implement the same
+contract later, but it must beat the existing adapter on a golden synthetic journal
+before the system pays to recreate double-entry and return semantics.
 
 ## Related tools and why this is not them
 
@@ -133,4 +160,4 @@ correctly reports it out of scope rather than missing.
 | [Actual Budget](https://actualbudget.org) | Envelope budgeting, fast local-first UI | Rejected as core. Its automatic German bank sync ran through GoCardless Bank Account Data, which stopped accepting new accounts in July 2025 |
 | [Firefly III](https://firefly-iii.org) | A serious rule engine and a real REST API | PHP with its own database. A second store inside Axon, and a ledger that is not git-diffable, so agent writes stop being reviewable |
 | [Ghostfolio](https://ghostfol.io) | Portfolio math, price feeds, allocation | A candidate for the investment half later. It owns valuation well and models a subscription's history not at all |
-| [hledger](https://hledger.org) | Double-entry, commodities, `roi`, CSV rules | Adopted, in phase 3. This capability sits above it and reimplements none of it |
+| [hledger](https://hledger.org) | Double-entry, commodities, reports and `roi` | Adopted as the first external engine behind `AccountingEngine`; not the importer and not bundled |

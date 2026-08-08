@@ -11,10 +11,14 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 
+use finance::accounting::AccountingEngine;
+use finance::analytics::{self, AnalyticsFilter, BudgetTarget};
 use finance::config::{Config, ObsidianConfig};
+use finance::import::{self, CandidateState, CsvMapping};
 use finance::obsidian::{self, WriteBack};
 use finance::store::FinanceStore;
 use finance::subscription::{burn_at, cents_to_decimal, PricePoint, StateChange};
+use finance::HledgerEngine;
 
 /// What this capability answers, served as data beside `/health`. Query parameters
 /// are named in the summary: a path alone cannot tell a caller what to send, and
@@ -62,6 +66,36 @@ const ROUTES: &[route_manifest::Route] = &[
         "/api/writeback",
         "Regenerate the derived block in each note. Conflicts are reported, never resolved.",
     ),
+    r(
+        "POST",
+        "/api/import/csv",
+        "Stage a CSV export as review candidates. Body: content and mapping. Raw rows are not retained.",
+    ),
+    r(
+        "GET",
+        "/api/import/candidates",
+        "List normalized transaction candidates and their review state.",
+    ),
+    r(
+        "POST",
+        "/api/import/candidates/:id/review",
+        "Confirm or reject one candidate. Confirmation requires an account and is the only journal write path.",
+    ),
+    r(
+        "GET",
+        "/api/ledger/check",
+        "Check the configured journal through the accounting-engine boundary.",
+    ),
+    r(
+        "POST",
+        "/api/ledger/rebuild",
+        "Atomically rebuild the disposable transaction projection from the canonical journal.",
+    ),
+    r(
+        "GET",
+        "/api/dashboard",
+        "One reconciled projection for KPIs, trend, budget, transactions, filters and Sankey links.",
+    ),
 ];
 
 const fn r(
@@ -84,6 +118,9 @@ async fn routes() -> Json<Value> {
 struct AppState {
     database_url: Arc<String>,
     obsidian: Option<ObsidianConfig>,
+    journal: Option<std::path::PathBuf>,
+    budgets: Arc<Vec<BudgetTarget>>,
+    journal_write: Arc<std::sync::Mutex<()>>,
 }
 
 type ApiResponse = (StatusCode, Json<Value>);
@@ -117,6 +154,267 @@ fn no_vault() -> ApiResponse {
             "error": "no vault configured; set the overlay's config/finance.json or AXON_FINANCE_OBSIDIAN_ROOT"
         }),
     )
+}
+
+fn no_journal() -> ApiResponse {
+    response(
+        StatusCode::CONFLICT,
+        json!({
+            "ok": false,
+            "capability": "finance",
+            "error": "no journal configured; set the overlay's config/finance.json or AXON_FINANCE_JOURNAL"
+        }),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct CsvImportRequest {
+    content: String,
+    mapping: CsvMapping,
+}
+
+async fn import_csv(
+    State(state): State<AppState>,
+    Json(request): Json<CsvImportRequest>,
+) -> ApiResponse {
+    let candidates = match import::parse_csv(request.content.as_bytes(), &request.mapping) {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            return response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": error.to_string() }),
+            )
+        }
+    };
+    let database_url = state.database_url.clone();
+    let now = today();
+    match tokio::task::spawn_blocking(move || {
+        FinanceStore::open(&database_url)
+            .and_then(|store| store.stage_candidates(&candidates, &now))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok((created, already_present))) => response(
+            StatusCode::OK,
+            json!({ "ok": true, "created": created, "already_present": already_present }),
+        ),
+        Ok(Err(error)) => failed(error),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+async fn list_candidates(State(state): State<AppState>) -> ApiResponse {
+    let database_url = state.database_url.clone();
+    match tokio::task::spawn_blocking(move || {
+        FinanceStore::open(&database_url)
+            .and_then(|store| store.list_candidates())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(candidates)) => response(StatusCode::OK, candidates),
+        Ok(Err(error)) => failed(error),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReviewDecision {
+    Confirm,
+    Reject,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewRequest {
+    decision: ReviewDecision,
+    account: Option<String>,
+}
+
+async fn review_candidate(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<ReviewRequest>,
+) -> ApiResponse {
+    let Some(journal) = state.journal.clone() else {
+        return no_journal();
+    };
+    let database_url = state.database_url.clone();
+    let budgets = state.budgets.clone();
+    let journal_write = state.journal_write.clone();
+    let now = today();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let candidate = store
+            .candidate(&id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "candidate not found".to_string())?;
+        match request.decision {
+            ReviewDecision::Reject => {
+                if candidate.state == CandidateState::Confirmed {
+                    return Err(
+                        "a confirmed candidate cannot be rejected because its posting is canonical"
+                            .into(),
+                    );
+                }
+                store
+                    .review_candidate(
+                        &id,
+                        CandidateState::Rejected,
+                        &candidate.proposed_account,
+                        &now,
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({ "ok": true, "id": id, "state": "rejected", "journal_written": false }))
+            }
+            ReviewDecision::Confirm => {
+                if candidate.state == CandidateState::Rejected {
+                    return Err("a rejected candidate must be restaged before confirmation".into());
+                }
+                let account = if candidate.state == CandidateState::Confirmed {
+                    if request
+                        .account
+                        .as_deref()
+                        .is_some_and(|account| account != candidate.proposed_account)
+                    {
+                        return Err(
+                            "a confirmed candidate cannot be moved to another account".into()
+                        );
+                    }
+                    candidate.proposed_account.as_str()
+                } else {
+                    request
+                        .account
+                        .as_deref()
+                        .ok_or_else(|| "account is required for confirmation".to_string())?
+                };
+                import::validate_account(account).map_err(|error| error.to_string())?;
+                let _write_guard = journal_write
+                    .lock()
+                    .map_err(|_| "journal writer lock is unavailable".to_string())?;
+                let entry = import::render_journal_entry(&candidate, account)
+                    .map_err(|error| error.to_string())?;
+                validate_journal_append(&journal, &entry)?;
+                let journal_written = import::append_confirmed(&journal, &candidate, account)
+                    .map_err(|error| error.to_string())?;
+                store
+                    .review_candidate(&id, CandidateState::Confirmed, account, &now)
+                    .map_err(|error| error.to_string())?;
+                rebuild_projection(&database_url, &journal, &budgets)?;
+                Ok(json!({
+                    "ok": true,
+                    "id": id,
+                    "state": "confirmed",
+                    "journal_written": journal_written,
+                }))
+            }
+        }
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(StatusCode::OK, body),
+        Ok(Err(error)) if error == "candidate not found" => {
+            response(StatusCode::NOT_FOUND, json!({ "error": error }))
+        }
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+fn validate_journal_append(journal: &std::path::Path, entry: &str) -> Result<(), String> {
+    let existing = std::fs::read_to_string(journal)
+        .map_err(|error| format!("journal could not be read: {error}"))?;
+    let parent = journal
+        .parent()
+        .ok_or_else(|| "journal has no parent directory".to_string())?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let name = format!(".axon-finance-check-{}-{nonce}", std::process::id());
+    let temporary = parent.join(name);
+    let result = (|| {
+        std::fs::write(&temporary, format!("{existing}{entry}"))
+            .map_err(|error| format!("journal validation file could not be written: {error}"))?;
+        HledgerEngine::new(&temporary)
+            .check()
+            .map_err(|error| error.to_string())
+    })();
+    let _ = std::fs::remove_file(&temporary);
+    result
+}
+
+async fn check_ledger(State(state): State<AppState>) -> ApiResponse {
+    let Some(journal) = state.journal.clone() else {
+        return no_journal();
+    };
+    match tokio::task::spawn_blocking(move || HledgerEngine::new(journal).check()).await {
+        Ok(Ok(())) => response(StatusCode::OK, json!({ "ok": true })),
+        Ok(Err(error)) => response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "ok": false, "error": error.to_string() }),
+        ),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+async fn rebuild_ledger(State(state): State<AppState>) -> ApiResponse {
+    let Some(journal) = state.journal.clone() else {
+        return no_journal();
+    };
+    let database_url = state.database_url.clone();
+    let budgets = state.budgets.clone();
+    match tokio::task::spawn_blocking(move || rebuild_projection(&database_url, &journal, &budgets))
+        .await
+    {
+        Ok(Ok(count)) => response(StatusCode::OK, json!({ "ok": true, "rows": count })),
+        Ok(Err(error)) => response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "ok": false, "error": error }),
+        ),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+fn rebuild_projection(
+    database_url: &str,
+    journal: &std::path::Path,
+    budgets: &[BudgetTarget],
+) -> Result<usize, String> {
+    let engine = HledgerEngine::new(journal);
+    engine.check().map_err(|error| error.to_string())?;
+    let transactions = engine.transactions().map_err(|error| error.to_string())?;
+    let mut currencies = std::collections::BTreeSet::from(["EUR".to_string()]);
+    currencies.extend(budgets.iter().map(|budget| budget.currency.clone()));
+    let rows: Vec<_> = currencies
+        .iter()
+        .flat_map(|currency| analytics::project(&transactions, currency))
+        .collect();
+    FinanceStore::open(database_url)
+        .and_then(|store| store.replace_transaction_projection(&rows))
+        .map_err(|error| error.to_string())?;
+    Ok(rows.len())
+}
+
+async fn dashboard_projection(
+    State(state): State<AppState>,
+    Query(filter): Query<AnalyticsFilter>,
+) -> ApiResponse {
+    let database_url = state.database_url.clone();
+    let budgets = state.budgets.clone();
+    match tokio::task::spawn_blocking(move || {
+        FinanceStore::open(&database_url)
+            .and_then(|store| store.transaction_projection())
+            .map(|rows| analytics::dashboard(&rows, &budgets, &filter))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(view)) => response(StatusCode::OK, view),
+        Ok(Err(error)) => failed(error),
+        Err(_) => failed("task panicked".into()),
+    }
 }
 
 async fn health() -> Json<Value> {
@@ -476,6 +774,9 @@ async fn main() {
     let state = AppState {
         database_url: Arc::new(config.database_url),
         obsidian: config.obsidian,
+        journal: config.journal,
+        budgets: Arc::new(config.budgets),
+        journal_write: Arc::new(std::sync::Mutex::new(())),
     };
     let app = Router::new()
         .route("/routes", get(routes))
@@ -488,6 +789,12 @@ async fn main() {
         .route("/api/import/obsidian/scan", get(scan_vault))
         .route("/api/import/obsidian", post(import_vault))
         .route("/api/writeback", post(writeback))
+        .route("/api/import/csv", post(import_csv))
+        .route("/api/import/candidates", get(list_candidates))
+        .route("/api/import/candidates/:id/review", post(review_candidate))
+        .route("/api/ledger/check", get(check_ledger))
+        .route("/api/ledger/rebuild", post(rebuild_ledger))
+        .route("/api/dashboard", get(dashboard_projection))
         .layer(CorsLayer::permissive())
         .with_state(state);
     axon_server::serve_local("finance-server", config.port, app).await;

@@ -136,8 +136,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 77,
-        "nodes": 462
+        "files": 80,
+        "nodes": 472
       }
     },
     {
@@ -161,8 +161,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 7,
-        "nodes": 133
+        "files": 11,
+        "nodes": 254
       }
     },
     {
@@ -1068,6 +1068,11 @@
       "pin": "0.9.31"
     },
     {
+      "name": "hledger",
+      "verdict": "adopt",
+      "pin": "1.52.1"
+    },
+    {
       "name": "home-assistant",
       "verdict": "adopt",
       "pin": "2026.7.4"
@@ -1335,7 +1340,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 8293,
+    "nodes": 8463,
     "external": 7,
     "stale": [],
     "unmatched": [
