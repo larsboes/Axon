@@ -3,6 +3,7 @@ members = [
     "capabilities/axon-status",
     "capabilities/calendar",
     "capabilities/comms",
+    "capabilities/finance",
     "capabilities/punctuality",
     "capabilities/scouting",
     "capabilities/soundscape",

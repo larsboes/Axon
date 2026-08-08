@@ -151,6 +151,17 @@
       }
     },
     {
+      "name": "finance",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "postgres"
+        ],
+        "port": "8090"
+      }
+    },
+    {
       "name": "foundation-models",
       "kind": "capability",
       "service": {
@@ -633,6 +644,56 @@
       ],
       "evidence": [
         "capabilities/comms/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "finance",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/finance/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "finance",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/finance/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "finance",
+      "to": "axon-store",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/finance/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "finance",
+      "to": "markdown-root",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/finance/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "finance",
+      "to": "route-manifest",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/finance/BUILD.bazel"
       ]
     },
     {
