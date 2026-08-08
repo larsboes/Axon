@@ -10,6 +10,7 @@ export const PRIMARY_NAV: NavItem[] = [
   { href: "/calendar", label: "Calendar", icon: "calendar" },
   { href: "/feed", label: "Feed", icon: "feed" },
   { href: "/travel", label: "Travel", icon: "map-pin" },
+  { href: "/finance", label: "Finance", icon: "database" },
 ];
 
 /**
@@ -20,7 +21,6 @@ export const UTILITY_NAV: NavItem[] = [
   { href: "/projects", label: "Projects", icon: "graduation" },
   { href: "/systems", label: "Systems", icon: "server" },
   { href: "/capabilities", label: "Capabilities", icon: "boxes" },
-  { href: "/finance", label: "Finance", icon: "database" },
   { href: "/upstreams", label: "Upstreams", icon: "git-branch" },
   { href: "/self", label: "Self-model", icon: "compass" },
 ];
