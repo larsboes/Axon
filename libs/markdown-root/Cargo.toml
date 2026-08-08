@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "A declared markdown root and the only way to get a file out of it: bounded patterns, containment proven after symlink resolution."
+description = "A declared markdown root: the only way to get a file out of it, and the only way to write a machine-owned region back into one."
 publish = false
 
 [lib]
