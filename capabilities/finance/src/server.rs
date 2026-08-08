@@ -40,12 +40,12 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "POST",
         "/api/subscriptions/:id/price",
-        "Append a price point. Body: valid_from, amount_cents, currency, cycle, reason.",
+        "Idempotently append a price point. Body: valid_from, amount_cents, currency, cycle, optional plan, required reason. Response: created.",
     ),
     r(
         "POST",
         "/api/subscriptions/:id/state",
-        "Append a state change. Body: effective, state, note.",
+        "Idempotently append a state change. Body: effective, state, note. Response: created.",
     ),
     r(
         "GET",
@@ -172,6 +172,62 @@ struct AtQuery {
     at: Option<String>,
 }
 
+fn valid_iso_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    if bytes
+        .iter()
+        .enumerate()
+        .any(|(index, byte)| !matches!(index, 4 | 7) && !byte.is_ascii_digit())
+    {
+        return false;
+    }
+
+    let Ok(year) = value[0..4].parse::<u32>() else {
+        return false;
+    };
+    let Ok(month) = value[5..7].parse::<u32>() else {
+        return false;
+    };
+    let Ok(day) = value[8..10].parse::<u32>() else {
+        return false;
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let last_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=last_day).contains(&day)
+}
+
+fn validate_price(price: &PricePoint) -> Result<(), String> {
+    if !valid_iso_date(&price.valid_from) {
+        return Err("valid_from must be a real date in YYYY-MM-DD form".into());
+    }
+    if price.amount_cents < 0 {
+        return Err("amount_cents must not be negative".into());
+    }
+    if price.currency.len() != 3 || !price.currency.bytes().all(|byte| byte.is_ascii_uppercase()) {
+        return Err("currency must be a three-letter uppercase code".into());
+    }
+    if price.reason.trim().is_empty() {
+        return Err("reason is required for an append-only price point".into());
+    }
+    if price
+        .plan
+        .as_ref()
+        .is_some_and(|plan| plan.trim().is_empty())
+    {
+        return Err("plan must be omitted instead of blank".into());
+    }
+    Ok(())
+}
+
 /// Burn on a date, computed from each subscription's series.
 ///
 /// There is no stored total to return, by design: a cached figure is a second
@@ -179,6 +235,12 @@ struct AtQuery {
 async fn burn(State(state): State<AppState>, Query(query): Query<AtQuery>) -> ApiResponse {
     let database_url = state.database_url.clone();
     let at = query.at.unwrap_or_else(today);
+    if !valid_iso_date(&at) {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "at must be a real date in YYYY-MM-DD form" }),
+        );
+    }
     let at_for_body = at.clone();
     match tokio::task::spawn_blocking(move || {
         FinanceStore::open(&database_url)
@@ -212,16 +274,30 @@ async fn append_price(
     Path(id): Path<String>,
     Json(price): Json<PricePoint>,
 ) -> ApiResponse {
+    if let Err(error) = validate_price(&price) {
+        return response(StatusCode::BAD_REQUEST, json!({ "error": error }));
+    }
     let database_url = state.database_url.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
         FinanceStore::open(&database_url)
-            .and_then(|store| store.append_price(&id, &price, &now).map(|_| id.clone()))
+            .and_then(|store| {
+                store
+                    .append_price(&id, &price, &now)
+                    .map(|created| (id.clone(), created))
+            })
             .map_err(|e| e.to_string())
     })
     .await
     {
-        Ok(Ok(id)) => response(StatusCode::CREATED, json!({ "ok": true, "id": id })),
+        Ok(Ok((id, created))) => response(
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            json!({ "ok": true, "id": id, "created": created }),
+        ),
         Ok(Err(e)) => failed(e),
         Err(_) => failed("task panicked".into()),
     }
@@ -232,16 +308,33 @@ async fn append_state(
     Path(id): Path<String>,
     Json(change): Json<StateChange>,
 ) -> ApiResponse {
+    if !valid_iso_date(&change.effective) {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "effective must be a real date in YYYY-MM-DD form" }),
+        );
+    }
     let database_url = state.database_url.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
         FinanceStore::open(&database_url)
-            .and_then(|store| store.append_state(&id, &change, &now).map(|_| id.clone()))
+            .and_then(|store| {
+                store
+                    .append_state(&id, &change, &now)
+                    .map(|created| (id.clone(), created))
+            })
             .map_err(|e| e.to_string())
     })
     .await
     {
-        Ok(Ok(id)) => response(StatusCode::CREATED, json!({ "ok": true, "id": id })),
+        Ok(Ok((id, created))) => response(
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            json!({ "ok": true, "id": id, "created": created }),
+        ),
         Ok(Err(e)) => failed(e),
         Err(_) => failed("task panicked".into()),
     }
@@ -418,6 +511,31 @@ mod tests {
         let t = today();
         assert_eq!(t.len(), 10);
         assert_eq!(t.chars().filter(|c| *c == '-').count(), 2);
+    }
+
+    #[test]
+    fn dates_are_calendar_dates_not_only_ten_characters() {
+        assert!(valid_iso_date("2024-02-29"));
+        assert!(valid_iso_date("2026-08-08"));
+        assert!(!valid_iso_date("2026-02-29"));
+        assert!(!valid_iso_date("2026-13-01"));
+        assert!(!valid_iso_date("202610-01-08"));
+    }
+
+    #[test]
+    fn a_price_append_needs_an_auditable_reason() {
+        let price = PricePoint {
+            valid_from: "2026-10-01".into(),
+            amount_cents: 10_000,
+            currency: "EUR".into(),
+            cycle: finance::BillingCycle::Monthly,
+            plan: Some("Max".into()),
+            reason: String::new(),
+        };
+        assert_eq!(
+            validate_price(&price),
+            Err("reason is required for an append-only price point".into())
+        );
     }
 
     #[test]

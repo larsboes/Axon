@@ -5,6 +5,7 @@
   import {
     finance,
     type Burn,
+    type PricePoint,
     type Subscription,
     type SubscriptionState,
     type WritebackResult,
@@ -62,6 +63,8 @@
   interface Row {
     sub: Subscription;
     state: SubscriptionState;
+    /** The price in force at `at`, which is also what the editor prefills from. */
+    price: PricePoint | null;
     monthlyCents: number;
     currency: string;
     scheduled: { valid_from: string; amount_cents: number; currency: string } | null;
@@ -104,6 +107,7 @@
         return {
           sub,
           state,
+          price: price ?? null,
           monthlyCents: billing && price ? (MONTHLY[price.cycle] ?? ((c: number) => c))(price.amount_cents) : 0,
           currency: price?.currency ?? "EUR",
           scheduled,
@@ -148,15 +152,101 @@
     return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")} ${currency}`;
   }
 
-  async function run(label: string, action: () => Promise<unknown>) {
+  // Which row is expanded. One at a time: two open editors invite editing the wrong
+  // subscription, and the rows are one line each so there is nothing to compare.
+  let open = $state<string | null>(null);
+
+  // Draft state for the two forms. Reset whenever a different row opens, so a date
+  // typed for one subscription cannot be submitted against another.
+  let priceDraft = $state({
+    valid_from: '',
+    amount: '',
+    cycle: 'monthly' as PricePoint['cycle'],
+    plan: '',
+    reason: '',
+  });
+  let stateDraft = $state({ effective: '', state: 'paused' as SubscriptionState, note: '' });
+
+  function toggle(row: Row) {
+    if (open === row.sub.id) {
+      open = null;
+      return;
+    }
+    open = row.sub.id;
+    priceDraft = {
+      valid_from: at,
+      amount: '',
+      cycle: row.price?.cycle ?? 'monthly',
+      plan: row.price?.plan ?? '',
+      reason: '',
+    };
+    stateDraft = {
+      effective: at,
+      state: row.state === 'paused' ? 'active' : 'paused',
+      note: '',
+    };
+  }
+
+  /** Tiers already recorded on this subscription, so a second switch is a click. */
+  function knownPlans(sub: Subscription): string[] {
+    return [...new Set(sub.prices.map((p) => p.plan).filter((p): p is string => !!p))];
+  }
+
+  /** "20", "20,00" and "€ 20.00" all mean the same thing to a person. */
+  function toCents(raw: string): number | null {
+    if (raw.includes('-')) return null;
+    const cleaned = raw.trim().replace(',', '.').replace(/[^\d.]/g, '');
+    if (!cleaned) return null;
+    const value = Number(cleaned);
+    const cents = Math.round(value * 100);
+    return Number.isSafeInteger(cents) ? cents : null;
+  }
+
+  const priceReady = $derived(
+    WELL_FORMED.test(priceDraft.valid_from) &&
+      toCents(priceDraft.amount) !== null &&
+      priceDraft.reason.trim().length > 0,
+  );
+  const stateReady = $derived(WELL_FORMED.test(stateDraft.effective));
+
+  async function submitPrice(row: Row) {
+    const amount_cents = toCents(priceDraft.amount);
+    if (amount_cents === null) return;
+    const saved = await run('price', () =>
+      finance.appendPrice(row.sub.id, {
+        valid_from: priceDraft.valid_from,
+        amount_cents,
+        currency: row.currency,
+        cycle: priceDraft.cycle,
+        plan: priceDraft.plan.trim() || null,
+        reason: priceDraft.reason.trim(),
+      }),
+    );
+    if (saved) open = null;
+  }
+
+  async function submitState(row: Row) {
+    const saved = await run('state', () =>
+      finance.appendState(row.sub.id, {
+        effective: stateDraft.effective,
+        state: stateDraft.state,
+        note: stateDraft.note.trim(),
+      }),
+    );
+    if (saved) open = null;
+  }
+
+  async function run(label: string, action: () => Promise<unknown>): Promise<boolean> {
     busy = true;
     notice = null;
     try {
       const result = await action();
       notice = describe(label, result);
       await load(at);
+      return true;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
+      return false;
     } finally {
       busy = false;
     }
@@ -171,6 +261,13 @@
         return `${w.written} written, ${w.unchanged} unchanged. Left alone because you edited inside the block: ${w.conflicts.join(", ")}`;
       }
       return `${w.written} written, ${w.unchanged} already correct.`;
+    }
+    if (label === 'price' || label === 'state') {
+      const write = result as { created: boolean };
+      if (!write.created) return 'That exact history point was already present.';
+      return label === 'price'
+        ? 'Price point appended. Nothing was overwritten.'
+        : 'State change appended. Nothing was overwritten.';
     }
     const i = result as { created: number; already_present: number };
     return `${i.created} imported, ${i.already_present} already known.`;
@@ -250,13 +347,102 @@
     </thead>
     <tbody>
       {#each rows as row (row.sub.id)}
-        <tr class:dim={row.monthlyCents === 0}>
-          <td>{row.sub.name}</td>
+        <tr class:dim={row.monthlyCents === 0} class:open={open === row.sub.id}>
+          <td>
+            <button class="name" onclick={() => toggle(row)} aria-expanded={open === row.sub.id}>
+              {row.sub.name}
+              {#if row.price?.plan}<span class="plan">{row.price.plan}</span>{/if}
+            </button>
+          </td>
           <td><span class="state {row.state}">{row.state}</span></td>
           <td class="num">{row.monthlyCents > 0 ? money(row.monthlyCents, row.currency) : "—"}</td>
           <td class="num">{row.sub.value_rating ?? "—"}</td>
           <td class="muted">{row.sub.category ?? "—"}</td>
         </tr>
+
+        {#if open === row.sub.id}
+          <tr class="editor">
+            <td colspan="5">
+              <div class="panes">
+                <form class="pane" onsubmit={(e) => { e.preventDefault(); void submitPrice(row); }}>
+                  <h3>Change price or plan</h3>
+                  <div class="fields">
+                    <label>From<input type="date" bind:value={priceDraft.valid_from} /></label>
+                    <label>Amount<input
+                      type="text"
+                      inputmode="decimal"
+                      placeholder="100"
+                      bind:value={priceDraft.amount}
+                    /></label>
+                    <label>Cycle<select bind:value={priceDraft.cycle}>
+                      <option value="weekly">weekly</option>
+                      <option value="monthly">monthly</option>
+                      <option value="quarterly">quarterly</option>
+                      <option value="yearly">yearly</option>
+                      <option value="one_off">one-off</option>
+                    </select></label>
+                    <label>Plan<input
+                      type="text"
+                      list="plans-{row.sub.id}"
+                      placeholder="Max"
+                      bind:value={priceDraft.plan}
+                    /></label>
+                  </div>
+                  <datalist id="plans-{row.sub.id}">
+                    {#each knownPlans(row.sub) as plan (plan)}<option value={plan}></option>{/each}
+                  </datalist>
+                  <label class="wide">Why<input
+                    type="text"
+                    required
+                    placeholder="upgrade to Max, income scales"
+                    bind:value={priceDraft.reason}
+                  /></label>
+                  <button type="submit" disabled={busy || !priceReady}>Append price point</button>
+                </form>
+
+                <form class="pane" onsubmit={(e) => { e.preventDefault(); void submitState(row); }}>
+                  <h3>Change state</h3>
+                  <div class="fields">
+                    <label>From<input type="date" bind:value={stateDraft.effective} /></label>
+                    <label>State<select bind:value={stateDraft.state}>
+                      <option value="active">active</option>
+                      <option value="paused">paused</option>
+                      <option value="trial">trial</option>
+                      <option value="considering">considering</option>
+                      <option value="cancelled">cancelled</option>
+                    </select></label>
+                  </div>
+                  <label class="wide">Note<input
+                    type="text"
+                    placeholder="reassess after the raise lands"
+                    bind:value={stateDraft.note}
+                  /></label>
+                  <button type="submit" disabled={busy || !stateReady}>Append state change</button>
+                </form>
+
+                <div class="pane history">
+                  <h3>History</h3>
+                  <ul>
+                    {#each row.sub.prices as p (p.valid_from + p.reason)}
+                      <li>
+                        <code>{p.valid_from}</code>
+                        {money(p.amount_cents, p.currency)}{#if p.plan}, {p.plan}{/if}
+                        {#if p.reason}<span class="muted">— {p.reason}</span>{/if}
+                      </li>
+                    {/each}
+                    {#each row.sub.states as st (st.effective + st.state)}
+                      <li>
+                        <code>{st.effective}</code> {st.state}
+                        {#if st.note}<span class="muted">— {st.note}</span>{/if}
+                      </li>
+                    {/each}
+                  </ul>
+                  <p class="muted small">Appended, never edited. Nothing above is overwritten.</p>
+                </div>
+              </div>
+            </td>
+          </tr>
+        {/if}
       {/each}
       {#if rows.length === 0}
         <tr><td colspan="5" class="muted">Nothing imported yet. Import vault reads the notes.</td></tr>
@@ -424,6 +610,125 @@
 
   .muted {
     color: var(--muted, #888);
+  }
+
+  .name {
+    font: inherit;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .name:hover {
+    color: var(--primary);
+  }
+
+  .plan {
+    margin-left: 0.4rem;
+    font-size: 0.6875rem;
+    letter-spacing: 0.03em;
+    padding: 0.05rem 0.35rem;
+    border-radius: 4px;
+    border: 1px solid var(--border, #333);
+    color: var(--muted, #888);
+  }
+
+  tr.open td {
+    border-bottom: 0;
+  }
+
+  .editor td {
+    padding: 0 0.6rem 1rem;
+  }
+
+  .panes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--border, #333);
+    border-radius: 8px;
+  }
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 15rem;
+    flex: 1;
+  }
+
+  .pane h3 {
+    margin: 0;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--primary);
+  }
+
+  .fields {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .pane label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.6875rem;
+    color: var(--muted, #888);
+    flex: 1;
+  }
+
+  .pane input,
+  .pane select {
+    font: inherit;
+    font-size: 0.8125rem;
+    padding: 0.3rem 0.45rem;
+    border: 1px solid var(--border, #333);
+    border-radius: 5px;
+    background: transparent;
+    color: inherit;
+    min-width: 0;
+  }
+
+  .pane button {
+    align-self: flex-start;
+    font: inherit;
+    font-size: 0.8125rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .pane button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .history ul {
+    margin: 0;
+    padding-left: 1rem;
+    font-size: 0.8125rem;
+    line-height: 1.6;
+  }
+
+  .history code {
+    font-size: 0.75rem;
+    opacity: 0.75;
+  }
+
+  .small {
+    font-size: 0.6875rem;
+    margin: 0.2rem 0 0;
   }
 
   .notice {

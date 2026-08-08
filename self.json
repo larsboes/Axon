@@ -60,7 +60,7 @@
       },
       "code": {
         "files": 8,
-        "nodes": 73
+        "nodes": 79
       }
     },
     {
@@ -83,7 +83,7 @@
       },
       "code": {
         "files": 24,
-        "nodes": 551
+        "nodes": 554
       }
     },
     {
@@ -105,8 +105,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 64,
-        "nodes": 987
+        "files": 65,
+        "nodes": 1121
       }
     },
     {
@@ -136,8 +136,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 75,
-        "nodes": 450
+        "files": 77,
+        "nodes": 462
       }
     },
     {
@@ -159,6 +159,10 @@
           "postgres"
         ],
         "port": "8090"
+      },
+      "code": {
+        "files": 7,
+        "nodes": 133
       }
     },
     {
@@ -273,8 +277,8 @@
       "name": "markdown-root",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 40
+        "files": 3,
+        "nodes": 75
       }
     },
     {
@@ -362,7 +366,7 @@
       },
       "code": {
         "files": 29,
-        "nodes": 527
+        "nodes": 531
       }
     },
     {
@@ -414,15 +418,15 @@
       },
       "code": {
         "files": 5,
-        "nodes": 56
+        "nodes": 61
       }
     },
     {
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 112,
-        "nodes": 939
+        "files": 117,
+        "nodes": 965
       }
     },
     {
@@ -452,7 +456,7 @@
       },
       "code": {
         "files": 6,
-        "nodes": 94
+        "nodes": 97
       }
     },
     {
@@ -1331,7 +1335,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 7834,
+    "nodes": 8293,
     "external": 7,
     "stale": [],
     "unmatched": [
