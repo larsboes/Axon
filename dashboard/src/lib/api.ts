@@ -2024,6 +2024,7 @@ export interface InvestmentCsvMapping {
 }
 
 export interface InvestmentCsvMappingProfile {
+  source_key: string;
   label: string;
   mapping: InvestmentCsvMapping;
 }
@@ -2049,6 +2050,11 @@ export interface ReviewedHoldingsSnapshot {
   snapshot_id: string;
   reviewed_at: string;
   holdings: InvestmentHolding[];
+  sources: Array<{
+    source_key: string;
+    snapshot_id: string;
+    reviewed_at: string;
+  }>;
 }
 
 export interface FinanceTransaction {
@@ -2152,6 +2158,7 @@ export const finance = {
   confirmInvestments: (
     content: string,
     mapping: InvestmentCsvMapping,
+    sourceKey: string,
     expectedSnapshotId: string,
   ) =>
     request<{ ok: boolean; created: boolean; snapshot: ReviewedHoldingsSnapshot }>(
@@ -2159,6 +2166,7 @@ export const finance = {
       jsonInit('POST', {
         content,
         mapping,
+        source_key: sourceKey,
         expected_snapshot_id: expectedSnapshotId,
       }),
     ),

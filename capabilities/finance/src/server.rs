@@ -90,7 +90,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "POST",
         "/api/import/investments/confirm",
-        "Recompute and confirm an unchanged holdings preview into the configured private aggregate snapshot.",
+        "Recompute and confirm an unchanged holdings preview for one source in the configured private collection.",
     ),
     r(
         "GET",
@@ -268,6 +268,7 @@ async fn preview_investments(Json(request): Json<InvestmentPreviewRequest>) -> A
 struct InvestmentConfirmRequest {
     content: String,
     mapping: InvestmentCsvMapping,
+    source_key: String,
     expected_snapshot_id: String,
 }
 
@@ -295,7 +296,7 @@ async fn confirm_investments(
         let _write_guard = projection_write
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
-        let created = investment::write_reviewed_snapshot(&path, &snapshot)
+        let created = investment::write_reviewed_snapshot(&path, &request.source_key, &snapshot)
             .map_err(|error| error.to_string())?;
         let canonical = investment::read_reviewed_snapshot(&path)
             .map_err(|error| error.to_string())?
@@ -1070,6 +1071,7 @@ mod tests {
     #[tokio::test]
     async fn investment_mapping_endpoint_returns_private_profiles_without_mutating_them() {
         let profile = InvestmentCsvMappingProfile {
+            source_key: "synthetic-broker".into(),
             label: "Synthetic activity export".into(),
             mapping: InvestmentCsvMapping {
                 delimiter: ';',
@@ -1133,6 +1135,7 @@ mod tests {
                 default_currency: "EUR".into(),
                 instrument_aliases: Default::default(),
             },
+            source_key: "synthetic-broker".into(),
             expected_snapshot_id: String::new(),
         };
 

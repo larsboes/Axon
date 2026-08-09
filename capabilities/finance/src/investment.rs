@@ -73,6 +73,21 @@ pub struct ReviewedHoldingsSnapshot {
     pub snapshot_id: String,
     pub reviewed_at: String,
     pub holdings: Vec<Holding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<ReviewedHoldingsSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewedHoldingsSource {
+    pub source_key: String,
+    pub snapshot_id: String,
+    pub reviewed_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ReviewedHoldingsCollection {
+    schema_version: u32,
+    sources: BTreeMap<String, ReviewedHoldingsSnapshot>,
 }
 
 #[derive(Debug)]
@@ -283,6 +298,7 @@ pub fn reviewed_snapshot(
         snapshot_id: preview.snapshot_id.clone(),
         reviewed_at: reviewed_at.to_string(),
         holdings: preview.holdings.clone(),
+        sources: Vec::new(),
     })
 }
 
@@ -292,34 +308,45 @@ pub fn read_reviewed_snapshot(path: &Path) -> ImportResult<Option<ReviewedHoldin
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(ImportError("holdings snapshot could not be read".into())),
     };
-    let snapshot: ReviewedHoldingsSnapshot = serde_json::from_str(&body)
+    let value: serde_json::Value = serde_json::from_str(&body)
         .map_err(|_| ImportError("holdings snapshot has an unsupported shape".into()))?;
-    validate_snapshot(&snapshot)?;
-    if snapshot.snapshot_id != holdings_identity(&snapshot.holdings) {
-        return Err(ImportError(
-            "holdings snapshot failed its integrity check".into(),
-        ));
+    if value
+        .get("sources")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        let collection: ReviewedHoldingsCollection = serde_json::from_value(value)
+            .map_err(|_| ImportError("holdings snapshot has an unsupported shape".into()))?;
+        return aggregate_collection(&collection).map(Some);
     }
+    let snapshot: ReviewedHoldingsSnapshot = serde_json::from_value(value)
+        .map_err(|_| ImportError("holdings snapshot has an unsupported shape".into()))?;
+    validate_source_snapshot(&snapshot)?;
     Ok(Some(snapshot))
 }
 
-/// Atomically replace the canonical private aggregate. Reconfirming the same
-/// identity is a no-op, including its original review timestamp.
+/// Atomically replace one source inside the canonical private collection.
+/// Reconfirming the same source identity on the same date is a no-op. A later
+/// review advances source freshness even when the quantities are unchanged.
 pub fn write_reviewed_snapshot(
     path: &Path,
+    source_key: &str,
     snapshot: &ReviewedHoldingsSnapshot,
 ) -> ImportResult<bool> {
-    validate_snapshot(snapshot)?;
-    if snapshot.snapshot_id != holdings_identity(&snapshot.holdings) {
-        return Err(ImportError(
-            "holdings snapshot failed its integrity check".into(),
-        ));
-    }
-    if read_reviewed_snapshot(path)?
-        .is_some_and(|existing| existing.snapshot_id == snapshot.snapshot_id)
-    {
+    validate_source_key(source_key)?;
+    validate_source_snapshot(snapshot)?;
+    let mut collection = read_collection(path)?.unwrap_or(ReviewedHoldingsCollection {
+        schema_version: 2,
+        sources: BTreeMap::new(),
+    });
+    if collection.sources.get(source_key).is_some_and(|existing| {
+        existing.snapshot_id == snapshot.snapshot_id && existing.reviewed_at == snapshot.reviewed_at
+    }) {
         return Ok(false);
     }
+    collection
+        .sources
+        .insert(source_key.to_string(), snapshot.clone());
+    aggregate_collection(&collection)?;
     let parent = path
         .parent()
         .ok_or_else(|| ImportError("holdings snapshot has no parent directory".into()))?;
@@ -333,7 +360,7 @@ pub fn write_reviewed_snapshot(
         ".axon-finance-holdings-{}-{nonce}",
         std::process::id()
     ));
-    let body = serde_json::to_vec_pretty(snapshot)
+    let body = serde_json::to_vec_pretty(&collection)
         .map_err(|_| ImportError("holdings snapshot could not be serialized".into()))?;
     let result = (|| {
         let mut file = std::fs::OpenOptions::new()
@@ -362,6 +389,102 @@ pub fn write_reviewed_snapshot(
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+fn read_collection(path: &Path) -> ImportResult<Option<ReviewedHoldingsCollection>> {
+    let body = match std::fs::read_to_string(path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ImportError("holdings snapshot could not be read".into())),
+    };
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| ImportError("holdings snapshot has an unsupported shape".into()))?;
+    if !value
+        .get("sources")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        return Err(ImportError(
+            "legacy holdings snapshot requires an explicit source migration".into(),
+        ));
+    }
+    let collection: ReviewedHoldingsCollection = serde_json::from_value(value)
+        .map_err(|_| ImportError("holdings snapshot has an unsupported shape".into()))?;
+    aggregate_collection(&collection)?;
+    Ok(Some(collection))
+}
+
+fn aggregate_collection(
+    collection: &ReviewedHoldingsCollection,
+) -> ImportResult<ReviewedHoldingsSnapshot> {
+    if collection.schema_version != 2 || collection.sources.is_empty() {
+        return Err(ImportError(
+            "holdings snapshot has an unsupported shape".into(),
+        ));
+    }
+    struct AggregatePosition {
+        quantity: Quantity,
+        currency: String,
+        latest_unit_price: Option<Quantity>,
+        source_count: usize,
+    }
+
+    let mut positions: BTreeMap<String, AggregatePosition> = BTreeMap::new();
+    let mut sources = Vec::with_capacity(collection.sources.len());
+    for (source_key, snapshot) in &collection.sources {
+        validate_source_key(source_key)?;
+        validate_source_snapshot(snapshot)?;
+        sources.push(ReviewedHoldingsSource {
+            source_key: source_key.clone(),
+            snapshot_id: snapshot.snapshot_id.clone(),
+            reviewed_at: snapshot.reviewed_at.clone(),
+        });
+        for holding in &snapshot.holdings {
+            let position = positions
+                .entry(holding.instrument.clone())
+                .or_insert_with(|| AggregatePosition {
+                    quantity: Quantity {
+                        mantissa: 0,
+                        scale: holding.quantity.scale,
+                    },
+                    currency: holding.currency.clone(),
+                    latest_unit_price: holding.latest_unit_price.clone(),
+                    source_count: 0,
+                });
+            if position.currency != holding.currency {
+                return Err(ImportError(
+                    "one instrument cannot use multiple currencies across sources".into(),
+                ));
+            }
+            position.quantity = add(&position.quantity, &holding.quantity)?;
+            position.source_count += 1;
+            if position.source_count > 1 {
+                position.latest_unit_price = None;
+            }
+        }
+    }
+    let holdings = positions
+        .into_iter()
+        .filter(|(_, position)| position.quantity.mantissa != 0)
+        .map(|(instrument, position)| Holding {
+            instrument,
+            quantity: position.quantity,
+            latest_unit_price: position.latest_unit_price,
+            currency: position.currency,
+        })
+        .collect();
+    let reviewed_at = sources
+        .iter()
+        .map(|source| source.reviewed_at.as_str())
+        .max()
+        .expect("a nonempty collection has a review date")
+        .to_string();
+    Ok(ReviewedHoldingsSnapshot {
+        schema_version: 2,
+        snapshot_id: collection_identity(&sources),
+        reviewed_at,
+        holdings,
+        sources,
+    })
 }
 
 fn validate_mapping(mapping: &InvestmentCsvMapping) -> ImportResult<()> {
@@ -544,8 +667,43 @@ fn holdings_identity(holdings: &[Holding]) -> String {
     encoded
 }
 
-fn validate_snapshot(snapshot: &ReviewedHoldingsSnapshot) -> ImportResult<()> {
+fn collection_identity(sources: &[ReviewedHoldingsSource]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"axon-finance-holdings-collection-v2");
+    for source in sources {
+        hash.update(source.source_key.as_bytes());
+        hash.update([0xff]);
+        hash.update(source.snapshot_id.as_bytes());
+        hash.update([0xff]);
+        hash.update(source.reviewed_at.as_bytes());
+        hash.update([0xfe]);
+    }
+    let mut encoded = String::with_capacity(64);
+    for byte in hash.finalize() {
+        use std::fmt::Write;
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+fn validate_source_key(source_key: &str) -> ImportResult<()> {
+    let valid = !source_key.is_empty()
+        && source_key.len() <= 64
+        && source_key.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(ImportError(
+            "source key must be lowercase ASCII with digits, hyphens or underscores".into(),
+        ))
+    }
+}
+
+fn validate_source_snapshot(snapshot: &ReviewedHoldingsSnapshot) -> ImportResult<()> {
     if snapshot.schema_version != 1
+        || !snapshot.sources.is_empty()
         || normalize_date(&snapshot.reviewed_at)? != snapshot.reviewed_at
     {
         return Err(ImportError(
@@ -574,6 +732,11 @@ fn validate_snapshot(snapshot: &ReviewedHoldingsSnapshot) -> ImportResult<()> {
             ));
         }
         previous = Some(&holding.instrument);
+    }
+    if snapshot.snapshot_id != holdings_identity(&snapshot.holdings) {
+        return Err(ImportError(
+            "holdings snapshot failed its integrity check".into(),
+        ));
     }
     Ok(())
 }
@@ -761,17 +924,111 @@ mod tests {
         let path = directory.join("holdings.json");
         let _ = std::fs::remove_dir_all(&directory);
 
-        assert!(write_reviewed_snapshot(&path, &snapshot).unwrap());
+        assert!(write_reviewed_snapshot(&path, "synthetic-broker", &snapshot).unwrap());
         let reconfirmed = ReviewedHoldingsSnapshot {
             reviewed_at: "2026-08-10".into(),
             ..snapshot.clone()
         };
-        assert!(!write_reviewed_snapshot(&path, &reconfirmed).unwrap());
-        assert_eq!(read_reviewed_snapshot(&path).unwrap(), Some(snapshot));
+        assert!(write_reviewed_snapshot(&path, "synthetic-broker", &reconfirmed).unwrap());
+        assert!(!write_reviewed_snapshot(&path, "synthetic-broker", &reconfirmed).unwrap());
+        let canonical = read_reviewed_snapshot(&path).unwrap().unwrap();
+        assert_eq!(canonical.schema_version, 2);
+        assert_eq!(canonical.holdings, snapshot.holdings);
+        assert_eq!(canonical.sources.len(), 1);
+        assert_eq!(canonical.sources[0].source_key, "synthetic-broker");
+        assert_eq!(canonical.sources[0].reviewed_at, "2026-08-10");
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(!body.contains("private-source-id"));
         assert!(!body.contains("private-reference"));
         assert!(body.contains("\"mantissa\": \"10\""));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn source_updates_preserve_other_sources_and_aggregate_quantities() {
+        let directory = std::env::temp_dir().join(format!(
+            "axon-finance-holdings-sources-test-{}",
+            std::process::id()
+        ));
+        let path = directory.join("holdings.json");
+        let _ = std::fs::remove_dir_all(&directory);
+        let source = |quantity, reviewed_at: &str| {
+            let holdings = vec![Holding {
+                instrument: "ACME".into(),
+                quantity: Quantity {
+                    mantissa: quantity,
+                    scale: 0,
+                },
+                latest_unit_price: Some(Quantity {
+                    mantissa: 1000,
+                    scale: 2,
+                }),
+                currency: "EUR".into(),
+            }];
+            ReviewedHoldingsSnapshot {
+                schema_version: 1,
+                snapshot_id: holdings_identity(&holdings),
+                reviewed_at: reviewed_at.into(),
+                holdings,
+                sources: Vec::new(),
+            }
+        };
+
+        assert!(write_reviewed_snapshot(&path, "broker-one", &source(2, "2026-08-08")).unwrap());
+        assert!(write_reviewed_snapshot(&path, "broker-two", &source(3, "2026-08-09")).unwrap());
+        let aggregate = read_reviewed_snapshot(&path).unwrap().unwrap();
+        assert_eq!(aggregate.sources.len(), 2);
+        assert_eq!(aggregate.holdings[0].quantity.mantissa, 5);
+        assert_eq!(aggregate.holdings[0].latest_unit_price, None);
+        assert_eq!(aggregate.reviewed_at, "2026-08-09");
+
+        assert!(write_reviewed_snapshot(&path, "broker-one", &source(4, "2026-08-10")).unwrap());
+        let aggregate = read_reviewed_snapshot(&path).unwrap().unwrap();
+        assert_eq!(aggregate.sources.len(), 2);
+        assert_eq!(aggregate.holdings[0].quantity.mantissa, 7);
+        assert_eq!(aggregate.reviewed_at, "2026-08-10");
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_snapshots_remain_readable_but_require_named_migration_before_writes() {
+        let directory = std::env::temp_dir().join(format!(
+            "axon-finance-holdings-legacy-test-{}",
+            std::process::id()
+        ));
+        let path = directory.join("holdings.json");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let holdings = vec![Holding {
+            instrument: "ACME".into(),
+            quantity: Quantity {
+                mantissa: 1,
+                scale: 0,
+            },
+            latest_unit_price: None,
+            currency: "EUR".into(),
+        }];
+        let snapshot = ReviewedHoldingsSnapshot {
+            schema_version: 1,
+            snapshot_id: holdings_identity(&holdings),
+            reviewed_at: "2026-08-09".into(),
+            holdings,
+            sources: Vec::new(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+
+        assert_eq!(
+            read_reviewed_snapshot(&path).unwrap(),
+            Some(snapshot.clone())
+        );
+        assert_eq!(
+            write_reviewed_snapshot(&path, "synthetic-broker", &snapshot)
+                .unwrap_err()
+                .0,
+            "legacy holdings snapshot requires an explicit source migration"
+        );
 
         std::fs::remove_dir_all(directory).unwrap();
     }

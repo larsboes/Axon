@@ -14,7 +14,7 @@ use postgres::{Client, Row};
 
 use crate::analytics::{TransactionKind, TransactionRow};
 use crate::import::{CandidateState, TransactionCandidate};
-use crate::investment::{Holding, Quantity, ReviewedHoldingsSnapshot};
+use crate::investment::{Holding, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource};
 use crate::obsidian::ScannedNote;
 use crate::subscription::{BillingCycle, PricePoint, State, StateChange, Subscription};
 
@@ -169,6 +169,12 @@ impl FinanceStore {
                 price_scale INTEGER CHECK (price_scale BETWEEN 0 AND 12),
                 currency TEXT NOT NULL,
                 CHECK ((price_mantissa IS NULL) = (price_scale IS NULL))
+            );
+
+            CREATE TABLE IF NOT EXISTS {schema}.holding_projection_sources (
+                source_key TEXT PRIMARY KEY,
+                snapshot_id TEXT NOT NULL,
+                reviewed_at TEXT NOT NULL
             );
             "
         ))?;
@@ -462,6 +468,10 @@ impl FinanceStore {
             &[],
         )?;
         transaction.execute(
+            &format!("DELETE FROM {schema}.holding_projection_sources"),
+            &[],
+        )?;
+        transaction.execute(
             &format!(
                 "INSERT INTO {schema}.holding_projection_state
                     (singleton, snapshot_id, reviewed_at) VALUES (TRUE, $1, $2)"
@@ -498,6 +508,15 @@ impl FinanceStore {
                 ],
             )?;
         }
+        for source in &snapshot.sources {
+            transaction.execute(
+                &format!(
+                    "INSERT INTO {schema}.holding_projection_sources
+                        (source_key, snapshot_id, reviewed_at) VALUES ($1,$2,$3)"
+                ),
+                &[&source.source_key, &source.snapshot_id, &source.reviewed_at],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -509,6 +528,10 @@ impl FinanceStore {
         transaction.execute(&format!("DELETE FROM {schema}.holding_projection"), &[])?;
         transaction.execute(
             &format!("DELETE FROM {schema}.holding_projection_state"),
+            &[],
+        )?;
+        transaction.execute(
+            &format!("DELETE FROM {schema}.holding_projection_sources"),
             &[],
         )?;
         transaction.commit()?;
@@ -557,11 +580,27 @@ impl FinanceStore {
                 currency: row.get("currency"),
             });
         }
+        let sources = conn
+            .query(
+                &format!(
+                    "SELECT source_key, snapshot_id, reviewed_at
+                     FROM {schema}.holding_projection_sources ORDER BY source_key"
+                ),
+                &[],
+            )?
+            .into_iter()
+            .map(|row| ReviewedHoldingsSource {
+                source_key: row.get("source_key"),
+                snapshot_id: row.get("snapshot_id"),
+                reviewed_at: row.get("reviewed_at"),
+            })
+            .collect::<Vec<_>>();
         Ok(Some(ReviewedHoldingsSnapshot {
-            schema_version: 1,
+            schema_version: if sources.is_empty() { 1 } else { 2 },
             snapshot_id: state.get("snapshot_id"),
             reviewed_at: state.get("reviewed_at"),
             holdings,
+            sources,
         }))
     }
 }

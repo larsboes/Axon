@@ -12,6 +12,7 @@
 
   let profiles = $state<InvestmentCsvMappingProfile[]>([]);
   let selectedProfile = $state("");
+  let sourceKey = $state("");
   let content = $state("");
   let filename = $state("");
   let busy = $state(false);
@@ -56,9 +57,13 @@
 
   function selectMapping(event: Event) {
     selectedProfile = (event.currentTarget as HTMLSelectElement).value;
-    if (!selectedProfile) return;
+    if (!selectedProfile) {
+      sourceKey = "";
+      return;
+    }
     const profile = profiles[Number(selectedProfile)];
     if (profile) {
+      sourceKey = profile.source_key;
       mapping = structuredClone(profile.mapping);
       positionActivityValues = mapping.position_activity_values.join(", ");
       nonPositionActivityValues = mapping.non_position_activity_values.join(", ");
@@ -101,6 +106,7 @@
       const response = await finance.confirmInvestments(
         content,
         normalizedMapping(),
+        sourceKey.trim(),
         result.snapshot_id,
       );
       confirmed = true;
@@ -146,6 +152,7 @@
           </select>
         </label>
       {/if}
+      <label>Source key<input bind:value={sourceKey} placeholder="required" /></label>
       <label>Delimiter<input maxlength="1" bind:value={mapping.delimiter} /></label>
       <label>Decimal separator<input maxlength="1" bind:value={mapping.decimal_separator} /></label>
       <label>Date column<input bind:value={mapping.date_column} /></label>
@@ -170,7 +177,7 @@
       {result.duplicate_rows} duplicates
     </p>
     <div class="review">
-      <button disabled={busy || confirmed} onclick={confirm}>
+      <button disabled={busy || confirmed || !sourceKey.trim()} onclick={confirm}>
         {confirmed ? "Reviewed snapshot confirmed" : "Confirm reviewed snapshot"}
       </button>
       <span>Confirmation requires an explicit private alias for every instrument. Only aggregate aliases, quantities and prices are retained.</span>
