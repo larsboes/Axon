@@ -37,7 +37,13 @@ source "$_here/lib/paths.sh"
 DEMO_DATABASE_URL="${AXON_DEMO_DATABASE_URL:-postgresql://axon:axon@127.0.0.1:5432/axon_demo}"
 
 # Which capabilities the demo runs, read from the overlay rather than written twice.
-CAPABILITIES="$(toml_get capabilities "$AXON_MACHINE_TOML" | tr -d '[]",' )"
+#
+# toml_array, not toml_get: toml_get unquotes a SCALAR and leaves an array line otherwise
+# untouched, so `capabilities = ["a", "b"]` came back with the key still on the front and the
+# word "capabilities" became the first thing this tried to start. Stripping brackets by hand
+# was the mistake; toml.sh already has the function for this.
+CAPABILITIES="$(toml_array capabilities "$AXON_MACHINE_TOML")"
+[ -n "$CAPABILITIES" ] || { echo "demo-up: no capabilities in $AXON_MACHINE_TOML" >&2; exit 1; }
 
 # Every capability reads $AXON_<NAME>_DATABASE_URL before its config file, so one exported
 # variable per capability is enough to move the whole stack onto a throwaway database without
@@ -56,11 +62,19 @@ occupied() {  # occupied <port> — something is already listening
   lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
 }
 
+# Exits non-zero on a name the registry does not know, rather than answering "" — an empty
+# port makes occupied() false, which turns a bogus capability name into a silently skipped
+# collision check. That is exactly how a parsing bug in CAPABILITIES above survived a local
+# run of the guard: the guard reported the right five and said nothing about the sixth.
 port_of() {  # port_of <capability>
   bun -e '
     const { registry } = await import(`${process.env.AXON_ROOT}/tools/lib/demo-endpoints.ts`);
     const hit = registry().find((s) => s.name === process.argv[1]);
-    process.stdout.write(hit?.port ?? "");
+    if (!hit) {
+      console.error(`demo-up: no capability named ${process.argv[1]} in the registry`);
+      process.exit(1);
+    }
+    process.stdout.write(hit.port);
   ' "$1"
 }
 
