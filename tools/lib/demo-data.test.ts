@@ -176,6 +176,17 @@ describe("the vocabulary contains nothing real", () => {
     }
   });
 
+  // Finance applies one rule to an instrument and to an alias target alike: ASCII
+  // alphanumeric plus `.`, `_` or `-`, at most 64 bytes. The aliases first mapped each symbol
+  // to a prose label, which the import rejected before reading a single row.
+  test("every instrument symbol and alias target is a symbolic ASCII identifier", () => {
+    const identifier = /^[A-Za-z0-9._-]{1,64}$/;
+    for (const instrument of VOCABULARY.instruments) {
+      expect(instrument.symbol).toMatch(identifier);
+      expect(instrument.canonical).toMatch(identifier);
+    }
+  });
+
   test("every trip names a city that exists in the list", () => {
     const known = new Set(VOCABULARY.cities.map((c) => c.name));
     for (const t of VOCABULARY.trips) expect(known.has(t.city)).toBe(true);

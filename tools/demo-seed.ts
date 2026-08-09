@@ -419,7 +419,7 @@ function investmentMapping() {
     currency_column: "currency",
     default_currency: "EUR",
     instrument_aliases: Object.fromEntries(
-      VOCABULARY.instruments.map((i) => [i.symbol, i.label]),
+      VOCABULARY.instruments.map((i) => [i.symbol, i.canonical]),
     ),
   };
 }

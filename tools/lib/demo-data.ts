@@ -200,13 +200,21 @@ export const VOCABULARY = {
     { name: "Loam Language Tutor", category: "learning", cents: 1_500 },
   ],
 
-  /** Invented instruments. Deliberately not real tickers: a demo portfolio quoting real
-   *  securities at invented prices is the one kind of fixture that could mislead somebody
-   *  who skims it. */
+  /**
+   * Invented instruments. Deliberately not real tickers: a demo portfolio quoting real
+   * securities at invented prices is the one kind of fixture that could mislead somebody
+   * who skims it.
+   *
+   * `symbol` is what the broker export carries; `canonical` is what the import's
+   * `instrument_aliases` maps it to, which is the feature a real broker export needs. Both
+   * are symbolic on purpose: Finance validates an alias TARGET with the same rule as an
+   * instrument (ASCII alphanumeric plus `.`, `_`, `-`, max 64), so a human-readable
+   * "Nordlys Broad Index" on the right-hand side is rejected outright.
+   */
   instruments: [
-    { symbol: "NDLX", label: "Nordlys Broad Index", unitCents: 8_420 },
-    { symbol: "TRVA", label: "Terravia Sustainable", unitCents: 3_190 },
-    { symbol: "KPST", label: "Keystone Short Bond", unitCents: 10_240 },
+    { symbol: "NDLX", canonical: "NORDLYS-BROAD-INDEX", unitCents: 8_420 },
+    { symbol: "TRVA", canonical: "TERRAVIA-SUSTAINABLE", unitCents: 3_190 },
+    { symbol: "KPST", canonical: "KEYSTONE-SHORT-BOND", unitCents: 10_240 },
   ],
 
   /** Task titles. Written to read like somebody's actual list — a demo whose tasks are
