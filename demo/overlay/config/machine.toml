@@ -1,0 +1,31 @@
+# The demo deployment (#168). A real overlay, describing a machine that does not exist.
+#
+# Every other overlay is private and lives outside this repository. This one is tracked, and
+# that is the whole point: it is the configuration a published demonstration runs on, so it
+# has to be reviewable by anyone reading the repo, and it must be impossible for it to name a
+# real host, path, port binding or secret. There is nothing in here to keep private, because
+# there is no machine on the other end of it.
+#
+# tools/demo-up points AXON_OVERLAY_ROOT here, and tools/demo-seed refuses to write unless it
+# resolves to exactly this directory — the guard that stops a seeding run from inventing rows
+# in somebody's real ledger.
+
+# The demo is recorded on a Linux CI runner. Nothing in the seeded set is platform-specific,
+# and container_runtime goes unused: tools/demo-up sets AXON_<CAP>_DATABASE_URL directly at
+# whatever Postgres the environment provides, rather than starting Axon's postgres capability.
+# A demonstration should not need a container runtime to build.
+os = "linux"
+container_runtime = "docker"
+
+# The seeded set, and nothing else. Each of these can be filled entirely through its own HTTP
+# write API; a capability that cannot is listed under [absent] in demo/demo.toml with the
+# reason, rather than being enabled here and quietly rendering empty.
+#
+# postgres is deliberately NOT here even though all four declare `requires = ["postgres"]`.
+# The demo consumes a Postgres the environment already provides — GitHub Actions' service
+# container in CI, a scratch database locally — so there is no container for this overlay to
+# manage. Single line, per the tools/lib/toml.sh contract.
+capabilities = ["axon-status", "calendar", "finance", "tasks", "trips"]
+
+# No [[state_mount]] blocks. A state mount records where a tool on a real machine actually
+# persists data; this deployment persists nothing that outlives the job that built it.

@@ -4,19 +4,28 @@
   import "../app.css";
   import Icon from "$lib/Icon.svelte";
   import { capabilities } from "$lib/capabilities.svelte";
-  import { PRIMARY_NAV, UTILITY_NAV } from "$lib/nav";
+  import { PRIMARY_NAV, UTILITY_NAV, withoutCapabilities } from "$lib/nav";
   import SoundscapeDock from "$lib/SoundscapeDock.svelte";
 
-  let { children } = $props();
+  let { children, data } = $props();
 
   let dark = $state(true);
   let menuOpen = $state(false);
   let moreOpen = $state(false);
   let now = $state(new Date());
 
+  // `data.demo` is null outside a demo build, so both lists below are the untouched arrays
+  // and the banner never renders. In a demo build the index names the capabilities the
+  // recording could not include; the destinations that lead only to those are dropped
+  // rather than left to render a page of error cards (#168).
+  const demo = $derived(data?.demo ?? null);
+  const missing = $derived(new Set(Object.keys(demo?.absent ?? {})));
+  const primary = $derived(withoutCapabilities(PRIMARY_NAV, missing));
+  const utility = $derived(withoutCapabilities(UTILITY_NAV, missing));
+
   const isActive = (href: string) =>
     href === "/" ? page.url.pathname === "/" : page.url.pathname.startsWith(href);
-  const utilityActive = $derived(UTILITY_NAV.some((item) => isActive(item.href)));
+  const utilityActive = $derived(utility.some((item) => isActive(item.href)));
 
   onMount(() => {
     dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -62,7 +71,7 @@
 
     <div class="desktop-wrap">
       <nav class="desktop" aria-label="Main navigation">
-        {#each PRIMARY_NAV as item (item.href)}
+        {#each primary as item (item.href)}
           <a class="nav-link" class:active={isActive(item.href)} href={item.href}>
             <Icon name={item.icon as never} size={14} />
             {item.label}
@@ -76,7 +85,7 @@
           More
         </summary>
         <nav class="more-menu" aria-label="Projects and system">
-          {#each UTILITY_NAV as item (item.href)}
+          {#each utility as item (item.href)}
             <a
               class="nav-link"
               class:active={isActive(item.href)}
@@ -92,12 +101,27 @@
     </div>
   </header>
 
+  {#if demo}
+    <!-- Sticky under the header rather than dismissible: a visitor who scrolls past a
+         one-time notice and then reads a balance is exactly who this is for. -->
+    <aside class="demo-banner">
+      <strong>{demo.label}</strong>
+      <span>
+        Every figure below was generated from seed <code>{demo.seed}</code> and dated around
+        {demo.anchor}. Writing is disabled.
+      </span>
+      {#if missing.size > 0}
+        <span class="demo-absent">Not in this demo: {[...missing].join(", ")}</span>
+      {/if}
+    </aside>
+  {/if}
+
   {#if menuOpen}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="scrim" onclick={() => (menuOpen = false)}></div>
     <nav class="mobile" aria-label="Mobile navigation">
       <span class="nav-section">Work</span>
-      {#each PRIMARY_NAV as item (item.href)}
+      {#each primary as item (item.href)}
         <a
           class="nav-link"
           class:active={isActive(item.href)}
@@ -109,7 +133,7 @@
         </a>
       {/each}
       <span class="nav-section second">Projects and system</span>
-      {#each UTILITY_NAV as item (item.href)}
+      {#each utility as item (item.href)}
         <a
           class="nav-link"
           class:active={isActive(item.href)}
@@ -275,6 +299,32 @@
 
   .more-menu .nav-link {
     width: 100%;
+  }
+
+  .demo-banner {
+    position: sticky;
+    top: 3.5rem;
+    z-index: 45;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 0.75rem;
+    padding: 0.5rem clamp(1rem, 2.5vw, 1.5rem);
+    border-bottom: 1px solid var(--card-border);
+    /* colour-mix against the page rather than a new token: the banner has to read as a
+       notice in both themes without app.css growing a palette entry only one build uses. */
+    background: color-mix(in oklab, var(--primary-soft) 70%, var(--page-bg));
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+
+  .demo-banner strong {
+    color: var(--primary);
+  }
+
+  .demo-absent {
+    color: var(--text-tertiary);
   }
 
   .scrim {

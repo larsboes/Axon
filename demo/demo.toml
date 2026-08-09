@@ -1,0 +1,138 @@
+# The demo manifest (#168). One file decides what the published demonstration contains.
+#
+# Axon's public page used to be tables generated from self.json: true, checkable, and
+# no help at all to somebody asking what the thing looks like. This manifest drives the
+# other half — a real dashboard bundle running on data that was never real.
+#
+# THE ONE INVARIANT: every value the demo shows was produced by tools/demo-seed writing
+# through a capability's own public HTTP API, into a store that started empty. Nothing
+# reads an overlay, a vault, a keychain or a live database. A capability that cannot be
+# filled that way does not appear here — see `[absent]` at the bottom, which says which
+# ones those are and why, because a demo that quietly omits half the system is a worse
+# lie than one that shows nothing.
+#
+# Paths below are written as the BROWSER requests them, not as a capability serves them.
+# tools/demo-record resolves each one through `tools/capability.sh registry`, applying the
+# same `/<name>` prefix rule dashboard/vite.config.ts proxies by — so a port stays declared
+# in exactly one service.toml and this file never learns a number.
+
+[demo]
+# Fixed, because a demo that differs between two builds cannot be reviewed by diffing it.
+# Every generated name, amount and date descends from this string through tools/lib/demo-data.ts's
+# PRNG. Change it and the whole corpus changes at once, which is the intended way to get a
+# different-looking demo — not by editing generators.
+seed = "axon-demo-v1"
+
+# The demo's "today". Everything dated is generated relative to this, so a page showing
+# "next week" keeps meaning it, and a rebuild two months from now produces the identical
+# bytes. Deliberately NOT the build date: a fixture set that changes daily would make the
+# hygiene diff below unreadable and turn every rebuild into a spurious change.
+anchor = "2026-03-16"
+
+# Stamped into the banner and the landing page. A reader who finds this page in a year
+# should be able to tell that the dates are staged rather than stale.
+label = "Demo data — generated, not real"
+
+[fixtures]
+# Where tools/demo-record writes, and where the demo bundle's fetch shim reads. Untracked:
+# fixtures are a build product of the seeder plus the capability servers, and committing
+# them would let a stale copy get published behind a changed API without anything noticing.
+dir = "demo/fixtures"
+
+# ─── Seeded capabilities ──────────────────────────────────────────────────────
+#
+# `writes` names the generator in tools/lib/demo-data.ts that fills this capability.
+# `paths` are recorded AFTER every seeder has run, so cross-capability references
+# (a finance expense pointing at a trip) resolve.
+
+[capability.tasks]
+writes = "tasks"
+paths = [
+  "/tasks/api/tasks",
+  "/tasks/api/tasks?status=open",
+  "/tasks/api/tasks?status=done",
+  "/tasks/api/counts",
+]
+
+[capability.calendar]
+writes = "calendar"
+# The month/agenda views ask for an explicit window. Recorded around the anchor rather
+# than "now", and the shim matches on the exact query string, so these are the windows
+# the demo can show — the dashboard's own default range is derived from the anchor too.
+paths = [
+  "/calendar/api/entries?from=2026-02-01&to=2026-05-01",
+  "/calendar/api/proposals?from=2026-02-01&to=2026-05-01",
+  "/calendar/api/contexts?from=2026-02-01&to=2026-05-01",
+  "/calendar/api/rhythms",
+  "/calendar/api/windows?from=2026-03-16&to=2026-05-01",
+  "/calendar/api/trip-drafts?from=2026-03-16&to=2026-05-01&max_gap_days=5",
+]
+
+[capability.trips]
+writes = "trips"
+paths = ["/trips/api/plans"]
+# Plan detail pages are per-id and the ids are generated, so they cannot be listed here.
+# The recorder expands this against whatever /trips/api/plans returned: one fixture per
+# plan, no id ever written down. Same mechanism serves any list→detail pair.
+expand = [{ from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}" }]
+
+[capability.finance]
+writes = "finance"
+# Seeded the way a person actually onboards: a synthetic bank CSV through
+# /import/csv/preview → /import/csv → confirm-batch, then holdings and manual balances.
+# That is why the demo's Import Review screen has something in it rather than being the
+# one empty page in an otherwise full dashboard.
+paths = [
+  "/finance/api/dashboard",
+  "/finance/api/subscriptions",
+  "/finance/api/subscriptions/burn",
+  "/finance/api/import/candidates",
+  "/finance/api/import/csv/mappings",
+  "/finance/api/import/investments/mappings",
+]
+
+# ─── Recorded without seeding ─────────────────────────────────────────────────
+
+[capability.axon-status]
+# No `writes`: every answer here is derived from the manifests in this checkout plus the
+# state of the machine recording it. On a clean CI runner that is honestly a clean CI
+# runner — capabilities up because the job started them, one repo on main, no overlay.
+# Nothing to invent, and inventing it would be the only way to get it wrong.
+paths = [
+  "/axon-status/api/axon-status/health",
+  "/axon-status/api/axon-status/capabilities",
+  "/axon-status/api/axon-status/self",
+  "/axon-status/api/axon-status/repos",
+  "/axon-status/api/axon-status/upstreams",
+  "/axon-status/api/axon-status/backups",
+]
+
+# ─── Deliberately absent ──────────────────────────────────────────────────────
+#
+# Read by tools/demo-site to hide these from the demo's navigation and to print the reason
+# on the demo landing card. A page that 404s teaches a visitor the software is broken; a
+# page that is honestly missing teaches them where the edge is.
+
+[absent.comms]
+reason = """
+Feed items enter Comms only through a collector, and both shipped collectors \
+(github-trending, arxiv) fetch from a fixed remote host. `feed_sources[]` declares no \
+URL, so there is no way to point one at a synthetic local feed without changing the \
+capability. Wiring the existing sources/rss.rs adapter to a configurable URL would make \
+Feed demoable — that is the change to make, not a hand-written fixture.\
+"""
+
+[absent.scouting]
+reason = """
+Same shape as Comms, one step closer: scouting's create_adapter() already has an `rss` arm \
+that takes a URL, so a synthetic local feed would work. Left out of the first wave only \
+because its opportunities reference calendar windows, and that cross-capability seeding \
+order is worth doing deliberately rather than in passing.\
+"""
+
+[absent.transit]
+reason = """
+Every answer comes from a live HAFAS query. Recording one would publish a real timetable \
+frozen at build time, which stops being true within the hour and cannot be regenerated \
+without hitting the same external service.\
+"""

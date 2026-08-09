@@ -96,6 +96,17 @@ sh_test(
     data = ["check-publication-hygiene.sh"],
 )
 
+# The sibling gate: publication_hygiene_test scans a Git index, this one scans built bytes.
+# It shells out to `git grep` to skip terms this repository already publishes; in the sandbox
+# there is no repository, that lookup simply fails, and every derived term is checked instead
+# — strictly the more suspicious direction, which is the right way for a gate to degrade.
+sh_test(
+    name = "site_payload_test",
+    size = "small",
+    srcs = ["check-site-payload.test.sh"],
+    data = ["check-site-payload.sh"],
+)
+
 sh_test(
     name = "update_profiles_test",
     size = "medium",

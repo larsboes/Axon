@@ -1,13 +1,24 @@
 name: Pages
 
-# Publish the self-model as the repository's landing surface (#14). The page is generated from
-# self.json, which is generated from the manifests — so a fact that is not declared somewhere in
-# this tree cannot appear on it, the same reason ARCHITECTURE.md is generated rather than written.
+# Publish three surfaces from one build (#14, #168):
 #
-# The freshness gate below is the load-bearing part. self.json is a committed artifact, so it can
-# be behind the manifests it describes; publishing from a stale one would put confident, wrong
-# facts on a public page. `tools/self check` fails the job before anything is built, which is
-# #14's "the build fails rather than publishing when its inputs are stale" — a gate, not a hope.
+#   /        the self-model, generated from self.json, which is generated from the manifests
+#   /docs/   one reference page per unit, plus response shapes read out of the recording below
+#   /demo/   the real dashboard bundle, running on data this job generated minutes earlier
+#
+# THE DEMO IS RECORDED, NOT WRITTEN. This job starts the actual capability servers against a
+# throwaway Postgres, seeds them through their own HTTP write APIs, and captures what they
+# answer. Nobody hand-maintains a fixture, so a fixture cannot drift from the API: if a
+# response shape changes, the recording changes with it in the same commit, and if an endpoint
+# disappears the recording step fails rather than publishing a page describing it.
+#
+# WHY THIS RUNNER CANNOT LEAK. There is no overlay here, no vault, no credential and no real
+# database — the only data in the tree is what tools/demo-seed just generated from a fixed
+# seed. That is the primary guarantee. tools/check-site-payload.sh runs anyway, at the end,
+# over the assembled bytes: it is what protects a LOCAL demo build, where all three of those
+# things are a directory away, and running it here too is what keeps it honest.
+#
+# Every gate below fails the job rather than publishing something weaker.
 
 on:
   push:
@@ -27,6 +38,33 @@ jobs:
   build:
     name: build the page
     runs-on: ubuntu-latest
+
+    # The demo's store. Deliberately the service container rather than Axon's own postgres
+    # capability: the demo overlay enables no container runtime, and a demonstration should not
+    # need one to build. Same image and pin ci.yml's integration job uses.
+    services:
+      postgres:
+        image: postgres:17.10-alpine
+        env:
+          POSTGRES_USER: axon
+          POSTGRES_PASSWORD: axon
+          POSTGRES_DB: axon
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U axon"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Read by tools/demo-up, which exports it to every seeded capability as
+      # AXON_<NAME>_DATABASE_URL. One variable, no per-capability config file.
+      AXON_DEMO_DATABASE_URL: postgresql://axon:axon@127.0.0.1:5432/axon
+      # A GitHub Pages PROJECT site is served from /<repo>, and a static SPA has to be told:
+      # its asset URLs and router links are baked in at build time.
+      AXON_PAGES_BASE: /Axon
+
     steps:
       - name: Check out Axon
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -38,6 +76,7 @@ jobs:
 
       # paths.sh resolves the overlay before anything else runs; with no axon.local.toml it falls
       # back to axon.toml's shipped default. Same minimal seed ci.yml and upstream-watch use.
+      # tools/demo-up overrides it for its own steps by exporting AXON_OVERLAY_ROOT.
       - name: Minimal overlay for path resolution
         run: |
           mkdir -p "$HOME/.axon-overlay/config"
@@ -53,8 +92,80 @@ jobs:
       - name: self.json is current
         run: tools/self check
 
-      - name: Generate
-        run: tools/generate-site
+      - name: Cache Bazel repository cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/.cache/bazel-repo
+          key: bazel-repo-${{ runner.os }}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', 'Cargo.lock') }}
+          restore-keys: |
+            bazel-repo-${{ runner.os }}-
+
+      - name: Cache Bazel disk cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-
+
+      # The double-entry engine behind Finance. Taken from the exact ref upstreams.toml pins
+      # rather than from apt, whose hledger trails the pinned 1.52.1 — a demo built against a
+      # different engine version is a demo of software this repository does not describe.
+      - name: Install the pinned ledger engine
+        run: |
+          pin="$(bun -e '
+            const t = Bun.TOML.parse(await Bun.file("upstreams.toml").text());
+            process.stdout.write(t.hledger.pin);
+          ')"
+          curl -fsSL -o /tmp/hledger.tar.gz \
+            "https://github.com/simonmichael/hledger/releases/download/${pin}/hledger-linux-x64.tar.gz"
+          tar -xzf /tmp/hledger.tar.gz -C /usr/local/bin hledger
+          chmod +x /usr/local/bin/hledger
+          hledger --version
+
+      # Built explicitly and together rather than left to service-runner's on-demand fallback:
+      # one bazel invocation shares the analysis cache across all five, and a compile error
+      # fails here with a compiler's error message instead of inside a service start.
+      - name: Build the demo's capability servers
+        run: |
+          bazel build \
+            //capabilities/axon-status:axon-status \
+            //capabilities/calendar:calendar-server \
+            //capabilities/finance:finance-server \
+            //capabilities/tasks:tasks-server \
+            //capabilities/trips:trips-server \
+            --repository_cache="$HOME/.cache/bazel-repo" \
+            --disk_cache="$HOME/.cache/bazel-disk"
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      # Starts the five capabilities against the demo overlay, seeds them through their own
+      # write APIs, and records every declared path. Refuses if anything is already listening
+      # or if any store is non-empty — on a runner both are trivially true, and the guards are
+      # there for the machine where they are not.
+      - name: Seed and record the demo
+        run: tools/demo-up
+
+      - name: Assemble the site
+        run: tools/demo-site --base "$AXON_PAGES_BASE"
+
+      # demo-site runs the hygiene gate itself; this makes the refusal a named, visible step
+      # rather than one line inside another script's output.
+      - name: Payload hygiene
+        run: tools/check-site-payload.sh site
+
+      # Only on failure, and only the capability logs: a seeding run that fails against a
+      # server whose stderr nobody printed is a red job with no cause in it.
+      - name: Capability logs
+        if: failure()
+        run: |
+          for log in /tmp/axon-*.log /tmp/axon-*.err; do
+            [ -s "$log" ] || continue
+            echo "───────── $log"
+            tail -80 "$log"
+          done
 
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
