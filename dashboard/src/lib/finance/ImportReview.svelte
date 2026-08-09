@@ -2,6 +2,8 @@
   import Icon from "$lib/Icon.svelte";
   import {
     finance,
+    type CsvDateFormat,
+    type CsvImportPreview,
     type CsvMapping,
     type CsvMappingProfile,
     type TransactionCandidate,
@@ -18,6 +20,8 @@
   let accounts = $state<Record<string, string>>({});
   let mappingProfiles = $state<CsvMappingProfile[]>([]);
   let selectedProfile = $state("");
+  let preview = $state<CsvImportPreview | null>(null);
+  let previewKey = $state("");
   let mapping = $state<CsvMapping>({
     delimiter: ";",
     decimal_separator: ",",
@@ -28,6 +32,9 @@
     currency_column: "Währung",
     default_currency: "EUR",
     source_account: "assets:bank:checking",
+    amount_sign: "as_provided",
+    date_formats: ["day_month_year_dots"],
+    row_policy: "strict",
   });
 
   async function load() {
@@ -54,27 +61,69 @@
     if (!file) return;
     filename = file.name;
     content = await file.text();
+    preview = null;
+    previewKey = "";
   }
 
   function selectMapping(event: Event) {
     selectedProfile = (event.currentTarget as HTMLSelectElement).value;
     const selected = selectedCsvMapping(mappingProfiles, selectedProfile);
-    if (selected) mapping = selected;
+    if (selected) {
+      mapping = selected;
+      preview = null;
+      previewKey = "";
+    }
+  }
+
+  function selectDateFormat(event: Event) {
+    mapping.date_formats = [(event.currentTarget as HTMLSelectElement).value as CsvDateFormat];
+  }
+
+  function normalizedMapping(): CsvMapping {
+    return {
+      ...mapping,
+      reference_column: mapping.reference_column?.trim() || null,
+      currency_column: mapping.currency_column?.trim() || null,
+    };
+  }
+
+  function currentPreviewKey(): string {
+    return JSON.stringify([content, normalizedMapping()]);
+  }
+
+  async function previewImport() {
+    if (!content) return;
+    busy = true;
+    error = null;
+    notice = null;
+    try {
+      preview = await finance.previewCsv(content, normalizedMapping());
+      previewKey = currentPreviewKey();
+    } catch (cause) {
+      preview = null;
+      previewKey = "";
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      busy = false;
+    }
   }
 
   async function stage() {
-    if (!content) return;
+    if (!content || !preview || previewKey !== currentPreviewKey()) return;
     busy = true;
+    error = null;
     notice = null;
     try {
-      const result = await finance.importCsv(content, {
-        ...mapping,
-        reference_column: mapping.reference_column?.trim() || null,
-        currency_column: mapping.currency_column?.trim() || null,
-      });
-      notice = `${result.created} staged, ${result.already_present} already known. Raw CSV rows were discarded.`;
+      const result = await finance.importCsv(
+        content,
+        normalizedMapping(),
+        preview.preview_id,
+      );
+      notice = `${result.created} staged, ${result.already_present} already known. ${result.duplicate_rows} duplicate and ${result.ignored_non_transaction_rows} non-transaction rows were not staged. Raw CSV rows were discarded.`;
       content = "";
       filename = "";
+      preview = null;
+      previewKey = "";
       await load();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -141,9 +190,38 @@
       <label>Reference column<input bind:value={mapping.reference_column} placeholder="optional" /></label>
       <label>Currency column<input bind:value={mapping.currency_column} placeholder="optional" /></label>
       <label>Default currency<input maxlength="3" bind:value={mapping.default_currency} /></label>
+      <label>Amount sign
+        <select bind:value={mapping.amount_sign}>
+          <option value="as_provided">As provided</option>
+          <option value="invert">Invert</option>
+        </select>
+      </label>
+      <label>Date format
+        <select value={mapping.date_formats[0]} onchange={selectDateFormat}>
+          <option value="iso_year_month_day">YYYY-MM-DD</option>
+          <option value="day_month_year_dots">DD.MM.YYYY</option>
+          <option value="day_month_year_slashes">DD/MM/YYYY</option>
+        </select>
+      </label>
+      <label>Row policy
+        <select bind:value={mapping.row_policy}>
+          <option value="strict">Strict shape</option>
+          <option value="required_fields">Required fields</option>
+        </select>
+      </label>
       <label class="account">Source account<input bind:value={mapping.source_account} /></label>
-      <button disabled={busy} onclick={stage}>Stage candidates</button>
+      <button disabled={busy} onclick={previewImport}>Preview candidates</button>
     </div>
+    {#if preview && previewKey === currentPreviewKey()}
+      <div class="preview" aria-live="polite">
+        <span>{preview.candidate_count} candidates</span>
+        <span>{preview.outflow_count} outflows</span>
+        <span>{preview.inflow_count} inflows</span>
+        <span>{preview.duplicate_rows} duplicates</span>
+        <span>{preview.ignored_non_transaction_rows} ignored rows</span>
+        <button disabled={busy} onclick={stage}>Stage reviewed preview</button>
+      </div>
+    {/if}
   {/if}
 
   {#if error}<p class="error">{error}</p>{/if}
@@ -192,6 +270,8 @@
   input, select { min-width: 0; border: 1px solid var(--border, #333); border-radius: 5px; padding: .35rem .45rem; font: inherit; font-size: .78rem; background: transparent; color: inherit; }
   .mapping .profile, .mapping .account { grid-column: span 2; }
   .mapping button { align-self: end; justify-content: center; }
+  .preview { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; margin: -.4rem 0 1rem; padding: .65rem .8rem; border: 1px solid var(--border, #333); border-radius: 7px; font-size: .75rem; }
+  .preview button { margin-left: auto; }
   .candidate-list { display: grid; gap: .4rem; margin-top: 1rem; }
   article { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .65rem .75rem; border: 1px solid var(--border, #333); border-radius: 7px; }
   article.resolved { opacity: .55; }

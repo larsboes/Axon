@@ -173,7 +173,10 @@ mod tests {
                     "reference_column": "Reference",
                     "currency_column": "Currency",
                     "default_currency": "EUR",
-                    "source_account": "assets:bank:checking"
+                    "source_account": "assets:bank:checking",
+                    "amount_sign": "invert",
+                    "date_formats": ["day_month_year_slashes"],
+                    "row_policy": "required_fields"
                 }
             }]
         }))
@@ -182,6 +185,18 @@ mod tests {
         assert_eq!(config.csv_mappings.len(), 1);
         assert_eq!(config.csv_mappings[0].label, "Synthetic semicolon export");
         assert_eq!(config.csv_mappings[0].mapping.date_column, "Date");
+        assert_eq!(
+            config.csv_mappings[0].mapping.amount_sign,
+            crate::import::AmountSign::Invert
+        );
+        assert_eq!(
+            config.csv_mappings[0].mapping.date_formats,
+            [crate::import::CsvDateFormat::DayMonthYearSlashes]
+        );
+        assert_eq!(
+            config.csv_mappings[0].mapping.row_policy,
+            crate::import::CsvRowPolicy::RequiredFields
+        );
     }
 
     #[test]

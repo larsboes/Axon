@@ -124,12 +124,15 @@ pub struct DashboardProjection {
 pub fn project(transactions: &[JournalTransaction], currency: &str) -> Vec<TransactionRow> {
     let mut rows = Vec::new();
     for transaction in transactions {
-        let assets: Vec<_> = transaction
+        let balance_accounts: Vec<_> = transaction
             .postings
             .iter()
-            .filter(|posting| posting.account.starts_with("assets:"))
+            .filter(|posting| {
+                posting.account.starts_with("assets:")
+                    || posting.account.starts_with("liabilities:")
+            })
             .collect();
-        let account = assets
+        let account = balance_accounts
             .iter()
             .find(|posting| amount_cents(posting, currency).unwrap_or(0) != 0)
             .map(|posting| posting.account.as_str())
@@ -164,11 +167,11 @@ pub fn project(transactions: &[JournalTransaction], currency: &str) -> Vec<Trans
                 currency: currency.to_string(),
             });
         }
-        if !classified && assets.len() >= 2 {
-            let source = assets
+        if !classified && balance_accounts.len() >= 2 {
+            let source = balance_accounts
                 .iter()
                 .find(|posting| amount_cents(posting, currency).unwrap_or(0) < 0);
-            let target = assets
+            let target = balance_accounts
                 .iter()
                 .find(|posting| amount_cents(posting, currency).unwrap_or(0) > 0);
             if let (Some(source), Some(target)) = (source, target) {
@@ -450,6 +453,39 @@ mod tests {
             ..AnalyticsFilter::default()
         };
         assert_eq!(dashboard(&rows, &[], &filter).transactions.len(), 3);
+    }
+
+    #[test]
+    fn card_purchases_are_expenses_and_settlements_are_transfers() {
+        let transactions = vec![
+            JournalTransaction {
+                index: 1,
+                date: "2026-08-01".into(),
+                description: "synthetic purchase".into(),
+                postings: vec![
+                    posting("liabilities:card:review", -12_00),
+                    posting("expenses:services", 12_00),
+                ],
+            },
+            JournalTransaction {
+                index: 2,
+                date: "2026-08-02".into(),
+                description: "synthetic settlement".into(),
+                postings: vec![
+                    posting("assets:bank:checking", -12_00),
+                    posting("liabilities:card:review", 12_00),
+                ],
+            },
+        ];
+        let rows = project(&transactions, "EUR");
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].kind, TransactionKind::Expense);
+        assert_eq!(rows[0].account, "liabilities:card:review");
+        assert_eq!(rows[1].kind, TransactionKind::Transfer);
+        let view = dashboard(&rows, &[], &AnalyticsFilter::default());
+        assert_eq!(view.summary.expense_cents, 12_00);
+        assert_eq!(view.transactions.len(), 1);
     }
 
     #[test]
