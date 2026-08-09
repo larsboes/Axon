@@ -142,7 +142,8 @@ export function renderSite(model: SelfModel, demoed: string[] = []): string {
     title: "Axon — one tree that knows what it runs",
     description:
       "What Axon is: its capabilities, their contracts, and how they connect — generated from the repository's own manifests, with a live demo running on synthetic data.",
-    root: "",
+    // Lives at /docs/self-model.html since #170, so one level up.
+    root: "../",
     current: "overview",
     body: `
 <header>
@@ -156,11 +157,11 @@ ${counts.map(([k, n]) => `    <li><strong>${n}</strong> ${esc(KIND_LABEL[k].toLo
 </header>
 
 <section>
-  <h2>Three ways in</h2>
-  <p class="blurb">Nothing on this site is written by hand. The tables below are generated from the manifests, the reference pages from those plus a live recording, and the demo runs the real dashboard against data that was never real.</p>
+  <h2>Where else to look</h2>
+  <p class="blurb">Nothing on this site is written by hand. The tables below are generated from the manifests, the reference pages from those plus a live recording, and the dashboard at the root runs against data that was never real.</p>
   <ul class="cards">
-    <li><a href="demo/"><strong>Live demo →</strong><span>The actual dashboard, on ${demoed.length} capabilities seeded with generated data. Writing is disabled; nothing in it is real.</span></a></li>
-    <li><a href="docs/index.html"><strong>Reference →</strong><span>One page per unit: declared contract, what it is coupled to, and response shapes read out of the recording.</span></a></li>
+    <li><a href="../"><strong>Dashboard →</strong><span>The actual shell, on ${demoed.length} capabilities seeded with generated data. Writing is disabled; nothing in it is real.</span></a></li>
+    <li><a href="index.html"><strong>Reference →</strong><span>One page per unit: declared contract, what it is coupled to, and response shapes read out of the recording.</span></a></li>
     <li><a href="https://github.com/larsboes/Axon"><strong>Source →</strong><span>The repository, its README, and the manifests every page here is generated from.</span></a></li>
   </ul>
 </section>
@@ -175,11 +176,16 @@ ${renderUpstreams(model.upstreams)}`,
 function main(): void {
   const args = process.argv.slice(2);
   if (args.includes("-h") || args.includes("--help")) {
-    console.log("tools/generate-site [--out <dir>] [--check]");
+    console.log("tools/generate-site [--out <dir>] [--name <file>] [--check]");
     process.exit(0);
   }
   const outIdx = args.indexOf("--out");
   const outDir = outIdx >= 0 ? args[outIdx + 1] : join(AXON_ROOT, "site");
+  // Since #170 the site root is the dashboard, so this page is no longer an index. It keeps
+  // its own generator because it renders self.json rather than a per-unit view, and it is
+  // written into /docs beside the reference pages under its own name.
+  const nameIdx = args.indexOf("--name");
+  const outName = nameIdx >= 0 ? args[nameIdx + 1] : "index.html";
   const selfPath = join(AXON_ROOT, "self.json");
   if (!existsSync(selfPath)) {
     console.error(`generate-site: no self.json at ${selfPath} — run: tools/self generate`);
@@ -201,7 +207,7 @@ function main(): void {
     return;
   }
   mkdirSync(outDir, { recursive: true });
-  const dest = join(outDir, "index.html");
+  const dest = join(outDir, outName);
   writeFileSync(dest, html);
   console.log(`wrote ${dest} (${html.length} bytes)`);
 }

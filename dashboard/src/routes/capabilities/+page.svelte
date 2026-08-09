@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
@@ -162,7 +163,7 @@
             {/if}
           {/if}
           {#if hasPanel(c) && c.up}
-            <a class="btn" href="/projects">Project <Icon name="arrow-right" size={13} /></a>
+            <a class="btn" href={link("/projects")}>Project <Icon name="arrow-right" size={13} /></a>
           {/if}
           {#if c.up !== null}
             {#if busy === c.name}

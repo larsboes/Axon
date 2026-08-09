@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import Icon from "$lib/Icon.svelte";
   import { contextLink, entryReaderLink, kindConfig } from "$lib/calendar/types";
   import type { CalendarContext, CalendarEntry } from "$lib/api";
@@ -66,7 +67,7 @@
             {context.title}<span>{span(context)}</span>
           </a>{#if index < contexts.length - 1}<i aria-hidden="true">·</i>{/if}
         {/each}
-        <a class="edit" href="/calendar">Calendar <Icon name="arrow-right" size={11} /></a>
+        <a class="edit" href={link("/calendar")}>Calendar <Icon name="arrow-right" size={11} /></a>
       </p>
     {/if}
   </section>

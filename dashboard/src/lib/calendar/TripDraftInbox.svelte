@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import { calendar, type CalendarTripDraft, type CalendarTripDrafts } from "$lib/api";
 
   let {
@@ -139,7 +140,7 @@
           {/each}
         </ul>
         {#if planId}
-          <p class="created">Created as a trip. <a href={`/travel?plan=${encodeURIComponent(planId)}`}>Open Travel</a></p>
+          <p class="created">Created as a trip. <a href={link(`/travel?plan=${encodeURIComponent(planId)}`)}>Open Travel</a></p>
         {:else}
           <label class="title-field">
             <span>Trip title</span>

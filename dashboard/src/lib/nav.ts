@@ -1,3 +1,19 @@
+import { base } from "$app/paths";
+
+/**
+ * An internal destination, made absolute against the configured base path.
+ *
+ * SvelteKit rewrites asset URLs for `paths.base` and deliberately does NOT touch `href`
+ * attributes you wrote yourself — it cannot tell an app route from an outbound link. On a
+ * real machine `base` is empty and this is the identity function, which is why 37 raw
+ * `href={link("/…")}` attributes worked for a year and then sent every click in the published demo
+ * to the domain root, where GitHub answers with its own 404 (#170).
+ *
+ * Every internal link goes through here. `nav-links.test.ts` fails the build on one that
+ * does not, because the failure is invisible in the only environment anyone develops in.
+ */
+export const link = (path: string): string => `${base}${path}`;
+
 export interface NavItem {
   href: string;
   label: string;

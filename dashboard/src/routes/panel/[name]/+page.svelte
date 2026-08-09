@@ -5,7 +5,7 @@
   import PageHeader from "$lib/PageHeader.svelte";
   import { axonStatus, hasPanel, panelUrl } from "$lib/api";
   import { capabilities } from "$lib/capabilities.svelte";
-  import { titleCase } from "$lib/nav";
+  import { titleCase, link } from "$lib/nav";
 
   const name = $derived(page.params.name ?? "");
   const capability = $derived(capabilities.byName(name));
@@ -67,7 +67,7 @@
     <a class="btn btn-primary" href={panelUrl(capability)} target="_blank" rel="noreferrer">
       Open site <Icon name="external" size={13} />
     </a>
-    <a class="back" href="/projects">Back to Projects</a>
+    <a class="back" href={link("/projects")}>Back to Projects</a>
   </div>
 {/if}
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
   import RelatedTools from "$lib/RelatedTools.svelte";
@@ -118,8 +119,8 @@
 />
 
 <nav class="travel-nav" aria-label="Travel sections">
-  <a href="/travel"><Icon name="map-pin" size={14} /> Trip plans</a>
-  <a class="active" href="/travel/connections"><Icon name="train" size={14} /> Connections</a>
+  <a href={link("/travel")}><Icon name="map-pin" size={14} /> Trip plans</a>
+  <a class="active" href={link("/travel/connections")}><Icon name="train" size={14} /> Connections</a>
 </nav>
 
 <form

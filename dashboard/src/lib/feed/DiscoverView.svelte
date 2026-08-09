@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import { onMount } from "svelte";
   import EntryForm from "$lib/calendar/EntryForm.svelte";
   import Icon from "$lib/Icon.svelte";
@@ -382,7 +383,7 @@
 {#if error}
   <p class="notice">
     <Icon name="wifi-off" />
-    <span>{error} <a href="/capabilities">Check Capabilities</a></span>
+    <span>{error} <a href={link("/capabilities")}>Check Capabilities</a></span>
   </p>
 {/if}
 

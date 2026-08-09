@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import type { FeedEvaluation } from "$lib/api";
 
   let {
@@ -46,7 +47,7 @@
         {#if !compact}
           <p>{factor.rationale} · Weight {Math.round(factor.weight * 100)}%</p>
           {#if factor.context?.kind === "trip"}
-            <a class="factor-context" href="/travel">
+            <a class="factor-context" href={link("/travel")}>
               {factor.context.label}
               {#if factor.context.matched_terms.length > 0}
                 · {factor.context.matched_terms.join(", ")}

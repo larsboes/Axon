@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
@@ -409,7 +410,7 @@
     error = null;
     try {
       await calendar.entries.delete(entry.id);
-      await goto("/calendar");
+      await goto(link("/calendar"));
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
       savingField = false;
@@ -1475,7 +1476,7 @@
                     </div>
                   {/if}
                   {#if calendarProposalSaved.size > 0}
-                    <a class="calendar-review-link" href="/calendar">Open Calendar review →</a>
+                    <a class="calendar-review-link" href={link("/calendar")}>Open Calendar review →</a>
                   {/if}
                   {#if calendarProposalError}
                     <p class="cloud-job-error" role="alert">{calendarProposalError}</p>

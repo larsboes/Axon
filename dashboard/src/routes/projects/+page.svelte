@@ -4,7 +4,7 @@
   import PageHeader from "$lib/PageHeader.svelte";
   import { axonStatus, panelUrl, type CapabilityView } from "$lib/api";
   import { capabilities } from "$lib/capabilities.svelte";
-  import { titleCase } from "$lib/nav";
+  import { titleCase, link } from "$lib/nav";
 
   const copy: Record<string, { title: string; description: string; kind: string; icon: "graduation" | "server" }> = {
     server: {
@@ -101,7 +101,7 @@
 
 <p class="note">
   The dashboard does not embed these sites. Start and stop them from
-  <a href="/capabilities">Capabilities</a>.
+  <a href={link("/capabilities")}>Capabilities</a>.
 </p>
 
 <style>

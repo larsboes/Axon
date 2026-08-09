@@ -1,3 +1,4 @@
+import { link } from "$lib/nav";
 /** Entry kind as stored — open text, documented in the calendar capability's
  * README. The UI knows about well-known kinds for color/icon mapping but
  * must render any token gracefully. */
@@ -138,7 +139,7 @@ export function kindConfig(kind: string) {
  * workspace's window before the id is looked up, so the target is inside the
  * range the page loads anyway and no fetch-by-id is needed. */
 export function entryLink(entry: CalendarEntry): string {
-  return `/calendar?date=${entry.starts_at.slice(0, 10)}&entry=${encodeURIComponent(entry.id)}`;
+  return link(`/calendar?date=${entry.starts_at.slice(0, 10)}&entry=${encodeURIComponent(entry.id)}`);
 }
 
 /** The entry in the shared content reader — the same surface that renders a
@@ -146,12 +147,12 @@ export function entryLink(entry: CalendarEntry): string {
  *  which opens the editable form in the calendar grid: one is for reading what
  *  this is and where it came from, the other for changing when it happens. */
 export function entryReaderLink(entry: CalendarEntry): string {
-  return `/feed/${encodeURIComponent(entry.id)}?source=calendar`;
+  return link(`/feed/${encodeURIComponent(entry.id)}?source=calendar`);
 }
 
 /** Same for a planning context, which opens in the context panel. */
 export function contextLink(context: CalendarContext): string {
-  return `/calendar?date=${context.valid_from.slice(0, 10)}&context=${encodeURIComponent(context.id)}`;
+  return link(`/calendar?date=${context.valid_from.slice(0, 10)}&context=${encodeURIComponent(context.id)}`);
 }
 
 export function dayKey(date: Date | string): string {
