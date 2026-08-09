@@ -12,6 +12,31 @@ use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldingsCoverage {
+    #[default]
+    Complete,
+    Partial,
+}
+
+impl HoldingsCoverage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "complete" => Some(Self::Complete),
+            "partial" => Some(Self::Partial),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvestmentCsvMapping {
     #[serde(default = "default_delimiter")]
@@ -72,6 +97,8 @@ pub struct ReviewedHoldingsSnapshot {
     pub schema_version: u32,
     pub snapshot_id: String,
     pub reviewed_at: String,
+    #[serde(default)]
+    pub coverage: HoldingsCoverage,
     pub holdings: Vec<Holding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<ReviewedHoldingsSource>,
@@ -82,6 +109,8 @@ pub struct ReviewedHoldingsSource {
     pub source_key: String,
     pub snapshot_id: String,
     pub reviewed_at: String,
+    #[serde(default)]
+    pub coverage: HoldingsCoverage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,6 +311,7 @@ pub fn reviewed_snapshot(
     preview: &InvestmentPreview,
     mapping: &InvestmentCsvMapping,
     reviewed_at: &str,
+    coverage: HoldingsCoverage,
 ) -> ImportResult<ReviewedHoldingsSnapshot> {
     let approved_aliases: HashSet<_> = mapping.instrument_aliases.values().collect();
     if preview
@@ -297,6 +327,7 @@ pub fn reviewed_snapshot(
         schema_version: 1,
         snapshot_id: preview.snapshot_id.clone(),
         reviewed_at: reviewed_at.to_string(),
+        coverage,
         holdings: preview.holdings.clone(),
         sources: Vec::new(),
     })
@@ -339,7 +370,9 @@ pub fn write_reviewed_snapshot(
         sources: BTreeMap::new(),
     });
     if collection.sources.get(source_key).is_some_and(|existing| {
-        existing.snapshot_id == snapshot.snapshot_id && existing.reviewed_at == snapshot.reviewed_at
+        existing.snapshot_id == snapshot.snapshot_id
+            && existing.reviewed_at == snapshot.reviewed_at
+            && existing.coverage == snapshot.coverage
     }) {
         return Ok(false);
     }
@@ -437,6 +470,7 @@ fn aggregate_collection(
             source_key: source_key.clone(),
             snapshot_id: snapshot.snapshot_id.clone(),
             reviewed_at: snapshot.reviewed_at.clone(),
+            coverage: snapshot.coverage,
         });
         for holding in &snapshot.holdings {
             let position = positions
@@ -478,10 +512,19 @@ fn aggregate_collection(
         .max()
         .expect("a nonempty collection has a review date")
         .to_string();
+    let coverage = if sources
+        .iter()
+        .any(|source| source.coverage == HoldingsCoverage::Partial)
+    {
+        HoldingsCoverage::Partial
+    } else {
+        HoldingsCoverage::Complete
+    };
     Ok(ReviewedHoldingsSnapshot {
         schema_version: 2,
         snapshot_id: collection_identity(&sources),
         reviewed_at,
+        coverage,
         holdings,
         sources,
     })
@@ -676,6 +719,8 @@ fn collection_identity(sources: &[ReviewedHoldingsSource]) -> String {
         hash.update(source.snapshot_id.as_bytes());
         hash.update([0xff]);
         hash.update(source.reviewed_at.as_bytes());
+        hash.update([0xff]);
+        hash.update(source.coverage.as_str().as_bytes());
         hash.update([0xfe]);
     }
     let mut encoded = String::with_capacity(64);
@@ -918,7 +963,9 @@ mod tests {
             .insert("private-source-id".into(), "ACME".into());
         let csv = b"Date;Instrument;Quantity;Reference;Price;Currency\n2026-01-02;private-source-id;1,0;private-reference;10,1234;EUR\n";
         let preview = preview_csv(csv, &mapping).unwrap();
-        let snapshot = reviewed_snapshot(&preview, &mapping, "2026-08-09").unwrap();
+        let snapshot =
+            reviewed_snapshot(&preview, &mapping, "2026-08-09", HoldingsCoverage::Complete)
+                .unwrap();
         let directory =
             std::env::temp_dir().join(format!("axon-finance-holdings-test-{}", std::process::id()));
         let path = directory.join("holdings.json");
@@ -931,12 +978,20 @@ mod tests {
         };
         assert!(write_reviewed_snapshot(&path, "synthetic-broker", &reconfirmed).unwrap());
         assert!(!write_reviewed_snapshot(&path, "synthetic-broker", &reconfirmed).unwrap());
+        let partial = ReviewedHoldingsSnapshot {
+            coverage: HoldingsCoverage::Partial,
+            ..reconfirmed.clone()
+        };
+        assert!(write_reviewed_snapshot(&path, "synthetic-broker", &partial).unwrap());
+        assert!(!write_reviewed_snapshot(&path, "synthetic-broker", &partial).unwrap());
         let canonical = read_reviewed_snapshot(&path).unwrap().unwrap();
         assert_eq!(canonical.schema_version, 2);
         assert_eq!(canonical.holdings, snapshot.holdings);
         assert_eq!(canonical.sources.len(), 1);
         assert_eq!(canonical.sources[0].source_key, "synthetic-broker");
         assert_eq!(canonical.sources[0].reviewed_at, "2026-08-10");
+        assert_eq!(canonical.coverage, HoldingsCoverage::Partial);
+        assert_eq!(canonical.sources[0].coverage, HoldingsCoverage::Partial);
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(!body.contains("private-source-id"));
         assert!(!body.contains("private-reference"));
@@ -953,7 +1008,7 @@ mod tests {
         ));
         let path = directory.join("holdings.json");
         let _ = std::fs::remove_dir_all(&directory);
-        let source = |quantity, reviewed_at: &str| {
+        let source = |quantity, reviewed_at: &str, coverage| {
             let holdings = vec![Holding {
                 instrument: "ACME".into(),
                 quantity: Quantity {
@@ -970,20 +1025,38 @@ mod tests {
                 schema_version: 1,
                 snapshot_id: holdings_identity(&holdings),
                 reviewed_at: reviewed_at.into(),
+                coverage,
                 holdings,
                 sources: Vec::new(),
             }
         };
 
-        assert!(write_reviewed_snapshot(&path, "broker-one", &source(2, "2026-08-08")).unwrap());
-        assert!(write_reviewed_snapshot(&path, "broker-two", &source(3, "2026-08-09")).unwrap());
+        assert!(write_reviewed_snapshot(
+            &path,
+            "broker-one",
+            &source(2, "2026-08-08", HoldingsCoverage::Complete),
+        )
+        .unwrap());
+        assert!(write_reviewed_snapshot(
+            &path,
+            "broker-two",
+            &source(3, "2026-08-09", HoldingsCoverage::Partial),
+        )
+        .unwrap());
         let aggregate = read_reviewed_snapshot(&path).unwrap().unwrap();
         assert_eq!(aggregate.sources.len(), 2);
+        assert_eq!(aggregate.coverage, HoldingsCoverage::Partial);
+        assert_eq!(aggregate.sources[1].coverage, HoldingsCoverage::Partial);
         assert_eq!(aggregate.holdings[0].quantity.mantissa, 5);
         assert_eq!(aggregate.holdings[0].latest_unit_price, None);
         assert_eq!(aggregate.reviewed_at, "2026-08-09");
 
-        assert!(write_reviewed_snapshot(&path, "broker-one", &source(4, "2026-08-10")).unwrap());
+        assert!(write_reviewed_snapshot(
+            &path,
+            "broker-one",
+            &source(4, "2026-08-10", HoldingsCoverage::Complete),
+        )
+        .unwrap());
         let aggregate = read_reviewed_snapshot(&path).unwrap().unwrap();
         assert_eq!(aggregate.sources.len(), 2);
         assert_eq!(aggregate.holdings[0].quantity.mantissa, 7);
@@ -1014,10 +1087,13 @@ mod tests {
             schema_version: 1,
             snapshot_id: holdings_identity(&holdings),
             reviewed_at: "2026-08-09".into(),
+            coverage: HoldingsCoverage::Complete,
             holdings,
             sources: Vec::new(),
         };
-        std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        let mut legacy = serde_json::to_value(&snapshot).unwrap();
+        legacy.as_object_mut().unwrap().remove("coverage");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
 
         assert_eq!(
             read_reviewed_snapshot(&path).unwrap(),
@@ -1039,7 +1115,7 @@ mod tests {
         let mapping = mapping();
         let preview = preview_csv(csv, &mapping).unwrap();
         assert_eq!(
-            reviewed_snapshot(&preview, &mapping, "2026-08-09")
+            reviewed_snapshot(&preview, &mapping, "2026-08-09", HoldingsCoverage::Complete)
                 .unwrap_err()
                 .0,
             "every confirmed instrument requires an explicit private alias"

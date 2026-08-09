@@ -20,6 +20,11 @@
   function sourceCount(snapshot: ReviewedHoldingsSnapshot): number {
     return Math.max(snapshot.sources.length, 1);
   }
+
+  function partialSourceCount(snapshot: ReviewedHoldingsSnapshot): number {
+    const count = snapshot.sources.filter((source) => source.coverage === "partial").length;
+    return snapshot.coverage === "partial" ? Math.max(count, 1) : count;
+  }
 </script>
 
 <section class="portfolio">
@@ -32,30 +37,35 @@
   </div>
   {#if snapshot === null}
     <p>No reviewed holdings snapshot yet.</p>
-  {:else if snapshot.holdings.length === 0}
-    <p>The reviewed snapshot contains no open positions.</p>
   {:else}
-    {#if snapshot.sources.length > 0}
-      <ul class="sources" aria-label="Reviewed holding sources">
-        {#each snapshot.sources as source (source.source_key)}
-          <li><span>{source.source_key}</span><time datetime={source.reviewed_at}>{source.reviewed_at}</time></li>
-        {/each}
-      </ul>
+    {#if snapshot.coverage === "partial"}
+      <p class="coverage-warning"><strong>Incomplete portfolio.</strong> {partialSourceCount(snapshot)} source{partialSourceCount(snapshot) === 1 ? " is" : "s are"} based on partial evidence, so position count and totals are lower bounds.</p>
     {/if}
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Instrument</th><th>Quantity</th><th>Latest activity price</th></tr></thead>
-        <tbody>
-          {#each snapshot.holdings as holding (holding.instrument)}
-            <tr>
-              <td>{holding.instrument}</td>
-              <td>{decimal(holding.quantity.mantissa, holding.quantity.scale)}</td>
-              <td>{holding.latest_unit_price === null ? "—" : `${decimal(holding.latest_unit_price.mantissa, holding.latest_unit_price.scale)} ${holding.currency}`}</td>
-            </tr>
+    {#if snapshot.holdings.length === 0}
+      <p>The reviewed snapshot contains no open positions.</p>
+    {:else}
+      {#if snapshot.sources.length > 0}
+        <ul class="sources" aria-label="Reviewed holding sources">
+          {#each snapshot.sources as source (source.source_key)}
+            <li class:partial={source.coverage === "partial"}><span>{source.source_key}</span><span class="coverage">{source.coverage}</span><time datetime={source.reviewed_at}>{source.reviewed_at}</time></li>
           {/each}
-        </tbody>
-      </table>
-    </div>
+        </ul>
+      {/if}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Instrument</th><th>Quantity</th><th>Latest activity price</th></tr></thead>
+          <tbody>
+            {#each snapshot.holdings as holding (holding.instrument)}
+              <tr>
+                <td>{holding.instrument}</td>
+                <td>{decimal(holding.quantity.mantissa, holding.quantity.scale)}</td>
+                <td>{holding.latest_unit_price === null ? "—" : `${decimal(holding.latest_unit_price.mantissa, holding.latest_unit_price.scale)} ${holding.currency}`}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
   {/if}
 </section>
 
@@ -67,7 +77,10 @@
   .heading > strong { font-size: .78rem; font-variant-numeric: tabular-nums; }
   .sources { display: flex; flex-wrap: wrap; gap: .4rem; margin: .65rem 0 0; padding: 0; list-style: none; }
   .sources li { display: flex; gap: .35rem; padding: .25rem .4rem; border: 1px solid var(--border, #333); border-radius: 5px; font-size: .68rem; }
+  .sources li.partial { border-color: var(--warning, #a76b2c); }
+  .sources .coverage { color: var(--muted, #888); }
   .sources time { color: var(--muted, #888); font-variant-numeric: tabular-nums; }
+  .coverage-warning { margin-top: .65rem; padding: .55rem .65rem; border-left: 3px solid var(--warning, #a76b2c); background: color-mix(in srgb, var(--warning, #a76b2c) 10%, transparent); color: inherit; }
   .table-wrap { margin-top: .75rem; overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: .78rem; }
   th, td { padding: .5rem .4rem; border-top: 1px solid var(--border, #333); text-align: left; }

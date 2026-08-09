@@ -3,7 +3,9 @@ use finance::analytics::{project, TransactionRow};
 use finance::import::{
     parse_csv, AmountSign, CandidateState, CsvDateFormat, CsvMapping, CsvRowPolicy,
 };
-use finance::investment::{Holding, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource};
+use finance::investment::{
+    Holding, HoldingsCoverage, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource,
+};
 use finance::FinanceStore;
 use postgres::{Client, NoTls};
 
@@ -185,6 +187,7 @@ fn reviewed_holdings_replace_atomically_and_preserve_an_empty_review() {
         schema_version: 2,
         snapshot_id: "synthetic-snapshot".into(),
         reviewed_at: "2026-08-09".into(),
+        coverage: HoldingsCoverage::Partial,
         holdings: vec![Holding {
             instrument: "ACME".into(),
             quantity: Quantity {
@@ -201,6 +204,7 @@ fn reviewed_holdings_replace_atomically_and_preserve_an_empty_review() {
             source_key: "synthetic-broker".into(),
             snapshot_id: "synthetic-source-snapshot".into(),
             reviewed_at: "2026-08-09".into(),
+            coverage: HoldingsCoverage::Partial,
         }],
     };
     store.replace_holding_projection(&snapshot).unwrap();
@@ -210,11 +214,13 @@ fn reviewed_holdings_replace_atomically_and_preserve_an_empty_review() {
         schema_version: 2,
         snapshot_id: "synthetic-empty".into(),
         reviewed_at: "2026-08-10".into(),
+        coverage: HoldingsCoverage::Complete,
         holdings: vec![],
         sources: vec![ReviewedHoldingsSource {
             source_key: "synthetic-broker".into(),
             snapshot_id: "synthetic-empty-source".into(),
             reviewed_at: "2026-08-10".into(),
+            coverage: HoldingsCoverage::Complete,
         }],
     };
     store.replace_holding_projection(&empty).unwrap();

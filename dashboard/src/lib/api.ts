@@ -2043,8 +2043,11 @@ export interface InvestmentCsvMapping {
 export interface InvestmentCsvMappingProfile {
   source_key: string;
   label: string;
+  coverage: HoldingsCoverage;
   mapping: InvestmentCsvMapping;
 }
+
+export type HoldingsCoverage = 'complete' | 'partial';
 
 export interface InvestmentHolding {
   instrument: string;
@@ -2066,11 +2069,13 @@ export interface ReviewedHoldingsSnapshot {
   schema_version: number;
   snapshot_id: string;
   reviewed_at: string;
+  coverage: HoldingsCoverage;
   holdings: InvestmentHolding[];
   sources: Array<{
     source_key: string;
     snapshot_id: string;
     reviewed_at: string;
+    coverage: HoldingsCoverage;
   }>;
 }
 
@@ -2177,6 +2182,7 @@ export const finance = {
     mapping: InvestmentCsvMapping,
     sourceKey: string,
     expectedSnapshotId: string,
+    coverage: HoldingsCoverage,
   ) =>
     request<{ ok: boolean; created: boolean; snapshot: ReviewedHoldingsSnapshot }>(
       '/finance/api/import/investments/confirm',
@@ -2185,6 +2191,7 @@ export const finance = {
         mapping,
         source_key: sourceKey,
         expected_snapshot_id: expectedSnapshotId,
+        coverage,
       }),
     ),
   candidates: () => request<TransactionCandidate[]>('/finance/api/import/candidates'),
