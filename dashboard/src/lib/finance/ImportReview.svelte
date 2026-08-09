@@ -119,7 +119,7 @@
         normalizedMapping(),
         preview.preview_id,
       );
-      notice = `${result.created} staged, ${result.already_present} already known. ${result.duplicate_rows} duplicate and ${result.ignored_non_transaction_rows} non-transaction rows were not staged. Raw CSV rows were discarded.`;
+      notice = `${result.created} staged, ${result.already_present} already known. ${result.preserved_repetitions} repeated reference-less rows were preserved; ${result.duplicate_rows} stable-reference duplicates and ${result.ignored_non_transaction_rows} non-transaction rows were not staged. Raw CSV rows were discarded.`;
       content = "";
       filename = "";
       preview = null;
@@ -217,7 +217,8 @@
         <span>{preview.candidate_count} candidates</span>
         <span>{preview.outflow_count} outflows</span>
         <span>{preview.inflow_count} inflows</span>
-        <span>{preview.duplicate_rows} duplicates</span>
+        <span>{preview.preserved_repetitions} repetitions preserved</span>
+        <span>{preview.duplicate_rows} reference duplicates</span>
         <span>{preview.ignored_non_transaction_rows} ignored rows</span>
         <button disabled={busy} onclick={stage}>Stage reviewed preview</button>
       </div>

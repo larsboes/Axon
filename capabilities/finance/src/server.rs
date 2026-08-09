@@ -257,6 +257,7 @@ async fn import_csv(
                 "created": created,
                 "already_present": already_present,
                 "duplicate_rows": preview.duplicate_rows,
+                "preserved_repetitions": preview.preserved_repetitions,
                 "ignored_non_transaction_rows": preview.ignored_non_transaction_rows,
             }),
         ),
@@ -1106,6 +1107,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["candidate_count"], 1);
+        assert_eq!(body["preserved_repetitions"], 0);
         assert!(body.get("candidates").is_none());
         assert!(body.get("description").is_none());
 

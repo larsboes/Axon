@@ -7,7 +7,7 @@
 use csv::StringRecord;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub type ImportResult<T> = Result<T, ImportError>;
@@ -137,6 +137,7 @@ pub struct CsvImportPreview {
     pub preview_id: String,
     pub candidate_count: usize,
     pub duplicate_rows: usize,
+    pub preserved_repetitions: usize,
     pub ignored_non_transaction_rows: usize,
     pub outflow_count: usize,
     pub inflow_count: usize,
@@ -181,8 +182,10 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
     let currency = optional_column(&headers, mapping.currency_column.as_deref())?;
 
     let mut candidates = Vec::new();
-    let mut fingerprints = HashSet::new();
+    let mut stable_fingerprints = HashSet::new();
+    let mut occurrence_counts = HashMap::new();
     let mut duplicate_rows = 0;
+    let mut preserved_repetitions = 0;
     let mut ignored_non_transaction_rows = 0;
     for (index, record) in reader.records().enumerate() {
         let row = index + 2;
@@ -231,7 +234,7 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
             )));
         }
         let amount_text = amount_cents.to_string();
-        let fingerprint = fingerprint(&[
+        let base_fingerprint = fingerprint(&[
             &booked_at,
             &amount_text,
             &currency,
@@ -239,10 +242,26 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
             source_reference.as_deref().unwrap_or(""),
             &mapping.source_account,
         ]);
-        if !fingerprints.insert(fingerprint.clone()) {
-            duplicate_rows += 1;
-            continue;
-        }
+        let fingerprint = if source_reference.is_some() {
+            if !stable_fingerprints.insert(base_fingerprint.clone()) {
+                duplicate_rows += 1;
+                continue;
+            }
+            base_fingerprint
+        } else {
+            let occurrence = occurrence_counts
+                .entry(base_fingerprint.clone())
+                .or_insert(0_usize);
+            let fingerprint = if *occurrence == 0 {
+                base_fingerprint
+            } else {
+                preserved_repetitions += 1;
+                let ordinal = occurrence.to_string();
+                fingerprint(&["csv-occurrence", &base_fingerprint, &ordinal])
+            };
+            *occurrence += 1;
+            fingerprint
+        };
         candidates.push(TransactionCandidate {
             id: format!("candidate_{fingerprint}"),
             fingerprint,
@@ -270,9 +289,15 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
         .filter(|candidate| candidate.amount_cents > 0)
         .count();
     let preview = CsvImportPreview {
-        preview_id: preview_id(&candidates, duplicate_rows, ignored_non_transaction_rows),
+        preview_id: preview_id(
+            &candidates,
+            duplicate_rows,
+            preserved_repetitions,
+            ignored_non_transaction_rows,
+        ),
         candidate_count: candidates.len(),
         duplicate_rows,
+        preserved_repetitions,
         ignored_non_transaction_rows,
         outflow_count,
         inflow_count,
@@ -537,6 +562,7 @@ fn fingerprint(parts: &[&str]) -> String {
 fn preview_id(
     candidates: &[TransactionCandidate],
     duplicate_rows: usize,
+    preserved_repetitions: usize,
     ignored_non_transaction_rows: usize,
 ) -> String {
     let mut fingerprints: Vec<_> = candidates
@@ -545,8 +571,10 @@ fn preview_id(
         .collect();
     fingerprints.sort_unstable();
     let duplicate_rows = duplicate_rows.to_string();
+    let preserved_repetitions = preserved_repetitions.to_string();
     let ignored_non_transaction_rows = ignored_non_transaction_rows.to_string();
     fingerprints.push(&duplicate_rows);
+    fingerprints.push(&preserved_repetitions);
     fingerprints.push(&ignored_non_transaction_rows);
     fingerprint(&fingerprints)
 }
@@ -610,17 +638,45 @@ mod tests {
 
         let prepared = prepare_csv(csv, &mapping).unwrap();
 
-        assert_eq!(prepared.preview.candidate_count, 1);
-        assert_eq!(prepared.preview.outflow_count, 1);
+        assert_eq!(prepared.preview.candidate_count, 2);
+        assert_eq!(prepared.preview.outflow_count, 2);
         assert_eq!(prepared.preview.inflow_count, 0);
-        assert_eq!(prepared.preview.duplicate_rows, 1);
+        assert_eq!(prepared.preview.duplicate_rows, 0);
+        assert_eq!(prepared.preview.preserved_repetitions, 1);
         assert_eq!(prepared.preview.ignored_non_transaction_rows, 1);
         assert_eq!(prepared.candidates[0].booked_at, "2026-08-09");
         assert_eq!(prepared.candidates[0].amount_cents, -1234);
+        assert_ne!(prepared.candidates[0].id, prepared.candidates[1].id);
         assert_eq!(
             prepared.candidates[0].proposed_account,
             "expenses:uncategorized"
         );
+    }
+
+    #[test]
+    fn a_stable_reference_still_collapses_an_exact_duplicate() {
+        let csv = b"Buchung;Betrag;Text;Referenz;Waehrung\n02.08.2026;-12,34;Synthetic market;row-1;EUR\n02.08.2026;-12,34;Synthetic market;row-1;EUR\n";
+
+        let prepared = prepare_csv(csv, &mapping()).unwrap();
+
+        assert_eq!(prepared.preview.candidate_count, 1);
+        assert_eq!(prepared.preview.duplicate_rows, 1);
+        assert_eq!(prepared.preview.preserved_repetitions, 0);
+    }
+
+    #[test]
+    fn the_first_reference_less_occurrence_keeps_its_existing_identity() {
+        let mut mapping = mapping();
+        mapping.reference_column = None;
+        let single = b"Buchung;Betrag;Text;Waehrung\n02.08.2026;-12,34;Synthetic market;EUR\n";
+        let repeated = b"Buchung;Betrag;Text;Waehrung\n02.08.2026;-12,34;Synthetic market;EUR\n02.08.2026;-12,34;Synthetic market;EUR\n";
+
+        let single = prepare_csv(single, &mapping).unwrap();
+        let repeated = prepare_csv(repeated, &mapping).unwrap();
+
+        assert_eq!(single.candidates[0].id, repeated.candidates[0].id);
+        assert_ne!(repeated.candidates[0].id, repeated.candidates[1].id);
+        assert_eq!(repeated.preview.preserved_repetitions, 1);
     }
 
     #[test]

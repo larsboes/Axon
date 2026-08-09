@@ -120,8 +120,10 @@ operator can still edit every field before staging. A mapping explicitly declare
 amount direction, accepted date formats, and whether every row must match the header
 or rows without transaction fields may be counted and ignored. Preview returns only
 quality counts and an identity token; staging recomputes the CSV and requires that
-unchanged token. Duplicate fingerprints are counted within one export and remain
-idempotent across overlapping exports in the candidate store.
+unchanged token. Stable-reference duplicates are counted within one export. When
+the source has no reference, repeated normalized rows are preserved with
+deterministic occurrence identities, so legitimate repetition and overlapping-export
+idempotency both survive in the candidate store.
 Named `investment_csv_mappings` supply the corresponding preview-only adapter. The
 stable source key and source identifier to symbolic commodity mapping belong there
 rather than in Axon. `investment_snapshot` names the private canonical collection
