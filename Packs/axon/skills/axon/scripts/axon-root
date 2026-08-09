@@ -1,0 +1,37 @@
+#!/bin/bash
+# Print the active Axon checkout without assuming where it lives.
+set -eu
+
+is_axon_root() {
+  [ -f "$1/axon.toml" ] && [ -x "$1/tools/capability.sh" ] && [ -x "$1/tools/self" ]
+}
+
+if [ -n "${AXON_ROOT:-}" ] && is_axon_root "$AXON_ROOT"; then
+  cd "$AXON_ROOT" && pwd
+  exit 0
+fi
+
+if command -v git >/dev/null 2>&1; then
+  candidate="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$candidate" ] && is_axon_root "$candidate"; then
+    cd "$candidate" && pwd
+    exit 0
+  fi
+fi
+
+source_path="${BASH_SOURCE[0]:-$0}"
+case "$source_path" in
+  /*) candidate="$(dirname "$source_path")" ;;
+  *) candidate="$PWD/$(dirname "$source_path")" ;;
+esac
+candidate="$(cd "$candidate" 2>/dev/null && pwd || true)"
+while [ -n "$candidate" ] && [ "$candidate" != "/" ]; do
+  if is_axon_root "$candidate"; then
+    echo "$candidate"
+    exit 0
+  fi
+  candidate="$(dirname "$candidate")"
+done
+
+echo "axon-root: Axon checkout not found; work inside it or export AXON_ROOT=/path/to/Axon" >&2
+exit 1

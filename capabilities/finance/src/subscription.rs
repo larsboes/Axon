@@ -25,6 +25,7 @@
 //! date library would be a dependency bought for `<=`.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// How often a price recurs. The monthly equivalent of each is the whole reason
 /// this is an enum rather than a free-text field.
@@ -76,6 +77,9 @@ pub enum State {
     Considering,
     Trial,
     Active,
+    /// The service is active, but somebody else currently pays for it. It remains
+    /// visible without inflating personal recurring spend.
+    Covered,
     Paused,
     Cancelled,
 }
@@ -96,6 +100,7 @@ impl State {
             State::Considering => "considering",
             State::Trial => "trial",
             State::Active => "active",
+            State::Covered => "covered",
             State::Paused => "paused",
             State::Cancelled => "cancelled",
         }
@@ -106,6 +111,7 @@ impl State {
             "considering" => Some(State::Considering),
             "trial" => Some(State::Trial),
             "active" => Some(State::Active),
+            "covered" | "externally_paid" | "externally-paid" => Some(State::Covered),
             "paused" => Some(State::Paused),
             "cancelled" | "canceled" => Some(State::Cancelled),
             _ => None,
@@ -229,6 +235,58 @@ pub struct Burn {
     /// How many subscriptions were actually billing. A burn of zero across nine
     /// subscriptions and a burn of zero across none are different situations.
     pub billing_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrencyBurn {
+    pub currency: String,
+    pub monthly_cents: i64,
+    pub annual_cents: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BurnByCurrency {
+    pub currencies: Vec<CurrencyBurn>,
+    pub billing_count: usize,
+    pub covered_count: usize,
+    pub unknown_price_count: usize,
+}
+
+/// Recurring personal spend grouped by currency. Currency amounts are never
+/// added together without an explicit exchange-rate decision.
+pub fn burn_by_currency(subscriptions: &[Subscription], date: &str) -> BurnByCurrency {
+    let mut amounts: BTreeMap<String, i64> = BTreeMap::new();
+    let mut billing_count = 0;
+    let mut covered_count = 0;
+    let mut unknown_price_count = 0;
+    for subscription in subscriptions {
+        match subscription.state_at(date) {
+            State::Active | State::Trial => {
+                billing_count += 1;
+                if let Some(price) = subscription.price_at(date) {
+                    *amounts.entry(price.currency.clone()).or_default() +=
+                        price.cycle.monthly_cents(price.amount_cents);
+                } else {
+                    unknown_price_count += 1;
+                }
+            }
+            State::Covered => covered_count += 1,
+            State::Considering | State::Paused | State::Cancelled => {}
+        }
+    }
+    BurnByCurrency {
+        currencies: amounts
+            .into_iter()
+            .map(|(currency, monthly_cents)| CurrencyBurn {
+                currency,
+                monthly_cents,
+                annual_cents: monthly_cents.saturating_mul(12),
+            })
+            .collect(),
+        billing_count,
+        covered_count,
+        unknown_price_count,
+    }
 }
 
 /// Total burn on `date`, computed from each subscription's series rather than from
@@ -454,6 +512,41 @@ mod tests {
         assert_eq!(burn.monthly_cents, 2000);
         assert_eq!(burn.annual_cents, 24_000);
         assert_eq!(burn.billing_count, 1);
+    }
+
+    #[test]
+    fn currency_burn_never_adds_unconverted_money() {
+        let mut eur = two_price_points();
+        eur.id = "eur".into();
+        eur.prices = vec![PricePoint {
+            valid_from: "2026-01-01".into(),
+            amount_cents: 1_000,
+            currency: "EUR".into(),
+            cycle: BillingCycle::Monthly,
+            plan: None,
+            reason: "synthetic".into(),
+        }];
+        let mut usd = eur.clone();
+        usd.id = "usd".into();
+        usd.prices[0].currency = "USD".into();
+        usd.prices[0].amount_cents = 2_000;
+        let mut covered = eur.clone();
+        covered.id = "covered".into();
+        covered.states = vec![StateChange {
+            effective: "2026-01-01".into(),
+            state: State::Covered,
+            note: String::new(),
+        }];
+
+        let burn = burn_by_currency(&[eur, usd, covered], "2026-08-08");
+        assert_eq!(burn.billing_count, 2);
+        assert_eq!(burn.covered_count, 1);
+        assert_eq!(burn.unknown_price_count, 0);
+        assert_eq!(burn.currencies.len(), 2);
+        assert_eq!(burn.currencies[0].currency, "EUR");
+        assert_eq!(burn.currencies[0].monthly_cents, 1_000);
+        assert_eq!(burn.currencies[1].currency, "USD");
+        assert_eq!(burn.currencies[1].monthly_cents, 2_000);
     }
 
     #[test]

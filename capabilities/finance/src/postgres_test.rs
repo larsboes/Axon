@@ -41,6 +41,8 @@ fn synthetic_projection() -> Vec<TransactionRow> {
             index: 1,
             date: "2026-08-01".into(),
             description: "Synthetic market".into(),
+            source_id: None,
+            tags: std::collections::BTreeMap::new(),
             postings: vec![
                 Posting {
                     account: "expenses:food".into(),
@@ -76,11 +78,17 @@ fn candidate_staging_is_idempotent_and_review_is_explicit() {
         date_column: "Date".into(),
         amount_column: "Amount".into(),
         description_column: "Description".into(),
+        categorization_columns: Vec::new(),
         reference_column: Some("Reference".into()),
         currency_column: None,
         default_currency: "EUR".into(),
         source_account: "assets:bank:checking".into(),
+        default_outflow_account: "expenses:uncategorized".into(),
+        default_inflow_account: "income:uncategorized".into(),
+        categorization_rules: Vec::new(),
+        row_filter: None,
         amount_sign: AmountSign::AsProvided,
+        amount_rounding: finance::import::AmountRounding::Reject,
         date_formats: vec![CsvDateFormat::IsoYearMonthDay],
         row_policy: CsvRowPolicy::Strict,
     };
@@ -99,6 +107,18 @@ fn candidate_staging_is_idempotent_and_review_is_explicit() {
         store.stage_candidates(&first_export, "2026-08-08").unwrap(),
         (2, 0)
     );
+    let mut remapped_export = first_export.clone();
+    remapped_export[0].proposed_account = "expenses:groceries".into();
+    remapped_export[0].confidence_basis_points = 9_000;
+    assert_eq!(
+        store
+            .stage_candidates(&remapped_export, "2026-08-09")
+            .unwrap(),
+        (0, 2)
+    );
+    let remapped = store.candidate(&first_export[0].id).unwrap().unwrap();
+    assert_eq!(remapped.proposed_account, "expenses:groceries");
+    assert_eq!(remapped.confidence_basis_points, 9_000);
     assert_eq!(
         store
             .stage_candidates(&overlapping_export, "2026-08-08")
@@ -139,11 +159,17 @@ fn reference_less_overlap_preserves_multiplicity_without_reimporting_it() {
         date_column: "Date".into(),
         amount_column: "Amount".into(),
         description_column: "Description".into(),
+        categorization_columns: Vec::new(),
         reference_column: None,
         currency_column: None,
         default_currency: "EUR".into(),
         source_account: "liabilities:card:review".into(),
+        default_outflow_account: "expenses:uncategorized".into(),
+        default_inflow_account: "income:uncategorized".into(),
+        categorization_rules: Vec::new(),
+        row_filter: None,
         amount_sign: AmountSign::AsProvided,
+        amount_rounding: finance::import::AmountRounding::Reject,
         date_formats: vec![CsvDateFormat::IsoYearMonthDay],
         row_policy: CsvRowPolicy::Strict,
     };
@@ -176,6 +202,65 @@ fn reference_less_overlap_preserves_multiplicity_without_reimporting_it() {
             .stage_candidates(&larger_export, "2026-08-09")
             .unwrap(),
         (0, 2)
+    );
+}
+
+#[test]
+fn reconciled_transfer_pair_has_one_canonical_candidate() {
+    let mapping = CsvMapping {
+        delimiter: ';',
+        decimal_separator: '.',
+        date_column: "Date".into(),
+        amount_column: "Amount".into(),
+        description_column: "Description".into(),
+        categorization_columns: Vec::new(),
+        reference_column: Some("Reference".into()),
+        currency_column: None,
+        default_currency: "EUR".into(),
+        source_account: "assets:bank:checking".into(),
+        default_outflow_account: "expenses:uncategorized".into(),
+        default_inflow_account: "income:uncategorized".into(),
+        categorization_rules: Vec::new(),
+        row_filter: None,
+        amount_sign: AmountSign::AsProvided,
+        amount_rounding: finance::import::AmountRounding::Reject,
+        date_formats: vec![CsvDateFormat::IsoYearMonthDay],
+        row_policy: CsvRowPolicy::Strict,
+    };
+    let mut bank = parse_csv(
+        b"Date;Amount;Description;Reference\n2026-08-02;-12.34;Synthetic transfer;bank\n",
+        &mapping,
+    )
+    .unwrap()
+    .remove(0);
+    bank.proposed_account = "liabilities:card:review".into();
+    let mut card = bank.clone();
+    card.id = "card-candidate".into();
+    card.fingerprint = "card-fingerprint".into();
+    card.booked_at = "2026-08-01".into();
+    card.amount_cents = 1234;
+    card.source_account = "liabilities:card:review".into();
+    card.proposed_account = "assets:bank:checking".into();
+    let (store, _schema) = store("transfer_pair");
+    store
+        .stage_candidates(&[bank.clone(), card.clone()], "2026-08-09")
+        .unwrap();
+
+    assert!(store
+        .review_transfer_pair(
+            &bank.id,
+            &card.id,
+            &bank.proposed_account,
+            "2026-08-09"
+        )
+        .unwrap());
+    assert_eq!(
+        store.candidate(&bank.id).unwrap().unwrap().state,
+        CandidateState::Confirmed
+    );
+    assert_eq!(
+        store.candidate(&card.id).unwrap().unwrap().state,
+        CandidateState::Duplicate
     );
 }
 

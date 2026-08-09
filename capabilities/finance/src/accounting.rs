@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -56,6 +57,10 @@ pub struct JournalTransaction {
     pub index: u64,
     pub date: String,
     pub description: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub tags: BTreeMap<String, String>,
     pub postings: Vec<Posting>,
 }
 
@@ -295,10 +300,33 @@ fn parse_posting(value: &Value) -> Option<Posting> {
     })
 }
 
+fn parse_tags(value: Option<&Value>) -> BTreeMap<String, String> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tag| {
+            let pair = tag.as_array()?;
+            Some((
+                pair.first()?.as_str()?.to_string(),
+                pair.get(1)?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
 fn parse_transactions(value: Value) -> AccountingResult<Vec<JournalTransaction>> {
     let rows = value.as_array().ok_or_else(|| shape("transactions"))?;
     rows.iter()
         .map(|row| {
+            let tags = parse_tags(row.get("ttags"));
+            let source_id = tags.get("source-id").cloned().or_else(|| {
+                row.get("tpostings")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .find_map(|posting| parse_tags(posting.get("ptags")).get("source-id").cloned())
+            });
             Ok(JournalTransaction {
                 index: row
                     .get("tindex")
@@ -314,6 +342,8 @@ fn parse_transactions(value: Value) -> AccountingResult<Vec<JournalTransaction>>
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
+                source_id,
+                tags,
                 postings: row
                     .get("tpostings")
                     .and_then(Value::as_array)

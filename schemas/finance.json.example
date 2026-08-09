@@ -6,6 +6,7 @@
   },
   "journal": "<finance-journal-path>",
   "investment_snapshot": "<finance-investment-snapshot-path>",
+  "balance_snapshot": "<finance-balance-snapshot-path>",
   "csv_mappings": [
     {
       "label": "Synthetic semicolon export",
@@ -15,11 +16,39 @@
         "date_column": "Date",
         "amount_column": "Amount",
         "description_column": "Description",
+        "categorization_columns": ["Statement label"],
         "reference_column": "Reference",
         "currency_column": "Currency",
         "default_currency": "EUR",
         "source_account": "assets:bank:checking",
+        "default_outflow_account": "expenses:uncategorized",
+        "default_inflow_account": "review:credit-or-refund",
+        "categorization_rules": [
+          {
+            "description_contains_any": [],
+            "description_starts_with_any": ["Synthetic settlement"],
+            "field_equals_any": [],
+            "direction": "inflow",
+            "account": "assets:bank:checking",
+            "confidence_basis_points": 10000
+          },
+          {
+            "description_contains_any": ["Synthetic software"],
+            "description_starts_with_any": [],
+            "field_equals_any": [
+              {"column": "Entry type", "values": ["PURCHASE"]}
+            ],
+            "direction": "outflow",
+            "account": "expenses:software",
+            "confidence_basis_points": 9500
+          }
+        ],
+        "row_filter": {
+          "column": "Entry type",
+          "include_values": ["PURCHASE", "REFUND"]
+        },
         "amount_sign": "as_provided",
+        "amount_rounding": "reject",
         "date_formats": ["iso_year_month_day", "day_month_year_dots"],
         "row_policy": "strict"
       }
@@ -49,6 +78,18 @@
     }
   ],
   "budgets": [],
+  "commitments": [
+    {
+      "id": "synthetic-rent",
+      "label": "Synthetic rent",
+      "account": "expenses:housing:rent",
+      "monthly_cents": 75000,
+      "currency": "EUR",
+      "valid_from": "2026-09-01",
+      "valid_until": null
+    }
+  ],
   "_budget_note": "Budget entries have account, monthly_cents and optional currency. They belong only in this private overlay file; schemas/finance-journal.example remains the public synthetic data contract.",
+  "_commitment_note": "Commitments are forward-looking dated obligations, not historical transactions. All real labels, dates and amounts belong only in the private overlay.",
   "_mapping_note": "Only synthetic profiles belong in Axon. Real source keys, profile labels, column mappings, instrument aliases and symbolic source accounts stay in the private overlay."
 }

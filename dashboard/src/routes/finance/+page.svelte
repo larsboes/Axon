@@ -59,9 +59,10 @@
   const ORDER: Record<SubscriptionState, number> = {
     active: 0,
     trial: 1,
-    paused: 2,
-    considering: 3,
-    cancelled: 4,
+    covered: 2,
+    paused: 3,
+    considering: 4,
+    cancelled: 5,
   };
 
   interface Row {
@@ -79,7 +80,9 @@
    *  would otherwise need one request each. */
   function at_or_before<T extends { d: string }>(items: T[], date: string): T | null {
     let best: T | null = null;
-    for (const item of items) if (item.d <= date && (!best || item.d > best.d)) best = item;
+    // Series are ordered oldest to newest. On a same-day correction the later
+    // append supersedes the earlier speculative point.
+    for (const item of items) if (item.d <= date && (!best || item.d >= best.d)) best = item;
     return best;
   }
 
@@ -104,10 +107,16 @@
             at,
           )?.s.state ?? "considering";
         const billing = state === "active" || state === "trial";
-        const scheduled =
-          sub.prices
-            .filter((p) => p.valid_from > at)
-            .sort((a, b) => a.valid_from.localeCompare(b.valid_from))[0] ?? null;
+        let scheduled: PricePoint | null = null;
+        for (const future of sub.prices) {
+          if (future.valid_from <= at) continue;
+          if (!scheduled || future.valid_from <= scheduled.valid_from) scheduled = future;
+        }
+        if (scheduled && price
+          && scheduled.amount_cents === price.amount_cents
+          && scheduled.currency === price.currency
+          && scheduled.cycle === price.cycle
+          && scheduled.plan === price.plan) scheduled = null;
         return {
           sub,
           state,
@@ -307,16 +316,14 @@
       <p class="muted totals">Waiting for a complete date…</p>
     {:else if burn}
       <div class="totals">
-        <div class="total">
-          <span class="figure">{burn.monthly}</span>
-          <span class="unit">EUR / month</span>
-        </div>
-        <div class="total secondary">
-          <span class="figure">{burn.annual}</span>
-          <span class="unit">EUR / year</span>
-        </div>
+        {#each burn.currencies as total (total.currency)}
+          <div class="total">
+            <span class="figure">{money(total.monthly_cents, total.currency)}</span>
+            <span class="unit">per month · {money(total.annual_cents, total.currency)} per year</span>
+          </div>
+        {/each}
         <p class="muted count">
-          {burn.billing_count} billing of {burn.total_count} tracked
+          {burn.billing_count} personally billing · {burn.covered_count} externally covered · {burn.total_count} tracked{burn.unknown_price_count ? ` · ${burn.unknown_price_count} missing a price` : ""}
         </p>
       </div>
     {/if}
@@ -418,6 +425,7 @@
                     <label>From<input type="date" bind:value={stateDraft.effective} /></label>
                     <label>State<select bind:value={stateDraft.state}>
                       <option value="active">active</option>
+                      <option value="covered">covered externally</option>
                       <option value="paused">paused</option>
                       <option value="trial">trial</option>
                       <option value="considering">considering</option>
@@ -531,11 +539,6 @@
     font-size: 1.75rem;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-  }
-
-  .total.secondary .figure {
-    font-size: 1.125rem;
-    opacity: 0.7;
   }
 
   .unit {

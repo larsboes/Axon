@@ -7,18 +7,22 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 
 use finance::accounting::AccountingEngine;
+use finance::allocation::{self, ExpenseAllocation, ReimbursementLink, SHARED_RECEIVABLE_ACCOUNT};
 use finance::analytics::{self, AnalyticsFilter, BudgetTarget};
-use finance::config::{Config, CsvMappingProfile, InvestmentCsvMappingProfile, ObsidianConfig};
-use finance::import::{self, CandidateState, CsvMapping};
+use finance::balance::{self, ManualBalanceSnapshot, ManualBalanceUpdate, TrackedNetWorth};
+use finance::config::{
+    Config, CsvMappingProfile, InvestmentCsvMappingProfile, ObsidianConfig, RecurringCommitment,
+};
+use finance::import::{self, CandidateState, CsvMapping, TransactionCandidate};
 use finance::investment::{self, HoldingsCoverage, InvestmentCsvMapping};
 use finance::obsidian::{self, WriteBack};
 use finance::store::FinanceStore;
-use finance::subscription::{burn_at, cents_to_decimal, PricePoint, StateChange};
+use finance::subscription::{burn_by_currency, PricePoint, StateChange};
 use finance::HledgerEngine;
 
 /// What this capability answers, served as data beside `/health`. Query parameters
@@ -105,7 +109,32 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "POST",
         "/api/import/candidates/:id/review",
-        "Confirm or reject one candidate. Confirmation requires an account and is the only journal write path.",
+        "Confirm or reject one candidate. Reconfirming with another valid account atomically reclassifies its existing journal posting.",
+    ),
+    r(
+        "POST",
+        "/api/import/candidates/:id/reconcile-transfer",
+        "Confirm one side of a reciprocal transfer and mark the counterpart as duplicate source evidence.",
+    ),
+    r(
+        "POST",
+        "/api/import/candidates/:id/allocation",
+        "Apply reviewed purpose, optional Trips plan, and personal/shared split to a confirmed expense.",
+    ),
+    r(
+        "POST",
+        "/api/import/candidates/:id/reimbursement",
+        "Link a confirmed inflow to an outstanding shared expense as receivable settlement, never income.",
+    ),
+    r(
+        "POST",
+        "/api/import/candidates/confirm-batch",
+        "Confirm an explicit bounded list of candidate IDs with their reviewed accounts, then rebuild the projection once.",
+    ),
+    r(
+        "POST",
+        "/api/balance-snapshot",
+        "Replace the configured private manual balance snapshot and stamp its update time.",
     ),
     r(
         "GET",
@@ -146,11 +175,14 @@ struct AppState {
     obsidian: Option<ObsidianConfig>,
     journal: Option<std::path::PathBuf>,
     budgets: Arc<Vec<BudgetTarget>>,
+    commitments: Arc<Vec<RecurringCommitment>>,
     csv_mappings: Arc<Vec<CsvMappingProfile>>,
     investment_csv_mappings: Arc<Vec<InvestmentCsvMappingProfile>>,
     investment_snapshot: Option<std::path::PathBuf>,
+    balance_snapshot: Option<std::path::PathBuf>,
     journal_write: Arc<std::sync::Mutex<()>>,
     projection_write: Arc<std::sync::Mutex<()>>,
+    balance_write: Arc<std::sync::Mutex<()>>,
 }
 
 type ApiResponse = (StatusCode, Json<Value>);
@@ -193,6 +225,17 @@ fn no_journal() -> ApiResponse {
             "ok": false,
             "capability": "finance",
             "error": "no journal configured; set the overlay's config/finance.json or AXON_FINANCE_JOURNAL"
+        }),
+    )
+}
+
+fn no_balance_snapshot() -> ApiResponse {
+    response(
+        StatusCode::CONFLICT,
+        json!({
+            "ok": false,
+            "capability": "finance",
+            "error": "no private balance snapshot is configured"
         }),
     )
 }
@@ -266,6 +309,13 @@ async fn import_csv(
     }
 }
 
+#[derive(Debug, Serialize)]
+struct CandidateReviewView {
+    #[serde(flatten)]
+    candidate: TransactionCandidate,
+    transfer_match_ids: Vec<String>,
+}
+
 async fn list_candidates(State(state): State<AppState>) -> ApiResponse {
     let database_url = state.database_url.clone();
     match tokio::task::spawn_blocking(move || {
@@ -275,7 +325,17 @@ async fn list_candidates(State(state): State<AppState>) -> ApiResponse {
     })
     .await
     {
-        Ok(Ok(candidates)) => response(StatusCode::OK, candidates),
+        Ok(Ok(candidates)) => {
+            let views = candidates
+                .iter()
+                .cloned()
+                .map(|candidate| CandidateReviewView {
+                    transfer_match_ids: import::transfer_match_ids(&candidates, &candidate),
+                    candidate,
+                })
+                .collect::<Vec<_>>();
+            response(StatusCode::OK, views)
+        }
         Ok(Err(error)) => failed(error),
         Err(_) => failed("task panicked".into()),
     }
@@ -381,6 +441,372 @@ struct ReviewRequest {
     account: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ReconcileTransferRequest {
+    counterpart_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BatchConfirmation {
+    id: String,
+    account: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BatchConfirmationRequest {
+    items: Vec<BatchConfirmation>,
+}
+
+async fn reconcile_transfer(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<ReconcileTransferRequest>,
+) -> ApiResponse {
+    let Some(journal) = state.journal.clone() else {
+        return no_journal();
+    };
+    let database_url = state.database_url.clone();
+    let budgets = state.budgets.clone();
+    let investment_snapshot = state.investment_snapshot.clone();
+    let journal_write = state.journal_write.clone();
+    let projection_write = state.projection_write.clone();
+    let now = today();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let first = store
+            .candidate(&id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "candidate not found".to_string())?;
+        let second = store
+            .candidate(&request.counterpart_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "counterpart candidate not found".to_string())?;
+        if !import::is_transfer_pair(&first, &second) {
+            return Err("candidates are not a reciprocal transfer pair".into());
+        }
+        if first.state == CandidateState::Confirmed && second.state == CandidateState::Confirmed {
+            return Err("both transfer candidates are already confirmed".into());
+        }
+        let (canonical, duplicate) = if first.state == CandidateState::Confirmed {
+            (&first, &second)
+        } else if second.state == CandidateState::Confirmed {
+            (&second, &first)
+        } else if first.source_account.starts_with("assets:")
+            && !second.source_account.starts_with("assets:")
+        {
+            (&first, &second)
+        } else if second.source_account.starts_with("assets:")
+            && !first.source_account.starts_with("assets:")
+        {
+            (&second, &first)
+        } else if first.id <= second.id {
+            (&first, &second)
+        } else {
+            (&second, &first)
+        };
+        if !matches!(
+            canonical.state,
+            CandidateState::Pending | CandidateState::Confirmed
+        ) || !matches!(
+            duplicate.state,
+            CandidateState::Pending | CandidateState::Duplicate
+        ) {
+            return Err("transfer pair is not in a reconcilable review state".into());
+        }
+        let _write_guard = journal_write
+            .lock()
+            .map_err(|_| "journal writer lock is unavailable".to_string())?;
+        let journal_written = if canonical.state == CandidateState::Confirmed {
+            false
+        } else {
+            let entry = import::render_journal_entry(canonical, &canonical.proposed_account)
+                .map_err(|error| error.to_string())?;
+            validate_journal_append(&journal, &entry)?;
+            import::append_confirmed(&journal, canonical, &canonical.proposed_account)
+                .map_err(|error| error.to_string())?
+        };
+        if !store
+            .review_transfer_pair(
+                &canonical.id,
+                &duplicate.id,
+                &canonical.proposed_account,
+                &now,
+            )
+            .map_err(|error| error.to_string())?
+        {
+            return Err("transfer pair changed before reconciliation".into());
+        }
+        let _projection_guard = projection_write
+            .lock()
+            .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
+        rebuild_projection(
+            &database_url,
+            &journal,
+            &budgets,
+            investment_snapshot.as_deref(),
+        )?;
+        Ok(json!({
+            "ok": true,
+            "canonical_id": canonical.id,
+            "duplicate_id": duplicate.id,
+            "journal_written": journal_written,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(StatusCode::OK, body),
+        Ok(Err(error)) if error.ends_with("candidate not found") => {
+            response(StatusCode::NOT_FOUND, json!({ "error": error }))
+        }
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+async fn allocate_expense(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(allocation_request): Json<ExpenseAllocation>,
+) -> ApiResponse {
+    let Some(journal) = state.journal.clone() else {
+        return no_journal();
+    };
+    let database_url = state.database_url.clone();
+    let budgets = state.budgets.clone();
+    let investment_snapshot = state.investment_snapshot.clone();
+    let journal_write = state.journal_write.clone();
+    let projection_write = state.projection_write.clone();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let candidate = store
+            .candidate(&id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "candidate not found".to_string())?;
+        let _journal_guard = journal_write
+            .lock()
+            .map_err(|_| "journal writer lock is unavailable".to_string())?;
+        let _projection_guard = projection_write
+            .lock()
+            .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
+        let current = std::fs::read_to_string(&journal)
+            .map_err(|error| format!("journal could not be read: {error}"))?;
+        let (updated, changed) =
+            allocation::rewrite_expense(&current, &candidate, &allocation_request)
+                .map_err(|error| error.to_string())?;
+        if changed {
+            replace_journal_atomically(&journal, &updated)?;
+        }
+        rebuild_projection(
+            &database_url,
+            &journal,
+            &budgets,
+            investment_snapshot.as_deref(),
+        )?;
+        Ok(json!({
+            "ok": true,
+            "id": id,
+            "journal_written": changed,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(StatusCode::OK, body),
+        Ok(Err(error)) if error == "candidate not found" => {
+            response(StatusCode::NOT_FOUND, json!({ "error": error }))
+        }
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+async fn link_reimbursement(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<ReimbursementLink>,
+) -> ApiResponse {
+    let Some(journal) = state.journal.clone() else {
+        return no_journal();
+    };
+    let database_url = state.database_url.clone();
+    let budgets = state.budgets.clone();
+    let investment_snapshot = state.investment_snapshot.clone();
+    let journal_write = state.journal_write.clone();
+    let projection_write = state.projection_write.clone();
+    let now = today();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let candidate = store
+            .candidate(&id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "candidate not found".to_string())?;
+        let expense = store
+            .candidate(&request.expense_candidate_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "expense candidate not found".to_string())?;
+        if expense.state != CandidateState::Confirmed || expense.amount_cents >= 0 {
+            return Err("reimbursement target must be a confirmed expense".into());
+        }
+        if candidate.currency != expense.currency {
+            return Err("reimbursement and expense currencies must match".into());
+        }
+        let _journal_guard = journal_write
+            .lock()
+            .map_err(|_| "journal writer lock is unavailable".to_string())?;
+        let _projection_guard = projection_write
+            .lock()
+            .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
+        let rows = store
+            .transaction_projection()
+            .map_err(|error| error.to_string())?;
+        let outstanding = analytics::outstanding_shared_cents(
+            &rows,
+            &expense.fingerprint,
+            &candidate.currency,
+            Some(&candidate.fingerprint),
+        )
+        .ok_or_else(|| "expense has no reviewed shared-cost allocation".to_string())?;
+        if candidate.amount_cents <= 0 || candidate.amount_cents > outstanding {
+            return Err("reimbursement exceeds the outstanding shared receivable".into());
+        }
+        let current = std::fs::read_to_string(&journal)
+            .map_err(|error| format!("journal could not be read: {error}"))?;
+        let (updated, changed) =
+            allocation::rewrite_reimbursement(&current, &candidate, &expense.fingerprint)
+                .map_err(|error| error.to_string())?;
+        if changed {
+            replace_journal_atomically(&journal, &updated)?;
+        }
+        if !store
+            .review_candidate(
+                &id,
+                CandidateState::Confirmed,
+                SHARED_RECEIVABLE_ACCOUNT,
+                &now,
+            )
+            .map_err(|error| error.to_string())?
+        {
+            return Err("candidate changed before reimbursement linking".into());
+        }
+        rebuild_projection(
+            &database_url,
+            &journal,
+            &budgets,
+            investment_snapshot.as_deref(),
+        )?;
+        Ok(json!({
+            "ok": true,
+            "id": id,
+            "expense_candidate_id": request.expense_candidate_id,
+            "journal_written": changed,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(StatusCode::OK, body),
+        Ok(Err(error)) if error.ends_with("candidate not found") => {
+            response(StatusCode::NOT_FOUND, json!({ "error": error }))
+        }
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+async fn confirm_candidates_batch(
+    State(state): State<AppState>,
+    Json(request): Json<BatchConfirmationRequest>,
+) -> ApiResponse {
+    let Some(journal) = state.journal.clone() else {
+        return no_journal();
+    };
+    if request.items.is_empty() || request.items.len() > 1_000 {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "batch must contain between 1 and 1000 candidates" }),
+        );
+    }
+    let database_url = state.database_url.clone();
+    let budgets = state.budgets.clone();
+    let investment_snapshot = state.investment_snapshot.clone();
+    let journal_write = state.journal_write.clone();
+    let projection_write = state.projection_write.clone();
+    let now = today();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let mut seen = std::collections::HashSet::new();
+        let mut prepared = Vec::with_capacity(request.items.len());
+        for item in request.items {
+            if !seen.insert(item.id.clone()) {
+                return Err("batch contains a duplicate candidate id".into());
+            }
+            let candidate = store
+                .candidate(&item.id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "candidate not found".to_string())?;
+            if !matches!(
+                candidate.state,
+                CandidateState::Pending | CandidateState::Confirmed
+            ) {
+                return Err("batch candidate is not confirmable".into());
+            }
+            if item.account != candidate.proposed_account {
+                return Err("batch account no longer matches the staged suggestion".into());
+            }
+            import::validate_account(&item.account).map_err(|error| error.to_string())?;
+            let entry = (candidate.state == CandidateState::Pending)
+                .then(|| import::render_journal_entry(&candidate, &item.account))
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            prepared.push((candidate, item.account, entry));
+        }
+        let _write_guard = journal_write
+            .lock()
+            .map_err(|_| "journal writer lock is unavailable".to_string())?;
+        let combined: String = prepared
+            .iter()
+            .filter_map(|(_, _, entry)| entry.as_deref())
+            .collect();
+        if !combined.is_empty() {
+            validate_journal_append(&journal, &combined)?;
+        }
+        let mut journal_writes = 0;
+        for (candidate, account, _) in &prepared {
+            journal_writes += usize::from(
+                import::append_confirmed(&journal, candidate, account)
+                    .map_err(|error| error.to_string())?,
+            );
+            if !store
+                .review_candidate(&candidate.id, CandidateState::Confirmed, account, &now)
+                .map_err(|error| error.to_string())?
+            {
+                return Err("candidate changed before batch confirmation".into());
+            }
+        }
+        let _projection_guard = projection_write
+            .lock()
+            .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
+        rebuild_projection(
+            &database_url,
+            &journal,
+            &budgets,
+            investment_snapshot.as_deref(),
+        )?;
+        Ok(json!({
+            "ok": true,
+            "confirmed": prepared.len(),
+            "journal_writes": journal_writes,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(StatusCode::OK, body),
+        Ok(Err(error)) if error == "candidate not found" => {
+            response(StatusCode::NOT_FOUND, json!({ "error": error }))
+        }
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
 async fn review_candidate(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -424,16 +850,10 @@ async fn review_candidate(
                     return Err("a rejected candidate must be restaged before confirmation".into());
                 }
                 let account = if candidate.state == CandidateState::Confirmed {
-                    if request
+                    request
                         .account
                         .as_deref()
-                        .is_some_and(|account| account != candidate.proposed_account)
-                    {
-                        return Err(
-                            "a confirmed candidate cannot be moved to another account".into()
-                        );
-                    }
-                    candidate.proposed_account.as_str()
+                        .unwrap_or(&candidate.proposed_account)
                 } else {
                     request
                         .account
@@ -444,11 +864,25 @@ async fn review_candidate(
                 let _write_guard = journal_write
                     .lock()
                     .map_err(|_| "journal writer lock is unavailable".to_string())?;
-                let entry = import::render_journal_entry(&candidate, account)
-                    .map_err(|error| error.to_string())?;
-                validate_journal_append(&journal, &entry)?;
-                let journal_written = import::append_confirmed(&journal, &candidate, account)
-                    .map_err(|error| error.to_string())?;
+                let reclassified = candidate.state == CandidateState::Confirmed
+                    && account != candidate.proposed_account;
+                let journal_written = if reclassified {
+                    let current = std::fs::read_to_string(&journal)
+                        .map_err(|error| format!("journal could not be read: {error}"))?;
+                    let (updated, changed) =
+                        import::rewrite_confirmed_account(&current, &candidate, account)
+                            .map_err(|error| error.to_string())?;
+                    if changed {
+                        replace_journal_atomically(&journal, &updated)?;
+                    }
+                    changed
+                } else {
+                    let entry = import::render_journal_entry(&candidate, account)
+                        .map_err(|error| error.to_string())?;
+                    validate_journal_append(&journal, &entry)?;
+                    import::append_confirmed(&journal, &candidate, account)
+                        .map_err(|error| error.to_string())?
+                };
                 store
                     .review_candidate(&id, CandidateState::Confirmed, account, &now)
                     .map_err(|error| error.to_string())?;
@@ -466,6 +900,7 @@ async fn review_candidate(
                     "id": id,
                     "state": "confirmed",
                     "journal_written": journal_written,
+                    "reclassified": reclassified,
                 }))
             }
         }
@@ -501,6 +936,45 @@ fn validate_journal_append(journal: &std::path::Path, entry: &str) -> Result<(),
             .map_err(|error| error.to_string())
     })();
     let _ = std::fs::remove_file(&temporary);
+    result
+}
+
+fn replace_journal_atomically(journal: &std::path::Path, updated: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let parent = journal
+        .parent()
+        .ok_or_else(|| "journal has no parent directory".to_string())?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary = parent.join(format!(
+        ".axon-finance-reclassify-{}-{nonce}",
+        std::process::id()
+    ));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| format!("journal replacement could not be created: {error}"))?;
+        if let Ok(metadata) = std::fs::metadata(journal) {
+            file.set_permissions(metadata.permissions())
+                .map_err(|error| format!("journal permissions could not be preserved: {error}"))?;
+        }
+        file.write_all(updated.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|error| format!("journal replacement could not be written: {error}"))?;
+        HledgerEngine::new(&temporary)
+            .check()
+            .map_err(|error| error.to_string())?;
+        std::fs::rename(&temporary, journal)
+            .map_err(|error| format!("journal replacement could not be installed: {error}"))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
     result
 }
 
@@ -591,6 +1065,8 @@ async fn dashboard_projection(
 ) -> ApiResponse {
     let database_url = state.database_url.clone();
     let budgets = state.budgets.clone();
+    let balance_snapshot_path = state.balance_snapshot.clone();
+    let commitments = state.commitments.clone();
     let projection_write = state.projection_write.clone();
     match tokio::task::spawn_blocking(move || {
         let _projection_guard = projection_write
@@ -611,12 +1087,80 @@ async fn dashboard_projection(
             .map_err(|error| error.to_string())?
             .unwrap_or_default();
         view.investment = investment;
-        Ok::<_, String>(view)
+        let balance_snapshot = balance_snapshot_path
+            .as_deref()
+            .map(balance::read_snapshot)
+            .transpose()?
+            .flatten();
+        let portfolio = view
+            .portfolio_values
+            .iter()
+            .find(|value| value.currency == view.summary.currency);
+        let portfolio_complete = view.investment.as_ref().is_some_and(|snapshot| {
+            snapshot.coverage == HoldingsCoverage::Complete
+                && portfolio.is_some_and(|value| value.unpriced_holdings == 0)
+        });
+        let tracked_net_worth = balance_snapshot
+            .as_ref()
+            .map(|snapshot| balance::tracked_net_worth(snapshot, portfolio, portfolio_complete))
+            .transpose()?;
+        let commitment_as_of = today();
+        let current_commitment_monthly_cents = commitments
+            .iter()
+            .filter(|commitment| {
+                commitment.currency == view.summary.currency
+                    && commitment.active_on(&commitment_as_of)
+            })
+            .map(|commitment| commitment.monthly_cents)
+            .sum();
+        Ok::<_, String>(DashboardResponse {
+            projection: view,
+            balance_snapshot,
+            tracked_net_worth,
+            commitment_as_of,
+            current_commitment_monthly_cents,
+            commitments: commitments.as_ref().clone(),
+        })
     })
     .await
     {
         Ok(Ok(view)) => response(StatusCode::OK, view),
         Ok(Err(error)) => failed(error),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DashboardResponse {
+    #[serde(flatten)]
+    projection: analytics::DashboardProjection,
+    balance_snapshot: Option<ManualBalanceSnapshot>,
+    tracked_net_worth: Option<TrackedNetWorth>,
+    commitment_as_of: String,
+    current_commitment_monthly_cents: i64,
+    commitments: Vec<RecurringCommitment>,
+}
+
+async fn update_balance_snapshot(
+    State(state): State<AppState>,
+    Json(update): Json<ManualBalanceUpdate>,
+) -> ApiResponse {
+    let Some(path) = state.balance_snapshot.clone() else {
+        return no_balance_snapshot();
+    };
+    let balance_write = state.balance_write.clone();
+    match tokio::task::spawn_blocking(move || -> Result<ManualBalanceSnapshot, String> {
+        let snapshot = balance::snapshot_from_update(update, now_timestamp())?;
+        let _write_guard = balance_write
+            .lock()
+            .map_err(|_| "balance snapshot writer lock is unavailable".to_string())?;
+        balance::write_snapshot(&path, &snapshot)?;
+        Ok(snapshot)
+    })
+    .await
+    {
+        Ok(Ok(snapshot)) => response(StatusCode::OK, json!({ "ok": true, "snapshot": snapshot })),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
         Err(_) => failed("task panicked".into()),
     }
 }
@@ -752,16 +1296,15 @@ async fn burn(State(state): State<AppState>, Query(query): Query<AtQuery>) -> Ap
     .await
     {
         Ok(Ok(subs)) => {
-            let burn = burn_at(&subs, &at);
+            let burn = burn_by_currency(&subs, &at);
             response(
                 StatusCode::OK,
                 json!({
                     "at": at_for_body,
-                    "monthly_cents": burn.monthly_cents,
-                    "annual_cents": burn.annual_cents,
-                    "monthly": cents_to_decimal(burn.monthly_cents),
-                    "annual": cents_to_decimal(burn.annual_cents),
+                    "currencies": burn.currencies,
                     "billing_count": burn.billing_count,
+                    "covered_count": burn.covered_count,
+                    "unknown_price_count": burn.unknown_price_count,
                     "total_count": subs.len(),
                 }),
             )
@@ -958,6 +1501,21 @@ fn today() -> String {
     civil_from_days(secs / 86_400)
 }
 
+fn now_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    let seconds = secs.rem_euclid(86_400);
+    format!(
+        "{}T{:02}:{:02}:{:02}Z",
+        civil_from_days(secs.div_euclid(86_400)),
+        seconds / 3_600,
+        seconds % 3_600 / 60,
+        seconds % 60
+    )
+}
+
 fn civil_from_days(days: i64) -> String {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -980,11 +1538,14 @@ async fn main() {
         obsidian: config.obsidian,
         journal: config.journal,
         budgets: Arc::new(config.budgets),
+        commitments: Arc::new(config.commitments),
         csv_mappings: Arc::new(config.csv_mappings),
         investment_csv_mappings: Arc::new(config.investment_csv_mappings),
         investment_snapshot: config.investment_snapshot,
+        balance_snapshot: config.balance_snapshot,
         journal_write: Arc::new(std::sync::Mutex::new(())),
         projection_write: Arc::new(std::sync::Mutex::new(())),
+        balance_write: Arc::new(std::sync::Mutex::new(())),
     };
     let app = Router::new()
         .route("/routes", get(routes))
@@ -1007,7 +1568,24 @@ async fn main() {
         .route("/api/import/investments/preview", post(preview_investments))
         .route("/api/import/investments/confirm", post(confirm_investments))
         .route("/api/import/candidates", get(list_candidates))
+        .route(
+            "/api/import/candidates/confirm-batch",
+            post(confirm_candidates_batch),
+        )
         .route("/api/import/candidates/:id/review", post(review_candidate))
+        .route(
+            "/api/import/candidates/:id/reconcile-transfer",
+            post(reconcile_transfer),
+        )
+        .route(
+            "/api/import/candidates/:id/allocation",
+            post(allocate_expense),
+        )
+        .route(
+            "/api/import/candidates/:id/reimbursement",
+            post(link_reimbursement),
+        )
+        .route("/api/balance-snapshot", post(update_balance_snapshot))
         .route("/api/ledger/check", get(check_ledger))
         .route("/api/ledger/rebuild", post(rebuild_ledger))
         .route("/api/dashboard", get(dashboard_projection))
@@ -1028,11 +1606,17 @@ mod tests {
             date_column: "Date".into(),
             amount_column: "Amount".into(),
             description_column: "Description".into(),
+            categorization_columns: Vec::new(),
             reference_column: Some("Reference".into()),
             currency_column: Some("Currency".into()),
             default_currency: "EUR".into(),
             source_account: "assets:bank:checking".into(),
+            default_outflow_account: "expenses:uncategorized".into(),
+            default_inflow_account: "income:uncategorized".into(),
+            categorization_rules: Vec::new(),
+            row_filter: None,
             amount_sign: AmountSign::AsProvided,
+            amount_rounding: finance::import::AmountRounding::Reject,
             date_formats: vec![
                 CsvDateFormat::IsoYearMonthDay,
                 CsvDateFormat::DayMonthYearDots,
@@ -1103,6 +1687,16 @@ mod tests {
             "/api/import/investments/mappings",
             "/api/import/investments/preview",
             "/api/import/investments/confirm",
+            "/api/import/candidates",
+            "/api/import/candidates/confirm-batch",
+            "/api/import/candidates/:id/review",
+            "/api/import/candidates/:id/reconcile-transfer",
+            "/api/import/candidates/:id/allocation",
+            "/api/import/candidates/:id/reimbursement",
+            "/api/balance-snapshot",
+            "/api/ledger/check",
+            "/api/ledger/rebuild",
+            "/api/dashboard",
         ] {
             assert!(
                 ROUTES.iter().any(|r| r.path == path),
@@ -1130,11 +1724,14 @@ mod tests {
             obsidian: None,
             journal: None,
             budgets: Arc::new(Vec::new()),
+            commitments: Arc::new(Vec::new()),
             csv_mappings: Arc::new(Vec::new()),
             investment_csv_mappings: Arc::new(Vec::new()),
             investment_snapshot: None,
+            balance_snapshot: None,
             journal_write: Arc::new(std::sync::Mutex::new(())),
             projection_write: Arc::new(std::sync::Mutex::new(())),
+            balance_write: Arc::new(std::sync::Mutex::new(())),
         };
         let (status, Json(body)) = import_csv(
             State(state),
@@ -1160,11 +1757,14 @@ mod tests {
             obsidian: None,
             journal: None,
             budgets: Arc::new(Vec::new()),
+            commitments: Arc::new(Vec::new()),
             csv_mappings: Arc::new(vec![profile.clone()]),
             investment_csv_mappings: Arc::new(Vec::new()),
             investment_snapshot: None,
+            balance_snapshot: None,
             journal_write: Arc::new(std::sync::Mutex::new(())),
             projection_write: Arc::new(std::sync::Mutex::new(())),
+            balance_write: Arc::new(std::sync::Mutex::new(())),
         };
 
         let Json(returned) = list_csv_mappings(State(state)).await;
@@ -1198,11 +1798,14 @@ mod tests {
             obsidian: None,
             journal: None,
             budgets: Arc::new(Vec::new()),
+            commitments: Arc::new(Vec::new()),
             csv_mappings: Arc::new(Vec::new()),
             investment_csv_mappings: Arc::new(vec![profile.clone()]),
             investment_snapshot: None,
+            balance_snapshot: None,
             journal_write: Arc::new(std::sync::Mutex::new(())),
             projection_write: Arc::new(std::sync::Mutex::new(())),
+            balance_write: Arc::new(std::sync::Mutex::new(())),
         };
 
         let Json(returned) = list_investment_mappings(State(state)).await;
@@ -1216,11 +1819,14 @@ mod tests {
             obsidian: None,
             journal: None,
             budgets: Arc::new(Vec::new()),
+            commitments: Arc::new(Vec::new()),
             csv_mappings: Arc::new(Vec::new()),
             investment_csv_mappings: Arc::new(Vec::new()),
             investment_snapshot: None,
+            balance_snapshot: None,
             journal_write: Arc::new(std::sync::Mutex::new(())),
             projection_write: Arc::new(std::sync::Mutex::new(())),
+            balance_write: Arc::new(std::sync::Mutex::new(())),
         };
         let request = InvestmentConfirmRequest {
             content: String::new(),

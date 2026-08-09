@@ -120,6 +120,11 @@ impl FinanceStore {
                 recorded_at TEXT NOT NULL,
                 UNIQUE (subscription_id, effective, state)
             );
+            ALTER TABLE {schema}.state_changes
+                DROP CONSTRAINT IF EXISTS state_changes_state_check;
+            ALTER TABLE {schema}.state_changes
+                ADD CONSTRAINT state_changes_state_check
+                CHECK (state IN ('considering','trial','active','covered','paused','cancelled'));
 
             CREATE INDEX IF NOT EXISTS idx_price_points_sub
                 ON {schema}.price_points(subscription_id, valid_from);
@@ -137,10 +142,15 @@ impl FinanceStore {
                 source_reference TEXT,
                 proposed_account TEXT NOT NULL,
                 confidence_basis_points SMALLINT NOT NULL,
-                state TEXT NOT NULL CHECK (state IN ('pending','confirmed','rejected')),
+                state TEXT NOT NULL CHECK (state IN ('pending','confirmed','rejected','duplicate')),
                 created_at TEXT NOT NULL,
                 reviewed_at TEXT
             );
+            ALTER TABLE {schema}.transaction_candidates
+                DROP CONSTRAINT IF EXISTS transaction_candidates_state_check;
+            ALTER TABLE {schema}.transaction_candidates
+                ADD CONSTRAINT transaction_candidates_state_check
+                CHECK (state IN ('pending','confirmed','rejected','duplicate'));
             CREATE INDEX IF NOT EXISTS idx_transaction_candidates_state
                 ON {schema}.transaction_candidates(state, booked_at DESC);
 
@@ -154,6 +164,20 @@ impl FinanceStore {
                 amount_cents BIGINT NOT NULL CHECK (amount_cents >= 0),
                 currency TEXT NOT NULL
             );
+            ALTER TABLE {schema}.transaction_projection
+                ADD COLUMN IF NOT EXISTS source_id TEXT;
+            ALTER TABLE {schema}.transaction_projection
+                ADD COLUMN IF NOT EXISTS purpose TEXT;
+            ALTER TABLE {schema}.transaction_projection
+                ADD COLUMN IF NOT EXISTS trip_id TEXT;
+            ALTER TABLE {schema}.transaction_projection
+                ADD COLUMN IF NOT EXISTS cash_amount_cents BIGINT NOT NULL DEFAULT 0
+                    CHECK (cash_amount_cents >= 0);
+            ALTER TABLE {schema}.transaction_projection
+                ADD COLUMN IF NOT EXISTS shared_cents BIGINT NOT NULL DEFAULT 0
+                    CHECK (shared_cents >= 0);
+            ALTER TABLE {schema}.transaction_projection
+                ADD COLUMN IF NOT EXISTS reimbursement_for TEXT;
             CREATE INDEX IF NOT EXISTS idx_transaction_projection_date
                 ON {schema}.transaction_projection(booked_at DESC);
 
@@ -213,7 +237,7 @@ impl FinanceStore {
                     &format!(
                         "SELECT valid_from, amount_cents, currency, cycle, plan, reason
                          FROM {schema}.price_points
-                         WHERE subscription_id = $1 ORDER BY valid_from"
+                         WHERE subscription_id = $1 ORDER BY valid_from, id"
                     ),
                     &[&sub.id],
                 )?
@@ -226,7 +250,7 @@ impl FinanceStore {
                     &format!(
                         "SELECT effective, state, note
                          FROM {schema}.state_changes
-                         WHERE subscription_id = $1 ORDER BY effective"
+                         WHERE subscription_id = $1 ORDER BY effective, id"
                     ),
                     &[&sub.id],
                 )?
@@ -327,7 +351,9 @@ impl FinanceStore {
     }
 
     /// Stage normalized candidates. The CSV bytes never reach this store; the
-    /// fingerprint makes importing the same export again a counted no-op.
+    /// fingerprint makes importing the same export again a counted no-op. A
+    /// changed mapping may refresh suggestions while a candidate is still pending;
+    /// reviewed candidates remain untouched.
     pub fn stage_candidates(
         &self,
         candidates: &[TransactionCandidate],
@@ -365,6 +391,18 @@ impl FinanceStore {
             if inserted == 1 {
                 created += 1;
             } else {
+                conn.execute(
+                    &format!(
+                        "UPDATE {schema}.transaction_candidates
+                         SET proposed_account = $2, confidence_basis_points = $3
+                         WHERE fingerprint = $1 AND state = 'pending'"
+                    ),
+                    &[
+                        &candidate.fingerprint,
+                        &candidate.proposed_account,
+                        &confidence,
+                    ],
+                )?;
                 existing += 1;
             }
         }
@@ -416,6 +454,39 @@ impl FinanceStore {
         )? == 1)
     }
 
+    pub fn review_transfer_pair(
+        &self,
+        canonical_id: &str,
+        duplicate_id: &str,
+        canonical_account: &str,
+        today: &str,
+    ) -> Fallible<bool> {
+        let schema = &self.schema;
+        let mut conn = self.conn()?;
+        let mut transaction = conn.transaction()?;
+        let canonical = transaction.execute(
+            &format!(
+                "UPDATE {schema}.transaction_candidates
+                 SET state = 'confirmed', proposed_account = $2, reviewed_at = $3
+                 WHERE id = $1 AND state IN ('pending','confirmed')"
+            ),
+            &[&canonical_id, &canonical_account, &today],
+        )?;
+        let duplicate = transaction.execute(
+            &format!(
+                "UPDATE {schema}.transaction_candidates
+                 SET state = 'duplicate', reviewed_at = $3
+                 WHERE id = $1 AND id <> $2 AND state IN ('pending','duplicate')"
+            ),
+            &[&duplicate_id, &canonical_id, &today],
+        )?;
+        if canonical != 1 || duplicate != 1 {
+            return Ok(false);
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
     /// Replace the disposable index in one database transaction. The journal is
     /// canonical, so a half-rebuilt projection is never observable.
     pub fn replace_transaction_projection(&self, rows: &[TransactionRow]) -> Fallible<()> {
@@ -427,8 +498,10 @@ impl FinanceStore {
             transaction.execute(
                 &format!(
                     "INSERT INTO {schema}.transaction_projection
-                        (id, booked_at, description, kind, account, category, amount_cents, currency)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)"
+                        (id, booked_at, description, kind, account, category, amount_cents,
+                         currency, source_id, purpose, trip_id, cash_amount_cents, shared_cents,
+                         reimbursement_for)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)"
                 ),
                 &[
                     &row.id,
@@ -439,6 +512,12 @@ impl FinanceStore {
                     &row.category,
                     &row.amount_cents,
                     &row.currency,
+                    &row.source_id,
+                    &row.purpose.map(|purpose| purpose.as_str()),
+                    &row.trip_id,
+                    &row.cash_amount_cents,
+                    &row.shared_cents,
+                    &row.reimbursement_for,
                 ],
             )?;
         }
@@ -453,7 +532,8 @@ impl FinanceStore {
             .query(
                 &format!(
                     "SELECT id, booked_at, description, kind, account, category,
-                            amount_cents, currency
+                            amount_cents, currency, source_id, purpose, trip_id,
+                            cash_amount_cents, shared_cents, reimbursement_for
                      FROM {schema}.transaction_projection
                      ORDER BY booked_at DESC, id"
                 ),
@@ -776,6 +856,15 @@ fn row_to_transaction(row: &Row) -> Option<TransactionRow> {
         category: row.get("category"),
         amount_cents: row.get("amount_cents"),
         currency: row.get("currency"),
+        source_id: row.get("source_id"),
+        purpose: row
+            .get::<_, Option<String>>("purpose")
+            .as_deref()
+            .and_then(crate::allocation::SpendingPurpose::parse),
+        trip_id: row.get("trip_id"),
+        cash_amount_cents: row.get("cash_amount_cents"),
+        shared_cents: row.get("shared_cents"),
+        reimbursement_for: row.get("reimbursement_for"),
     })
 }
 

@@ -163,4 +163,16 @@ axon_lifeos_user_dir() {
   (cd "$dir" && pwd -P)
 }
 
+# The LifeOS MEMORY tree on stdout — the other zone inside the `lifeos` state mount, holding
+# what the system learned rather than who the principal is. Same symlink resolution and the
+# same reason for it as the USER zone above: a `~/.claude/LIFEOS/MEMORY -> ~/.config/LIFEOS/
+# MEMORY` layout is what a stock install produces.
+axon_lifeos_memory_dir() {
+  local mount="" dir=""
+  mount="$(axon_state_mount_for lifeos)" || return $?
+  dir="$mount/LIFEOS/MEMORY"
+  [ -d "$dir" ] || { echo "$dir"; return 0; }
+  (cd "$dir" && pwd -P)
+}
+
 unset _overlay_raw _lib

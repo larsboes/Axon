@@ -55,6 +55,20 @@ if ! out="$("$MIRROR_TOOL" --apply 2>&1)"; then
   exit 0
 fi
 
+# The MEMORY archive mirror, resolved as a sibling of the tool substituted above rather than
+# through a second __TOKEN__. The installer already told us where the tools directory is, so
+# asking for that path twice would just create a way for the two to disagree. Guarded on -x
+# so a checkout predating that tool still refreshes USER and says why the rest did not.
+MEMORY_TOOL="$(dirname "$MIRROR_TOOL")/mirror-lifeos-memory.sh"
+if [ -x "$MEMORY_TOOL" ]; then
+  if ! mem_out="$("$MEMORY_TOOL" --apply 2>&1)"; then
+    echo "pre-commit: LifeOS MEMORY mirror refresh FAILED — commit continues, that backup is stale:" >&2
+    echo "$mem_out" | sed 's/^/  /' >&2
+  fi
+else
+  echo "pre-commit: $MEMORY_TOOL missing — MEMORY archive NOT refreshed (USER mirror was)." >&2
+fi
+
 if [ -n "$preselected" ]; then
   # The caller opted in. Re-stage exactly what they had selected, never the whole path.
   echo "$preselected" | while IFS= read -r p; do

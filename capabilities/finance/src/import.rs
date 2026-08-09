@@ -33,18 +33,65 @@ pub struct CsvMapping {
     pub amount_column: String,
     pub description_column: String,
     #[serde(default)]
+    pub categorization_columns: Vec<String>,
+    #[serde(default)]
     pub reference_column: Option<String>,
     #[serde(default)]
     pub currency_column: Option<String>,
     #[serde(default = "default_currency")]
     pub default_currency: String,
     pub source_account: String,
+    #[serde(default = "default_outflow_account")]
+    pub default_outflow_account: String,
+    #[serde(default = "default_inflow_account")]
+    pub default_inflow_account: String,
+    #[serde(default)]
+    pub categorization_rules: Vec<CsvCategorizationRule>,
+    #[serde(default)]
+    pub row_filter: Option<CsvRowFilter>,
     #[serde(default)]
     pub amount_sign: AmountSign,
+    #[serde(default)]
+    pub amount_rounding: AmountRounding,
     #[serde(default = "default_date_formats")]
     pub date_formats: Vec<CsvDateFormat>,
     #[serde(default)]
     pub row_policy: CsvRowPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CsvCategorizationRule {
+    #[serde(default)]
+    pub description_contains_any: Vec<String>,
+    #[serde(default)]
+    pub description_starts_with_any: Vec<String>,
+    #[serde(default)]
+    pub field_equals_any: Vec<CsvFieldEquals>,
+    #[serde(default)]
+    pub direction: CsvRuleDirection,
+    pub account: String,
+    pub confidence_basis_points: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CsvFieldEquals {
+    pub column: String,
+    pub values: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CsvRowFilter {
+    pub column: String,
+    pub include_values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CsvRuleDirection {
+    #[default]
+    Any,
+    Outflow,
+    Inflow,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +100,14 @@ pub enum AmountSign {
     #[default]
     AsProvided,
     Invert,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AmountRounding {
+    #[default]
+    Reject,
+    HalfAwayFromZero,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +138,14 @@ fn default_currency() -> String {
     "EUR".into()
 }
 
+fn default_outflow_account() -> String {
+    "expenses:uncategorized".into()
+}
+
+fn default_inflow_account() -> String {
+    "income:uncategorized".into()
+}
+
 fn default_date_formats() -> Vec<CsvDateFormat> {
     vec![
         CsvDateFormat::IsoYearMonthDay,
@@ -96,6 +159,7 @@ pub enum CandidateState {
     Pending,
     Confirmed,
     Rejected,
+    Duplicate,
 }
 
 impl CandidateState {
@@ -104,6 +168,7 @@ impl CandidateState {
             Self::Pending => "pending",
             Self::Confirmed => "confirmed",
             Self::Rejected => "rejected",
+            Self::Duplicate => "duplicate",
         }
     }
 
@@ -112,6 +177,7 @@ impl CandidateState {
             "pending" => Some(Self::Pending),
             "confirmed" => Some(Self::Confirmed),
             "rejected" => Some(Self::Rejected),
+            "duplicate" => Some(Self::Duplicate),
             _ => None,
         }
     }
@@ -178,8 +244,27 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
     let date = column(&headers, &mapping.date_column)?;
     let amount = column(&headers, &mapping.amount_column)?;
     let description = column(&headers, &mapping.description_column)?;
+    let categorization_columns = mapping
+        .categorization_columns
+        .iter()
+        .map(|name| column(&headers, name))
+        .collect::<ImportResult<Vec<_>>>()?;
     let reference = optional_column(&headers, mapping.reference_column.as_deref())?;
     let currency = optional_column(&headers, mapping.currency_column.as_deref())?;
+    let row_filter = mapping
+        .row_filter
+        .as_ref()
+        .map(|filter| {
+            Ok::<_, ImportError>((
+                column(&headers, &filter.column)?,
+                filter
+                    .include_values
+                    .iter()
+                    .map(|value| value.trim().to_ascii_lowercase())
+                    .collect::<HashSet<_>>(),
+            ))
+        })
+        .transpose()?;
 
     let mut candidates = Vec::new();
     let mut stable_fingerprints = HashSet::new();
@@ -194,6 +279,14 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
         let date_value = record.get(date).unwrap_or_default();
         let amount_value = record.get(amount).unwrap_or_default();
         let description_value = record.get(description).unwrap_or_default();
+        if row_filter.as_ref().is_some_and(|(column, include_values)| {
+            !include_values.contains(
+                &normalize_text(record.get(*column).unwrap_or_default()).to_ascii_lowercase(),
+            )
+        }) {
+            ignored_non_transaction_rows += 1;
+            continue;
+        }
         if mapping.row_policy == CsvRowPolicy::RequiredFields
             && amount_value.trim().is_empty()
             && normalize_date_with_formats(date_value, &mapping.date_formats).is_err()
@@ -203,8 +296,12 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
         }
         let booked_at = normalize_date_with_formats(date_value, &mapping.date_formats)
             .map_err(|error| row_error(row, error))?;
-        let mut amount_cents = parse_decimal_cents(amount_value, mapping.decimal_separator)
-            .map_err(|error| row_error(row, error))?;
+        let mut amount_cents = parse_decimal_cents_with_rounding(
+            amount_value,
+            mapping.decimal_separator,
+            mapping.amount_rounding,
+        )
+        .map_err(|error| row_error(row, error))?;
         if mapping.amount_sign == AmountSign::Invert {
             amount_cents = amount_cents.checked_neg().ok_or_else(|| {
                 ImportError(format!(
@@ -218,6 +315,17 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
                 "CSV row {row}: description must not be blank"
             )));
         }
+        let categorization_text =
+            categorization_columns
+                .iter()
+                .fold(description.clone(), |mut combined, index| {
+                    let value = normalize_text(record.get(*index).unwrap_or_default());
+                    if !value.is_empty() {
+                        combined.push(' ');
+                        combined.push_str(&value);
+                    }
+                    combined
+                });
         let source_reference = reference
             .and_then(|index| record.get(index))
             .map(normalize_text)
@@ -262,6 +370,13 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
             *occurrence += 1;
             fingerprint
         };
+        let (proposed_account, confidence_basis_points) = categorize(
+            mapping,
+            &categorization_text,
+            amount_cents,
+            &headers,
+            &record,
+        )?;
         candidates.push(TransactionCandidate {
             id: format!("candidate_{fingerprint}"),
             fingerprint,
@@ -271,12 +386,8 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
             currency,
             source_account: mapping.source_account.clone(),
             source_reference,
-            proposed_account: if amount_cents < 0 {
-                "expenses:uncategorized".into()
-            } else {
-                "income:uncategorized".into()
-            },
-            confidence_basis_points: 0,
+            proposed_account,
+            confidence_basis_points,
             state: CandidateState::Pending,
         });
     }
@@ -314,9 +425,12 @@ pub fn render_journal_entry(
 ) -> ImportResult<String> {
     validate_account(&candidate.source_account)?;
     validate_account(account)?;
-    if candidate.state == CandidateState::Rejected {
+    if matches!(
+        candidate.state,
+        CandidateState::Rejected | CandidateState::Duplicate
+    ) {
         return Err(ImportError(
-            "a rejected candidate cannot be confirmed".into(),
+            "a rejected or duplicate candidate cannot be confirmed".into(),
         ));
     }
     if candidate.amount_cents == 0 {
@@ -351,6 +465,63 @@ pub fn render_journal_entry(
     ))
 }
 
+pub fn transfer_match_ids(
+    candidates: &[TransactionCandidate],
+    candidate: &TransactionCandidate,
+) -> Vec<String> {
+    if candidate.state != CandidateState::Pending {
+        return Vec::new();
+    }
+    let mut matches: Vec<_> = candidates
+        .iter()
+        .filter(|other| other.id != candidate.id)
+        .filter(|other| {
+            matches!(
+                other.state,
+                CandidateState::Pending | CandidateState::Confirmed
+            )
+        })
+        .filter(|other| is_transfer_pair(candidate, other))
+        .map(|other| other.id.clone())
+        .collect();
+    matches.sort();
+    matches
+}
+
+pub fn is_transfer_pair(left: &TransactionCandidate, right: &TransactionCandidate) -> bool {
+    left.currency == right.currency
+        && left.source_account != right.source_account
+        && left.proposed_account == right.source_account
+        && right.proposed_account == left.source_account
+        && left.amount_cents.checked_neg() == Some(right.amount_cents)
+        && match (iso_day(&left.booked_at), iso_day(&right.booked_at)) {
+            (Some(left), Some(right)) => left.abs_diff(right) <= 3,
+            _ => false,
+        }
+}
+
+fn iso_day(value: &str) -> Option<i64> {
+    if value.len() != 10
+        || value.as_bytes().get(4) != Some(&b'-')
+        || value.as_bytes().get(7) != Some(&b'-')
+    {
+        return None;
+    }
+    let mut year = value.get(..4)?.parse::<i64>().ok()?;
+    let month = value.get(5..7)?.parse::<i64>().ok()?;
+    let day = value.get(8..10)?.parse::<i64>().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    year -= i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let adjusted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * adjusted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
+}
+
 /// Append at most once. A crash after the file write but before the database state
 /// update is recoverable: the retry sees the marker and does not duplicate money.
 pub fn append_confirmed(
@@ -376,8 +547,84 @@ pub fn append_confirmed(
     Ok(true)
 }
 
+/// Rewrite the reviewed account for one confirmed source entry without changing
+/// its date, amount, description, or stable source marker. The caller validates
+/// and atomically replaces the complete journal returned here.
+pub fn rewrite_confirmed_account(
+    journal: &str,
+    candidate: &TransactionCandidate,
+    account: &str,
+) -> ImportResult<(String, bool)> {
+    if candidate.state != CandidateState::Confirmed {
+        return Err(ImportError(
+            "only a confirmed candidate can be reclassified".into(),
+        ));
+    }
+    let current = render_journal_entry(candidate, &candidate.proposed_account)?;
+    let replacement = render_journal_entry(candidate, account)?;
+    if current == replacement {
+        return Ok((journal.to_string(), false));
+    }
+    let marker = format!("source-id: {}", candidate.fingerprint);
+    if journal.matches(&marker).count() != 1 {
+        return Err(ImportError(
+            "confirmed source marker must occur exactly once in the journal".into(),
+        ));
+    }
+    if journal.matches(&replacement).count() == 1 {
+        return Ok((journal.to_string(), false));
+    }
+    if journal.matches(&current).count() != 1 {
+        return Err(ImportError(
+            "confirmed journal entry no longer matches its reviewed candidate".into(),
+        ));
+    }
+    Ok((journal.replacen(&current, &replacement, 1), true))
+}
+
 fn validate_mapping(mapping: &CsvMapping) -> ImportResult<()> {
     validate_account(&mapping.source_account)?;
+    validate_account(&mapping.default_outflow_account)?;
+    validate_account(&mapping.default_inflow_account)?;
+    if let Some(filter) = &mapping.row_filter {
+        if filter.column.trim().is_empty()
+            || filter.include_values.is_empty()
+            || filter
+                .include_values
+                .iter()
+                .any(|value| value.trim().is_empty())
+        {
+            return Err(ImportError(
+                "row filter requires a column and at least one non-blank included value".into(),
+            ));
+        }
+    }
+    for rule in &mapping.categorization_rules {
+        validate_account(&rule.account)?;
+        if (rule.description_contains_any.is_empty()
+            && rule.description_starts_with_any.is_empty()
+            && rule.field_equals_any.is_empty())
+            || rule
+                .description_contains_any
+                .iter()
+                .chain(&rule.description_starts_with_any)
+                .any(|value| value.trim().is_empty())
+            || rule.field_equals_any.iter().any(|matcher| {
+                matcher.column.trim().is_empty()
+                    || matcher.values.is_empty()
+                    || matcher.values.iter().any(|value| value.trim().is_empty())
+            })
+        {
+            return Err(ImportError(
+                "categorization rules require at least one non-blank matcher".into(),
+            ));
+        }
+        if rule.confidence_basis_points > 10_000 {
+            return Err(ImportError(
+                "categorization confidence must not exceed 10000 basis points".into(),
+            ));
+        }
+    }
     if mapping.default_currency.len() != 3 {
         return Err(ImportError(
             "default currency must be a three-letter code".into(),
@@ -389,6 +636,49 @@ fn validate_mapping(mapping: &CsvMapping) -> ImportResult<()> {
         ));
     }
     Ok(())
+}
+
+fn categorize(
+    mapping: &CsvMapping,
+    description: &str,
+    amount_cents: i64,
+    headers: &csv::StringRecord,
+    record: &csv::StringRecord,
+) -> ImportResult<(String, u16)> {
+    let normalized_description = description.to_lowercase();
+    for rule in &mapping.categorization_rules {
+        let direction_matches = match rule.direction {
+            CsvRuleDirection::Any => true,
+            CsvRuleDirection::Outflow => amount_cents < 0,
+            CsvRuleDirection::Inflow => amount_cents > 0,
+        };
+        let contains = rule
+            .description_contains_any
+            .iter()
+            .any(|fragment| normalized_description.contains(&fragment.trim().to_lowercase()));
+        let starts_with = rule
+            .description_starts_with_any
+            .iter()
+            .any(|fragment| normalized_description.starts_with(&fragment.trim().to_lowercase()));
+        let mut field_equals = false;
+        for matcher in &rule.field_equals_any {
+            let index = column(headers, &matcher.column)?;
+            let value = normalize_text(record.get(index).unwrap_or_default()).to_ascii_lowercase();
+            field_equals |= matcher
+                .values
+                .iter()
+                .any(|expected| value == expected.trim().to_ascii_lowercase());
+        }
+        if direction_matches && (contains || starts_with || field_equals) {
+            return Ok((rule.account.clone(), rule.confidence_basis_points));
+        }
+    }
+    let account = if amount_cents < 0 {
+        &mapping.default_outflow_account
+    } else {
+        &mapping.default_inflow_account
+    };
+    Ok((account.clone(), 0))
 }
 
 fn is_balance_account(account: &str) -> bool {
@@ -476,7 +766,16 @@ fn row_error(row: usize, error: ImportError) -> ImportError {
     ImportError(format!("CSV row {row}: {}", error.0))
 }
 
+#[cfg(test)]
 fn parse_decimal_cents(value: &str, decimal_separator: char) -> ImportResult<i64> {
+    parse_decimal_cents_with_rounding(value, decimal_separator, AmountRounding::Reject)
+}
+
+fn parse_decimal_cents_with_rounding(
+    value: &str,
+    decimal_separator: char,
+    rounding: AmountRounding,
+) -> ImportResult<i64> {
     let mut value = value.trim().replace(['\u{a0}', ' '], "");
     if value.ends_with('-') {
         value.pop();
@@ -495,51 +794,60 @@ fn parse_decimal_cents(value: &str, decimal_separator: char) -> ImportResult<i64
     {
         return Err(ImportError("amount is not a decimal number".into()));
     }
-    let decimal = value.rfind(decimal_separator);
     let negative = value.starts_with('-');
-    let digits: String = value
-        .bytes()
-        .filter(|byte| byte.is_ascii_digit())
-        .map(char::from)
-        .collect();
-    if digits.is_empty() {
-        return Err(ImportError("amount is not a decimal number".into()));
-    }
-    let fraction_digits = decimal.map_or(0, |index| {
-        value[index + 1..]
-            .bytes()
-            .filter(|byte| byte.is_ascii_digit())
-            .count()
-    });
-    if fraction_digits > 2 {
+    let unsigned = value.strip_prefix(['-', '+']).unwrap_or(value.as_str());
+    let (whole, fraction) = unsigned
+        .split_once(decimal_separator)
+        .map_or((unsigned, ""), |parts| parts);
+    if fraction.len() > 2 && rounding == AmountRounding::Reject {
         return Err(ImportError(
             "amount has more than two decimal places".into(),
         ));
     }
-    let mut cents = digits
-        .parse::<i64>()
-        .map_err(|_| ImportError("amount is outside the supported range".into()))?;
-    if fraction_digits == 0 {
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        whole
+            .parse::<i64>()
+            .map_err(|_| ImportError("amount is outside the supported range".into()))?
+    };
+    let fraction_cents = fraction
+        .bytes()
+        .take(2)
+        .fold(0_i64, |value, digit| value * 10 + i64::from(digit - b'0'))
+        * if fraction.len() == 1 { 10 } else { 1 };
+    let mut cents = whole
+        .checked_mul(100)
+        .and_then(|value| value.checked_add(fraction_cents))
+        .ok_or_else(|| ImportError("amount is outside the supported range".into()))?;
+    if rounding == AmountRounding::HalfAwayFromZero
+        && fraction
+            .as_bytes()
+            .get(2)
+            .is_some_and(|digit| *digit >= b'5')
+    {
         cents = cents
-            .checked_mul(100)
-            .ok_or_else(|| ImportError("amount is outside the supported range".into()))?;
-    } else if fraction_digits == 1 {
-        cents = cents
-            .checked_mul(10)
+            .checked_add(1)
             .ok_or_else(|| ImportError("amount is outside the supported range".into()))?;
     }
-    Ok(if negative { -cents } else { cents })
+    if negative {
+        cents
+            .checked_neg()
+            .ok_or_else(|| ImportError("amount is outside the supported range".into()))
+    } else {
+        Ok(cents)
+    }
 }
 
 fn normalize_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn sanitize_description(value: &str) -> String {
+pub(crate) fn sanitize_description(value: &str) -> String {
     normalize_text(value).replace([';', '\n', '\r'], " ")
 }
 
-fn decimal(cents: i64) -> String {
+pub(crate) fn decimal(cents: i64) -> String {
     let sign = if cents < 0 { "-" } else { "" };
     let absolute = cents.unsigned_abs();
     format!("{sign}{}.{:02}", absolute / 100, absolute % 100)
@@ -590,11 +898,17 @@ mod tests {
             date_column: "Buchung".into(),
             amount_column: "Betrag".into(),
             description_column: "Text".into(),
+            categorization_columns: Vec::new(),
             reference_column: Some("Referenz".into()),
             currency_column: Some("Waehrung".into()),
             default_currency: "EUR".into(),
             source_account: "assets:bank:checking".into(),
+            default_outflow_account: default_outflow_account(),
+            default_inflow_account: default_inflow_account(),
+            categorization_rules: Vec::new(),
+            row_filter: None,
             amount_sign: AmountSign::AsProvided,
+            amount_rounding: AmountRounding::Reject,
             date_formats: default_date_formats(),
             row_policy: CsvRowPolicy::Strict,
         }
@@ -610,6 +924,149 @@ mod tests {
         assert_eq!(rows[1].amount_cents, 123450);
         assert_eq!(rows[1].proposed_account, "income:uncategorized");
         assert!(rows.iter().all(|row| row.state == CandidateState::Pending));
+    }
+
+    #[test]
+    fn ordered_rules_are_case_insensitive_and_direction_aware() {
+        let mut mapping = mapping();
+        mapping.categorization_rules = vec![
+            CsvCategorizationRule {
+                description_contains_any: vec!["synthetic".into()],
+                description_starts_with_any: Vec::new(),
+                field_equals_any: Vec::new(),
+                direction: CsvRuleDirection::Inflow,
+                account: "income:synthetic-refund".into(),
+                confidence_basis_points: 8_000,
+            },
+            CsvCategorizationRule {
+                description_contains_any: vec!["SERVICE".into()],
+                description_starts_with_any: Vec::new(),
+                field_equals_any: Vec::new(),
+                direction: CsvRuleDirection::Outflow,
+                account: "expenses:software".into(),
+                confidence_basis_points: 9_500,
+            },
+        ];
+        let candidates = parse_csv(
+            b"Buchung;Betrag;Text;Referenz;Waehrung\n02.08.2026;-12,34;Synthetic Service;one;EUR\n03.08.2026;12,34;Synthetic Service;two;EUR\n",
+            &mapping,
+        )
+        .unwrap();
+
+        assert_eq!(candidates[0].proposed_account, "expenses:software");
+        assert_eq!(candidates[0].confidence_basis_points, 9_500);
+        assert_eq!(candidates[1].proposed_account, "income:synthetic-refund");
+        assert_eq!(candidates[1].confidence_basis_points, 8_000);
+    }
+
+    #[test]
+    fn rule_only_columns_do_not_replace_the_canonical_description() {
+        let mut mapping = mapping();
+        mapping.categorization_columns = vec!["Statement".into()];
+        mapping.categorization_rules = vec![CsvCategorizationRule {
+            description_contains_any: vec!["synthetic provider".into()],
+            description_starts_with_any: Vec::new(),
+            field_equals_any: Vec::new(),
+            direction: CsvRuleDirection::Outflow,
+            account: "expenses:software".into(),
+            confidence_basis_points: 9_000,
+        }];
+        let candidate = parse_csv(
+            b"Buchung;Betrag;Text;Statement;Referenz;Waehrung\n02.08.2026;-12,34;Readable purchase;Synthetic Provider;one;EUR\n",
+            &mapping,
+        )
+        .unwrap()
+        .remove(0);
+
+        assert_eq!(candidate.description, "Readable purchase");
+        assert_eq!(candidate.proposed_account, "expenses:software");
+    }
+
+    #[test]
+    fn a_custom_inflow_default_can_fail_closed_for_manual_review() {
+        let mut mapping = mapping();
+        mapping.default_inflow_account = "review:credit-or-refund".into();
+        let candidate = parse_csv(
+            b"Buchung;Betrag;Text;Referenz;Waehrung\n02.08.2026;12,34;Synthetic credit;one;EUR\n",
+            &mapping,
+        )
+        .unwrap()
+        .remove(0);
+
+        assert_eq!(candidate.proposed_account, "review:credit-or-refund");
+        assert_eq!(candidate.confidence_basis_points, 0);
+        assert!(render_journal_entry(&candidate, &candidate.proposed_account).is_err());
+    }
+
+    #[test]
+    fn settlement_rules_can_propose_balance_transfers() {
+        let mut mapping = mapping();
+        mapping.source_account = "liabilities:card:review".into();
+        mapping.categorization_rules = vec![CsvCategorizationRule {
+            description_contains_any: vec!["settlement".into()],
+            description_starts_with_any: Vec::new(),
+            field_equals_any: Vec::new(),
+            direction: CsvRuleDirection::Inflow,
+            account: "assets:bank:checking".into(),
+            confidence_basis_points: 10_000,
+        }];
+        let candidate = parse_csv(
+            b"Buchung;Betrag;Text;Referenz;Waehrung\n02.08.2026;12,34;Synthetic Settlement;one;EUR\n",
+            &mapping,
+        )
+        .unwrap()
+        .remove(0);
+
+        assert_eq!(candidate.proposed_account, "assets:bank:checking");
+        assert!(render_journal_entry(&candidate, &candidate.proposed_account).is_ok());
+    }
+
+    #[test]
+    fn invalid_categorization_rules_are_rejected_before_rows_are_read() {
+        let mut mapping = mapping();
+        mapping.categorization_rules = vec![CsvCategorizationRule {
+            description_contains_any: vec![" ".into()],
+            description_starts_with_any: Vec::new(),
+            field_equals_any: Vec::new(),
+            direction: CsvRuleDirection::Any,
+            account: "expenses:software".into(),
+            confidence_basis_points: 10_001,
+        }];
+
+        let error = preview_csv(b"", &mapping).unwrap_err();
+        assert!(error.0.contains("non-blank matcher"));
+    }
+
+    #[test]
+    fn exact_field_rules_and_row_filters_keep_mixed_exports_bounded() {
+        let mut mapping = mapping();
+        mapping.categorization_rules = vec![CsvCategorizationRule {
+            description_contains_any: Vec::new(),
+            description_starts_with_any: Vec::new(),
+            field_equals_any: vec![CsvFieldEquals {
+                column: "Code".into(),
+                values: vec!["5811".into()],
+            }],
+            direction: CsvRuleDirection::Outflow,
+            account: "expenses:food:canteen".into(),
+            confidence_basis_points: 10_000,
+        }];
+        mapping.row_filter = Some(CsvRowFilter {
+            column: "Type".into(),
+            include_values: vec!["card".into()],
+        });
+        let prepared = prepare_csv(
+            b"Buchung;Betrag;Text;Referenz;Waehrung;Type;Code\n02.08.2026;-12,34;Synthetic lunch;one;EUR;CARD;5811\n03.08.2026;-5,00;Synthetic trade;two;EUR;BUY;5811\n",
+            &mapping,
+        )
+        .unwrap();
+
+        assert_eq!(prepared.candidates.len(), 1);
+        assert_eq!(prepared.preview.ignored_non_transaction_rows, 1);
+        assert_eq!(
+            prepared.candidates[0].proposed_account,
+            "expenses:food:canteen"
+        );
     }
 
     #[test]
@@ -709,6 +1166,21 @@ mod tests {
     }
 
     #[test]
+    fn configured_rounding_handles_high_precision_cash_exports() {
+        assert_eq!(
+            parse_decimal_cents_with_rounding("12.345", '.', AmountRounding::HalfAwayFromZero)
+                .unwrap(),
+            1235
+        );
+        assert_eq!(
+            parse_decimal_cents_with_rounding("-12.345", '.', AmountRounding::HalfAwayFromZero)
+                .unwrap(),
+            -1235
+        );
+        assert!(parse_decimal_cents("12.345", '.').is_err());
+    }
+
+    #[test]
     fn balance_account_transfers_render_without_weakening_direction_checks() {
         let mut candidate = parse_csv(
             b"Buchung;Betrag;Text;Referenz;Waehrung\n02.08.2026;-12,34;Synthetic settlement;row-1;EUR\n",
@@ -738,6 +1210,53 @@ mod tests {
         let entry = render_journal_entry(&candidate, "expenses:food").unwrap();
         assert!(entry.contains("assets:bank:checking  -12.34 EUR"));
         assert!(entry.contains("source-id:"));
+    }
+
+    #[test]
+    fn reciprocal_balance_rows_match_across_nearby_booking_dates() {
+        let mut bank = parse_csv(
+            b"Buchung;Betrag;Text;Referenz;Waehrung\n14.07.2026;-12,34;Synthetic card debit;bank;EUR\n",
+            &mapping(),
+        )
+        .unwrap()
+        .remove(0);
+        bank.proposed_account = "liabilities:card:review".into();
+        let mut card = bank.clone();
+        card.id = "card-candidate".into();
+        card.fingerprint = "card-fingerprint".into();
+        card.booked_at = "2026-07-12".into();
+        card.amount_cents = 1234;
+        card.source_account = "liabilities:card:review".into();
+        card.proposed_account = "assets:bank:checking".into();
+
+        assert!(is_transfer_pair(&bank, &card));
+        assert_eq!(
+            transfer_match_ids(&[bank.clone(), card.clone()], &bank),
+            [card.id.clone()]
+        );
+        card.booked_at = "2026-07-10".into();
+        assert!(!is_transfer_pair(&bank, &card));
+    }
+
+    #[test]
+    fn transfer_matching_requires_reciprocal_accounts_and_an_unambiguous_amount() {
+        let mut bank = parse_csv(
+            b"Buchung;Betrag;Text;Referenz;Waehrung\n31.07.2026;-12,34;Synthetic card debit;bank;EUR\n",
+            &mapping(),
+        )
+        .unwrap()
+        .remove(0);
+        bank.proposed_account = "liabilities:card:review".into();
+        let mut card = bank.clone();
+        card.id = "card-candidate".into();
+        card.booked_at = "2026-08-01".into();
+        card.amount_cents = 1234;
+        card.source_account = "liabilities:card:review".into();
+        card.proposed_account = "assets:bank:checking".into();
+        assert!(is_transfer_pair(&bank, &card));
+
+        card.proposed_account = "assets:bank:other".into();
+        assert!(!is_transfer_pair(&bank, &card));
     }
 
     #[test]
@@ -776,5 +1295,45 @@ mod tests {
                 .unwrap();
         }
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_confirmed_account_can_be_reclassified_without_changing_source_identity() {
+        let mut candidate = parse_csv(
+            b"Buchung;Betrag;Text;Referenz;Waehrung\n02.08.2026;-12,00;Synthetic housing;row-reclass;EUR\n",
+            &mapping(),
+        )
+        .unwrap()
+        .remove(0);
+        candidate.state = CandidateState::Confirmed;
+        candidate.proposed_account = "expenses:uncategorized".into();
+        let journal = render_journal_entry(&candidate, &candidate.proposed_account).unwrap();
+
+        let (rewritten, changed) =
+            rewrite_confirmed_account(&journal, &candidate, "expenses:housing").unwrap();
+        assert!(changed);
+        assert!(!rewritten.contains("expenses:uncategorized"));
+        assert!(rewritten.contains("expenses:housing"));
+        assert_eq!(rewritten.matches("source-id:").count(), 1);
+
+        let (same, changed) =
+            rewrite_confirmed_account(&rewritten, &candidate, "expenses:housing").unwrap();
+        assert!(!changed);
+        assert_eq!(same, rewritten);
+    }
+
+    #[test]
+    fn reclassification_refuses_a_confirmed_entry_that_drifted_in_the_journal() {
+        let mut candidate = parse_csv(
+            b"Buchung;Betrag;Text;Referenz;Waehrung\n02.08.2026;-12,00;Synthetic housing;row-reclass-drift;EUR\n",
+            &mapping(),
+        )
+        .unwrap()
+        .remove(0);
+        candidate.state = CandidateState::Confirmed;
+        candidate.proposed_account = "expenses:uncategorized".into();
+        let journal = render_journal_entry(&candidate, "expenses:manually-reviewed").unwrap();
+
+        assert!(rewrite_confirmed_account(&journal, &candidate, "expenses:housing").is_err());
     }
 }

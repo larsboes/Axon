@@ -40,6 +40,33 @@ pub struct InvestmentCsvMappingProfile {
     pub mapping: InvestmentCsvMapping,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecurringCommitment {
+    pub id: String,
+    pub label: String,
+    pub account: String,
+    pub monthly_cents: i64,
+    #[serde(default = "default_currency")]
+    pub currency: String,
+    pub valid_from: String,
+    #[serde(default)]
+    pub valid_until: Option<String>,
+}
+
+fn default_currency() -> String {
+    "EUR".into()
+}
+
+impl RecurringCommitment {
+    pub fn active_on(&self, date: &str) -> bool {
+        self.valid_from.as_str() <= date
+            && self
+                .valid_until
+                .as_deref()
+                .is_none_or(|valid_until| date <= valid_until)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -47,7 +74,9 @@ pub struct Config {
     pub obsidian: Option<ObsidianConfig>,
     pub journal: Option<PathBuf>,
     pub investment_snapshot: Option<PathBuf>,
+    pub balance_snapshot: Option<PathBuf>,
     pub budgets: Vec<BudgetTarget>,
+    pub commitments: Vec<RecurringCommitment>,
     pub csv_mappings: Vec<CsvMappingProfile>,
     pub investment_csv_mappings: Vec<InvestmentCsvMappingProfile>,
 }
@@ -57,8 +86,11 @@ struct FinanceFileConfig {
     obsidian: Option<FinanceFileObsidian>,
     journal: Option<String>,
     investment_snapshot: Option<String>,
+    balance_snapshot: Option<String>,
     #[serde(default)]
     budgets: Vec<BudgetTarget>,
+    #[serde(default)]
+    commitments: Vec<RecurringCommitment>,
     #[serde(default)]
     csv_mappings: Vec<CsvMappingProfile>,
     #[serde(default)]
@@ -113,6 +145,10 @@ impl Config {
             .as_ref()
             .map(|config| config.budgets.clone())
             .unwrap_or_default();
+        let commitments = personal
+            .as_ref()
+            .map(|config| config.commitments.clone())
+            .unwrap_or_default();
         let csv_mappings = personal
             .as_ref()
             .map(|config| config.csv_mappings.clone())
@@ -139,13 +175,24 @@ impl Config {
                     .and_then(|config| config.investment_snapshot.as_ref())
                     .map(|path| expand_tilde(path))
             });
+        let balance_snapshot = std::env::var("AXON_FINANCE_BALANCE_SNAPSHOT")
+            .ok()
+            .map(|path| expand_tilde(&path))
+            .or_else(|| {
+                personal
+                    .as_ref()
+                    .and_then(|config| config.balance_snapshot.as_ref())
+                    .map(|path| expand_tilde(path))
+            });
         Self {
             database_url,
             port,
             obsidian,
             journal,
             investment_snapshot,
+            balance_snapshot,
             budgets,
+            commitments,
             csv_mappings,
             investment_csv_mappings,
         }
@@ -206,6 +253,24 @@ mod tests {
         let config: FinanceFileConfig = serde_json::from_str("{}").unwrap();
         assert!(config.csv_mappings.is_empty());
         assert!(config.investment_csv_mappings.is_empty());
+        assert!(config.commitments.is_empty());
+    }
+
+    #[test]
+    fn dated_commitments_are_active_only_inside_their_window() {
+        let commitment = RecurringCommitment {
+            id: "synthetic-rent".into(),
+            label: "Synthetic rent".into(),
+            account: "expenses:housing:rent".into(),
+            monthly_cents: 75_000,
+            currency: "EUR".into(),
+            valid_from: "2026-09-01".into(),
+            valid_until: Some("2027-08-31".into()),
+        };
+        assert!(!commitment.active_on("2026-08-31"));
+        assert!(commitment.active_on("2026-09-01"));
+        assert!(commitment.active_on("2027-08-31"));
+        assert!(!commitment.active_on("2027-09-01"));
     }
 
     #[test]

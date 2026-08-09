@@ -3,14 +3,19 @@
   import Icon from "$lib/Icon.svelte";
   import ImportReview from "$lib/finance/ImportReview.svelte";
   import HoldingsPanel from "$lib/finance/HoldingsPanel.svelte";
+  import BalanceEditor from "$lib/finance/BalanceEditor.svelte";
+  import CategoryTrend from "$lib/finance/CategoryTrend.svelte";
   import InvestmentPreview from "$lib/finance/InvestmentPreview.svelte";
   import TransactionTable from "$lib/finance/TransactionTable.svelte";
+  import { exactMoney } from "$lib/finance/money";
   import { finance, type FinanceDashboard } from "$lib/api";
 
   type Mode = "overview" | "budget" | "transactions";
   let { mode }: { mode: Mode } = $props();
   const today = new Date().toISOString().slice(0, 10);
-  let start = $state(`${today.slice(0, 4)}-01-01`);
+  const lookback = new Date(`${today}T00:00:00Z`);
+  lookback.setUTCMonth(lookback.getUTCMonth() - 11, 1);
+  let start = $state(lookback.toISOString().slice(0, 10));
   let end = $state(today);
   let account = $state("");
   let category = $state("");
@@ -58,16 +63,6 @@
 
   function money(cents: number, currency = "EUR") {
     return new Intl.NumberFormat("de-DE", { style: "currency", currency }).format(cents / 100);
-  }
-
-  function exactMoney(mantissa: string, scale: number, currency: string) {
-    const negative = mantissa.startsWith("-");
-    const digits = (negative ? mantissa.slice(1) : mantissa).padStart(scale + 1, "0");
-    const whole = scale === 0 ? digits : digits.slice(0, -scale);
-    const fraction = scale === 0 ? "" : digits.slice(-scale);
-    const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-    const decimal = fraction.padEnd(2, "0");
-    return `${negative ? "-" : ""}${grouped},${decimal} ${currency}`;
   }
 
   function short(account: string) {
@@ -124,7 +119,36 @@
       <strong>{portfolioValue === null ? "—" : `${portfolioLowerBound ? "≥ " : ""}${exactMoney(portfolioValue.value.mantissa, portfolioValue.value.scale, portfolioValue.currency)}`}</strong>
       <small>{portfolioValue === null ? `No reviewed ${data.summary.currency} holdings` : `${portfolioValue.priced_holdings} priced · ${portfolioValue.unpriced_holdings} unpriced · latest reviewed activity prices${portfolioLowerBound ? " · lower bound" : ""}`}</small>
     </article>
+    <article>
+      <span>Tracked net worth</span>
+      <strong>{data.tracked_net_worth === null ? "—" : exactMoney(data.tracked_net_worth.value.mantissa, data.tracked_net_worth.value.scale, data.tracked_net_worth.currency)}</strong>
+      <small>{data.tracked_net_worth === null ? "Add a manual balance snapshot" : `${data.tracked_net_worth.complete ? "Complete" : "Incomplete"} · balances as of ${data.balance_snapshot?.as_of ?? "unknown"}${data.tracked_net_worth.portfolio_included ? " · reviewed portfolio included" : ""}`}</small>
+    </article>
+    <article>
+      <span>Current commitments</span>
+      <strong>{money(data.current_commitment_monthly_cents)}</strong>
+      <small>Monthly obligations active on {data.commitment_as_of}; kept separate from historical spending.</small>
+    </article>
   </section>
+
+  <BalanceEditor snapshot={data.balance_snapshot} onsaved={load} />
+
+  {#if data.commitments.length}
+    <section class="panel commitments">
+      <div class="panel-heading"><div><h2>Recurring commitments</h2><p>Forward-looking obligations, with effective dates.</p></div></div>
+      <div class="commitment-list">
+        {#each data.commitments as commitment (commitment.id)}
+          <article class:inactive={commitment.valid_from > data.commitment_as_of || (commitment.valid_until !== null && commitment.valid_until < data.commitment_as_of)}>
+            <div><strong>{commitment.label}</strong><small>{short(commitment.account)}</small></div>
+            <span>{commitment.valid_from}{commitment.valid_until ? ` – ${commitment.valid_until}` : " onward"}</span>
+            <strong>{money(commitment.monthly_cents, commitment.currency)} / month</strong>
+          </article>
+        {/each}
+      </div>
+    </section>
+  {/if}
+
+  <CategoryTrend {data} />
 
   <div class="overview-grid">
     <section class="panel trend">
@@ -233,6 +257,13 @@
   svg text { fill: currentColor; font-size: 14px; dominant-baseline: middle; pointer-events: none; }
   .hint { text-align: center; }
   .recent { margin-top: .75rem; }
+  .commitments { margin-bottom: .75rem; }
+  .commitment-list { display: grid; gap: .5rem; }
+  .commitment-list article { display: grid; grid-template-columns: minmax(12rem, 1fr) auto auto; align-items: center; gap: 1rem; padding: .55rem 0; border-top: 1px solid var(--border, #333); font-size: .72rem; }
+  .commitment-list article > div { display: flex; flex-direction: column; gap: .15rem; }
+  .commitment-list small, .commitment-list span { color: var(--muted, #888); }
+  .commitment-list article > strong { font-variant-numeric: tabular-nums; text-align: right; }
+  .commitment-list article.inactive { opacity: .62; }
   .budget article { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 2fr) 7rem; gap: 1rem; align-items: center; padding: .75rem 0; border-top: 1px solid var(--border, #333); font-size: .78rem; }
   .budget article > div:first-child { display: flex; justify-content: space-between; gap: 1rem; }
   .budget article span { color: var(--muted, #888); }
@@ -242,5 +273,5 @@
   .track span.over { background: var(--danger, #b44); }
   .error { display: flex; align-items: center; gap: .35rem; }
   .muted { color: var(--muted, #888); }
-  @media (max-width: 850px) { .overview-grid { grid-template-columns: 1fr; } button.rebuild { margin-left: 0; } .budget article { grid-template-columns: 1fr; gap: .4rem; } .budget article > strong { text-align: left; } }
+  @media (max-width: 850px) { .overview-grid { grid-template-columns: 1fr; } button.rebuild { margin-left: 0; } .budget article, .commitment-list article { grid-template-columns: 1fr; gap: .4rem; } .budget article > strong, .commitment-list article > strong { text-align: left; } }
 </style>

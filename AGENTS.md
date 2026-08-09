@@ -17,11 +17,6 @@ with a service already held down.
 Keep public code and doctrine in Axon. Keep private values, machine state and secrets in the active
 overlay or Vaultwarden. Never generate, expose or change a secret without explicit authorization.
 
-For planned GitHub work, load the `axon` skill's issue workflow. Start from clean, current `main`;
-use one issue branch and one focused draft PR; show scope and completed validation for approval;
-merge only after approval; then continue from fresh `main`. Preserve and report failed or
-unavailable checks exactly.
-
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.

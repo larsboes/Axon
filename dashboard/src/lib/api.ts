@@ -1924,7 +1924,7 @@ export const tasks = {
 // ─── Finance ─────────────────────────────────────────────────────────────────
 
 export type BillingCycle = 'weekly' | 'monthly' | 'quarterly' | 'yearly' | 'one_off';
-export type SubscriptionState = 'considering' | 'trial' | 'active' | 'paused' | 'cancelled';
+export type SubscriptionState = 'considering' | 'trial' | 'active' | 'covered' | 'paused' | 'cancelled';
 
 /** Append-only. A price change adds one of these; it never edits the one before. */
 export interface PricePoint {
@@ -1957,11 +1957,14 @@ export interface Subscription {
 /** Computed from the series at a date, never read from a stored total. */
 export interface Burn {
   at: string;
-  monthly_cents: number;
-  annual_cents: number;
-  monthly: string;
-  annual: string;
+  currencies: Array<{
+    currency: string;
+    monthly_cents: number;
+    annual_cents: number;
+  }>;
   billing_count: number;
+  covered_count: number;
+  unknown_price_count: number;
   total_count: number;
 }
 
@@ -1974,7 +1977,8 @@ export interface WritebackResult {
 }
 
 export type FinanceTransactionKind = 'income' | 'expense' | 'transfer';
-export type CandidateState = 'pending' | 'confirmed' | 'rejected';
+export type SpendingPurpose = 'day_to_day' | 'trip' | 'work' | 'housing' | 'other';
+export type CandidateState = 'pending' | 'confirmed' | 'rejected' | 'duplicate';
 export type CsvDateFormat =
   | 'iso_year_month_day'
   | 'day_month_year_dots'
@@ -1992,6 +1996,7 @@ export interface TransactionCandidate {
   proposed_account: string;
   confidence_basis_points: number;
   state: CandidateState;
+  transfer_match_ids: string[];
 }
 
 export interface CsvMapping {
@@ -2000,13 +2005,38 @@ export interface CsvMapping {
   date_column: string;
   amount_column: string;
   description_column: string;
+  categorization_columns: string[];
   reference_column?: string | null;
   currency_column?: string | null;
   default_currency: string;
   source_account: string;
+  default_outflow_account: string;
+  default_inflow_account: string;
+  categorization_rules: CsvCategorizationRule[];
+  row_filter?: CsvRowFilter | null;
   amount_sign: 'as_provided' | 'invert';
+  amount_rounding?: 'reject' | 'half_away_from_zero';
   date_formats: CsvDateFormat[];
   row_policy: 'strict' | 'required_fields';
+}
+
+export interface CsvCategorizationRule {
+  description_contains_any: string[];
+  description_starts_with_any: string[];
+  field_equals_any?: CsvFieldEquals[];
+  direction: 'any' | 'outflow' | 'inflow';
+  account: string;
+  confidence_basis_points: number;
+}
+
+export interface CsvFieldEquals {
+  column: string;
+  values: string[];
+}
+
+export interface CsvRowFilter {
+  column: string;
+  include_values: string[];
 }
 
 export interface CsvImportPreview {
@@ -2095,12 +2125,37 @@ export interface FinanceTransaction {
   category: string;
   amount_cents: number;
   currency: string;
+  source_id: string | null;
+  purpose: SpendingPurpose | null;
+  trip_id: string | null;
+  cash_amount_cents: number;
+  shared_cents: number;
+  reimbursement_for: string | null;
+}
+
+export interface SharedExpenseSummary {
+  source_id: string;
+  candidate_id: string;
+  date: string;
+  description: string;
+  account: string;
+  category: string;
+  purpose: SpendingPurpose | null;
+  trip_id: string | null;
+  gross_cents: number;
+  personal_cents: number;
+  shared_cents: number;
+  reimbursed_cents: number;
+  outstanding_cents: number;
+  currency: string;
 }
 
 export interface FinanceDashboard {
   summary: {
     income_cents: number;
     expense_cents: number;
+    gross_cash_outflow_cents: number;
+    reimbursement_received_cents: number;
     net_cash_flow_cents: number;
     savings_rate_percent: number | null;
     budget_cents: number;
@@ -2112,6 +2167,11 @@ export interface FinanceDashboard {
     income_cents: number;
     expense_cents: number;
     net_cash_flow_cents: number;
+  }>;
+  category_trend: Array<{
+    month: string;
+    category: string;
+    amount_cents: number;
   }>;
   budgets: Array<{
     account: string;
@@ -2131,6 +2191,56 @@ export interface FinanceDashboard {
   categories: string[];
   investment: ReviewedHoldingsSnapshot | null;
   portfolio_values: PortfolioValuation[];
+  shared_expenses: SharedExpenseSummary[];
+  balance_snapshot: ManualBalanceSnapshot | null;
+  tracked_net_worth: TrackedNetWorth | null;
+  commitment_as_of: string;
+  current_commitment_monthly_cents: number;
+  commitments: RecurringCommitment[];
+}
+
+export interface RecurringCommitment {
+  id: string;
+  label: string;
+  account: string;
+  monthly_cents: number;
+  currency: string;
+  valid_from: string;
+  valid_until: string | null;
+}
+
+export type BalanceCoverage = 'complete' | 'partial';
+export type BalanceKind = 'asset' | 'liability';
+
+export interface ManualBalance {
+  id: string;
+  label: string;
+  kind: BalanceKind;
+  amount_cents: number;
+}
+
+export interface ManualBalanceSnapshot {
+  schema_version: number;
+  as_of: string;
+  updated_at: string;
+  currency: string;
+  coverage: BalanceCoverage;
+  balances: ManualBalance[];
+}
+
+export interface ManualBalanceUpdate {
+  as_of: string;
+  currency: string;
+  coverage: BalanceCoverage;
+  balances: ManualBalance[];
+}
+
+export interface TrackedNetWorth {
+  currency: string;
+  value: { mantissa: string; scale: number };
+  manual_balance_cents: number;
+  portfolio_included: boolean;
+  complete: boolean;
 }
 
 export const finance = {
@@ -2228,5 +2338,49 @@ export const finance = {
     request<{ ok: boolean; id: string; state: CandidateState; journal_written: boolean }>(
       `/finance/api/import/candidates/${encodeURIComponent(id)}/review`,
       jsonInit('POST', { decision, account }),
+    ),
+  confirmCandidates: (items: { id: string; account: string }[]) =>
+    request<{ ok: boolean; confirmed: number; journal_writes: number }>(
+      '/finance/api/import/candidates/confirm-batch',
+      jsonInit('POST', { items }),
+    ),
+  reconcileTransfer: (id: string, counterpartId: string) =>
+    request<{
+      ok: boolean;
+      canonical_id: string;
+      duplicate_id: string;
+      journal_written: boolean;
+    }>(
+      `/finance/api/import/candidates/${encodeURIComponent(id)}/reconcile-transfer`,
+      jsonInit('POST', { counterpart_id: counterpartId }),
+    ),
+  allocateExpense: (
+    id: string,
+    personalCents: number,
+    purpose: SpendingPurpose,
+    tripId: string | null,
+  ) =>
+    request<{ ok: boolean; id: string; journal_written: boolean }>(
+      `/finance/api/import/candidates/${encodeURIComponent(id)}/allocation`,
+      jsonInit('POST', {
+        personal_cents: personalCents,
+        purpose,
+        trip_id: tripId,
+      }),
+    ),
+  linkReimbursement: (id: string, expenseCandidateId: string) =>
+    request<{
+      ok: boolean;
+      id: string;
+      expense_candidate_id: string;
+      journal_written: boolean;
+    }>(
+      `/finance/api/import/candidates/${encodeURIComponent(id)}/reimbursement`,
+      jsonInit('POST', { expense_candidate_id: expenseCandidateId }),
+    ),
+  updateBalanceSnapshot: (update: ManualBalanceUpdate) =>
+    request<{ ok: boolean; snapshot: ManualBalanceSnapshot }>(
+      '/finance/api/balance-snapshot',
+      jsonInit('POST', update),
     ),
 };

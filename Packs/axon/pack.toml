@@ -1,0 +1,5 @@
+# See schemas/pack.toml.example for the field reference.
+name        = "axon"
+description = "Operate and work on Axon itself: capability discovery, service and feed operations, architecture placement, issue-driven change."
+skills      = ["axon"]
+license     = "MIT"

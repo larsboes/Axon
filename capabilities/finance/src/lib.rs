@@ -8,7 +8,9 @@
 //! Spec, phases and the decision record: the principal's `Projects/Ledger` note.
 
 pub mod accounting;
+pub mod allocation;
 pub mod analytics;
+pub mod balance;
 pub mod config;
 pub mod import;
 pub mod investment;
@@ -20,4 +22,7 @@ pub use accounting::{AccountingEngine, HledgerEngine};
 pub use config::Config;
 pub use obsidian::{scan, seed_from_note, ScannedNote, WriteBack};
 pub use store::FinanceStore;
-pub use subscription::{burn_at, BillingCycle, Burn, PricePoint, State, StateChange, Subscription};
+pub use subscription::{
+    burn_at, burn_by_currency, BillingCycle, Burn, BurnByCurrency, CurrencyBurn, PricePoint, State,
+    StateChange, Subscription,
+};

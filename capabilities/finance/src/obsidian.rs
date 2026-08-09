@@ -110,10 +110,10 @@ pub fn scan(root: &MarkdownRoot, dir: &Path) -> Result<Vec<ScannedNote>, ScanErr
 /// moved on would throw that series away, so the store imports by path and leaves
 /// an existing subscription's history alone.
 ///
-/// The vault's own vocabulary is honoured rather than replaced: `cost_eur`,
-/// `billing_cycle`, `status`, `value_rating`, `category` are the keys the notes
-/// already carry. A `start_date` seeds the first price point's date; without one
-/// the caller's `today` is used, which is wrong-but-visible rather than invented.
+/// The vault's own vocabulary is honoured rather than replaced. New notes can use
+/// `cost` plus an ISO currency code; `cost_eur` remains a compatible shorthand for
+/// the existing notes. A `start_date` seeds the first price point's date; without
+/// one the caller's `today` is used, which is wrong-but-visible rather than invented.
 pub fn seed_from_note(note: &ScannedNote, today: &str) -> Subscription {
     let f = &note.fields;
 
@@ -135,14 +135,20 @@ pub fn seed_from_note(note: &ScannedNote, today: &str) -> Subscription {
         .unwrap_or(today)
         .to_string();
 
+    let currency = f
+        .get("currency")
+        .map(|value| value.trim().to_ascii_uppercase())
+        .filter(|value| value.len() == 3)
+        .unwrap_or_else(|| "EUR".into());
     let prices = f
-        .get("cost_eur")
+        .get("cost")
+        .or_else(|| f.get("cost_eur"))
         .and_then(|raw| decimal_to_cents(raw))
         .map(|amount_cents| {
             vec![PricePoint {
                 valid_from: start.clone(),
                 amount_cents,
-                currency: "EUR".into(),
+                currency,
                 cycle,
                 plan: f
                     .get("plan")
@@ -347,6 +353,22 @@ mod tests {
         assert_eq!(sub.states[0].state, State::Active);
         assert_eq!(sub.value_rating, Some(5));
         assert_eq!(sub.category.as_deref(), Some("productivity"));
+    }
+
+    #[test]
+    fn generic_cost_and_currency_support_non_euro_notes() {
+        let note = note(
+            &[
+                ("cost", "12.50"),
+                ("currency", "usd"),
+                ("billing_cycle", "monthly"),
+                ("status", "active"),
+            ],
+            "Synthetic USD plan",
+        );
+        let subscription = seed_from_note(&note, "2026-08-09");
+        assert_eq!(subscription.prices[0].amount_cents, 1_250);
+        assert_eq!(subscription.prices[0].currency, "USD");
     }
 
     #[test]

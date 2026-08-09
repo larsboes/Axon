@@ -28,11 +28,17 @@
     date_column: "Buchung",
     amount_column: "Betrag",
     description_column: "Verwendungszweck",
+    categorization_columns: [],
     reference_column: null,
     currency_column: "Währung",
     default_currency: "EUR",
     source_account: "assets:bank:checking",
+    default_outflow_account: "expenses:uncategorized",
+    default_inflow_account: "income:uncategorized",
+    categorization_rules: [],
+    row_filter: null,
     amount_sign: "as_provided",
+    amount_rounding: "reject",
     date_formats: ["day_month_year_dots"],
     row_policy: "strict",
   });
@@ -155,6 +161,26 @@
     }
   }
 
+  async function reconcile(candidate: TransactionCandidate) {
+    const counterpartId = candidate.transfer_match_ids[0];
+    if (!counterpartId) return;
+    busy = true;
+    error = null;
+    notice = null;
+    try {
+      const result = await finance.reconcileTransfer(candidate.id, counterpartId);
+      notice = result.journal_written
+        ? "Transfer reconciled as one journal posting; the counterpart is retained as duplicate evidence."
+        : "Transfer was already in the journal; the counterpart is now retained as duplicate evidence.";
+      await load();
+      onchanged?.();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
   $effect(() => { void load(); });
 </script>
 
@@ -240,13 +266,22 @@
             </span>
           </div>
           {#if candidate.state === "pending"}
-            <div class="decision">
-              <input aria-label="Reviewed account" bind:value={accounts[candidate.id]} />
-              <button disabled={busy || !accounts[candidate.id]?.trim()} onclick={() => review(candidate, "confirm")}>
-                <Icon name="check" size={14} /> Confirm
-              </button>
-              <button class="reject" disabled={busy} onclick={() => review(candidate, "reject")}>Reject</button>
-            </div>
+            {#if candidate.transfer_match_ids.length === 1}
+              <div class="decision transfer-match">
+                <span>Matching transfer found · one posting</span>
+                <button disabled={busy} onclick={() => reconcile(candidate)}><Icon name="swap" size={14} /> Reconcile</button>
+                <button class="reject" disabled={busy} onclick={() => review(candidate, "reject")}>Reject</button>
+              </div>
+            {:else}
+              <div class="decision">
+                {#if candidate.transfer_match_ids.length > 1}<span class="ambiguous">{candidate.transfer_match_ids.length} possible transfer matches</span>{/if}
+                <input aria-label="Reviewed account" bind:value={accounts[candidate.id]} />
+                <button disabled={busy || !accounts[candidate.id]?.trim()} onclick={() => review(candidate, "confirm")}>
+                  <Icon name="check" size={14} /> Confirm
+                </button>
+                <button class="reject" disabled={busy} onclick={() => review(candidate, "reject")}>Reject</button>
+              </div>
+            {/if}
           {:else}
             <span class="state">{candidate.state}</span>
           {/if}
@@ -283,6 +318,7 @@
   .amount.outflow { color: inherit; }
   .decision { flex-wrap: wrap; }
   .decision input { width: 14rem; }
+  .transfer-match span, .ambiguous { color: var(--warning, #a76b2c); font-size: .7rem; }
   button.reject { border-color: transparent; color: var(--muted, #888); }
   button:disabled { opacity: .45; cursor: default; }
   .error { color: var(--danger, #b44); }
