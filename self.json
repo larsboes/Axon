@@ -36,7 +36,11 @@
     },
     {
       "name": "axon",
-      "kind": "pack"
+      "kind": "pack",
+      "code": {
+        "files": 16,
+        "nodes": 65
+      }
     },
     {
       "name": "axon-config",
@@ -141,7 +145,7 @@
       },
       "code": {
         "files": 88,
-        "nodes": 515
+        "nodes": 520
       }
     },
     {
@@ -165,8 +169,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 13,
-        "nodes": 424
+        "files": 14,
+        "nodes": 464
       }
     },
     {
@@ -429,8 +433,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 117,
-        "nodes": 965
+        "files": 118,
+        "nodes": 968
       }
     },
     {
@@ -1344,7 +1348,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 8714,
+    "nodes": 8835,
     "external": 7,
     "stale": [],
     "unmatched": [

@@ -160,7 +160,7 @@ fn render_expense(
     let shared = total - allocation.personal_cents;
     let mut tags = vec![
         format!("axon-purpose: {}", allocation.purpose.as_str()),
-        format!("axon-personal-cents: {}", allocation.personal_cents),
+        format!("axon-own-cents: {}", allocation.personal_cents),
         format!("axon-shared-cents: {shared}"),
     ];
     if let Some(trip_id) = &allocation.trip_id {
@@ -269,7 +269,7 @@ fn parse_expense(block: &str) -> ImportResult<ExpenseAllocation> {
     let purpose = tag(block, "axon-purpose")
         .and_then(SpendingPurpose::parse)
         .ok_or_else(|| ImportError("journal entry has no valid Axon purpose".into()))?;
-    let personal_cents = tag(block, "axon-personal-cents")
+    let personal_cents = tag(block, "axon-own-cents")
         .and_then(|value| value.parse().ok())
         .ok_or_else(|| ImportError("journal entry has no valid personal share".into()))?;
     let trip_id = tag(block, "axon-trip-id").map(str::to_string);

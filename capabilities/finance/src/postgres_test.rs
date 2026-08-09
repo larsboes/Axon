@@ -36,17 +36,26 @@ fn synthetic_projection() -> Vec<TransactionRow> {
         mantissa,
         scale: 2,
     };
+    let tags = std::collections::BTreeMap::from([
+        ("axon-purpose".into(), "trip".into()),
+        ("axon-trip-id".into(), "trip:synthetic".into()),
+        ("axon-shared-cents".into(), "600".into()),
+    ]);
     project(
         &[JournalTransaction {
             index: 1,
             date: "2026-08-01".into(),
             description: "Synthetic market".into(),
-            source_id: None,
-            tags: std::collections::BTreeMap::new(),
+            source_id: Some("synthetic-source".into()),
+            tags,
             postings: vec![
                 Posting {
                     account: "expenses:food".into(),
-                    amounts: vec![amount(1_000)],
+                    amounts: vec![amount(400)],
+                },
+                Posting {
+                    account: "assets:receivable:shared".into(),
+                    amounts: vec![amount(600)],
                 },
                 Posting {
                     account: "assets:bank:checking".into(),

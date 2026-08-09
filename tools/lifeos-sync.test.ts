@@ -5,7 +5,9 @@
 // Run: bun test tools/lifeos-sync.test.ts
 
 import { describe, expect, test } from "bun:test";
-import { mergeHooks, parseOverlayTargets } from "./lifeos-sync.ts";
+import { mergeHooks, parseOverlayTargets, writebackPlan } from "./lifeos-sync.ts";
+
+const entry = (hash: string, mtimeMs: number) => ({ hash, mtimeMs });
 
 describe("parseOverlayTargets", () => {
   const manifest = {
@@ -17,8 +19,8 @@ describe("parseOverlayTargets", () => {
 
   test("src resolves against the overlay, dst against the config root", () => {
     expect(parseOverlayTargets(manifest, "/ov", "/cfg")).toEqual([
-      { what: "PULSE.toml", kind: "link", src: "/ov/config/lifeos/PULSE.toml", dst: "/cfg/LIFEOS/PULSE/PULSE.toml", why: "instance sinks" },
-      { what: "budgets.json", kind: "link", src: "/ov/config/lifeos/budgets.json", dst: "/cfg/LIFEOS/TOOLS/budgets.json", why: "instance caps" },
+      { what: "PULSE.toml", kind: "copy", src: "/ov/config/lifeos/PULSE.toml", dst: "/cfg/LIFEOS/PULSE/PULSE.toml", why: "instance sinks", writeback: false },
+      { what: "budgets.json", kind: "copy", src: "/ov/config/lifeos/budgets.json", dst: "/cfg/LIFEOS/TOOLS/budgets.json", why: "instance caps", writeback: false },
     ]);
   });
 
@@ -48,9 +50,63 @@ describe("parseOverlayTargets", () => {
     expect(() => parseOverlayTargets({ file: "PULSE.toml" }, "/ov", "/cfg")).toThrow("array of tables");
   });
 
-  test("kind is never taken from the manifest — only links are declarable", () => {
+  test("kind is never taken from the manifest — only copies are declarable", () => {
     const sneaky = { file: [{ ...manifest.file[0], kind: "hooks" }] };
-    expect(parseOverlayTargets(sneaky, "/ov", "/cfg")[0].kind).toBe("link");
+    expect(parseOverlayTargets(sneaky, "/ov", "/cfg")[0].kind).toBe("copy");
+  });
+
+  test("writeback defaults off — a target is read-only unless it says otherwise", () => {
+    expect(parseOverlayTargets(manifest, "/ov", "/cfg")[0].writeback).toBe(false);
+  });
+
+  test("writeback is honoured when declared", () => {
+    const w = { file: [{ ...manifest.file[0], writeback: true }] };
+    expect(parseOverlayTargets(w, "/ov", "/cfg")[0].writeback).toBe(true);
+  });
+
+  test("a non-boolean writeback throws rather than being coerced", () => {
+    // `writeback = "yes"` is truthy in JS. Coercing it would silently turn a
+    // read-only target into one that copies live content back into the overlay.
+    for (const bad of ["yes", 1, "false"]) {
+      expect(() => parseOverlayTargets({ file: [{ ...manifest.file[0], writeback: bad }] }, "/ov", "/cfg")).toThrow("writeback");
+    }
+  });
+});
+
+describe("writebackPlan", () => {
+  test("a live file that is both newer and different is pulled back", () => {
+    const src = new Map([["CURRENT.md", entry("a", 100)]]);
+    const dst = new Map([["CURRENT.md", entry("b", 200)]]);
+    expect(writebackPlan(src, dst)).toEqual(["CURRENT.md"]);
+  });
+
+  test("newer but identical is not an edit — a touch must not count", () => {
+    const src = new Map([["CURRENT.md", entry("a", 100)]]);
+    const dst = new Map([["CURRENT.md", entry("a", 999)]]);
+    expect(writebackPlan(src, dst)).toEqual([]);
+  });
+
+  test("different but older never wins — a stale live copy must not overwrite a deliberate overlay edit", () => {
+    const src = new Map([["CURRENT.md", entry("new", 500)]]);
+    const dst = new Map([["CURRENT.md", entry("old", 100)]]);
+    expect(writebackPlan(src, dst)).toEqual([]);
+  });
+
+  test("a file only the live tree has is pulled back — that is generator output", () => {
+    const src = new Map([["CURRENT.md", entry("a", 100)]]);
+    const dst = new Map([["CURRENT.md", entry("a", 100)], ["DERIVED/state.json", entry("x", 300)]]);
+    expect(writebackPlan(src, dst)).toEqual(["DERIVED/state.json"]);
+  });
+
+  test("a file only the overlay has is left alone — deploy is what puts it live", () => {
+    const src = new Map([["A.md", entry("a", 100)], ["B.md", entry("b", 100)]]);
+    const dst = new Map([["A.md", entry("a", 100)]]);
+    expect(writebackPlan(src, dst)).toEqual([]);
+  });
+
+  test("two identical trees plan nothing, so a re-run stays a no-op", () => {
+    const t = () => new Map([["A.md", entry("a", 100)], ["B.md", entry("b", 200)]]);
+    expect(writebackPlan(t(), t())).toEqual([]);
   });
 });
 

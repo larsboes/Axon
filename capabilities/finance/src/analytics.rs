@@ -86,10 +86,12 @@ pub struct AnalyticsFilter {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Summary {
     pub income_cents: i64,
-    pub expense_cents: i64,
+    pub personal_spending_cents: i64,
     pub gross_cash_outflow_cents: i64,
     pub reimbursement_received_cents: i64,
-    pub net_cash_flow_cents: i64,
+    pub personal_result_cents: i64,
+    pub external_cash_inflow_cents: i64,
+    pub external_cash_movement_cents: i64,
     pub savings_rate_percent: Option<f64>,
     pub budget_cents: i64,
     pub budget_variance_cents: i64,
@@ -115,11 +117,46 @@ pub struct SharedExpenseSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PurposeSpendingSummary {
+    pub purpose: Option<SpendingPurpose>,
+    pub personal_spending_cents: i64,
+    pub expense_posting_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TripSpendingSummary {
+    pub trip_id: String,
+    pub personal_spending_cents: i64,
+    pub gross_cash_outflow_cents: i64,
+    pub reimbursed_cents: i64,
+    pub outstanding_cents: i64,
+    pub expense_posting_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TrendPoint {
     pub month: String,
     pub income_cents: i64,
-    pub expense_cents: i64,
-    pub net_cash_flow_cents: i64,
+    pub personal_spending_cents: i64,
+    pub gross_cash_outflow_cents: i64,
+    pub reimbursement_received_cents: i64,
+    pub personal_result_cents: i64,
+    pub external_cash_inflow_cents: i64,
+    pub external_cash_movement_cents: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AnalyticsQuality {
+    pub expense_posting_count: usize,
+    pub categorized_expense_posting_count: usize,
+    pub personal_spending_cents: i64,
+    pub categorized_personal_spending_cents: i64,
+    pub categorization_count_percent: Option<f64>,
+    pub categorization_value_percent: Option<f64>,
+    pub first_transaction_date: Option<String>,
+    pub latest_transaction_date: Option<String>,
+    pub observed_months: usize,
+    pub expected_months: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -139,6 +176,7 @@ pub struct BudgetRow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SankeyLink {
+    pub month: String,
     pub source: String,
     pub target: String,
     pub amount_cents: i64,
@@ -149,6 +187,7 @@ pub struct SankeyLink {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DashboardProjection {
     pub summary: Summary,
+    pub quality: AnalyticsQuality,
     pub trend: Vec<TrendPoint>,
     pub category_trend: Vec<CategoryTrendPoint>,
     pub budgets: Vec<BudgetRow>,
@@ -159,6 +198,8 @@ pub struct DashboardProjection {
     pub investment: Option<ReviewedHoldingsSnapshot>,
     pub portfolio_values: Vec<PortfolioValuation>,
     pub shared_expenses: Vec<SharedExpenseSummary>,
+    pub purpose_spending: Vec<PurposeSpendingSummary>,
+    pub trip_spending: Vec<TripSpendingSummary>,
 }
 
 pub fn project(transactions: &[JournalTransaction], currency: &str) -> Vec<TransactionRow> {
@@ -195,6 +236,7 @@ pub fn project(transactions: &[JournalTransaction], currency: &str) -> Vec<Trans
             .unwrap_or(0);
         let reimbursement_for = transaction.tags.get("axon-reimbursement-for").cloned();
         let mut classified = false;
+        let mut cash_recorded = false;
         for (posting_index, posting) in transaction.postings.iter().enumerate() {
             let Some(signed_cents) = amount_cents(posting, currency) else {
                 continue;
@@ -208,6 +250,12 @@ pub fn project(transactions: &[JournalTransaction], currency: &str) -> Vec<Trans
                     continue;
                 };
             classified = true;
+            let row_cash_amount_cents = if cash_recorded {
+                0
+            } else {
+                cash_recorded = true;
+                cash_amount_cents
+            };
             rows.push(TransactionRow {
                 id: format!(
                     "transaction_{}_{}_{}",
@@ -225,7 +273,7 @@ pub fn project(transactions: &[JournalTransaction], currency: &str) -> Vec<Trans
                 source_id: transaction.source_id.clone(),
                 purpose,
                 trip_id: trip_id.clone(),
-                cash_amount_cents,
+                cash_amount_cents: row_cash_amount_cents,
                 shared_cents: tagged_shared_cents,
                 reimbursement_for: reimbursement_for.clone(),
             });
@@ -314,7 +362,7 @@ pub fn dashboard(
         .filter(|row| row.kind == TransactionKind::Income)
         .map(|row| row.amount_cents)
         .sum();
-    let expense_cents = transactions
+    let personal_spending_cents = transactions
         .iter()
         .filter(|row| row.kind == TransactionKind::Expense)
         .map(|row| row.amount_cents)
@@ -329,7 +377,14 @@ pub fn dashboard(
         .filter(|row| row.reimbursement_for.is_some())
         .map(|row| row.cash_amount_cents)
         .sum();
-    let net_cash_flow_cents = income_cents - expense_cents;
+    let income_cash_cents: i64 = scoped_rows
+        .iter()
+        .filter(|row| row.kind == TransactionKind::Income)
+        .map(|row| row.cash_amount_cents)
+        .sum();
+    let personal_result_cents = income_cents - personal_spending_cents;
+    let external_cash_inflow_cents = income_cash_cents + reimbursement_received_cents;
+    let external_cash_movement_cents = external_cash_inflow_cents - gross_cash_outflow_cents;
     let months = month_count(filter, &transactions);
 
     let scoped_budgets: Vec<_> = budgets
@@ -364,7 +419,7 @@ pub fn dashboard(
 
     let mut trend: BTreeMap<String, TrendPoint> = BTreeMap::new();
     let mut category_trend: BTreeMap<(String, String), i64> = BTreeMap::new();
-    for row in &transactions {
+    for row in &scoped_rows {
         if row.date.len() < 7 {
             continue;
         }
@@ -373,15 +428,31 @@ pub fn dashboard(
             .or_insert(TrendPoint {
                 month: row.date[..7].to_string(),
                 income_cents: 0,
-                expense_cents: 0,
-                net_cash_flow_cents: 0,
+                personal_spending_cents: 0,
+                gross_cash_outflow_cents: 0,
+                reimbursement_received_cents: 0,
+                personal_result_cents: 0,
+                external_cash_inflow_cents: 0,
+                external_cash_movement_cents: 0,
             });
         match row.kind {
-            TransactionKind::Income => point.income_cents += row.amount_cents,
-            TransactionKind::Expense => point.expense_cents += row.amount_cents,
+            TransactionKind::Income => {
+                point.income_cents += row.amount_cents;
+                point.external_cash_inflow_cents += row.cash_amount_cents;
+            }
+            TransactionKind::Expense => {
+                point.personal_spending_cents += row.amount_cents;
+                point.gross_cash_outflow_cents += row.cash_amount_cents;
+            }
+            TransactionKind::Transfer if row.reimbursement_for.is_some() => {
+                point.reimbursement_received_cents += row.cash_amount_cents;
+                point.external_cash_inflow_cents += row.cash_amount_cents;
+            }
             TransactionKind::Transfer => {}
         }
-        point.net_cash_flow_cents = point.income_cents - point.expense_cents;
+        point.personal_result_cents = point.income_cents - point.personal_spending_cents;
+        point.external_cash_movement_cents =
+            point.external_cash_inflow_cents - point.gross_cash_outflow_cents;
         if row.kind == TransactionKind::Expense {
             *category_trend
                 .entry((row.date[..7].to_string(), row.category.clone()))
@@ -389,34 +460,139 @@ pub fn dashboard(
         }
     }
 
-    let mut sankey: BTreeMap<(String, String, String, String), i64> = BTreeMap::new();
+    let mut sankey: BTreeMap<(String, String, String, String, String), i64> = BTreeMap::new();
     for row in &transactions {
+        if row.date.len() < 7 {
+            continue;
+        }
         let (source, target) = match row.kind {
             TransactionKind::Income => (row.category.clone(), row.account.clone()),
             TransactionKind::Expense => (row.account.clone(), row.category.clone()),
             TransactionKind::Transfer => continue,
         };
         *sankey
-            .entry((source, target, row.account.clone(), row.category.clone()))
+            .entry((
+                row.date[..7].to_string(),
+                source,
+                target,
+                row.account.clone(),
+                row.category.clone(),
+            ))
             .or_default() += row.amount_cents;
     }
 
+    let expense_rows: Vec<_> = transactions
+        .iter()
+        .filter(|row| row.kind == TransactionKind::Expense)
+        .collect();
+    let categorized_rows: Vec<_> = expense_rows
+        .iter()
+        .filter(|row| !is_uncategorized(&row.category))
+        .collect();
+    let categorized_personal_spending_cents = categorized_rows
+        .iter()
+        .map(|row| row.amount_cents)
+        .sum::<i64>();
+    let observed_months = scoped_rows
+        .iter()
+        .filter_map(|row| row.date.get(..7))
+        .collect::<BTreeSet<_>>()
+        .len();
+    let quality = AnalyticsQuality {
+        expense_posting_count: expense_rows.len(),
+        categorized_expense_posting_count: categorized_rows.len(),
+        personal_spending_cents,
+        categorized_personal_spending_cents,
+        categorization_count_percent: (!expense_rows.is_empty())
+            .then_some(categorized_rows.len() as f64 / expense_rows.len() as f64 * 100.0),
+        categorization_value_percent: (personal_spending_cents > 0).then_some(
+            categorized_personal_spending_cents as f64 / personal_spending_cents as f64 * 100.0,
+        ),
+        first_transaction_date: scoped_rows.iter().map(|row| row.date.clone()).min(),
+        latest_transaction_date: scoped_rows.iter().map(|row| row.date.clone()).max(),
+        observed_months,
+        expected_months: month_count(filter, &scoped_rows),
+    };
+
     let shared_expenses = shared_expenses(&scoped_rows);
+    let purpose_spending = [
+        Some(SpendingPurpose::DayToDay),
+        Some(SpendingPurpose::Trip),
+        Some(SpendingPurpose::Work),
+        Some(SpendingPurpose::Housing),
+        Some(SpendingPurpose::Other),
+        None,
+    ]
+    .into_iter()
+    .filter_map(|purpose| {
+        let matching: Vec<_> = transactions
+            .iter()
+            .filter(|row| row.kind == TransactionKind::Expense && row.purpose == purpose)
+            .collect();
+        (!matching.is_empty()).then(|| PurposeSpendingSummary {
+            purpose,
+            personal_spending_cents: matching.iter().map(|row| row.amount_cents).sum(),
+            expense_posting_count: matching.len(),
+        })
+    })
+    .collect();
+    let mut trip_spending: BTreeMap<String, TripSpendingSummary> = BTreeMap::new();
+    for row in transactions
+        .iter()
+        .filter(|row| row.kind == TransactionKind::Expense)
+    {
+        let Some(trip_id) = row.trip_id.clone() else {
+            continue;
+        };
+        let summary = trip_spending
+            .entry(trip_id.clone())
+            .or_insert(TripSpendingSummary {
+                trip_id,
+                personal_spending_cents: 0,
+                gross_cash_outflow_cents: 0,
+                reimbursed_cents: 0,
+                outstanding_cents: 0,
+                expense_posting_count: 0,
+            });
+        summary.personal_spending_cents += row.amount_cents;
+        summary.gross_cash_outflow_cents += row.cash_amount_cents;
+        summary.expense_posting_count += 1;
+    }
+    for shared in &shared_expenses {
+        let Some(trip_id) = shared.trip_id.as_ref() else {
+            continue;
+        };
+        let summary = trip_spending
+            .entry(trip_id.clone())
+            .or_insert(TripSpendingSummary {
+                trip_id: trip_id.clone(),
+                personal_spending_cents: 0,
+                gross_cash_outflow_cents: 0,
+                reimbursed_cents: 0,
+                outstanding_cents: 0,
+                expense_posting_count: 0,
+            });
+        summary.reimbursed_cents += shared.reimbursed_cents;
+        summary.outstanding_cents += shared.outstanding_cents;
+    }
     let accounts: BTreeSet<_> = rows.iter().map(|row| row.account.clone()).collect();
     let categories: BTreeSet<_> = rows.iter().map(|row| row.category.clone()).collect();
     DashboardProjection {
         summary: Summary {
             income_cents,
-            expense_cents,
+            personal_spending_cents,
             gross_cash_outflow_cents,
             reimbursement_received_cents,
-            net_cash_flow_cents,
+            personal_result_cents,
+            external_cash_inflow_cents,
+            external_cash_movement_cents,
             savings_rate_percent: (income_cents > 0)
-                .then_some(net_cash_flow_cents as f64 / income_cents as f64 * 100.0),
+                .then_some(personal_result_cents as f64 / income_cents as f64 * 100.0),
             budget_cents,
             budget_variance_cents: budget_cents - budget_actual_cents,
             currency: currency.into(),
         },
+        quality,
         trend: trend.into_values().collect(),
         category_trend: category_trend
             .into_iter()
@@ -431,7 +607,8 @@ pub fn dashboard(
         sankey: sankey
             .into_iter()
             .map(
-                |((source, target, account, category), amount_cents)| SankeyLink {
+                |((month, source, target, account, category), amount_cents)| SankeyLink {
+                    month,
                     source,
                     target,
                     amount_cents,
@@ -445,7 +622,15 @@ pub fn dashboard(
         investment: None,
         portfolio_values: Vec::new(),
         shared_expenses,
+        purpose_spending,
+        trip_spending: trip_spending.into_values().collect(),
     }
+}
+
+fn is_uncategorized(category: &str) -> bool {
+    category
+        .split(':')
+        .any(|segment| segment == "uncategorized")
 }
 
 pub fn outstanding_shared_cents(
@@ -613,14 +798,19 @@ mod tests {
             &AnalyticsFilter::default(),
         );
         assert_eq!(view.summary.income_cents, 200_000);
-        assert_eq!(view.summary.expense_cents, 25_00);
-        assert_eq!(view.summary.net_cash_flow_cents, 197_500);
+        assert_eq!(view.summary.personal_spending_cents, 25_00);
+        assert_eq!(view.summary.personal_result_cents, 197_500);
+        assert_eq!(view.summary.external_cash_movement_cents, 197_500);
         assert_eq!(view.summary.budget_variance_cents, 15_00);
         assert_eq!(view.transactions.len(), 2);
         assert_eq!(view.category_trend.len(), 1);
         assert_eq!(view.category_trend[0].month, "2026-08");
         assert_eq!(view.category_trend[0].category, "expenses:food");
         assert_eq!(view.category_trend[0].amount_cents, 25_00);
+        assert_eq!(view.quality.categorization_value_percent, Some(100.0));
+        assert_eq!(view.purpose_spending.len(), 1);
+        assert_eq!(view.purpose_spending[0].purpose, None);
+        assert_eq!(view.purpose_spending[0].personal_spending_cents, 25_00);
         assert_eq!(
             view.sankey
                 .iter()
@@ -679,7 +869,7 @@ mod tests {
         assert_eq!(rows[0].account, "liabilities:card:review");
         assert_eq!(rows[1].kind, TransactionKind::Transfer);
         let view = dashboard(&rows, &[], &AnalyticsFilter::default());
-        assert_eq!(view.summary.expense_cents, 12_00);
+        assert_eq!(view.summary.personal_spending_cents, 12_00);
         assert_eq!(view.transactions.len(), 1);
     }
 
@@ -770,16 +960,117 @@ mod tests {
 
         let rows = project(&transactions, "EUR");
         let view = dashboard(&rows, &[], &AnalyticsFilter::default());
-        assert_eq!(view.summary.expense_cents, 10_00);
+        assert_eq!(view.summary.personal_spending_cents, 10_00);
         assert_eq!(view.summary.gross_cash_outflow_cents, 40_00);
         assert_eq!(view.summary.reimbursement_received_cents, 20_00);
+        assert_eq!(view.summary.personal_result_cents, -10_00);
+        assert_eq!(view.summary.external_cash_movement_cents, -20_00);
         assert_eq!(view.summary.income_cents, 0);
         assert_eq!(view.shared_expenses.len(), 1);
         assert_eq!(view.shared_expenses[0].shared_cents, 30_00);
         assert_eq!(view.shared_expenses[0].outstanding_cents, 10_00);
+        assert_eq!(view.purpose_spending.len(), 1);
+        assert_eq!(
+            view.purpose_spending[0].purpose,
+            Some(SpendingPurpose::Trip)
+        );
+        assert_eq!(view.purpose_spending[0].personal_spending_cents, 10_00);
+        assert_eq!(view.trip_spending.len(), 1);
+        assert_eq!(view.trip_spending[0].trip_id, "trip:synthetic");
+        assert_eq!(view.trip_spending[0].gross_cash_outflow_cents, 40_00);
+        assert_eq!(view.trip_spending[0].reimbursed_cents, 20_00);
+        assert_eq!(view.trip_spending[0].outstanding_cents, 10_00);
         assert_eq!(
             outstanding_shared_cents(&rows, "synthetic-expense", "EUR", None),
             Some(10_00)
+        );
+    }
+
+    #[test]
+    fn split_categories_record_external_cash_once() {
+        let rows = project(
+            &[JournalTransaction {
+                index: 1,
+                date: "2026-08-01".into(),
+                description: "synthetic split purchase".into(),
+                source_id: None,
+                tags: BTreeMap::new(),
+                postings: vec![
+                    posting("assets:bank:checking", -10_00),
+                    posting("expenses:food:groceries", 6_00),
+                    posting("expenses:household", 4_00),
+                ],
+            }],
+            "EUR",
+        );
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.iter().map(|row| row.cash_amount_cents).sum::<i64>(),
+            10_00
+        );
+        let view = dashboard(&rows, &[], &AnalyticsFilter::default());
+        assert_eq!(view.summary.personal_spending_cents, 10_00);
+        assert_eq!(view.summary.gross_cash_outflow_cents, 10_00);
+        assert_eq!(view.summary.external_cash_movement_cents, -10_00);
+    }
+
+    #[test]
+    fn quality_reports_categorization_and_period_coverage() {
+        let rows = vec![
+            TransactionRow {
+                id: "categorized".into(),
+                date: "2026-07-02".into(),
+                description: "synthetic categorized".into(),
+                kind: TransactionKind::Expense,
+                account: "assets:bank:checking".into(),
+                category: "expenses:food".into(),
+                amount_cents: 75,
+                currency: "EUR".into(),
+                source_id: None,
+                purpose: None,
+                trip_id: None,
+                cash_amount_cents: 75,
+                shared_cents: 0,
+                reimbursement_for: None,
+            },
+            TransactionRow {
+                id: "uncategorized".into(),
+                date: "2026-08-02".into(),
+                description: "synthetic uncategorized".into(),
+                kind: TransactionKind::Expense,
+                account: "assets:bank:checking".into(),
+                category: "expenses:uncategorized".into(),
+                amount_cents: 25,
+                currency: "EUR".into(),
+                source_id: None,
+                purpose: None,
+                trip_id: None,
+                cash_amount_cents: 25,
+                shared_cents: 0,
+                reimbursement_for: None,
+            },
+        ];
+        let filter = AnalyticsFilter {
+            start: Some("2026-07-01".into()),
+            end: Some("2026-08-31".into()),
+            ..AnalyticsFilter::default()
+        };
+
+        let view = dashboard(&rows, &[], &filter);
+        assert_eq!(view.quality.expense_posting_count, 2);
+        assert_eq!(view.quality.categorized_expense_posting_count, 1);
+        assert_eq!(view.quality.categorization_count_percent, Some(50.0));
+        assert_eq!(view.quality.categorization_value_percent, Some(75.0));
+        assert_eq!(view.quality.observed_months, 2);
+        assert_eq!(view.quality.expected_months, 2);
+        assert_eq!(
+            view.quality.first_transaction_date.as_deref(),
+            Some("2026-07-02")
+        );
+        assert_eq!(
+            view.quality.latest_transaction_date.as_deref(),
+            Some("2026-08-02")
         );
     }
 }
