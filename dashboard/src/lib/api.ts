@@ -2013,6 +2013,7 @@ export interface CsvImportPreview {
   preview_id: string;
   candidate_count: number;
   duplicate_rows: number;
+  preserved_repetitions: number;
   ignored_non_transaction_rows: number;
   outflow_count: number;
   inflow_count: number;
@@ -2198,6 +2199,7 @@ export const finance = {
       created: number;
       already_present: number;
       duplicate_rows: number;
+      preserved_repetitions: number;
       ignored_non_transaction_rows: number;
     }>(
       '/finance/api/import/csv',

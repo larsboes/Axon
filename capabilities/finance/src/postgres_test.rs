@@ -130,6 +130,54 @@ fn candidate_staging_is_idempotent_and_review_is_explicit() {
 }
 
 #[test]
+fn reference_less_overlap_preserves_multiplicity_without_reimporting_it() {
+    let mapping = CsvMapping {
+        delimiter: ';',
+        decimal_separator: '.',
+        date_column: "Date".into(),
+        amount_column: "Amount".into(),
+        description_column: "Description".into(),
+        reference_column: None,
+        currency_column: None,
+        default_currency: "EUR".into(),
+        source_account: "liabilities:card:review".into(),
+        amount_sign: AmountSign::AsProvided,
+        date_formats: vec![CsvDateFormat::IsoYearMonthDay],
+        row_policy: CsvRowPolicy::Strict,
+    };
+    let first_export = parse_csv(
+        b"Date;Amount;Description\n2026-08-01;-7.13;Synthetic market\n",
+        &mapping,
+    )
+    .unwrap();
+    let larger_export = parse_csv(
+        b"Date;Amount;Description\n2026-08-01;-7.13;Synthetic market\n2026-08-01;-7.13;Synthetic market\n",
+        &mapping,
+    )
+    .unwrap();
+    assert_eq!(first_export[0].id, larger_export[0].id);
+    assert_ne!(larger_export[0].id, larger_export[1].id);
+
+    let (store, _schema) = store("candidate_multiplicity");
+    assert_eq!(
+        store.stage_candidates(&first_export, "2026-08-09").unwrap(),
+        (1, 0)
+    );
+    assert_eq!(
+        store
+            .stage_candidates(&larger_export, "2026-08-09")
+            .unwrap(),
+        (1, 1)
+    );
+    assert_eq!(
+        store
+            .stage_candidates(&larger_export, "2026-08-09")
+            .unwrap(),
+        (0, 2)
+    );
+}
+
+#[test]
 fn reviewed_holdings_replace_atomically_and_preserve_an_empty_review() {
     let (store, _schema) = store("holdings");
     assert_eq!(store.holding_projection().unwrap(), None);
