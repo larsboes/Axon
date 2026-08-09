@@ -60,6 +60,16 @@
     return new Intl.NumberFormat("de-DE", { style: "currency", currency }).format(cents / 100);
   }
 
+  function exactMoney(mantissa: string, scale: number, currency: string) {
+    const negative = mantissa.startsWith("-");
+    const digits = (negative ? mantissa.slice(1) : mantissa).padStart(scale + 1, "0");
+    const whole = scale === 0 ? digits : digits.slice(0, -scale);
+    const fraction = scale === 0 ? "" : digits.slice(-scale);
+    const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    const decimal = fraction.padEnd(2, "0");
+    return `${negative ? "-" : ""}${grouped},${decimal} ${currency}`;
+  }
+
   function short(account: string) {
     return account.split(":").slice(1).join(" · ") || account;
   }
@@ -69,6 +79,8 @@
   const accountNodes = $derived([...new Set(data?.sankey.map((link) => link.account) ?? [])]);
   const expenseNodes = $derived([...new Set(data?.sankey.filter((link) => link.target.startsWith("expenses:")).map((link) => link.target) ?? [])]);
   const linkMax = $derived(Math.max(1, ...(data?.sankey.map((link) => link.amount_cents) ?? [1])));
+  const portfolioValue = $derived(data?.portfolio_values.find((value) => value.currency === data?.summary.currency) ?? null);
+  const portfolioLowerBound = $derived(data?.investment?.coverage === "partial" || (portfolioValue?.unpriced_holdings ?? 0) > 0);
   const nodeY = (nodes: string[], name: string) => 35 + (Math.max(0, nodes.indexOf(name)) + 0.5) * (290 / Math.max(1, nodes.length));
   const linkPath = (source: string, target: string) => {
     const income = source.startsWith("income:");
@@ -107,6 +119,11 @@
     <article><span>Net cash flow</span><strong class:negative={data.summary.net_cash_flow_cents < 0}>{money(data.summary.net_cash_flow_cents)}</strong></article>
     <article><span>Savings rate</span><strong>{data.summary.savings_rate_percent === null ? "—" : `${data.summary.savings_rate_percent.toFixed(1)}%`}</strong></article>
     <article><span>Budget variance</span><strong class:negative={data.summary.budget_variance_cents < 0}>{money(data.summary.budget_variance_cents)}</strong></article>
+    <article>
+      <span>Reviewed portfolio value</span>
+      <strong>{portfolioValue === null ? "—" : `${portfolioLowerBound ? "≥ " : ""}${exactMoney(portfolioValue.value.mantissa, portfolioValue.value.scale, portfolioValue.currency)}`}</strong>
+      <small>{portfolioValue === null ? `No reviewed ${data.summary.currency} holdings` : `${portfolioValue.priced_holdings} priced · ${portfolioValue.unpriced_holdings} unpriced · latest reviewed activity prices${portfolioLowerBound ? " · lower bound" : ""}`}</small>
+    </article>
   </section>
 
   <div class="overview-grid">
@@ -193,6 +210,7 @@
   .cards article { display: flex; flex-direction: column; gap: .3rem; padding: .8rem; }
   .cards span, .panel p, .hint, .legend { color: var(--muted, #888); font-size: .7rem; }
   .cards strong { font-size: 1.25rem; font-variant-numeric: tabular-nums; }
+  .cards small { color: var(--muted, #888); font-size: .62rem; line-height: 1.35; }
   .negative { color: var(--danger, #b44); }
   .overview-grid { display: grid; grid-template-columns: minmax(18rem, .8fr) minmax(24rem, 1.2fr); gap: .75rem; }
   .panel { padding: .9rem; min-width: 0; }
