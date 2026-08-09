@@ -82,6 +82,17 @@ describe("internal links are base-aware", () => {
     setBase(""); // leave the module as found, for whatever imports it next
   });
 
+  // nav.ts is reached by plain `.ts` modules that Bun tests import directly, and `$lib` is a
+  // Vite alias. Whether Bun resolves it depends on the environment: locally it does, in CI it
+  // did not, and the failure named calendar/types.ts rather than anything changed. A relative
+  // import resolves everywhere and costs nothing, so nav is imported that way from `lib/`.
+  test("no module under lib/ reaches nav.ts through the $lib alias", () => {
+    const offenders = files
+      .filter((f) => f.endsWith(".ts") && f.includes("/lib/"))
+      .filter((f) => readFileSync(f, "utf8").includes('from "$lib/nav"'));
+    expect(offenders.map(relative)).toEqual([]);
+  });
+
   // Only the root layout may read the Vite alias, and among plain modules only it. A .svelte
   // file is always compiled by Vite and can never appear in a plain-bun import graph, so the
   // rule that matters is about `.ts`: the moment a second one imports `$app/paths`, every

@@ -1,4 +1,4 @@
-import { link } from "$lib/nav";
+import { link } from "../nav";
 /** Entry kind as stored — open text, documented in the calendar capability's
  * README. The UI knows about well-known kinds for color/icon mapping but
  * must render any token gracefully. */
