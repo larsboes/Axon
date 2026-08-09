@@ -3,6 +3,7 @@
   import Icon from "$lib/Icon.svelte";
   import {
     finance,
+    type HoldingsCoverage,
     type InvestmentCsvMapping,
     type InvestmentCsvMappingProfile,
     type InvestmentPreview,
@@ -13,6 +14,7 @@
   let profiles = $state<InvestmentCsvMappingProfile[]>([]);
   let selectedProfile = $state("");
   let sourceKey = $state("");
+  let coverage = $state<HoldingsCoverage>("complete");
   let content = $state("");
   let filename = $state("");
   let busy = $state(false);
@@ -59,11 +61,13 @@
     selectedProfile = (event.currentTarget as HTMLSelectElement).value;
     if (!selectedProfile) {
       sourceKey = "";
+      coverage = "complete";
       return;
     }
     const profile = profiles[Number(selectedProfile)];
     if (profile) {
       sourceKey = profile.source_key;
+      coverage = profile.coverage;
       mapping = structuredClone(profile.mapping);
       positionActivityValues = mapping.position_activity_values.join(", ");
       nonPositionActivityValues = mapping.non_position_activity_values.join(", ");
@@ -108,6 +112,7 @@
         normalizedMapping(),
         sourceKey.trim(),
         result.snapshot_id,
+        coverage,
       );
       confirmed = true;
       result = { ...result, holdings: response.snapshot.holdings };
@@ -153,6 +158,7 @@
         </label>
       {/if}
       <label>Source key<input bind:value={sourceKey} placeholder="required" /></label>
+      <label>Coverage<select bind:value={coverage}><option value="complete">Complete source</option><option value="partial">Partial source</option></select></label>
       <label>Delimiter<input maxlength="1" bind:value={mapping.delimiter} /></label>
       <label>Decimal separator<input maxlength="1" bind:value={mapping.decimal_separator} /></label>
       <label>Date column<input bind:value={mapping.date_column} /></label>
@@ -177,10 +183,10 @@
       {result.duplicate_rows} duplicates
     </p>
     <div class="review">
-      <button disabled={busy || confirmed || !sourceKey.trim()} onclick={confirm}>
-        {confirmed ? "Reviewed snapshot confirmed" : "Confirm reviewed snapshot"}
+      <button class:partial={coverage === "partial"} disabled={busy || confirmed || !sourceKey.trim()} onclick={confirm}>
+        {confirmed ? "Reviewed snapshot confirmed" : coverage === "partial" ? "Confirm partial snapshot" : "Confirm reviewed snapshot"}
       </button>
-      <span>Confirmation requires an explicit private alias for every instrument. Only aggregate aliases, quantities and prices are retained.</span>
+      <span>{coverage === "partial" ? "Partial means this source is known to omit positions. " : ""}Confirmation requires an explicit private alias for every instrument. Only aggregate aliases, quantities and prices are retained.</span>
     </div>
     {#if result.holdings.length > 0}
       <table>
@@ -214,6 +220,7 @@
   .mapping button { align-self: end; justify-content: center; }
   input, select { min-width: 0; border: 1px solid var(--border, #333); border-radius: 5px; padding: .35rem .45rem; font: inherit; font-size: .78rem; background: transparent; color: inherit; }
   button:disabled { opacity: .45; cursor: default; }
+  button.partial { border-color: var(--warning, #a76b2c); }
   .error { color: var(--danger, #b44); }
   .summary { margin: 1rem 0 .65rem; }
   .review { display: flex; align-items: center; gap: .65rem; margin-bottom: .65rem; }

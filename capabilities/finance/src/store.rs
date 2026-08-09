@@ -14,7 +14,9 @@ use postgres::{Client, Row};
 
 use crate::analytics::{TransactionKind, TransactionRow};
 use crate::import::{CandidateState, TransactionCandidate};
-use crate::investment::{Holding, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource};
+use crate::investment::{
+    Holding, HoldingsCoverage, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource,
+};
 use crate::obsidian::ScannedNote;
 use crate::subscription::{BillingCycle, PricePoint, State, StateChange, Subscription};
 
@@ -158,8 +160,11 @@ impl FinanceStore {
             CREATE TABLE IF NOT EXISTS {schema}.holding_projection_state (
                 singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
                 snapshot_id TEXT NOT NULL,
-                reviewed_at TEXT NOT NULL
+                reviewed_at TEXT NOT NULL,
+                coverage TEXT NOT NULL DEFAULT 'complete'
             );
+            ALTER TABLE {schema}.holding_projection_state
+                ADD COLUMN IF NOT EXISTS coverage TEXT NOT NULL DEFAULT 'complete';
 
             CREATE TABLE IF NOT EXISTS {schema}.holding_projection (
                 instrument TEXT PRIMARY KEY,
@@ -174,8 +179,11 @@ impl FinanceStore {
             CREATE TABLE IF NOT EXISTS {schema}.holding_projection_sources (
                 source_key TEXT PRIMARY KEY,
                 snapshot_id TEXT NOT NULL,
-                reviewed_at TEXT NOT NULL
+                reviewed_at TEXT NOT NULL,
+                coverage TEXT NOT NULL DEFAULT 'complete'
             );
+            ALTER TABLE {schema}.holding_projection_sources
+                ADD COLUMN IF NOT EXISTS coverage TEXT NOT NULL DEFAULT 'complete';
             "
         ))?;
         Ok(())
@@ -474,9 +482,13 @@ impl FinanceStore {
         transaction.execute(
             &format!(
                 "INSERT INTO {schema}.holding_projection_state
-                    (singleton, snapshot_id, reviewed_at) VALUES (TRUE, $1, $2)"
+                    (singleton, snapshot_id, reviewed_at, coverage) VALUES (TRUE, $1, $2, $3)"
             ),
-            &[&snapshot.snapshot_id, &snapshot.reviewed_at],
+            &[
+                &snapshot.snapshot_id,
+                &snapshot.reviewed_at,
+                &snapshot.coverage.as_str(),
+            ],
         )?;
         for holding in &snapshot.holdings {
             let quantity_scale = i32::try_from(holding.quantity.scale)?;
@@ -512,9 +524,14 @@ impl FinanceStore {
             transaction.execute(
                 &format!(
                     "INSERT INTO {schema}.holding_projection_sources
-                        (source_key, snapshot_id, reviewed_at) VALUES ($1,$2,$3)"
+                        (source_key, snapshot_id, reviewed_at, coverage) VALUES ($1,$2,$3,$4)"
                 ),
-                &[&source.source_key, &source.snapshot_id, &source.reviewed_at],
+                &[
+                    &source.source_key,
+                    &source.snapshot_id,
+                    &source.reviewed_at,
+                    &source.coverage.as_str(),
+                ],
             )?;
         }
         transaction.commit()?;
@@ -543,7 +560,7 @@ impl FinanceStore {
         let mut conn = self.conn()?;
         let Some(state) = conn.query_opt(
             &format!(
-                "SELECT snapshot_id, reviewed_at
+                "SELECT snapshot_id, reviewed_at, coverage
                  FROM {schema}.holding_projection_state WHERE singleton = TRUE"
             ),
             &[],
@@ -583,22 +600,31 @@ impl FinanceStore {
         let sources = conn
             .query(
                 &format!(
-                    "SELECT source_key, snapshot_id, reviewed_at
+                    "SELECT source_key, snapshot_id, reviewed_at, coverage
                      FROM {schema}.holding_projection_sources ORDER BY source_key"
                 ),
                 &[],
             )?
             .into_iter()
-            .map(|row| ReviewedHoldingsSource {
-                source_key: row.get("source_key"),
-                snapshot_id: row.get("snapshot_id"),
-                reviewed_at: row.get("reviewed_at"),
+            .map(|row| {
+                let coverage: String = row.get("coverage");
+                Ok(ReviewedHoldingsSource {
+                    source_key: row.get("source_key"),
+                    snapshot_id: row.get("snapshot_id"),
+                    reviewed_at: row.get("reviewed_at"),
+                    coverage: HoldingsCoverage::parse(&coverage)
+                        .ok_or("holding projection source coverage is invalid")?,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Fallible<Vec<_>>>()?;
+        let stored_coverage: String = state.get("coverage");
+        let coverage = HoldingsCoverage::parse(&stored_coverage)
+            .ok_or("holding projection coverage is invalid")?;
         Ok(Some(ReviewedHoldingsSnapshot {
             schema_version: if sources.is_empty() { 1 } else { 2 },
             snapshot_id: state.get("snapshot_id"),
             reviewed_at: state.get("reviewed_at"),
+            coverage,
             holdings,
             sources,
         }))

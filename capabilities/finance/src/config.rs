@@ -11,7 +11,7 @@
 
 use crate::analytics::BudgetTarget;
 use crate::import::CsvMapping;
-use crate::investment::InvestmentCsvMapping;
+use crate::investment::{HoldingsCoverage, InvestmentCsvMapping};
 use axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -35,6 +35,8 @@ pub struct CsvMappingProfile {
 pub struct InvestmentCsvMappingProfile {
     pub source_key: String,
     pub label: String,
+    #[serde(default)]
+    pub coverage: HoldingsCoverage,
     pub mapping: InvestmentCsvMapping,
 }
 
@@ -236,6 +238,10 @@ mod tests {
         assert_eq!(
             config.investment_csv_mappings[0].source_key,
             "synthetic-broker"
+        );
+        assert_eq!(
+            config.investment_csv_mappings[0].coverage,
+            HoldingsCoverage::Complete
         );
         assert_eq!(
             config.investment_snapshot.as_deref(),

@@ -15,7 +15,7 @@ use finance::accounting::AccountingEngine;
 use finance::analytics::{self, AnalyticsFilter, BudgetTarget};
 use finance::config::{Config, CsvMappingProfile, InvestmentCsvMappingProfile, ObsidianConfig};
 use finance::import::{self, CandidateState, CsvMapping};
-use finance::investment::{self, InvestmentCsvMapping};
+use finance::investment::{self, HoldingsCoverage, InvestmentCsvMapping};
 use finance::obsidian::{self, WriteBack};
 use finance::store::FinanceStore;
 use finance::subscription::{burn_at, cents_to_decimal, PricePoint, StateChange};
@@ -307,6 +307,8 @@ struct InvestmentConfirmRequest {
     mapping: InvestmentCsvMapping,
     source_key: String,
     expected_snapshot_id: String,
+    #[serde(default)]
+    coverage: HoldingsCoverage,
 }
 
 async fn confirm_investments(
@@ -328,8 +330,13 @@ async fn confirm_investments(
         if preview.snapshot_id != request.expected_snapshot_id {
             return Err("investment preview changed before confirmation".into());
         }
-        let snapshot = investment::reviewed_snapshot(&preview, &request.mapping, &reviewed_at)
-            .map_err(|error| error.to_string())?;
+        let snapshot = investment::reviewed_snapshot(
+            &preview,
+            &request.mapping,
+            &reviewed_at,
+            request.coverage,
+        )
+        .map_err(|error| error.to_string())?;
         let _write_guard = projection_write
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
@@ -1162,6 +1169,7 @@ mod tests {
         let profile = InvestmentCsvMappingProfile {
             source_key: "synthetic-broker".into(),
             label: "Synthetic activity export".into(),
+            coverage: HoldingsCoverage::Partial,
             mapping: InvestmentCsvMapping {
                 delimiter: ';',
                 decimal_separator: ',',
@@ -1226,6 +1234,7 @@ mod tests {
             },
             source_key: "synthetic-broker".into(),
             expected_snapshot_id: String::new(),
+            coverage: HoldingsCoverage::Complete,
         };
 
         let (status, _) = confirm_investments(State(state), Json(request)).await;
