@@ -253,6 +253,14 @@ const allowedHosts = [
 ];
 
 export default defineConfig(({ command }) => ({
+  // Substituted as a literal so `if (!DEMO)` in src/lib/demo.ts folds at build time and the
+  // fetch shim leaves no trace in a normal bundle. Declared here rather than left to Vite's
+  // .env loading, because the value comes from the environment tools/demo-site exports and
+  // `import.meta.env` reads .env FILES — a shell variable would silently be undefined, which
+  // fails in the safe direction (no demo) and is therefore the kind of bug that ships.
+  define: {
+    "import.meta.env.VITE_AXON_DEMO": JSON.stringify(process.env.AXON_DEMO === "1" ? "1" : "0"),
+  },
   plugins: [sveltekit(), bundleGuard(), {
     name: "top-processes",
     configureServer(server) {

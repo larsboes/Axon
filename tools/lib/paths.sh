@@ -19,7 +19,20 @@ export AXON_ROOT
 source "$_lib/toml.sh"
 
 _overlay_raw=""
-if [ -f "$AXON_ROOT/axon.local.toml" ]; then
+# An already-exported AXON_OVERLAY_ROOT wins over both files. This is the only way to point a
+# single shell at a different deployment without editing something — axon.local.toml is the
+# machine's answer to "which overlay am I", and a tool that rewrote it to borrow another one
+# would leave the machine pointing somewhere else if it died halfway. tools/demo-up is the
+# first caller: it runs the published demonstration against the tracked demo/overlay while the
+# operator's real overlay stays exactly where it was. Deliberately not documented as a general
+# configuration mechanism — it is a per-invocation override, and anything permanent belongs in
+# axon.local.toml where tools/doctor can see it.
+_overlay_overridden=""
+if [ -n "${AXON_OVERLAY_ROOT:-}" ]; then
+  _overlay_raw="$AXON_OVERLAY_ROOT"
+  _overlay_overridden="yes"
+fi
+if [ -z "$_overlay_raw" ] && [ -f "$AXON_ROOT/axon.local.toml" ]; then
   _overlay_raw="$(toml_get overlay "$AXON_ROOT/axon.local.toml")"
 fi
 if [ -z "$_overlay_raw" ]; then
@@ -50,7 +63,10 @@ export AXON_OVERLAY_ROOT AXON_PERSONAL_ROOT
 # no generator that writes a tracked artifact reads them.
 AXON_MACHINES_DIR="$AXON_OVERLAY_ROOT/config/machines"
 _machine_name=""
-if [ -f "$AXON_ROOT/axon.local.toml" ]; then
+# Skipped when the overlay was overridden above: `machine` names a machine INSIDE the
+# overlay axon.local.toml points at, so carrying it across to a borrowed overlay asks for a
+# machines/<name>.toml that has no reason to exist there and fails the lookup outright.
+if [ -z "$_overlay_overridden" ] && [ -f "$AXON_ROOT/axon.local.toml" ]; then
   _machine_name="$(toml_get machine "$AXON_ROOT/axon.local.toml")"
 fi
 if [ -n "$_machine_name" ]; then

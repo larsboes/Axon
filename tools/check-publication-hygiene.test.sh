@@ -51,6 +51,22 @@ printf '%s\n' 'private overlay: axon-family' > "$SCRATCH/instance.txt"
 git -C "$SCRATCH" add instance.txt
 expect_fail_with "named deployment marker" "instance.txt"
 
+# A compound identifier that merely starts with a marker is not a deployment being named.
+# `axon-personal-cents` is a journal tag in capabilities/finance and exposes nothing; it failed
+# this gate on every push to main until the marker gained a trailing-character guard.
+printf '%s\n' 'let tag = "axon-personal-cents";' > "$SCRATCH/instance.txt"
+git -C "$SCRATCH" add instance.txt
+expect_pass "a compound identifier beginning with a marker"
+
+# ...but the marker itself, in a path or on its own, still fails.
+printf '%s\n' 'see ~/Developer/axon-personal/config' > "$SCRATCH/instance.txt"
+git -C "$SCRATCH" add instance.txt
+expect_fail_with "a marker used as a real path" "instance.txt"
+
+printf '%s\n' 'axon-personal' > "$SCRATCH/instance.txt"
+git -C "$SCRATCH" add instance.txt
+expect_fail_with "a marker alone on a line" "instance.txt"
+
 printf '%s\n' 'selected deployment overlay' > "$SCRATCH/instance.txt"
 git -C "$SCRATCH" add instance.txt
 expect_pass "generic deployment language"

@@ -200,6 +200,7 @@ alias(name = "manifest_resolution_test", actual = "//tools:manifest_resolution_t
 alias(name = "materialize_inference_key_test", actual = "//tools:materialize_inference_key_test")
 alias(name = "publication_hygiene_test", actual = "//tools:publication_hygiene_test")
 alias(name = "restore_test", actual = "//tools:restore_test")
+alias(name = "site_payload_test", actual = "//tools:site_payload_test")
 alias(name = "update_profiles_test", actual = "//tools:update_profiles_test")
 alias(name = "upstream_declaration_test", actual = "//tools:upstream_declaration_test")
 alias(name = "version_compare_test", actual = "//tools:version_compare_test")

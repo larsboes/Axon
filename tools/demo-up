@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# tools/demo-up — run the published demonstration's stack, against the demo overlay (#168).
+#
+# Points a single shell at demo/overlay, gives every capability a throwaway database, starts
+# them through the ordinary service runner, then seeds and records. The operator's own overlay
+# and axon.local.toml are never touched — see the AXON_OVERLAY_ROOT override in tools/lib/paths.sh.
+#
+# THE COLLISION, and why this script refuses rather than coping. The demo capabilities listen on
+# the SAME ports as a real installation's. They have to: `tools/capability.sh registry` reads
+# ports from each service.toml and does not apply machine.toml's per-capability `port` override
+# (only service-runner.sh does), so a demo overlay that moved its ports would be started on one
+# number and recorded from another. Sharing the ports means a real stack that is already up would
+# be silently adopted — service-runner sees a live pid file and returns "already up" — and the
+# seeder would then POST invented rows into a real ledger. So this refuses to start when anything
+# already answers, and says what to stop.
+#
+# That is one of three independent guards, because this is the failure that cannot be undone:
+#   1. here — refuse to start on top of a running stack
+#   2. tools/demo-seed — refuse unless the resolved overlay IS demo/overlay
+#   3. tools/demo-seed — refuse any capability whose store already holds rows
+#
+#   tools/demo-up            start, seed, record
+#   tools/demo-up start      start only
+#   tools/demo-up down       stop the demo stack
+#   tools/demo-up reset      drop and recreate the demo database
+set -euo pipefail
+
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AXON_ROOT="$(cd "$_here/.." && pwd)"
+
+# Set before paths.sh is sourced — that is the whole override.
+export AXON_OVERLAY_ROOT="$AXON_ROOT/demo/overlay"
+source "$_here/lib/paths.sh"
+
+# A database this repository owns the name of. Overridable for CI, which hands its service
+# container's URL in rather than inventing a second convention.
+DEMO_DATABASE_URL="${AXON_DEMO_DATABASE_URL:-postgresql://axon:axon@127.0.0.1:5432/axon_demo}"
+
+# Which capabilities the demo runs, read from the overlay rather than written twice.
+#
+# toml_array, not toml_get: toml_get unquotes a SCALAR and leaves an array line otherwise
+# untouched, so `capabilities = ["a", "b"]` came back with the key still on the front and the
+# word "capabilities" became the first thing this tried to start. Stripping brackets by hand
+# was the mistake; toml.sh already has the function for this.
+CAPABILITIES="$(toml_array capabilities "$AXON_MACHINE_TOML")"
+[ -n "$CAPABILITIES" ] || { echo "demo-up: no capabilities in $AXON_MACHINE_TOML" >&2; exit 1; }
+
+# Every capability reads $AXON_<NAME>_DATABASE_URL before its config file, so one exported
+# variable per capability is enough to move the whole stack onto a throwaway database without
+# any of them carrying a demo branch.
+for cap in $CAPABILITIES; do
+  var="AXON_$(printf '%s' "$cap" | tr '[:lower:]-' '[:upper:]_')_DATABASE_URL"
+  export "$var=$DEMO_DATABASE_URL"
+done
+# Finance keeps four things outside its database, each behind its own env var, and every one
+# of them has to land inside the demo tree rather than in an overlay. Discovered the expensive
+# way: a missing journal path is not a startup error, it is a 409 on the first write that
+# needs one, six minutes into a CI run. So all of them are set together.
+#
+#   journal              the plaintext double-entry ledger hledger reads and writes
+#   investment_snapshot  the reviewed holdings document
+#   balance_snapshot     manual balances, which no bank export can know
+#   obsidian root/dir    the vault tools/demo-seed writes fictional subscription notes into
+DEMO_STATE="$AXON_ROOT/demo/state"
+export AXON_FINANCE_JOURNAL="$DEMO_STATE/demo.journal"
+export AXON_FINANCE_INVESTMENT_SNAPSHOT="$DEMO_STATE/holdings.json"
+export AXON_FINANCE_BALANCE_SNAPSHOT="$DEMO_STATE/balances.json"
+export AXON_FINANCE_OBSIDIAN_ROOT="$AXON_ROOT/demo/vault"
+export AXON_FINANCE_OBSIDIAN_DIR="subscriptions"
+
+occupied() {  # occupied <port> — something is already listening
+  [ -n "$1" ] || return 1
+  # -sTCP:LISTEN rather than a connect attempt: a connect would also succeed against a
+  # half-open socket somewhere else on the network, and this question is about this host.
+  lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+}
+
+# Exits non-zero on a name the registry does not know, rather than answering "" — an empty
+# port makes occupied() false, which turns a bogus capability name into a silently skipped
+# collision check. That is exactly how a parsing bug in CAPABILITIES above survived a local
+# run of the guard: the guard reported the right five and said nothing about the sixth.
+port_of() {  # port_of <capability>
+  bun -e '
+    const { registry } = await import(`${process.env.AXON_ROOT}/tools/lib/demo-endpoints.ts`);
+    const hit = registry().find((s) => s.name === process.argv[1]);
+    if (!hit) {
+      console.error(`demo-up: no capability named ${process.argv[1]} in the registry`);
+      process.exit(1);
+    }
+    process.stdout.write(hit.port);
+  ' "$1"
+}
+
+refuse_if_running() {
+  local busy="" cap port
+  for cap in $CAPABILITIES; do
+    port="$(port_of "$cap")"
+    if occupied "$port"; then busy="$busy  $cap (port $port)\n"; fi
+  done
+  [ -n "$busy" ] || return 0
+  {
+    echo "demo-up: something is already listening on the demo's ports:"
+    echo ""
+    printf "%b" "$busy"
+    echo "The demo runs on the same ports a real installation does, so it cannot start"
+    echo "alongside one — and starting anyway would let the seeder write into whatever is"
+    echo "actually running there. Stop your stack first:"
+    echo ""
+    echo "  tools/service-runner.sh down"
+    echo ""
+  } >&2
+  exit 1
+}
+
+reset_database() {
+  local admin="${DEMO_DATABASE_URL%/*}/postgres"
+  local name="${DEMO_DATABASE_URL##*/}"
+  psql "$admin" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$name\" WITH (FORCE)" >/dev/null
+  psql "$admin" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$name\"" >/dev/null
+  echo "demo-up: recreated database $name"
+}
+
+start_stack() {
+  refuse_if_running
+  # Cleared, not reused. A journal left over from a previous run would be appended to, and the
+  # demo's whole claim is that its numbers descend from one fixed seed.
+  rm -rf "$DEMO_STATE"
+  mkdir -p "$DEMO_STATE"
+  : > "$AXON_FINANCE_JOURNAL"
+  local cap
+  for cap in $CAPABILITIES; do
+    echo "demo-up: starting $cap"
+    "$_here/service-runner.sh" start "$cap"
+  done
+}
+
+stop_stack() {
+  local cap
+  for cap in $CAPABILITIES; do
+    "$_here/service-runner.sh" stop "$cap" --no-hold || true
+  done
+}
+
+case "${1:-all}" in
+  start) start_stack ;;
+  down)  stop_stack ;;
+  reset) reset_database ;;
+  all)
+    start_stack
+    "$_here/demo-seed"
+    "$_here/demo-record"
+    ;;
+  *)
+    echo "usage: demo-up [all|start|down|reset]" >&2
+    exit 1
+    ;;
+esac

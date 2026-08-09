@@ -52,11 +52,32 @@ describe("renderSite", () => {
   });
 
   // #14: "Self-contained: no external CSS, JS, font or CDN request."
-  test("requests nothing from another host", () => {
-    const urls = html.match(/https?:\/\/[^"' )]+/g) ?? [];
-    expect(urls).toEqual([]);
+  //
+  // Written against SUBRESOURCES rather than against every URL in the document. It used to
+  // assert that no `https://` appeared anywhere at all, which is a stricter rule than the
+  // criterion and a different one: an `<a href>` a reader may click is not something the page
+  // fetches, and #168 needs the footer to link to the repository the whole site is generated
+  // from. What matters is that nothing loads while the page renders, so that is what is
+  // asserted — src, stylesheet links, and CSS url() — and it now catches an external image or
+  // font, which the old blanket match would have reported without distinguishing.
+  test("loads nothing from another host", () => {
+    const subresources = [
+      ...html.matchAll(/\bsrc\s*=\s*["']([^"']+)/g),
+      ...html.matchAll(/<link\b[^>]*\bhref\s*=\s*["']([^"']+)/g),
+      ...html.matchAll(/url\(\s*["']?([^"')]+)/g),
+    ].map((m) => m[1]);
+    expect(subresources.filter((u) => /^(https?:)?\/\//.test(u))).toEqual([]);
     expect(html).not.toContain("<script");
     expect(html).not.toContain("@import");
+  });
+
+  // The links that ARE allowed still have to be ones this repository owns — a generated page
+  // that grew a third-party link would be a supply-chain surface nobody reviewed.
+  test("links off-site only to the repository it is generated from", () => {
+    const hosts = new Set(
+      [...html.matchAll(/https?:\/\/([^/"' )]+)/g)].map((m) => m[1]),
+    );
+    expect([...hosts]).toEqual(["github.com"]);
   });
 
   // #14: "Every rendered fact traces to a manifest or a generated artifact." The code graph is

@@ -13,6 +13,11 @@ const config = {
   preprocess: vitePreprocess(),
   kit: {
     adapter: adapter({ pages: "dist", assets: "dist", fallback: "index.html", strict: false }),
+    // Empty on a real machine, where the shell is served from the root of its own port.
+    // The published demo (#168) is served from a subdirectory of a GitHub Pages site, and a
+    // static SPA cannot discover that at runtime — every asset URL and every router link is
+    // baked in at build time. tools/demo-site sets it; nothing else does.
+    paths: { base: process.env.AXON_DEMO_BASE ?? "" },
   },
 };
 

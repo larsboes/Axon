@@ -22,12 +22,21 @@
 // Self-contained by requirement (#14) and by house rule: inline CSS, no script, no font, no image,
 // no request to any other host. The one interactive element (filtering by kind) is CSS-only.
 //
+// Since #168 this is the site's LANDING page rather than the whole site: the reference pages
+// (tools/generate-docs) and the live demo (tools/demo-site) sit beside it, and the shell, the
+// stylesheet and the nav that ties the three together moved to tools/lib/site-style.ts. What
+// stayed here is unchanged — the self-model tables, and the argument above about which of
+// them may honestly be published.
+//
 //   tools/generate-site                 write site/index.html
 //   tools/generate-site --out <dir>     write <dir>/index.html
 //   tools/generate-site --check         render to memory, report size, write nothing
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+
+import { loadManifest } from "./lib/demo-endpoints.ts";
+import { esc, page } from "./lib/site-style.ts";
 
 const AXON_ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
 
@@ -40,13 +49,6 @@ interface Coupling { from: string; to: string; kinds: string[]; evidence: string
 interface Upstream { name: string; verdict: string; pin: string }
 interface SelfModel { schema: number; generator: string; units: Unit[]; coupling: Coupling[]; upstreams: Upstream[] }
 
-// Minimal, total escaping. Every value below comes from a tracked manifest, but a manifest is
-// still text somebody edits, and an unescaped `&` in a `why` field would be a silent corruption
-// rather than a visible one.
-const esc = (s: unknown): string =>
-  String(s ?? "")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
 const KIND_ORDER: Unit["kind"][] = ["capability", "spine", "lib", "pack"];
 const KIND_LABEL: Record<string, string> = {
@@ -132,79 +134,17 @@ ${body}
 </section>`;
 }
 
-export function renderSite(model: SelfModel): string {
+export function renderSite(model: SelfModel, demoed: string[] = []): string {
   const counts = KIND_ORDER
     .map((k) => [k, model.units.filter((u) => u.kind === k).length] as const)
     .filter(([, n]) => n > 0);
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Axon — self-model</title>
-<meta name="description" content="What Axon is: its capabilities, their contracts, and how they connect — generated from the repository's own manifests.">
-<style>
-  :root {
-    color-scheme: light dark;
-    --bg: #fbfbfa; --fg: #1a1a1a; --dim: #5b5b58; --line: #e2e1dd;
-    --card: #ffffff; --accent: #2b5f8f; --code-bg: #f2f1ee;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #121312; --fg: #e8e7e3; --dim: #9a9a95; --line: #2a2b29;
-      --card: #191a19; --accent: #7fb3dd; --code-bg: #202120;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 0 1.25rem 5rem; background: var(--bg); color: var(--fg);
-    font: 15px/1.6 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-  main { max-width: 62rem; margin: 0 auto; }
-  header { padding: 4rem 0 2rem; border-bottom: 1px solid var(--line); }
-  h1 { margin: 0 0 .4rem; font-size: 2.1rem; letter-spacing: -.02em; }
-  .tagline { margin: 0; max-width: 44rem; color: var(--dim); font-size: 1.05rem; }
-  .totals { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1.6rem 0 0; padding: 0; list-style: none; }
-  .totals li {
-    padding: .35rem .7rem; border: 1px solid var(--line); border-radius: 999px;
-    background: var(--card); font-size: .82rem; color: var(--dim);
-  }
-  .totals strong { color: var(--fg); font-variant-numeric: tabular-nums; }
-  section { padding: 2.5rem 0 0; }
-  h2 { margin: 0 0 .3rem; font-size: 1.3rem; letter-spacing: -.01em; }
-  h3 { margin: 1.6rem 0 .5rem; font-size: .95rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
-  .count {
-    margin-left: .4rem; padding: .1rem .45rem; border-radius: 4px; background: var(--code-bg);
-    font-size: .75rem; font-weight: 400; color: var(--dim); vertical-align: middle;
-    font-variant-numeric: tabular-nums;
-  }
-  .blurb { margin: 0 0 1rem; max-width: 46rem; color: var(--dim); font-size: .9rem; }
-  /* Wide content scrolls inside its own box; the page body never scrolls sideways. */
-  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
-  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
-  th, td { padding: .55rem .8rem; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
-  tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
-  thead th { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 500; }
-  tbody th { font-weight: 600; white-space: nowrap; }
-  code {
-    padding: .1rem .35rem; border-radius: 4px; background: var(--code-bg);
-    font: .85em ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere;
-  }
-  .pins { margin: 0; padding: 0; list-style: none; display: grid; gap: .3rem;
-          grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr)); }
-  .pins li {
-    display: flex; align-items: baseline; justify-content: space-between; gap: .6rem;
-    padding: .4rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card);
-    font-size: .85rem;
-  }
-  .pins em { color: var(--dim); font-size: .8rem; }
-  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--dim); font-size: .82rem; }
-  footer code { background: none; padding: 0; }
-  a { color: var(--accent); }
-</style>
-</head>
-<body>
-<main>
+  return page({
+    title: "Axon — one tree that knows what it runs",
+    description:
+      "What Axon is: its capabilities, their contracts, and how they connect — generated from the repository's own manifests, with a live demo running on synthetic data.",
+    root: "",
+    current: "overview",
+    body: `
 <header>
   <h1>Axon</h1>
   <p class="tagline">One tree that knows what it runs. Every capability declares what it needs in a manifest; one shared runner decides how to satisfy it on this machine.</p>
@@ -214,17 +154,22 @@ ${counts.map(([k, n]) => `    <li><strong>${n}</strong> ${esc(KIND_LABEL[k].toLo
     <li><strong>${model.coupling.length}</strong> couplings</li>
   </ul>
 </header>
+
+<section>
+  <h2>Three ways in</h2>
+  <p class="blurb">Nothing on this site is written by hand. The tables below are generated from the manifests, the reference pages from those plus a live recording, and the demo runs the real dashboard against data that was never real.</p>
+  <ul class="cards">
+    <li><a href="demo/"><strong>Live demo →</strong><span>The actual dashboard, on ${demoed.length} capabilities seeded with generated data. Writing is disabled; nothing in it is real.</span></a></li>
+    <li><a href="docs/index.html"><strong>Reference →</strong><span>One page per unit: declared contract, what it is coupled to, and response shapes read out of the recording.</span></a></li>
+    <li><a href="https://github.com/larsboes/Axon"><strong>Source →</strong><span>The repository, its README, and the manifests every page here is generated from.</span></a></li>
+  </ul>
+</section>
 ${renderUnits(model.units)}
 ${renderCoupling(model.coupling)}
-${renderUpstreams(model.upstreams)}
-<footer>
-  <p>Generated from <code>self.json</code> (schema ${esc(model.schema)}, written by <code>${esc(model.generator)}</code>) and rendered by <code>tools/generate-site.ts</code>. Nothing here is hand-maintained.</p>
-  <p>Code-graph counts and the per-unit file counts in <code>self.json</code> are deliberately absent: they come from an untracked artifact, so a fresh clone cannot reproduce them, and a number nobody can check does not belong on a page like this.</p>
-</footer>
-</main>
-</body>
-</html>
-`;
+${renderUpstreams(model.upstreams)}`,
+    footer: `  <p>Generated from <code>self.json</code> (schema ${esc(model.schema)}, written by <code>${esc(model.generator)}</code>) and rendered by <code>tools/generate-site.ts</code>. Nothing here is hand-maintained.</p>
+  <p>Code-graph counts and the per-unit file counts in <code>self.json</code> are deliberately absent: they come from an untracked artifact, so a fresh clone cannot reproduce them, and a number nobody can check does not belong on a page like this.</p>`,
+  });
 }
 
 function main(): void {
@@ -247,7 +192,10 @@ function main(): void {
     console.error(`generate-site: self.json is schema ${model.schema}, this renderer knows schema 1`);
     process.exit(1);
   }
-  const html = renderSite(model);
+  // Which capabilities the demo actually runs, read from demo.toml rather than inferred from
+  // what is NOT in its absent list — the demo covers a handful of the tree's capabilities, and
+  // "everything except the three we wrote a reason for" would overstate it by twenty.
+  const html = renderSite(model, loadManifest().capabilities.map((c) => c.name));
   if (args.includes("--check")) {
     console.log(`generate-site: renders ${html.length} bytes from schema ${model.schema} (nothing written)`);
     return;
