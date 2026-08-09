@@ -58,3 +58,4 @@ site/
 # behind an API that had already moved, with nothing to notice it.
 demo/fixtures/
 demo/vault/
+demo/state/

@@ -47,13 +47,26 @@ CAPABILITIES="$(toml_array capabilities "$AXON_MACHINE_TOML")"
 
 # Every capability reads $AXON_<NAME>_DATABASE_URL before its config file, so one exported
 # variable per capability is enough to move the whole stack onto a throwaway database without
-# any of them carrying a demo branch. AXON_FINANCE_OBSIDIAN_ROOT is the same idea for the one
-# capability that also reads a vault: tools/demo-seed writes fictional notes there first.
+# any of them carrying a demo branch.
 for cap in $CAPABILITIES; do
   var="AXON_$(printf '%s' "$cap" | tr '[:lower:]-' '[:upper:]_')_DATABASE_URL"
   export "$var=$DEMO_DATABASE_URL"
 done
+# Finance keeps four things outside its database, each behind its own env var, and every one
+# of them has to land inside the demo tree rather than in an overlay. Discovered the expensive
+# way: a missing journal path is not a startup error, it is a 409 on the first write that
+# needs one, six minutes into a CI run. So all of them are set together.
+#
+#   journal              the plaintext double-entry ledger hledger reads and writes
+#   investment_snapshot  the reviewed holdings document
+#   balance_snapshot     manual balances, which no bank export can know
+#   obsidian root/dir    the vault tools/demo-seed writes fictional subscription notes into
+DEMO_STATE="$AXON_ROOT/demo/state"
+export AXON_FINANCE_JOURNAL="$DEMO_STATE/demo.journal"
+export AXON_FINANCE_INVESTMENT_SNAPSHOT="$DEMO_STATE/holdings.json"
+export AXON_FINANCE_BALANCE_SNAPSHOT="$DEMO_STATE/balances.json"
 export AXON_FINANCE_OBSIDIAN_ROOT="$AXON_ROOT/demo/vault"
+export AXON_FINANCE_OBSIDIAN_DIR="subscriptions"
 
 occupied() {  # occupied <port> — something is already listening
   [ -n "$1" ] || return 1
@@ -109,6 +122,11 @@ reset_database() {
 
 start_stack() {
   refuse_if_running
+  # Cleared, not reused. A journal left over from a previous run would be appended to, and the
+  # demo's whole claim is that its numbers descend from one fixed seed.
+  rm -rf "$DEMO_STATE"
+  mkdir -p "$DEMO_STATE"
+  : > "$AXON_FINANCE_JOURNAL"
   local cap
   for cap in $CAPABILITIES; do
     echo "demo-up: starting $cap"
