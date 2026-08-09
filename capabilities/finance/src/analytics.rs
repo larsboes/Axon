@@ -5,7 +5,7 @@
 //! prevents the UI from growing a second definition of income or spending.
 
 use crate::accounting::JournalTransaction;
-use crate::investment::ReviewedHoldingsSnapshot;
+use crate::investment::{PortfolioValuation, ReviewedHoldingsSnapshot};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -119,6 +119,7 @@ pub struct DashboardProjection {
     pub accounts: Vec<String>,
     pub categories: Vec<String>,
     pub investment: Option<ReviewedHoldingsSnapshot>,
+    pub portfolio_values: Vec<PortfolioValuation>,
 }
 
 pub fn project(transactions: &[JournalTransaction], currency: &str) -> Vec<TransactionRow> {
@@ -333,6 +334,7 @@ pub fn dashboard(
         accounts: accounts.into_iter().collect(),
         categories: categories.into_iter().collect(),
         investment: None,
+        portfolio_values: Vec::new(),
     }
 }
 

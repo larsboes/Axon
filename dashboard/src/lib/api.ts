@@ -2079,6 +2079,13 @@ export interface ReviewedHoldingsSnapshot {
   }>;
 }
 
+export interface PortfolioValuation {
+  currency: string;
+  value: { mantissa: string; scale: number };
+  priced_holdings: number;
+  unpriced_holdings: number;
+}
+
 export interface FinanceTransaction {
   id: string;
   date: string;
@@ -2123,6 +2130,7 @@ export interface FinanceDashboard {
   accounts: string[];
   categories: string[];
   investment: ReviewedHoldingsSnapshot | null;
+  portfolio_values: PortfolioValuation[];
 }
 
 export const finance = {

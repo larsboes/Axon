@@ -601,9 +601,16 @@ async fn dashboard_projection(
             .transaction_projection()
             .map_err(|error| error.to_string())?;
         let mut view = analytics::dashboard(&rows, &budgets, &filter);
-        view.investment = store
+        let investment = store
             .holding_projection()
             .map_err(|error| error.to_string())?;
+        view.portfolio_values = investment
+            .as_ref()
+            .map(investment::portfolio_valuations)
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        view.investment = investment;
         Ok::<_, String>(view)
     })
     .await

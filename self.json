@@ -136,8 +136,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 80,
-        "nodes": 473
+        "files": 84,
+        "nodes": 496
       }
     },
     {
@@ -161,8 +161,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 11,
-        "nodes": 259
+        "files": 12,
+        "nodes": 355
       }
     },
     {
@@ -1340,7 +1340,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 8471,
+    "nodes": 8612,
     "external": 7,
     "stale": [],
     "unmatched": [

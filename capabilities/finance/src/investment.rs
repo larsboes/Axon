@@ -113,6 +113,21 @@ pub struct ReviewedHoldingsSource {
     pub coverage: HoldingsCoverage,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortfolioValuation {
+    pub currency: String,
+    pub value: DecimalValue,
+    pub priced_holdings: usize,
+    pub unpriced_holdings: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DecimalValue {
+    #[serde(serialize_with = "serialize_i128_as_string")]
+    pub mantissa: i128,
+    pub scale: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ReviewedHoldingsCollection {
     schema_version: u32,
@@ -133,6 +148,39 @@ struct Position {
     quantity: Quantity,
     latest_price: Option<(String, Quantity)>,
     currency: String,
+}
+
+pub fn portfolio_valuations(
+    snapshot: &ReviewedHoldingsSnapshot,
+) -> ImportResult<Vec<PortfolioValuation>> {
+    let mut values = BTreeMap::<String, PortfolioValuation>::new();
+    for holding in &snapshot.holdings {
+        let valuation =
+            values
+                .entry(holding.currency.clone())
+                .or_insert_with(|| PortfolioValuation {
+                    currency: holding.currency.clone(),
+                    value: DecimalValue {
+                        mantissa: 0,
+                        scale: 0,
+                    },
+                    priced_holdings: 0,
+                    unpriced_holdings: 0,
+                });
+        match &holding.latest_unit_price {
+            Some(price) => {
+                let position_value = multiply(&holding.quantity, price)?;
+                valuation.value = if valuation.value.mantissa == 0 {
+                    position_value
+                } else {
+                    add_values(&valuation.value, &position_value)?
+                };
+                valuation.priced_holdings += 1;
+            }
+            None => valuation.unpriced_holdings += 1,
+        }
+    }
+    Ok(values.into_values().collect())
 }
 
 pub fn preview_csv(
@@ -668,7 +716,54 @@ fn add(left: &Quantity, right: &Quantity) -> ImportResult<Quantity> {
     Ok(Quantity { mantissa, scale })
 }
 
+fn multiply(left: &Quantity, right: &Quantity) -> ImportResult<DecimalValue> {
+    let mantissa = i128::from(left.mantissa)
+        .checked_mul(i128::from(right.mantissa))
+        .ok_or_else(|| ImportError("portfolio value is outside the supported range".into()))?;
+    let scale = left
+        .scale
+        .checked_add(right.scale)
+        .ok_or_else(|| ImportError("portfolio value is outside the supported range".into()))?;
+    Ok(normalize_value(DecimalValue { mantissa, scale }))
+}
+
+fn add_values(left: &DecimalValue, right: &DecimalValue) -> ImportResult<DecimalValue> {
+    let scale = left.scale.max(right.scale);
+    let left_factor = 10_i128
+        .checked_pow(scale - left.scale)
+        .ok_or_else(|| ImportError("portfolio value is outside the supported range".into()))?;
+    let right_factor = 10_i128
+        .checked_pow(scale - right.scale)
+        .ok_or_else(|| ImportError("portfolio value is outside the supported range".into()))?;
+    let mantissa = left
+        .mantissa
+        .checked_mul(left_factor)
+        .and_then(|value| {
+            right
+                .mantissa
+                .checked_mul(right_factor)
+                .and_then(|right| value.checked_add(right))
+        })
+        .ok_or_else(|| ImportError("portfolio value is outside the supported range".into()))?;
+    Ok(normalize_value(DecimalValue { mantissa, scale }))
+}
+
+fn normalize_value(mut value: DecimalValue) -> DecimalValue {
+    while value.scale > 0 && value.mantissa % 10 == 0 {
+        value.mantissa /= 10;
+        value.scale -= 1;
+    }
+    value
+}
+
 fn serialize_i64_as_string<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&value.to_string())
+}
+
+fn serialize_i128_as_string<S>(value: &i128, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -1119,6 +1214,106 @@ mod tests {
                 .unwrap_err()
                 .0,
             "every confirmed instrument requires an explicit private alias"
+        );
+    }
+
+    #[test]
+    fn portfolio_valuation_is_exact_and_grouped_by_currency() {
+        let snapshot = ReviewedHoldingsSnapshot {
+            schema_version: 2,
+            snapshot_id: "synthetic".into(),
+            reviewed_at: "2026-08-09".into(),
+            coverage: HoldingsCoverage::Partial,
+            holdings: vec![
+                Holding {
+                    instrument: "ACME".into(),
+                    quantity: Quantity {
+                        mantissa: 125,
+                        scale: 2,
+                    },
+                    latest_unit_price: Some(Quantity {
+                        mantissa: 1234,
+                        scale: 2,
+                    }),
+                    currency: "EUR".into(),
+                },
+                Holding {
+                    instrument: "EXAMPLE".into(),
+                    quantity: Quantity {
+                        mantissa: 2,
+                        scale: 0,
+                    },
+                    latest_unit_price: Some(Quantity {
+                        mantissa: 500,
+                        scale: 2,
+                    }),
+                    currency: "EUR".into(),
+                },
+                Holding {
+                    instrument: "SAMPLE".into(),
+                    quantity: Quantity {
+                        mantissa: 3,
+                        scale: 0,
+                    },
+                    latest_unit_price: None,
+                    currency: "USD".into(),
+                },
+            ],
+            sources: Vec::new(),
+        };
+
+        assert_eq!(
+            portfolio_valuations(&snapshot).unwrap(),
+            vec![
+                PortfolioValuation {
+                    currency: "EUR".into(),
+                    value: DecimalValue {
+                        mantissa: 25425,
+                        scale: 3,
+                    },
+                    priced_holdings: 2,
+                    unpriced_holdings: 0,
+                },
+                PortfolioValuation {
+                    currency: "USD".into(),
+                    value: DecimalValue {
+                        mantissa: 0,
+                        scale: 0,
+                    },
+                    priced_holdings: 0,
+                    unpriced_holdings: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn portfolio_valuation_rejects_decimal_overflow() {
+        let snapshot = ReviewedHoldingsSnapshot {
+            schema_version: 2,
+            snapshot_id: "synthetic".into(),
+            reviewed_at: "2026-08-09".into(),
+            coverage: HoldingsCoverage::Complete,
+            holdings: (0..3)
+                .map(|index| Holding {
+                    instrument: format!("ACME-{index}"),
+                    quantity: Quantity {
+                        mantissa: i64::MAX,
+                        scale: 0,
+                    },
+                    latest_unit_price: Some(Quantity {
+                        mantissa: i64::MAX,
+                        scale: 0,
+                    }),
+                    currency: "EUR".into(),
+                })
+                .collect(),
+            sources: Vec::new(),
+        };
+
+        assert_eq!(
+            portfolio_valuations(&snapshot).unwrap_err().0,
+            "portfolio value is outside the supported range"
         );
     }
 }
