@@ -23,6 +23,12 @@ name: Pages
 on:
   push:
     branches: [main]
+  # Build on a pull request too, and deploy nothing. Without this the first full run of the
+  # seed-and-record pipeline would be the one that publishes it: a seeder written against a
+  # changed API fails here, on the branch, instead of taking the public page down with it.
+  # The `deploy` job below is gated on the event, not on the branch, so a fork PR cannot
+  # reach the Pages environment.
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -30,9 +36,11 @@ permissions:
 
 # One deployment at a time, and never cancel one mid-flight: a cancelled deploy can leave Pages
 # serving a half-published state, which is worse than serving the previous page a minute longer.
+# Pull-request builds get their own group per branch, so two of them do not serialise behind
+# each other and neither queues in front of a real deployment.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -168,9 +176,11 @@ jobs:
           done
 
       - name: Configure Pages
+        if: github.event_name != 'pull_request'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
@@ -178,6 +188,8 @@ jobs:
   deploy:
     name: deploy to Pages
     needs: build
+    # A pull request builds and is gated; it never publishes.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pages: write
