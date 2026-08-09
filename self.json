@@ -35,6 +35,10 @@
       }
     },
     {
+      "name": "axon",
+      "kind": "pack"
+    },
+    {
       "name": "axon-config",
       "kind": "lib",
       "code": {
@@ -136,8 +140,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 84,
-        "nodes": 498
+        "files": 88,
+        "nodes": 515
       }
     },
     {
@@ -161,8 +165,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 12,
-        "nodes": 405
+        "files": 13,
+        "nodes": 424
       }
     },
     {
@@ -1340,7 +1344,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 8678,
+    "nodes": 8714,
     "external": 7,
     "stale": [],
     "unmatched": [
