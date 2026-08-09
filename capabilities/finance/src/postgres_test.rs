@@ -1,9 +1,9 @@
 use finance::accounting::{Amount, JournalTransaction, Posting};
 use finance::analytics::{project, TransactionRow};
-use finance::import::{parse_csv, CandidateState, CsvMapping};
-use finance::investment::{
-    Holding, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource,
+use finance::import::{
+    parse_csv, AmountSign, CandidateState, CsvDateFormat, CsvMapping, CsvRowPolicy,
 };
+use finance::investment::{Holding, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource};
 use finance::FinanceStore;
 use postgres::{Client, NoTls};
 
@@ -78,25 +78,55 @@ fn candidate_staging_is_idempotent_and_review_is_explicit() {
         currency_column: None,
         default_currency: "EUR".into(),
         source_account: "assets:bank:checking".into(),
+        amount_sign: AmountSign::AsProvided,
+        date_formats: vec![CsvDateFormat::IsoYearMonthDay],
+        row_policy: CsvRowPolicy::Strict,
     };
-    let candidates = parse_csv(
-        b"Date;Amount;Description;Reference\n2026-08-01;-10.00;Synthetic market;one\n",
+    let first_export = parse_csv(
+        b"Date;Amount;Description;Reference\n2026-08-01;-10.00;Synthetic market;one\n2026-08-02;-5.00;Synthetic service;two\n",
+        &mapping,
+    )
+    .unwrap();
+    let overlapping_export = parse_csv(
+        b"Date;Amount;Description;Reference\n2026-08-02;-5.00;Synthetic service;two\n2026-08-03;20.00;Synthetic refund;three\n",
         &mapping,
     )
     .unwrap();
     let (store, _schema) = store("candidates");
-    assert_eq!(store.stage_candidates(&candidates, "2026-08-08").unwrap(), (1, 0));
-    assert_eq!(store.stage_candidates(&candidates, "2026-08-08").unwrap(), (0, 1));
-    assert_eq!(store.list_candidates().unwrap()[0].state, CandidateState::Pending);
+    assert_eq!(
+        store.stage_candidates(&first_export, "2026-08-08").unwrap(),
+        (2, 0)
+    );
+    assert_eq!(
+        store
+            .stage_candidates(&overlapping_export, "2026-08-08")
+            .unwrap(),
+        (1, 1)
+    );
+    assert_eq!(
+        store
+            .candidate(&first_export[0].id)
+            .unwrap()
+            .unwrap()
+            .state,
+        CandidateState::Pending
+    );
     store
         .review_candidate(
-            &candidates[0].id,
+            &first_export[0].id,
             CandidateState::Rejected,
             "expenses:food",
             "2026-08-08",
         )
         .unwrap();
-    assert_eq!(store.list_candidates().unwrap()[0].state, CandidateState::Rejected);
+    assert_eq!(
+        store
+            .candidate(&first_export[0].id)
+            .unwrap()
+            .unwrap()
+            .state,
+        CandidateState::Rejected
+    );
 }
 
 #[test]

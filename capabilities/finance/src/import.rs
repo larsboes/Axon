@@ -7,6 +7,7 @@
 use csv::StringRecord;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::Path;
 
 pub type ImportResult<T> = Result<T, ImportError>;
@@ -38,6 +39,36 @@ pub struct CsvMapping {
     #[serde(default = "default_currency")]
     pub default_currency: String,
     pub source_account: String,
+    #[serde(default)]
+    pub amount_sign: AmountSign,
+    #[serde(default = "default_date_formats")]
+    pub date_formats: Vec<CsvDateFormat>,
+    #[serde(default)]
+    pub row_policy: CsvRowPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AmountSign {
+    #[default]
+    AsProvided,
+    Invert,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CsvDateFormat {
+    IsoYearMonthDay,
+    DayMonthYearDots,
+    DayMonthYearSlashes,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CsvRowPolicy {
+    #[default]
+    Strict,
+    RequiredFields,
 }
 
 fn default_delimiter() -> char {
@@ -50,6 +81,13 @@ fn default_decimal_separator() -> char {
 
 fn default_currency() -> String {
     "EUR".into()
+}
+
+fn default_date_formats() -> Vec<CsvDateFormat> {
+    vec![
+        CsvDateFormat::IsoYearMonthDay,
+        CsvDateFormat::DayMonthYearDots,
+    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +132,31 @@ pub struct TransactionCandidate {
     pub state: CandidateState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CsvImportPreview {
+    pub preview_id: String,
+    pub candidate_count: usize,
+    pub duplicate_rows: usize,
+    pub ignored_non_transaction_rows: usize,
+    pub outflow_count: usize,
+    pub inflow_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedCsv {
+    pub preview: CsvImportPreview,
+    pub candidates: Vec<TransactionCandidate>,
+}
+
 pub fn parse_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<Vec<TransactionCandidate>> {
+    Ok(prepare_csv(bytes, mapping)?.candidates)
+}
+
+pub fn preview_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<CsvImportPreview> {
+    Ok(prepare_csv(bytes, mapping)?.preview)
+}
+
+pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedCsv> {
     validate_mapping(mapping)?;
     if !mapping.delimiter.is_ascii() {
         return Err(ImportError("delimiter must be one ASCII character".into()));
@@ -106,7 +168,7 @@ pub fn parse_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<Vec<Transac
     }
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(mapping.delimiter as u8)
-        .flexible(false)
+        .flexible(mapping.row_policy == CsvRowPolicy::RequiredFields)
         .from_reader(bytes);
     let headers = reader
         .headers()
@@ -119,16 +181,39 @@ pub fn parse_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<Vec<Transac
     let currency = optional_column(&headers, mapping.currency_column.as_deref())?;
 
     let mut candidates = Vec::new();
-    for record in reader.records() {
-        let record = record.map_err(|_| ImportError("CSV row does not match its header".into()))?;
-        let booked_at = normalize_date(record.get(date).unwrap_or_default())?;
-        let amount_cents = parse_decimal_cents(
-            record.get(amount).unwrap_or_default(),
-            mapping.decimal_separator,
-        )?;
-        let description = normalize_text(record.get(description).unwrap_or_default());
+    let mut fingerprints = HashSet::new();
+    let mut duplicate_rows = 0;
+    let mut ignored_non_transaction_rows = 0;
+    for (index, record) in reader.records().enumerate() {
+        let row = index + 2;
+        let record =
+            record.map_err(|_| ImportError(format!("CSV row {row} does not match its header")))?;
+        let date_value = record.get(date).unwrap_or_default();
+        let amount_value = record.get(amount).unwrap_or_default();
+        let description_value = record.get(description).unwrap_or_default();
+        if mapping.row_policy == CsvRowPolicy::RequiredFields
+            && amount_value.trim().is_empty()
+            && normalize_date_with_formats(date_value, &mapping.date_formats).is_err()
+        {
+            ignored_non_transaction_rows += 1;
+            continue;
+        }
+        let booked_at = normalize_date_with_formats(date_value, &mapping.date_formats)
+            .map_err(|error| row_error(row, error))?;
+        let mut amount_cents = parse_decimal_cents(amount_value, mapping.decimal_separator)
+            .map_err(|error| row_error(row, error))?;
+        if mapping.amount_sign == AmountSign::Invert {
+            amount_cents = amount_cents.checked_neg().ok_or_else(|| {
+                ImportError(format!(
+                    "CSV row {row}: amount is outside the supported range"
+                ))
+            })?;
+        }
+        let description = normalize_text(description_value);
         if description.is_empty() {
-            return Err(ImportError("description must not be blank".into()));
+            return Err(ImportError(format!(
+                "CSV row {row}: description must not be blank"
+            )));
         }
         let source_reference = reference
             .and_then(|index| record.get(index))
@@ -141,7 +226,9 @@ pub fn parse_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<Vec<Transac
             .unwrap_or_else(|| mapping.default_currency.clone())
             .to_ascii_uppercase();
         if currency.len() != 3 || !currency.bytes().all(|byte| byte.is_ascii_uppercase()) {
-            return Err(ImportError("currency must be a three-letter code".into()));
+            return Err(ImportError(format!(
+                "CSV row {row}: currency must be a three-letter code"
+            )));
         }
         let amount_text = amount_cents.to_string();
         let fingerprint = fingerprint(&[
@@ -152,6 +239,10 @@ pub fn parse_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<Vec<Transac
             source_reference.as_deref().unwrap_or(""),
             &mapping.source_account,
         ]);
+        if !fingerprints.insert(fingerprint.clone()) {
+            duplicate_rows += 1;
+            continue;
+        }
         candidates.push(TransactionCandidate {
             id: format!("candidate_{fingerprint}"),
             fingerprint,
@@ -170,7 +261,26 @@ pub fn parse_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<Vec<Transac
             state: CandidateState::Pending,
         });
     }
-    Ok(candidates)
+    let outflow_count = candidates
+        .iter()
+        .filter(|candidate| candidate.amount_cents < 0)
+        .count();
+    let inflow_count = candidates
+        .iter()
+        .filter(|candidate| candidate.amount_cents > 0)
+        .count();
+    let preview = CsvImportPreview {
+        preview_id: preview_id(&candidates, duplicate_rows, ignored_non_transaction_rows),
+        candidate_count: candidates.len(),
+        duplicate_rows,
+        ignored_non_transaction_rows,
+        outflow_count,
+        inflow_count,
+    };
+    Ok(PreparedCsv {
+        preview,
+        candidates,
+    })
 }
 
 pub fn render_journal_entry(
@@ -189,14 +299,18 @@ pub fn render_journal_entry(
             "zero-value candidates are not journal entries".into(),
         ));
     }
-    if candidate.amount_cents < 0 && !account.starts_with("expenses:") {
+    let balance_transfer = is_balance_account(&candidate.source_account)
+        && is_balance_account(account)
+        && candidate.source_account != account;
+    if candidate.amount_cents < 0 && !account.starts_with("expenses:") && !balance_transfer {
         return Err(ImportError(
-            "outflows must be reviewed into an expenses account".into(),
+            "outflows must be reviewed into an expenses account or a different balance account"
+                .into(),
         ));
     }
-    if candidate.amount_cents > 0 && !account.starts_with("income:") {
+    if candidate.amount_cents > 0 && !account.starts_with("income:") && !balance_transfer {
         return Err(ImportError(
-            "inflows must be reviewed into an income account".into(),
+            "inflows must be reviewed into an income account or a different balance account".into(),
         ));
     }
     let description = sanitize_description(&candidate.description);
@@ -244,7 +358,16 @@ fn validate_mapping(mapping: &CsvMapping) -> ImportResult<()> {
             "default currency must be a three-letter code".into(),
         ));
     }
+    if mapping.date_formats.is_empty() {
+        return Err(ImportError(
+            "at least one explicit date format is required".into(),
+        ));
+    }
     Ok(())
+}
+
+fn is_balance_account(account: &str) -> bool {
+    account.starts_with("assets:") || account.starts_with("liabilities:")
 }
 
 pub fn validate_account(account: &str) -> ImportResult<()> {
@@ -267,7 +390,7 @@ pub fn validate_account(account: &str) -> ImportResult<()> {
 fn column(headers: &StringRecord, name: &str) -> ImportResult<usize> {
     headers
         .iter()
-        .position(|header| header.trim() == name)
+        .position(|header| header.trim().trim_start_matches('\u{feff}') == name)
         .ok_or_else(|| ImportError(format!("configured column {name:?} is absent")))
 }
 
@@ -276,25 +399,56 @@ fn optional_column(headers: &StringRecord, name: Option<&str>) -> ImportResult<O
 }
 
 pub(crate) fn normalize_date(value: &str) -> ImportResult<String> {
+    normalize_date_with_formats(value, &default_date_formats())
+}
+
+fn normalize_date_with_formats(value: &str, formats: &[CsvDateFormat]) -> ImportResult<String> {
     let value = value.trim();
-    let normalized = if value.len() == 10 && value.as_bytes().get(2) == Some(&b'.') {
-        format!("{}-{}-{}", &value[6..10], &value[3..5], &value[0..2])
-    } else {
-        value.to_string()
-    };
-    let bytes = normalized.as_bytes();
-    if bytes.len() == 10
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
-    {
-        Ok(normalized)
-    } else {
-        Err(ImportError("date must be YYYY-MM-DD or DD.MM.YYYY".into()))
+    for format in formats {
+        let parts = match format {
+            CsvDateFormat::IsoYearMonthDay => date_parts(value, b'-', true),
+            CsvDateFormat::DayMonthYearDots => date_parts(value, b'.', false),
+            CsvDateFormat::DayMonthYearSlashes => date_parts(value, b'/', false),
+        };
+        if let Some((year, month, day)) = parts.filter(|parts| valid_date(*parts)) {
+            return Ok(format!("{year:04}-{month:02}-{day:02}"));
+        }
     }
+    Err(ImportError(
+        "date does not match the configured formats or is not a calendar date".into(),
+    ))
+}
+
+fn date_parts(value: &str, separator: u8, year_first: bool) -> Option<(u32, u32, u32)> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10
+        || bytes[2 + usize::from(year_first) * 2] != separator
+        || bytes[5 + usize::from(year_first) * 2] != separator
+    {
+        return None;
+    }
+    let digits = |start: usize, end: usize| value.get(start..end)?.parse::<u32>().ok();
+    if year_first {
+        Some((digits(0, 4)?, digits(5, 7)?, digits(8, 10)?))
+    } else {
+        Some((digits(6, 10)?, digits(3, 5)?, digits(0, 2)?))
+    }
+}
+
+fn valid_date((year, month, day): (u32, u32, u32)) -> bool {
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    day > 0 && day <= days
+}
+
+fn row_error(row: usize, error: ImportError) -> ImportError {
+    ImportError(format!("CSV row {row}: {}", error.0))
 }
 
 fn parse_decimal_cents(value: &str, decimal_separator: char) -> ImportResult<i64> {
@@ -307,6 +461,14 @@ fn parse_decimal_cents(value: &str, decimal_separator: char) -> ImportResult<i64
     value = value.replace(grouping_separator, "");
     if value.matches(decimal_separator).count() > 1 {
         return Err(ImportError("amount has more than one decimal mark".into()));
+    }
+    let unsigned = value.strip_prefix(['-', '+']).unwrap_or(value.as_str());
+    if unsigned.is_empty()
+        || !unsigned
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == decimal_separator as u8)
+    {
+        return Err(ImportError("amount is not a decimal number".into()));
     }
     let decimal = value.rfind(decimal_separator);
     let negative = value.starts_with('-');
@@ -372,6 +534,23 @@ fn fingerprint(parts: &[&str]) -> String {
     encoded
 }
 
+fn preview_id(
+    candidates: &[TransactionCandidate],
+    duplicate_rows: usize,
+    ignored_non_transaction_rows: usize,
+) -> String {
+    let mut fingerprints: Vec<_> = candidates
+        .iter()
+        .map(|candidate| candidate.fingerprint.as_str())
+        .collect();
+    fingerprints.sort_unstable();
+    let duplicate_rows = duplicate_rows.to_string();
+    let ignored_non_transaction_rows = ignored_non_transaction_rows.to_string();
+    fingerprints.push(&duplicate_rows);
+    fingerprints.push(&ignored_non_transaction_rows);
+    fingerprint(&fingerprints)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +566,9 @@ mod tests {
             currency_column: Some("Waehrung".into()),
             default_currency: "EUR".into(),
             source_account: "assets:bank:checking".into(),
+            amount_sign: AmountSign::AsProvided,
+            date_formats: default_date_formats(),
+            row_policy: CsvRowPolicy::Strict,
         }
     }
 
@@ -409,6 +591,83 @@ mod tests {
         let first = parse_csv(csv, &mapping()).unwrap();
         let second = parse_csv(csv, &mapping()).unwrap();
         assert_eq!(first[0].id, second[0].id);
+    }
+
+    #[test]
+    fn credit_card_shape_is_explicitly_normalized_before_preview() {
+        let mut mapping = mapping();
+        mapping.delimiter = ',';
+        mapping.date_column = "Date".into();
+        mapping.amount_column = "Amount".into();
+        mapping.description_column = "Description".into();
+        mapping.reference_column = None;
+        mapping.currency_column = None;
+        mapping.amount_sign = AmountSign::Invert;
+        mapping.date_formats = vec![CsvDateFormat::DayMonthYearSlashes];
+        mapping.row_policy = CsvRowPolicy::RequiredFields;
+        mapping.source_account = "liabilities:card:review".into();
+        let csv = b"\xef\xbb\xbfDate,Amount,Description,Optional\n09/08/2026,\"12,34\",Synthetic service\nSummary\n09/08/2026,\"12,34\",Synthetic service\n";
+
+        let prepared = prepare_csv(csv, &mapping).unwrap();
+
+        assert_eq!(prepared.preview.candidate_count, 1);
+        assert_eq!(prepared.preview.outflow_count, 1);
+        assert_eq!(prepared.preview.inflow_count, 0);
+        assert_eq!(prepared.preview.duplicate_rows, 1);
+        assert_eq!(prepared.preview.ignored_non_transaction_rows, 1);
+        assert_eq!(prepared.candidates[0].booked_at, "2026-08-09");
+        assert_eq!(prepared.candidates[0].amount_cents, -1234);
+        assert_eq!(
+            prepared.candidates[0].proposed_account,
+            "expenses:uncategorized"
+        );
+    }
+
+    #[test]
+    fn rows_with_amounts_fail_closed_when_dates_are_unsupported() {
+        let mut mapping = mapping();
+        mapping.delimiter = ',';
+        mapping.date_column = "Date".into();
+        mapping.amount_column = "Amount".into();
+        mapping.description_column = "Description".into();
+        mapping.reference_column = None;
+        mapping.currency_column = None;
+        mapping.date_formats = vec![CsvDateFormat::DayMonthYearSlashes];
+        mapping.row_policy = CsvRowPolicy::RequiredFields;
+        let error = preview_csv(
+            b"Date,Amount,Description\n09-08-2026,12.34,Synthetic service\n",
+            &mapping,
+        )
+        .unwrap_err();
+
+        assert!(error.0.contains("CSV row 2"));
+        assert!(error.0.contains("configured formats"));
+    }
+
+    #[test]
+    fn amounts_with_unconfigured_text_fail_closed() {
+        let error = parse_decimal_cents("EUR 12,34", ',').unwrap_err();
+        assert_eq!(error.0, "amount is not a decimal number");
+        assert_eq!(parse_decimal_cents("+12,34", ',').unwrap(), 1234);
+        assert_eq!(parse_decimal_cents("12,34-", ',').unwrap(), -1234);
+    }
+
+    #[test]
+    fn balance_account_transfers_render_without_weakening_direction_checks() {
+        let mut candidate = parse_csv(
+            b"Buchung;Betrag;Text;Referenz;Waehrung\n02.08.2026;-12,34;Synthetic settlement;row-1;EUR\n",
+            &mapping(),
+        )
+        .unwrap()
+        .remove(0);
+
+        assert!(render_journal_entry(&candidate, "liabilities:card:review").is_ok());
+        assert!(render_journal_entry(&candidate, "income:salary").is_err());
+
+        candidate.source_account = "liabilities:card:review".into();
+        candidate.amount_cents = 1234;
+        assert!(render_journal_entry(&candidate, "assets:bank:checking").is_ok());
+        assert!(render_journal_entry(&candidate, "expenses:food").is_err());
     }
 
     #[test]

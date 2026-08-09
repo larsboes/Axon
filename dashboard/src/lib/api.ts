@@ -1975,6 +1975,10 @@ export interface WritebackResult {
 
 export type FinanceTransactionKind = 'income' | 'expense' | 'transfer';
 export type CandidateState = 'pending' | 'confirmed' | 'rejected';
+export type CsvDateFormat =
+  | 'iso_year_month_day'
+  | 'day_month_year_dots'
+  | 'day_month_year_slashes';
 
 export interface TransactionCandidate {
   id: string;
@@ -2000,6 +2004,18 @@ export interface CsvMapping {
   currency_column?: string | null;
   default_currency: string;
   source_account: string;
+  amount_sign: 'as_provided' | 'invert';
+  date_formats: CsvDateFormat[];
+  row_policy: 'strict' | 'required_fields';
+}
+
+export interface CsvImportPreview {
+  preview_id: string;
+  candidate_count: number;
+  duplicate_rows: number;
+  ignored_non_transaction_rows: number;
+  outflow_count: number;
+  inflow_count: number;
 }
 
 export interface CsvMappingProfile {
@@ -2171,10 +2187,25 @@ export const finance = {
       }),
     ),
   candidates: () => request<TransactionCandidate[]>('/finance/api/import/candidates'),
-  importCsv: (content: string, mapping: CsvMapping) =>
-    request<{ ok: boolean; created: number; already_present: number }>(
-      '/finance/api/import/csv',
+  previewCsv: (content: string, mapping: CsvMapping) =>
+    request<CsvImportPreview>(
+      '/finance/api/import/csv/preview',
       jsonInit('POST', { content, mapping }),
+    ),
+  importCsv: (content: string, mapping: CsvMapping, expectedPreviewId: string) =>
+    request<{
+      ok: boolean;
+      created: number;
+      already_present: number;
+      duplicate_rows: number;
+      ignored_non_transaction_rows: number;
+    }>(
+      '/finance/api/import/csv',
+      jsonInit('POST', {
+        content,
+        mapping,
+        expected_preview_id: expectedPreviewId,
+      }),
     ),
   reviewCandidate: (id: string, decision: 'confirm' | 'reject', account?: string) =>
     request<{ ok: boolean; id: string; state: CandidateState; journal_written: boolean }>(

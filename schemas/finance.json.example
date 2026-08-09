@@ -18,7 +18,10 @@
         "reference_column": "Reference",
         "currency_column": "Currency",
         "default_currency": "EUR",
-        "source_account": "assets:bank:checking"
+        "source_account": "assets:bank:checking",
+        "amount_sign": "as_provided",
+        "date_formats": ["iso_year_month_day", "day_month_year_dots"],
+        "row_policy": "strict"
       }
     }
   ],

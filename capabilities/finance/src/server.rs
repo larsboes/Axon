@@ -69,8 +69,13 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r(
         "POST",
+        "/api/import/csv/preview",
+        "Validate and summarize a CSV export without staging candidates or returning transaction details.",
+    ),
+    r(
+        "POST",
         "/api/import/csv",
-        "Stage a CSV export as review candidates. Body: content and mapping. Raw rows are not retained.",
+        "Recompute and stage an unchanged CSV preview as review candidates. Raw rows are not retained.",
     ),
     r(
         "GET",
@@ -196,14 +201,31 @@ fn no_journal() -> ApiResponse {
 struct CsvImportRequest {
     content: String,
     mapping: CsvMapping,
+    expected_preview_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CsvPreviewRequest {
+    content: String,
+    mapping: CsvMapping,
+}
+
+async fn preview_csv(Json(request): Json<CsvPreviewRequest>) -> ApiResponse {
+    match import::preview_csv(request.content.as_bytes(), &request.mapping) {
+        Ok(preview) => response(StatusCode::OK, preview),
+        Err(error) => response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": error.to_string() }),
+        ),
+    }
 }
 
 async fn import_csv(
     State(state): State<AppState>,
     Json(request): Json<CsvImportRequest>,
 ) -> ApiResponse {
-    let candidates = match import::parse_csv(request.content.as_bytes(), &request.mapping) {
-        Ok(candidates) => candidates,
+    let prepared = match import::prepare_csv(request.content.as_bytes(), &request.mapping) {
+        Ok(prepared) => prepared,
         Err(error) => {
             return response(
                 StatusCode::BAD_REQUEST,
@@ -211,6 +233,14 @@ async fn import_csv(
             )
         }
     };
+    if prepared.preview.preview_id != request.expected_preview_id {
+        return response(
+            StatusCode::CONFLICT,
+            json!({ "error": "CSV preview changed before staging" }),
+        );
+    }
+    let preview = prepared.preview;
+    let candidates = prepared.candidates;
     let database_url = state.database_url.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
@@ -222,7 +252,13 @@ async fn import_csv(
     {
         Ok(Ok((created, already_present))) => response(
             StatusCode::OK,
-            json!({ "ok": true, "created": created, "already_present": already_present }),
+            json!({
+                "ok": true,
+                "created": created,
+                "already_present": already_present,
+                "duplicate_rows": preview.duplicate_rows,
+                "ignored_non_transaction_rows": preview.ignored_non_transaction_rows,
+            }),
         ),
         Ok(Err(error)) => failed(error),
         Err(_) => failed("task panicked".into()),
@@ -946,6 +982,7 @@ async fn main() {
         .route("/api/import/obsidian/scan", get(scan_vault))
         .route("/api/import/obsidian", post(import_vault))
         .route("/api/writeback", post(writeback))
+        .route("/api/import/csv/preview", post(preview_csv))
         .route("/api/import/csv", post(import_csv))
         .route("/api/import/csv/mappings", get(list_csv_mappings))
         .route(
@@ -967,6 +1004,27 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use finance::import::{AmountSign, CsvDateFormat, CsvRowPolicy};
+
+    fn synthetic_csv_mapping() -> CsvMapping {
+        CsvMapping {
+            delimiter: ';',
+            decimal_separator: ',',
+            date_column: "Date".into(),
+            amount_column: "Amount".into(),
+            description_column: "Description".into(),
+            reference_column: Some("Reference".into()),
+            currency_column: Some("Currency".into()),
+            default_currency: "EUR".into(),
+            source_account: "assets:bank:checking".into(),
+            amount_sign: AmountSign::AsProvided,
+            date_formats: vec![
+                CsvDateFormat::IsoYearMonthDay,
+                CsvDateFormat::DayMonthYearDots,
+            ],
+            row_policy: CsvRowPolicy::Strict,
+        }
+    }
 
     #[test]
     fn the_date_conversion_matches_known_days() {
@@ -1024,6 +1082,8 @@ mod tests {
             "/api/import/obsidian/scan",
             "/api/import/obsidian",
             "/api/writeback",
+            "/api/import/csv/preview",
+            "/api/import/csv",
             "/api/import/csv/mappings",
             "/api/import/investments/mappings",
             "/api/import/investments/preview",
@@ -1037,20 +1097,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transaction_csv_preview_is_summary_only_and_staging_requires_its_identity() {
+        let content = "Date;Amount;Description;Reference;Currency\n2026-08-09;-12,34;Synthetic service;one;EUR\n";
+        let (status, Json(body)) = preview_csv(Json(CsvPreviewRequest {
+            content: content.into(),
+            mapping: synthetic_csv_mapping(),
+        }))
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["candidate_count"], 1);
+        assert!(body.get("candidates").is_none());
+        assert!(body.get("description").is_none());
+
+        let state = AppState {
+            database_url: Arc::new(String::new()),
+            obsidian: None,
+            journal: None,
+            budgets: Arc::new(Vec::new()),
+            csv_mappings: Arc::new(Vec::new()),
+            investment_csv_mappings: Arc::new(Vec::new()),
+            investment_snapshot: None,
+            journal_write: Arc::new(std::sync::Mutex::new(())),
+            projection_write: Arc::new(std::sync::Mutex::new(())),
+        };
+        let (status, Json(body)) = import_csv(
+            State(state),
+            Json(CsvImportRequest {
+                content: content.into(),
+                mapping: synthetic_csv_mapping(),
+                expected_preview_id: "changed-preview".into(),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "CSV preview changed before staging");
+    }
+
+    #[tokio::test]
     async fn csv_mapping_endpoint_returns_private_profiles_without_mutating_them() {
         let profile = CsvMappingProfile {
             label: "Synthetic semicolon export".into(),
-            mapping: CsvMapping {
-                delimiter: ';',
-                decimal_separator: ',',
-                date_column: "Date".into(),
-                amount_column: "Amount".into(),
-                description_column: "Description".into(),
-                reference_column: Some("Reference".into()),
-                currency_column: Some("Currency".into()),
-                default_currency: "EUR".into(),
-                source_account: "assets:bank:checking".into(),
-            },
+            mapping: synthetic_csv_mapping(),
         };
         let state = AppState {
             database_url: Arc::new(String::new()),

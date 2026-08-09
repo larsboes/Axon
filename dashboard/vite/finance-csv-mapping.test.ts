@@ -14,6 +14,9 @@ const profiles: CsvMappingProfile[] = [{
     currency_column: 'Currency',
     default_currency: 'EUR',
     source_account: 'assets:bank:checking',
+    amount_sign: 'as_provided',
+    date_formats: ['iso_year_month_day', 'day_month_year_dots'],
+    row_policy: 'strict',
   },
 }];
 
@@ -26,6 +29,7 @@ describe('selectedCsvMapping', () => {
     const selected = selectedCsvMapping(profiles, '0');
     expect(selected).toEqual(profiles[0].mapping);
     expect(selected).not.toBe(profiles[0].mapping);
+    expect(selected?.date_formats).not.toBe(profiles[0].mapping.date_formats);
   });
 
   test('an unavailable profile cannot select another mapping', () => {

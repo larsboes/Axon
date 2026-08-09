@@ -100,7 +100,7 @@ On the manifest-declared port. `GET /routes` serves the full manifest.
 - `GET /api/import/obsidian/scan` · `POST /api/import/obsidian`
 - `POST /api/writeback`
 - `GET /api/import/csv/mappings`
-- `POST /api/import/csv` · `GET /api/import/candidates`
+- `POST /api/import/csv/preview` · `POST /api/import/csv` · `GET /api/import/candidates`
 - `GET /api/import/investments/mappings` · `POST /api/import/investments/preview`
 - `POST /api/import/investments/confirm`
 - `POST /api/import/candidates/:id/review`
@@ -116,7 +116,12 @@ development. `journal` and `budgets` live in that same private file; the journal
 also be set with `AXON_FINANCE_JOURNAL`. `schemas/finance.json.example` documents the
 shape without carrying private deployment values. Named `csv_mappings` also live in
 that private file; the loopback API supplies them to the local review UI, where the
-operator can still edit every field before staging.
+operator can still edit every field before staging. A mapping explicitly declares
+amount direction, accepted date formats, and whether every row must match the header
+or rows without transaction fields may be counted and ignored. Preview returns only
+quality counts and an identity token; staging recomputes the CSV and requires that
+unchanged token. Duplicate fingerprints are counted within one export and remain
+idempotent across overlapping exports in the candidate store.
 Named `investment_csv_mappings` supply the corresponding preview-only adapter. The
 stable source key and source identifier to symbolic commodity mapping belong there
 rather than in Axon. `investment_snapshot` names the private canonical collection
@@ -127,6 +132,11 @@ row per open position. Raw CSV rows and mapping values are never written to the
 canonical collection. When one instrument spans sources, its activity price is
 suppressed rather than selecting an arbitrary source. Other prices shown in Overview
 are latest activity prices, not live quotes or a claim about current market value.
+
+Transaction source accounts are balance accounts. A reviewed card purchase therefore
+posts from a liability to an expense, while a settlement posts between balance accounts.
+The latter projects as a transfer and is excluded from spending unless transfers are
+explicitly requested.
 
 Budget entries have `account`, `monthly_cents` and an optional `currency`. Accounts
 stay symbolic. Real account numbers and the mapping from a symbol to an institution
