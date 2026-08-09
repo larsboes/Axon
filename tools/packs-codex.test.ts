@@ -20,6 +20,7 @@ import {
   removePack,
   resolveProfilePacks,
   syncPack,
+  validateCodexFiles,
   type DeployConfig,
 } from "./packs-codex.ts";
 
@@ -52,10 +53,17 @@ function makePack(): void {
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "axon-packs-codex-test-"));
+  // `adapter` became required when the engine moved to lib/pack-deploy.ts: the
+  // shared core may not carry a default harness name, so every caller states its
+  // own. Only this fixture changed — every assertion below is the one that
+  // guarded the pre-extraction behaviour.
   config = {
     axonRoot: join(root, "Axon"),
     destination: join(root, "home", ".agents", "skills"),
     stateFile: join(root, "state", "codex.json"),
+    adapter: "codex",
+    stateEnvVar: "AXON_CODEX_STATE_FILE",
+    validateAdapterFiles: validateCodexFiles,
   };
   makePack();
 });

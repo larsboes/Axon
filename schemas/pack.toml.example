@@ -7,8 +7,8 @@
 # key) is ever inlined in a skill — it is redacted to a placeholder, and the
 # skill reads the real value at runtime from the overlay
 # ($AXON_PERSONAL_ROOT/config/<pack>.*). Harness adapters activate the same
-# source: tools/packs.sh links into Claude Code; tools/packs-codex materializes
-# copies into Codex.
+# source: every adapter materializes COPIES — tools/packs-claude into Claude Code,
+# tools/packs-codex into Codex — over the shared engine in tools/lib/pack-deploy.ts.
 
 name         = "example"                 # pack id, must match the dir name
 description  = "One line: what this pack lets an agent do."
@@ -22,12 +22,12 @@ deployer     = "packs-axon"              # optional: a dedicated tool owns this 
 
 
 # `deployer` names the one tool that owns this pack's destination directories.
-# Set it and the generic adapters stop claiming the pack: tools/packs.sh will not
-# link it, and tools/packs-codex leaves it out of every sweep and out of a `*`
+# Set it and the generic adapters stop claiming the pack: neither packs-claude nor
+# packs-codex will deploy it, and it stays out of every sweep and out of a `*`
 # profile. The named tool still deploys it by asking for it explicitly.
-# Without this field, one skill can be claimed by three mechanisms at once — a
-# packs.sh symlink, a packs-codex copy, and a dedicated deployer's ledger, all
-# pointed at the same path, each reporting a different verdict for it.
+# Without this field, one skill can be claimed by several mechanisms at once —
+# each adapter's copy plus a dedicated deployer's ledger, all pointed at the same
+# path, each reporting a different verdict for it.
 
 # Every pack carries a short README.md: what it does, how to activate it, and —
 # if any skill was adapted from an external source — an Attribution line naming
@@ -36,9 +36,9 @@ deployer     = "packs-axon"              # optional: a dedicated tool owns this 
 
 # Optional, convention-based (no TOML field): a pack MAY also carry an
 # agents/ directory of Claude-Code-native subagent .md files
-# (https://code.claude.com/docs/en/sub-agents). packs.sh links it as one
-# directory symlink if present -- deliberately not named here, since a
-# Claude-Code-only concept doesn't belong in the neutral manifest shape
+# (https://code.claude.com/docs/en/sub-agents). packs-claude deploys it as ONE
+# owned unit at ~/.claude/agents/<name> if present -- deliberately not named here,
+# since a Claude-Code-only concept doesn't belong in the neutral manifest shape
 # (see README.md#harness-neutral-packs). See Packs/academic-writing/ for a
 # worked example (5 review-lens agents + 3 adversarial-skeptic agents).
 #
@@ -48,12 +48,18 @@ deployer     = "packs-axon"              # optional: a dedicated tool owns this 
 # tools/packs-codex merges this overlay over the shared skill while staging,
 # but refuses a Codex-specific SKILL.md so the shared workflow stays canonical.
 
-# tools/packs.sh:
-#   list                 -> every pack, its skills/agents, and link state
-#   link <name>          -> symlink this pack's skills into ~/.claude/skills/
-#                           (and agents/ into ~/.claude/agents/<name>/, if present)
-#                           then remove symlinked retired_skills owned by that Pack
-#   unlink <name>        -> remove those symlinks (never touches real skill/agent dirs)
+# tools/packs-claude (tools/packs.sh is a shim over it, kept for older call sites):
+#   status [name|--all]  -> source/install/drift state for materialized Claude skills
+#   deploy <name>        -> copy a Pack into ~/.claude/skills with ownership state
+#                           (and agents/ into ~/.claude/agents/<name>, if present)
+#   adopt <name>         -> claim identical copies already in place, e.g. after the
+#                           2026-08-09 migration off symlinks; refuses anything that differs
+#   sync <name>|--all    -> update clean owned copies; refuse destination drift
+#   remove <name>        -> remove only clean copies owned by that Pack
+#
+# `retired_skills` above is honoured by adapters that need it; a ledger-backed one
+# does not, because it already knows what it deployed and `sync` removes a skill
+# dropped from `skills` as stale.
 #
 # tools/packs-codex:
 #   status [name|--all]  -> source/install/drift state for materialized Codex skills

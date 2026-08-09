@@ -155,7 +155,7 @@ pack_command() {
     list)
       case "$harness" in
         "") bun run "$AXON_ROOT/tools/packs-opencode.ts" list ;;
-        claude) "$AXON_ROOT/tools/packs.sh" list ;;
+        claude) bun run "$AXON_ROOT/tools/packs-claude.ts" status ;;
         codex) "$AXON_ROOT/tools/packs-codex" status --all ;;
         opencode) bun run "$AXON_ROOT/tools/packs-opencode.ts" list ;;
         pi) bun run "$AXON_ROOT/tools/packs-pi.ts" list ;;
@@ -165,14 +165,11 @@ pack_command() {
     status|deploy|sync|remove)
       [ -n "$harness" ] || { echo "usage: axon pack $command <harness> ..." >&2; exit 1; }
       case "$harness" in
-        claude)
-          if [ "$command" = "status" ]; then
-            "$AXON_ROOT/tools/packs.sh" list
-          else
-            echo "axon: Claude Packs use 'axon pack list claude' and tools/packs.sh link|unlink" >&2
-            exit 1
-          fi
-          ;;
+        # First-class since 2026-08-09: the Claude adapter deploys copies with a
+        # ledger like every other harness, so status/deploy/sync/remove all mean
+        # something here. It used to accept status alone, because symlinking had
+        # no sync and no ownership to remove against.
+        claude) bun run "$AXON_ROOT/tools/packs-claude.ts" "$command" "$@" ;;
         codex) "$AXON_ROOT/tools/packs-codex" "$command" "$@" ;;
         opencode) bun run "$AXON_ROOT/tools/packs-opencode.ts" "$command" "$@" ;;
         pi) bun run "$AXON_ROOT/tools/packs-pi.ts" "$command" "$@" ;;
