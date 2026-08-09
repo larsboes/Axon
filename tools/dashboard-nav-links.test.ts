@@ -14,7 +14,7 @@
 // `import.meta.dir`, which are Bun's and not the browser's. Every other Bun test in this
 // repository is here too, and the root `bun test` finds it either way.
 
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 
@@ -66,26 +66,31 @@ describe("internal links are base-aware", () => {
     expect(offenders.map(([file, n]) => `${file} (${n})`)).toEqual([]);
   });
 
-  // Both halves of the contract. `$app/paths` is a SvelteKit build-time alias with no
-  // resolution outside Vite, so it is mocked — which also lets the base-present case be
-  // asserted at all, and that is the case no other test in this repository can reach.
-  test("link() is transparent when no base path is configured", async () => {
-    mock.module("$app/paths", () => ({ base: "" }));
-    // Query suffix defeats the module cache so the second mock below actually takes effect.
-    // TypeScript cannot resolve a specifier with a query, and does not need to — this runs
-    // under Bun, which can.
-    // @ts-expect-error -- cache-busting specifier, resolved at run time only
-    const { link } = await import("../dashboard/src/lib/nav.ts?nobase");
+  // Both halves of the contract, exercised directly now that nav.ts imports no Vite alias.
+  test("link() is transparent until a base path is configured", async () => {
+    const { link, setBase } = await import("../dashboard/src/lib/nav.ts");
+    setBase("");
     expect(link("/calendar")).toBe("/calendar");
     expect(link("/")).toBe("/");
   });
 
-  test("link() prefixes every path when the demo's base is configured", async () => {
-    mock.module("$app/paths", () => ({ base: "/Axon/demo" }));
-    // @ts-expect-error -- cache-busting specifier, resolved at run time only
-    const { link } = await import("../dashboard/src/lib/nav.ts?withbase");
-    expect(link("/calendar")).toBe("/Axon/demo/calendar");
-    expect(link("/")).toBe("/Axon/demo/");
-    expect(link("/feed/abc?source=calendar")).toBe("/Axon/demo/feed/abc?source=calendar");
+  test("link() prefixes every path once the demo's base is configured", async () => {
+    const { link, setBase } = await import("../dashboard/src/lib/nav.ts");
+    setBase("/Axon");
+    expect(link("/calendar")).toBe("/Axon/calendar");
+    expect(link("/feed/abc?source=calendar")).toBe("/Axon/feed/abc?source=calendar");
+    setBase(""); // leave the module as found, for whatever imports it next
+  });
+
+  // Only the root layout may read the Vite alias, and among plain modules only it. A .svelte
+  // file is always compiled by Vite and can never appear in a plain-bun import graph, so the
+  // rule that matters is about `.ts`: the moment a second one imports `$app/paths`, every
+  // Bun test that transitively reaches it fails to resolve — with an error naming a file
+  // nowhere near the change, which is exactly how this was found.
+  test("no plain module outside the root layout imports $app/paths", () => {
+    const readers = files
+      .filter((f) => f.endsWith(".ts"))
+      .filter((f) => readFileSync(f, "utf8").includes('from "$app/paths"'));
+    expect(readers.map(relative)).toEqual(["routes/+layout.ts"]);
   });
 });
