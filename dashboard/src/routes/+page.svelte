@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import {
@@ -393,7 +394,7 @@
   }
 
   function mailLink(item: TriageItem): string {
-    return `/feed/${encodeURIComponent(item.id)}?source=mail`;
+    return link(`/feed/${encodeURIComponent(item.id)}?source=mail`);
   }
 
   /// Local only. Dismissing drops the proposal from this list and changes
@@ -700,7 +701,7 @@
       </h1>
       <p class="brief">{brief}</p>
     </div>
-    <a class="library-link" href="/feed/library">
+    <a class="library-link" href={link("/feed/library")}>
       Library <Icon name="arrow-right" size={13} />
     </a>
   </header>
@@ -769,11 +770,11 @@
                 <div class="decision-mark warning"><Icon name="alert" size={16} /></div>
                 <div class="decision-copy">
                   <span class="kind">System</span>
-                  <a class="decision-title" href="/capabilities">Check autostart</a>
+                  <a class="decision-title" href={link("/capabilities")}>Check autostart</a>
                   <p>At least one service that should be running is not responding.</p>
                 </div>
                 <div class="decision-actions">
-                  <a class="btn action-primary" href="/capabilities">
+                  <a class="btn action-primary" href={link("/capabilities")}>
                     Check <Icon name="arrow-right" size={13} />
                   </a>
                 </div>
@@ -787,7 +788,7 @@
                       · matches {decision.entry.relevance.profile_label}
                     {/if}
                   </span>
-                  <a class="decision-title" href={`/feed/${encodeURIComponent(decision.entry.id)}`}>
+                  <a class="decision-title" href={link(`/feed/${encodeURIComponent(decision.entry.id)}`)}>
                     {decision.entry.title ?? decision.entry.url}
                   </a>
                   {#if decision.entry.summary || cleanRationale(decision.entry.relevance?.rationale ?? "")}
@@ -798,7 +799,7 @@
                   {/if}
                 </div>
                 <div class="decision-actions">
-                  <a class="btn" href={`/feed/${encodeURIComponent(decision.entry.id)}`}>Read</a>
+                  <a class="btn" href={link(`/feed/${encodeURIComponent(decision.entry.id)}`)}>Read</a>
                   <button
                     class="btn action-primary"
                     type="button"
@@ -955,11 +956,11 @@
                       · {decision.plan.destinations.map((place) => place.name).join(" → ")}
                     {/if}
                   </span>
-                  <a class="decision-title" href="/travel">{decision.plan.title}</a>
+                  <a class="decision-title" href={link("/travel")}>{decision.plan.title}</a>
                   <p>{tripGap(decision.plan)}</p>
                 </div>
                 <div class="decision-actions">
-                  <a class="btn action-primary" href="/travel">
+                  <a class="btn action-primary" href={link("/travel")}>
                     Continue planning <Icon name="arrow-right" size={13} />
                   </a>
                 </div>
@@ -1037,17 +1038,17 @@
           </div>
         </div>
         <nav class="quick-list" aria-label="Quick actions">
-          <a href="/feed">
+          <a href={link("/feed")}>
             <Icon name="plus" size={15} />
             <span><strong>Add a link</strong><small>Article, video, or repository</small></span>
             <Icon name="arrow-right" size={13} />
           </a>
-          <a href="/travel">
+          <a href={link("/travel")}>
             <Icon name="map-pin" size={15} />
             <span><strong>Plan travel</strong><small>Places, connections, and dates</small></span>
             <Icon name="arrow-right" size={13} />
           </a>
-          <a href="/feed?view=discover">
+          <a href={link("/feed?view=discover")}>
             <Icon name="compass" size={15} />
             <span><strong>Scan sources</strong><small>Look deliberately for new opportunities</small></span>
             <Icon name="arrow-right" size={13} />
@@ -1062,7 +1063,7 @@
               <span class="section-kicker">Projects</span>
               <h2>Continue working</h2>
             </div>
-            <a class="small-link" href="/projects">All</a>
+            <a class="small-link" href={link("/projects")}>All</a>
           </div>
           <ul>
             {#each capabilities.panels as project (project.name)}
@@ -1128,7 +1129,7 @@
           {#if macmonErr}
             <p class="mc-offline">
               <Icon name="alert" size={12} />
-              macmon is off — <a href="/systems">Details</a>
+              macmon is off — <a href={link("/systems")}>Details</a>
             </p>
           {:else if macmonSample}
             <div class="macmon-compact">
@@ -1148,13 +1149,13 @@
                 </div>
                 <span class="mc-mem-num mono">{(macmonSample.memory.ram_usage / 1073741824).toFixed(1)} GB</span>
               </div>
-              <a class="mc-detail" href="/systems">Details <Icon name="arrow-right" size={11} /></a>
+              <a class="mc-detail" href={link("/systems")}>Details <Icon name="arrow-right" size={11} /></a>
             </div>
           {/if}
 
           <RepoStatusCard />
 
-          <a class="capabilities-link" href="/capabilities">
+          <a class="capabilities-link" href={link("/capabilities")}>
             Capabilities <Icon name="arrow-right" size={12} />
           </a>
         </div>

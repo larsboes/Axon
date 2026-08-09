@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import { onMount } from "svelte";
   import EvaluationBreakdown from "$lib/feed/EvaluationBreakdown.svelte";
   import FeedNav from "$lib/feed/FeedNav.svelte";
@@ -324,7 +325,7 @@
           <p class="eyebrow mono">Planned trips</p>
           <h2 id="reise-kontext-title">What may become relevant while travelling</h2>
         </div>
-        <a href="/travel">Open Travel <Icon name="arrow-right" size={13} /></a>
+        <a href={link("/travel")}>Open Travel <Icon name="arrow-right" size={13} /></a>
       </header>
       <div class="travel-timeline">
         {#each travelLanes as lane (lane.id)}
@@ -342,7 +343,7 @@
               <ol>
                 {#each lane.entries.slice(0, 3) as entry (entry.id)}
                   <li>
-                    <a href={`/feed/${entry.id}`}>{entry.title ?? entry.url}</a>
+                    <a href={link(`/feed/${entry.id}`)}>{entry.title ?? entry.url}</a>
                     <span class="mono">{Math.round((travelFactor(entry)?.score ?? 0) * 100)}</span>
                   </li>
                 {/each}
@@ -420,7 +421,7 @@
                   <span>{formatDate(entry)}</span>
                   <span class={`status status-${entry.status}`}>{STATUS_LABEL[entry.status]}</span>
                 </div>
-                <h3><a href={`/feed/${entry.id}`}>{entry.title ?? entry.url}</a></h3>
+                <h3><a href={link(`/feed/${entry.id}`)}>{entry.title ?? entry.url}</a></h3>
                 {#if entry.author}<p class="author">{entry.author}</p>{/if}
                 {#if preview(entry.summary)}
                   <p class="preview">{preview(entry.summary)}</p>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import { page } from "$app/state";
   import DiscoverView from "$lib/feed/DiscoverView.svelte";
   import EvaluationBreakdown from "$lib/feed/EvaluationBreakdown.svelte";
@@ -662,7 +663,7 @@
   {#if offline}
     <p class="notice">
       <Icon name="wifi-off" />
-      Mail proposals could not be loaded. See <a href="/capabilities">Capabilities</a> for details.
+      Mail proposals could not be loaded. See <a href={link("/capabilities")}>Capabilities</a> for details.
     </p>
   {:else if loading}
     <p class="notice muted"><Icon name="loader" size={13} /> Loading mail proposals…</p>
@@ -845,7 +846,7 @@
                     </label>
                     <a
                       class="proposal-summary"
-                      href={`/feed/${encodeURIComponent(proposal.id)}?source=mail`}
+                      href={link(`/feed/${encodeURIComponent(proposal.id)}?source=mail`)}
                     >
                       <span class="chevron"><Icon name="arrow-right" size={12} /></span>
                       <span class="proposal-copy">
@@ -1071,7 +1072,7 @@
 {#if offline}
   <p class="notice">
     <Icon name="wifi-off" />
-    Feed could not be started. See <a href="/capabilities">Capabilities</a> for details.
+    Feed could not be started. See <a href={link("/capabilities")}>Capabilities</a> for details.
   </p>
 {:else if loading && entries.length === 0}
   <p class="notice muted">Loading…</p>
@@ -1114,7 +1115,7 @@
 {#snippet entryCard(e: FeedEntry)}
           <li class="card entry">
             <div class="row">
-              <a class="title" href={`/feed/${e.id}`}>
+              <a class="title" href={link(`/feed/${e.id}`)}>
                 <span class="kind tag mono">{KIND_LABEL[e.kind] ?? e.kind}</span>
                 <span class="text">{e.title ?? e.url}</span>
               </a>

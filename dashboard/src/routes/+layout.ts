@@ -3,6 +3,12 @@
 // browser would not immediately replace.
 import { base } from "$app/paths";
 import { DEMO, installDemoFetch, type DemoIndex } from "$lib/demo";
+import { setBase } from "$lib/nav";
+
+// The single reader of `$app/paths` in this app. At module scope, so it runs before this
+// module's `load` and long before any component renders a link. `base` is a build-time
+// constant, so there is nothing to await and no ordering to get wrong.
+setBase(base);
 
 export const ssr = false;
 export const prerender = false;

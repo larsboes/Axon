@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import { onMount } from "svelte";
   import FeedNav from "$lib/feed/FeedNav.svelte";
   import Icon from "$lib/Icon.svelte";
@@ -150,7 +151,7 @@
                 <span>content {item.contentStatus}</span>
                 <time datetime={item.derivedAt}>{formatTime(item.derivedAt)}</time>
               </div>
-              <h2><a href={`/feed/${item.feedId}`}>{item.title ?? item.url}</a></h2>
+              <h2><a href={link(`/feed/${item.feedId}`)}>{item.title ?? item.url}</a></h2>
             </div>
             <a class="original" href={item.url} target="_blank" rel="noreferrer">
               Original <Icon name="external" size={13} />

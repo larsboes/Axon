@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   let {
     active,
     mailCount,
@@ -9,18 +10,18 @@
 </script>
 
 <nav aria-label="Feed view">
-  <a class:active={active === "inbox"} href="/feed">Inbox</a>
-  <a class:active={active === "discover"} href="/feed?view=discover">Discover</a>
+  <a class:active={active === "inbox"} href={link("/feed")}>Inbox</a>
+  <a class:active={active === "discover"} href={link("/feed?view=discover")}>Discover</a>
   <a
     class:active={active === "mail"}
-    href="/feed?view=mail"
+    href={link("/feed?view=mail")}
     aria-label={mailCount === undefined ? "Mail proposals" : `Mail proposals, ${mailCount}`}
   >
     Mail
     {#if mailCount !== undefined}<span class="count mono">{mailCount}</span>{/if}
   </a>
-  <a class:active={active === "library"} href="/feed/library">Library</a>
-  <a class:active={active === "review"} href="/feed/review">Review</a>
+  <a class:active={active === "library"} href={link("/feed/library")}>Library</a>
+  <a class:active={active === "review"} href={link("/feed/review")}>Review</a>
 </nav>
 
 <style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { link } from "$lib/nav";
   import { page } from "$app/state";
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
@@ -970,8 +971,8 @@
 
 {#if !activePlan}
   <nav class="travel-nav" aria-label="Travel sections">
-    <a class="active" href="/travel"><Icon name="map-pin" size={14} /> Trip plans</a>
-    <a href="/travel/connections"><Icon name="train" size={14} /> Connections</a>
+    <a class="active" href={link("/travel")}><Icon name="map-pin" size={14} /> Trip plans</a>
+    <a href={link("/travel/connections")}><Icon name="train" size={14} /> Connections</a>
   </nav>
 
   <section class="travel-candidates" aria-labelledby="travel-candidate-heading">
@@ -1382,7 +1383,7 @@
       <button type="button" onclick={() => (editingPlan = !editingPlan)}>
         {editingPlan ? "Close editor" : "Edit trip"}
       </button>
-      <a class="connection-link" href="/travel/connections">
+      <a class="connection-link" href={link("/travel/connections")}>
         Find connection <Icon name="arrow-right" size={13} />
       </a>
     </div>
@@ -1557,7 +1558,7 @@
                 <span class="eyebrow">From your calendar</span>
                 <h3 id="calendar-anchor-heading">Anchors for this trip</h3>
               </div>
-              <a href="/calendar">Calendar</a>
+              <a href={link("/calendar")}>Calendar</a>
             </header>
             <ol>
               {#each selected.anchors as entry (entry.id)}
@@ -1638,7 +1639,7 @@
               {#if selected.journeys.length === 0}
                 <p class="empty">
                   No suitable connection received.
-                  <a href="/travel/connections">Open connection search</a>
+                  <a href={link("/travel/connections")}>Open connection search</a>
                 </p>
               {:else}
                 <ol class="journey-list">

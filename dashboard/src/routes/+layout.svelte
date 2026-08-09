@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { base } from "$app/paths";
   import { page } from "$app/state";
   import "../app.css";
   import Icon from "$lib/Icon.svelte";
   import { capabilities } from "$lib/capabilities.svelte";
-  import { PRIMARY_NAV, UTILITY_NAV, withoutCapabilities } from "$lib/nav";
+  import { PRIMARY_NAV, UTILITY_NAV, withoutCapabilities, link } from "$lib/nav";
   import SoundscapeDock from "$lib/SoundscapeDock.svelte";
 
   let { children, data } = $props();
@@ -45,7 +46,7 @@
 <div class="shell">
   <header>
     <div class="bar">
-      <a class="brand" href="/">
+      <a class="brand" href={link("/")}>
         <span class="mark">A</span>
         <span class="name">Axon</span>
       </a>
@@ -72,7 +73,7 @@
     <div class="desktop-wrap">
       <nav class="desktop" aria-label="Main navigation">
         {#each primary as item (item.href)}
-          <a class="nav-link" class:active={isActive(item.href)} href={item.href}>
+          <a class="nav-link" class:active={isActive(item.href)} href={link(item.href)}>
             <Icon name={item.icon as never} size={14} />
             {item.label}
           </a>
@@ -89,7 +90,7 @@
             <a
               class="nav-link"
               class:active={isActive(item.href)}
-              href={item.href}
+              href={link(item.href)}
               onclick={() => (moreOpen = false)}
             >
               <Icon name={item.icon as never} size={14} />
@@ -113,6 +114,9 @@
       {#if missing.size > 0}
         <span class="demo-absent">Not in this demo: {[...missing].join(", ")}</span>
       {/if}
+      <!-- The generated reference is a sibling of this bundle, not a route in it, so it is a
+           plain href rather than link(): the router must not try to handle it. -->
+      <a class="demo-docs" href="{base}/docs/index.html">Reference →</a>
     </aside>
   {/if}
 
@@ -125,7 +129,7 @@
         <a
           class="nav-link"
           class:active={isActive(item.href)}
-          href={item.href}
+          href={link(item.href)}
           onclick={() => (menuOpen = false)}
         >
           <Icon name={item.icon as never} />
@@ -137,7 +141,7 @@
         <a
           class="nav-link"
           class:active={isActive(item.href)}
-          href={item.href}
+          href={link(item.href)}
           onclick={() => (menuOpen = false)}
         >
           <Icon name={item.icon as never} />
@@ -325,6 +329,12 @@
 
   .demo-absent {
     color: var(--text-tertiary);
+  }
+
+  .demo-banner .demo-docs {
+    margin-left: auto;
+    color: var(--primary);
+    white-space: nowrap;
   }
 
   .scrim {

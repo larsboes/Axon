@@ -46,21 +46,30 @@ fi
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
-echo "demo-site: landing page"
-"$_here/generate-site" --out "$OUT"
-
-echo "demo-site: reference pages"
-"$_here/generate-docs" --out "$OUT/docs" --fixtures "$FIXTURES"
-
-echo "demo-site: dashboard bundle (base $BASE/demo)"
+# The dashboard IS the site (#170). A visitor used to land on a page of generated tables with
+# the demo one click away behind a card, which is backwards: the whole reason this site exists
+# is to show what Axon looks like. So the shell is served from the root, and the generated
+# reference — self-model included — lives under /docs where a reader goes looking for it.
+echo "demo-site: dashboard bundle (base ${BASE:-/})"
 (
   cd "$AXON_ROOT/dashboard"
   # AXON_DEMO compiles the fetch shim in (vite.config.ts turns it into a literal, so a normal
   # build drops it); AXON_DEMO_BASE is what svelte.config.js bakes into every URL.
-  AXON_DEMO=1 AXON_DEMO_BASE="$BASE/demo" bun run build >/dev/null
+  AXON_DEMO=1 AXON_DEMO_BASE="$BASE" bun run build >/dev/null
 )
-cp -R "$AXON_ROOT/dashboard/dist" "$OUT/demo"
-cp -R "$FIXTURES" "$OUT/demo/fixtures"
+cp -R "$AXON_ROOT/dashboard/dist/." "$OUT/"
+cp -R "$FIXTURES" "$OUT/fixtures"
+
+# GitHub Pages has no SPA fallback. It serves 404.html for any path it cannot match, and knows
+# nothing about adapter-static's `fallback: index.html` — so before this every deep link and
+# every refresh returned GitHub's own 404 page, even with correct links. One copy is the fix.
+cp "$OUT/index.html" "$OUT/404.html"
+
+echo "demo-site: reference pages"
+"$_here/generate-docs" --out "$OUT/docs" --fixtures "$FIXTURES"
+
+echo "demo-site: self-model page"
+"$_here/generate-site" --out "$OUT/docs" --name self-model.html
 
 # GitHub Pages serves this tree through Jekyll unless told not to, and Jekyll drops every
 # directory beginning with an underscore — which is where SvelteKit puts the entire bundle.

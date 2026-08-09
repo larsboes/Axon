@@ -114,6 +114,8 @@ export interface PageOptions {
 export function page(opts: PageOptions): string {
   const link = (href: string, label: string, key: PageOptions["current"]) =>
     `<a href="${opts.root}${href}"${opts.current === key ? ' aria-current="page"' : ""}>${label}</a>`;
+  // The root is the running dashboard, not a generated page (#170), so "Dashboard" is an
+  // empty href against `root` rather than a filename.
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -129,9 +131,9 @@ ${opts.body}
 <footer>
 ${opts.footer}
 <p class="sitenav">
-  ${link("index.html", "Overview", "overview")}
+  ${link("", "Dashboard", "demo")}
   ${link("docs/index.html", "Reference", "docs")}
-  ${link("demo/", "Live demo", "demo")}
+  ${link("docs/self-model.html", "Self-model", "overview")}
   <span class="sep"></span>
   <a href="https://github.com/larsboes/Axon">Source</a>
 </p>

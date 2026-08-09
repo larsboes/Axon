@@ -1,3 +1,32 @@
+/**
+ * An internal destination, made absolute against the configured base path.
+ *
+ * SvelteKit rewrites asset URLs for `paths.base` and deliberately does NOT touch an `href`
+ * you wrote yourself — it cannot tell an app route from an outbound link. On a real machine
+ * the base is empty and this is the identity function, which is why every raw absolute href
+ * worked for a year and then sent every click in the published demo to the domain root,
+ * where GitHub answers with its own 404 (#170).
+ *
+ * Every internal link goes through here, and `tools/dashboard-nav-links.test.ts` fails the
+ * build on one that does not — the failure is invisible in the only environment anyone
+ * develops in.
+ *
+ * The base is HANDED to this module rather than imported from `$app/paths`, which is not a
+ * style choice. That alias is resolved by Vite and does not exist under plain `bun test`, so
+ * importing it here put it into the import graph of every module that builds a link —
+ * including `calendar/types.ts`, which an existing test imports directly and which then
+ * failed to resolve at all. Exactly one module reads the alias now, and it is the root
+ * layout, which cannot run outside SvelteKit anyway.
+ */
+let configuredBase = "";
+
+/** Called once from the root layout, before any component renders. */
+export const setBase = (value: string): void => {
+  configuredBase = value;
+};
+
+export const link = (path: string): string => `${configuredBase}${path}`;
+
 export interface NavItem {
   href: string;
   label: string;
