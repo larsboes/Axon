@@ -534,8 +534,14 @@ mod tests {
             &crate::analytics::AnalyticsFilter::default(),
         );
         assert_eq!(dashboard.summary.income_cents, 120_000);
-        assert_eq!(dashboard.summary.expense_cents, 6_120);
-        assert_eq!(dashboard.summary.net_cash_flow_cents, 113_880);
+        assert_eq!(dashboard.summary.personal_spending_cents, 3_640);
+        assert_eq!(dashboard.summary.gross_cash_outflow_cents, 6_640);
+        assert_eq!(dashboard.summary.reimbursement_received_cents, 2_000);
+        assert_eq!(dashboard.summary.personal_result_cents, 116_360);
+        let shared = dashboard.shared_expenses.first().unwrap();
+        assert_eq!(shared.source_id, "synthetic-expense");
+        assert_eq!(shared.trip_id.as_deref(), Some("trip:synthetic"));
+        assert_eq!(shared.outstanding_cents, 1_000);
     }
 
     #[test]

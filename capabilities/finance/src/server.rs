@@ -113,6 +113,11 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r(
         "POST",
+        "/api/import/candidates/reclassify-batch",
+        "Reclassify an explicit bounded set of confirmed expenses to reviewed non-uncategorized expense accounts, replacing the journal once.",
+    ),
+    r(
+        "POST",
         "/api/import/candidates/:id/reconcile-transfer",
         "Confirm one side of a reciprocal transfer and mark the counterpart as duplicate source evidence.",
     ),
@@ -454,6 +459,11 @@ struct BatchConfirmation {
 
 #[derive(Debug, Deserialize)]
 struct BatchConfirmationRequest {
+    items: Vec<BatchConfirmation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BatchReclassificationRequest {
     items: Vec<BatchConfirmation>,
 }
 
@@ -807,6 +817,110 @@ async fn confirm_candidates_batch(
     }
 }
 
+async fn reclassify_candidates_batch(
+    State(state): State<AppState>,
+    Json(request): Json<BatchReclassificationRequest>,
+) -> ApiResponse {
+    let Some(journal) = state.journal.clone() else {
+        return no_journal();
+    };
+    if request.items.is_empty() || request.items.len() > 500 {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "reclassification batch must contain between 1 and 500 candidates" }),
+        );
+    }
+    let database_url = state.database_url.clone();
+    let budgets = state.budgets.clone();
+    let investment_snapshot = state.investment_snapshot.clone();
+    let journal_write = state.journal_write.clone();
+    let projection_write = state.projection_write.clone();
+    let now = today();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let mut seen = std::collections::HashSet::new();
+        let mut prepared = Vec::with_capacity(request.items.len());
+        for item in request.items {
+            if !seen.insert(item.id.clone()) {
+                return Err("reclassification batch contains a duplicate candidate id".into());
+            }
+            let candidate = store
+                .candidate(&item.id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "candidate not found".to_string())?;
+            if candidate.state != CandidateState::Confirmed
+                || candidate.amount_cents >= 0
+                || !candidate.proposed_account.starts_with("expenses:")
+            {
+                return Err("reclassification requires confirmed expense candidates".into());
+            }
+            import::validate_account(&item.account).map_err(|error| error.to_string())?;
+            if !is_reviewed_expense_account(&item.account) {
+                return Err("reclassification target must be a categorized expense account".into());
+            }
+            prepared.push((candidate, item.account));
+        }
+
+        let _write_guard = journal_write
+            .lock()
+            .map_err(|_| "journal writer lock is unavailable".to_string())?;
+        let mut updated = std::fs::read_to_string(&journal)
+            .map_err(|error| format!("journal could not be read: {error}"))?;
+        let mut reclassified = 0;
+        for (candidate, account) in &prepared {
+            if candidate.proposed_account == *account {
+                continue;
+            }
+            let (next, changed) = import::rewrite_confirmed_account(&updated, candidate, account)
+                .map_err(|error| error.to_string())?;
+            if !changed {
+                return Err("candidate journal posting did not change".into());
+            }
+            updated = next;
+            reclassified += 1;
+        }
+        if reclassified > 0 {
+            replace_journal_atomically(&journal, &updated)?;
+        }
+        for (candidate, account) in &prepared {
+            if !store
+                .review_candidate(&candidate.id, CandidateState::Confirmed, account, &now)
+                .map_err(|error| error.to_string())?
+            {
+                return Err("candidate changed before batch reclassification".into());
+            }
+        }
+        let _projection_guard = projection_write
+            .lock()
+            .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
+        rebuild_projection(
+            &database_url,
+            &journal,
+            &budgets,
+            investment_snapshot.as_deref(),
+        )?;
+        Ok(json!({
+            "ok": true,
+            "reviewed": prepared.len(),
+            "reclassified": reclassified,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(StatusCode::OK, body),
+        Ok(Err(error)) if error == "candidate not found" => {
+            response(StatusCode::NOT_FOUND, json!({ "error": error }))
+        }
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+fn is_reviewed_expense_account(account: &str) -> bool {
+    account.starts_with("expenses:")
+        && !account.split(':').any(|segment| segment == "uncategorized")
+}
+
 async fn review_candidate(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1113,10 +1227,53 @@ async fn dashboard_projection(
             })
             .map(|commitment| commitment.monthly_cents)
             .sum();
+        let source_freshness = vec![
+            SourceFreshness {
+                source: "journal".into(),
+                label: "Journal projection".into(),
+                as_of: view.quality.latest_transaction_date.clone(),
+                coverage: match view.quality.latest_transaction_date.as_ref() {
+                    None => "missing",
+                    Some(_) if view.quality.observed_months == view.quality.expected_months => {
+                        "complete"
+                    }
+                    Some(_) => "partial",
+                }
+                .into(),
+            },
+            SourceFreshness {
+                source: "balances".into(),
+                label: "Manual balances".into(),
+                as_of: balance_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.as_of.clone()),
+                coverage: match balance_snapshot.as_ref().map(|snapshot| snapshot.coverage) {
+                    None => "missing",
+                    Some(balance::BalanceCoverage::Complete) => "complete",
+                    Some(balance::BalanceCoverage::Partial) => "partial",
+                }
+                .into(),
+            },
+            SourceFreshness {
+                source: "holdings".into(),
+                label: "Reviewed holdings".into(),
+                as_of: view
+                    .investment
+                    .as_ref()
+                    .map(|snapshot| snapshot.reviewed_at.clone()),
+                coverage: match view.investment.as_ref() {
+                    None => "missing",
+                    Some(_) if portfolio_complete => "complete",
+                    Some(_) => "partial",
+                }
+                .into(),
+            },
+        ];
         Ok::<_, String>(DashboardResponse {
             projection: view,
             balance_snapshot,
             tracked_net_worth,
+            source_freshness,
             commitment_as_of,
             current_commitment_monthly_cents,
             commitments: commitments.as_ref().clone(),
@@ -1136,9 +1293,18 @@ struct DashboardResponse {
     projection: analytics::DashboardProjection,
     balance_snapshot: Option<ManualBalanceSnapshot>,
     tracked_net_worth: Option<TrackedNetWorth>,
+    source_freshness: Vec<SourceFreshness>,
     commitment_as_of: String,
     current_commitment_monthly_cents: i64,
     commitments: Vec<RecurringCommitment>,
+}
+
+#[derive(Debug, Serialize)]
+struct SourceFreshness {
+    source: String,
+    label: String,
+    as_of: Option<String>,
+    coverage: String,
 }
 
 async fn update_balance_snapshot(
@@ -1572,6 +1738,10 @@ async fn main() {
             "/api/import/candidates/confirm-batch",
             post(confirm_candidates_batch),
         )
+        .route(
+            "/api/import/candidates/reclassify-batch",
+            post(reclassify_candidates_batch),
+        )
         .route("/api/import/candidates/:id/review", post(review_candidate))
         .route(
             "/api/import/candidates/:id/reconcile-transfer",
@@ -1689,6 +1859,7 @@ mod tests {
             "/api/import/investments/confirm",
             "/api/import/candidates",
             "/api/import/candidates/confirm-batch",
+            "/api/import/candidates/reclassify-batch",
             "/api/import/candidates/:id/review",
             "/api/import/candidates/:id/reconcile-transfer",
             "/api/import/candidates/:id/allocation",
@@ -1703,6 +1874,15 @@ mod tests {
                 "{path} is served but undeclared"
             );
         }
+    }
+
+    #[test]
+    fn batch_reclassification_accepts_only_reviewed_expense_targets() {
+        assert!(is_reviewed_expense_account("expenses:food:groceries"));
+        assert!(!is_reviewed_expense_account("expenses:uncategorized"));
+        assert!(!is_reviewed_expense_account("expenses:food:uncategorized"));
+        assert!(!is_reviewed_expense_account("income:salary"));
+        assert!(!is_reviewed_expense_account("assets:bank:checking"));
     }
 
     #[tokio::test]

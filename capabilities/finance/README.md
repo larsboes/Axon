@@ -35,10 +35,20 @@ accounting-engine policy.
   holdings in a private snapshot. Instrument aliases remain private mapping data.
 - Candidates stay pending until the local UI confirms or rejects them. Confirmation
   validates the prospective journal, appends once, and atomically rebuilds the
-  Postgres transaction projection. A retry cannot duplicate the posting.
-- `/finance` has Overview, Budget, Transactions and Subscriptions. KPI cards, monthly
-  cash flow, budget variance, the table and the interactive Sankey all use the same
-  Rust projection. Internal transfers are excluded by default.
+  Postgres transaction projection. A retry cannot duplicate the posting. Confirmed
+  uncategorized expenses can later be grouped locally by description and explicitly
+  batch-reclassified; the selected journal postings are validated and replaced once.
+- A confirmed expense can then receive a reviewed purpose and personal/shared split.
+  The personal share remains on the expense account; money fronted for others posts
+  to `assets:receivable:shared`. A linked repayment settles that receivable and is
+  never projected as income or negative spending.
+- `/finance` has Overview, Budget, Transactions and Subscriptions. Personal result,
+  external cash movement, category composition, purpose/trip summaries, budget
+  variance, the table and the constrained flow explorer all use the same Rust
+  projection. Transactions starts with largest-first categorization review and a
+  trip-first allocation workspace: Trips owns the plan and dates, while Finance loads
+  that window and reviews each transaction's personal share. Internal transfers are
+  excluded by default.
 - Subscription prices and states remain append-only, with conflict-safe Obsidian
   writeback through `libs/markdown-root`.
 
@@ -104,6 +114,9 @@ On the manifest-declared port. `GET /routes` serves the full manifest.
 - `GET /api/import/investments/mappings` · `POST /api/import/investments/preview`
 - `POST /api/import/investments/confirm`
 - `POST /api/import/candidates/:id/review`
+- `POST /api/import/candidates/reclassify-batch`
+- `POST /api/import/candidates/:id/allocation`
+- `POST /api/import/candidates/:id/reimbursement`
 - `GET /api/ledger/check` · `POST /api/ledger/rebuild`
 - `GET /api/dashboard?start=&end=&account=&category=&currency=`
 
@@ -173,11 +186,13 @@ permanent and the knowledge-boundary requires that forgetting stay possible, so 
 mapping from a symbolic name to a real account lives in Vaultwarden. This holds for
 comments and commit messages too.
 
-**A trip is a posting tag, not a branch.** A trip expense is also a food expense.
+**A trip is context, not a category branch.** A trip expense is also a food expense.
 Duplicating the category tree under a trip prefix would make "what did I spend on
 food this year" answerable only by remembering to union two subtrees. `hledger
-balance tag:trip=<slug>` is the join, and the slug matches the trips capability's
-plan, which is how the two agree without either reading the other's store.
+balance tag:axon-trip-id=<plan-id>` is the join. Finance stores only the opaque Trips
+plan identifier; the dashboard asks Trips for the current title. Purpose is a
+separate `axon-purpose` tag, and ownership is represented by postings, so category,
+reason and whose money was spent remain independently queryable.
 
 `service.toml` declares `ledger = "hledger"`. That makes the existing scoped
 toolchain check require hledger only on machines that enable Finance. Version 1.52.1

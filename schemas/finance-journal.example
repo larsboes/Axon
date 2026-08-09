@@ -12,6 +12,7 @@
 ;   assets:broker:<broker>:cash        uninvested cash at a broker
 ;   assets:investments:<broker>:<SYM>  a position, held in its own commodity
 ;   assets:p2p:<platform>              lending platforms and similar
+;   assets:receivable:shared           money fronted for other people
 ;   liabilities:card:<issuer>          a credit card
 ;   income:salary                      employment income
 ;   income:dividends                   distributions
@@ -28,15 +29,15 @@
 ; Trip attribution
 ; ---------------------------------------------------------------------------
 ;
-; A trip expense is also a food expense, so the trip is a posting TAG rather than
+; A trip expense is also a food expense, so the trip is transaction context rather than
 ; a branch of the tree. Duplicating the category tree under a trip prefix would
 ; make "what did I spend on food this year" answerable only by remembering to
 ; union two subtrees.
 ;
-;   hledger -f <journal> balance tag:trip=lisbon-2026
+;   hledger -f <journal> balance tag:axon-trip-id=trip:synthetic
 ;
-; The slug matches the trips capability's plan, which is how the two agree without
-; either reading the other's store.
+; Finance stores only the opaque plan id. The dashboard resolves its current title
+; through Trips, so neither capability reads the other's store.
 
 decimal-mark ,
 commodity 1.000,00 EUR
@@ -45,6 +46,7 @@ account assets:bank:checking
 account assets:bank:savings
 account assets:broker:cash
 account assets:investments:ACME
+account assets:receivable:shared
 account expenses:food
 account expenses:subscriptions:example-service
 account expenses:transport
@@ -77,12 +79,20 @@ account equity:opening-balances
 ; position against.
 P 2026-08-08 ACME 51,20 EUR
 
-; Trip-tagged spending. Two different categories, one trip, and the tag is what
-; joins them.
-2026-06-12 dinner  ; trip: lisbon-2026
-    expenses:food                             34,80 EUR
-    assets:bank:checking
+; Shared trip spending. Only the reviewed personal share is an expense; the rest
+; remains an asset until repayments settle it.
+2026-06-12 group dinner  ; axon-purpose: trip, axon-own-cents: 1000, axon-shared-cents: 3000, axon-trip-id: trip:synthetic
+    assets:bank:checking                     -40,00 EUR
+    expenses:food                             10,00 EUR
+    assets:receivable:shared                  30,00 EUR
+    ; source-id: synthetic-expense
 
-2026-06-12 metro  ; trip: lisbon-2026
+2026-06-12 metro  ; axon-purpose: trip, axon-own-cents: 640, axon-shared-cents: 0, axon-trip-id: trip:synthetic
     expenses:transport                         6,40 EUR
     assets:bank:checking
+
+; A repayment reduces the receivable. It is neither income nor negative spending.
+2026-06-13 group repayment  ; axon-reimbursement-for: synthetic-expense
+    assets:bank:checking                      20,00 EUR
+    assets:receivable:shared                 -20,00 EUR
+    ; source-id: synthetic-repayment

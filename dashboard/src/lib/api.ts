@@ -2153,20 +2153,38 @@ export interface SharedExpenseSummary {
 export interface FinanceDashboard {
   summary: {
     income_cents: number;
-    expense_cents: number;
+    personal_spending_cents: number;
     gross_cash_outflow_cents: number;
     reimbursement_received_cents: number;
-    net_cash_flow_cents: number;
+    personal_result_cents: number;
+    external_cash_inflow_cents: number;
+    external_cash_movement_cents: number;
     savings_rate_percent: number | null;
     budget_cents: number;
     budget_variance_cents: number;
     currency: string;
   };
+  quality: {
+    expense_posting_count: number;
+    categorized_expense_posting_count: number;
+    personal_spending_cents: number;
+    categorized_personal_spending_cents: number;
+    categorization_count_percent: number | null;
+    categorization_value_percent: number | null;
+    first_transaction_date: string | null;
+    latest_transaction_date: string | null;
+    observed_months: number;
+    expected_months: number;
+  };
   trend: Array<{
     month: string;
     income_cents: number;
-    expense_cents: number;
-    net_cash_flow_cents: number;
+    personal_spending_cents: number;
+    gross_cash_outflow_cents: number;
+    reimbursement_received_cents: number;
+    personal_result_cents: number;
+    external_cash_inflow_cents: number;
+    external_cash_movement_cents: number;
   }>;
   category_trend: Array<{
     month: string;
@@ -2181,6 +2199,7 @@ export interface FinanceDashboard {
   }>;
   transactions: FinanceTransaction[];
   sankey: Array<{
+    month: string;
     source: string;
     target: string;
     amount_cents: number;
@@ -2192,8 +2211,27 @@ export interface FinanceDashboard {
   investment: ReviewedHoldingsSnapshot | null;
   portfolio_values: PortfolioValuation[];
   shared_expenses: SharedExpenseSummary[];
+  purpose_spending: Array<{
+    purpose: SpendingPurpose | null;
+    personal_spending_cents: number;
+    expense_posting_count: number;
+  }>;
+  trip_spending: Array<{
+    trip_id: string;
+    personal_spending_cents: number;
+    gross_cash_outflow_cents: number;
+    reimbursed_cents: number;
+    outstanding_cents: number;
+    expense_posting_count: number;
+  }>;
   balance_snapshot: ManualBalanceSnapshot | null;
   tracked_net_worth: TrackedNetWorth | null;
+  source_freshness: Array<{
+    source: 'journal' | 'balances' | 'holdings';
+    label: string;
+    as_of: string | null;
+    coverage: 'complete' | 'partial' | 'missing';
+  }>;
   commitment_as_of: string;
   current_commitment_monthly_cents: number;
   commitments: RecurringCommitment[];
@@ -2342,6 +2380,11 @@ export const finance = {
   confirmCandidates: (items: { id: string; account: string }[]) =>
     request<{ ok: boolean; confirmed: number; journal_writes: number }>(
       '/finance/api/import/candidates/confirm-batch',
+      jsonInit('POST', { items }),
+    ),
+  reclassifyCandidates: (items: { id: string; account: string }[]) =>
+    request<{ ok: boolean; reviewed: number; reclassified: number }>(
+      '/finance/api/import/candidates/reclassify-batch',
       jsonInit('POST', { items }),
     ),
   reconcileTransfer: (id: string, counterpartId: string) =>
