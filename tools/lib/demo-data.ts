@@ -209,11 +209,13 @@ export const VOCABULARY = {
     { title: "Concert — Kanto Live", kind: "nightlife", hours: 4 },
   ],
 
-  /** Weekly rhythms, in the calendar capability's byweekday form. */
+  /** Weekly rhythms. `byweekday` is lowercase because the calendar capability's own validator
+   *  is: `byweekday token must be one of mo,tu,we,th,fr,sa,su`. The RFC 5545 spelling these
+   *  were first written in (MO, TU) is rejected outright rather than normalised. */
   rhythms: [
-    { title: "Bouldering", kind: "sport", byweekday: ["TU", "TH"], start: "18:30", end: "20:30" },
-    { title: "Language class", kind: "learning", byweekday: ["WE"], start: "19:00", end: "20:30" },
-    { title: "Standup", kind: "work_onsite", byweekday: ["MO", "TU", "WE", "TH", "FR"], start: "09:30", end: "09:45" },
+    { title: "Bouldering", kind: "sport", byweekday: ["tu", "th"], start: "18:30", end: "20:30" },
+    { title: "Language class", kind: "learning", byweekday: ["we"], start: "19:00", end: "20:30" },
+    { title: "Standup", kind: "work_onsite", byweekday: ["mo", "tu", "we", "th", "fr"], start: "09:30", end: "09:45" },
   ],
 
   /** Trip titles, paired with how far ahead of the anchor they start. A demo with every

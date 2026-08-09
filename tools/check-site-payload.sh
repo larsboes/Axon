@@ -83,8 +83,10 @@ scan "a private network address" \
   '\b(10\.[0-9]{1,3}|192\.168|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}\b'
 
 # The same deployment-instance names tools/check-publication-hygiene.sh rejects from the index.
+# Same trailing-character guard as tools/check-publication-hygiene.sh, and for the same
+# reason: a journal tag named axon-personal-cents names no deployment.
 scan "a deployment-instance marker" \
-  'axon-personal|axon-family|axon-work|lifeos-mono|obsidian-mono'
+  '(axon-personal|axon-family|axon-work|lifeos-mono|obsidian-mono)([^-A-Za-z0-9]|$)'
 
 # ─── Derived markers ──────────────────────────────────────────────────────────
 #

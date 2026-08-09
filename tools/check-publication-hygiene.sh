@@ -37,11 +37,20 @@ while IFS= read -r path; do
 done < <(git grep --cached -a -l -E "${mac_home}[A-Za-z0-9._-]+/|${linux_home}[A-Za-z0-9._-]+/" || true)
 
 legacy_tooling_path='~/Developer/'"Tooling"
-instance_markers="axon-personal|axon-family|axon-work|lifeos-mono|obsidian-mono|DS220|Open Telekom Cloud|${legacy_tooling_path}"
+# Each marker must be followed by a non-identifier character or end of line, so a name that
+# merely BEGINS with one does not match. capabilities/finance/src/allocation.rs names a journal
+# tag `axon-personal-cents`, which is a field name in a ledger format and exposes nothing — and
+# it turned this gate red on every push to main from the commit that introduced it. A marker
+# exists to catch a deployment being named, not a string starting with the same letters.
+instance_markers="(axon-personal|axon-family|axon-work|lifeos-mono|obsidian-mono|DS220|Open Telekom Cloud|${legacy_tooling_path})([^-A-Za-z0-9]|$)"
 while IFS= read -r path; do
   [ -n "$path" ] || continue
   case "$path" in
+    # A file whose job is to detect markers has to contain them. That is this script, its
+    # test, and since #168 the sibling gate that scans built site bytes for the same list.
+    # Nothing else earns an entry here: every other file assembles the string at run time.
     tools/check-publication-hygiene.sh|tools/check-publication-hygiene.test.sh) continue ;;
+    tools/check-site-payload.sh) continue ;;
   esac
   echo "publication hygiene: tracked blob contains a deployment-instance marker: $path" >&2
   failed=1

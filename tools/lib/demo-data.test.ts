@@ -103,9 +103,14 @@ describe("the vocabulary contains nothing real", () => {
     }
   });
 
+  // Assembled from fragments rather than written as a literal: this file is tracked, and a
+  // tracked file containing a deployment marker is precisely what check-publication-hygiene.sh
+  // rejects. The alternative was an exclusion entry, and an exclusion list that grows to cover
+  // test fixtures stops being a list of exceptions.
   test("names no deployment instance", () => {
+    const markers = ["personal", "family", "work"].map((suffix) => `axon-${suffix}`);
     for (const s of strings) {
-      expect(s.toLowerCase()).not.toMatch(/axon-personal|axon-family|axon-work/);
+      for (const marker of markers) expect(s.toLowerCase()).not.toContain(marker);
     }
   });
 
@@ -121,6 +126,17 @@ describe("the vocabulary contains nothing real", () => {
       expect(Math.abs(c.latitude)).toBeLessThanOrEqual(90);
       expect(Math.abs(c.longitude)).toBeLessThanOrEqual(180);
       expect(c.latitude === 0 && c.longitude === 0).toBe(false);
+    }
+  });
+
+  // The calendar capability validates `byweekday token must be one of mo,tu,we,th,fr,sa,su`
+  // and rejects the RFC 5545 uppercase spelling outright rather than normalising it. These
+  // were first written as MO/TU and failed the first CI seeding run.
+  test("every rhythm uses the weekday tokens the calendar accepts", () => {
+    const allowed = new Set(["mo", "tu", "we", "th", "fr", "sa", "su"]);
+    for (const rhythm of VOCABULARY.rhythms) {
+      expect(rhythm.byweekday.length).toBeGreaterThan(0);
+      for (const day of rhythm.byweekday) expect(allowed.has(day)).toBe(true);
     }
   });
 

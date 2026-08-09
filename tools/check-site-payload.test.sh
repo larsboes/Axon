@@ -52,10 +52,15 @@ expect_reject "an IBAN written as one run"
 plant fixture.json '{"iban":"GB29 NWBK 6016 1331 9268 19"}'
 expect_reject "an IBAN written in spaced groups"
 
-plant repos.json '{"path":"/Users/someone/Developer/axon"}'
+# Assembled for the same reason as MARKER below: a tracked file containing a literal
+# workstation path is itself what tools/check-publication-hygiene.sh rejects.
+MAC_HOME="/""Users/someone/Developer/axon"
+LINUX_HOME="/""home/someone/axon"
+
+plant repos.json "{\"path\":\"$MAC_HOME\"}"
 expect_reject "a macOS workstation home path"
 
-plant repos.json '{"path":"/home/someone/axon"}'
+plant repos.json "{\"path\":\"$LINUX_HOME\"}"
 expect_reject "a Linux workstation home path"
 
 plant systems.json '{"url":"https://somehost.tail1a2b3c.ts.net"}'
@@ -64,8 +69,16 @@ expect_reject "a tailnet hostname"
 plant systems.json '{"host":"192.168.1.42"}'
 expect_reject "an RFC1918 address"
 
-plant page.html '<p>see the axon-personal overlay</p>'
+# Assembled rather than written out: a tracked file containing the literal would itself trip
+# tools/check-publication-hygiene.sh, and growing that script's exclusion list to cover test
+# fixtures is how an exclusion list stops meaning anything.
+MARKER="axon-$(printf 'personal')"
+
+plant page.html "<p>see the $MARKER overlay</p>"
 expect_reject "a deployment-instance marker"
+
+plant fixture.json "{\"tag\":\"$MARKER-cents\",\"value\":1200}"
+expect_pass "a journal tag that merely begins with a marker"
 
 # ─── What must pass ───────────────────────────────────────────────────────────
 
@@ -93,22 +106,28 @@ expect_pass "a lowercase hex digest"
 # A fake overlay, so the case needs nothing real. The term must be one this repository does
 # not itself contain, or the already-public filter correctly skips it.
 
+# The machine name is generated, never written literally. The check skips any term this
+# repository already contains, so a literal in THIS file would be tracked, filtered as
+# already-public, and the rejection case would pass for the wrong reason — which is exactly
+# what happened the first time it was committed.
+MACHINE="demohost-$(basename "$SCRATCH")"
+
 OVERLAY="$SCRATCH/overlay"
 mkdir -p "$OVERLAY/config/machines"
-touch "$OVERLAY/config/machines/quernstone-nine.toml"
+touch "$OVERLAY/config/machines/$MACHINE.toml"
 export AXON_OVERLAY_ROOT="$OVERLAY"
 
-plant fixture.json '{"machine":"quernstone-nine"}'
+plant fixture.json "{\"machine\":\"$MACHINE\"}"
 expect_reject "a machine name read from the active overlay"
 
-plant fixture.json '{"machine":"some-other-host"}'
+plant fixture.json '{"machine":"a-host-no-overlay-declares"}'
 expect_pass "a payload naming no machine from the active overlay"
 
 # The demo overlay is tracked and public by design, so nothing is derived from it.
 export AXON_OVERLAY_ROOT="$SCRATCH/demo/overlay"
 mkdir -p "$AXON_OVERLAY_ROOT/config/machines"
-touch "$AXON_OVERLAY_ROOT/config/machines/quernstone-nine.toml"
-plant fixture.json '{"machine":"quernstone-nine"}'
+touch "$AXON_OVERLAY_ROOT/config/machines/$MACHINE.toml"
+plant fixture.json "{\"machine\":\"$MACHINE\"}"
 expect_pass "the demo overlay's own machine name"
 
 if [ "$fails" -ne 0 ]; then
