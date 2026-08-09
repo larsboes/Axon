@@ -7,7 +7,7 @@
 // like working software right up until somebody reads the page.
 
 import { describe, expect, test } from "bun:test";
-import { fixtureFile, loadManifest, resolvePath, routes, type RegistryEntry } from "./demo-endpoints.ts";
+import { DEMO_OVERLAY, fixtureFile, loadManifest, registry, resolvePath, routes, type RegistryEntry } from "./demo-endpoints.ts";
 
 /** A registry standing in for three real shapes: the uniform rule, the api-only rule, and a
  *  capability with a legacy unstripped prefix. */
@@ -104,6 +104,13 @@ describe("fixtureFile", () => {
 describe("the committed demo.toml", () => {
   const manifest = loadManifest();
 
+  // Asked of the overlay the demo actually runs on, not of this machine. `capability.sh
+  // registry` answers for the ENABLED set, so without pinning it the two cases below were
+  // green on a workstation with these five capabilities on and red in CI, where the seed
+  // overlay enables none. Whether every declared path resolves is a fact about the
+  // repository; it must not depend on the runner.
+  const live = routes(registry(DEMO_OVERLAY));
+
   test("declares a fixed seed and a fixed anchor date", () => {
     expect(manifest.seed).not.toBe("");
     expect(manifest.anchor).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -112,14 +119,12 @@ describe("the committed demo.toml", () => {
   test("every declared path resolves against the real registry", () => {
     // The one assertion that catches a capability being renamed or losing its port: it runs
     // against tools/capability.sh registry, not against the fixture above.
-    const live = routes();
     for (const cap of manifest.capabilities) {
       for (const path of cap.paths) expect(() => resolvePath(path, live)).not.toThrow();
     }
   });
 
   test("a path is declared under the capability that serves it", () => {
-    const live = routes();
     for (const cap of manifest.capabilities) {
       for (const path of cap.paths) {
         expect(resolvePath(path, live).capability).toBe(cap.name);

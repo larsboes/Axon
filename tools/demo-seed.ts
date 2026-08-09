@@ -24,6 +24,7 @@ import {
   addDays,
   at,
   daysBetween,
+  eventWindow,
   monthStart,
   Rng,
   VOCABULARY,
@@ -138,7 +139,7 @@ const SEEDERS: Record<string, (ctx: Ctx) => Promise<string>> = {
       if (!ctx.rng.bool(0.42)) continue;
       const event = ctx.rng.pick(VOCABULARY.events);
       const date = addDays(ctx.anchor, day);
-      const startHour = ctx.rng.int(8, 19);
+      const window = eventWindow(ctx.rng, date, event.hours);
       await post(entries, {
         kind: event.kind,
         // Past entries are settled, near ones are planned, far ones are still ideas. A
@@ -146,8 +147,8 @@ const SEEDERS: Record<string, (ctx: Ctx) => Promise<string>> = {
         // whole model is that they are not.
         commitment: day < 0 ? "committed" : day < 14 ? "planned" : "possible",
         title: event.title,
-        starts_at: at(date, startHour),
-        ends_at: at(date, startHour + Math.max(1, Math.round(event.hours))),
+        starts_at: window.starts_at,
+        ends_at: window.ends_at,
         all_day: false,
         location: ctx.rng.bool(0.6) ? VOCABULARY.home.name : null,
         notes: null,

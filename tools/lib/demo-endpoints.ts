@@ -102,12 +102,24 @@ export function loadManifest(path = join(AXON_ROOT, "demo/demo.toml")): DemoMani
   };
 }
 
-export function registry(): RegistryEntry[] {
+/**
+ * The enabled capability set, as `tools/capability.sh registry` reports it.
+ *
+ * `overlayRoot` names which deployment to ask about, passed explicitly to the child rather
+ * than left to whatever the calling shell exports. Callers that want "this machine" omit it;
+ * the tests pass demo/overlay, because "does every path in demo.toml resolve" is a question
+ * about the repository and must not depend on which capabilities the runner happens to enable.
+ */
+export function registry(overlayRoot?: string): RegistryEntry[] {
   const out = execFileSync(join(AXON_ROOT, "tools/capability.sh"), ["registry"], {
     encoding: "utf8",
+    env: overlayRoot ? { ...process.env, AXON_OVERLAY_ROOT: overlayRoot } : process.env,
   });
   return JSON.parse(out) as RegistryEntry[];
 }
+
+/** The overlay the published demonstration runs as. */
+export const DEMO_OVERLAY = join(AXON_ROOT, "demo/overlay");
 
 interface Route {
   /** The browser-side prefix, longest match wins. */

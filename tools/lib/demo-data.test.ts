@@ -13,7 +13,7 @@
 // the failure lands on whoever adds the string, not on a deploy six commits later.
 
 import { describe, expect, test } from "bun:test";
-import { addDays, at, daysBetween, monthStart, Rng, VOCABULARY, email, vocabularyStrings } from "./demo-data.ts";
+import { addDays, at, daysBetween, eventWindow, monthStart, Rng, VOCABULARY, email, vocabularyStrings } from "./demo-data.ts";
 
 describe("Rng", () => {
   test("the same seed replays the same sequence", () => {
@@ -59,8 +59,12 @@ describe("dates", () => {
     expect(addDays("2026-02-28", 1)).toBe("2026-03-01"); // 2026 is not a leap year
   });
 
-  test("at() is an RFC3339 instant in UTC", () => {
-    expect(at("2026-03-16", 9, 30)).toBe("2026-03-16T09:30:00Z");
+  // The calendar capability's own accepted form. A zone suffix is rejected outright, so this
+  // pins the absence of one as much as the padding.
+  test("at() is a zoneless local-time instant the calendar accepts", () => {
+    expect(at("2026-03-16", 9, 30)).toBe("2026-03-16T09:30");
+    expect(at("2026-03-16", 9)).toBe("2026-03-16T09:00");
+    expect(at("2026-03-16", 14, 5)).toBe("2026-03-16T14:05");
   });
 
   test("monthStart walks back whole months", () => {
@@ -71,6 +75,38 @@ describe("dates", () => {
   test("daysBetween is signed and symmetric", () => {
     expect(daysBetween("2026-03-01", "2026-03-16")).toBe(15);
     expect(daysBetween("2026-03-16", "2026-03-01")).toBe(-15);
+  });
+});
+
+describe("eventWindow", () => {
+  // Every rule the calendar's NewEntry::validate applies to a timed entry, asserted over the
+  // whole corpus rather than a sample: the failure this replaces only appeared on the days
+  // the dice picked a late start for a long event.
+  test("every event on every day produces a window the calendar accepts", () => {
+    const rng = new Rng("windows");
+    for (const event of VOCABULARY.events) {
+      for (let day = -30; day <= 45; day++) {
+        const { starts_at, ends_at } = eventWindow(rng, addDays("2026-03-16", day), event.hours);
+        for (const stamp of [starts_at, ends_at]) {
+          expect(stamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+          const hour = Number(stamp.slice(11, 13));
+          expect(hour).toBeGreaterThanOrEqual(0);
+          expect(hour).toBeLessThan(24);
+        }
+        // Ends are exclusive and must be strictly later.
+        expect(ends_at > starts_at).toBe(true);
+        // ...and on the same day, so an entry cannot silently span midnight.
+        expect(ends_at.slice(0, 10)).toBe(starts_at.slice(0, 10));
+      }
+    }
+  });
+
+  test("a long event starts early enough to finish inside the day", () => {
+    const rng = new Rng("long");
+    for (let i = 0; i < 200; i++) {
+      const { ends_at } = eventWindow(rng, "2026-03-16", 6);
+      expect(Number(ends_at.slice(11, 13))).toBeLessThanOrEqual(21);
+    }
   });
 });
 

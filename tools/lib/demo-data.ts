@@ -90,11 +90,41 @@ export function addDays(iso: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** An RFC3339 instant at a given hour on a date, always UTC. */
+/**
+ * A local-time instant at a given hour on a date: `2026-03-16T09:30`.
+ *
+ * Deliberately NOT RFC3339. The calendar capability parses `YYYY-MM-DD` or
+ * `YYYY-MM-DDTHH:MM[:SS]` and accepts no zone suffix at all — a trailing `Z` lands in its
+ * seconds field, fails an integer parse, and comes back as "starts_at must be a date or local
+ * time". Its model is local wall-clock time on purpose (capabilities/calendar/src/date.rs), so
+ * an instant with a zone on it would be a different kind of value, not a formatting variant.
+ */
 export function at(iso: string, hour: number, minute = 0): string {
-  const d = new Date(`${iso}T00:00:00Z`);
-  d.setUTCHours(hour, minute, 0, 0);
-  return d.toISOString().replace(".000Z", "Z");
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${iso}T${pad(hour)}:${pad(minute)}`;
+}
+
+/**
+ * A timed entry's window on a date, as the calendar capability will accept it.
+ *
+ * Here rather than inline in the seeder because it encodes three of that capability's rules
+ * at once, and all three are easy to break by arithmetic: an hour field must be under 24,
+ * `ends_at` must be strictly after `starts_at`, and a non-all-day entry needs HH:MM on both.
+ * The first draft picked a start hour in [8, 19] and added up to six hours, which produces
+ * `25:00` for the longest events — rejected outright, and only on the days the dice chose it.
+ *
+ * The start window is therefore derived from the duration rather than fixed: a six-hour event
+ * starts by 15:00, a one-hour event may start as late as 20:00, and nothing ends past 21:00.
+ */
+export function eventWindow(
+  rng: Rng,
+  date: string,
+  hours: number,
+): { starts_at: string; ends_at: string } {
+  const duration = Math.min(12, Math.max(1, Math.round(hours)));
+  const latestStart = Math.max(8, 21 - duration);
+  const startHour = rng.int(8, latestStart);
+  return { starts_at: at(date, startHour), ends_at: at(date, startHour + duration) };
 }
 
 /** First day of the month `back` months before `iso`. */

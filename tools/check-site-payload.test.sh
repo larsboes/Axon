@@ -112,7 +112,11 @@ expect_pass "a lowercase hex digest"
 # what happened the first time it was committed.
 MACHINE="demohost-$(basename "$SCRATCH")"
 
-OVERLAY="$SCRATCH/overlay"
+# The directory name is derived too. It used to be literally "overlay", which the check emits
+# as a derived term; the passing case below happened to contain that word, and only the
+# already-public filter finding "overlay" somewhere in the repo kept it green. Under Bazel
+# there is no repository to search, the filter correctly declined, and the case failed.
+OVERLAY="$SCRATCH/$MACHINE-root"
 mkdir -p "$OVERLAY/config/machines"
 touch "$OVERLAY/config/machines/$MACHINE.toml"
 export AXON_OVERLAY_ROOT="$OVERLAY"
@@ -120,11 +124,11 @@ export AXON_OVERLAY_ROOT="$OVERLAY"
 plant fixture.json "{\"machine\":\"$MACHINE\"}"
 expect_reject "a machine name read from the active overlay"
 
-plant fixture.json '{"machine":"a-host-no-overlay-declares"}'
+plant fixture.json '{"machine":"unrelated-value"}'
 expect_pass "a payload naming no machine from the active overlay"
 
 # The demo overlay is tracked and public by design, so nothing is derived from it.
-export AXON_OVERLAY_ROOT="$SCRATCH/demo/overlay"
+export AXON_OVERLAY_ROOT="$SCRATCH/nested/demo/overlay"
 mkdir -p "$AXON_OVERLAY_ROOT/config/machines"
 touch "$AXON_OVERLAY_ROOT/config/machines/$MACHINE.toml"
 plant fixture.json "{\"machine\":\"$MACHINE\"}"
