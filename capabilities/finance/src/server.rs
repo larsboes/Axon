@@ -21,6 +21,7 @@ use finance::config::{
 use finance::import::{self, CandidateState, CsvMapping, TransactionCandidate};
 use finance::investment::{self, HoldingsCoverage, InvestmentCsvMapping};
 use finance::obsidian::{self, WriteBack};
+use finance::planning::{self, PlanningConfig, PlanningReport, SourceExpectation};
 use finance::store::FinanceStore;
 use finance::subscription::{burn_by_currency, PricePoint, StateChange};
 use finance::HledgerEngine;
@@ -181,6 +182,7 @@ struct AppState {
     journal: Option<std::path::PathBuf>,
     budgets: Arc<Vec<BudgetTarget>>,
     commitments: Arc<Vec<RecurringCommitment>>,
+    planning: Arc<PlanningConfig>,
     csv_mappings: Arc<Vec<CsvMappingProfile>>,
     investment_csv_mappings: Arc<Vec<InvestmentCsvMappingProfile>>,
     investment_snapshot: Option<std::path::PathBuf>,
@@ -1181,6 +1183,7 @@ async fn dashboard_projection(
     let budgets = state.budgets.clone();
     let balance_snapshot_path = state.balance_snapshot.clone();
     let commitments = state.commitments.clone();
+    let planning_config = state.planning.clone();
     let projection_write = state.projection_write.clone();
     match tokio::task::spawn_blocking(move || {
         let _projection_guard = projection_write
@@ -1190,6 +1193,7 @@ async fn dashboard_projection(
         let rows = store
             .transaction_projection()
             .map_err(|error| error.to_string())?;
+        let subscriptions = store.list().map_err(|error| error.to_string())?;
         let mut view = analytics::dashboard(&rows, &budgets, &filter);
         let investment = store
             .holding_projection()
@@ -1227,11 +1231,36 @@ async fn dashboard_projection(
             })
             .map(|commitment| commitment.monthly_cents)
             .sum();
-        let source_freshness = vec![
+        let planning = planning::report(planning::PlanningInputs {
+            rows: &rows,
+            commitments: &commitments,
+            subscriptions: &subscriptions,
+            balance_snapshot: balance_snapshot.as_ref(),
+            investment_snapshot: view.investment.as_ref(),
+            portfolio_values: &view.portfolio_values,
+            config: &planning_config,
+            as_of: &commitment_as_of,
+            currency: &view.summary.currency,
+        });
+        let journal_as_of = view.quality.latest_transaction_date.clone();
+        let balance_as_of = balance_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.as_of.clone());
+        let holdings_as_of = view
+            .investment
+            .as_ref()
+            .map(|snapshot| snapshot.reviewed_at.clone());
+        let mut source_freshness = vec![
             SourceFreshness {
                 source: "journal".into(),
                 label: "Journal projection".into(),
-                as_of: view.quality.latest_transaction_date.clone(),
+                age_days: source_age_days(journal_as_of.as_deref(), &commitment_as_of),
+                freshness: source_freshness_status(
+                    journal_as_of.as_deref(),
+                    &commitment_as_of,
+                    planning_config.journal_freshness_days,
+                ),
+                as_of: journal_as_of,
                 coverage: match view.quality.latest_transaction_date.as_ref() {
                     None => "missing",
                     Some(_) if view.quality.observed_months == view.quality.expected_months => {
@@ -1244,9 +1273,13 @@ async fn dashboard_projection(
             SourceFreshness {
                 source: "balances".into(),
                 label: "Manual balances".into(),
-                as_of: balance_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.as_of.clone()),
+                age_days: source_age_days(balance_as_of.as_deref(), &commitment_as_of),
+                freshness: source_freshness_status(
+                    balance_as_of.as_deref(),
+                    &commitment_as_of,
+                    planning_config.snapshot_freshness_days,
+                ),
+                as_of: balance_as_of,
                 coverage: match balance_snapshot.as_ref().map(|snapshot| snapshot.coverage) {
                     None => "missing",
                     Some(balance::BalanceCoverage::Complete) => "complete",
@@ -1257,10 +1290,13 @@ async fn dashboard_projection(
             SourceFreshness {
                 source: "holdings".into(),
                 label: "Reviewed holdings".into(),
-                as_of: view
-                    .investment
-                    .as_ref()
-                    .map(|snapshot| snapshot.reviewed_at.clone()),
+                age_days: source_age_days(holdings_as_of.as_deref(), &commitment_as_of),
+                freshness: source_freshness_status(
+                    holdings_as_of.as_deref(),
+                    &commitment_as_of,
+                    planning_config.snapshot_freshness_days,
+                ),
+                as_of: holdings_as_of,
                 coverage: match view.investment.as_ref() {
                     None => "missing",
                     Some(_) if portfolio_complete => "complete",
@@ -1269,6 +1305,12 @@ async fn dashboard_projection(
                 .into(),
             },
         ];
+        source_freshness.extend(expected_source_freshness(
+            &rows,
+            view.investment.as_ref(),
+            &planning_config,
+            &commitment_as_of,
+        ));
         Ok::<_, String>(DashboardResponse {
             projection: view,
             balance_snapshot,
@@ -1277,6 +1319,7 @@ async fn dashboard_projection(
             commitment_as_of,
             current_commitment_monthly_cents,
             commitments: commitments.as_ref().clone(),
+            planning,
         })
     })
     .await
@@ -1297,6 +1340,7 @@ struct DashboardResponse {
     commitment_as_of: String,
     current_commitment_monthly_cents: i64,
     commitments: Vec<RecurringCommitment>,
+    planning: PlanningReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -1304,7 +1348,122 @@ struct SourceFreshness {
     source: String,
     label: String,
     as_of: Option<String>,
+    age_days: Option<i64>,
+    freshness: String,
     coverage: String,
+}
+
+fn expected_source_freshness(
+    rows: &[analytics::TransactionRow],
+    investment: Option<&investment::ReviewedHoldingsSnapshot>,
+    config: &PlanningConfig,
+    today: &str,
+) -> Vec<SourceFreshness> {
+    config
+        .source_expectations
+        .iter()
+        .map(|expectation| match expectation {
+            SourceExpectation::Transactions {
+                id,
+                label,
+                account_prefixes,
+                freshness_days,
+                coverage,
+            } => {
+                let as_of = rows
+                    .iter()
+                    .filter(|row| {
+                        account_prefixes
+                            .iter()
+                            .any(|prefix| row.account.starts_with(prefix))
+                    })
+                    .map(|row| row.date.as_str())
+                    .max()
+                    .map(str::to_string);
+                SourceFreshness {
+                    source: format!("transactions:{id}"),
+                    label: label.clone(),
+                    age_days: source_age_days(as_of.as_deref(), today),
+                    freshness: source_freshness_status(
+                        as_of.as_deref(),
+                        today,
+                        freshness_days.unwrap_or(config.journal_freshness_days),
+                    ),
+                    coverage: as_of
+                        .as_ref()
+                        .map_or("missing", |_| coverage.as_str())
+                        .into(),
+                    as_of,
+                }
+            }
+            SourceExpectation::Holdings {
+                id,
+                label,
+                source_key,
+                freshness_days,
+                coverage,
+            } => {
+                let source = investment.and_then(|snapshot| {
+                    snapshot
+                        .sources
+                        .iter()
+                        .find(|source| source.source_key == *source_key)
+                });
+                let as_of = source.map(|source| source.reviewed_at.clone());
+                let reported_coverage = source.map_or("missing", |source| {
+                    if coverage.as_str() == "complete"
+                        && source.coverage == HoldingsCoverage::Complete
+                    {
+                        "complete"
+                    } else {
+                        "partial"
+                    }
+                });
+                SourceFreshness {
+                    source: format!("holdings:{id}"),
+                    label: label.clone(),
+                    age_days: source_age_days(as_of.as_deref(), today),
+                    freshness: source_freshness_status(
+                        as_of.as_deref(),
+                        today,
+                        freshness_days.unwrap_or(config.snapshot_freshness_days),
+                    ),
+                    coverage: reported_coverage.into(),
+                    as_of,
+                }
+            }
+        })
+        .collect()
+}
+
+fn source_age_days(as_of: Option<&str>, today: &str) -> Option<i64> {
+    let age = iso_day(today)?.checked_sub(iso_day(as_of?)?)?;
+    Some(age.max(0))
+}
+
+fn source_freshness_status(as_of: Option<&str>, today: &str, threshold_days: u32) -> String {
+    match source_age_days(as_of, today) {
+        None => "missing",
+        Some(age) if age <= i64::from(threshold_days) => "current",
+        Some(_) => "stale",
+    }
+    .into()
+}
+
+fn iso_day(value: &str) -> Option<i64> {
+    if !valid_iso_date(value) {
+        return None;
+    }
+    let year = value[0..4].parse::<i64>().ok()?;
+    let month = value[5..7].parse::<i64>().ok()?;
+    let day = value[8..10].parse::<i64>().ok()?;
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let shifted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
 }
 
 async fn update_balance_snapshot(
@@ -1705,6 +1864,7 @@ async fn main() {
         journal: config.journal,
         budgets: Arc::new(config.budgets),
         commitments: Arc::new(config.commitments),
+        planning: Arc::new(config.planning),
         csv_mappings: Arc::new(config.csv_mappings),
         investment_csv_mappings: Arc::new(config.investment_csv_mappings),
         investment_snapshot: config.investment_snapshot,
@@ -1767,7 +1927,10 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use finance::analytics::{TransactionKind, TransactionRow};
     use finance::import::{AmountSign, CsvDateFormat, CsvRowPolicy};
+    use finance::investment::{ReviewedHoldingsSnapshot, ReviewedHoldingsSource};
+    use finance::planning::ExpectedCoverage;
 
     fn synthetic_csv_mapping() -> CsvMapping {
         CsvMapping {
@@ -1802,6 +1965,90 @@ mod tests {
         // 2024 was a leap year; the day after 02-28 is 02-29, not 03-01.
         assert_eq!(civil_from_days(19_782), "2024-02-29");
         assert_eq!(civil_from_days(20_673), "2026-08-08");
+        assert_eq!(iso_day("1970-01-01"), Some(0));
+        assert_eq!(iso_day("2024-02-29"), Some(19_782));
+        assert_eq!(iso_day("2026-08-08"), Some(20_673));
+    }
+
+    #[test]
+    fn source_freshness_distinguishes_current_stale_and_missing() {
+        assert_eq!(source_age_days(Some("2026-08-01"), "2026-08-11"), Some(10));
+        assert_eq!(
+            source_freshness_status(Some("2026-08-01"), "2026-08-11", 14),
+            "current"
+        );
+        assert_eq!(
+            source_freshness_status(Some("2026-07-01"), "2026-08-11", 14),
+            "stale"
+        );
+        assert_eq!(source_freshness_status(None, "2026-08-11", 14), "missing");
+    }
+
+    #[test]
+    fn configured_sources_are_checked_independently() {
+        let rows = vec![TransactionRow {
+            id: "synthetic".into(),
+            date: "2026-08-01".into(),
+            description: "Synthetic".into(),
+            kind: TransactionKind::Expense,
+            account: "liabilities:card:synthetic".into(),
+            category: "expenses:food".into(),
+            amount_cents: 100,
+            currency: "EUR".into(),
+            source_id: None,
+            purpose: None,
+            trip_id: None,
+            cash_amount_cents: 100,
+            shared_cents: 0,
+            reimbursement_for: None,
+        }];
+        let investment = ReviewedHoldingsSnapshot {
+            schema_version: 2,
+            snapshot_id: "synthetic".into(),
+            reviewed_at: "2026-07-01".into(),
+            coverage: HoldingsCoverage::Partial,
+            holdings: Vec::new(),
+            sources: vec![ReviewedHoldingsSource {
+                source_key: "synthetic-broker".into(),
+                snapshot_id: "synthetic-source".into(),
+                reviewed_at: "2026-07-01".into(),
+                coverage: HoldingsCoverage::Partial,
+            }],
+        };
+        let config = PlanningConfig {
+            source_expectations: vec![
+                SourceExpectation::Transactions {
+                    id: "card".into(),
+                    label: "Synthetic card".into(),
+                    account_prefixes: vec!["liabilities:card:synthetic".into()],
+                    freshness_days: Some(14),
+                    coverage: ExpectedCoverage::Complete,
+                },
+                SourceExpectation::Holdings {
+                    id: "broker".into(),
+                    label: "Synthetic broker".into(),
+                    source_key: "synthetic-broker".into(),
+                    freshness_days: Some(14),
+                    coverage: ExpectedCoverage::Complete,
+                },
+                SourceExpectation::Transactions {
+                    id: "missing".into(),
+                    label: "Missing source".into(),
+                    account_prefixes: vec!["assets:missing".into()],
+                    freshness_days: None,
+                    coverage: ExpectedCoverage::Partial,
+                },
+            ],
+            ..PlanningConfig::default()
+        };
+
+        let sources = expected_source_freshness(&rows, Some(&investment), &config, "2026-08-11");
+        assert_eq!(sources[0].freshness, "current");
+        assert_eq!(sources[0].coverage, "complete");
+        assert_eq!(sources[1].freshness, "stale");
+        assert_eq!(sources[1].coverage, "partial");
+        assert_eq!(sources[2].freshness, "missing");
+        assert_eq!(sources[2].coverage, "missing");
     }
 
     #[test]
@@ -1905,6 +2152,7 @@ mod tests {
             journal: None,
             budgets: Arc::new(Vec::new()),
             commitments: Arc::new(Vec::new()),
+            planning: Arc::new(PlanningConfig::default()),
             csv_mappings: Arc::new(Vec::new()),
             investment_csv_mappings: Arc::new(Vec::new()),
             investment_snapshot: None,
@@ -1938,6 +2186,7 @@ mod tests {
             journal: None,
             budgets: Arc::new(Vec::new()),
             commitments: Arc::new(Vec::new()),
+            planning: Arc::new(PlanningConfig::default()),
             csv_mappings: Arc::new(vec![profile.clone()]),
             investment_csv_mappings: Arc::new(Vec::new()),
             investment_snapshot: None,
@@ -1979,6 +2228,7 @@ mod tests {
             journal: None,
             budgets: Arc::new(Vec::new()),
             commitments: Arc::new(Vec::new()),
+            planning: Arc::new(PlanningConfig::default()),
             csv_mappings: Arc::new(Vec::new()),
             investment_csv_mappings: Arc::new(vec![profile.clone()]),
             investment_snapshot: None,
@@ -2000,6 +2250,7 @@ mod tests {
             journal: None,
             budgets: Arc::new(Vec::new()),
             commitments: Arc::new(Vec::new()),
+            planning: Arc::new(PlanningConfig::default()),
             csv_mappings: Arc::new(Vec::new()),
             investment_csv_mappings: Arc::new(Vec::new()),
             investment_snapshot: None,

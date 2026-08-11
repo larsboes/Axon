@@ -12,6 +12,7 @@
 use crate::analytics::BudgetTarget;
 use crate::import::CsvMapping;
 use crate::investment::{HoldingsCoverage, InvestmentCsvMapping};
+use crate::planning::PlanningConfig;
 use axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -79,6 +80,7 @@ pub struct Config {
     pub commitments: Vec<RecurringCommitment>,
     pub csv_mappings: Vec<CsvMappingProfile>,
     pub investment_csv_mappings: Vec<InvestmentCsvMappingProfile>,
+    pub planning: PlanningConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +97,8 @@ struct FinanceFileConfig {
     csv_mappings: Vec<CsvMappingProfile>,
     #[serde(default)]
     investment_csv_mappings: Vec<InvestmentCsvMappingProfile>,
+    #[serde(default)]
+    planning: PlanningConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,6 +161,10 @@ impl Config {
             .as_ref()
             .map(|config| config.investment_csv_mappings.clone())
             .unwrap_or_default();
+        let planning = personal
+            .as_ref()
+            .map(|config| config.planning.clone())
+            .unwrap_or_default();
         let journal = std::env::var("AXON_FINANCE_JOURNAL")
             .ok()
             .map(|path| expand_tilde(&path))
@@ -195,6 +203,7 @@ impl Config {
             commitments,
             csv_mappings,
             investment_csv_mappings,
+            planning,
         }
     }
 }

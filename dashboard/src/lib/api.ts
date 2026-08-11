@@ -2250,14 +2250,115 @@ export interface FinanceDashboard {
   balance_snapshot: ManualBalanceSnapshot | null;
   tracked_net_worth: TrackedNetWorth | null;
   source_freshness: Array<{
-    source: 'journal' | 'balances' | 'holdings';
+    source: string;
     label: string;
     as_of: string | null;
+    age_days: number | null;
+    freshness: 'current' | 'stale' | 'missing';
     coverage: 'complete' | 'partial' | 'missing';
   }>;
   commitment_as_of: string;
   current_commitment_monthly_cents: number;
   commitments: RecurringCommitment[];
+  planning: FinancePlanningReport;
+}
+
+export interface FinancePlanningReport {
+  as_of: string;
+  currency: string;
+  baseline: {
+    months: string[];
+    monthly_income_cents: number;
+    monthly_spending_cents: number;
+    forecast_base_cents: number;
+    monthly_result_cents: number;
+    savings_rate_percent: number | null;
+    behavior: Array<{ behavior: 'fixed' | 'variable' | 'discretionary' | 'exceptional' | 'unclassified'; monthly_cents: number }>;
+    classified_value_percent: number | null;
+  };
+  forecasts: Array<{
+    as_of: string;
+    historical_base_cents: number;
+    commitments_cents: number;
+    subscriptions_cents: number;
+    adjustments_cents: number;
+    projected_spending_cents: number;
+    projected_result_cents: number;
+    savings_rate_percent: number | null;
+  }>;
+  liquidity: {
+    currency: string;
+    liquid_assets_cents: number;
+    liabilities_cents: number;
+    invested_cents: number | null;
+    net_worth_cents: number | null;
+    cash_share_percent: number | null;
+    largest_priced_holding_percent: number | null;
+    runway_months: number | null;
+    target_cash_cents: number;
+    cash_buffer_cents: number;
+    complete: boolean;
+  } | null;
+  subscriptions: {
+    monthly_cents: number;
+    annual_cents: number;
+    billing_count: number;
+    covered_count: number;
+    unknown_price_count: number;
+    anomalies: Array<{
+      subscription_id: string;
+      subscription_name: string;
+      kind: string;
+      detail: string;
+    }>;
+  };
+  card_decision: {
+    annual_eligible_spend_cents: number;
+    annual_fx_spend_cents: number;
+    usage_reviewed: boolean;
+    spend_source: 'manual' | 'reviewed_transactions';
+    spend_period_start: string | null;
+    spend_period_end: string | null;
+    provisional: boolean;
+    options: Array<{
+      id: string;
+      label: string;
+      currency: string;
+      annual_fee_cents: number;
+      annual_face_value_cents: number;
+      annual_benefit_value_cents: number;
+      annual_unvalued_face_value_cents: number;
+      annual_reward_value_cents: number;
+      annual_fx_cost_cents: number;
+      annual_net_value_cents: number;
+      break_even_eligible_spend_cents: number | null;
+      points_per_currency_unit_milli: number;
+      point_value_milli_cents: number;
+      point_value_assumption: string;
+      terms_checked_on: string;
+      source_urls: string[];
+      benefits: Array<{
+        id: string;
+        label: string;
+        annual_face_value_cents: number;
+        annual_personal_value_cents: number;
+      }>;
+    }>;
+  } | null;
+  loyalty: Array<{
+    id: string;
+    label: string;
+    points: number;
+    point_value_milli_cents: number;
+    estimated_value_cents: number;
+    transferable: boolean;
+    assumption: string;
+    as_of: string | null;
+    expires_on: string | null;
+    transfer_path: string | null;
+    source_urls: string[];
+  }>;
+  caveats: string[];
 }
 
 export interface RecurringCommitment {

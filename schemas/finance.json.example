@@ -89,7 +89,93 @@
       "valid_until": null
     }
   ],
+  "planning": {
+    "baseline_months": 3,
+    "runway_target_months": 6,
+    "journal_freshness_days": 45,
+    "snapshot_freshness_days": 14,
+    "source_expectations": [
+      {
+        "kind": "transactions",
+        "id": "synthetic-card-feed",
+        "label": "Synthetic card transactions",
+        "account_prefixes": ["liabilities:card:synthetic"],
+        "freshness_days": 45,
+        "coverage": "complete"
+      },
+      {
+        "kind": "holdings",
+        "id": "synthetic-broker-feed",
+        "label": "Synthetic broker holdings",
+        "source_key": "synthetic-broker",
+        "freshness_days": 14,
+        "coverage": "partial"
+      }
+    ],
+    "spending_rules": [
+      {"account_prefix": "expenses:housing", "behavior": "fixed"},
+      {"account_prefix": "expenses:food:groceries", "behavior": "variable"},
+      {"account_prefix": "expenses:leisure", "behavior": "discretionary"}
+    ],
+    "subscription_account_prefixes": ["expenses:software:subscriptions"],
+    "include_subscription_burn": true,
+    "forecast_adjustments": [
+      {
+        "id": "synthetic-commute-change",
+        "label": "Synthetic commute change",
+        "monthly_cents": 5000,
+        "currency": "EUR",
+        "valid_from": "2026-09-01",
+        "valid_until": null
+      }
+    ],
+    "comparison_dates": ["2026-09-01"],
+    "card_decision": {
+      "annual_eligible_spend_cents": 1200000,
+      "annual_fx_spend_cents": 100000,
+      "usage_reviewed": false,
+      "eligible_account_prefixes": ["liabilities:card:synthetic"],
+      "ineligible_category_prefixes": [],
+      "options": [
+        {
+          "id": "synthetic-card",
+          "label": "Synthetic card",
+          "annual_fee_cents": 60000,
+          "currency": "EUR",
+          "points_per_currency_unit_milli": 1000,
+          "point_value_milli_cents": 500,
+          "point_value_assumption": "Synthetic half-cent value per point",
+          "fx_fee_basis_points": 200,
+          "benefits": [
+            {
+              "id": "synthetic-credit",
+              "label": "Synthetic annual credit",
+              "annual_face_value_cents": 30000,
+              "annual_personal_value_cents": 15000
+            }
+          ],
+          "terms_checked_on": "2026-08-11",
+          "source_urls": ["https://example.com/synthetic-card-terms"]
+        }
+      ]
+    },
+    "loyalty_balances": [
+      {
+        "id": "synthetic-points",
+        "label": "Synthetic points",
+        "points": 10000,
+        "point_value_milli_cents": 500,
+        "transferable": true,
+        "assumption": "Synthetic valuation for schema documentation",
+        "as_of": "2026-08-11",
+        "expires_on": null,
+        "transfer_path": "Synthetic points to synthetic miles",
+        "source_urls": ["https://example.com/synthetic-points-terms"]
+      }
+    ]
+  },
   "_budget_note": "Budget entries have account, monthly_cents and optional currency. They belong only in this private overlay file; schemas/finance-journal.example remains the public synthetic data contract.",
   "_commitment_note": "Commitments are forward-looking dated obligations, not historical transactions. All real labels, dates and amounts belong only in the private overlay.",
+  "_planning_note": "Planning rules, comparison dates, card usage, personal benefit values, point balances and valuation assumptions are private. Public Axon contains only the provider-neutral arithmetic and this synthetic shape.",
   "_mapping_note": "Only synthetic profiles belong in Axon. Real source keys, profile labels, column mappings, instrument aliases and symbolic source accounts stay in the private overlay."
 }

@@ -6,13 +6,14 @@
   import {
     finance,
     type Burn,
+    type FinanceDashboard as FinanceDashboardData,
     type PricePoint,
     type Subscription,
     type SubscriptionState,
     type WritebackResult,
   } from "$lib/api";
 
-  type View = "overview" | "budget" | "transactions" | "subscriptions";
+  type View = "overview" | "planning" | "budget" | "transactions" | "subscriptions";
   let view = $state<View>("overview");
 
   // The date picker is the point of this page rather than a convenience on it. A
@@ -23,6 +24,7 @@
 
   let subs = $state<Subscription[]>([]);
   let burn = $state<Burn | null>(null);
+  let subscriptionInsights = $state<FinanceDashboardData["planning"]["subscriptions"] | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
   let notice = $state<string | null>(null);
@@ -30,9 +32,14 @@
 
   async function load(date: string) {
     try {
-      const [list, totals] = await Promise.all([finance.subscriptions(), finance.burn(date)]);
+      const [list, totals, dashboard] = await Promise.all([
+        finance.subscriptions(),
+        finance.burn(date),
+        finance.dashboard({ currency: "EUR" }),
+      ]);
       subs = list;
       burn = totals;
+      subscriptionInsights = dashboard.planning.subscriptions;
       error = null;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -132,6 +139,43 @@
         (a, b) => ORDER[a.state] - ORDER[b.state] || b.monthlyCents - a.monthlyCents,
       ),
   );
+
+  let scenarioIds = $state<string[]>([]);
+  let scenarioInitialized = $state(false);
+
+  $effect(() => {
+    if (!loaded || scenarioInitialized || rows.length === 0) return;
+    scenarioIds = rows
+      .filter((row) => row.state === "active" || row.state === "trial")
+      .map((row) => row.sub.id);
+    scenarioInitialized = true;
+  });
+
+  function toggleScenario(id: string) {
+    scenarioIds = scenarioIds.includes(id)
+      ? scenarioIds.filter((candidate) => candidate !== id)
+      : [...scenarioIds, id];
+  }
+
+  function scenarioMonthly(row: Row): number {
+    if (!row.price) return 0;
+    return (MONTHLY[row.price.cycle] ?? ((c: number) => c))(row.price.amount_cents);
+  }
+
+  const scenarioTotals = $derived.by(() => {
+    const totals = new Map<string, number>(
+      burn?.currencies.map((amount) => [amount.currency, 0]) ?? [],
+    );
+    for (const row of rows) {
+      if (!scenarioIds.includes(row.sub.id)) continue;
+      totals.set(row.currency, (totals.get(row.currency) ?? 0) + scenarioMonthly(row));
+    }
+    return [...totals.entries()].map(([currency, monthlyCents]) => ({ currency, monthlyCents }));
+  });
+
+  function currentBurn(currency: string): number {
+    return burn?.currencies.find((amount) => amount.currency === currency)?.monthly_cents ?? 0;
+  }
 
   interface Upcoming {
     id: string;
@@ -294,13 +338,13 @@
 />
 
 <nav aria-label="Finance views">
-  {#each ["overview", "budget", "transactions", "subscriptions"] as item (item)}
+  {#each ["overview", "planning", "budget", "transactions", "subscriptions"] as item (item)}
     <button class:active={view === item} onclick={() => view = item as View}>{item}</button>
   {/each}
 </nav>
 
 {#if view !== "subscriptions"}
-  <FinanceDashboard mode={view} />
+  <FinanceDashboard mode={view} onnavigate={(target) => view = target} />
 {:else if error}
   <p class="err"><Icon name="alert" size={14} /> {error}</p>
 {:else if !loaded}
@@ -340,6 +384,43 @@
 
   {#if notice}<p class="notice">{notice}</p>{/if}
 
+  <section class="scenario">
+    <div class="scenario-heading">
+      <div>
+        <h2>Plan combination</h2>
+        <p>Toggle the services you would keep. Prices come from the history in force on {at}; this does not change their recorded state.</p>
+      </div>
+      <div class="scenario-totals">
+        {#each scenarioTotals as total (total.currency)}
+          <strong>{money(total.monthlyCents, total.currency)} / month</strong>
+          <span class:save={total.monthlyCents < currentBurn(total.currency)}>
+            {total.monthlyCents <= currentBurn(total.currency) ? "save" : "add"} {money(Math.abs(currentBurn(total.currency) - total.monthlyCents), total.currency)} / month
+          </span>
+        {/each}
+      </div>
+    </div>
+    <div class="scenario-options">
+      {#each rows.filter((row) => row.price !== null) as row (row.sub.id)}
+        <label class:selected={scenarioIds.includes(row.sub.id)}>
+          <input type="checkbox" checked={scenarioIds.includes(row.sub.id)} onchange={() => toggleScenario(row.sub.id)} />
+          <span><strong>{row.sub.name}</strong>{#if row.price?.plan}<small>{row.price.plan}</small>{/if}</span>
+          <span class="state {row.state}">{row.state}</span>
+          <strong>{money(scenarioMonthly(row), row.currency)}</strong>
+        </label>
+      {/each}
+    </div>
+    {#if subscriptionInsights?.anomalies.length}
+      <div class="scenario-anomalies">
+        <strong>Review flags</strong>
+        <ul>
+          {#each subscriptionInsights.anomalies as anomaly (`${anomaly.subscription_id}-${anomaly.kind}`)}
+            <li><strong>{anomaly.subscription_name}</strong> — {anomaly.detail}</li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+  </section>
+
   {#if upcoming.length > 0}
     <section class="upcoming">
       <h2>Price changes ahead</h2>
@@ -354,6 +435,7 @@
     </section>
   {/if}
 
+  <div class="subscription-table">
   <table>
     <thead>
       <tr>
@@ -469,6 +551,7 @@
       {/if}
     </tbody>
   </table>
+  </div>
 {/if}
 
 <style>
@@ -477,6 +560,8 @@
     gap: 0.2rem;
     margin: -0.25rem 0 1.25rem;
     border-bottom: 1px solid var(--border, #333);
+    max-width: 100%;
+    overflow-x: auto;
   }
 
   nav button {
@@ -488,6 +573,7 @@
     font: inherit;
     font-size: 0.78rem;
     text-transform: capitalize;
+    white-space: nowrap;
     cursor: pointer;
   }
 
@@ -576,6 +662,99 @@
     cursor: default;
   }
 
+  .scenario {
+    margin-bottom: 1rem;
+    padding: 0.85rem;
+    border: 1px solid var(--border, #333);
+    border-top: 2px solid var(--primary);
+  }
+
+  .scenario-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .scenario h2 {
+    margin: 0;
+    font-size: 0.85rem;
+  }
+
+  .scenario p {
+    margin: 0.18rem 0 0;
+    color: var(--muted, #888);
+    font-size: 0.68rem;
+  }
+
+  .scenario-totals {
+    display: grid;
+    justify-items: end;
+    gap: 0.15rem;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .scenario-totals span {
+    color: var(--danger, #b44);
+    font-size: 0.65rem;
+  }
+
+  .scenario-totals span.save {
+    color: var(--primary);
+  }
+
+  .scenario-options {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    border-top: 1px solid var(--border, #333);
+  }
+
+  .scenario-options label {
+    display: grid;
+    grid-template-columns: auto minmax(8rem, 1fr) auto auto;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--border, #333);
+    font-size: 0.7rem;
+    cursor: pointer;
+  }
+
+  .scenario-options label.selected {
+    background: color-mix(in srgb, var(--primary) 6%, transparent);
+  }
+
+  .scenario-options label > span:nth-child(2) {
+    display: grid;
+    gap: 0.08rem;
+  }
+
+  .scenario-options small {
+    color: var(--muted, #888);
+    font-size: 0.6rem;
+  }
+
+  .scenario-options label > strong:last-child {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .scenario-anomalies {
+    display: grid;
+    grid-template-columns: 7rem 1fr;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+    font-size: 0.68rem;
+  }
+
+  .scenario-anomalies ul {
+    margin: 0;
+    padding-left: 1rem;
+    color: var(--muted, #888);
+  }
+
   .upcoming {
     margin-bottom: 1.25rem;
     padding: 0.75rem 1rem;
@@ -602,6 +781,11 @@
     width: 100%;
     border-collapse: collapse;
     font-size: 0.875rem;
+  }
+
+  .subscription-table {
+    max-width: 100%;
+    overflow-x: auto;
   }
 
   th,
@@ -780,5 +964,23 @@
     align-items: center;
     gap: 0.4rem;
     font-size: 0.875rem;
+  }
+
+  @media (max-width: 650px) {
+    .scenario-heading {
+      flex-direction: column;
+    }
+
+    .scenario-totals {
+      justify-items: start;
+    }
+
+    .scenario-options {
+      grid-template-columns: 1fr;
+    }
+
+    .scenario-anomalies {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

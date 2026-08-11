@@ -10,13 +10,21 @@
   import InvestmentPreview from "$lib/finance/InvestmentPreview.svelte";
   import SpendingDrivers from "$lib/finance/SpendingDrivers.svelte";
   import SpendingPurposeOverview from "$lib/finance/SpendingPurposeOverview.svelte";
+  import PlanningPanel from "$lib/finance/PlanningPanel.svelte";
   import TransactionTable from "$lib/finance/TransactionTable.svelte";
   import SpendingContextReview from "$lib/finance/SpendingContextReview.svelte";
   import { exactMoney } from "$lib/finance/money";
   import { finance, type FinanceDashboard } from "$lib/api";
 
-  type Mode = "overview" | "budget" | "transactions";
-  let { mode }: { mode: Mode } = $props();
+  type Mode = "overview" | "planning" | "budget" | "transactions";
+  type ReviewTarget = "overview" | "transactions" | "subscriptions";
+  let {
+    mode,
+    onnavigate,
+  }: {
+    mode: Mode;
+    onnavigate: (target: ReviewTarget) => void;
+  } = $props();
   const today = new Date().toISOString().slice(0, 10);
   const lookback = new Date(`${today}T00:00:00Z`);
   lookback.setUTCMonth(lookback.getUTCMonth() - 11, 1);
@@ -234,6 +242,8 @@
     <h2>Recent transactions</h2>
     <TransactionTable rows={data.transactions.slice(0, 8)} />
   </section>
+{:else if mode === "planning"}
+  <PlanningPanel {data} {onnavigate} />
 {:else if mode === "budget"}
   <section class="panel budget">
     <div class="panel-heading"><div><h2>Budget against actual</h2><p>Variance is budget minus spending for the selected period.</p></div><strong>{money(data.summary.budget_variance_cents)}</strong></div>

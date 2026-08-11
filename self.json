@@ -144,8 +144,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 94,
-        "nodes": 541
+        "files": 96,
+        "nodes": 554
       }
     },
     {
@@ -170,7 +170,7 @@
       },
       "code": {
         "files": 14,
-        "nodes": 464
+        "nodes": 470
       }
     },
     {
@@ -433,8 +433,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 134,
-        "nodes": 1054
+        "files": 137,
+        "nodes": 1107
       }
     },
     {
@@ -1348,7 +1348,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 8955,
+    "nodes": 9039,
     "external": 8,
     "stale": [],
     "unmatched": [

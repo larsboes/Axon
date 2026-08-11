@@ -38,7 +38,7 @@
       <article>
         <span>{source.label}</span>
         <strong>{date(source.as_of)}</strong>
-        <small class={source.coverage}>{source.source === "journal" ? "Latest projected transaction" : `${source.coverage} source coverage`}</small>
+        <small class:warning={source.freshness !== "current"} class={source.coverage}>{source.freshness}{source.age_days === null ? "" : ` · ${source.age_days}d old`} · {source.source === "journal" ? "projected transactions" : `${source.coverage} coverage`}</small>
       </article>
     {/each}
   </div>
@@ -51,7 +51,7 @@
   p, small, span { color: var(--muted, #888); }
   p { margin: .15rem 0 0; font-size: .68rem; }
   .heading > strong { font-size: .72rem; font-variant-numeric: tabular-nums; }
-  .heading > strong.warning, small.partial, small.missing { color: #a65f4c; }
+  .heading > strong.warning, small.warning, small.partial, small.missing { color: #a65f4c; }
   .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .5rem 1rem; }
   article { display: grid; gap: .1rem; min-width: 0; }
   article span, article small { font-size: .63rem; }

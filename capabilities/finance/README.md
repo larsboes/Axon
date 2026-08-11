@@ -42,13 +42,21 @@ accounting-engine policy.
   The personal share remains on the expense account; money fronted for others posts
   to `assets:receivable:shared`. A linked repayment settles that receivable and is
   never projected as income or negative spending.
-- `/finance` has Overview, Budget, Transactions and Subscriptions. Personal result,
+- `/finance` has Overview, Planning, Budget, Transactions and Subscriptions. Personal result,
   external cash movement, category composition, purpose/trip summaries, budget
   variance, the table and the constrained flow explorer all use the same Rust
   projection. Transactions starts with largest-first categorization review and a
   trip-first allocation workspace: Trips owns the plan and dates, while Finance loads
   that window and reviews each transaction's personal share. Internal transfers are
   excluded by default.
+- Planning uses medians from complete months, private behavior rules and dated
+  commitments to project monthly spending and savings. Exceptional trip spending is
+  excluded from the recurring forecast. Reviewed balances and holdings add liquidity,
+  runway and concentration; partial snapshots remain visibly partial.
+- Subscription anomalies, card break-even calculations and loyalty values share that
+  planning response. Provider terms need dated source links. Eligible spend can come
+  from reviewed journal postings, but benefit use and point value remain explicit
+  private assumptions, so an incomplete comparison stays provisional.
 - Subscription prices and states remain append-only, with conflict-safe Obsidian
   writeback through `libs/markdown-root`.
 
@@ -85,8 +93,10 @@ collapsing the two into one field wrong.
 | Confirmed postings | private plaintext journal | this capability, after explicit review |
 | Import candidates and transaction projection | Postgres | this capability, rebuildable |
 | Budget targets | private `config/finance.json` | the human |
+| Spending behavior, forecast adjustments and personal card/loyalty values | private `config/finance.json` | the human |
 | Reviewed aggregate holdings | private configured snapshot | this capability, after explicit review |
 | Holdings dashboard projection | Postgres | this capability, rebuildable from the private snapshot |
+| Baseline, forecast, runway and decision results | API response only | this capability, rebuilt from reviewed private state |
 
 Writeback goes through `libs/markdown-root`'s region writer, which preserves every
 byte outside the markers and refuses to overwrite a region a human edited. Nothing
@@ -120,6 +130,9 @@ On the manifest-declared port. `GET /routes` serves the full manifest.
 - `GET /api/ledger/check` · `POST /api/ledger/rebuild`
 - `GET /api/dashboard?start=&end=&account=&category=&currency=`
 
+The dashboard response includes source freshness and the planning report. Neither is
+stored as a second source of truth.
+
 ## Configuration
 
 Database from `$AXON_FINANCE_DATABASE_URL`, else the overlay's
@@ -147,6 +160,21 @@ row per open position. Raw CSV rows and mapping values are never written to the
 canonical collection. When one instrument spans sources, its activity price is
 suppressed rather than selecting an arbitrary source. Other prices shown in Overview
 are latest activity prices, not live quotes or a claim about current market value.
+
+Optional `planning` configuration controls baseline length, cash-buffer target,
+source-freshness thresholds, category behavior rules and dated adjustments. Private
+source expectations can track each symbolic transaction account or reviewed holdings
+source independently, so one recent import cannot hide another stale source. A rule
+classifies what normally recurs; a trip purpose remains exceptional even when its
+category is otherwise recurring. Historical categories replaced by commitment or
+subscription series are removed once before those dated series are added, so they do
+not count twice. Fixed costs without a replacement series stay in the forecast.
+
+Card options carry fee, reward-rate, FX-cost and dated source evidence. When private
+account prefixes are configured, eligible spend is derived from reviewed expense
+postings for the trailing twelve months. Personal benefit values, FX spend, point
+valuations and loyalty balances are never inferred. They remain private inputs, and
+the response marks a decision provisional until usage and sources have been reviewed.
 
 Transaction source accounts are balance accounts. A reviewed card purchase therefore
 posts from a liability to an expense, while a settlement posts between balance accounts.
