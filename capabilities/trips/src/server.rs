@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
     routing::{delete, get, post},
@@ -36,9 +36,31 @@ const ROUTES: &[route_manifest::Route] = &[
         "/api/plans/:id",
         "One trip plan with its stages and items.",
     ),
-    r("PATCH", "/api/plans/:id", "Patch a trip plan."),
-    r("DELETE", "/api/plans/:id", "Delete a trip plan."),
+    r(
+        "PATCH",
+        "/api/plans/:id",
+        "Patch a trip plan. Optional expected_updated_at (body) makes the write conditional: \
+         a mismatch is 409 with code stale_plan instead of overwriting another writer. \
+         budget_cents + currency record what the trip is meant to cost.",
+    ),
+    r(
+        "DELETE",
+        "/api/plans/:id",
+        "Delete a trip plan. Optional expected_updated_at (query) makes it conditional, \
+         409 with code stale_plan on a mismatch.",
+    ),
     r("POST", "/api/plans/:id/items", "Add an item to a plan."),
+    r(
+        "PATCH",
+        "/api/plans/:plan_id/items/:item_id",
+        "Move an item to a day. Body is {day: \"YYYY-MM-DD\"} or {day: null} to unset.",
+    ),
+    r(
+        "GET",
+        "/api/places",
+        "Every place across all plans, with visit counts and merge_candidates: distinct \
+         place ids whose names normalise to the same string. Computed on read.",
+    ),
     r(
         "DELETE",
         "/api/plans/:plan_id/items/:item_id",
@@ -185,7 +207,68 @@ async fn update_plan(
             StatusCode::NOT_FOUND,
             json!({ "error": "trip plan not found" }),
         ),
+        Ok(Err(error)) => write_conflict_or_bad_request(error),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+/// A stale revision is 409, not 400: the request was well-formed and the caller
+/// should re-read and retry, which is a different instruction from "fix your
+/// input". `code` is there so a caller can branch without parsing prose.
+fn write_conflict_or_bad_request(error: String) -> ApiResponse {
+    if error.starts_with("stale_plan:") {
+        return response(
+            StatusCode::CONFLICT,
+            json!({ "error": error, "code": "stale_plan" }),
+        );
+    }
+    response(StatusCode::BAD_REQUEST, json!({ "error": error }))
+}
+
+#[derive(serde::Deserialize)]
+struct SetDay {
+    /// Explicit null clears the day; omitting the field is the same request with
+    /// no instruction in it, so it is rejected rather than guessed at.
+    day: Option<String>,
+}
+
+async fn set_item_day(
+    State(state): State<AppState>,
+    Path((plan_id, item_id)): Path<(String, String)>,
+    Json(input): Json<SetDay>,
+) -> ApiResponse {
+    let database_url = state.database_url.clone();
+    match tokio::task::spawn_blocking(move || {
+        TripsStore::open(&database_url)
+            .and_then(|store| store.set_item_day(&plan_id, &item_id, input.day.as_deref()))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(Some(item))) => response(StatusCode::OK, item),
+        Ok(Ok(None)) => response(StatusCode::NOT_FOUND, json!({ "error": "item not found" })),
         Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn list_places(State(state): State<AppState>) -> ApiResponse {
+    let database_url = state.database_url.clone();
+    match tokio::task::spawn_blocking(move || {
+        TripsStore::open(&database_url)
+            .and_then(|store| store.list_places())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(places)) => response(StatusCode::OK, places),
+        Ok(Err(error)) => response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })),
         Err(error) => response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": error.to_string() }),
@@ -215,12 +298,35 @@ async fn get_plan(State(state): State<AppState>, Path(id): Path<String>) -> ApiR
     }
 }
 
-async fn delete_plan(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
+#[derive(serde::Deserialize)]
+struct DeleteQuery {
+    /// Same guard as PATCH, and in the same commit deliberately: a stale delete
+    /// is worse than a stale patch, because there is nothing left to re-apply.
+    expected_updated_at: Option<String>,
+}
+
+async fn delete_plan(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<DeleteQuery>,
+) -> ApiResponse {
     let database_url = state.database_url.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
-            .and_then(|store| store.delete_plan(&id))
-            .map_err(|error| error.to_string())
+        let store = TripsStore::open(&database_url).map_err(|error| error.to_string())?;
+        if let Some(expected) = params.expected_updated_at.as_deref() {
+            match store.get_plan(&id).map_err(|error| error.to_string())? {
+                None => return Ok(false),
+                Some(details) if details.plan.updated_at != expected => {
+                    return Err(format!(
+                        "stale_plan: expected_updated_at {expected} but the plan is at {}; \
+                         re-read it before deleting",
+                        details.plan.updated_at
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        store.delete_plan(&id).map_err(|error| error.to_string())
     })
     .await
     {
@@ -229,7 +335,7 @@ async fn delete_plan(State(state): State<AppState>, Path(id): Path<String>) -> A
             StatusCode::NOT_FOUND,
             json!({ "error": "trip plan not found" }),
         ),
-        Ok(Err(error)) => response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })),
+        Ok(Err(error)) => write_conflict_or_bad_request(error),
         Err(error) => response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": error.to_string() }),
@@ -515,7 +621,11 @@ async fn main() {
             get(get_plan).patch(update_plan).delete(delete_plan),
         )
         .route("/api/plans/:id/items", post(add_item))
-        .route("/api/plans/:plan_id/items/:item_id", delete(delete_item))
+        .route(
+            "/api/plans/:plan_id/items/:item_id",
+            delete(delete_item).patch(set_item_day),
+        )
+        .route("/api/places", get(list_places))
         .route("/api/import/obsidian/scan", get(scan_obsidian))
         .route("/api/import/obsidian/all", post(import_all_obsidian))
         .route("/api/import/obsidian", post(import_obsidian))

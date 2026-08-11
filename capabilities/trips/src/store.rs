@@ -109,6 +109,40 @@ pub struct UpdatePlan {
     pub transport_modes: Option<Vec<TransportMode>>,
     pub stages: Option<Vec<TripStage>>,
     pub cover_image_url: Option<String>,
+    /// What the trip is meant to cost, in minor units. Finance keeps every
+    /// actual cent and already tags postings with an `axon-trip-id`; this is the
+    /// intention those actuals get compared against, which had no home at all.
+    pub budget_cents: Option<i64>,
+    pub currency: Option<String>,
+    /// The `updated_at` the caller believes it is editing. Omitted keeps the old
+    /// last-write-wins behaviour, so nothing that already works breaks.
+    ///
+    /// `stages` is accepted wholesale, so changing one stage means reading the
+    /// plan, editing the array and writing it back. A browser holds that read for
+    /// milliseconds. An agent holds it across turns while it calls transit and
+    /// reasons, and every stage another writer changed in between is silently
+    /// reverted. Same shape as comms' 409-on-hash-mismatch and calendar
+    /// rejecting a changed Google revision.
+    pub expected_updated_at: Option<String>,
+}
+
+/// A plan revision the caller did not expect is a lost update waiting to happen.
+///
+/// The error text carries `stale_plan` so a caller can branch on it without
+/// parsing prose, and names both revisions so it can tell "someone else wrote"
+/// apart from "I sent the wrong id".
+fn check_expected_revision(
+    expected: Option<&str>,
+    actual: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match expected {
+        Some(expected) if expected != actual => Err(format!(
+            "stale_plan: expected_updated_at {expected} but the plan is at {actual}; \
+             re-read it and re-apply your change"
+        )
+        .into()),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -128,6 +162,14 @@ pub struct TripPlan {
     pub source: Option<PlanSource>,
     pub created_at: String,
     pub updated_at: String,
+    /// What this trip is meant to cost, in minor units, beside what it actually
+    /// did. Finance keeps every actual cent and already tags postings with an
+    /// `axon-trip-id`; the intention had no home at all, so the two halves of
+    /// "did I overspend" were one HTTP call apart and never compared.
+    #[serde(default)]
+    pub budget_cents: Option<i64>,
+    #[serde(default)]
+    pub currency: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -321,7 +363,9 @@ impl TripsStore {
                 ADD COLUMN IF NOT EXISTS stages TEXT NOT NULL DEFAULT '[]',
                 ADD COLUMN IF NOT EXISTS cover_image_url TEXT,
                 ADD COLUMN IF NOT EXISTS source_kind TEXT,
-                ADD COLUMN IF NOT EXISTS source_ref TEXT;
+                ADD COLUMN IF NOT EXISTS source_ref TEXT,
+                ADD COLUMN IF NOT EXISTS budget_cents BIGINT,
+                ADD COLUMN IF NOT EXISTS currency TEXT;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_trip_plan_source
                 ON {schema}.plans(source_kind, source_ref)
                 WHERE source_kind IS NOT NULL AND source_ref IS NOT NULL;
@@ -369,7 +413,7 @@ impl TripsStore {
                  VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11,$12,$13,$14,$14)
                  RETURNING id,title,origin,destinations,date_start,date_end,interests,status,
                     travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
-                    created_at,updated_at",
+                    created_at,updated_at,budget_cents,currency",
                 schema = self.schema
             ),
             &[
@@ -398,7 +442,7 @@ impl TripsStore {
             &format!(
                 "SELECT id,title,origin,destinations,date_start,date_end,interests,status,
                         travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
-                        created_at,updated_at
+                        created_at,updated_at,budget_cents,currency
                  FROM {}.plans WHERE status != 'archived'
                  ORDER BY updated_at DESC",
                 self.schema
@@ -414,7 +458,7 @@ impl TripsStore {
             &format!(
                 "SELECT id,title,origin,destinations,date_start,date_end,interests,status,
                         travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
-                        created_at,updated_at
+                        created_at,updated_at,budget_cents,currency
                  FROM {}.plans WHERE id = $1",
                 self.schema
             ),
@@ -449,6 +493,7 @@ impl TripsStore {
             return Ok(None);
         };
         let current = details.plan;
+        check_expected_revision(input.expected_updated_at.as_deref(), &current.updated_at)?;
         let title = input.title.clone().unwrap_or(current.title);
         let origin = input.origin.clone().unwrap_or(current.origin);
         let destinations = input.destinations.clone().unwrap_or(current.destinations);
@@ -490,6 +535,11 @@ impl TripsStore {
             }
         });
         let cover_image_url = input.cover_image_url.clone().or(current.cover_image_url);
+        let budget_cents = input.budget_cents.or(current.budget_cents);
+        let currency = input.currency.clone().or(current.currency);
+        if budget_cents.is_some_and(|cents| cents < 0) {
+            return Err("budget_cents must not be negative".into());
+        }
 
         validate_plan_fields(&title, &destinations, &date_start, &date_end)?;
         if !["draft", "saved", "archived"].contains(&status.as_str()) {
@@ -508,11 +558,11 @@ impl TripsStore {
                 "UPDATE {schema}.plans SET
                     title=$1,origin=$2,destinations=$3,date_start=$4,date_end=$5,interests=$6,
                     status=$7,travelers=$8,transport_modes=$9,stages=$10,cover_image_url=$11,
-                    updated_at=$12
+                    updated_at=$12,budget_cents=$14,currency=$15
                  WHERE id=$13
                  RETURNING id,title,origin,destinations,date_start,date_end,interests,status,
                     travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
-                    created_at,updated_at",
+                    created_at,updated_at,budget_cents,currency",
                 schema = self.schema
             ),
             &[
@@ -529,9 +579,125 @@ impl TripsStore {
                 &cover_image_url,
                 &now,
                 &plan_id,
+                &budget_cents,
+                &currency,
             ],
         )?;
         Ok(Some(row_to_plan(&row)?))
+    }
+
+    /// Moves one item to a day, or clears it.
+    ///
+    /// `plan_items` has had a `day` column and an index on `(plan_id, day,
+    /// created_at)` since the start, and no write path ever decided a value for
+    /// it: a saved journey is stamped with the plan's `date_start` even when its
+    /// stage runs on a different date, and every saved place gets `null` with
+    /// nothing in the system able to fill it in. An index on a column nobody
+    /// maintains sorts a multi-day trip into one heap.
+    pub fn set_item_day(
+        &self,
+        plan_id: &str,
+        item_id: &str,
+        day: Option<&str>,
+    ) -> Result<Option<PlanItem>, Box<dyn std::error::Error>> {
+        if let Some(day) = day {
+            // A date the index can order. Anything else silently sorts wrong.
+            if day.len() != 10 || !day.as_bytes().iter().enumerate().all(|(i, b)| {
+                if i == 4 || i == 7 {
+                    *b == b'-'
+                } else {
+                    b.is_ascii_digit()
+                }
+            }) {
+                return Err("day must be YYYY-MM-DD, or null to unset it".into());
+            }
+        }
+        let mut conn = self.conn()?;
+        let row = conn.query_opt(
+            &format!(
+                "UPDATE {schema}.plan_items SET day = $3
+                 WHERE plan_id = $1 AND id = $2
+                 RETURNING id,plan_id,item_type,day,external_id,title,payload,created_at",
+                schema = self.schema
+            ),
+            &[&plan_id, &item_id, &day],
+        )?;
+        row.as_ref().map(row_to_item).transpose()
+    }
+
+    /// Where the operator actually goes, computed on read over the plans that
+    /// already exist. No new table: a projection cannot drift from its source.
+    ///
+    /// `merge_candidates` is the part worth having on day one. The dashboard's
+    /// place field slugifies typed text into `place:<slug>` with a null
+    /// coordinate whenever the operator does not pick a suggested station, so the
+    /// same city typed two ways is two places, and every coordinate-dependent
+    /// behaviour downstream (the 75 km candidate match, the map, nearby places)
+    /// degrades without saying so. This reports the collisions instead of
+    /// guessing at a merge, because merging identities is not a read's decision.
+    pub fn list_places(&self) -> Result<Value, Box<dyn std::error::Error>> {
+        use std::collections::BTreeMap;
+
+        let mut visits: BTreeMap<String, (String, usize, Option<String>, Option<String>, bool)> =
+            BTreeMap::new();
+        for plan in self.list_plans()? {
+            let dated = std::iter::once(&plan.origin)
+                .chain(plan.destinations.iter())
+                .map(|place| (place, plan.date_start.clone()));
+            for (place, date) in dated {
+                let entry = visits.entry(place.id.clone()).or_insert_with(|| {
+                    (
+                        place.name.clone(),
+                        0,
+                        None,
+                        None,
+                        place.latitude.is_some() && place.longitude.is_some(),
+                    )
+                });
+                entry.1 += 1;
+                entry.2 = Some(match entry.2.take() {
+                    Some(first) if first <= date => first,
+                    _ => date.clone(),
+                });
+                entry.3 = Some(match entry.3.take() {
+                    Some(last) if last >= date => last,
+                    _ => date,
+                });
+            }
+        }
+
+        // Two ids whose names normalise to one string are one place typed twice.
+        let mut by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (id, (name, _, _, _, _)) in &visits {
+            by_name
+                .entry(normalize_place_name(name))
+                .or_default()
+                .push(id.clone());
+        }
+        let merge_candidates: Vec<Value> = by_name
+            .iter()
+            .filter(|(_, ids)| ids.len() > 1)
+            .map(|(name, ids)| json_value(name, ids))
+            .collect();
+
+        let places: Vec<Value> = visits
+            .iter()
+            .map(|(id, (name, count, first, last, has_coordinate))| {
+                serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "visits": count,
+                    "first": first,
+                    "last": last,
+                    "has_coordinate": has_coordinate,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "places": places,
+            "merge_candidates": merge_candidates,
+        }))
     }
 
     pub fn find_plan_by_source(
@@ -544,7 +710,7 @@ impl TripsStore {
             &format!(
                 "SELECT id,title,origin,destinations,date_start,date_end,interests,status,
                         travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
-                        created_at,updated_at
+                        created_at,updated_at,budget_cents,currency
                  FROM {}.plans WHERE source_kind = $1 AND source_ref = $2",
                 self.schema
             ),
@@ -707,6 +873,20 @@ fn validate_payload(
     Ok(())
 }
 
+/// Case- and whitespace-insensitive, and nothing more. Stripping punctuation or
+/// folding umlauts would collapse places that really are different, and this
+/// reports collisions for a human to judge rather than merging them itself.
+fn normalize_place_name(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn json_value(name: &str, ids: &[String]) -> Value {
+    serde_json::json!({ "normalized_name": name, "ids": ids })
+}
+
 fn propagate_default_transport_modes(
     stages: Vec<TripStage>,
     previous: &[TransportMode],
@@ -751,6 +931,8 @@ fn row_to_plan(row: &Row) -> Result<TripPlan, Box<dyn std::error::Error>> {
             .map(|(kind, reference)| PlanSource { kind, reference }),
         created_at: row.try_get(14)?,
         updated_at: row.try_get(15)?,
+        budget_cents: row.try_get(16)?,
+        currency: row.try_get(17)?,
     })
 }
 
@@ -779,6 +961,49 @@ mod tests {
         let second = generated_id("trip:plan");
         assert!(first.starts_with("trip:plan:"));
         assert_ne!(first, second);
+    }
+
+    /// The lost-update guard. A browser holds a read for milliseconds; an agent
+    /// holds it across turns while it calls transit and reasons, and `stages` is
+    /// accepted wholesale, so a stale write silently reverts everything another
+    /// writer changed in between.
+    #[test]
+    fn a_conditional_write_refuses_a_revision_it_did_not_expect() {
+        // Omitted keeps last-write-wins, so nothing that already works breaks.
+        assert!(check_expected_revision(None, "1786470000").is_ok());
+        assert!(check_expected_revision(Some("1786470000"), "1786470000").is_ok());
+
+        let stale = check_expected_revision(Some("1786470000"), "1786479999")
+            .expect_err("a changed revision must be refused");
+        let message = stale.to_string();
+        // The prefix is what the server turns into 409 + code:stale_plan, so a
+        // caller can branch without parsing prose.
+        assert!(message.starts_with("stale_plan:"), "got: {message}");
+        // Both revisions are named, so "someone else wrote" is distinguishable
+        // from "I sent the wrong id".
+        assert!(message.contains("1786470000") && message.contains("1786479999"));
+    }
+
+    /// Two ids whose names normalise to one string are one place typed twice.
+    /// The dashboard mints `place:<slug>` with a null coordinate for any typed
+    /// text, so this is how a plan quietly stops matching candidates within
+    /// 75 km of itself.
+    #[test]
+    fn place_names_normalise_for_collision_detection_only() {
+        assert_eq!(normalize_place_name("Bonn  Hbf"), "bonn hbf");
+        assert_eq!(normalize_place_name("BONN HBF"), "bonn hbf");
+        assert_eq!(normalize_place_name(" München "), "münchen");
+        // Umlauts and punctuation are deliberately NOT folded: collapsing
+        // Munchen and München would merge two places a human should judge, and
+        // this detector reports collisions rather than deciding them.
+        assert_ne!(
+            normalize_place_name("Munchen"),
+            normalize_place_name("München")
+        );
+        assert_ne!(
+            normalize_place_name("Frankfurt(Main)Hbf"),
+            normalize_place_name("Frankfurt Main Hbf")
+        );
     }
 
     #[test]
