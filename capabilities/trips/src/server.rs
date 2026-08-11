@@ -57,8 +57,9 @@ const ROUTES: &[route_manifest::Route] = &[
     route_manifest::Route {
         method: "POST",
         path: "/api/plans/:id/items",
-        summary: "Add an item to a plan. Two item_types promise a payload shape and are \
-                  validated on write: see schemas/trip-plan.schema.json.",
+        summary: "Add an item to a plan. Four item_types (transport, option_set, booking, \
+                  stay) promise a payload shape and are validated on write: see \
+                  schemas/trip-plan.schema.json.",
         request_schema: Some(route_manifest::schema_of::<CreatePlanItem>),
     },
     r(

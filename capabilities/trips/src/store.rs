@@ -907,10 +907,16 @@ pub const ITEM_TYPES: &[&str] = &[
 ///   deliberately records `traveler_name_present` as a boolean rather than the
 ///   name, because whose name is on a ticket is personal data this repo has no
 ///   reason to hold.
+/// - `stay` gained its first producer (accommodation search results entered
+///   through the agent surface), so its shape is fixed from the start the way
+///   `option_set`'s was: where the stay is and when. Coordinates are required
+///   because the place matching downstream runs on them; provider fields such
+///   as the booking URL, price and rating ride along unvalidated.
 const DECLARED_PAYLOADS: &[(&str, &[&str])] = &[
     ("transport", &["mode", "journey"]),
     ("option_set", &["query", "options"]),
     ("booking", &["provider", "order_ref"]),
+    ("stay", &["check_in", "check_out", "latitude", "longitude"]),
 ];
 
 /// Rejects a declared variant that is missing a required field, naming the field.
@@ -1127,6 +1133,15 @@ mod tests {
         .expect_err("option_set without options must be rejected");
         assert!(missing_options.to_string().contains("options"));
 
+        // A stay without coordinates is exactly the row A2's coordinate matcher
+        // could never use, so the write is refused and names what it lacks.
+        let missing_latitude = validate_payload(
+            "stay",
+            &json!({ "check_in": "2026-09-14", "check_out": "2026-09-16", "longitude": 11.57 }),
+        )
+        .expect_err("stay without latitude must be rejected");
+        assert!(missing_latitude.to_string().contains("latitude"));
+
         // A payload that is not an object at all is a different mistake, and says so.
         let not_an_object = validate_payload("transport", &json!("a string"))
             .expect_err("a non-object payload must be rejected");
@@ -1139,6 +1154,23 @@ mod tests {
                 "query": { "from": "8000044", "to": "8000105", "time": "2026-09-01T08:00:00" },
                 "options": [{ "id": "j:1", "total_price": 36.47, "chosen": true }],
                 "observed_at": "2026-08-11T12:00:00Z"
+            })
+        )
+        .is_ok());
+
+        // A stay as the agent surface writes it from an accommodation search
+        // result: the declared fields plus provider evidence riding along.
+        assert!(validate_payload(
+            "stay",
+            &json!({
+                "check_in": "2026-09-14",
+                "check_out": "2026-09-16",
+                "latitude": 48.1371,
+                "longitude": 11.5754,
+                "provider": "booking.com",
+                "url": "https://www.booking.com/hotel/de/example.html",
+                "amount_cents": 12200,
+                "currency": "EUR"
             })
         )
         .is_ok());

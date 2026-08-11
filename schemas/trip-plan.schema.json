@@ -363,6 +363,25 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "item_type": {
+                "const": "stay"
+              }
+            },
+            "required": [
+              "item_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/stayPayload"
+              }
+            }
+          }
         }
       ],
       "additionalProperties": false
@@ -477,6 +496,75 @@
         "booked_at": {
           "type": [
             "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "stayPayload": {
+      "description": "Where you sleep, next to how you get there. Written from an accommodation search result (the item's title carries the property name, external_id namespaces the provider's own id, e.g. `booking.com:1234567`). Coordinates are required because the place matching downstream runs on them; provider fields beyond those named here are preserved.",
+      "type": "object",
+      "required": [
+        "check_in",
+        "check_out",
+        "latitude",
+        "longitude"
+      ],
+      "properties": {
+        "check_in": {
+          "description": "First night, as a date (YYYY-MM-DD).",
+          "type": "string",
+          "minLength": 1
+        },
+        "check_out": {
+          "description": "Departure day, as a date (YYYY-MM-DD).",
+          "type": "string",
+          "minLength": 1
+        },
+        "latitude": {
+          "type": "number"
+        },
+        "longitude": {
+          "type": "number"
+        },
+        "provider": {
+          "description": "Where the result came from. `booking.com`, an agency, a direct website.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The provider's page for this stay, so the plan holds a bookable link rather than a name to re-search.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "amount_cents": {
+          "description": "Total for the whole stay, integer minor units. A price in floating point is a price that eventually disagrees with the receipt.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "currency": {
+          "description": "ISO 4217, e.g. EUR.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rating": {
+          "description": "As the provider scores it, kept verbatim on the provider's own scale.",
+          "type": [
+            "number",
             "null"
           ]
         }

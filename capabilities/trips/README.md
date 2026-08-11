@@ -18,7 +18,7 @@ durable plan contract.
 <!-- human-voice: ignore em_dash -->
 
 That freedom cost a caller the ability to know what to send: any JSON was accepted, so a
-guessed shape got a 201 and a row nobody could read back. Two item types now promise a shape,
+guessed shape got a 201 and a row nobody could read back. Four item types now promise a shape,
 are validated on write, and name the missing field on rejection:
 
 - `transport` — `{mode, journey}`. One producer, one shape, and the item to write for "hold
@@ -26,6 +26,13 @@ are validated on write, and name the missing field on rejection:
 - `option_set` — `{query, options, observed_at?}`. Every fare a search offered, including the
   ones not taken. It exists because an unchosen fare cannot be queried back later at
   yesterday's price, so an unrecorded option set is gone rather than merely unwritten.
+- `booking` — `{provider, order_ref, …}`. What makes a stage's `booked` status mean something:
+  the order reference, fare name, refundability and cancellation deadline of a purchase made
+  elsewhere. (Declared 2026-08-11; this list previously stopped at two.)
+- `stay` — `{check_in, check_out, latitude, longitude, …}`. Where you sleep, next to how you
+  get there. First producer is accommodation search results entered through the agent surface;
+  coordinates are required because the place matching downstream runs on them, and the
+  provider's URL, price and rating ride along unvalidated.
 
 Every other type stays permissive on purpose. `event` alone is written by three producers with
 three different shapes (a scouting opportunity, a whole search result, a calendar anchor), so

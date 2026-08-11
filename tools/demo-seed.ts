@@ -200,7 +200,14 @@ const SEEDERS: Record<string, (ctx: Ctx) => Promise<string>> = {
         day: start,
         external_id: `demo-stay-${plan.id}`,
         title: `Apartment near the centre, ${city.name}`,
-        payload: { nights: trip.nights, currency: "EUR" },
+        // The declared stay shape: where and when are required, the rest rides along.
+        payload: {
+          check_in: start,
+          check_out: addDays(start, trip.nights),
+          latitude: city.latitude,
+          longitude: city.longitude,
+          currency: "EUR",
+        },
       });
       await post(`${url}/${plan.id}/items`, {
         item_type: "note",
