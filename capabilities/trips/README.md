@@ -11,9 +11,26 @@ The public shape is [`schemas/trip-plan.schema.json`](../../schemas/trip-plan.sc
 `trips.plans` records general places rather than only stations, up to four destinations,
 a date window, travelers and allowed transport modes. Its explicit stages can use different
 dates, travelers, modes and booking states. `trips.plan_items` records selected transport
-options, events, activities, places, stays, images and notes. The payload is JSON text so
-provider-specific evidence can be preserved without making provider fields part of the
+options, events, activities, places, stays, images, notes and option sets. The payload is JSON
+text so provider-specific evidence can be preserved without making provider fields part of the
 durable plan contract.
+
+<!-- human-voice: ignore em_dash -->
+
+That freedom cost a caller the ability to know what to send: any JSON was accepted, so a
+guessed shape got a 201 and a row nobody could read back. Two item types now promise a shape,
+are validated on write, and name the missing field on rejection:
+
+- `transport` — `{mode, journey}`. One producer, one shape, and the item to write for "hold
+  this connection in the plan".
+- `option_set` — `{query, options, observed_at?}`. Every fare a search offered, including the
+  ones not taken. It exists because an unchosen fare cannot be queried back later at
+  yesterday's price, so an unrecorded option set is gone rather than merely unwritten.
+
+Every other type stays permissive on purpose. `event` alone is written by three producers with
+three different shapes (a scouting opportunity, a whole search result, a calendar anchor), so
+declaring one shape for it would reject two of them. A variant is declared where there is
+exactly one shape to promise, and nowhere else.
 
 The Travel workspace exposes plan editing for title, start, up to four destinations, dates,
 interests, travelers and transport modes through the existing `PATCH /api/plans/:id` contract.

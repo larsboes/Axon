@@ -108,9 +108,13 @@ for runs outside the runner, then the shipped default `3000`. Binds loopback onl
 - `GET /api/suggest?q=<query>` — station name -> EVA candidates (wraps `suggest_stations`)
 - `GET /api/search?from=<eva>&to=<eva>&time=<iso>` — journey search (wraps `search_connections`)
 - `GET /api/split?from=<eva>&to=<eva>&time=<iso>` — cheapest split-ticket chain (wraps
-  `search_split_tickets`)
-- `GET /api/trips` — **stub**: returns `{count, trips: []}` only, no actual trip rows yet (see
-  Known gaps)
+  `search_split_tickets`). Each segment carries `train_match` and the `expected_trains` it was
+  judged against, and the chain carries `confidence` plus `unpriced_pairs`/`queried_pairs` — see
+  "What a split-ticket chain does and does not promise" below
+- `GET /api/trips?session_id=<id>&limit=<n>` — stored trips with their legs, cheapest-first.
+  Both parameters optional; `limit` defaults to 100, clamped to 500. The reply carries `count`,
+  `returned` and `truncated`, so a bounded read says what it left behind rather than implying
+  it returned everything
 
 **Running:**
 
@@ -118,6 +122,32 @@ for runs outside the runner, then the shipped default `3000`. Binds loopback onl
 cargo run --bin transit-server
 bazel run //capabilities/transit:transit-server
 ```
+
+## What a split-ticket chain does and does not promise
+
+<!-- human-voice: ignore em_dash -->
+
+The solver prices each stop pair with its own call to `search_connections` and takes the first
+journey that comes back. Nothing in that makes the returned journey the one the traveller is
+sitting on, so a chain could contain a fare for a train leaving two hours later. Buy three of
+four tickets in a chain like that and you own three tickets and no trip.
+
+That is a property of pricing each pair independently, and it is not fixed here. What is fixed
+is that the result now says so:
+
+| Field | Reads |
+|---|---|
+| `segments[].train_match` | `exact` (same trains, same order), `partial` (shares some), `different` (shares none, so this fare is for another service), `unknown` (no train number on one side) |
+| `segments[].expected_trains` | the trains the direct journey uses over that hop, so the verdict is checkable |
+| `confidence` | the chain's worst case: `low` if any segment is `different` |
+| `unpriced_pairs` / `queried_pairs` | how many fare lookups came back empty. The chain shown is fully priced by construction, but the search ran against a table with holes, and a cheaper split may never have been visible |
+
+Empty lookups are ordinary, not exceptional: a live Bonn to Frankfurt search on 2026-08-11
+returned nothing for 3 of 6 pairs. Before this, that chain was presented as the cheapest one
+that exists.
+
+`savings` is `null` when no direct fare came back. It used to be `0.0`, which the dashboard
+rendered as "Direct is cheapest" — a claim nobody had checked.
 
 ## Trip persistence
 
@@ -326,9 +356,11 @@ score null.
   live Postgres data directory safely; needs a `pg_dump`-based mechanism.
 - `trips.status` exists in the schema but nothing reads or sets it back yet — no CLI command
   consumes it (see "Trip persistence" above).
-- `transit-server`'s `GET /api/trips` is a stub — `TransitStore` has no `list_all_trips` method
-  yet (only `get_trip`/`list_session_trips`/`count`), so the handler returns `{count, trips: []}`
-  rather than actual trip rows (see "HTTP server (transit-server)" above).
+- Split-ticket segment fares are still each found by a *separate* connection search, so
+  `train_match` reports whether a segment's fare belongs to the planned train rather than
+  guaranteeing it does. A chain with any `different` segment is not buyable as shown, and the
+  dashboard withholds the booking link for exactly that case. Making the segment search return
+  the planned train by construction is the real fix and is not done.
 - Session journeys live in `transit.trips` tagged `trigger_reason = "session"` and do **not**
   currently also surface in `scouting.opportunities` — that would need a scouting-side adapter
   pulling from transit sessions, which would reverse the established dependency direction

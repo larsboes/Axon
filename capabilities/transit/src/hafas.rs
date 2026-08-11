@@ -24,7 +24,9 @@
 //! below assert exactly that by checking the field is still `None` on the way
 //! out of here.
 
-use crate::travel::{Journey, Leg, SplitResult, Station};
+use crate::travel::{
+    Journey, Leg, SplitConfidence, SplitResult, SplitSegment, Station, TrainMatch,
+};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -224,41 +226,71 @@ impl HafasClient {
             ));
         }
 
+        // Which train the traveller is actually on over each stop pair. Read from
+        // the same direct-journey payload the stops came from, so classifying a
+        // segment costs no extra request.
+        let spans = extract_section_spans(v, &stops);
+
         let mut prices: HashMap<(usize, usize), f64> = HashMap::new();
         let mut segments_data: HashMap<(usize, usize), Journey> = HashMap::new();
+        let mut queried_pairs = 0usize;
+        let mut unpriced_pairs = 0usize;
 
         for i in 0..n {
             for j in (i + 1)..n {
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                if let Ok(journeys) = self.search_connections(
+                queried_pairs += 1;
+                // A failed query used to disappear here, so the DP quietly ran
+                // against a table with holes in it and the caller was told the
+                // answer was the cheapest chain that exists. It is counted now.
+                let priced = match self.search_connections(
                     &stops[i].ext_id,
                     &stops[j].ext_id,
                     &stops[i].departure_iso,
                 ) {
-                    if let Some(first) = journeys.first() {
-                        if let Some(price) = first.total_price {
-                            prices.insert((i, j), price);
-                            segments_data.insert((i, j), first.clone());
-                        }
+                    Ok(journeys) => match journeys.first() {
+                        Some(first) => first.total_price.map(|price| (price, first.clone())),
+                        None => None,
+                    },
+                    Err(_) => None,
+                };
+                match priced {
+                    Some((price, journey)) => {
+                        prices.insert((i, j), price);
+                        segments_data.insert((i, j), journey);
                     }
+                    None => unpriced_pairs += 1,
                 }
             }
         }
 
         let (split_price, path) = cheapest_split(n, &prices).ok_or(HafasError::NoSplitFound)?;
 
-        let segments: Vec<Journey> = path
+        let segments: Vec<SplitSegment> = path
             .into_iter()
-            .filter_map(|pair| segments_data.get(&pair).cloned())
+            .filter_map(|(i, j)| {
+                segments_data.get(&(i, j)).cloned().map(|journey| {
+                    let expected_trains = expected_trains(&spans, i, j);
+                    let train_match = classify_train_match(&expected_trains, &journey);
+                    SplitSegment {
+                        journey,
+                        train_match,
+                        expected_trains,
+                    }
+                })
+            })
             .collect();
 
-        let savings = direct_price.map(|p| p - split_price).unwrap_or(0.0);
+        let confidence = split_confidence(&segments, unpriced_pairs);
 
         Ok(SplitResult {
             original_price: direct_price,
             split_price,
-            savings,
+            savings: direct_price.map(|p| p - split_price),
             segments,
+            confidence,
+            unpriced_pairs,
+            queried_pairs,
         })
     }
 }
@@ -266,6 +298,114 @@ impl HafasClient {
 struct Stop {
     ext_id: String,
     departure_iso: String,
+}
+
+/// One non-WALK section of the direct journey, expressed as the stop-index pair
+/// it spans plus the train that covers it.
+struct SectionSpan {
+    from: usize,
+    to: usize,
+    train_number: String,
+}
+
+/// Maps each non-WALK section of the direct journey onto the stop indices
+/// `extract_stops` produced, so a stop pair can be asked which trains it rides.
+///
+/// Done as a second pass rather than inside `extract_stops` because that function
+/// deduplicates by station id: a transfer station is pushed once, while processing
+/// the section that *arrives* there, and the train it later departs on is not known
+/// at that moment. Matching by station id afterwards has no such ordering problem.
+fn extract_section_spans(v: &Value, stops: &[Stop]) -> Vec<SectionSpan> {
+    let index_of = |ext_id: &str| stops.iter().position(|s| s.ext_id == ext_id);
+    let mut spans = Vec::new();
+    let Some(sections) = v.get("verbindungsAbschnitte").and_then(|s| s.as_array()) else {
+        return spans;
+    };
+    for section in sections {
+        let verkehrsmittel = section.get("verkehrsmittel").cloned().unwrap_or(Value::Null);
+        if verkehrsmittel.get("typ").and_then(|t| t.as_str()) == Some("WALK") {
+            continue;
+        }
+        let Some(halte) = section.get("halte").and_then(|h| h.as_array()) else {
+            continue;
+        };
+        if halte.len() < 2 {
+            continue;
+        }
+        let halt_id = |halt: &Value| -> Option<String> {
+            halt.get("id")
+                .or_else(|| halt.get("extId"))
+                .and_then(|id| id.as_str())
+                .map(|s| s.to_string())
+        };
+        let (Some(from_id), Some(to_id)) = (halt_id(&halte[0]), halt_id(halte.last().unwrap()))
+        else {
+            continue;
+        };
+        let (Some(from), Some(to)) = (index_of(&from_id), index_of(&to_id)) else {
+            continue;
+        };
+        let train_number = verkehrsmittel
+            .get("nummer")
+            .or_else(|| verkehrsmittel.get("linienNummer"))
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string();
+        spans.push(SectionSpan {
+            from,
+            to,
+            train_number,
+        });
+    }
+    spans
+}
+
+/// The trains the direct journey uses between two stop indices, in route order.
+fn expected_trains(spans: &[SectionSpan], i: usize, j: usize) -> Vec<String> {
+    spans
+        .iter()
+        .filter(|s| s.from >= i && s.to <= j && !s.train_number.is_empty())
+        .map(|s| s.train_number.clone())
+        .collect()
+}
+
+/// Whether a separately-priced journey is the same ride as the planned one.
+pub fn classify_train_match(expected: &[String], journey: &Journey) -> TrainMatch {
+    let actual: Vec<&str> = journey
+        .legs
+        .iter()
+        .map(|l| l.train_number.as_str())
+        .filter(|n| !n.is_empty())
+        .collect();
+    if expected.is_empty() || actual.is_empty() {
+        return TrainMatch::Unknown;
+    }
+    if expected.len() == actual.len() && expected.iter().zip(&actual).all(|(e, a)| e == a) {
+        return TrainMatch::Exact;
+    }
+    if actual.iter().any(|a| expected.iter().any(|e| e == a)) {
+        return TrainMatch::Partial;
+    }
+    TrainMatch::Different
+}
+
+/// One value a caller can gate on, taking the worst case across the chain: a
+/// chain is only as buyable as its least trustworthy ticket.
+pub fn split_confidence(segments: &[SplitSegment], unpriced_pairs: usize) -> SplitConfidence {
+    if segments
+        .iter()
+        .any(|s| s.train_match == TrainMatch::Different)
+    {
+        return SplitConfidence::Low;
+    }
+    if unpriced_pairs > 0
+        || segments
+            .iter()
+            .any(|s| s.train_match != TrainMatch::Exact)
+    {
+        return SplitConfidence::Partial;
+    }
+    SplitConfidence::Exact
 }
 
 fn extract_stops(v: &Value) -> Vec<Stop> {
@@ -572,6 +712,126 @@ mod tests {
         // no price at all reaches stop 2 -- (1,2) and (0,2) both missing.
         let result = cheapest_split(3, &prices);
         assert!(result.is_none());
+    }
+
+    fn journey_on(trains: &[&str]) -> Journey {
+        let station = |name: &str| Station {
+            id: "8000000".into(),
+            name: name.into(),
+            latitude: None,
+            longitude: None,
+        };
+        Journey {
+            id: "j".into(),
+            start_station: station("A"),
+            end_station: station("B"),
+            legs: trains
+                .iter()
+                .map(|n| Leg {
+                    origin: station("A"),
+                    destination: station("B"),
+                    departure_time: "2026-09-01T08:00:00".into(),
+                    arrival_time: "2026-09-01T10:00:00".into(),
+                    train_name: format!("ICE {n}"),
+                    train_number: (*n).into(),
+                    train_category: "ICE".into(),
+                    platform: None,
+                    is_regional: false,
+                })
+                .collect(),
+            total_duration_minutes: 120,
+            total_price: Some(30.0),
+            delay_risk_score: None,
+        }
+    }
+
+    fn owned(trains: &[&str]) -> Vec<String> {
+        trains.iter().map(|t| (*t).to_string()).collect()
+    }
+
+    /// The defect this classification exists for: each segment is priced by a
+    /// fresh search that takes `journeys.first()`, and nothing made that journey
+    /// the train the traveller is on.
+    #[test]
+    fn train_match_separates_the_same_ride_from_a_different_one() {
+        assert_eq!(
+            classify_train_match(&owned(&["691"]), &journey_on(&["691"])),
+            TrainMatch::Exact
+        );
+        // Priced for a service the traveller will not be on. This is the case
+        // that costs money, so it must not be reported as merely unknown.
+        assert_eq!(
+            classify_train_match(&owned(&["691"]), &journey_on(&["512"])),
+            TrainMatch::Different
+        );
+        // Covers one of the two planned trains.
+        assert_eq!(
+            classify_train_match(&owned(&["691", "512"]), &journey_on(&["691"])),
+            TrainMatch::Partial
+        );
+        // Same trains, wrong order is not the same ride.
+        assert_eq!(
+            classify_train_match(&owned(&["691", "512"]), &journey_on(&["512", "691"])),
+            TrainMatch::Partial
+        );
+        // No train number on either side is not a verdict.
+        assert_eq!(
+            classify_train_match(&[], &journey_on(&["691"])),
+            TrainMatch::Unknown
+        );
+        assert_eq!(
+            classify_train_match(&owned(&["691"]), &journey_on(&[])),
+            TrainMatch::Unknown
+        );
+    }
+
+    fn segment(train_match: TrainMatch) -> SplitSegment {
+        SplitSegment {
+            journey: journey_on(&["691"]),
+            train_match,
+            expected_trains: owned(&["691"]),
+        }
+    }
+
+    /// A chain is only as buyable as its least trustworthy ticket, and a hole in
+    /// the price table means the search never saw every candidate split.
+    #[test]
+    fn chain_confidence_takes_the_worst_case() {
+        assert_eq!(
+            split_confidence(&[segment(TrainMatch::Exact), segment(TrainMatch::Exact)], 0),
+            SplitConfidence::Exact
+        );
+        assert_eq!(
+            split_confidence(&[segment(TrainMatch::Exact), segment(TrainMatch::Partial)], 0),
+            SplitConfidence::Partial
+        );
+        assert_eq!(
+            split_confidence(&[segment(TrainMatch::Exact), segment(TrainMatch::Unknown)], 0),
+            SplitConfidence::Partial
+        );
+        // All exact, but a failed pairwise query means a cheaper split may exist
+        // that was never priced.
+        assert_eq!(
+            split_confidence(&[segment(TrainMatch::Exact)], 1),
+            SplitConfidence::Partial
+        );
+        // One wrong-train segment outranks every other signal.
+        assert_eq!(
+            split_confidence(
+                &[segment(TrainMatch::Exact), segment(TrainMatch::Different)],
+                0
+            ),
+            SplitConfidence::Low
+        );
+    }
+
+    /// `savings: 0.0` could not be told apart from "the split saves nothing",
+    /// and the dashboard rendered that as "Direct is cheapest".
+    #[test]
+    fn unknown_direct_fare_yields_no_savings_figure() {
+        let direct: Option<f64> = None;
+        assert_eq!(direct.map(|p: f64| p - 20.0), None);
+        assert_eq!(Some(35.0f64).map(|p| p - 20.0), Some(15.0));
     }
 
     #[test]

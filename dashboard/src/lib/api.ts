@@ -381,11 +381,34 @@ export const wikimedia = {
   },
 };
 
+/**
+ * Whether a separately-priced segment is priced for the train you will be on.
+ * `different` is the one that costs money: that fare buys a seat on another
+ * service, so the tickets do not add up to the journey you planned.
+ */
+export type TrainMatch = "exact" | "partial" | "different" | "unknown";
+
+export interface SplitSegment {
+  journey: Journey;
+  train_match: TrainMatch;
+  /** The trains the direct journey uses over this hop, in route order. */
+  expected_trains: string[];
+}
+
 export interface SplitResult {
-  segments: Journey[];
-  original_price: number;
+  segments: SplitSegment[];
+  /** Null when the direct fare is unknown, which is not the same as free. */
+  original_price: number | null;
   split_price: number;
-  savings: number;
+  /** Null when there is no direct fare to compare against. */
+  savings: number | null;
+  confidence: "exact" | "partial" | "low";
+  /**
+   * Stop pairs the solver wanted a fare for and got none. The chain shown is
+   * fully priced, but a cheaper split may never have been visible to it.
+   */
+  unpriced_pairs: number;
+  queried_pairs: number;
 }
 
 export interface Journey {

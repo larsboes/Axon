@@ -4,7 +4,14 @@
   import PageHeader from "$lib/PageHeader.svelte";
   import RelatedTools from "$lib/RelatedTools.svelte";
   import StationField from "$lib/travel/StationField.svelte";
-  import { axonStatus, transit, type Journey, type SplitResult, type Station } from "$lib/api";
+  import {
+    axonStatus,
+    transit,
+    type Journey,
+    type SplitResult,
+    type Station,
+    type TrainMatch,
+  } from "$lib/api";
 
   function tomorrow(): string {
     const d = new Date();
@@ -109,7 +116,28 @@
   }
 
   const savedPercent = (s: SplitResult) =>
-    s.original_price > 0 ? Math.round((s.savings / s.original_price) * 100) : 0;
+    s.savings !== null && s.original_price !== null && s.original_price > 0
+      ? Math.round((s.savings / s.original_price) * 100)
+      : null;
+
+  // Why a chain might not be buyable as shown. Each segment is priced by its own
+  // fare search, and nothing forces that search to return the train you are on.
+  const CONFIDENCE_NOTE: Record<SplitResult["confidence"], string | null> = {
+    exact: null,
+    partial:
+      "Some tickets could not be matched to the exact train on this route, " +
+      "or a fare lookup failed. Check each ticket before buying.",
+    low:
+      "At least one ticket is priced for a different train than this journey uses. " +
+      "Buying this chain does not buy a seat on this trip.",
+  };
+
+  const MATCH_LABEL: Record<TrainMatch, string | null> = {
+    exact: null,
+    partial: "partial train match",
+    different: "different train",
+    unknown: "train unknown",
+  };
 </script>
 
 <PageHeader
@@ -221,7 +249,11 @@
           <h2>Split-Ticket</h2>
           <p class="sub">The same journey split into separately purchased sections.</p>
         </div>
-        {#if split.savings > 0.01}
+        {#if split.savings === null}
+          <span class="tag mono" title="No direct fare came back, so there is nothing to compare against.">
+            No direct fare to compare
+          </span>
+        {:else if split.savings > 0.01}
           <span class="tag win mono">{savedPercent(split)}% cheaper</span>
         {:else}
           <span class="tag mono">Direct is cheapest</span>
@@ -239,24 +271,55 @@
         </div>
       </div>
 
+      {#if CONFIDENCE_NOTE[split.confidence]}
+        <p class="chain-warn" class:severe={split.confidence === "low"}>
+          {CONFIDENCE_NOTE[split.confidence]}
+          {#if split.unpriced_pairs > 0}
+            ({split.unpriced_pairs} of {split.queried_pairs} fare lookups returned nothing.)
+          {/if}
+        </p>
+      {/if}
+
       <ol class="segments">
-        {#each split.segments as seg, i (seg.id)}
+        {#each split.segments as seg, i (seg.journey.id)}
           <li class="card">
             <div class="seg-head">
               <span class="cap">Ticket {i + 1}</span>
-              <span class="mono fare">{price(seg.total_price)}</span>
+              <span class="mono fare">{price(seg.journey.total_price)}</span>
             </div>
-            <p class="seg-route">{seg.start_station.name} → {seg.end_station.name}</p>
-            <p class="seg-meta mono">
-              departs {hhmm(seg.legs[0].departure_time)} · {duration(seg.total_duration_minutes)}
+            <p class="seg-route">
+              {seg.journey.start_station.name} → {seg.journey.end_station.name}
             </p>
+            <p class="seg-meta mono">
+              departs {hhmm(seg.journey.legs[0].departure_time)} · {duration(
+                seg.journey.total_duration_minutes,
+              )}
+            </p>
+            {#if MATCH_LABEL[seg.train_match]}
+              <p
+                class="seg-match"
+                class:severe={seg.train_match === "different"}
+                title={seg.expected_trains.length
+                  ? `This journey uses ${seg.expected_trains.join(", ")}.`
+                  : "The direct journey carried no train number to compare against."}
+              >
+                {MATCH_LABEL[seg.train_match]}
+              </p>
+            {/if}
           </li>
         {/each}
       </ol>
 
-      <a class="btn book" href="https://www.bahn.de" target="_blank" rel="noreferrer">
-        Book on bahn.de <Icon name="external" size={13} />
-      </a>
+      {#if split.confidence === "low"}
+        <p class="empty">
+          No booking link while a ticket is priced for a different train. Search the route
+          again, or buy the direct connection.
+        </p>
+      {:else}
+        <a class="btn book" href="https://www.bahn.de" target="_blank" rel="noreferrer">
+          Book on bahn.de <Icon name="external" size={13} />
+        </a>
+      {/if}
     </section>
   {:else}
     <p class="empty card">{splitNote ?? "No split calculation for this route."}</p>
@@ -589,6 +652,25 @@
     margin: 0.2rem 0 0;
     font-size: 0.6875rem;
     color: var(--text-tertiary);
+  }
+
+  .seg-match {
+    margin: 0.35rem 0 0;
+    font-size: 0.6875rem;
+    color: var(--text-tertiary);
+  }
+
+  .seg-match.severe,
+  .chain-warn.severe {
+    color: var(--danger, #b3261e);
+    font-weight: 500;
+  }
+
+  .chain-warn {
+    margin: 0 0 0.75rem;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    color: var(--text-secondary);
   }
 
   .book {

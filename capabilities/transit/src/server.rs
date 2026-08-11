@@ -33,7 +33,13 @@ const ROUTES: &[route_manifest::Route] = &[
         "Fare search between two stations on a date.",
     ),
     r("GET", "/api/split", "Split-ticket options for a search."),
-    r("GET", "/api/trips", "Saved trip searches."),
+    r(
+        "GET",
+        "/api/trips",
+        "Saved trip searches with their legs. Optional session_id filters to one \
+         `transit plan` session; optional limit (default 100, max 500) bounds the read, \
+         and the reply's count/returned/truncated say what was left behind.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -174,16 +180,83 @@ async fn handle_health() -> Json<Value> {
     }))
 }
 
+/// One stored trip with its legs, as JSON.
+///
+/// Written out here rather than derived, because `TripRow`/`TripLegRow` are the
+/// store's row shapes and deriving `Serialize` on them would make every column
+/// rename a breaking API change. The CLI's `session_summary` deliberately serves
+/// a flattened version of the same rows: a human choosing between fares wants
+/// price and duration, while the caller of this endpoint wants the legs it would
+/// otherwise have to query Postgres directly to see.
+fn trip_json(t: &transit::store::TripRow, legs: &[transit::store::TripLegRow]) -> Value {
+    json!({
+        "trip_id": t.id,
+        "status": t.status,
+        "origin_eva": t.origin_eva,
+        "destination_eva": t.destination_eva,
+        "trigger_reason": t.trigger_reason,
+        "total_duration_minutes": t.total_duration_minutes,
+        "total_price": t.total_price,
+        "created_at": t.created_at,
+        "session_id": t.session_id,
+        "legs": legs.iter().map(|l| json!({
+            "origin_eva": l.origin_eva,
+            "origin_name": l.origin_name,
+            "destination_eva": l.destination_eva,
+            "destination_name": l.destination_name,
+            "departure_time": l.departure_time,
+            "arrival_time": l.arrival_time,
+            "train_name": l.train_name,
+            "train_number": l.train_number,
+            "train_category": l.train_category,
+            "platform": l.platform,
+            "is_regional": l.is_regional,
+        })).collect::<Vec<Value>>(),
+    })
+}
+
+/// A bounded read says what it left behind. `count` is every trip matching the
+/// filter, `returned` is how many came back, and `truncated` says whether those
+/// two disagree -- borrowed from knowledge-graph's `/api/graph/unit`, for the
+/// same reason: a capped answer that looked complete would read as the whole set.
+#[derive(Deserialize)]
+struct TripsQuery {
+    session_id: Option<String>,
+    limit: Option<i64>,
+}
+
+/// How many trips one unfiltered read returns before it starts saying `truncated`.
+const TRIPS_DEFAULT_LIMIT: i64 = 100;
+/// The ceiling a caller can raise `limit` to. A trip carries its full leg set, so
+/// an unbounded read is a response size nobody asked for.
+const TRIPS_MAX_LIMIT: i64 = 500;
+
 async fn handle_list_trips(
     State(state): State<AppState>,
+    Query(params): Query<TripsQuery>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     let db_url = state.config.database_url.clone();
+    // Clamped rather than rejected: a caller asking for more than the ceiling wants
+    // as much as it can get, and `truncated` already tells it what it did not get.
+    let limit = params
+        .limit
+        .unwrap_or(TRIPS_DEFAULT_LIMIT)
+        .clamp(1, TRIPS_MAX_LIMIT);
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let store = TransitStore::open(&db_url).map_err(|e| e.to_string())?;
-        // TransitStore doesn't have a list_all_trips method yet.
-        // Return count for now.
-        let count = store.count().map_err(|e| e.to_string())?;
-        Ok(json!({ "count": count, "trips": [] }))
+        let session_id = params.session_id.as_deref();
+        let count = store.count_trips(session_id).map_err(|e| e.to_string())?;
+        let trips = store
+            .list_trips(session_id, Some(limit))
+            .map_err(|e| e.to_string())?;
+        let rendered: Vec<Value> = trips.iter().map(|(t, legs)| trip_json(t, legs)).collect();
+        Ok(json!({
+            "count": count,
+            "returned": rendered.len(),
+            "truncated": count > rendered.len() as i64,
+            "session_id": params.session_id,
+            "trips": rendered,
+        }))
     })
     .await
     {

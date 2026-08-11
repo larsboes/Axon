@@ -329,7 +329,7 @@ impl TripsStore {
                 DROP CONSTRAINT IF EXISTS plan_items_item_type_check;
             ALTER TABLE {schema}.plan_items
                 ADD CONSTRAINT plan_items_item_type_check
-                CHECK (item_type IN ('journey','transport','event','activity','place','stay','image','note'));
+                CHECK (item_type IN ('journey','transport','event','activity','place','stay','image','note','option_set'));
             ",
             schema = schema
         ))?;
@@ -558,26 +558,17 @@ impl TripsStore {
         plan_id: &str,
         input: &CreatePlanItem,
     ) -> Result<PlanItem, Box<dyn std::error::Error>> {
-        if ![
-            "journey",
-            "transport",
-            "event",
-            "activity",
-            "place",
-            "stay",
-            "image",
-            "note",
-        ]
-        .contains(&input.item_type.as_str())
-        {
-            return Err(
-                "item_type must be journey, transport, event, activity, place, stay, image, or note"
-                    .into(),
-            );
+        if !ITEM_TYPES.contains(&input.item_type.as_str()) {
+            return Err(format!(
+                "item_type must be one of {}",
+                ITEM_TYPES.join(", ")
+            )
+            .into());
         }
         if input.external_id.trim().is_empty() || input.title.trim().is_empty() {
             return Err("external_id and title are required".into());
         }
+        validate_payload(&input.item_type, &input.payload)?;
 
         let id = generated_id("trip:item");
         let now = now_text();
@@ -640,6 +631,72 @@ impl TripsStore {
         )?;
         Ok(count > 0)
     }
+}
+
+/// Every accepted `item_type`. One list, so the check and the error message it
+/// prints cannot drift apart.
+pub const ITEM_TYPES: &[&str] = &[
+    "journey",
+    "transport",
+    "event",
+    "activity",
+    "place",
+    "stay",
+    "image",
+    "note",
+    "option_set",
+];
+
+/// The `item_type`s whose payload shape this capability is willing to promise,
+/// and the fields a caller must send for each.
+///
+/// Deliberately short. `payload` is stored as JSON text so provider evidence can
+/// be preserved without becoming part of the durable contract, and the freedom
+/// that buys is real: `event` alone is written by three different producers with
+/// three different shapes (a scouting opportunity, a whole `ScoredResult`, and a
+/// calendar anchor). Declaring a shape for `event` would reject two of the three.
+///
+/// So a variant is declared only where there is exactly one shape to promise:
+///
+/// - `transport` has one producer and one shape, and is the item an agent most
+///   needs to write, because "hold this connection in the plan" is the request.
+/// - `option_set` is new here and has no existing producer, so its shape can be
+///   fixed from the start. It records the fares that were offered and not taken,
+///   which cannot be recovered later at yesterday's prices.
+///
+/// Every other type stays permissive, and that is a statement rather than an
+/// omission: an unmodelled payload is accepted as-is.
+const DECLARED_PAYLOADS: &[(&str, &[&str])] = &[
+    ("transport", &["mode", "journey"]),
+    ("option_set", &["query", "options"]),
+];
+
+/// Rejects a declared variant that is missing a required field, naming the field.
+///
+/// A caller that guesses a payload shape used to get a 201 and a row nobody could
+/// read back. Naming the field is the whole point: "invalid payload" sends the
+/// caller back to the source, one field name sends it back to its own request.
+fn validate_payload(
+    item_type: &str,
+    payload: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some((_, required)) = DECLARED_PAYLOADS.iter().find(|(t, _)| *t == item_type) else {
+        return Ok(());
+    };
+    let Some(object) = payload.as_object() else {
+        return Err(format!("payload for item_type '{item_type}' must be an object").into());
+    };
+    for field in *required {
+        if !object.contains_key(*field) {
+            return Err(format!(
+                "payload for item_type '{item_type}' requires the field '{field}' \
+                 (required: {})",
+                required.join(", ")
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn propagate_default_transport_modes(
@@ -706,6 +763,7 @@ fn row_to_item(row: &Row) -> Result<PlanItem, Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn generated_ids_unique() {
@@ -719,6 +777,93 @@ mod tests {
     fn schema_names_are_restricted() {
         assert!(validate_schema("trips_test").is_ok());
         assert!(validate_schema("trips; DROP SCHEMA public").is_err());
+    }
+
+    /// The write paths the dashboard already uses, replayed field for field from
+    /// `dashboard/src/routes/travel/+page.svelte`. A declared variant that
+    /// rejected one of these would turn a working button into a 400 on deploy,
+    /// which is the failure mode this test exists to catch.
+    #[test]
+    fn every_payload_the_dashboard_already_writes_still_validates() {
+        let existing = [
+            // saveJourney -- the one transport producer, and the shape now declared.
+            ("transport", json!({ "mode": "train", "journey": { "id": "j:1" } })),
+            // addTravelCandidate: a scouting opportunity.
+            (
+                "event",
+                json!({ "opportunity_id": "o:1", "source": "luma", "url": "https://example.org" }),
+            ),
+            // saveEvent: the whole search result, shape not ours to fix.
+            ("event", json!({ "title": "t", "score": 0.5, "date": "2026-09-01" })),
+            // saveCalendarEvent: a calendar anchor.
+            ("event", json!({ "calendar_entry_id": "e:1", "commitment": "planned" })),
+            // savePlace.
+            ("activity", json!({ "url": "https://example.org", "latitude": 50.7 })),
+        ];
+        for (item_type, payload) in existing {
+            assert!(
+                validate_payload(item_type, &payload).is_ok(),
+                "existing dashboard write for '{item_type}' must keep working: {payload}"
+            );
+        }
+    }
+
+    /// A caller that guesses a declared payload's shape gets told which field it
+    /// missed, not a 201 and an unreadable row.
+    #[test]
+    fn a_declared_variant_names_the_field_it_is_missing() {
+        let missing_journey = validate_payload("transport", &json!({ "mode": "train" }))
+            .expect_err("transport without a journey must be rejected");
+        assert!(
+            missing_journey.to_string().contains("journey"),
+            "the error must name the missing field, got: {missing_journey}"
+        );
+
+        let missing_options = validate_payload(
+            "option_set",
+            &json!({ "query": { "from": "8000044", "to": "8000105" } }),
+        )
+        .expect_err("option_set without options must be rejected");
+        assert!(missing_options.to_string().contains("options"));
+
+        // A payload that is not an object at all is a different mistake, and says so.
+        let not_an_object = validate_payload("transport", &json!("a string"))
+            .expect_err("a non-object payload must be rejected");
+        assert!(not_an_object.to_string().contains("must be an object"));
+
+        // Complete payloads pass.
+        assert!(validate_payload(
+            "option_set",
+            &json!({
+                "query": { "from": "8000044", "to": "8000105", "time": "2026-09-01T08:00:00" },
+                "options": [{ "id": "j:1", "total_price": 36.47, "chosen": true }],
+                "observed_at": "2026-08-11T12:00:00Z"
+            })
+        )
+        .is_ok());
+    }
+
+    /// An unmodelled type accepts anything, deliberately: the alternative is
+    /// inventing a shape for `note` that no producer agreed to.
+    #[test]
+    fn undeclared_types_stay_permissive() {
+        for item_type in ITEM_TYPES {
+            if DECLARED_PAYLOADS.iter().any(|(t, _)| t == item_type) {
+                continue;
+            }
+            assert!(
+                validate_payload(item_type, &json!({ "anything": [1, 2, 3] })).is_ok(),
+                "'{item_type}' is not declared and must accept any object"
+            );
+        }
+        // And the declared list is a subset of the accepted types, so a variant
+        // can never be declared for a type the CHECK constraint would reject.
+        for (declared, _) in DECLARED_PAYLOADS {
+            assert!(
+                ITEM_TYPES.contains(declared),
+                "'{declared}' is declared but not an accepted item_type"
+            );
+        }
     }
 
     #[test]

@@ -156,8 +156,17 @@ pub fn enrich(journeys: &mut [Journey]) {
 }
 
 /// Same enrichment for a split-ticket result's segments.
+///
+/// A segment now carries its journey beside the train-match verdict, so the
+/// journeys are lifted out, enriched as a slice, and put back rather than
+/// enriching in place: `enrich` takes `&mut [Journey]` and keeping it that way
+/// leaves it usable by every caller that has no split-ticket in hand.
 pub fn enrich_split(result: &mut SplitResult) {
-    enrich(&mut result.segments);
+    let mut journeys: Vec<_> = result.segments.iter().map(|s| s.journey.clone()).collect();
+    enrich(&mut journeys);
+    for (segment, journey) in result.segments.iter_mut().zip(journeys) {
+        segment.journey = journey;
+    }
 }
 
 #[cfg(test)]

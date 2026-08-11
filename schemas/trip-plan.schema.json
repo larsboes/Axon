@@ -146,16 +146,92 @@
             "place",
             "stay",
             "image",
-            "note"
+            "note",
+            "option_set"
           ]
         },
         "day": { "type": ["string", "null"], "format": "date" },
-        "external_id": { "type": "string" },
+        "external_id": {
+          "description": "Idempotency key together with (plan_id, item_type): writing the same external_id twice updates the row rather than duplicating it. Producers namespace it by source (`scouting:<id>`, `calendar:<entry-id>`) or reuse the provider's own id for a journey or place.",
+          "type": "string"
+        },
         "title": { "type": "string", "minLength": 1 },
         "payload": { "type": "object" },
         "created_at": { "type": "string" }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "item_type": { "const": "transport" } },
+            "required": ["item_type"]
+          },
+          "then": {
+            "properties": { "payload": { "$ref": "#/$defs/transportPayload" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "item_type": { "const": "option_set" } },
+            "required": ["item_type"]
+          },
+          "then": {
+            "properties": { "payload": { "$ref": "#/$defs/optionSetPayload" } }
+          }
+        }
+      ],
       "additionalProperties": false
+    },
+    "transportPayload": {
+      "description": "A selected transport option held in the itinerary. This is the item to write for 'hold this connection in the plan'. Provider fields beyond those named here are preserved.",
+      "type": "object",
+      "required": ["mode", "journey"],
+      "properties": {
+        "mode": { "$ref": "#/$defs/transportMode" },
+        "journey": {
+          "description": "The provider's journey record. Its `id` is what a stage's selected_option_id refers to, so it should be the same string used as the item's external_id.",
+          "type": "object",
+          "required": ["id"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "legs": { "type": "array" },
+            "total_price": { "type": ["number", "null"] },
+            "total_duration_minutes": { "type": ["integer", "null"] }
+          }
+        }
+      }
+    },
+    "optionSetPayload": {
+      "description": "Every option one search offered, including the ones not taken. Recorded because a fare that was not chosen cannot be queried back later at yesterday's price: an unrecorded option set is gone, not merely unwritten.",
+      "type": "object",
+      "required": ["query", "options"],
+      "properties": {
+        "query": {
+          "type": "object",
+          "required": ["from", "to"],
+          "properties": {
+            "from": { "type": "string", "minLength": 1 },
+            "to": { "type": "string", "minLength": 1 },
+            "time": { "type": ["string", "null"] }
+          }
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "total_price": { "type": ["number", "null"] },
+              "total_duration_minutes": { "type": ["integer", "null"] },
+              "chosen": { "type": "boolean" }
+            }
+          }
+        },
+        "observed_at": {
+          "description": "When these fares were seen. A stored price with no observation time cannot be told apart from a current one.",
+          "type": ["string", "null"]
+        }
+      }
     }
   },
   "additionalProperties": false

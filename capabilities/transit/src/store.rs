@@ -279,8 +279,24 @@ impl TransitStore {
     }
 
     pub fn count(&self) -> Result<i64, Box<dyn std::error::Error>> {
+        self.count_trips(None)
+    }
+
+    /// How many trips match the same filter `list_trips` takes, so a bounded
+    /// read can say how much it left behind instead of implying it returned
+    /// everything.
+    pub fn count_trips(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let row = conn.query_one(&format!("SELECT COUNT(*) FROM {}.trips", self.schema), &[])?;
+        let row = conn.query_one(
+            &format!(
+                "SELECT COUNT(*) FROM {}.trips WHERE ($1::text IS NULL OR session_id = $1)",
+                self.schema
+            ),
+            &[&session_id],
+        )?;
         Ok(row.try_get(0)?)
     }
 
@@ -377,16 +393,38 @@ impl TransitStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<TripWithLegs>, Box<dyn std::error::Error>> {
+        self.list_trips(Some(session_id), None)
+    }
+
+    /// The same read with the session filter made optional, so a caller that
+    /// wants "every trip" is not forced to already know a session id.
+    ///
+    /// `session_id = None` returns manual, `transit_fare`-adapter and session
+    /// trips together; `limit = None` returns all of them, because Postgres
+    /// reads `LIMIT NULL` as `LIMIT ALL` and that keeps the unbounded read a
+    /// parameter value rather than a second SQL string to keep in sync.
+    ///
+    /// This exists because `GET /api/trips` served `{"count": n, "trips": []}`
+    /// with HTTP 200 while the rows sat right here: to a human reading the
+    /// handler's TODO that was honest scaffolding, but to a programmatic caller
+    /// it was indistinguishable from "there are no trips".
+    pub fn list_trips(
+        &self,
+        session_id: Option<&str>,
+        limit: Option<i64>,
+    ) -> Result<Vec<TripWithLegs>, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let trips = conn.query(
             &format!(
                 "SELECT id, status, origin_eva, destination_eva, trigger_reason,
                     total_duration_minutes, total_price, created_at, session_id
-                 FROM {}.trips WHERE session_id = $1
-                 ORDER BY total_price ASC NULLS LAST, total_duration_minutes ASC NULLS LAST",
+                 FROM {}.trips
+                 WHERE ($1::text IS NULL OR session_id = $1)
+                 ORDER BY total_price ASC NULLS LAST, total_duration_minutes ASC NULLS LAST
+                 LIMIT $2",
                 self.schema
             ),
-            &[&session_id],
+            &[&session_id, &limit],
         )?;
         let mut out = Vec::with_capacity(trips.len());
         for t in trips {
@@ -1021,6 +1059,68 @@ mod tests {
         // Legs round-trip too.
         assert_eq!(trips[0].1.len(), 1);
         assert_eq!(trips[0].1[0].destination_name, "Valencia");
+    }
+
+    /// `GET /api/trips` used to answer `{"count": n, "trips": []}` with HTTP 200
+    /// because the store had no unfiltered read. This is that read: it must see
+    /// manual trips (`session_id IS NULL`) and session trips together, keep the
+    /// cheapest-first ranking across both, and honour a limit while `count_trips`
+    /// still reports the full total, so `truncated` can be computed honestly.
+    #[test]
+    fn list_trips_sees_manual_and_session_trips_and_bounds_the_read() {
+        let (store, _schema) = open_test_store("list_trips_all");
+        let cands = vec![CandidateDest {
+            eva: "8600206".into(),
+            name: "Valencia".into(),
+        }];
+        let sid = stable_session_id("8000044", &cands, "2026-09-01", "2026-09-30", "Valencia");
+        store
+            .upsert_session(
+                &sid,
+                "8000044",
+                "Valencia",
+                &cands,
+                "2026-09-01",
+                "2026-09-30",
+            )
+            .unwrap();
+        // One session trip and one manual trip: the manual one is what the old
+        // handler could never have returned even if it had tried a session read.
+        store
+            .record_journey(
+                &mk_session_journey("j:session", "8600206", "Valencia", Some(89.00), 340),
+                "8000044",
+                "8600206",
+                "session",
+                Some(&sid),
+            )
+            .unwrap();
+        store
+            .record_journey(&mk_journey("j:manual"), "8000044", "8098160", "auto", None)
+            .unwrap();
+
+        let all = store.list_trips(None, None).unwrap();
+        assert_eq!(all.len(), 2, "unfiltered read must see both trips");
+        // 79.90 (manual) before 89.00 (session): one ranking across both origins.
+        assert_eq!(all[0].0.id, "j:manual");
+        assert_eq!(all[1].0.id, "j:session");
+        assert_eq!(all[0].1.len(), 1, "legs come back with the trip");
+        assert_eq!(store.count_trips(None).unwrap(), 2);
+
+        // The session filter still narrows, and agrees with the old entry point.
+        let scoped = store.list_trips(Some(&sid), None).unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].0.id, "j:session");
+        assert_eq!(store.count_trips(Some(&sid)).unwrap(), 1);
+        assert_eq!(store.list_session_trips(&sid).unwrap(), scoped);
+
+        // A bounded read returns the cheapest one and leaves the total intact,
+        // which is what lets the handler say truncated: true rather than imply
+        // it returned everything.
+        let bounded = store.list_trips(None, Some(1)).unwrap();
+        assert_eq!(bounded.len(), 1);
+        assert_eq!(bounded[0].0.id, "j:manual");
+        assert_eq!(store.count_trips(None).unwrap(), 2);
     }
 
     #[test]

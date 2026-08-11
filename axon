@@ -28,7 +28,7 @@ Operate capabilities:
   capability list                List registered HTTP capability surfaces and health
   capability health              Probe registered capability health endpoints
   capability url <capability>    Print a registered capability's HTTP base URL
-  capability call <name> <get|post> <path> [body] [curl-args...]
+  capability call <name> <get|post|put|patch|delete> <path> [body] [curl-args...]
   capability ingest <url>        Ingest a URL through comms
   capability feed [days]         Read the comms feed
 
@@ -50,7 +50,7 @@ help() {
 Usage: axon capability <command>
 
   list | health | url <capability>
-  call <name> <get|post> <path> [body] [curl-args...]
+  call <name> <get|post|put|patch|delete> <path> [body] [curl-args...]
   ingest <url> | feed [days]
 EOF
       ;;
@@ -111,19 +111,32 @@ capability_health() {
   return "$failed"
 }
 
+# `--fail-with-body`, not `-f`: a capability that rejects a write puts the reason in the
+# response body, and `-f` throws that body away before the caller ever sees it. A caller
+# then gets exit 22 and no way to learn which field was wrong, which is the opposite of
+# what the capability went to the trouble of writing. The non-zero exit is unchanged.
+# Needs curl >= 7.76 (2021); macOS ships 8.x.
+#
+# PUT, PATCH and DELETE are here because capabilities serve them: trips alone has
+# `PATCH /api/plans/:id` and two DELETE routes, and calendar's idempotent upsert is
+# `PUT /api/entries/external`. Without these arms, half of a capability's own lifecycle
+# is unreachable through the one sanctioned non-browser transport.
 capability_call() {
   local name="$1" method="$2" path="$3"
   shift 3
-  local base
+  local base verb
   base="$(capability_url "$name")"
+  verb="$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')"
   case "$method" in
-    get) curl -sf "$base$path" "$@" ;;
-    post)
+    get) curl -s --fail-with-body "$base$path" "$@" ;;
+    delete) curl -s --fail-with-body -X DELETE "$base$path" "$@" ;;
+    post|put|patch)
       local body="${1:-}"
       [ "$#" -eq 0 ] || shift
-      curl -sf -X POST "$base$path" -H 'Content-Type: application/json' -d "$body" "$@"
+      curl -s --fail-with-body -X "$verb" "$base$path" \
+        -H 'Content-Type: application/json' -d "$body" "$@"
       ;;
-    *) echo "axon: method must be get or post" >&2; exit 1 ;;
+    *) echo "axon: method must be one of get, post, put, patch, delete" >&2; exit 1 ;;
   esac
 }
 
@@ -134,7 +147,7 @@ capability_command() {
     list) capability_list ;;
     health|status) capability_health ;;
     url) [ "$#" -eq 1 ] || { echo "usage: axon capability url <capability>" >&2; exit 1; }; capability_url "$1" ;;
-    call) [ "$#" -ge 3 ] || { echo "usage: axon capability call <name> <get|post> <path> [body] [curl-args...]" >&2; exit 1; }; capability_call "$@" ;;
+    call) [ "$#" -ge 3 ] || { echo "usage: axon capability call <name> <get|post|put|patch|delete> <path> [body] [curl-args...]" >&2; exit 1; }; capability_call "$@" ;;
     ingest)
       [ "$#" -eq 1 ] || { echo "usage: axon capability ingest <url>" >&2; exit 1; }
       capability_call comms post /ingest "$(jq -nc --arg url "$1" '{url:$url}')"

@@ -43,10 +43,68 @@ pub struct Journey {
     pub delay_risk_score: Option<f64>,
 }
 
+/// Whether a priced segment is priced for the train the traveller will be on.
+///
+/// The solver prices each stop pair with a *fresh* connection search and takes
+/// the first journey that comes back. Nothing forced that journey to be the one
+/// the traveller sits on, so a four-ticket chain could contain a fare for a train
+/// leaving two hours later. Buying three of four tickets in a chain like that
+/// leaves you with a broken itinerary and no refund, which is why this is
+/// reported per segment rather than averaged into one number.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrainMatch {
+    /// The priced journey rides exactly the trains the direct journey rides
+    /// over this stop pair, in the same order.
+    Exact,
+    /// It shares at least one train with the direct journey but not all of them.
+    Partial,
+    /// It shares no train with the direct journey: this fare is for a different
+    /// service, and buying it does not buy a seat on the planned trip.
+    Different,
+    /// Not determinable, because one side carried no train number at all.
+    Unknown,
+}
+
+/// One purchased leg of a split-ticket chain.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SplitSegment {
+    pub journey: Journey,
+    pub train_match: TrainMatch,
+    /// The train numbers the direct journey uses over this stop pair. Empty when
+    /// the direct journey carried none, which is also what makes `train_match`
+    /// `Unknown` rather than a verdict nobody can check.
+    pub expected_trains: Vec<String>,
+}
+
+/// How much of the chain is trustworthy, as one value a caller can gate on.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SplitConfidence {
+    /// Every segment priced for exactly the planned trains, and every stop pair
+    /// the solver wanted a fare for returned one.
+    Exact,
+    /// Some segment is `Partial` or `Unknown`, or some pairwise query failed so
+    /// the search ran against an incomplete price table.
+    Partial,
+    /// At least one segment is priced for a train the traveller will not be on.
+    Low,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SplitResult {
     pub original_price: Option<f64>,
     pub split_price: f64,
-    pub savings: f64,
-    pub segments: Vec<Journey>,
+    /// `None` when the direct fare is unknown. It used to be `0.0` in that case,
+    /// which a reader cannot tell apart from "the split saves nothing" -- and the
+    /// dashboard rendered exactly that as "Direct is cheapest".
+    pub savings: Option<f64>,
+    pub segments: Vec<SplitSegment>,
+    pub confidence: SplitConfidence,
+    /// Stop pairs the solver asked HAFAS to price and got nothing back for. The
+    /// chosen chain is fully priced by construction, so this does not invalidate
+    /// it; it says the search ran against an incomplete table and a cheaper split
+    /// may exist that was never visible.
+    pub unpriced_pairs: usize,
+    pub queried_pairs: usize,
 }
