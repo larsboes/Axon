@@ -33,6 +33,9 @@ struct FileConfig {
     default_to_eva: Option<String>,
     default_time: Option<String>,
     database_url: Option<String>,
+    document_backend: Option<String>,
+    xberg_bin: Option<String>,
+    ocr_language: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +49,59 @@ pub struct Config {
     /// Resolution: explicit override here, else built from
     /// `axon-overlay/config/postgres.env`, else a localhost dev-default guess.
     pub database_url: String,
+    /// Which reader turns a ticket file into text. `builtin` is the original
+    /// pdf_extract/mailparse path; `xberg` shells out to the xberg CLI, which
+    /// reads layout and can emit a table as a Markdown table.
+    ///
+    /// A setting rather than a hardcoded choice because the two are not
+    /// interchangeable: builtin needs no external binary and cannot read an
+    /// image, xberg reads images and tables and needs to be installed. Which
+    /// one is right depends on the machine, which is what the overlay is for.
+    pub document_backend: DocumentBackend,
+    /// Where the xberg binary lives. `cargo install` puts it on PATH, so the
+    /// default is the bare name; an overlay can point at an explicit path.
+    pub xberg_bin: String,
+    /// Tesseract's ISO 639-3 code. Defaults to German because that is what a DB
+    /// confirmation is written in, and the default English model reads its
+    /// umlauts as noise.
+    pub ocr_language: String,
+}
+
+/// The readers a ticket file can go through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DocumentBackend {
+    /// pdf_extract for PDFs, mailparse for .eml, raw bytes otherwise. No
+    /// external dependency, no images, no layout.
+    #[default]
+    Builtin,
+    /// The xberg CLI. Reads 100+ formats including images, and can preserve a
+    /// table as a Markdown table rather than flattening it into a line.
+    Xberg,
+}
+
+impl DocumentBackend {
+    /// Unknown names fall back to `Builtin` loudly rather than failing to start.
+    /// A typo in the overlay should cost layout-aware parsing, not the service.
+    fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            None | Some("") | Some("builtin") => Self::Builtin,
+            Some("xberg") => Self::Xberg,
+            Some(other) => {
+                eprintln!(
+                    "warning: unknown document_backend {other:?} -- using builtin. \
+                     Valid values: builtin, xberg"
+                );
+                Self::Builtin
+            }
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::Xberg => "xberg",
+        }
+    }
 }
 
 fn config_path() -> PathBuf {
@@ -93,6 +149,9 @@ impl Config {
             default_to_eva: file.default_to_eva,
             default_time: file.default_time,
             database_url,
+            document_backend: DocumentBackend::parse(file.document_backend.as_deref()),
+            xberg_bin: file.xberg_bin.unwrap_or_else(|| "xberg".into()),
+            ocr_language: file.ocr_language.unwrap_or_else(|| "deu".into()),
         }
     }
 }
@@ -132,6 +191,16 @@ mod tests {
         let cfg = Config::load();
         assert!(cfg.default_from_eva.is_none());
         assert!(cfg.default_to_eva.is_none());
+    }
+
+    /// A typo in the overlay must cost layout-aware parsing, not the service.
+    #[test]
+    fn an_unknown_document_backend_falls_back_to_builtin() {
+        assert_eq!(DocumentBackend::parse(None), DocumentBackend::Builtin);
+        assert_eq!(DocumentBackend::parse(Some("")), DocumentBackend::Builtin);
+        assert_eq!(DocumentBackend::parse(Some("builtin")), DocumentBackend::Builtin);
+        assert_eq!(DocumentBackend::parse(Some(" XBerg ")), DocumentBackend::Xberg);
+        assert_eq!(DocumentBackend::parse(Some("dolphin")), DocumentBackend::Builtin);
     }
 
     #[test]

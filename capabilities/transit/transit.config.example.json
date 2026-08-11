@@ -1,8 +1,11 @@
 {
   "_note": "Public template. Copy to axon-overlay/config/transit.json and fill real values there — never here. transit resolves config from $AXON_PERSONAL_ROOT/config/transit.json at runtime (see src/config.rs Config::load).",
-
   "_comment_defaults": "Optional conveniences. default_from_eva also backs `plan --from` (Phase 3). Set your own home route so `search`/`split`/`plan` run with fewer flags. Leave unset and the CLI requires --from/--to explicitly (errors with a clear message rather than silently defaulting to someone else's stations).",
   "default_from_eva": "",
   "default_to_eva": "",
-  "default_time": ""
+  "default_time": "",
+  "_comment_document_backend": "Which reader turns a ticket file into text. \"builtin\" (default) uses pdf_extract/mailparse and cannot read an image. \"xberg\" shells out to the xberg CLI (cargo install xberg-cli), which reads images and 100+ formats. Measured 2026-08-11: xberg recovers a key-value block as a Markdown table but NOT a journey table, so it is adopted for the image path rather than as a parsing fix. ocr_language is Tesseract's ISO 639-3 code; the English default reads German umlauts as noise.",
+  "document_backend": "builtin",
+  "xberg_bin": "xberg",
+  "ocr_language": "deu"
 }

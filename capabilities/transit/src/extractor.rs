@@ -32,6 +32,10 @@ pub struct ExtractedTicket {
     /// The fields this parse could not find, by name.
     #[serde(default)]
     pub missing: Vec<String>,
+    /// Which reader produced the text, so a reader of the reply can tell a
+    /// layout-aware parse from a flattened one without guessing.
+    #[serde(default = "default_backend")]
+    pub backend: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -92,6 +96,31 @@ static FROM_TO_RE: LazyLock<Regex> =
 static TO_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(?:To|Nach|End|Destination|Ziel)\s*:\s*(.+)$").unwrap());
 
+/// One row of a journey table: a date, a departure time, a station, an arrival
+/// time, a station, and a train.
+///
+/// This exists because no reader recovers that table as a table. `pdf_extract`
+/// flattens it into a line; xberg's native PDF path produces the same run-on
+/// line; its OCR path emits one cell per line. The row *shape* survives all
+/// three, so matching the shape works where matching the layout does not.
+///
+/// It is also the only thing that tells data from a header. Reading stations
+/// with `VON_NACH_RE` on flattened table text produced two legs running from
+/// "Bahnhof" to "Bahnhof Zug Gleis" -- the header row -- and reported success.
+static TABLE_ROW_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?x)
+        (\d{2}\.\d{2}\.\d{4})      \s+   # date
+        (\d{2}:\d{2})                \s+   # departure
+        ([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß0-9\s.\-/()]{1,40}?) \s+
+        (\d{2}:\d{2})                \s+   # arrival
+        ([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß0-9\s.\-/()]{1,40}?) \s+
+        ((?:ICE|IC|EC|RE|RB|IRE|FLX|NJ|EN|S)\s*\d+)   # train
+        ",
+    )
+    .unwrap()
+});
+
 static PRICE_RE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
         Regex::new(r"(?i)(?:Preis|Price|Total|Sum|Betrag)\s*[:\-]?\s*(\d+[.,]\d{2})").unwrap(),
@@ -101,35 +130,42 @@ static PRICE_RE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     ]
 });
 
+/// Reads a ticket with the configured backend and parses it.
+///
+/// Which reader runs is config, not a hardcoded match on the file extension:
+/// see `crate::document`. That is also where the image path now lives, so this
+/// function no longer refuses one on principle.
 pub fn extract_from_bytes(bytes: &[u8], file_name: &str) -> Result<ExtractedTicket, String> {
-    let ext = std::path::Path::new(file_name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    let text = match ext.as_str() {
-        "pdf" => extract_pdf_text(bytes).map_err(|e| format!("PDF extraction failed: {e}"))?,
-        "eml" => extract_email_text(bytes).map_err(|e| format!("Email extraction failed: {e}"))?,
-        "txt" | "text" | "html" | "htm" => String::from_utf8_lossy(bytes).to_string(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" => {
-            return Err(
-                "Image files require OCR - not yet supported. Convert to PDF or text first."
-                    .to_string(),
-            );
-        }
-        _ => String::from_utf8_lossy(bytes).to_string(),
-    };
-
-    Ok(parse_ticket_text(&text, file_name))
+    let config = crate::config::Config::load();
+    extract_with_config(bytes, file_name, &config)
 }
 
-fn extract_pdf_text(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+pub fn extract_with_config(
+    bytes: &[u8],
+    file_name: &str,
+    config: &crate::config::Config,
+) -> Result<ExtractedTicket, String> {
+    let document = crate::document::read(bytes, file_name, config)?;
+    // Parse from the richest representation the backend produced.
+    //
+    // Not a preference, a measured requirement: xberg's plain-text mode
+    // reorders a PDF's content, putting the dates and times of a journey table
+    // twenty lines away from the station names, which leaves the row pattern
+    // nothing contiguous to match. Its Markdown mode keeps reading order. The
+    // builtin reader has no Markdown at all and its text is already in order,
+    // so `unwrap_or` is the whole compatibility story.
+    let source = document.markdown.as_deref().unwrap_or(&document.text);
+    let mut ticket = parse_ticket_text(source, file_name);
+    ticket.backend = document.backend;
+    Ok(ticket)
+}
+
+pub(crate) fn extract_pdf_text(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let text = pdf_extract::extract_text_from_mem(bytes)?;
     Ok(text)
 }
 
-fn extract_email_text(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) fn extract_email_text(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let parsed = mailparse::parse_mail(bytes)?;
     let ct = parsed
         .headers
@@ -189,7 +225,17 @@ fn parse_ticket_text(text: &str, file_name: &str) -> ExtractedTicket {
     let confirmation = parse_confirmation(text);
     let price = parse_price(text);
 
-    let legs = if !trains.is_empty() && stations.origin.is_some() && stations.destination.is_some()
+    // A journey table, when there is one, beats every other signal: it carries
+    // each leg's own origin, destination, train and times, where the fallback
+    // below can only stamp one origin/destination pair onto every train it
+    // found anywhere in the document.
+    let table_legs = parse_table_rows(text);
+
+    let legs = if !table_legs.is_empty() {
+        table_legs
+    } else if !trains.is_empty()
+        && stations.origin.is_some()
+        && stations.destination.is_some()
     {
         let default_time = format!("{}T00:00:00", chrono_now_date());
         let dep = departure.as_deref().unwrap_or(&default_time).to_string();
@@ -235,8 +281,13 @@ fn parse_ticket_text(text: &str, file_name: &str) -> ExtractedTicket {
         },
         ok,
         missing,
+        backend: default_backend(),
         error: None,
     }
+}
+
+fn default_backend() -> &'static str {
+    "builtin"
 }
 
 /// What a parse could not find, named for whoever has to fill it in.
@@ -263,6 +314,39 @@ fn missing_fields(
         missing.push("price".to_string());
     }
     missing
+}
+
+/// Reads legs off a journey table, one row at a time.
+///
+/// Rows are matched on a whole-document basis rather than line by line, because
+/// the readers disagree about where the lines are: one puts a whole table on a
+/// single line, another puts one cell per line. Collapsing whitespace first
+/// makes both look the same to the row pattern.
+fn parse_table_rows(text: &str) -> Vec<ExtractedLeg> {
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    TABLE_ROW_RE
+        .captures_iter(&flattened)
+        .map(|row| {
+            let date = iso_date(&row[1]);
+            ExtractedLeg {
+                origin_name: row[3].trim().to_string(),
+                destination_name: row[5].trim().to_string(),
+                train_number: Some(row[6].split_whitespace().collect::<Vec<_>>().join(" ")),
+                departure_time: format!("{date}T{}:00", &row[2]),
+                arrival_time: format!("{date}T{}:00", &row[4]),
+                price: None,
+            }
+        })
+        .collect()
+}
+
+/// `DD.MM.YYYY` to `YYYY-MM-DD`.
+fn iso_date(german: &str) -> String {
+    let mut parts = german.split('.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(d), Some(m), Some(y)) => format!("{y}-{m}-{d}"),
+        _ => german.to_string(),
+    }
 }
 
 fn parse_trains(text: &str) -> Vec<String> {
@@ -490,6 +574,68 @@ mod tests {
         let s = parse_stations("Von: Köln Hbf\nZiel: Hamburg Hbf");
         assert_eq!(s.origin.as_deref(), Some("Köln Hbf"));
         assert_eq!(s.destination.as_deref(), Some("Hamburg Hbf"));
+    }
+
+    /// The bug this whole change exists for, with the real flattened text.
+    ///
+    /// `pdf_extract` turns a journey table into these lines. Reading stations
+    /// with the von/nach patterns produced two legs from "Bahnhof" to "Bahnhof
+    /// Zug Gleis" -- the header row -- and reported ok with nothing missing.
+    #[test]
+    fn a_journey_table_yields_its_own_rows_not_the_header() {
+        let text = "Auftragsnummer  XJ4K7Q2\n\
+                    Datum Ab Bahnhof An Bahnhof Zug Gleis\n\
+                    25.08.2026 10:07 Bonn Hbf 10:31 Siegburg/Bonn RB 66 2\n\
+                    25.08.2026 10:48 Siegburg/Bonn 11:49 Frankfurt(Main)Hbf ICE 1513 4\n\
+                    Gesamtpreis 73,97 EUR\n";
+        let result = parse_ticket_text(text, "ticket.pdf");
+
+        assert_eq!(result.legs.len(), 2, "one leg per table row");
+        assert_eq!(result.legs[0].origin_name, "Bonn Hbf");
+        assert_eq!(result.legs[0].destination_name, "Siegburg/Bonn");
+        assert_eq!(result.legs[0].train_number.as_deref(), Some("RB 66"));
+        assert_eq!(result.legs[0].departure_time, "2026-08-25T10:07:00");
+        assert_eq!(result.legs[0].arrival_time, "2026-08-25T10:31:00");
+        assert_eq!(result.legs[1].origin_name, "Siegburg/Bonn");
+        assert_eq!(result.legs[1].destination_name, "Frankfurt(Main)Hbf");
+        assert_eq!(result.legs[1].train_number.as_deref(), Some("ICE 1513"));
+
+        // The header must never become a station.
+        for leg in &result.legs {
+            assert!(
+                !leg.origin_name.contains("Bahnhof Zug"),
+                "read the header as a station: {leg:?}"
+            );
+            assert_ne!(leg.origin_name, "Bahnhof");
+            assert_ne!(leg.destination_name, "Bahnhof");
+        }
+        assert!(result.ok);
+    }
+
+    /// The same rows as xberg's OCR path emits them: one cell per line. The row
+    /// shape survives; the line breaks do not, which is why matching runs over
+    /// collapsed whitespace rather than line by line.
+    #[test]
+    fn one_cell_per_line_parses_to_the_same_legs() {
+        let text = "Datum\nAb\nBahnhof\nAn\nBahnhof\nZug\nGleis\n\
+                    25.08.2026\n10:07\nBonn Hbf\n10:31\nSiegburg/Bonn\nRB 66\n2\n\
+                    25.08.2026\n10:48\nSiegburg/Bonn\n11:49\nFrankfurt(Main)Hbf\nICE 1513\n4\n";
+        let result = parse_ticket_text(text, "ticket.png");
+        assert_eq!(result.legs.len(), 2);
+        assert_eq!(result.legs[0].origin_name, "Bonn Hbf");
+        assert_eq!(result.legs[1].destination_name, "Frankfurt(Main)Hbf");
+    }
+
+    /// A ticket with no table still parses the old way, so the fallback is not
+    /// dead code and the German-label fix still holds.
+    #[test]
+    fn a_ticket_without_a_table_still_uses_the_labelled_stations() {
+        let text = "Von: Bonn Hbf\nNach: Frankfurt(Main)Hbf\n\
+                    ICE 1513\nam 25.08.2026 um 10:07\nPreis: 68,47 EUR\n";
+        let result = parse_ticket_text(text, "ticket.txt");
+        assert_eq!(result.legs.len(), 1);
+        assert_eq!(result.legs[0].origin_name, "Bonn Hbf");
+        assert!(result.ok);
     }
 
     #[test]

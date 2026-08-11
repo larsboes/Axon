@@ -149,6 +149,42 @@ that exists.
 `savings` is `null` when no direct fare came back. It used to be `0.0`, which the dashboard
 rendered as "Direct is cheapest" — a claim nobody had checked.
 
+## Reading a ticket: two backends, and what each is actually for
+
+`document_backend` in the overlay picks the reader. `builtin` is pdf_extract and
+mailparse; `xberg` shells out to the [xberg](https://github.com/xberg-io/xberg) CLI
+(`cargo install xberg-cli`; it builds a bundled Tesseract, so it needs `cmake`).
+
+The reason for xberg is narrow and measured, and it is not the one this started as.
+Adopted 2026-08-11 after testing both against the same generated DB confirmation:
+
+| | builtin | xberg |
+|---|---|---|
+| PDF with a text layer | reading order preserved | preserved in Markdown, **scrambled in plain text** |
+| Image | hard error | reads it, correctly, with `ocr_language: deu` |
+| Journey table | flattened to a line | still flattened to a line |
+| Key-value block | flattened | recovered as a Markdown table |
+
+So xberg is adopted for the image path, which builtin can never serve, and for nothing
+else. It does **not** recover a journey table, which is what the switch was originally
+meant to fix.
+
+Two findings worth keeping. Its plain-text mode reorders a PDF, putting a journey table's
+dates twenty lines from its station names, so extraction parses from Markdown when a
+backend produces it. And the default OCR language reads German umlauts as noise: `Züge`
+came back as `Ztige`, `möglich` as `méglich`. `ocr_language` defaults to `deu` here.
+
+## Why the parser reads table rows
+
+No reader recovers a journey table as a table, so the parser matches the row *shape*
+instead: date, departure time, station, arrival time, station, train. That shape survives
+every path tested, including xberg's OCR output, which emits one cell per line.
+
+This replaced a real defect rather than an inconvenience. Reading stations with the
+von/nach patterns on flattened table text produced two legs running from "Bahnhof" to
+"Bahnhof Zug Gleis" -- the table's own header row -- with `ok: true` and nothing reported
+missing. The labelled-station path is still there for a ticket with no table.
+
 ## Trip persistence
 
 `store.rs`'s `TransitStore` owns `transit.trips`/`transit.trip_legs`/`transit.trip_sessions` on
