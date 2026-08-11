@@ -16,7 +16,9 @@ use calendar::correlate::{self, Candidate};
 use calendar::date;
 use calendar::google_sync::{self, HttpCalendarApi, Settings};
 use calendar::markdown_import;
-use calendar::model::{NewContext, NewEntry, NewRhythm, UpdateContext, UpdateEntry, UpdateRhythm};
+use calendar::model::{
+    Commitment, NewContext, NewEntry, NewRhythm, UpdateContext, UpdateEntry, UpdateRhythm,
+};
 use calendar::store::CalendarStore;
 
 #[derive(Clone)]
@@ -119,6 +121,13 @@ const ROUTES: &[route_manifest::Route] = &[
         "GET",
         "/api/trip-drafts",
         "Events clustered by city and time proximity. Requires from, to.",
+    ),
+    r(
+        "POST",
+        "/api/trip-plans/:plan_id/sync",
+        "Write a plan's option_selected and booked stages back as away entries, and any \
+         booking's free-cancellation date as a deadline entry. Idempotent by external_id; \
+         deletes nothing.",
     ),
     r(
         "POST",
@@ -748,6 +757,178 @@ struct MaterializeBody {
     entry_ids: Vec<String>,
     #[serde(default)]
     title: Option<String>,
+}
+
+/// Writes a plan's committed travel back into the calendar.
+///
+/// The loop only ran one way. Calendar could turn clustered entries into a
+/// `trips.plan`, but a plan whose stage was `booked` produced no entry, so
+/// `POST /api/verdicts` called that week free and `GET /api/windows` offered it
+/// as a feasible travel window. The system could propose a trip on top of a trip
+/// it had created itself.
+///
+/// The direction is calendar-to-trips on purpose, and stays that way: calendar
+/// already holds the trips HTTP client, the base URL and the idempotence ledger,
+/// while trips has no outbound client at all. Having trips push would give two
+/// capabilities an HTTP client for each other and put the deadline entry in a
+/// second `external_id` namespace with nothing reconciling them.
+///
+/// Idempotent by construction rather than by ledger: every entry is written
+/// through the same `upsert_external_entry` the Google import uses, keyed
+/// `trip:stage:<id>` or `trip:booking:<id>`, so running it twice updates in
+/// place. Nothing is deleted -- a stage that stops being booked leaves its entry
+/// behind, and removing it is the operator's call, not a sync's.
+async fn sync_trip_plan(
+    State(state): State<AppState>,
+    Path(plan_id): Path<String>,
+) -> ApiResponse {
+    let database_url = state.database_url.clone();
+    let config = state.config.clone();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = CalendarStore::open(&database_url).map_err(|e| e.to_string())?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .map_err(|e| format!("client build: {e}"))?;
+        let base = config.trips_base_url.trim_end_matches('/').to_string();
+
+        let url = format!("{base}/api/plans/{plan_id}");
+        let response = client
+            .get(&url)
+            .send()
+            .map_err(|e| format!("GET {url}: {e}"))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(format!("no plan {plan_id}"));
+        }
+        if !response.status().is_success() {
+            return Err(format!("trips answered {} for {plan_id}", response.status()));
+        }
+        let plan: Value = response
+            .json()
+            .map_err(|e| format!("trips returned something unreadable: {e}"))?;
+
+        let mut written = Vec::new();
+        let mut skipped = Vec::new();
+
+        for stage in plan
+            .get("stages")
+            .and_then(|s| s.as_array())
+            .map(|s| s.as_slice())
+            .unwrap_or_default()
+        {
+            let status = stage.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            // `planning` is not a decision yet, and `completed` is history: writing
+            // either would block days for trips that are not happening or already
+            // happened.
+            let commitment = match status {
+                "booked" => Commitment::Committed,
+                "option_selected" => Commitment::Planned,
+                _ => continue,
+            };
+            let stage_id = stage.get("id").and_then(|s| s.as_str()).unwrap_or_default();
+            let Some(date) = stage.get("date").and_then(|d| d.as_str()) else {
+                // A stage with no date cannot be placed, and a travel day guessed
+                // from the plan window would block a day nobody chose.
+                skipped.push(json!({ "stage": stage_id, "reason": "no date" }));
+                continue;
+            };
+            let Some(day) = date::parse_date(date) else {
+                skipped.push(json!({ "stage": stage_id, "reason": "unreadable date" }));
+                continue;
+            };
+
+            let place = |key: &str| -> String {
+                stage
+                    .get(key)
+                    .and_then(|p| p.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("?")
+                    .to_string()
+            };
+            let entry = NewEntry {
+                kind: "away".to_string(),
+                commitment,
+                title: format!("{} → {}", place("origin"), place("destination")),
+                starts_at: date.to_string(),
+                // Calendar ends are exclusive; a one-day all-day entry ends the
+                // next day. The same unit mismatch the materialize path documents,
+                // in the other direction.
+                ends_at: date::format_date(day + 1),
+                all_day: true,
+                location: Some(place("destination")),
+                notes: None,
+                source: "trips".to_string(),
+                external_id: Some(format!("trip:stage:{stage_id}")),
+                rhythm_id: None,
+                payload: json!({ "plan_id": plan_id, "stage_id": stage_id, "stage_status": status }),
+            };
+            let saved = store.upsert_external_entry(&entry).map_err(|e| e.to_string())?;
+            written.push(json!({ "entry_id": saved.id, "kind": "away", "stage": stage_id }));
+        }
+
+        // Booking deadlines, from the same read. A free-cancellation date is the
+        // one field in a booking with a deadline attached, and `deadline` is
+        // calendar's kind for exactly that: visible evidence, never a time block.
+        for item in plan
+            .get("items")
+            .and_then(|i| i.as_array())
+            .map(|i| i.as_slice())
+            .unwrap_or_default()
+        {
+            if item.get("item_type").and_then(|t| t.as_str()) != Some("booking") {
+                continue;
+            }
+            let payload = item.get("payload").cloned().unwrap_or(Value::Null);
+            let Some(until) = payload
+                .get("free_cancellation_until")
+                .and_then(|d| d.as_str())
+            else {
+                continue;
+            };
+            let Some(day) = date::parse_date(&until[..until.len().min(10)]) else {
+                continue;
+            };
+            let item_id = item.get("id").and_then(|i| i.as_str()).unwrap_or_default();
+            let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("booking");
+            let entry = NewEntry {
+                kind: "deadline".to_string(),
+                // A cancellation deadline is a fact about a booking that exists,
+                // not something you might do.
+                commitment: Commitment::Committed,
+                title: format!("Free cancellation ends: {title}"),
+                starts_at: date::format_date(day),
+                ends_at: date::format_date(day + 1),
+                all_day: true,
+                location: None,
+                notes: payload
+                    .get("order_ref")
+                    .and_then(|r| r.as_str())
+                    .map(|r| format!("Order {r}")),
+                source: "trips".to_string(),
+                external_id: Some(format!("trip:booking:{item_id}")),
+                rhythm_id: None,
+                payload: json!({ "plan_id": plan_id, "item_id": item_id }),
+            };
+            let saved = store.upsert_external_entry(&entry).map_err(|e| e.to_string())?;
+            written.push(json!({ "entry_id": saved.id, "kind": "deadline", "item": item_id }));
+        }
+
+        Ok(json!({
+            "plan_id": plan_id,
+            "written": written.len(),
+            "entries": written,
+            "skipped": skipped,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(StatusCode::OK, body),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
 }
 
 /// Turns a set of entries into a `trips.plan`.
@@ -1391,6 +1572,7 @@ async fn main() {
         .route("/api/windows", get(windows))
         .route("/api/trip-drafts", get(trip_drafts))
         .route("/api/trip-drafts/materialize", post(materialize_trip))
+        .route("/api/trip-plans/:plan_id/sync", post(sync_trip_plan))
         .route("/api/google/import", post(google_import))
         .route("/api/google/import-preview", post(google_import_preview))
         .route("/api/google/import-selected", post(google_import_selected))
