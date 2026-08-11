@@ -41,7 +41,12 @@ const overlayRoot = (): string => {
 // replaces is called "raum-ansicht". The title is what the sidebar shows; the slug is URL only.
 const TARGETS = [
   { slug: "mein-zuhause", title: "Zuhause", icon: "mdi:home-heart", admin: false, wall: false },
-  { slug: "wand-tablet", title: "Wand", icon: "mdi:tablet-dashboard", admin: false, wall: true },
+  // wall:false on purpose. The four-column layout this flag switches on renders the whole
+  // dashboard blank on 2026.6.3, isolated by the fact that mein-zuhause and wand-tablet are
+  // byte-identical apart from it. The tablet therefore ships the same verified two-column
+  // layout as the phones; what still distinguishes it is the Glas theme and the ?kiosk URL.
+  // Wide layout is a follow-up, not a blocker for a wall tablet that has to work tonight.
+  { slug: "wand-tablet", title: "Wand", icon: "mdi:tablet-dashboard", admin: false, wall: false },
   { slug: "technik-netzwerk", title: "Netzwerk", icon: "mdi:lan", admin: true, wall: false },
 ] as const;
 
@@ -116,7 +121,7 @@ async function build(): Promise<Record<string, Record<string, unknown>>> {
     const views = t.admin
       ? technicalViews(house as never)
       : familyViews(house as never, t.wall, t.slug);
-    out[t.slug] = dashboard(t.title, views);
+    out[t.slug] = dashboard(t.title, views, { kiosk: t.wall });
   }
   const dir = outDir();
   mkdirSync(dir, { recursive: true });

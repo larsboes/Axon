@@ -95,6 +95,7 @@ const startView = (h: House, wall: boolean, slug: string): View =>
     path: "start",
     icon: "mdi:home",
     maxColumns: wall ? 4 : 2,
+    theme: slug.startsWith("wand") ? "Glas" : "Glas Klar",
     sections: [
       // A plain, always-present status row.
       //
@@ -153,6 +154,7 @@ const roomsView = (h: House, wall: boolean, slug: string): View =>
     path: "raeume",
     icon: "mdi:sofa",
     maxColumns: wall ? 4 : 2,
+    theme: slug.startsWith("wand") ? "Glas" : "Glas Klar",
     sections: [
       section([
         heading("Licht im Haus", { icon: "mdi:lightbulb-group", level: "h1" }),
@@ -195,6 +197,7 @@ const energyView = (h: House, wall: boolean, slug: string): View =>
     path: "energie",
     icon: "mdi:solar-power",
     maxColumns: wall ? 4 : 2,
+    theme: slug.startsWith("wand") ? "Glas" : "Glas Klar",
     sections: [
       section([
         heading("Gerade", { icon: "mdi:flash" }),
@@ -242,6 +245,7 @@ const gardenView = (h: House, wall: boolean, slug: string): View =>
     path: "garten",
     icon: "mdi:tree",
     maxColumns: wall ? 4 : 2,
+    theme: slug.startsWith("wand") ? "Glas" : "Glas Klar",
     sections: [
       section([
         heading("Pool", { icon: "mdi:pool" }),
@@ -306,6 +310,7 @@ const securityView = (h: House, wall: boolean, slug: string): View =>
     path: "sicherheit",
     icon: "mdi:cctv",
     maxColumns: wall ? 4 : 2,
+    theme: slug.startsWith("wand") ? "Glas" : "Glas Klar",
     sections: [
       section(
         [
@@ -349,6 +354,7 @@ const automationView = (h: House, wall: boolean, slug: string): View =>
     path: "automatik",
     icon: "mdi:robot",
     maxColumns: wall ? 4 : 2,
+    theme: slug.startsWith("wand") ? "Glas" : "Glas Klar",
     sections: [
       section([
         heading("Hauptschalter", { icon: "mdi:shield-check", level: "h1" }),
@@ -400,6 +406,7 @@ const systemView = (h: House, wall: boolean, slug: string): View =>
     path: "system",
     icon: "mdi:heart-pulse",
     maxColumns: wall ? 4 : 2,
+    theme: slug.startsWith("wand") ? "Glas" : "Glas Klar",
     sections: [
       section([
         heading("Zustand", { icon: "mdi:heart-pulse", level: "h1" }),
@@ -441,6 +448,7 @@ export const technicalViews = (h: House): View[] => [
     path: "netzwerk",
     icon: "mdi:lan",
     maxColumns: 4,
+    theme: "Glas",
     sections: [
       section([
         heading("FritzBox", { icon: "mdi:router-wireless" }),
@@ -484,6 +492,7 @@ export const technicalViews = (h: House): View[] => [
     path: "anlage",
     icon: "mdi:cog",
     maxColumns: 4,
+    theme: "Glas",
     sections: [
       section([
         heading("Wechselrichter", { icon: "mdi:solar-power" }),

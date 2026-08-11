@@ -46,6 +46,7 @@ export const view = (opts: {
   maxColumns?: number;
   denseSection?: boolean;
   subview?: boolean;
+  theme?: string;
 }): View => ({
   title: opts.title,
   path: opts.path,
@@ -53,13 +54,23 @@ export const view = (opts: {
   type: "sections",
   max_columns: opts.maxColumns ?? 4,
   dense_section_placement: opts.denseSection ?? true,
+  ...(opts.theme ? { theme: opts.theme } : {}),
   ...(opts.subview ? { subview: true } : {}),
   ...(opts.badges?.length ? { badges: opts.badges } : {}),
   sections: opts.sections,
 });
 
-export const dashboard = (title: string, views: View[]): Record<string, unknown> => ({
+export const dashboard = (
+  title: string,
+  views: View[],
+  opts: { kiosk?: boolean } = {},
+): Record<string, unknown> => ({
   title,
+  // NO `kiosk_mode` key here, deliberately. Putting kiosk-mode's config at the dashboard
+  // root blanked the entire wall dashboard — same failure as every other unrecognised root
+  // key on this instance. kiosk-mode also reads URL query parameters, so the wall tablet
+  // simply opens `…/wand-tablet/start?kiosk` and gets the same result with nothing stored.
+  // The `kiosk` option is kept in the signature so the call site still reads intentionally.
   views,
 });
 
