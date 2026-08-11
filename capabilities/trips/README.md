@@ -79,6 +79,43 @@ read-only. Import is explicit, idempotent by vault-relative path and requires a 
 origin instead of guessing one. This contract does not scan Comms keeper notes or Scouting
 opportunities; those vault surfaces remain owned by their respective capabilities.
 
+## A sentence to a draft
+
+There is one way to start a trip today: a form needing an origin picked from
+`transit.suggest`, destinations, dates and modes typed field by field. "Somewhere warm in
+October, under 300 euro, by train" has no entry point at all.
+
+```bash
+trips draft-intent "Munich for a conference the 14th to the 16th of September 2026, by train"
+```
+
+It prints a `CreatePlan`-shaped body plus what it could not settle, and persists nothing.
+Every destination comes back as a `place:<slug>` with null coordinates, bit-identical to
+what the dashboard mints from typed text, so a station still has to be picked before
+anything can be searched. The model emits no EVA, no price, no feasibility and no plan id;
+if it returns them anyway they are dropped, because nothing reads them.
+
+CLI only and no HTTP route, deliberately. The question is whether a small local model turns
+a travel sentence into a valid form, and until that has started a real trip more than twice
+it does not need a surface.
+
+### What the model got wrong, and what catches it
+
+Measured against the on-device rung on 2026-08-11, so these are observations rather than
+worries:
+
+- Asked for "somewhere warm in October" with no year, it answered **2023**, twice. A plan
+  quietly created for a date three years past is worse than a blank field, so a date is
+  kept only when it is well-formed and not in the past.
+- It lists `dates` as unresolved almost every time, **including when it has just returned
+  correct ones** — for the Munich sentence above it answered 2026-09-14/16 and called dates
+  unresolved in the same object. Trusting that claim discarded dates the sentence plainly
+  gave.
+
+So neither the dates nor the self-report is trusted. The check decides and rewrites
+`unresolved` to match, which is the whole shape of this: the model proposes words, a
+deterministic path decides what survives. A prompt is not a validation layer.
+
 ## Why a capability
 
 Trip planning is a bounded domain with its own persistent state. Putting plan items in

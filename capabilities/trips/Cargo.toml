@@ -31,3 +31,10 @@ tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
 schemars = "1.2.2"
+# Loopback HTTP only (the local model rung), so no TLS backend is pulled in.
+# Version matched to capabilities/calendar so the workspace resolves one reqwest.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+
+[[bin]]
+name = "trips"
+path = "src/bin/trips-cli.rs"

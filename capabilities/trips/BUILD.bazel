@@ -47,3 +47,17 @@ rust_binary(
         "@crate_index//:tower-http",
     ],
 )
+
+# trips: the CLI. One command -- a sentence to a plan draft -- so it is a
+# separate binary rather than a subcommand of the server.
+rust_binary(
+    name = "trips-cli",
+    srcs = ["src/bin/trips-cli.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":trips_lib",
+        "@crate_index//:reqwest",
+        "@crate_index//:serde_json",
+    ],
+)

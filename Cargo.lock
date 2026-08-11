@@ -5058,6 +5058,7 @@ dependencies = [
  "postgres",
  "r2d2",
  "r2d2_postgres",
+ "reqwest",
  "route-manifest",
  "schemars",
  "serde",
