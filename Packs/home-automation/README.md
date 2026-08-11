@@ -11,6 +11,7 @@ entity ID, automation, device inventory, component pin, and secret reference.
 - `ha-cli` queries and controls Home Assistant and can create a private overlay inventory.
 - `ha-deploy` validates, reloads, and verifies an existing Home Assistant deployment.
 - `ha-dashboard` and `energy-dashboard` operate Home Assistant presentation surfaces.
+- `ha-dashgen` generates whole dashboards from an overlay-owned house model and deploys them.
 - `fritz`, `netmon`, and `pihole` inspect explicitly configured private-network services.
 - `esphome` operates an explicitly configured ESPHome environment without declaring one public
   deployment.
