@@ -125,6 +125,18 @@ impl TransitStore {
                 created_at TEXT NOT NULL
             );
 
+            -- When the stored fare was last seen.
+            --
+            -- The upsert refreshes total_price and deliberately leaves created_at
+            -- alone, and there was no other timestamp, so `plan --show` printed a
+            -- ten-week-old fare and a fresh one identically. A stored price with
+            -- no observation time cannot be told apart from a current one, and a
+            -- reader has no way to know which it is looking at.
+            --
+            -- NULL on every row written before this, which reads as an unknown
+            -- observation time rather than as a recent one.
+            ALTER TABLE {schema}.trips ADD COLUMN IF NOT EXISTS priced_at TEXT;
+
             -- Phase 3: session-scoped journey ownership. Nullable so
             -- existing manual/auto trips keep their shape unchanged.
             ALTER TABLE {schema}.trips
@@ -195,14 +207,22 @@ impl TransitStore {
         tx.execute(
             &format!(
                 "INSERT INTO {schema}.trips (id, origin_eva, destination_eva, trigger_reason,
-                    total_duration_minutes, total_price, created_at, session_id)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                    total_duration_minutes, total_price, created_at, session_id, priced_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+                    CASE WHEN $6::DOUBLE PRECISION IS NULL THEN NULL ELSE $7 END)
                 ON CONFLICT (id) DO UPDATE SET
                     origin_eva = excluded.origin_eva,
                     destination_eva = excluded.destination_eva,
                     trigger_reason = excluded.trigger_reason,
                     total_duration_minutes = excluded.total_duration_minutes,
-                    total_price = excluded.total_price",
+                    total_price = excluded.total_price,
+                    -- Moves only when a price actually arrived. A refresh that
+                    -- came back without a fare must not restamp the old one as
+                    -- freshly observed.
+                    priced_at = CASE
+                        WHEN excluded.total_price IS NULL THEN {schema}.trips.priced_at
+                        ELSE excluded.priced_at
+                    END",
                 schema = self.schema
             ),
             &[
@@ -230,7 +250,7 @@ impl TransitStore {
         let trip_row = conn.query_opt(
             &format!(
                 "SELECT id, status, origin_eva, destination_eva, trigger_reason,
-                    total_duration_minutes, total_price, created_at, session_id
+                    total_duration_minutes, total_price, created_at, session_id, priced_at
                  FROM {}.trips WHERE id = $1",
                 self.schema
             ),
@@ -247,6 +267,7 @@ impl TransitStore {
             total_price: t.try_get(6)?,
             created_at: t.try_get(7)?,
             session_id: t.try_get::<_, Option<String>>(8)?,
+            priced_at: t.try_get(9)?,
         };
 
         let leg_rows = conn.query(
@@ -417,7 +438,7 @@ impl TransitStore {
         let trips = conn.query(
             &format!(
                 "SELECT id, status, origin_eva, destination_eva, trigger_reason,
-                    total_duration_minutes, total_price, created_at, session_id
+                    total_duration_minutes, total_price, created_at, session_id, priced_at
                  FROM {}.trips
                  WHERE ($1::text IS NULL OR session_id = $1)
                  ORDER BY total_price ASC NULLS LAST, total_duration_minutes ASC NULLS LAST
@@ -439,6 +460,7 @@ impl TransitStore {
                 total_price: t.try_get(6)?,
                 created_at: t.try_get(7)?,
                 session_id: t.try_get::<_, Option<String>>(8)?,
+                priced_at: t.try_get(9)?,
             };
             let leg_rows = conn.query(
                 &format!(
@@ -586,6 +608,9 @@ pub struct TripRow {
     /// Phase 3: which `trip_sessions` row owns this trip, if any -- `None`
     /// for a manual/`transit_fare`-adapter trip (Phase 2 shape).
     pub session_id: Option<String>,
+    /// When this fare was last actually seen. `None` for a row written before
+    /// the column existed, and for a trip stored without a price at all.
+    pub priced_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1059,6 +1084,33 @@ mod tests {
         // Legs round-trip too.
         assert_eq!(trips[0].1.len(), 1);
         assert_eq!(trips[0].1[0].destination_name, "Valencia");
+    }
+
+    /// A refreshed fare restamps priced_at; a refresh that came back without one
+    /// must not, or an old price would read as freshly observed.
+    #[test]
+    fn a_priceless_refresh_does_not_restamp_an_observed_fare() {
+        let (store, _schema) = open_test_store("priced_at");
+        let priced = mk_journey("j:priced");
+        store
+            .record_journey(&priced, "8000044", "8098160", "auto", None)
+            .unwrap();
+        let (row, _) = store.get_trip("j:priced").unwrap().unwrap();
+        let first = row.priced_at.clone().expect("a priced trip records when");
+        assert!(row.total_price.is_some());
+
+        // Same journey, no fare this time.
+        let mut priceless = priced.clone();
+        priceless.total_price = None;
+        store
+            .record_journey(&priceless, "8000044", "8098160", "auto", None)
+            .unwrap();
+        let (row, _) = store.get_trip("j:priced").unwrap().unwrap();
+        assert_eq!(
+            row.priced_at.as_deref(),
+            Some(first.as_str()),
+            "a refresh with no fare must leave the observation time where it was"
+        );
     }
 
     /// `GET /api/trips` used to answer `{"count": n, "trips": []}` with HTTP 200

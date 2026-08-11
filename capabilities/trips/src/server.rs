@@ -56,6 +56,13 @@ const ROUTES: &[route_manifest::Route] = &[
         "Move an item to a day. Body is {day: \"YYYY-MM-DD\"} or {day: null} to unset.",
     ),
     r(
+        "POST",
+        "/api/plans/:id/outcome",
+        "Record how a stage actually went. Requires stage_id; every other field is kept as \
+         observed. Refused when the stage has no selected_option_id, because there is then \
+         nothing to compare an actual against.",
+    ),
+    r(
         "GET",
         "/api/places",
         "Every place across all plans, with visit counts and merge_candidates: distinct \
@@ -250,6 +257,41 @@ async fn set_item_day(
     {
         Ok(Ok(Some(item))) => response(StatusCode::OK, item),
         Ok(Ok(None)) => response(StatusCode::NOT_FOUND, json!({ "error": "item not found" })),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct OutcomeBody {
+    stage_id: String,
+    /// Whatever was actually observed. Left open on purpose: nobody has filled
+    /// one of these in yet, so fixing a shape now would be designing an analysis
+    /// before there is anything to analyse. The fields that matter get promoted
+    /// to a declared variant once two real trips show which ones they are.
+    #[serde(flatten)]
+    outcome: serde_json::Map<String, Value>,
+}
+
+async fn record_outcome(
+    State(state): State<AppState>,
+    Path(plan_id): Path<String>,
+    Json(body): Json<OutcomeBody>,
+) -> ApiResponse {
+    let database_url = state.database_url.clone();
+    match tokio::task::spawn_blocking(move || {
+        TripsStore::open(&database_url)
+            .and_then(|store| {
+                store.record_outcome(&plan_id, &body.stage_id, &Value::Object(body.outcome))
+            })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(item)) => response(StatusCode::CREATED, item),
         Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
         Err(error) => response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -626,6 +668,7 @@ async fn main() {
             delete(delete_item).patch(set_item_day),
         )
         .route("/api/places", get(list_places))
+        .route("/api/plans/:id/outcome", post(record_outcome))
         .route("/api/import/obsidian/scan", get(scan_obsidian))
         .route("/api/import/obsidian/all", post(import_all_obsidian))
         .route("/api/import/obsidian", post(import_obsidian))

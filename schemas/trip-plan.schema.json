@@ -22,62 +22,148 @@
     "items"
   ],
   "properties": {
-    "id": { "type": "string", "pattern": "^trip:plan:" },
-    "title": { "type": "string", "minLength": 1 },
-    "origin": { "$ref": "#/$defs/placeRef" },
+    "id": {
+      "type": "string",
+      "pattern": "^trip:plan:"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "origin": {
+      "$ref": "#/$defs/placeRef"
+    },
     "destinations": {
       "type": "array",
       "minItems": 1,
       "maxItems": 4,
-      "items": { "$ref": "#/$defs/placeRef" }
+      "items": {
+        "$ref": "#/$defs/placeRef"
+      }
     },
-    "date_start": { "type": "string", "format": "date" },
-    "date_end": { "type": "string", "format": "date" },
-    "interests": { "type": "string" },
-    "status": { "enum": ["draft", "saved", "archived"] },
+    "date_start": {
+      "type": "string",
+      "format": "date"
+    },
+    "date_end": {
+      "type": "string",
+      "format": "date"
+    },
+    "interests": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "saved",
+        "archived"
+      ]
+    },
     "travelers": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "transport_modes": {
       "type": "array",
-      "items": { "$ref": "#/$defs/transportMode" },
+      "items": {
+        "$ref": "#/$defs/transportMode"
+      },
       "uniqueItems": true
     },
     "stages": {
       "type": "array",
-      "items": { "$ref": "#/$defs/tripStage" }
+      "items": {
+        "$ref": "#/$defs/tripStage"
+      }
     },
-    "cover_image_url": { "type": ["string", "null"], "format": "uri" },
+    "cover_image_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uri"
+    },
     "source": {
       "oneOf": [
-        { "$ref": "#/$defs/planSource" },
-        { "type": "null" }
+        {
+          "$ref": "#/$defs/planSource"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
-    "created_at": { "type": "string" },
-    "updated_at": { "type": "string" },
+    "created_at": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
     "items": {
       "type": "array",
-      "items": { "$ref": "#/$defs/planItem" }
+      "items": {
+        "$ref": "#/$defs/planItem"
+      }
     }
   },
   "$defs": {
     "placeRef": {
       "type": "object",
-      "required": ["id", "name"],
+      "required": [
+        "id",
+        "name"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "name": { "type": "string", "minLength": 1 },
-        "kind": { "enum": ["address", "airport", "city", "station", "venue"] },
-        "address": { "type": ["string", "null"] },
-        "latitude": { "type": ["number", "null"] },
-        "longitude": { "type": ["number", "null"] }
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "address",
+            "airport",
+            "city",
+            "station",
+            "venue"
+          ]
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "latitude": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "longitude": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "transportMode": {
-      "enum": ["bike", "bus", "car", "ferry", "flight", "train", "walk"]
+      "enum": [
+        "bike",
+        "bus",
+        "car",
+        "ferry",
+        "flight",
+        "train",
+        "walk"
+      ]
     },
     "tripStage": {
       "type": "object",
@@ -93,33 +179,73 @@
         "selected_option_id"
       ],
       "properties": {
-        "id": { "type": "string", "pattern": "^stage:" },
-        "sequence": { "type": "integer", "minimum": 0 },
-        "origin": { "$ref": "#/$defs/placeRef" },
-        "destination": { "$ref": "#/$defs/placeRef" },
-        "date": { "type": ["string", "null"], "format": "date" },
+        "id": {
+          "type": "string",
+          "pattern": "^stage:"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "origin": {
+          "$ref": "#/$defs/placeRef"
+        },
+        "destination": {
+          "$ref": "#/$defs/placeRef"
+        },
+        "date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
         "transport_modes": {
           "type": "array",
-          "items": { "$ref": "#/$defs/transportMode" },
+          "items": {
+            "$ref": "#/$defs/transportMode"
+          },
           "uniqueItems": true
         },
         "travelers": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "status": {
-          "enum": ["planning", "option_selected", "booked", "completed"]
+          "enum": [
+            "planning",
+            "option_selected",
+            "booked",
+            "completed"
+          ]
         },
-        "selected_option_id": { "type": ["string", "null"] }
+        "selected_option_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "planSource": {
       "type": "object",
-      "required": ["kind", "reference"],
+      "required": [
+        "kind",
+        "reference"
+      ],
       "properties": {
-        "kind": { "type": "string", "minLength": 1 },
-        "reference": { "type": "string", "minLength": 1 }
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
@@ -135,8 +261,14 @@
         "created_at"
       ],
       "properties": {
-        "id": { "type": "string", "pattern": "^trip:item:" },
-        "plan_id": { "type": "string", "pattern": "^trip:plan:" },
+        "id": {
+          "type": "string",
+          "pattern": "^trip:item:"
+        },
+        "plan_id": {
+          "type": "string",
+          "pattern": "^trip:plan:"
+        },
         "item_type": {
           "enum": [
             "journey",
@@ -148,44 +280,88 @@
             "image",
             "note",
             "option_set",
-            "booking"
+            "booking",
+            "outcome"
           ]
         },
-        "day": { "type": ["string", "null"], "format": "date" },
+        "day": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
         "external_id": {
-          "description": "Idempotency key together with (plan_id, item_type): writing the same external_id twice updates the row rather than duplicating it. Producers namespace it by source (`scouting:<id>`, `calendar:<entry-id>`) or reuse the provider's own id for a journey or place.",
+          "description": "Idempotency key together with (plan_id, item_type): writing the same external_id twice updates the row rather than duplicating it. Producers namespace it by source (`scouting:<id>`, `calendar:<entry-id>`) or reuse the provider's own id for a journey or place. An outcome uses `outcome:<stage-id>`, so re-recording one stage corrects it rather than adding a second.",
           "type": "string"
         },
-        "title": { "type": "string", "minLength": 1 },
-        "payload": { "type": "object" },
-        "created_at": { "type": "string" }
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload": {
+          "type": "object"
+        },
+        "created_at": {
+          "type": "string"
+        }
       },
       "allOf": [
         {
           "if": {
-            "properties": { "item_type": { "const": "transport" } },
-            "required": ["item_type"]
+            "properties": {
+              "item_type": {
+                "const": "transport"
+              }
+            },
+            "required": [
+              "item_type"
+            ]
           },
           "then": {
-            "properties": { "payload": { "$ref": "#/$defs/transportPayload" } }
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/transportPayload"
+              }
+            }
           }
         },
         {
           "if": {
-            "properties": { "item_type": { "const": "option_set" } },
-            "required": ["item_type"]
+            "properties": {
+              "item_type": {
+                "const": "option_set"
+              }
+            },
+            "required": [
+              "item_type"
+            ]
           },
           "then": {
-            "properties": { "payload": { "$ref": "#/$defs/optionSetPayload" } }
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/optionSetPayload"
+              }
+            }
           }
         },
         {
           "if": {
-            "properties": { "item_type": { "const": "booking" } },
-            "required": ["item_type"]
+            "properties": {
+              "item_type": {
+                "const": "booking"
+              }
+            },
+            "required": [
+              "item_type"
+            ]
           },
           "then": {
-            "properties": { "payload": { "$ref": "#/$defs/bookingPayload" } }
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/bookingPayload"
+              }
+            }
           }
         }
       ],
@@ -194,18 +370,40 @@
     "transportPayload": {
       "description": "A selected transport option held in the itinerary. This is the item to write for 'hold this connection in the plan'. Provider fields beyond those named here are preserved.",
       "type": "object",
-      "required": ["mode", "journey"],
+      "required": [
+        "mode",
+        "journey"
+      ],
       "properties": {
-        "mode": { "$ref": "#/$defs/transportMode" },
+        "mode": {
+          "$ref": "#/$defs/transportMode"
+        },
         "journey": {
           "description": "The provider's journey record. Its `id` is what a stage's selected_option_id refers to, so it should be the same string used as the item's external_id.",
           "type": "object",
-          "required": ["id"],
+          "required": [
+            "id"
+          ],
           "properties": {
-            "id": { "type": "string", "minLength": 1 },
-            "legs": { "type": "array" },
-            "total_price": { "type": ["number", "null"] },
-            "total_duration_minutes": { "type": ["integer", "null"] }
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "legs": {
+              "type": "array"
+            },
+            "total_price": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "total_duration_minutes": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         }
       }
@@ -213,7 +411,10 @@
     "bookingPayload": {
       "description": "What makes a stage's `booked` status mean something. Before this, `booked` was a string the API accepted with nothing behind it: no order reference, no fare name, no refundability, no cancellation deadline. Axon never buys anything, so a booking record is always evidence of a purchase made elsewhere, entered by hand or parsed from a confirmation.",
       "type": "object",
-      "required": ["provider", "order_ref"],
+      "required": [
+        "provider",
+        "order_ref"
+      ],
       "properties": {
         "provider": {
           "description": "Who sold it. `bahn.de`, an airline, an agency.",
@@ -226,63 +427,128 @@
           "minLength": 1
         },
         "fare_name": {
-          "description": "The fare as the provider names it — Sparpreis, Flexpreis, a fare class. Kept verbatim rather than normalised, because the name is what the conditions attach to.",
-          "type": ["string", "null"]
+          "description": "The fare as the provider names it \u2014 Sparpreis, Flexpreis, a fare class. Kept verbatim rather than normalised, because the name is what the conditions attach to.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
-        "refundable": { "type": ["boolean", "null"] },
+        "refundable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "free_cancellation_until": {
           "description": "The last moment cancelling is free, as a date or datetime. This is the one field with a deadline attached, and calendar turns it into a `deadline` entry.",
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "amount_cents": {
           "description": "Integer minor units. A price in floating point is a price that eventually disagrees with the receipt.",
-          "type": ["integer", "null"]
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "currency": {
           "description": "ISO 4217, e.g. EUR.",
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "ticket_file_ref": {
           "description": "A reference to the ticket file, never the file. Where it lives is a deployment fact and belongs in the private overlay.",
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "traveler_name_present": {
           "description": "Whether the ticket is name-bound, as a boolean. Deliberately not the name: whose name is on a ticket is personal data this repository has no reason to hold, and knowing that a ticket is non-transferable is the part a plan needs.",
-          "type": ["boolean", "null"]
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
-        "booked_at": { "type": ["string", "null"] }
+        "booked_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "optionSetPayload": {
       "description": "Every option one search offered, including the ones not taken. Recorded because a fare that was not chosen cannot be queried back later at yesterday's price: an unrecorded option set is gone, not merely unwritten.",
       "type": "object",
-      "required": ["query", "options"],
+      "required": [
+        "query",
+        "options"
+      ],
       "properties": {
         "query": {
           "type": "object",
-          "required": ["from", "to"],
+          "required": [
+            "from",
+            "to"
+          ],
           "properties": {
-            "from": { "type": "string", "minLength": 1 },
-            "to": { "type": "string", "minLength": 1 },
-            "time": { "type": ["string", "null"] }
+            "from": {
+              "type": "string",
+              "minLength": 1
+            },
+            "to": {
+              "type": "string",
+              "minLength": 1
+            },
+            "time": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         },
         "options": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["id"],
+            "required": [
+              "id"
+            ],
             "properties": {
-              "id": { "type": "string", "minLength": 1 },
-              "total_price": { "type": ["number", "null"] },
-              "total_duration_minutes": { "type": ["integer", "null"] },
-              "chosen": { "type": "boolean" }
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "total_price": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "total_duration_minutes": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "chosen": {
+                "type": "boolean"
+              }
             }
           }
         },
         "observed_at": {
           "description": "When these fares were seen. A stored price with no observation time cannot be told apart from a current one.",
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     }

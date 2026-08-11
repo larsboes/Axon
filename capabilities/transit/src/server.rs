@@ -244,6 +244,9 @@ fn trip_json(t: &transit::store::TripRow, legs: &[transit::store::TripLegRow]) -
         "total_price": t.total_price,
         "created_at": t.created_at,
         "session_id": t.session_id,
+        // When the fare was last seen, so a reader can tell a ten-week-old price
+        // from a fresh one. Null means unknown, never recent.
+        "priced_at": t.priced_at,
         "legs": legs.iter().map(|l| json!({
             "origin_eva": l.origin_eva,
             "origin_name": l.origin_name,

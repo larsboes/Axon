@@ -373,7 +373,7 @@ impl TripsStore {
                 DROP CONSTRAINT IF EXISTS plan_items_item_type_check;
             ALTER TABLE {schema}.plan_items
                 ADD CONSTRAINT plan_items_item_type_check
-                CHECK (item_type IN ('journey','transport','event','activity','place','stay','image','note','option_set','booking'));
+                CHECK (item_type IN ('journey','transport','event','activity','place','stay','image','note','option_set','booking','outcome'));
             ",
             schema = schema
         ))?;
@@ -625,6 +625,73 @@ impl TripsStore {
         row.as_ref().map(row_to_item).transpose()
     }
 
+    /// Records how a stage actually went, against the intent it was chosen under.
+    ///
+    /// `StageStatus::Completed` has existed since the start and nothing anywhere
+    /// sets it: the past/upcoming split is pure date arithmetic, so the system
+    /// has no memory of whether a connection was made, what it really cost, or
+    /// whether the transfer was too tight. punctuality knows what every train
+    /// does; nothing knows what these trips did.
+    ///
+    /// A stage with no `selected_option_id` is refused rather than recorded.
+    /// With nothing chosen there is nothing to compare an actual against, and the
+    /// row would be a hoard rather than a measurement.
+    ///
+    /// Stored as a plan item so it needs no new table and travels with the plan.
+    /// The kill criterion is deliberately cheap to run: if two trips go by
+    /// without this being filled in, the whole learning idea is answered and the
+    /// endpoint goes away.
+    pub fn record_outcome(
+        &self,
+        plan_id: &str,
+        stage_id: &str,
+        outcome: &Value,
+    ) -> Result<PlanItem, Box<dyn std::error::Error>> {
+        let Some(details) = self.get_plan(plan_id)? else {
+            return Err("trip plan not found".into());
+        };
+        let stage = details
+            .plan
+            .stages
+            .iter()
+            .find(|stage| stage.id == stage_id)
+            .ok_or_else(|| format!("no stage {stage_id} on {plan_id}"))?;
+        let Some(selected) = stage.selected_option_id.as_deref() else {
+            return Err(format!(
+                "stage {stage_id} has no selected_option_id, so there is nothing to compare \
+                 an outcome against"
+            )
+            .into());
+        };
+
+        let mut payload = outcome.clone();
+        let object = payload
+            .as_object_mut()
+            .ok_or("outcome must be a JSON object")?;
+        // The intent half, copied in at write time. Reading it back later from
+        // the stage would compare an actual against whatever the plan says now,
+        // which is not what was chosen.
+        object.insert("stage_id".into(), Value::String(stage_id.to_string()));
+        object.insert(
+            "selected_option_id".into(),
+            Value::String(selected.to_string()),
+        );
+        if let Some(date) = stage.date.clone() {
+            object.insert("planned_date".into(), Value::String(date));
+        }
+
+        self.add_item(
+            plan_id,
+            &CreatePlanItem {
+                item_type: "outcome".into(),
+                day: stage.date.clone(),
+                external_id: format!("outcome:{stage_id}"),
+                title: format!("How {} → {} went", stage.origin.name, stage.destination.name),
+                payload,
+            },
+        )
+    }
+
     /// Where the operator actually goes, computed on read over the plans that
     /// already exist. No new table: a projection cannot drift from its source.
     ///
@@ -812,6 +879,7 @@ pub const ITEM_TYPES: &[&str] = &[
     "note",
     "option_set",
     "booking",
+    "outcome",
 ];
 
 /// The `item_type`s whose payload shape this capability is willing to promise,
