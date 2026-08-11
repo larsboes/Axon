@@ -417,7 +417,7 @@ const systemView = (h: House, wall: boolean, slug: string): View =>
       ]),
       section([
         heading("Updates", { icon: "mdi:package-up" }),
-        entities(h.system.updates),
+        ...h.system.updates.map((u: string) => tile(u)),
       ]),
       section([
         heading("Batterien", { icon: "mdi:battery" }),
@@ -425,7 +425,7 @@ const systemView = (h: House, wall: boolean, slug: string): View =>
       ]),
       section([
         heading("Schwellen", { icon: "mdi:tune" }),
-        entities(h.system.thresholds),
+        ...h.system.thresholds.map((t: string) => tile(t)),
       ]),
     ],
   });
