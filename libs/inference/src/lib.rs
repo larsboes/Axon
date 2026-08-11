@@ -582,6 +582,7 @@ impl ResolvedRole {
     /// `/v1/rerank` contract. Results are restored to input order even though
     /// the server returns them sorted by relevance.
     pub fn rerank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>, String> {
+        self.refuse_ungoverned_cloud_call("a query and documents to rerank")?;
         if documents.is_empty() {
             return Ok(Vec::new());
         }
@@ -610,6 +611,30 @@ impl ResolvedRole {
 
     /// Embeds a batch. `Err` carries a reason worth printing; callers are
     /// expected to degrade rather than abort.
+    /// Refuses to send text off this machine unless the same policy chain that
+    /// gates `analyze` has been satisfied.
+    ///
+    /// `embed`/`rerank` are transport-agnostic and consulted no cloud policy at
+    /// all, while `has_cloud_policy()` was only ever called from comms' cloud
+    /// handlers. So calling `role.embed()` on an https role reached a cloud
+    /// provider with no preview, no redaction, no approval, no budget check and
+    /// no ledger entry -- the entire review discipline bypassed by a code path
+    /// that never mentions the cloud.
+    ///
+    /// Nothing configured today embeds against a remote endpoint, which is
+    /// exactly why this is cheap to close now rather than after the first
+    /// feature that wants cloud embeddings builds on the hole.
+    fn refuse_ungoverned_cloud_call(&self, what: &str) -> Result<(), String> {
+        if self.is_loopback() || self.has_cloud_policy() {
+            return Ok(());
+        }
+        Err(format!(
+            "this role would send {what} to {} (backend '{}') with no cloud policy: declare \
+             cloud_provider, cloud_data_tier and cloud_billing_mode on it, or point it at loopback",
+            self.backend.base_url, self.backend_name
+        ))
+    }
+
     pub fn embed(&self, texts: &[String], text_role: TextRole) -> Result<Vec<Vec<f32>>, String> {
         let inputs = texts
             .iter()
@@ -626,6 +651,7 @@ impl ResolvedRole {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
+        self.refuse_ungoverned_cloud_call("text to embed")?;
         let endpoint = self.embedding_endpoint();
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -1065,6 +1091,58 @@ mod tests {
             },
         );
         assert!(!cfg.role("cloud_incomplete").unwrap().has_cloud_policy());
+    }
+
+    /// `embed`/`rerank` are transport-agnostic and consulted no cloud policy,
+    /// while `has_cloud_policy()` was only ever called from comms' cloud
+    /// handlers. So a role pointed at an https endpoint reached a provider with
+    /// no preview, no redaction, no approval, no budget check and no ledger
+    /// entry: the whole review discipline bypassed by a path that never mentions
+    /// the cloud.
+    #[test]
+    fn embedding_off_this_machine_needs_the_same_policy_analyze_needs() {
+        let mut cfg = config();
+        cfg.backends.insert(
+            "hosted".into(),
+            Backend {
+                api: Api::OpenAi,
+                base_url: "https://api.example.com/v1".into(),
+                api_key_file: None,
+            },
+        );
+        cfg.roles.insert(
+            "ungoverned".into(),
+            Role {
+                backend: "hosted".into(),
+                model: "hosted-model".into(),
+                provider_name: None,
+                cloud_data_tier: None,
+                billing_mode: None,
+                failover_priority: None,
+                max_requests_per_day: None,
+                max_input_tokens: None,
+                credit_expires_on: None,
+                query_prefix: String::new(),
+                document_prefix: String::new(),
+            },
+        );
+        let role = cfg.role("ungoverned").unwrap();
+        assert!(!role.has_cloud_policy());
+        assert!(!role.is_loopback());
+
+        let refused = role
+            .refuse_ungoverned_cloud_call("text")
+            .expect_err("a remote endpoint with no cloud policy must be refused");
+        // Named, so the fix is obvious from the message rather than from the source.
+        assert!(refused.contains("cloud_provider"), "got: {refused}");
+        assert!(refused.contains("api.example.com"), "got: {refused}");
+
+        // A local role is unaffected, which is what makes this cheap to land:
+        // every configured embedding role today is loopback.
+        let local = cfg.role("embedding").or_else(|| cfg.role("summarization"));
+        if let Some(local) = local.filter(|role| role.is_loopback()) {
+            assert!(local.refuse_ungoverned_cloud_call("text").is_ok());
+        }
     }
 
     #[test]
