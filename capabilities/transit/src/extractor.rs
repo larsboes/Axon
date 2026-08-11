@@ -24,7 +24,14 @@ pub struct ExtractedTicket {
     pub legs: Vec<ExtractedLeg>,
     pub confirmation_number: Option<String>,
     pub meta: ExtractionMeta,
+    /// Whether this parse produced at least one leg to review. Not "the file was
+    /// readable": a confirmation whose stations did not parse is readable and
+    /// useless, and those are the same value to any caller that only checks a
+    /// boolean.
     pub ok: bool,
+    /// The fields this parse could not find, by name.
+    #[serde(default)]
+    pub missing: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -75,10 +82,15 @@ static CONFIRMATION_RE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 static VON_NACH_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:von|from|ab)\s+([A-Za-zÄÖÜäöüß\s.\-()]+?)\s+(?:nach|to|an|um)\s+([A-Za-zÄÖÜäöüß\s.\-()]+?)(?:\s+(?:am|um|ab|\d)|$)").unwrap()
 });
+// `Von` was missing here while `Nach` was already in TO_RE below, so a German
+// confirmation laid out as "Von: ... / Nach: ..." parsed its destination and lost
+// its origin -- and with one station missing, `parse_ticket_text` builds no legs
+// at all. German rail confirmations are this parser's entire subject, so the one
+// label it could not read was the one it most needed.
 static FROM_TO_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(?:From|Ab|Start|Origin)\s*:\s*(.+)$").unwrap());
+    LazyLock::new(|| Regex::new(r"(?i)(?:From|Von|Ab|Start|Origin)\s*:\s*(.+)$").unwrap());
 static TO_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(?:To|Nach|End|Destination)\s*:\s*(.+)$").unwrap());
+    LazyLock::new(|| Regex::new(r"(?i)(?:To|Nach|End|Destination|Ziel)\s*:\s*(.+)$").unwrap());
 
 static PRICE_RE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
@@ -198,6 +210,18 @@ fn parse_ticket_text(text: &str, file_name: &str) -> ExtractedTicket {
         vec![]
     };
 
+    // `ok` was the literal `true`, so a parse that found a train number and
+    // nothing else reported success with an empty leg list. A realistic DB
+    // confirmation does exactly that: on a 2026-08-11 check, the order number and
+    // `ICE 1513` parsed while both station names did not, and the reply still
+    // said ok. A caller cannot tell that apart from a ticket with no legs.
+    //
+    // `ok` now means "there is at least one leg here to review". `missing` says
+    // what a reviewer has to supply, because "not ok" with no reason sends them
+    // back to the PDF to work out which half failed.
+    let ok = !legs.is_empty();
+    let missing = missing_fields(&trains, &stations, departure.is_some(), price.is_some());
+
     ExtractedTicket {
         source_file: file_name.to_string(),
         text_preview,
@@ -209,9 +233,36 @@ fn parse_ticket_text(text: &str, file_name: &str) -> ExtractedTicket {
             has_date: departure.is_some(),
             has_price: price.is_some(),
         },
-        ok: true,
+        ok,
+        missing,
         error: None,
     }
+}
+
+/// What a parse could not find, named for whoever has to fill it in.
+fn missing_fields(
+    trains: &[String],
+    stations: &StationPair,
+    has_date: bool,
+    has_price: bool,
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    if trains.is_empty() {
+        missing.push("trains".to_string());
+    }
+    if stations.origin.is_none() {
+        missing.push("origin".to_string());
+    }
+    if stations.destination.is_none() {
+        missing.push("destination".to_string());
+    }
+    if !has_date {
+        missing.push("date".to_string());
+    }
+    if !has_price {
+        missing.push("price".to_string());
+    }
+    missing
 }
 
 fn parse_trains(text: &str) -> Vec<String> {
@@ -380,6 +431,65 @@ mod tests {
         let text = "Date: 2026-07-20";
         let (dep, _) = parse_date_time(text);
         assert!(dep.as_deref() == Some("2026-07-20T00:00:00"));
+    }
+
+    /// The exact text that exposed this: a realistic DB confirmation whose order
+    /// number, train and price all parse while neither station does. It used to
+    /// come back `ok: true` with an empty leg list, which no caller can tell
+    /// apart from a ticket that legitimately has no legs.
+    #[test]
+    fn a_parse_with_no_legs_is_not_ok_and_says_what_is_missing() {
+        let text = "Deutsche Bahn - Ihre Buchung\n\
+                    Auftragsnummer: XJ4K7Q\n\
+                    Hinfahrt am 25.08.2026\n\
+                    ICE 1513  Bonn Hbf  ab 10:07\n\
+                    Frankfurt(Main)Hbf an 11:49\n\
+                    Preis: 68,47 EUR\n";
+        let result = parse_ticket_text(text, "ticket.txt");
+
+        assert!(result.legs.is_empty(), "precondition: this text yields no legs");
+        assert!(!result.ok, "a parse with no legs must not report ok");
+        assert_eq!(result.confirmation_number.as_deref(), Some("XJ4K7Q"));
+        assert_eq!(result.meta.trains_found, vec!["ICE 1513"]);
+        assert!(result.meta.has_price, "the price does parse");
+
+        // The reviewer is told which half failed rather than being sent back to
+        // the PDF to work it out.
+        assert!(result.missing.contains(&"origin".to_string()));
+        assert!(result.missing.contains(&"destination".to_string()));
+        assert!(!result.missing.contains(&"trains".to_string()));
+        assert!(!result.missing.contains(&"price".to_string()));
+    }
+
+    /// The other direction, and the `Von:` fix at the same time. This exact
+    /// layout used to lose its origin, because `From|Ab|Start|Origin` did not
+    /// include the German label while `Nach` was already accepted for the
+    /// destination. One missing station means no legs at all.
+    #[test]
+    fn a_german_labelled_ticket_parses_both_stations_and_stays_ok() {
+        let text = "Von: Bonn Hbf\nNach: Frankfurt(Main)Hbf\n\
+                    ICE 1513\nam 25.08.2026 um 10:07\nPreis: 68,47 EUR\n";
+        let result = parse_ticket_text(text, "ticket.txt");
+        assert_eq!(result.meta.stations.origin.as_deref(), Some("Bonn Hbf"));
+        assert_eq!(
+            result.meta.stations.destination.as_deref(),
+            Some("Frankfurt(Main)Hbf")
+        );
+        assert!(!result.legs.is_empty());
+        assert!(result.ok);
+        assert!(
+            result.missing.is_empty(),
+            "nothing should be missing, got: {:?}",
+            result.missing
+        );
+    }
+
+    /// `Ziel:` is the other German label a confirmation uses for a destination.
+    #[test]
+    fn ziel_is_read_as_a_destination_label() {
+        let s = parse_stations("Von: Köln Hbf\nZiel: Hamburg Hbf");
+        assert_eq!(s.origin.as_deref(), Some("Köln Hbf"));
+        assert_eq!(s.destination.as_deref(), Some("Hamburg Hbf"));
     }
 
     #[test]

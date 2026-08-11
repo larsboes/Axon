@@ -147,7 +147,8 @@
             "stay",
             "image",
             "note",
-            "option_set"
+            "option_set",
+            "booking"
           ]
         },
         "day": { "type": ["string", "null"], "format": "date" },
@@ -177,6 +178,15 @@
           "then": {
             "properties": { "payload": { "$ref": "#/$defs/optionSetPayload" } }
           }
+        },
+        {
+          "if": {
+            "properties": { "item_type": { "const": "booking" } },
+            "required": ["item_type"]
+          },
+          "then": {
+            "properties": { "payload": { "$ref": "#/$defs/bookingPayload" } }
+          }
         }
       ],
       "additionalProperties": false
@@ -198,6 +208,49 @@
             "total_duration_minutes": { "type": ["integer", "null"] }
           }
         }
+      }
+    },
+    "bookingPayload": {
+      "description": "What makes a stage's `booked` status mean something. Before this, `booked` was a string the API accepted with nothing behind it: no order reference, no fare name, no refundability, no cancellation deadline. Axon never buys anything, so a booking record is always evidence of a purchase made elsewhere, entered by hand or parsed from a confirmation.",
+      "type": "object",
+      "required": ["provider", "order_ref"],
+      "properties": {
+        "provider": {
+          "description": "Who sold it. `bahn.de`, an airline, an agency.",
+          "type": "string",
+          "minLength": 1
+        },
+        "order_ref": {
+          "description": "The provider's own reference: an order number, PNR or booking code. Together with the provider this is what lets you find the booking again on their side.",
+          "type": "string",
+          "minLength": 1
+        },
+        "fare_name": {
+          "description": "The fare as the provider names it — Sparpreis, Flexpreis, a fare class. Kept verbatim rather than normalised, because the name is what the conditions attach to.",
+          "type": ["string", "null"]
+        },
+        "refundable": { "type": ["boolean", "null"] },
+        "free_cancellation_until": {
+          "description": "The last moment cancelling is free, as a date or datetime. This is the one field with a deadline attached, and calendar turns it into a `deadline` entry.",
+          "type": ["string", "null"]
+        },
+        "amount_cents": {
+          "description": "Integer minor units. A price in floating point is a price that eventually disagrees with the receipt.",
+          "type": ["integer", "null"]
+        },
+        "currency": {
+          "description": "ISO 4217, e.g. EUR.",
+          "type": ["string", "null"]
+        },
+        "ticket_file_ref": {
+          "description": "A reference to the ticket file, never the file. Where it lives is a deployment fact and belongs in the private overlay.",
+          "type": ["string", "null"]
+        },
+        "traveler_name_present": {
+          "description": "Whether the ticket is name-bound, as a boolean. Deliberately not the name: whose name is on a ticket is personal data this repository has no reason to hold, and knowing that a ticket is non-transferable is the part a plan needs.",
+          "type": ["boolean", "null"]
+        },
+        "booked_at": { "type": ["string", "null"] }
       }
     },
     "optionSetPayload": {

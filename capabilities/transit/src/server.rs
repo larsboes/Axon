@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     extract::{Query, State},
     response::Json,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde::Deserialize;
@@ -39,6 +39,13 @@ const ROUTES: &[route_manifest::Route] = &[
         "Saved trip searches with their legs. Optional session_id filters to one \
          `transit plan` session; optional limit (default 100, max 500) bounds the read, \
          and the reply's count/returned/truncated say what was left behind.",
+    ),
+    r(
+        "POST",
+        "/api/tickets/extract",
+        "Parse a rail ticket confirmation. Body is the raw file bytes; file_name (query) \
+         picks the reader by extension (pdf, eml, txt, html). Returns the parse for review \
+         and stores nothing: the parser is not fit to run unattended, see the README.",
     ),
 ];
 
@@ -180,6 +187,44 @@ async fn handle_health() -> Json<Value> {
     }))
 }
 
+#[derive(Deserialize)]
+struct ExtractQuery {
+    /// Only the extension is read, to choose the reader. A ticket's own filename
+    /// is a personal fact and is echoed back rather than stored anywhere.
+    file_name: String,
+}
+
+/// Parses a ticket confirmation and returns the parse. Stores nothing.
+///
+/// `transit import <file>` has done this since the port, printed the JSON and
+/// forgotten it, so the parser had no caller but a human at a terminal. This is
+/// the same function behind HTTP.
+///
+/// It deliberately does not write a booking record. `extractor.rs` emits one leg
+/// per train number, all sharing origin, destination and times, assigns dates
+/// positionally, takes the first price match rather than the total, and falls
+/// back to `<year>-01-01` when no date parses. Behind a human reviewing every
+/// field that is fine. Behind a scanner it writes wrong itineraries confidently,
+/// which is the failure this endpoint must not enable.
+async fn handle_extract_ticket(
+    Query(params): Query<ExtractQuery>,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    if body.is_empty() {
+        return Err(fail(
+            axum::http::StatusCode::BAD_REQUEST,
+            "request body is the ticket file's bytes, and it is empty",
+        ));
+    }
+    match transit::extractor::extract_from_bytes(&body, &params.file_name) {
+        Ok(ticket) => Ok(Json(serde_json::to_value(ticket).unwrap_or_default())),
+        // A file this parser cannot read is the caller's input, not a server
+        // fault: an image, or a format with no reader. 400 tells it to send
+        // something else rather than to retry the same bytes.
+        Err(e) => Err(fail(axum::http::StatusCode::BAD_REQUEST, e)),
+    }
+}
+
 /// One stored trip with its legs, as JSON.
 ///
 /// Written out here rather than derived, because `TripRow`/`TripLegRow` are the
@@ -301,6 +346,7 @@ async fn main() {
         .route("/api/search", get(handle_search))
         .route("/api/split", get(handle_split))
         .route("/api/trips", get(handle_list_trips))
+        .route("/api/tickets/extract", post(handle_extract_ticket))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

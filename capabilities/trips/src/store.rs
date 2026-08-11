@@ -329,7 +329,7 @@ impl TripsStore {
                 DROP CONSTRAINT IF EXISTS plan_items_item_type_check;
             ALTER TABLE {schema}.plan_items
                 ADD CONSTRAINT plan_items_item_type_check
-                CHECK (item_type IN ('journey','transport','event','activity','place','stay','image','note','option_set'));
+                CHECK (item_type IN ('journey','transport','event','activity','place','stay','image','note','option_set','booking'));
             ",
             schema = schema
         ))?;
@@ -645,6 +645,7 @@ pub const ITEM_TYPES: &[&str] = &[
     "image",
     "note",
     "option_set",
+    "booking",
 ];
 
 /// The `item_type`s whose payload shape this capability is willing to promise,
@@ -666,9 +667,16 @@ pub const ITEM_TYPES: &[&str] = &[
 ///
 /// Every other type stays permissive, and that is a statement rather than an
 /// omission: an unmodelled payload is accepted as-is.
+/// - `booking` is what makes a stage's `booked` status mean something. Before it,
+///   `booked` was a string the API accepted with nothing behind it: no order
+///   reference, no fare name, no refundability, no cancellation deadline. It
+///   deliberately records `traveler_name_present` as a boolean rather than the
+///   name, because whose name is on a ticket is personal data this repo has no
+///   reason to hold.
 const DECLARED_PAYLOADS: &[(&str, &[&str])] = &[
     ("transport", &["mode", "journey"]),
     ("option_set", &["query", "options"]),
+    ("booking", &["provider", "order_ref"]),
 ];
 
 /// Rejects a declared variant that is missing a required field, naming the field.
