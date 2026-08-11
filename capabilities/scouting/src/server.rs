@@ -73,11 +73,7 @@ const fn r(
     path: &'static str,
     summary: &'static str,
 ) -> route_manifest::Route {
-    route_manifest::Route {
-        method,
-        path,
-        summary,
-    }
+    route_manifest::get(method, path, summary)
 }
 
 async fn routes() -> Json<Value> {

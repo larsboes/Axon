@@ -38,14 +38,73 @@ pub struct Route {
     /// parameters belong here when they are required — a path alone does not
     /// tell a caller that `from` and `to` are mandatory.
     pub summary: &'static str,
+    /// The JSON Schema of the body this route accepts, derived from the struct
+    /// serde already deserializes.
+    ///
+    /// A function pointer rather than a value, because a `Route` is built in a
+    /// `const` array and a schema is not const-constructible. `manifest()` calls
+    /// it once per request.
+    ///
+    /// Derived, never hand-written, and deliberately not a `$ref` at a file in
+    /// `schemas/`: those describe *stored* shapes, and a write body differs from
+    /// what comes back (no id, no timestamps, different optionality). A schema
+    /// pointing at a document that does not describe the request is worse than
+    /// no schema, because it would be believed. Deriving from the struct means
+    /// the manifest cannot drift from the code that parses the body.
+    #[serde(skip)]
+    pub request_schema: Option<fn() -> Value>,
+}
+
+/// A route with no body. Most of them.
+pub const fn get(method: &'static str, path: &'static str, summary: &'static str) -> Route {
+    Route {
+        method,
+        path,
+        summary,
+        request_schema: None,
+    }
 }
 
 /// The body `GET /routes` returns.
 pub fn manifest(capability: &str, routes: &[Route]) -> Value {
+    let rendered: Vec<Value> = routes
+        .iter()
+        .map(|route| {
+            let mut entry = json!({
+                "method": route.method,
+                "path": route.path,
+                "summary": route.summary,
+            });
+            if let Some(schema) = route.request_schema {
+                entry["request_schema"] = schema();
+            }
+            entry
+        })
+        .collect();
     json!({
         "capability": capability,
-        "routes": routes,
+        "routes": rendered,
     })
+}
+
+/// Helper so a consumer writes `schema_of::<CreatePlan>` and nothing else.
+pub fn schema_of<T: schemars::JsonSchema>() -> Value {
+    serde_json::to_value(schemars::schema_for!(T)).unwrap_or_else(|_| json!({}))
+}
+
+/// Routes that take a body but declare no schema for it.
+///
+/// An agent discovering that `POST /api/plans/:id/items` exists still cannot
+/// send one without knowing the shape, and a one-line English summary cannot
+/// carry it. This is the same drift guard as `undeclared_routes`, one level up:
+/// the check fails rather than the manifest staying silent.
+pub fn bodies_without_schemas(routes: &[Route]) -> Vec<&'static str> {
+    routes
+        .iter()
+        .filter(|route| matches!(route.method, "POST" | "PUT" | "PATCH"))
+        .filter(|route| route.request_schema.is_none())
+        .map(|route| route.path)
+        .collect()
 }
 
 /// Paths the router serves that the manifest does not declare.
@@ -100,17 +159,65 @@ mod tests {
     use super::*;
 
     const ROUTES: &[Route] = &[
-        Route {
-            method: "GET",
-            path: "/health",
-            summary: "Liveness.",
-        },
-        Route {
-            method: "GET",
-            path: "/api/things",
-            summary: "Every thing.",
-        },
+        get("GET", "/health", "Liveness."),
+        get("GET", "/api/things", "Every thing."),
     ];
+
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    #[allow(dead_code)]
+    struct CreateThing {
+        name: String,
+        count: Option<u32>,
+    }
+
+    /// A route that takes a body and declares no schema is reported, so an agent
+    /// discovering the path also learns what to send it.
+    #[test]
+    fn a_body_route_without_a_schema_is_reported() {
+        const WITH_BODY: &[Route] = &[
+            get("GET", "/api/things", "Every thing."),
+            get("POST", "/api/things", "Create a thing."),
+        ];
+        assert_eq!(bodies_without_schemas(WITH_BODY), vec!["/api/things"]);
+
+        const DECLARED: &[Route] = &[Route {
+            method: "POST",
+            path: "/api/things",
+            summary: "Create a thing.",
+            request_schema: Some(schema_of::<CreateThing>),
+        }];
+        assert!(bodies_without_schemas(DECLARED).is_empty());
+
+        // A GET is not a body route, so it is never asked for one.
+        const READS: &[Route] = &[get("DELETE", "/api/things/:id", "Remove a thing.")];
+        assert!(bodies_without_schemas(READS).is_empty());
+    }
+
+    /// The schema is derived from the struct serde parses, so it cannot drift
+    /// from the code that reads the body.
+    #[test]
+    fn a_declared_schema_is_derived_from_the_parsing_struct() {
+        const DECLARED: &[Route] = &[Route {
+            method: "POST",
+            path: "/api/things",
+            summary: "Create a thing.",
+            request_schema: Some(schema_of::<CreateThing>),
+        }];
+        let body = manifest("things", DECLARED);
+        let schema = &body["routes"][0]["request_schema"];
+        assert!(
+            schema["properties"]["name"].is_object(),
+            "the derived schema must carry the struct's own fields, got: {schema}"
+        );
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["name"]),
+            "an Option field is not required; a plain one is"
+        );
+        // A route with no body carries no schema key at all, rather than null.
+        let plain = manifest("things", ROUTES);
+        assert!(plain["routes"][0].get("request_schema").is_none());
+    }
 
     #[test]
     fn a_served_path_missing_from_the_manifest_is_reported() {

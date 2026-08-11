@@ -7,7 +7,7 @@ use serde_json::Value;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlaceKind {
     Address,
@@ -18,7 +18,7 @@ pub enum PlaceKind {
     Venue,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct PlaceRef {
     pub id: String,
     pub name: String,
@@ -30,7 +30,7 @@ pub struct PlaceRef {
     pub longitude: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportMode {
     Bike,
@@ -42,7 +42,7 @@ pub enum TransportMode {
     Walk,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StageStatus {
     Booked,
@@ -52,7 +52,7 @@ pub enum StageStatus {
     Planning,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct TripStage {
     pub id: String,
     pub sequence: usize,
@@ -69,13 +69,13 @@ pub struct TripStage {
     pub selected_option_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct PlanSource {
     pub kind: String,
     pub reference: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct CreatePlan {
     pub title: String,
     pub origin: PlaceRef,
@@ -172,7 +172,7 @@ pub struct TripPlan {
     pub currency: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct CreatePlanItem {
     pub item_type: String,
     pub day: Option<String>,

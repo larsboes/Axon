@@ -18,6 +18,7 @@ rust_library(
         "@crate_index//:postgres",
         "@crate_index//:r2d2",
         "@crate_index//:r2d2_postgres",
+        "@crate_index//:schemars",
         "@crate_index//:serde",
         "@crate_index//:serde_json",
     ],

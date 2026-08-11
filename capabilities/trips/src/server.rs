@@ -30,7 +30,12 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r("GET", "/routes", "This manifest."),
     r("GET", "/api/plans", "Every trip plan."),
-    r("POST", "/api/plans", "Create a trip plan."),
+    route_manifest::Route {
+        method: "POST",
+        path: "/api/plans",
+        summary: "Create a trip plan.",
+        request_schema: Some(route_manifest::schema_of::<CreatePlan>),
+    },
     r(
         "GET",
         "/api/plans/:id",
@@ -49,7 +54,13 @@ const ROUTES: &[route_manifest::Route] = &[
         "Delete a trip plan. Optional expected_updated_at (query) makes it conditional, \
          409 with code stale_plan on a mismatch.",
     ),
-    r("POST", "/api/plans/:id/items", "Add an item to a plan."),
+    route_manifest::Route {
+        method: "POST",
+        path: "/api/plans/:id/items",
+        summary: "Add an item to a plan. Two item_types promise a payload shape and are \
+                  validated on write: see schemas/trip-plan.schema.json.",
+        request_schema: Some(route_manifest::schema_of::<CreatePlanItem>),
+    },
     r(
         "PATCH",
         "/api/plans/:plan_id/items/:item_id",
@@ -96,11 +107,7 @@ const fn r(
     path: &'static str,
     summary: &'static str,
 ) -> route_manifest::Route {
-    route_manifest::Route {
-        method,
-        path,
-        summary,
-    }
+    route_manifest::get(method, path, summary)
 }
 
 async fn routes() -> Json<Value> {

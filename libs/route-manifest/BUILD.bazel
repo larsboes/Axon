@@ -12,6 +12,7 @@ rust_library(
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
+        "@crate_index//:schemars",
         "@crate_index//:serde",
         "@crate_index//:serde_json",
     ],
