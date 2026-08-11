@@ -119,6 +119,35 @@ impl Cell {
     /// Share of non-cancelled stops at least `minutes` late. Six is the interesting
     /// threshold because it is the one DB reports itself against: a train under six
     /// minutes counts as punctual in their own statistics.
+    /// The histogram as it goes to Postgres. `i32` because that is the widest
+    /// integer an `INTEGER[]` column holds, and a bucket count cannot exceed it
+    /// for any station DB has ever published.
+    pub fn counts_i32(&self) -> Vec<i32> {
+        self.counts.iter().map(|c| *c as i32).collect()
+    }
+
+    /// The same exceedance `share_at_least` computes, from a stored bucket array
+    /// rather than a live `Cell`. Separate function because the reader has a
+    /// `Vec<i32>` out of Postgres and no `Cell` to put it back into, and going
+    /// through a reconstructed `Cell` would invite the two to disagree.
+    ///
+    /// Returns `None` when the array is absent or the wrong length: a row written
+    /// before the array was persisted must read as "cannot answer", never as zero.
+    pub fn share_at_least_from_counts(counts: &[i32], minutes: i32) -> Option<f64> {
+        if counts.len() != BUCKETS {
+            return None;
+        }
+        let total: i64 = counts.iter().map(|c| *c as i64).sum();
+        if total == 0 {
+            return Some(0.0);
+        }
+        let late: i64 = (0..BUCKETS)
+            .filter(|b| minute_of(*b) >= minutes)
+            .map(|b| counts[b] as i64)
+            .sum();
+        Some(late as f64 / total as f64)
+    }
+
     pub fn share_at_least(&self, minutes: i32) -> f64 {
         if self.n == 0 {
             return 0.0;
@@ -203,6 +232,35 @@ mod tests {
         // bucket for quantile purposes, but the running sum keeps the mean honest.
         let c = cell_of(&[0, 1421]);
         assert!((c.mean() - 710.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    /// The stored path must agree with the live one exactly, or the six-minute
+    /// column and the histogram would be two sources for one number. This is the
+    /// equality the whole persistence change rests on.
+    fn stored_counts_answer_the_same_question_as_the_live_cell() {
+        let cell = cell_of(&[-2, 0, 0, 1, 3, 5, 6, 6, 7, 12, 20, 45, 90]);
+        let stored = cell.counts_i32();
+        for minutes in [0, 1, 3, 5, 6, 7, 10, 15, 30, 60, 120] {
+            assert_eq!(
+                Cell::share_at_least_from_counts(&stored, minutes),
+                Some(cell.share_at_least(minutes)),
+                "threshold {minutes} disagrees between the stored array and the live cell"
+            );
+        }
+    }
+
+    #[test]
+    /// A row written before the array was persisted must read as "cannot answer".
+    /// Zero would be a claim that no train was ever that late.
+    fn an_absent_or_malformed_histogram_is_not_zero_risk() {
+        assert_eq!(Cell::share_at_least_from_counts(&[], 6), None);
+        assert_eq!(Cell::share_at_least_from_counts(&[1, 2, 3], 6), None);
+        // A present but empty histogram is a real zero: nothing was observed.
+        assert_eq!(
+            Cell::share_at_least_from_counts(&vec![0; BUCKETS], 6),
+            Some(0.0)
+        );
     }
 
     #[test]

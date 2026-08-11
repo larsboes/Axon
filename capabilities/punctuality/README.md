@@ -52,6 +52,26 @@ Timestamps are already Europe/Berlin local time, with no conversion applied. The
 treats them as wall-clock and carries no timezone library; converting them again would
 move the rush hour by an hour or two.
 
+## Asking a threshold other than six minutes
+
+`stop_stats` used to persist seven scalars and drop the 128-bucket histogram that produced
+them. So the only exceedance anyone could ever ask about was six minutes, which was never a
+considered threshold: it was the one that got its own column. `transit`'s own
+`punctuality.rs` states that transfer risk cannot be produced from this data. It always
+could; the array was thrown away on the way to disk.
+
+The array is stored now (`counts INTEGER[]`, ~512 bytes a cell), and a stop in
+`POST /lookup` may carry `at_least_minutes`. A four-minute transfer buffer and a
+twelve-minute one are different questions, and asking a new one is a query rather than a
+re-ingest of every parquet file.
+
+`share_delay_at_least` has three states and they are different answers. Absent means nobody
+asked. Explicit `null` means the question was asked and this row predates the stored
+histogram, so it cannot be answered. A number means it was answered. A row written before
+this change keeps working and simply cannot answer an arbitrary threshold, because `ingest`
+replaces the aggregate wholesale: filling the column in is a deliberate re-ingest, not
+something a schema migration should trigger.
+
 ## How the aggregate is built
 
 One histogram per cell, where a cell is (station, train type, hour of day, weekend).

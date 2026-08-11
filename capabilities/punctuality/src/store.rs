@@ -48,6 +48,10 @@ pub struct StatRow {
     pub p90: i16,
     pub share_late_6: f32,
     pub cancel_rate: f32,
+    /// The stored histogram, when the row was written by a binary that persists
+    /// it. `None` for a row from before that, which is why every reader has to
+    /// treat an arbitrary-threshold question as unanswerable rather than zero.
+    pub counts: Option<Vec<i32>>,
 }
 
 impl Store {
@@ -107,6 +111,16 @@ impl Store {
                 p90           SMALLINT NOT NULL,
                 share_late_6  REAL     NOT NULL,
                 cancel_rate   REAL     NOT NULL,
+                -- The histogram itself, one count per delay bucket.
+                --
+                -- Persisting seven scalars and dropping the array meant the only
+                -- exceedance anyone could ever ask about was the six minutes that
+                -- happened to get its own column, and transit's punctuality.rs said
+                -- outright that transfer risk cannot be produced from this data.
+                -- It always could; the array was thrown away on the way to disk.
+                -- ~512 bytes a cell, and a new question is now a query rather than
+                -- a re-ingest of every parquet file.
+                counts        INTEGER[],
                 PRIMARY KEY (eva, train_type, hour, weekend)
             );
 
@@ -123,6 +137,13 @@ impl Store {
                 rows_skipped BIGINT NOT NULL,
                 cells        INT  NOT NULL
             );
+
+            -- Additive, and NULL on every row written before it. A pre-existing
+            -- aggregate keeps working and simply cannot answer an arbitrary
+            -- threshold until the next ingest, which is the honest state to be in:
+            -- `ingest` replaces the aggregate wholesale, so filling this in is a
+            -- deliberate re-ingest and not something a migration should trigger.
+            ALTER TABLE {schema}.stop_stats ADD COLUMN IF NOT EXISTS counts INTEGER[];
             "
         ))?;
         Ok(())
@@ -145,8 +166,9 @@ impl Store {
 
         let insert = tx.prepare(&format!(
             "INSERT INTO {schema}.stop_stats
-               (eva, train_type, hour, weekend, n, canceled, mean_delay, p50, p90, share_late_6, cancel_rate)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"
+               (eva, train_type, hour, weekend, n, canceled, mean_delay, p50, p90, share_late_6,
+                cancel_rate, counts)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"
         ))?;
         for (key, cell) in cells {
             tx.execute(
@@ -163,6 +185,7 @@ impl Store {
                     &(cell.quantile(0.9) as i16),
                     &(cell.share_at_least(6) as f32),
                     &(cell.cancel_rate() as f32),
+                    &cell.counts_i32(),
                 ],
             )?;
         }
@@ -239,7 +262,7 @@ impl Store {
         let rows = self.conn()?.query(
             &format!(
                 "SELECT s.eva, st.station_name, s.train_type, s.hour, s.weekend, s.n, s.canceled,
-                        s.mean_delay, s.p50, s.p90, s.share_late_6, s.cancel_rate
+                        s.mean_delay, s.p50, s.p90, s.share_late_6, s.cancel_rate, s.counts
                  FROM {schema}.stop_stats s
                  LEFT JOIN {schema}.stations st ON st.eva = s.eva
                  WHERE s.eva = $1 AND s.train_type = $2 AND s.hour = $3 AND s.weekend = $4
@@ -296,6 +319,7 @@ fn row_to_stat(r: &postgres::Row) -> StatRow {
         p90: r.get(9),
         share_late_6: r.get(10),
         cancel_rate: r.get(11),
+        counts: r.get(12),
     }
 }
 

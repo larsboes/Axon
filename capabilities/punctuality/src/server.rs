@@ -33,7 +33,13 @@ use punctuality::store::{StatRow, Store};
 const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
     r("GET", "/routes", "This manifest."),
-    r("POST", "/lookup", "Punctuality for a connection."),
+    r(
+        "POST",
+        "/lookup",
+        "Punctuality for a connection. Each stop may carry at_least_minutes to ask for the \
+         share of trains at least that late, answered from the stored histogram; null when \
+         the row predates it.",
+    ),
     r("GET", "/stations", "Station search. Requires a query."),
 ];
 
@@ -61,6 +67,14 @@ struct StopQuery {
     hour: u8,
     #[serde(default)]
     weekend: bool,
+    /// Ask for the share of trains at least this many minutes late. Optional:
+    /// omitted, the reply carries the six-minute figure it always did.
+    ///
+    /// Six minutes was never a considered threshold, it was the one that got its
+    /// own column. A transfer with a four-minute buffer and one with a twelve-
+    /// minute buffer are different questions, and until now neither could be
+    /// asked.
+    at_least_minutes: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +98,17 @@ struct StopStats {
     p90: i16,
     share_late_6: f32,
     cancel_rate: f32,
+    /// The exceedance at the requested threshold.
+    ///
+    /// Three states, and they are different answers. Absent: nobody asked.
+    /// Explicit `null`: asked, and this row predates the stored histogram, so the
+    /// question cannot be answered from it. A number: answered. Collapsing the
+    /// middle case into absence would let a caller that asked read the silence as
+    /// zero risk, which is the failure this endpoint exists to avoid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    share_delay_at_least: Option<Option<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    at_least_minutes: Option<i32>,
 }
 
 impl From<StatRow> for StopStats {
@@ -100,7 +125,23 @@ impl From<StatRow> for StopStats {
             p90: r.p90,
             share_late_6: r.share_late_6,
             cancel_rate: r.cancel_rate,
+            share_delay_at_least: None,
+            at_least_minutes: None,
         }
+    }
+}
+
+impl StopStats {
+    /// Answers the caller's own threshold from the stored histogram.
+    fn with_threshold(mut self, row: &StatRow, minutes: Option<i32>) -> Self {
+        let Some(minutes) = minutes else { return self };
+        self.at_least_minutes = Some(minutes);
+        self.share_delay_at_least = Some(
+            row.counts.as_ref().and_then(|counts| {
+                punctuality::stats::Cell::share_at_least_from_counts(counts, minutes)
+            }),
+        );
+        self
     }
 }
 
@@ -165,7 +206,11 @@ async fn handle_lookup(State(state): State<AppState>, Json(body): Json<LookupBod
             .map(|s| {
                 store
                     .stop_stats(&s.eva, &s.train_type, s.hour as i16, s.weekend, MIN_SAMPLE)
-                    .map(|opt| opt.map(StopStats::from))
+                    .map(|opt| {
+                        opt.map(|row| {
+                            StopStats::from(row.clone()).with_threshold(&row, s.at_least_minutes)
+                        })
+                    })
                     .map_err(|e| e.to_string())
             })
             .collect()
