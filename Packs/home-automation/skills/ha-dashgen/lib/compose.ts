@@ -153,7 +153,12 @@ const roomsView = (h: House, wall: boolean, slug: string): View =>
     path: "raeume",
     icon: "mdi:sofa",
     maxColumns: wall ? 4 : 2,
-    sections: [...h.rooms.filter((r: any) => r.indoor).map((r: any) =>
+    sections: [
+      section([
+        heading("Licht im Haus", { icon: "mdi:lightbulb-group", level: "h1" }),
+        tile(h.system.lightsOn, { name: "Leuchten an", icon: "mdi:lightbulb-on" }),
+      ]),
+      ...h.rooms.filter((r: any) => r.indoor).map((r: any) =>
       section([
         heading(r.name, {
           icon: r.icon,
@@ -219,9 +224,6 @@ const energyView = (h: House, wall: boolean, slug: string): View =>
         tile(h.energy.ev.enabled, { name: "Laden freigegeben" }),
         tile(h.energy.ev.session, { name: "Diese Ladung", icon: "mdi:battery-charging" }),
         tile(h.energy.ev.lifetime, { name: "Insgesamt geladen", icon: "mdi:counter" }),
-        // The calendar drives the trip-charging automation, so it belongs beside the charger
-        // rather than on the near-empty tab of its own it used to have.
-        { type: "calendar", entities: [h.energy.ev.calendar], initial_view: "listWeek" },
       ]),
       section([
         heading("Vorhersage", { icon: "mdi:weather-partly-cloudy" }),
@@ -231,17 +233,6 @@ const energyView = (h: House, wall: boolean, slug: string): View =>
         tile(h.energy.forecast.peak, { name: "Stärkste Stunde", icon: "mdi:chart-bell-curve" }),
         tile(h.energy.exportPower, { name: "Einspeisung jetzt", icon: "mdi:transmission-tower-export" }),
       ]),
-      section(
-        [
-          heading("Verlauf", { icon: "mdi:chart-line" }),
-          energyDistribution(),
-          statisticsGraph([h.energy.today.pv, h.energy.today.consumed, h.energy.today.exported], {
-            title: "Letzte 30 Tage",
-            days: 30,
-          }),
-        ],
-        wall ? 2 : 1,
-      ),
     ],
   });
 
@@ -380,12 +371,10 @@ const automationView = (h: House, wall: boolean, slug: string): View =>
         section([
           heading(g.name, { icon: g.icon }),
           ...g.items.map((it: any) =>
-            tile(it.entity, {
-              name: it.text,
-              features: [feature.toggle()],
-              featurePosition: "inline",
-              hideState: true,
-            }),
+            // No `toggle` feature and no inline feature position: Automatik was the only
+            // view using either, and it was the only family view rendering blank. A plain
+            // automation tile already shows on/off and toggles from its more-info dialog.
+            tile(it.entity, { name: it.text }),
           ),
         ]),
       ),
