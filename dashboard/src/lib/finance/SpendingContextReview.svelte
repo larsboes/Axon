@@ -10,56 +10,89 @@
     type TransactionCandidate,
     type TripPlan,
   } from "$lib/api";
+  import {
+    parsePersonalCents,
+    presetShareCents,
+    prioritizedExpenseQueue,
+    reviewableExpenses,
+    type ExpenseReview,
+    type ReviewQueueMode,
+  } from "$lib/finance/spending-review";
 
-  let { data, onchanged }: { data: FinanceDashboard; onchanged?: () => void | Promise<void> } = $props();
+  let { data, start, end, account, category, onchanged }: {
+    data: FinanceDashboard;
+    start: string;
+    end: string;
+    account: string;
+    category: string;
+    onchanged?: () => void | Promise<void>;
+  } = $props();
   let candidates = $state<TransactionCandidate[]>([]);
   let plans = $state<TripPlan[]>([]);
+  let queueMode = $state<ReviewQueueMode>("unreviewed");
+  let reviewTripId = $state("");
   let expenseId = $state("");
-  let inflowId = $state("");
-  let reimbursementTarget = $state("");
   let personalAmount = $state("");
   let purpose = $state<SpendingPurpose>("day_to_day");
   let tripId = $state("");
-  let reviewTripId = $state("");
-  let tripProjection = $state<FinanceDashboard | null>(null);
-  let tripBusy = $state(false);
+  let inflowId = $state("");
+  let reimbursementTarget = $state("");
+  let visibleLimit = $state(16);
   let busy = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
 
-  const expenses = $derived(candidates.filter((candidate) =>
-    candidate.state === "confirmed"
-      && candidate.amount_cents < 0
-      && candidate.proposed_account.startsWith("expenses:"),
-  ));
-  const inflows = $derived(candidates.filter((candidate) =>
-    candidate.state === "confirmed"
-      && candidate.amount_cents > 0
-      && candidate.proposed_account !== "assets:receivable:shared",
-  ));
-  const selectedExpense = $derived(expenses.find((candidate) => candidate.id === expenseId) ?? null);
-  const selectedInflow = $derived(inflows.find((candidate) => candidate.id === inflowId) ?? null);
-  const selectedTarget = $derived(
-    (tripProjection?.shared_expenses ?? data.shared_expenses)
-      .find((expense) => expense.candidate_id === reimbursementTarget) ?? null,
-  );
+  const purposeLabels: Record<SpendingPurpose, string> = {
+    day_to_day: "Day to day",
+    trip: "Trip",
+    work: "Work",
+    housing: "Housing",
+    other: "Other",
+  };
   const selectedPlan = $derived(plans.find((plan) => plan.id === reviewTripId) ?? null);
-  const tripCandidates = $derived(selectedPlan === null ? [] : expenses.filter((candidate) =>
-    candidate.booked_at >= selectedPlan.date_start && candidate.booked_at <= selectedPlan.date_end,
+  const eligibleExpenses = $derived(reviewableExpenses(
+    candidates,
+    data.transactions,
+    { start, end, account, category },
   ));
-  const tripRows = $derived((tripProjection?.transactions ?? []).filter((row) =>
-    row.kind === "expense" && row.trip_id === reviewTripId,
+  const awaitingCategoryCount = $derived(candidates.filter((candidate) => candidate.state === "confirmed"
+    && candidate.amount_cents < 0
+    && candidate.booked_at >= start
+    && candidate.booked_at <= end
+    && (account === "" || candidate.source_account === account)
+    && candidate.proposed_account.split(":").includes("uncategorized")).length);
+  const reviewQueue = $derived(prioritizedExpenseQueue(eligibleExpenses, queueMode, selectedPlan));
+  const visibleQueue = $derived(reviewQueue.slice(0, visibleLimit));
+  const selectedReview = $derived(eligibleExpenses.find((entry) => entry.candidate.id === expenseId) ?? null);
+  const unreviewedCount = $derived(eligibleExpenses.filter((entry) => !entry.reviewed).length);
+  const reviewedCount = $derived(eligibleExpenses.length - unreviewedCount);
+  const purposeCoverage = $derived(eligibleExpenses.length === 0 ? null : reviewedCount / eligibleExpenses.length * 100);
+  const inflows = $derived(candidates.filter((candidate) => candidate.state === "confirmed"
+    && candidate.amount_cents > 0
+    && candidate.booked_at >= start
+    && candidate.booked_at <= end
+    && (account === "" || candidate.source_account === account)
+    && candidate.proposed_account !== "assets:receivable:shared")
+    .sort((left, right) => right.booked_at.localeCompare(left.booked_at)));
+  const openReceivables = $derived(data.shared_expenses
+    .filter((expense) => expense.outstanding_cents > 0
+      && (selectedPlan === null || expense.trip_id === selectedPlan.id))
+    .sort((left, right) => right.outstanding_cents - left.outstanding_cents));
+  const selectedInflow = $derived(inflows.find((candidate) => candidate.id === inflowId) ?? null);
+  const selectedTarget = $derived(openReceivables.find((expense) => expense.candidate_id === reimbursementTarget) ?? null);
+  const focusedTripRows = $derived(selectedPlan === null ? [] : eligibleExpenses.filter((entry) =>
+    entry.transaction?.trip_id === selectedPlan.id,
   ));
-  const tripSharedExpenses = $derived((tripProjection?.shared_expenses ?? []).filter((expense) =>
-    expense.trip_id === reviewTripId,
-  ));
-  const tripPersonalCents = $derived(tripRows.reduce((total, row) => total + row.amount_cents, 0));
-  const tripGrossCents = $derived(tripRows.reduce((total, row) => total + row.cash_amount_cents, 0));
-  const tripOutstandingCents = $derived(tripSharedExpenses.reduce((total, expense) => total + expense.outstanding_cents, 0));
-  const visibleSharedExpenses = $derived(selectedPlan ? tripSharedExpenses : data.shared_expenses);
+  const focusedTripPersonalCents = $derived(focusedTripRows.reduce((sum, entry) =>
+    sum + (entry.transaction?.amount_cents ?? 0), 0));
+  const focusedTripGrossCents = $derived(focusedTripRows.reduce((sum, entry) =>
+    sum + (entry.transaction?.cash_amount_cents ?? 0), 0));
+  const focusedTripOutstandingCents = $derived(openReceivables.reduce((sum, expense) =>
+    sum + expense.outstanding_cents, 0));
 
-  const money = (cents: number, currency: string) =>
+  const money = (cents: number, currency = data.summary.currency) =>
     new Intl.NumberFormat("de-DE", { style: "currency", currency }).format(cents / 100);
+  const shortAccount = (value: string) => value.split(":").slice(1).join(" · ") || value;
 
   async function load() {
     try {
@@ -76,78 +109,75 @@
     }
   }
 
-  async function loadTrip(plan: TripPlan) {
-    tripBusy = true;
-    try {
-      tripProjection = await finance.dashboard({
-        start: plan.date_start,
-        end: plan.date_end,
-        currency: "EUR",
-      });
-      error = null;
-    } catch (cause) {
-      tripProjection = null;
-      error = cause instanceof Error ? cause.message : String(cause);
-    } finally {
-      tripBusy = false;
-    }
+  function chooseQueueMode(event: Event) {
+    queueMode = (event.currentTarget as HTMLSelectElement).value as ReviewQueueMode;
+    visibleLimit = 16;
+    clearExpense();
   }
 
-  async function chooseTrip(event: Event) {
+  function chooseTrip(event: Event) {
     reviewTripId = (event.currentTarget as HTMLSelectElement).value;
+    visibleLimit = 16;
+    clearExpense();
+  }
+
+  function clearExpense() {
     expenseId = "";
     personalAmount = "";
-    const plan = plans.find((candidate) => candidate.id === reviewTripId);
-    if (!plan) {
-      tripProjection = null;
-      purpose = "day_to_day";
-      tripId = "";
-      return;
-    }
-    purpose = "trip";
-    tripId = plan.id;
-    await loadTrip(plan);
+    purpose = reviewTripId ? "trip" : "day_to_day";
+    tripId = reviewTripId;
   }
 
-  function chooseExpense(event: Event) {
-    selectExpense((event.currentTarget as HTMLSelectElement).value);
-  }
-
-  function selectExpense(id: string) {
-    expenseId = id;
-    const candidate = expenses.find((entry) => entry.id === expenseId);
-    if (!candidate) return;
-    const existing = data.transactions.find((row) => row.source_id === candidate.fingerprint);
-    personalAmount = ((existing?.amount_cents ?? -candidate.amount_cents) / 100)
+  function selectExpense(entry: ExpenseReview) {
+    expenseId = entry.candidate.id;
+    personalAmount = ((entry.transaction?.amount_cents ?? entry.totalCents) / 100)
       .toFixed(2)
       .replace(".", ",");
-    purpose = reviewTripId ? "trip" : existing?.purpose ?? "day_to_day";
-    tripId = reviewTripId || existing?.trip_id || "";
+    purpose = entry.transaction?.purpose ?? (reviewTripId ? "trip" : "day_to_day");
+    tripId = entry.transaction?.trip_id ?? reviewTripId;
+    error = null;
+    notice = null;
+  }
+
+  function choosePurpose(event: Event) {
+    purpose = (event.currentTarget as HTMLSelectElement).value as SpendingPurpose;
+    if (purpose !== "trip") tripId = "";
+    else if (!tripId) tripId = reviewTripId;
+  }
+
+  function setShare(percent: number) {
+    if (!selectedReview) return;
+    personalAmount = (presetShareCents(selectedReview.totalCents, percent) / 100)
+      .toFixed(2)
+      .replace(".", ",");
   }
 
   function personalCents(): number | null {
-    const normalized = personalAmount.trim().replace(",", ".");
-    if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
-    const cents = Math.round(Number(normalized) * 100);
-    return Number.isSafeInteger(cents) ? cents : null;
+    return parsePersonalCents(personalAmount);
+  }
+
+  function shareIsValid() {
+    const cents = personalCents();
+    return selectedReview !== null && cents !== null && cents >= 0 && cents <= selectedReview.totalCents;
   }
 
   async function saveAllocation() {
     const cents = personalCents();
-    if (!selectedExpense || cents === null) return;
+    if (!selectedReview || cents === null || !shareIsValid()) return;
     busy = true;
     error = null;
     notice = null;
     try {
       await finance.allocateExpense(
-        selectedExpense.id,
+        selectedReview.candidate.id,
         cents,
         purpose,
         purpose === "trip" ? tripId : null,
       );
-      notice = "Spending context saved; personal cost and shared receivable were rebuilt from the journal.";
+      notice = "Purpose and personal share saved; Finance was rebuilt from the reviewed journal.";
       await onchanged?.();
-      if (selectedPlan) await loadTrip(selectedPlan);
+      await load();
+      clearExpense();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -162,11 +192,11 @@
     notice = null;
     try {
       await finance.linkReimbursement(selectedInflow.id, selectedTarget.candidate_id);
-      notice = "Repayment linked to the shared receivable; it no longer counts as income.";
+      notice = "Repayment linked to the original shared expense; it no longer counts as income.";
       inflowId = "";
-      await load();
+      reimbursementTarget = "";
       await onchanged?.();
-      if (selectedPlan) await loadTrip(selectedPlan);
+      await load();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -180,208 +210,254 @@
 <section class="context-review">
   <div class="heading">
     <div>
-      <h2>Review spending</h2>
-      <p>Start with a trip, then review your share transaction by transaction. Category and purpose remain separate.</p>
+      <h2>Purpose and shared-cost review</h2>
+      <p>Largest unresolved expenses first. Record why you spent it, which trip it belongs to, and only the share that was yours.</p>
     </div>
-    <label class="trip-picker">Trip
-      <select value={reviewTripId} onchange={(event) => void chooseTrip(event)}>
-        <option value="">No trip selected</option>
+    <div class="coverage">
+      <strong>{purposeCoverage === null ? "—" : `${purposeCoverage.toFixed(1)}%`}</strong>
+      <span>{unreviewedCount} need review · {awaitingCategoryCount} need category first</span>
+    </div>
+  </div>
+
+  <div class="queue-controls">
+    <label>Queue
+      <select value={queueMode} onchange={chooseQueueMode}>
+        <option value="unreviewed">Needs purpose</option>
+        <option value="shared">Shared costs</option>
+        <option value="all">All categorized expenses</option>
+      </select>
+    </label>
+    <label>Trip focus
+      <select value={reviewTripId} onchange={chooseTrip}>
+        <option value="">Any purpose or trip</option>
         {#each plans as plan (plan.id)}
           <option value={plan.id}>{plan.title} · {plan.date_start}–{plan.date_end}</option>
         {/each}
       </select>
     </label>
+    <div class="queue-scope">
+      <span>{start}–{end}</span>
+      <strong>{reviewQueue.length} expense{reviewQueue.length === 1 ? "" : "s"}</strong>
+    </div>
   </div>
 
   {#if error}<p class="error"><Icon name="alert" size={14} /> {error}</p>{/if}
   {#if notice}<p class="notice">{notice}</p>{/if}
 
   {#if selectedPlan}
-    <section class="trip-overview">
-      <div class="trip-title">
-        <div><strong>{selectedPlan.title}</strong><span>{selectedPlan.date_start}–{selectedPlan.date_end}</span></div>
-        {#if tripBusy}<span>Loading trip spending…</span>{:else}<span>{tripCandidates.length} confirmed expenses in this date window</span>{/if}
-      </div>
-      <div class="trip-totals" aria-label="Trip spending totals">
-        <div><span>Your reviewed cost</span><strong>{money(tripPersonalCents, "EUR")}</strong></div>
-        <div><span>Gross paid</span><strong>{money(tripGrossCents, "EUR")}</strong></div>
-        <div><span>Outstanding</span><strong>{money(tripOutstandingCents, "EUR")}</strong></div>
-        <div><span>Assigned</span><strong>{tripRows.length} / {tripCandidates.length}</strong></div>
-      </div>
-      <div class="trip-transactions">
-        {#each tripCandidates as candidate (candidate.id)}
-          {@const existing = (tripProjection?.transactions ?? []).find((row) => row.source_id === candidate.fingerprint)}
-          <article class:assigned={existing?.trip_id === reviewTripId} class:selected={candidate.id === expenseId}>
-            <time>{candidate.booked_at}</time>
-            <strong>{candidate.description}</strong>
-            <span>{money(-candidate.amount_cents, candidate.currency)}</span>
-            <span class="review-state">
-              {existing?.trip_id === reviewTripId ? `${money(existing.amount_cents, candidate.currency)} yours` : "Not assigned"}
-            </span>
-            <button type="button" onclick={() => selectExpense(candidate.id)}>{candidate.id === expenseId ? "Selected" : "Review"}</button>
-          </article>
-        {/each}
-        {#if tripCandidates.length === 0 && !tripBusy}<p class="empty">No confirmed expenses fall inside this trip’s dates.</p>{/if}
-      </div>
-    </section>
+    <div class="trip-strip">
+      <div><strong>{selectedPlan.title}</strong><span>{selectedPlan.date_start}–{selectedPlan.date_end}</span></div>
+      <dl>
+        <div><dt>Reviewed personal</dt><dd>{money(focusedTripPersonalCents)}</dd></div>
+        <div><dt>Gross paid</dt><dd>{money(focusedTripGrossCents)}</dd></div>
+        <div><dt>Still owed</dt><dd>{money(focusedTripOutstandingCents)}</dd></div>
+        <div><dt>Assigned</dt><dd>{focusedTripRows.length}</dd></div>
+      </dl>
+    </div>
   {/if}
 
-  <div class="review-grid">
-    <form class="allocation" onsubmit={(event) => { event.preventDefault(); void saveAllocation(); }}>
-      <div class="form-heading">
-        <div><h3>Review one transaction</h3><p>{selectedPlan ? `Assign it to ${selectedPlan.title} and record your share.` : "Add purpose or split a non-trip expense."}</p></div>
+  <div class="review-workspace">
+    <div class="expense-queue">
+      {#each visibleQueue as entry (entry.candidate.id)}
+        <button type="button" class:selected={entry.candidate.id === expenseId} onclick={() => selectExpense(entry)}>
+          <time>{entry.candidate.booked_at}</time>
+          <span class="expense-main">
+            <strong>{entry.candidate.description}</strong>
+            <small>{shortAccount(entry.candidate.proposed_account)}</small>
+          </span>
+          <span class="context-state">
+            {#if entry.reviewed}
+              <strong>{purposeLabels[entry.transaction?.purpose ?? "other"]}</strong>
+              <small>{entry.transaction?.shared_cents ? `${money(entry.transaction.shared_cents, entry.candidate.currency)} shared` : "full amount yours"}</small>
+            {:else}
+              <strong>Needs purpose</strong>
+              <small>full amount assumed until reviewed</small>
+            {/if}
+          </span>
+          <strong class="amount">{money(entry.totalCents, entry.candidate.currency)}</strong>
+        </button>
+      {/each}
+      {#if reviewQueue.length === 0}<p class="empty">Nothing is waiting in this queue.</p>{/if}
+      {#if visibleLimit < reviewQueue.length}
+        <button class="show-more" type="button" onclick={() => visibleLimit += 16}>Show 16 more</button>
+      {/if}
+    </div>
+
+    <form class="allocation-editor" onsubmit={(event) => { event.preventDefault(); void saveAllocation(); }}>
+      <div class="editor-heading">
+        <div><h3>{selectedReview ? "Review selected expense" : "Select an expense"}</h3><p>Saving rewrites only this Axon-owned journal entry.</p></div>
+        {#if selectedReview}<strong>{money(selectedReview.totalCents, selectedReview.candidate.currency)}</strong>{/if}
       </div>
-      {#if !selectedPlan}
-        <label>Confirmed expense
-          <select value={expenseId} onchange={chooseExpense}>
-            <option value="">Select an expense</option>
-            {#each expenses as expense (expense.id)}
-              <option value={expense.id}>{expense.booked_at} · {expense.description} · {money(-expense.amount_cents, expense.currency)}</option>
+      {#if selectedReview}
+        <div class="selected-expense">
+          <time>{selectedReview.candidate.booked_at}</time>
+          <strong>{selectedReview.candidate.description}</strong>
+          <span>{shortAccount(selectedReview.candidate.proposed_account)}</span>
+        </div>
+        <label>Purpose
+          <select value={purpose} onchange={choosePurpose}>
+            {#each Object.entries(purposeLabels) as [value, label]}
+              <option value={value}>{label}</option>
             {/each}
           </select>
         </label>
-      {:else if !selectedExpense}
-        <p class="empty selection-hint">Choose Review beside a transaction above.</p>
-      {:else}
-        <div class="selected-transaction"><time>{selectedExpense.booked_at}</time><strong>{selectedExpense.description}</strong><span>{money(-selectedExpense.amount_cents, selectedExpense.currency)}</span></div>
-      {/if}
-      <div class="fields">
-        <label>Your share
-          <input inputmode="decimal" bind:value={personalAmount} placeholder="0,00" />
-        </label>
-        {#if selectedPlan}
-          <label>Purpose<input value="Trip" disabled /></label>
-        {:else}
-          <label>Purpose
-            <select bind:value={purpose}>
-              <option value="day_to_day">Day to day</option>
-              <option value="trip">Trip</option>
-              <option value="work">Work</option>
-              <option value="housing">Housing</option>
-              <option value="other">Other</option>
+        {#if purpose === "trip"}
+          <label>Trips plan
+            <select bind:value={tripId}>
+              <option value="">Select a plan</option>
+              {#each plans as plan (plan.id)}
+                <option value={plan.id}>{plan.title} · {plan.date_start}–{plan.date_end}</option>
+              {/each}
             </select>
           </label>
         {/if}
+        <label>Your final cost
+          <input inputmode="decimal" bind:value={personalAmount} placeholder="0,00" />
+        </label>
+        <div class="share-presets" aria-label="Personal share presets">
+          <button type="button" onclick={() => setShare(100)}>All mine</button>
+          <button type="button" onclick={() => setShare(50)}>1 / 2</button>
+          <button type="button" onclick={() => setShare(25)}>1 / 4</button>
+          <button type="button" onclick={() => setShare(0)}>Fronted all</button>
+        </div>
+        {#if personalCents() !== null}
+          <div class:error-calculation={!shareIsValid()} class="calculation">
+            <span>Gross paid <strong>{money(selectedReview.totalCents, selectedReview.candidate.currency)}</strong></span>
+            <span>Your cost <strong>{money(personalCents() ?? 0, selectedReview.candidate.currency)}</strong></span>
+            <span>Receivable <strong>{money(Math.max(0, selectedReview.totalCents - (personalCents() ?? 0)), selectedReview.candidate.currency)}</strong></span>
+          </div>
+        {/if}
+        <button class="save" disabled={busy || !shareIsValid() || (purpose === "trip" && !tripId)}>
+          Save purpose and share
+        </button>
+      {:else}
+        <p class="empty editor-empty">Choose a row to review its purpose and personal share.</p>
+      {/if}
+    </form>
+  </div>
+
+  <section class="receivables">
+    <div class="receivable-heading">
+      <div><h3>Open shared costs</h3><p>Link money received back to the original expense rather than counting it as income.</p></div>
+      <strong>{money(openReceivables.reduce((sum, expense) => sum + expense.outstanding_cents, 0))} open</strong>
+    </div>
+    <div class="receivable-grid">
+      <div class="receivable-list">
+        {#each openReceivables.slice(0, 8) as expense (expense.source_id)}
+          <article>
+            <time>{expense.date}</time>
+            <span><strong>{expense.description}</strong><small>{expense.trip_id ? plans.find((plan) => plan.id === expense.trip_id)?.title ?? "Linked trip" : purposeLabels[expense.purpose ?? "other"]}</small></span>
+            <strong>{money(expense.outstanding_cents, expense.currency)}</strong>
+          </article>
+        {/each}
+        {#if openReceivables.length === 0}<p class="empty">No open receivables in this scope.</p>{/if}
       </div>
-      {#if purpose === "trip" && !selectedPlan}
-        <label>Trips plan
-          <select bind:value={tripId}>
-            <option value="">Select a plan</option>
-            {#each plans as plan (plan.id)}
-              <option value={plan.id}>{plan.title} · {plan.date_start}–{plan.date_end}</option>
+      <form class="repayment" onsubmit={(event) => { event.preventDefault(); void saveReimbursement(); }}>
+        <label>Confirmed inflow
+          <select bind:value={inflowId}>
+            <option value="">Select money received back</option>
+            {#each inflows as inflow (inflow.id)}
+              <option value={inflow.id}>{inflow.booked_at} · {inflow.description} · {money(inflow.amount_cents, inflow.currency)}</option>
             {/each}
           </select>
         </label>
-      {/if}
-      {#if selectedExpense && personalCents() !== null}
-        <p class="calculation">
-          {money(-selectedExpense.amount_cents, selectedExpense.currency)} paid =
-          {money(personalCents() ?? 0, selectedExpense.currency)} yours +
-          {money(Math.max(0, -selectedExpense.amount_cents - (personalCents() ?? 0)), selectedExpense.currency)} receivable
-        </p>
-      {/if}
-      <button disabled={busy || !selectedExpense || personalCents() === null || (purpose === "trip" && !tripId)}>
-        Save reviewed split
-      </button>
-    </form>
-
-    <aside class="shared-ledger">
-      <h3>{selectedPlan ? "Trip receivables" : "Shared-expense ledger"}</h3>
-      {#if visibleSharedExpenses.length}
-        {#each visibleSharedExpenses as expense (expense.source_id)}
-          <article>
-            <div><time>{expense.date}</time><strong>{expense.description}</strong></div>
-            <span>{money(expense.personal_cents, expense.currency)} yours</span>
-            <strong class:settled={expense.outstanding_cents === 0}>{expense.outstanding_cents === 0 ? "Settled" : `${money(expense.outstanding_cents, expense.currency)} open`}</strong>
-          </article>
-        {/each}
-      {:else}
-        <p class="empty">No shared expenses here yet.</p>
-      {/if}
-      <details>
-        <summary>Link a repayment</summary>
-        <form class="repayment" onsubmit={(event) => { event.preventDefault(); void saveReimbursement(); }}>
-          <label>Confirmed inflow
-            <select bind:value={inflowId}>
-              <option value="">Select an inflow</option>
-              {#each inflows as inflow (inflow.id)}
-                <option value={inflow.id}>{inflow.booked_at} · {inflow.description} · {money(inflow.amount_cents, inflow.currency)}</option>
-              {/each}
-            </select>
-          </label>
-          <label>Shared expense
-            <select bind:value={reimbursementTarget}>
-              <option value="">Select an outstanding receivable</option>
-              {#each visibleSharedExpenses.filter((expense) => expense.outstanding_cents > 0) as expense (expense.source_id)}
-                <option value={expense.candidate_id}>{expense.date} · {expense.description} · {money(expense.outstanding_cents, expense.currency)} open</option>
-              {/each}
-            </select>
-          </label>
-          {#if selectedInflow && selectedTarget && selectedInflow.amount_cents > selectedTarget.outstanding_cents}
-            <p class="error">This inflow is larger than the outstanding receivable.</p>
-          {/if}
-          <button disabled={busy || !selectedInflow || !selectedTarget || selectedInflow.amount_cents > selectedTarget.outstanding_cents}>Link as repayment</button>
-        </form>
-      </details>
-    </aside>
-  </div>
+        <label>Original shared expense
+          <select bind:value={reimbursementTarget}>
+            <option value="">Select an open receivable</option>
+            {#each openReceivables as expense (expense.source_id)}
+              <option value={expense.candidate_id}>{expense.date} · {expense.description} · {money(expense.outstanding_cents, expense.currency)} open</option>
+            {/each}
+          </select>
+        </label>
+        {#if selectedInflow && selectedTarget && selectedInflow.currency !== selectedTarget.currency}
+          <p class="error">The repayment and original expense use different currencies.</p>
+        {:else if selectedInflow && selectedTarget && selectedInflow.amount_cents > selectedTarget.outstanding_cents}
+          <p class="error">This inflow is larger than the selected outstanding receivable.</p>
+        {/if}
+        <button disabled={busy || !selectedInflow || !selectedTarget || selectedInflow.currency !== selectedTarget.currency || selectedInflow.amount_cents > selectedTarget.outstanding_cents}>
+          Link repayment
+        </button>
+      </form>
+    </div>
+  </section>
 </section>
 
 <style>
-  .context-review { border: 1px solid var(--border, #333); border-radius: 8px; padding: .9rem; }
-  .heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
-  .heading h2, h3 { margin: 0; }
-  .heading h2 { font-size: .95rem; }
-  .heading p, .form-heading p, .calculation, .empty { margin: .2rem 0 0; color: var(--muted, #888); font-size: .7rem; }
-  .trip-picker { width: min(30rem, 48%); }
-  label { display: grid; gap: .25rem; color: var(--muted, #888); font-size: .68rem; }
-  input, select, button { min-width: 0; border: 1px solid var(--border, #333); border-radius: 6px; padding: .42rem .55rem; font: inherit; font-size: .74rem; background: transparent; color: inherit; }
-  button { justify-self: start; cursor: pointer; }
-  button:disabled, input:disabled { opacity: .45; cursor: default; }
-  .trip-overview { margin-top: .8rem; border-top: 1px solid var(--border, #333); }
-  .trip-title { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .65rem 0; font-size: .72rem; }
-  .trip-title > div { display: flex; align-items: baseline; gap: .7rem; }
-  .trip-title span { color: var(--muted, #888); }
-  .trip-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--border, #333); border-radius: 7px; }
-  .trip-totals div { display: grid; gap: .25rem; padding: .6rem .7rem; border-left: 1px solid var(--border, #333); }
-  .trip-totals div:first-child { border-left: 0; }
-  .trip-totals span { color: var(--muted, #888); font-size: .65rem; }
-  .trip-totals strong { font-size: .92rem; font-variant-numeric: tabular-nums; }
-  .trip-transactions { margin-top: .45rem; max-height: 17rem; overflow: auto; }
-  .trip-transactions article { display: grid; grid-template-columns: 5.5rem minmax(12rem, 1fr) 7rem 8rem 4rem; align-items: center; gap: .65rem; padding: .45rem .2rem; border-bottom: 1px solid var(--border, #333); font-size: .7rem; }
-  .trip-transactions article.selected { background: color-mix(in srgb, var(--primary) 8%, transparent); }
-  .trip-transactions article.assigned .review-state { color: var(--primary); }
-  .trip-transactions article > span { text-align: right; font-variant-numeric: tabular-nums; }
-  .review-state { color: var(--muted, #888); }
-  .trip-transactions button { justify-self: end; padding: .3rem .5rem; }
-  .review-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(19rem, .85fr); gap: .75rem; margin-top: .8rem; }
-  .allocation, .shared-ledger { min-width: 0; border: 1px solid var(--border, #333); border-radius: 7px; padding: .75rem; }
-  .allocation { display: grid; align-content: start; gap: .65rem; }
+  .context-review { min-width: 0; border: 1px solid var(--border, #333); border-radius: 8px; padding: .9rem; }
+  .heading, .editor-heading, .receivable-heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+  h2, h3 { margin: 0; }
+  h2 { font-size: .95rem; }
   h3 { font-size: .78rem; }
-  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
-  .selection-hint { min-height: 2.2rem; display: flex; align-items: center; }
-  .selected-transaction { display: grid; grid-template-columns: auto minmax(8rem, 1fr) auto; gap: .7rem; align-items: center; padding: .5rem .6rem; background: color-mix(in srgb, currentColor 4%, transparent); font-size: .72rem; }
-  .selected-transaction time { color: var(--muted, #888); }
-  .selected-transaction span { font-variant-numeric: tabular-nums; }
-  .shared-ledger > h3 { margin-bottom: .35rem; }
-  .shared-ledger > article { display: grid; grid-template-columns: minmax(9rem, 1fr) auto auto; align-items: center; gap: .7rem; padding: .45rem 0; border-bottom: 1px solid var(--border, #333); font-size: .68rem; }
-  .shared-ledger > article > div { display: grid; grid-template-columns: auto minmax(6rem, 1fr); gap: .45rem; }
-  .shared-ledger > article span { color: var(--muted, #888); }
-  .shared-ledger > article > strong { text-align: right; font-variant-numeric: tabular-nums; }
-  .shared-ledger > article > strong.settled { color: var(--primary); }
-  details { margin-top: .7rem; }
-  summary { cursor: pointer; color: var(--muted, #888); font-size: .7rem; }
-  .repayment { display: grid; gap: .55rem; margin-top: .6rem; }
-  .error { color: var(--danger, #b44); font-size: .72rem; }
-  .notice { color: var(--primary); font-size: .72rem; }
-  @media (max-width: 800px) {
-    .heading { align-items: stretch; flex-direction: column; }
-    .trip-picker { width: auto; }
-    .trip-totals { grid-template-columns: 1fr 1fr; }
-    .trip-totals div:nth-child(3) { border-left: 0; border-top: 1px solid var(--border, #333); }
-    .trip-totals div:nth-child(4) { border-top: 1px solid var(--border, #333); }
-    .trip-transactions article { grid-template-columns: auto 1fr auto; }
-    .trip-transactions article .review-state { grid-column: 2; text-align: left; }
-    .review-grid, .fields { grid-template-columns: 1fr; }
+  p { margin: .2rem 0 0; }
+  .heading p, .editor-heading p, .receivable-heading p, .empty { color: var(--muted, #888); font-size: .68rem; }
+  .coverage { display: grid; justify-items: end; white-space: nowrap; }
+  .coverage strong { font-size: 1rem; font-variant-numeric: tabular-nums; }
+  .coverage span, .queue-scope span { color: var(--muted, #888); font-size: .64rem; }
+  .queue-controls { display: grid; grid-template-columns: minmax(10rem, .55fr) minmax(16rem, 1fr) auto; align-items: end; gap: .6rem; margin-top: .8rem; padding-top: .75rem; border-top: 1px solid var(--border, #333); }
+  label { display: grid; gap: .25rem; min-width: 0; color: var(--muted, #888); font-size: .66rem; }
+  input, select, button { min-width: 0; border: 1px solid var(--border, #333); border-radius: 6px; padding: .4rem .52rem; font: inherit; font-size: .72rem; background: transparent; color: inherit; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  .queue-scope { display: grid; justify-items: end; gap: .15rem; padding-bottom: .35rem; }
+  .queue-scope strong { font-size: .72rem; }
+  .trip-strip { display: grid; grid-template-columns: minmax(12rem, .65fr) minmax(30rem, 1.35fr); align-items: center; gap: 1rem; margin-top: .7rem; padding: .6rem .7rem; border: 1px solid var(--border, #333); border-radius: 7px; }
+  .trip-strip > div { display: grid; gap: .15rem; }
+  .trip-strip > div span, .selected-expense span { color: var(--muted, #888); font-size: .64rem; }
+  .trip-strip dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
+  .trip-strip dl div { display: grid; gap: .15rem; padding-left: .65rem; border-left: 1px solid var(--border, #333); }
+  .trip-strip dt { color: var(--muted, #888); font-size: .6rem; }
+  .trip-strip dd { margin: 0; font-size: .75rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .review-workspace { display: grid; grid-template-columns: minmax(26rem, 1.25fr) minmax(19rem, .75fr); gap: .75rem; margin-top: .75rem; }
+  .expense-queue, .allocation-editor, .receivables { min-width: 0; border: 1px solid var(--border, #333); border-radius: 7px; }
+  .expense-queue { max-height: 27rem; overflow: auto; }
+  .expense-queue > button:not(.show-more) { width: 100%; display: grid; grid-template-columns: 5.4rem minmax(11rem, 1fr) 9rem 6.5rem; align-items: center; gap: .65rem; padding: .55rem .65rem; border: 0; border-bottom: 1px solid var(--border, #333); border-radius: 0; text-align: left; }
+  .expense-queue > button.selected { background: color-mix(in srgb, var(--primary) 9%, transparent); }
+  .expense-queue time, .selected-expense time, .receivable-list time { color: var(--muted, #888); font-size: .64rem; }
+  .expense-main, .context-state { min-width: 0; display: grid; gap: .13rem; }
+  .expense-main strong, .selected-expense strong, .receivable-list span strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .expense-main small, .context-state small, .receivable-list small { color: var(--muted, #888); font-size: .6rem; }
+  .context-state { text-align: right; }
+  .context-state strong { font-size: .66rem; font-weight: 600; }
+  .amount { text-align: right; font-variant-numeric: tabular-nums; }
+  .show-more { margin: .55rem; }
+  .allocation-editor { display: grid; align-content: start; gap: .65rem; padding: .75rem; }
+  .editor-heading > strong { font-size: .85rem; font-variant-numeric: tabular-nums; }
+  .selected-expense { display: grid; grid-template-columns: auto minmax(8rem, 1fr); gap: .15rem .55rem; padding: .5rem .55rem; background: color-mix(in srgb, currentColor 4%, transparent); font-size: .68rem; }
+  .selected-expense span { grid-column: 2; }
+  .share-presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .35rem; }
+  .share-presets button { padding-inline: .25rem; }
+  .calculation { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .4rem; padding: .5rem; border: 1px solid var(--border, #333); border-radius: 6px; }
+  .calculation span { display: grid; gap: .12rem; color: var(--muted, #888); font-size: .6rem; }
+  .calculation strong { color: inherit; font-size: .7rem; font-variant-numeric: tabular-nums; }
+  .error-calculation { border-color: var(--danger, #b44); }
+  .save { justify-self: start; }
+  .editor-empty { min-height: 8rem; display: grid; place-items: center; text-align: center; }
+  .receivables { margin-top: .75rem; padding: .75rem; }
+  .receivable-heading > strong { font-size: .78rem; font-variant-numeric: tabular-nums; }
+  .receivable-grid { display: grid; grid-template-columns: minmax(24rem, 1.2fr) minmax(18rem, .8fr); gap: .8rem; margin-top: .65rem; }
+  .receivable-list article { display: grid; grid-template-columns: 5.2rem minmax(10rem, 1fr) 6.5rem; align-items: center; gap: .55rem; padding: .4rem 0; border-bottom: 1px solid var(--border, #333); font-size: .66rem; }
+  .receivable-list span { min-width: 0; display: grid; gap: .12rem; }
+  .receivable-list > article > strong { text-align: right; font-variant-numeric: tabular-nums; }
+  .repayment { display: grid; align-content: start; gap: .55rem; }
+  .repayment button { justify-self: start; }
+  .error { color: var(--danger, #b44); font-size: .7rem; }
+  .notice { color: var(--primary); font-size: .7rem; }
+  .empty { padding: .7rem; }
+  @media (max-width: 900px) {
+    .review-workspace, .receivable-grid, .trip-strip { grid-template-columns: 1fr; }
+    .trip-strip dl div:first-child { border-left: 0; padding-left: 0; }
+  }
+  @media (max-width: 650px) {
+    .heading { flex-direction: column; }
+    .coverage { justify-items: start; }
+    .queue-controls { grid-template-columns: 1fr; }
+    .queue-scope { justify-items: start; }
+    .trip-strip dl { grid-template-columns: 1fr 1fr; gap: .55rem 0; }
+    .trip-strip dl div:nth-child(3) { border-left: 0; padding-left: 0; }
+    .expense-queue > button:not(.show-more) { grid-template-columns: 4.7rem minmax(9rem, 1fr) auto; }
+    .context-state { grid-column: 2; text-align: left; }
+    .amount { grid-column: 3; grid-row: 1; }
+    .share-presets { grid-template-columns: 1fr 1fr; }
+    .calculation { grid-template-columns: 1fr; }
   }
 </style>

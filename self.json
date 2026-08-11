@@ -144,8 +144,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 88,
-        "nodes": 520
+        "files": 94,
+        "nodes": 541
       }
     },
     {
@@ -433,8 +433,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 118,
-        "nodes": 968
+        "files": 134,
+        "nodes": 1054
       }
     },
     {
@@ -1348,8 +1348,8 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 8835,
-    "external": 7,
+    "nodes": 8955,
+    "external": 8,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
@@ -1364,7 +1364,7 @@
       "SECURITY.md",
       "axon",
       "bootstrap.sh",
-      "docs/axon-cli.md"
+      "demo/README.md"
     ]
   }
 }

@@ -249,7 +249,7 @@
   </section>
 {:else}
   <CategorizationReview {data} {start} {end} {account} onchanged={load} />
-  <SpendingContextReview {data} onchanged={load} />
+  <SpendingContextReview {data} {start} {end} {account} {category} onchanged={load} />
   <section class="panel transactions">
     <div class="panel-heading"><div><h2>Transactions</h2><p>{data.transactions.length} normalized journal rows. Transfers are excluded from totals by default.</p></div></div>
     <TransactionTable rows={data.transactions} />
