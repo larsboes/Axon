@@ -92,3 +92,37 @@ repo's rule forbids in comms' own README ("rather than opening a second capabili
 schema"), or it keeps a second ledger, which turns a per-role ceiling into a per-capability one
 and makes the budget meaningless. Moving the attempts ledger out of comms comes first; the
 itinerary question comes after, if at all.
+
+## No model-read scouting adapter for foreign-language sources
+
+Travel discovery is three hardcoded adapters, all English-language aggregator APIs. What is
+actually on in a Spanish or Portuguese city that week lives on a city page the pipeline
+cannot read. The roadmap sketched an adapter that would ask a model for bounded events with
+a verbatim quoted span per date, keeping only events whose quote appears in the page.
+
+Probed on 2026-08-11 with a throwaway script against a real municipal tourism page, before
+writing any adapter. Two findings, and both say no.
+
+**The grounding check that was supposed to make this safe does not work.** On the first run
+every extracted event passed: five quotes, all genuinely present in the page. They were
+navigation and marketing headings — "Welcome to Porto", "Subscribe to Newsletter" — carried
+with five sequential invented dates, 2023-10-01 through 10-05. The model satisfied "quote
+must appear in the document" perfectly while inventing the entire claim.
+
+Tightening the check to what actually matters, that the quote must support the *date* it is
+offered as evidence for, took it from 5/5 to 0/5. The second run invented `2024-12-25` for
+all five.
+
+This generalises past this adapter and is the reason it is written here rather than in a
+commit message: **a quoted span existing in a document does not verify the claim attached to
+it.** Any future grounding check has to test that the quote supports the specific assertion,
+not that it exists. The same weakness sits in `cloud-content-analysis`'s `source_text`
+requirement today.
+
+**And the input is mostly not there anyway.** The page returned 37 KB of HTML and 1,911
+characters of text: the events are JavaScript-rendered. No model fixes a page that was never
+fetched.
+
+The probe script was deliberately thrown away rather than committed. If this is revisited,
+the thing to build first is the honest grounding check, and the thing to check first is
+whether the source is server-rendered at all.
