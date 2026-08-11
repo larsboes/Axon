@@ -17,8 +17,30 @@ pub struct Station {
 pub struct Leg {
     pub origin: Station,
     pub destination: Station,
+    /// The time to plan around: real-time when HAFAS has one, scheduled
+    /// otherwise. Kept as the primary field because every existing consumer
+    /// reads it and "when does this actually leave" is the usual question.
     pub departure_time: String, // ISO 8601 datetime
     pub arrival_time: String,   // ISO 8601 datetime
+    /// Scheduled and real-time, kept apart.
+    ///
+    /// HAFAS serves `sollzeit` (scheduled) and `istzeit` (real-time) separately
+    /// and this collapsed them with an `or_else`, so a train running twenty
+    /// minutes late was indistinguishable from one running on time: the delay
+    /// existed in the response and was discarded on the way in. `None` means
+    /// HAFAS gave no real-time value, which is different from "no delay".
+    #[serde(default)]
+    pub scheduled_departure: Option<String>,
+    #[serde(default)]
+    pub realtime_departure: Option<String>,
+    #[serde(default)]
+    pub scheduled_arrival: Option<String>,
+    #[serde(default)]
+    pub realtime_arrival: Option<String>,
+    /// Whether HAFAS marked this leg cancelled. A cancelled train was previously
+    /// invisible: it came back as an ordinary leg with times on it.
+    #[serde(default)]
+    pub cancelled: bool,
     pub train_name: String,     // e.g. "ICE 690"
     pub train_number: String,   // e.g. "690"
     pub train_category: String, // e.g. "ICE", "RE", "RB", "S"

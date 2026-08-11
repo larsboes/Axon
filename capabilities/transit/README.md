@@ -185,6 +185,29 @@ von/nach patterns on flattened table text produced two legs running from "Bahnho
 "Bahnhof Zug Gleis" -- the table's own header row -- with `ok: true` and nothing reported
 missing. The labelled-station path is still there for a ticket with no table.
 
+## Scheduled and real-time are different fields now
+
+`parse_journeys_from_response` read `sollzeit` with an `or_else` onto `istzeit` and stored
+the result in one field. Two things were wrong with that.
+
+The fallback was dead. This endpoint does not serve `istzeit` at all; the real-time key is
+`echtzeit`. So the `or_else` never once fired, and every journey carried its scheduled time
+as though it were the actual one. The same failure shape as the `id`/`tripId` bug in
+Gotchas below: a wrong key name that shows up as silence rather than an error.
+
+And even with the right key, folding them loses the delay. A `Leg` now carries
+`scheduled_departure`, `realtime_departure`, `scheduled_arrival`, `realtime_arrival` and
+`cancelled` separately. `departure_time`/`arrival_time` stay as the field to plan around,
+real-time when there is one. `None` means bahn.de gave no real-time value, which is not the
+same as no delay.
+
+Key names were captured from a live response on 2026-08-11 rather than guessed, which is
+how the `istzeit` mistake was caught before it shipped. Verified the same evening against
+real disruption: ICE 619 scheduled 00:20 and running 00:50, ICE 22 scheduled 23:44 running
+00:05, and a tram whose real-time equalled its schedule. Cancellation reads
+`originCancelled`/`destinationCancelled`, also captured from a real section, though no
+cancelled train was in that response to confirm the flag end to end.
+
 ## Trip persistence
 
 `store.rs`'s `TransitStore` owns `transit.trips`/`transit.trip_legs`/`transit.trip_sessions` on

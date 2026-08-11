@@ -300,6 +300,39 @@ struct Stop {
     departure_iso: String,
 }
 
+/// A stop's scheduled and real-time value for one event, kept apart.
+///
+/// Both are read every time. Folding them with `or_else` on the way in is what
+/// made a delay invisible: the field held whichever existed and nothing recorded
+/// which one it was.
+fn times_of(halt: &Value, event: &str) -> (Option<String>, Option<String>) {
+    let read = |key: &str| {
+        halt.get(event)
+            .and_then(|e| e.get(key))
+            .and_then(|t| t.as_str())
+            .map(str::to_string)
+    };
+    // `echtzeit`, captured from a live response. The code this replaced fell
+    // back to `istzeit`, which this endpoint does not serve at all, so the
+    // fallback never once fired and every journey silently carried its
+    // scheduled time as though it were the real one. The same shape as the
+    // `id`/`tripId` bug in Gotchas: a wrong key name that fails as silence.
+    (read("sollzeit"), read("echtzeit"))
+}
+
+/// Whether HAFAS marked something cancelled.
+///
+/// The flag appears under several names across the response depending on where
+/// it sits, and a missing flag means not cancelled -- never unknown, because
+/// HAFAS omits it for the ordinary case.
+fn is_cancelled(node: &Value) -> bool {
+    // Both captured from a real section. A missing flag means not cancelled:
+    // bahn.de omits them for the ordinary case rather than sending false.
+    ["originCancelled", "destinationCancelled"]
+        .iter()
+        .any(|key| node.get(*key).and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
 /// One non-WALK section of the direct journey, expressed as the stop-index pair
 /// it spans plus the train that covers it.
 struct SectionSpan {
@@ -584,18 +617,23 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
                             longitude: None,
                         };
 
-                        let departure_time = origin_halt
-                            .get("abfahrt")
-                            .and_then(|a| a.get("sollzeit").or_else(|| a.get("istzeit")))
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let arrival_time = dest_halt
-                            .get("ankunft")
-                            .and_then(|a| a.get("sollzeit").or_else(|| a.get("istzeit")))
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        let (scheduled_departure, realtime_departure) =
+                            times_of(origin_halt, "abfahrt");
+                        let (scheduled_arrival, realtime_arrival) =
+                            times_of(dest_halt, "ankunft");
+                        // Real-time wins for the primary field, because that is
+                        // the time you have to be on the platform for.
+                        let departure_time = realtime_departure
+                            .clone()
+                            .or_else(|| scheduled_departure.clone())
+                            .unwrap_or_default();
+                        let arrival_time = realtime_arrival
+                            .clone()
+                            .or_else(|| scheduled_arrival.clone())
+                            .unwrap_or_default();
+                        let cancelled = is_cancelled(section)
+                            || is_cancelled(origin_halt)
+                            || is_cancelled(dest_halt);
 
                         legs.push(Leg {
                             origin: origin_station,
@@ -610,6 +648,11 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
                                 .and_then(|g| g.as_str())
                                 .map(|s| s.to_string()),
                             is_regional,
+                            scheduled_departure,
+                            realtime_departure,
+                            scheduled_arrival,
+                            realtime_arrival,
+                            cancelled,
                         });
                     }
                 }
@@ -714,6 +757,108 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// A delayed and partly cancelled connection, in the shape bahn.de serves.
+    ///
+    /// Every key here was captured from a real bahn.de response on 2026-08-11,
+    /// not guessed. That mattered: the first version of this used `istzeit`,
+    /// which the endpoint does not serve, so the field would have been
+    /// structurally null forever while the test passed. The live capture showed
+    /// `echtzeit`, on a train running 35 minutes late.
+    #[test]
+    fn a_delay_survives_the_parse_instead_of_being_folded_away() {
+        let body = serde_json::json!({
+            "verbindungen": [{
+                "verbindungsAbschnitte": [{
+                    "verkehrsmittel": {
+                        "typ": "ZUG", "name": "ICE 1513",
+                        "nummer": "1513", "kurzText": "ICE"
+                    },
+                    "halte": [
+                        {
+                            "id": "8000044", "name": "Bonn Hbf",
+                            "abfahrt": {
+                                "sollzeit": "2026-08-25T10:07:00",
+                                "echtzeit": "2026-08-25T10:26:00"
+                            }
+                        },
+                        {
+                            "id": "8000105", "name": "Frankfurt(Main)Hbf",
+                            "ankunft": {
+                                "sollzeit": "2026-08-25T11:49:00",
+                                "echtzeit": "2026-08-25T12:04:00"
+                            }
+                        }
+                    ]
+                }]
+            }]
+        });
+
+        let journeys = parse_journeys_from_response(&body);
+        assert_eq!(journeys.len(), 1);
+        let leg = &journeys[0].legs[0];
+
+        // Both times survive, and they are different: nineteen minutes late.
+        assert_eq!(
+            leg.scheduled_departure.as_deref(),
+            Some("2026-08-25T10:07:00")
+        );
+        assert_eq!(
+            leg.realtime_departure.as_deref(),
+            Some("2026-08-25T10:26:00")
+        );
+        assert_eq!(leg.scheduled_arrival.as_deref(), Some("2026-08-25T11:49:00"));
+        assert_eq!(leg.realtime_arrival.as_deref(), Some("2026-08-25T12:04:00"));
+
+        // The primary field carries the time you have to be there for.
+        assert_eq!(leg.departure_time, "2026-08-25T10:26:00");
+        assert_eq!(leg.arrival_time, "2026-08-25T12:04:00");
+        assert!(!leg.cancelled);
+    }
+
+    /// No real-time value is not the same as no delay, and must not read as
+    /// "on time".
+    #[test]
+    fn a_connection_with_no_realtime_data_says_so_rather_than_claiming_punctuality() {
+        let body = serde_json::json!({
+            "verbindungen": [{
+                "verbindungsAbschnitte": [{
+                    "verkehrsmittel": { "typ": "ZUG", "name": "RB 66", "nummer": "66" },
+                    "halte": [
+                        { "id": "8000044", "name": "Bonn Hbf",
+                          "abfahrt": { "sollzeit": "2026-08-25T10:07:00" } },
+                        { "id": "8000262", "name": "Siegburg/Bonn",
+                          "ankunft": { "sollzeit": "2026-08-25T10:31:00" } }
+                    ]
+                }]
+            }]
+        });
+        let leg = &parse_journeys_from_response(&body)[0].legs[0];
+        assert!(leg.realtime_departure.is_none());
+        assert!(leg.realtime_arrival.is_none());
+        // The planning field still falls back to the schedule.
+        assert_eq!(leg.departure_time, "2026-08-25T10:07:00");
+    }
+
+    /// A cancelled train used to come back as an ordinary leg with times on it.
+    #[test]
+    fn a_cancelled_leg_is_marked_cancelled() {
+        let body = serde_json::json!({
+            "verbindungen": [{
+                "verbindungsAbschnitte": [{
+                    "verkehrsmittel": { "typ": "ZUG", "name": "ICE 1513", "nummer": "1513" },
+                    "originCancelled": true,
+                    "halte": [
+                        { "id": "8000044", "name": "Bonn Hbf",
+                          "abfahrt": { "sollzeit": "2026-08-25T10:07:00" } },
+                        { "id": "8000105", "name": "Frankfurt(Main)Hbf",
+                          "ankunft": { "sollzeit": "2026-08-25T11:49:00" } }
+                    ]
+                }]
+            }]
+        });
+        assert!(parse_journeys_from_response(&body)[0].legs[0].cancelled);
+    }
+
     fn journey_on(trains: &[&str]) -> Journey {
         let station = |name: &str| Station {
             id: "8000000".into(),
@@ -737,6 +882,11 @@ mod tests {
                     train_category: "ICE".into(),
                     platform: None,
                     is_regional: false,
+                    scheduled_departure: None,
+                    realtime_departure: None,
+                    scheduled_arrival: None,
+                    realtime_arrival: None,
+                    cancelled: false,
                 })
                 .collect(),
             total_duration_minutes: 120,
