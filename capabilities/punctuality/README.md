@@ -72,6 +72,34 @@ this change keeps working and simply cannot answer an arbitrary threshold, becau
 replaces the aggregate wholesale: filling the column in is a deliberate re-ingest, not
 something a schema migration should trigger.
 
+## One train, one day
+
+`ingest` projects six of the sixteen columns in each monthly file and folds the rest into
+histograms. That is the right shape for "how late is an ICE here at this hour" and cannot
+answer "how late was ICE 611 at Dortmund on the 14th", because the ride is gone by the time
+the aggregate exists. The columns to answer it were being decompressed and discarded on
+every run.
+
+```bash
+punctuality ride --type ICE --number 611 --date 2026-07-14 [--eva 8000044]
+```
+
+CLI-only and stores nothing: this is a lookup against files already on disk, and giving it
+a table would create a second copy of DB's own published data.
+
+Three things it will not pretend. A month that is not in the local cache reads as
+`unavailable` with the reason, because the raw directory is prunable. Publication lags a
+journey by up to five weeks, so a recent trip is simply not there yet. And collection is
+98.92% complete with named missing hours. All three collapse into one rule, which is why
+every answer carries the caveat: an absent stop is never evidence that a train did not run.
+
+Two traps found while building it, both of which returned a confident wrong answer rather
+than an error. The time columns are timestamps, not strings, so reading them through a
+string downcast yields nulls, the date filter matches nothing, and the result is an empty
+stop list that looks exactly like "no such ride". And DB writes the same train as `ICE 611`,
+`ICE611` and `611` depending on the column, so a plain string compare misses and looks
+identical to a train that did not run.
+
 ## How the aggregate is built
 
 One histogram per cell, where a cell is (station, train type, hour of day, weekend).

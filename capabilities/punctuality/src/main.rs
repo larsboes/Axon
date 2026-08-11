@@ -12,6 +12,8 @@ Usage:
   punctuality ingest [--from YYYY-MM] [--to YYYY-MM]   download + aggregate monthly releases
   punctuality stats <station|eva> [--type ICE] [--min-n N]
   punctuality stations <needle>                        eva lookup by name
+  punctuality ride --type ICE --number 611 --date YYYY-MM-DD [--eva 8000044]
+                                                       one train's actual stops that day
 
 Defaults: --from 2025-12 (first month covering every station, not just the largest ~100),
 --to the newest published month, --min-n 30.";
@@ -29,6 +31,7 @@ fn main() {
         Some("ingest") => ingest_cmd(&args),
         Some("stats") => stats_cmd(&args),
         Some("stations") => stations_cmd(&args),
+        Some("ride") => ride_cmd(&args),
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);
@@ -166,5 +169,34 @@ fn stations_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     for (eva, name) in store.find_stations(needle)? {
         println!("{eva}  {name}");
     }
+    Ok(())
+}
+
+/// One train's actual stops on one day, straight from the cached monthly file.
+///
+/// Reads the columns `ingest` throws away. Deliberately CLI-only and
+/// deliberately not stored: this is a lookup against files already on disk, and
+/// giving it a table would create a second copy of DB's own published data.
+fn ride_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = Config::load();
+    let train_type = flag(args, "--type").ok_or("ride needs --type (e.g. ICE)")?;
+    let number = flag(args, "--number").ok_or("ride needs --number (e.g. 611)")?;
+    let date = flag(args, "--date").ok_or("ride needs --date YYYY-MM-DD")?;
+    let eva = flag(args, "--eva");
+
+    let answer = punctuality::ride::find(
+        &cfg.raw_dir,
+        &train_type,
+        &number,
+        &date,
+        eva.as_deref(),
+    )?;
+    if answer.stops.is_empty() && answer.unavailable.is_none() {
+        eprintln!(
+            "punctuality: no stops for {train_type} {number} on {date}. Cached months: {}",
+            punctuality::ride::cached_months(&cfg.raw_dir).join(", ")
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&answer)?);
     Ok(())
 }

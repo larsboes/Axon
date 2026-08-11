@@ -14,5 +14,6 @@
 pub mod config;
 pub mod dataset;
 pub mod ingest;
+pub mod ride;
 pub mod stats;
 pub mod store;

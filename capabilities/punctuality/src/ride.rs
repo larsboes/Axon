@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use arrow::array::{Array, BooleanArray, Int32Array, StringArray};
+use arrow::array::{Array, BooleanArray, Int32Array, StringArray, TimestampNanosecondArray};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ProjectionMask;
 use serde::Serialize;
@@ -112,11 +112,63 @@ const COLUMNS: [&str; 13] = [
 
 fn text(batch: &arrow::record_batch::RecordBatch, name: &str, row: usize) -> Option<String> {
     let index = batch.schema().index_of(name).ok()?;
-    let column = batch.column(index).as_any().downcast_ref::<StringArray>()?;
+    let column = batch.column(index);
+    if let Some(strings) = column.as_any().downcast_ref::<StringArray>() {
+        if strings.is_null(row) {
+            return None;
+        }
+        return Some(strings.value(row).to_string());
+    }
+    // The time columns are stored as timestamps, not strings. Reading them
+    // through a StringArray downcast silently yields None, and a None here is
+    // indistinguishable from a train that did not stop: the first version of
+    // this returned zero stops for every query and looked like a correct
+    // "no such ride" answer.
+    timestamp(batch, name, row)
+}
+
+/// A parquet timestamp as `YYYY-MM-DDTHH:MM:SS`.
+///
+/// Upstream states these are already Europe/Berlin wall-clock with no
+/// conversion applied, which the ingest also relies on. Formatting them as
+/// naive local time keeps that true; treating them as UTC would move every
+/// departure by an hour or two.
+fn timestamp(batch: &arrow::record_batch::RecordBatch, name: &str, row: usize) -> Option<String> {
+    let index = batch.schema().index_of(name).ok()?;
+    let column = batch
+        .column(index)
+        .as_any()
+        .downcast_ref::<TimestampNanosecondArray>()?;
     if column.is_null(row) {
         return None;
     }
-    Some(column.value(row).to_string())
+    let nanos = column.value(row);
+    let seconds = nanos.div_euclid(1_000_000_000);
+    let days = seconds.div_euclid(86_400);
+    let rest = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    Some(format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
+        rest / 3600,
+        (rest % 3600) / 60,
+        rest % 60
+    ))
+}
+
+/// Days since the Unix epoch to a civil date. Same proleptic-Gregorian
+/// arithmetic `dataset`/`date` modules use elsewhere in Axon, inlined here
+/// rather than taking a chrono dependency for one call.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 fn number(batch: &arrow::record_batch::RecordBatch, name: &str, row: usize) -> Option<i32> {
@@ -172,12 +224,15 @@ pub fn find(
     let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    let schema = builder.parquet_schema();
-    let indices: Vec<usize> = (0..schema.num_columns())
-        .filter(|i| COLUMNS.contains(&schema.column(*i).name()))
-        .collect();
+    let indices: Vec<usize> = {
+        let schema = builder.parquet_schema();
+        (0..schema.num_columns())
+            .filter(|i| COLUMNS.contains(&schema.column(*i).name()))
+            .collect()
+    };
+    let mask = ProjectionMask::roots(builder.parquet_schema(), indices);
     let reader = builder
-        .with_projection(ProjectionMask::roots(schema, indices))
+        .with_projection(mask)
         .with_batch_size(65_536)
         .build()
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -311,6 +366,19 @@ mod tests {
         assert!(reason.contains("2026-03"), "got: {reason}");
         assert!(reason.contains("ingest"), "the reason must name the fix");
         let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    /// The time columns are timestamps, not strings, and reading them through a
+    /// string downcast returned None for every row -- which the date filter then
+    /// read as "this train did not stop here". Zero results looked like a
+    /// correct answer.
+    #[test]
+    fn epoch_days_convert_to_the_civil_date_the_files_use() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(20_648), (2026, 7, 14));
+        assert_eq!(civil_from_days(19_723), (2024, 1, 1));
+        // A leap day, because off-by-one here silently shifts a whole month.
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
     }
 
     #[test]
