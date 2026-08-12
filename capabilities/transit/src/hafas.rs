@@ -78,8 +78,42 @@ pub struct FareOptions {
     pub deutschland_ticket: bool,
 }
 
+/// Which bahn.de backend this client speaks. The seam R1 asked for: losing a
+/// backend costs one variant, and the selection is config, not a rewrite.
+///
+/// `DbNav` is registered but deliberately UNIMPLEMENTED, with the evidence in
+/// the error it returns: on 2026-08-12 the DB Navigator endpoint answered
+/// OPS_BLOCKED to the canonical db-vendo-client itself (both stock and
+/// browser user agents), so no live response exists to build or verify a
+/// parser against -- writing one from reading the client's JS would be
+/// conjecture wearing a test suite. The moment a re-probe serves journeys,
+/// the parser gets built against captured reality. Until then dbweb stays
+/// primary by necessity, not just by choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RailBackend {
+    #[default]
+    DbWeb,
+    DbNav,
+}
+
+impl RailBackend {
+    /// From `AXON_TRANSIT_BACKEND` ("dbweb" | "dbnav"); anything else falls
+    /// back to dbweb loudly via the log rather than failing the process.
+    pub fn from_env() -> Self {
+        match std::env::var("AXON_TRANSIT_BACKEND").as_deref() {
+            Ok("dbnav") => Self::DbNav,
+            Ok("dbweb") | Err(_) => Self::DbWeb,
+            Ok(other) => {
+                eprintln!("transit: unknown AXON_TRANSIT_BACKEND '{other}', using dbweb");
+                Self::DbWeb
+            }
+        }
+    }
+}
+
 pub struct HafasClient {
     client: Client,
+    backend: RailBackend,
 }
 
 impl Default for HafasClient {
@@ -89,7 +123,23 @@ impl Default for HafasClient {
 }
 
 impl HafasClient {
+    /// The dbnav refusal, in one place: every search on that backend answers
+    /// with the recorded evidence instead of pretending.
+    fn dbnav_unimplemented() -> HafasError {
+        HafasError::Other(
+            "dbnav backend is registered but unimplemented: the endpoint answered OPS_BLOCKED \
+             to the canonical client on 2026-08-12, so no live response exists to verify a \
+             parser against. Re-probe app.services-bahn.de; when it serves journeys, build \
+             the parser from a captured response."
+                .into(),
+        )
+    }
+
     pub fn new() -> Self {
+        Self::with_backend(RailBackend::from_env())
+    }
+
+    pub fn with_backend(backend: RailBackend) -> Self {
         // A bare `Client::new()` has NO request timeout -- a slow or hung
         // response from bahn.de's undocumented endpoint blocks the calling
         // thread forever (this is exactly what happened during the port's
@@ -100,7 +150,7 @@ impl HafasClient {
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .expect("reqwest client with a fixed timeout should always build");
-        Self { client }
+        Self { client, backend }
     }
 
     fn fahrplan_payload(
@@ -149,6 +199,9 @@ impl HafasClient {
         datetime: &str,
         fare: &FareOptions,
     ) -> Result<Vec<Journey>, HafasError> {
+        if self.backend == RailBackend::DbNav {
+            return Err(Self::dbnav_unimplemented());
+        }
         let payload = Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?;
 
         let response = self
@@ -219,6 +272,9 @@ impl HafasClient {
         datetime: &str,
         fare: &FareOptions,
     ) -> Result<SplitResult, HafasError> {
+        if self.backend == RailBackend::DbNav {
+            return Err(Self::dbnav_unimplemented());
+        }
         let payload = Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?;
         let response = self
             .client
@@ -908,6 +964,24 @@ mod tests {
         assert_eq!(leg.departure_time, "2026-08-25T10:26:00");
         assert_eq!(leg.arrival_time, "2026-08-25T12:04:00");
         assert!(!leg.cancelled);
+    }
+
+    /// The backend seam holds: default is dbweb, the env selects, and the
+    /// unimplemented dbnav variant answers with its evidence instead of a
+    /// silent fallback to the other backend -- a caller who asked for dbnav
+    /// must never receive dbweb data unlabeled.
+    #[test]
+    fn the_dbnav_backend_refuses_with_its_evidence_instead_of_pretending() {
+        assert_eq!(RailBackend::default(), RailBackend::DbWeb);
+        let client = HafasClient::with_backend(RailBackend::DbNav);
+        let err = client
+            .search_connections("8000207", "8000105", "2026-09-01T08:00:00", &Default::default())
+            .expect_err("dbnav must refuse, not fall back");
+        assert!(err.to_string().contains("OPS_BLOCKED"), "the evidence travels: {err}");
+        let err = client
+            .search_split_tickets("8000207", "8000105", "2026-09-01T08:00:00", &Default::default())
+            .expect_err("split on dbnav must refuse too");
+        assert!(err.to_string().contains("unimplemented"));
     }
 
     /// A split chain's ticket boundaries carry facts, not verdicts: which
