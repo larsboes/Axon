@@ -15,6 +15,10 @@ pub struct ExtractedLeg {
     pub departure_time: String,
     pub arrival_time: String,
     pub price: Option<f64>,
+    /// `Some("flight")` when the airline path produced this leg; absent on
+    /// rail parses, so stored rail extractions read back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,13 +229,16 @@ fn parse_ticket_text(text: &str, file_name: &str) -> ExtractedTicket {
     let confirmation = parse_confirmation(text);
     let price = parse_price(text);
 
-    // A journey table, when there is one, beats every other signal: it carries
-    // each leg's own origin, destination, train and times, where the fallback
-    // below can only stamp one origin/destination pair onto every train it
-    // found anywhere in the document.
+    // An airline confirmation is its own genre and is checked first: its
+    // markers are unambiguous, and its flight lines would otherwise feed the
+    // rail fallback one useless origin/destination pair. A journey table,
+    // when there is one, beats every other rail signal.
+    let airline_legs = parse_airline_legs(text, price);
     let table_legs = parse_table_rows(text);
 
-    let legs = if !table_legs.is_empty() {
+    let legs = if !airline_legs.is_empty() {
+        airline_legs
+    } else if !table_legs.is_empty() {
         table_legs
     } else if !trains.is_empty()
         && stations.origin.is_some()
@@ -250,6 +257,7 @@ fn parse_ticket_text(text: &str, file_name: &str) -> ExtractedTicket {
                 departure_time: dep.clone(),
                 arrival_time: arr.clone(),
                 price,
+                mode: None,
             })
             .collect()
     } else {
@@ -316,6 +324,72 @@ fn missing_fields(
     missing
 }
 
+/// Airline-confirmation markers. The whole airline path only runs when one of
+/// these identifies the document, so a rail confirmation can never trip the
+/// looser flight patterns below.
+static AIRLINE_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:eurowings|ryanair|lufthansa|easyjet|wizz\s*air|condor)\b").unwrap()
+});
+
+/// One flight header as Eurowings renders it: a date, then the flight number,
+/// then the fare family. Matched on flattened text because every HTML reader
+/// flattens the layout differently while the label words survive them all
+/// (structure verified against a real Buchungsbestätigung, 2026-08-12).
+static FLIGHT_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?x)
+        Flug:?\s*(\d{2})\.(\d{2})\.(\d{4})        # leg date
+        [\s|]* Flugnummer:?\s*
+        ([A-Z]{1,3})\s*(\d{2,4})                  # carrier + number
+    ")
+    .unwrap()
+});
+
+/// The departure/arrival pair under each flight header: times are local
+/// ("Zeiten sind Ortszeiten"), stations are city names.
+static FLIGHT_TIMES_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?x)
+        Abflug\s*(\d{2}:\d{2})\s*Uhr\s*
+        ([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s.\-]{1,30}?)
+        [\s|]+ Ankunft\s*(\d{2}:\d{2})\s*Uhr\s*
+        ([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s.\-]{1,30}?)
+        (?:[\s|]|$)
+    ")
+    .unwrap()
+});
+
+/// Reads flight legs off an airline booking confirmation.
+///
+/// Flight headers and their departure/arrival pairs appear in document order,
+/// so they are zipped by position. The arrival is stamped with the leg's own
+/// date: this format prints no arrival date, so an overnight arrival would be
+/// off by a day -- a property of the source document, not recoverable here.
+fn parse_airline_legs(text: &str, price: Option<f64>) -> Vec<ExtractedLeg> {
+    if !AIRLINE_MARKER_RE.is_match(text) {
+        return Vec::new();
+    }
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let headers: Vec<_> = FLIGHT_LINE_RE.captures_iter(&flattened).collect();
+    let times: Vec<_> = FLIGHT_TIMES_RE.captures_iter(&flattened).collect();
+    headers
+        .iter()
+        .zip(times.iter())
+        .map(|(header, time)| {
+            let (day, month, year) = (&header[1], &header[2], &header[3]);
+            let flight = format!("{} {}", &header[4], &header[5]);
+            let date = format!("{year}-{month}-{day}");
+            ExtractedLeg {
+                origin_name: time[2].trim().to_string(),
+                destination_name: time[4].trim().to_string(),
+                train_number: Some(flight),
+                departure_time: format!("{date}T{}:00", &time[1]),
+                arrival_time: format!("{date}T{}:00", &time[3]),
+                price,
+                mode: Some("flight".to_string()),
+            }
+        })
+        .collect()
+}
+
 /// Reads legs off a journey table, one row at a time.
 ///
 /// Rows are matched on a whole-document basis rather than line by line, because
@@ -335,6 +409,7 @@ fn parse_table_rows(text: &str) -> Vec<ExtractedLeg> {
                 departure_time: format!("{date}T{}:00", &row[2]),
                 arrival_time: format!("{date}T{}:00", &row[4]),
                 price: None,
+                mode: None,
             }
         })
         .collect()
@@ -636,6 +711,55 @@ mod tests {
         assert_eq!(result.legs.len(), 1);
         assert_eq!(result.legs[0].origin_name, "Bonn Hbf");
         assert!(result.ok);
+    }
+
+    #[test]
+    /// An airline confirmation parses into flight legs. The fixture mirrors a
+    /// real Eurowings Buchungsbestätigung's structure (verified 2026-08-12)
+    /// with every personal value fabricated: the label words and layout are
+    /// the airline's, the data is not anyone's.
+    #[test]
+    fn an_airline_confirmation_becomes_flight_legs() {
+        let text = "Booking Confirmation ABC123 Passenger Receipt Buchungsbestätigung \
+            Hallo Max Mustermann, herzlichen Dank für deine Buchung bei Eurowings. \
+            Dein Buchungscode für den Check-in: ABC123 \
+            Flugdaten (Zeiten sind Ortszeiten) \
+            Flug: 03.11.2026 | Flugnummer: EW 538 (BASIC X ) \
+            | Abflug 07:15 Uhr Köln-Bonn | | Ankunft 09:40 Uhr Valencia \
+            Flug: 07.11.2026 | Flugnummer: EW 539 (BASIC E ) \
+            | Abflug 14:55 Uhr Valencia | | Ankunft 17:30 Uhr Köln-Bonn \
+            Gast 1 : Herr Max Mustermann \
+            Köln-Bonn ( CGN ) - Valencia ( VLC ) (BASIC) \
+            Gesamtpreis | 111.11 € |";
+        let ticket = parse_ticket_text(text, "confirmation.eml");
+
+        assert!(ticket.ok);
+        assert_eq!(ticket.legs.len(), 2);
+        let out = &ticket.legs[0];
+        assert_eq!(out.train_number.as_deref(), Some("EW 538"));
+        assert_eq!(out.origin_name, "Köln-Bonn");
+        assert_eq!(out.destination_name, "Valencia");
+        assert_eq!(out.departure_time, "2026-11-03T07:15:00");
+        assert_eq!(out.arrival_time, "2026-11-03T09:40:00");
+        assert_eq!(out.mode.as_deref(), Some("flight"));
+        let back = &ticket.legs[1];
+        assert_eq!(back.train_number.as_deref(), Some("EW 539"));
+        assert_eq!(back.departure_time, "2026-11-07T14:55:00");
+        assert_eq!(ticket.confirmation_number.as_deref(), Some("ABC123"));
+        assert_eq!(back.price, Some(111.11));
+    }
+
+    /// The airline path never runs on a rail confirmation: no marker, no
+    /// flight parsing, even if a stray "Flug" word appears.
+    #[test]
+    fn a_rail_confirmation_stays_on_the_rail_path() {
+        let text = "Ihre Buchung Auftragsnummer: XY123456 \
+            26.11.2026 08:53 Köln Hbf 10:27 Berlin Hbf ICE 848 \
+            Flug zum Sparpreis gibt es hier nicht. Summe: 49,99 €";
+        let ticket = parse_ticket_text(text, "db.pdf");
+        assert_eq!(ticket.legs.len(), 1);
+        assert_eq!(ticket.legs[0].mode, None);
+        assert_eq!(ticket.legs[0].train_number.as_deref(), Some("ICE 848"));
     }
 
     #[test]
