@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 
 use trips::config::{Config, ObsidianConfig};
+use trips::kiwi::KiwiClient;
 use trips::obsidian::{read_trip_note, scan_trip_notes, ObsidianTripCandidate};
 use trips::store::{
     CreatePlan, CreatePlanItem, PlaceRef, PlanSource, TripPlan, TripsStore, UpdatePlan,
@@ -99,6 +100,15 @@ const ROUTES: &[route_manifest::Route] = &[
         "POST",
         "/api/import/obsidian/all",
         "Import every scanned vault trip note.",
+    ),
+    r(
+        "GET",
+        "/api/flights/search",
+        "Flight search via Kiwi.com's open MCP endpoint. Query: from, to (IATA or place \
+         name), date (YYYY-MM-DD), optional flex_days (0-10, widens the search +/- N days) \
+         and return_date. Segments carry naive airport-local times AND resolved UTC \
+         instants; hidden_ground_transfers surfaces airport changes route[] hides. \
+         Self-rate-limited; the endpoint publishes no quota, treat withdrawal as expected.",
     ),
 ];
 
@@ -654,6 +664,45 @@ struct ImportAllObsidianTrips {
     origin: PlaceRef,
 }
 
+#[derive(serde::Deserialize)]
+struct FlightSearchParams {
+    from: String,
+    to: String,
+    date: String,
+    #[serde(default)]
+    flex_days: u8,
+    #[serde(default)]
+    return_date: Option<String>,
+}
+
+/// One live Kiwi search per call, on a blocking thread because the client is
+/// deliberately synchronous (and self-paced) like the bahn.de one in transit.
+/// Upstream failure is a 502 carrying the error text: this route proxies a
+/// third party and must never dress its outage as an empty result.
+async fn search_flights(Query(params): Query<FlightSearchParams>) -> ApiResponse {
+    match tokio::task::spawn_blocking(move || {
+        KiwiClient::new().search(
+            &params.from,
+            &params.to,
+            &params.date,
+            params.flex_days,
+            params.return_date.as_deref(),
+        )
+    })
+    .await
+    {
+        Ok(Ok(result)) => response(StatusCode::OK, result),
+        Ok(Err(error)) => response(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": error.to_string() }),
+        ),
+        Err(join_error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": join_error.to_string() }),
+        ),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let config = Config::load();
@@ -676,6 +725,7 @@ async fn main() {
             delete(delete_item).patch(set_item_day),
         )
         .route("/api/places", get(list_places))
+        .route("/api/flights/search", get(search_flights))
         .route("/api/plans/:id/outcome", post(record_outcome))
         .route("/api/import/obsidian/scan", get(scan_obsidian))
         .route("/api/import/obsidian/all", post(import_all_obsidian))

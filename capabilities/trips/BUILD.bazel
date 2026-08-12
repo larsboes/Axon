@@ -15,12 +15,15 @@ rust_library(
     deps = [
         "//libs/axon-config:axon-config",
         "//libs/axon-store:axon-store",
+        "//libs/station-time:station-time",
         "@crate_index//:postgres",
         "@crate_index//:r2d2",
         "@crate_index//:r2d2_postgres",
+        "@crate_index//:reqwest",
         "@crate_index//:schemars",
         "@crate_index//:serde",
         "@crate_index//:serde_json",
+        "@crate_index//:thiserror",
     ],
 )
 
