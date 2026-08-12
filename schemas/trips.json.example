@@ -1,7 +1,13 @@
 {
-  "_note": "Private overlay template. Replace <knowledge-base-root> with this deployment's absolute or home-relative knowledge-store path, or set AXON_TRIPS_OBSIDIAN_ROOT instead.",
+  "_note": "Private overlay template. Replace <knowledge-base-root> with this deployment's absolute or home-relative knowledge-store path, or set AXON_TRIPS_OBSIDIAN_ROOT instead. The travel section feeds the flight routes: home_airport is the default origin, and pivots are cities where sleeping is free or wanted (friends, family) -- the pivot-routing search enumerates itineraries through them, which is exactly the knowledge no commercial engine has. Personal by nature: real pivots belong only in the overlay copy of this file.",
   "obsidian": {
     "root": "<knowledge-base-root>",
     "trips_dir": "Atlas/Events"
+  },
+  "travel": {
+    "home_airport": "<IATA, e.g. CGN>",
+    "pivots": [
+      { "name": "<who or where>", "iata": "<IATA>", "max_nights": 2 }
+    ]
   }
 }
