@@ -514,11 +514,13 @@
         "check_in": {
           "description": "First night, as a date (YYYY-MM-DD).",
           "type": "string",
+          "format": "date",
           "minLength": 1
         },
         "check_out": {
           "description": "Departure day, as a date (YYYY-MM-DD).",
           "type": "string",
+          "format": "date",
           "minLength": 1
         },
         "latitude": {

@@ -30,9 +30,10 @@ are validated on write, and name the missing field on rejection:
   the order reference, fare name, refundability and cancellation deadline of a purchase made
   elsewhere. (Declared 2026-08-11; this list previously stopped at two.)
 - `stay` — `{check_in, check_out, latitude, longitude, …}`. Where you sleep, next to how you
-  get there. First producer is accommodation search results entered through the agent surface;
-  coordinates are required because the place matching downstream runs on them, and the
-  provider's URL, price and rating ride along unvalidated.
+  get there. Declared for its intended producer, accommodation search results entered through
+  the agent surface (in-repo, the demo seeder is the one writer); coordinates are required
+  because the place matching downstream runs on them, and the provider's URL, price and
+  rating ride along unvalidated.
 
 Every other type stays permissive on purpose. `event` alone is written by three producers with
 three different shapes (a scouting opportunity, a whole search result, a calendar anchor), so

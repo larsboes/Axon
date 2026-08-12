@@ -907,8 +907,9 @@ pub const ITEM_TYPES: &[&str] = &[
 ///   deliberately records `traveler_name_present` as a boolean rather than the
 ///   name, because whose name is on a ticket is personal data this repo has no
 ///   reason to hold.
-/// - `stay` gained its first producer (accommodation search results entered
-///   through the agent surface), so its shape is fixed from the start the way
+/// - `stay` is declared for its intended producer, accommodation search
+///   results entered through the agent surface (in-repo, the demo seeder is
+///   the one writer), so its shape is fixed from the start the way
 ///   `option_set`'s was: where the stay is and when. Coordinates are required
 ///   because the place matching downstream runs on them; provider fields such
 ///   as the booking URL, price and rating ride along unvalidated.
