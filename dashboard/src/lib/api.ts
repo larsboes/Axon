@@ -118,6 +118,8 @@ export interface TripPlan {
   status: 'draft' | 'saved' | 'archived';
   travelers: string[];
   transport_modes: TransportMode[];
+  budget_cents: number | null;
+  currency: string | null;
   stages: TripStage[];
   cover_image_url: string | null;
   source: PlanSource | null;
@@ -133,7 +135,10 @@ export type PlanItemType =
   | 'place'
   | 'stay'
   | 'image'
-  | 'note';
+  | 'note'
+  | 'option_set'
+  | 'booking'
+  | 'outcome';
 
 export interface PlanItem {
   id: string;
@@ -2173,6 +2178,16 @@ export interface SharedExpenseSummary {
   currency: string;
 }
 
+/** Per-trip cost roll-up; `trip_id` is the trips plan id (tag `axon-trip-id`). */
+export interface TripSpendingSummary {
+  trip_id: string;
+  personal_spending_cents: number;
+  gross_cash_outflow_cents: number;
+  reimbursed_cents: number;
+  outstanding_cents: number;
+  expense_posting_count: number;
+}
+
 export interface FinanceDashboard {
   summary: {
     income_cents: number;
@@ -2239,14 +2254,7 @@ export interface FinanceDashboard {
     personal_spending_cents: number;
     expense_posting_count: number;
   }>;
-  trip_spending: Array<{
-    trip_id: string;
-    personal_spending_cents: number;
-    gross_cash_outflow_cents: number;
-    reimbursed_cents: number;
-    outstanding_cents: number;
-    expense_posting_count: number;
-  }>;
+  trip_spending: TripSpendingSummary[];
   balance_snapshot: ManualBalanceSnapshot | null;
   tracked_net_worth: TrackedNetWorth | null;
   source_freshness: Array<{
@@ -2446,6 +2454,12 @@ export const finance = {
       signal ? { signal } : undefined,
     );
   },
+  /** The travel page wants only the per-trip slice, never the whole projection. */
+  tripSpending: (signal?: AbortSignal) =>
+    request<FinanceDashboard>(
+      '/finance/api/dashboard',
+      signal ? { signal } : undefined,
+    ).then((dashboard) => dashboard.trip_spending),
   rebuildLedger: () =>
     request<{ ok: boolean; rows: number }>('/finance/api/ledger/rebuild', { method: 'POST' }),
   csvMappings: () =>

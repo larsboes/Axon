@@ -23,6 +23,7 @@
     axonStatus,
     calendar,
     comms,
+    finance,
     scouting,
     transit,
     trips,
@@ -36,6 +37,7 @@
     type ScoutingOpportunity,
     type TransportMode,
     type TripPlan,
+    type TripSpendingSummary,
   } from "$lib/api";
 
   const EVENT_ADAPTERS = ["luma", "meetup", "euro_hackathons"];
@@ -112,6 +114,8 @@
   let savedTravelCandidates = $state<Set<string>>(new Set());
   let plannerElement: HTMLElement | undefined = $state();
   let openedPlanFromLink = "";
+  let tripSpending = $state<TripSpendingSummary[]>([]);
+  let tripSpendingRequested = false;
 
   const selected = $derived(results.find((result) => result.place.id === selectedId) ?? null);
   const upcomingPlans = $derived(
@@ -125,6 +129,23 @@
       .sort((a, b) => b.date_end.localeCompare(a.date_end)),
   );
   const viewingPast = $derived(activePlan !== null && activePlan.date_end < todayKey);
+  const money = (cents: number, currency: string | null) =>
+    (cents / 100).toLocaleString("en-GB", { style: "currency", currency: currency ?? "EUR" });
+  const tripCostLine = $derived.by(() => {
+    const plan = activePlan;
+    if (!plan) return null;
+    const spend = tripSpending.find((entry) => entry.trip_id === plan.id) ?? null;
+    const parts: string[] = [];
+    if (plan.budget_cents !== null) {
+      parts.push(`Budget ${money(plan.budget_cents, plan.currency)}`);
+    }
+    if (spend) {
+      parts.push(
+        `${parts.length > 0 ? "spent" : "Spent"} ${money(spend.personal_spending_cents, plan.currency)}`,
+      );
+    }
+    return parts.length > 0 ? parts.join(" · ") : null;
+  });
   const filteredPlans = $derived(
     planFilter === "upcoming" ? upcomingPlans : planFilter === "past" ? pastPlans : [...upcomingPlans, ...pastPlans],
   );
@@ -557,9 +578,22 @@
     }
   }
 
+  // One fetch per page life, on the first opened plan. Finance being down must not
+  // break travel: the cost line simply stays absent, so failure is swallowed here.
+  async function loadTripSpending(): Promise<void> {
+    if (tripSpendingRequested) return;
+    tripSpendingRequested = true;
+    try {
+      tripSpending = await finance.tripSpending();
+    } catch {
+      // Deliberate empty state — tripSpending stays [].
+    }
+  }
+
   async function openPlan(plan: TripPlan): Promise<void> {
     error = null;
     editingPlan = false;
+    void loadTripSpending();
     try {
       const details = await trips.get(plan.id);
       items = details.items;
@@ -890,6 +924,9 @@
       stay: "Accommodation",
       image: "Image",
       note: "Note",
+      option_set: "Options",
+      booking: "Booking",
+      outcome: "Outcome",
     };
     return labels[item.item_type];
   }
@@ -1370,6 +1407,9 @@
         {placeName(activePlan.origin)} · {shortDate(activePlan.date_start)} –
         {shortDate(activePlan.date_end)}
       </p>
+      {#if tripCostLine}
+        <p>{tripCostLine}</p>
+      {/if}
       <div class="trip-meta">
         {#each activePlan.transport_modes as mode (mode)}
           <span>{modeLabel(mode)}</span>
