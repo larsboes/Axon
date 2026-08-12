@@ -110,6 +110,15 @@ const ROUTES: &[route_manifest::Route] = &[
          instants; hidden_ground_transfers surfaces airport changes route[] hides. \
          Self-rate-limited; the endpoint publishes no quota, treat withdrawal as expected.",
     ),
+    r(
+        "GET",
+        "/api/flights/grid",
+        "Cheapest flight per departure day across a flexible window: one Kiwi search with \
+         flex_days (default 3, max 10) around date, reduced to cheapest-per-day. Query: \
+         from, to, date (YYYY-MM-DD), optional flex_days. Days won by a hidden \
+         self-transfer are flagged. Date flexibility is the 40-54% price axis; this is \
+         where the money is.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -703,6 +712,45 @@ async fn search_flights(Query(params): Query<FlightSearchParams>) -> ApiResponse
     }
 }
 
+#[derive(serde::Deserialize)]
+struct FlightGridParams {
+    from: String,
+    to: String,
+    date: String,
+    flex_days: Option<u8>,
+}
+
+/// The flexible-date money question: one widened search, reduced to
+/// cheapest-per-day. Defaults to +/-3 days because that alone moved a
+/// measured fare 23%.
+async fn flight_grid(Query(params): Query<FlightGridParams>) -> ApiResponse {
+    let flex = params.flex_days.unwrap_or(3).min(10);
+    match tokio::task::spawn_blocking(move || {
+        KiwiClient::new()
+            .search(&params.from, &params.to, &params.date, flex, None)
+            .map(|result| {
+                let days = trips::kiwi::cheapest_per_day(&result);
+                json!({
+                    "currency": result.currency,
+                    "flex_days": flex,
+                    "days": days,
+                })
+            })
+    })
+    .await
+    {
+        Ok(Ok(grid)) => response(StatusCode::OK, grid),
+        Ok(Err(error)) => response(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": error.to_string() }),
+        ),
+        Err(join_error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": join_error.to_string() }),
+        ),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let config = Config::load();
@@ -726,6 +774,7 @@ async fn main() {
         )
         .route("/api/places", get(list_places))
         .route("/api/flights/search", get(search_flights))
+        .route("/api/flights/grid", get(flight_grid))
         .route("/api/plans/:id/outcome", post(record_outcome))
         .route("/api/import/obsidian/scan", get(scan_obsidian))
         .route("/api/import/obsidian/all", post(import_all_obsidian))

@@ -104,6 +104,50 @@ pub struct FlightSearchResult {
     pub options: Vec<FlightOption>,
 }
 
+/// One day of a flexible-date grid: the cheapest option departing that day.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GridDay {
+    pub date: String,
+    pub price: f64,
+    pub price_formatted: String,
+    pub option_id: String,
+    pub booking_url: String,
+    /// True when this option's legs hide a ground transfer -- cheap days won
+    /// by a self-transfer should say so before anyone books them.
+    pub has_hidden_ground_transfer: bool,
+}
+
+/// Cheapest-per-departure-day over a search result. This is the 40-54% axis
+/// from the PRD measurements: date flexibility moved a CGN->LIS fare from
+/// €223 fixed to €103 across a month, while provider breadth moved it 0.3%.
+pub fn cheapest_per_day(result: &FlightSearchResult) -> Vec<GridDay> {
+    let mut by_day: std::collections::BTreeMap<String, GridDay> = std::collections::BTreeMap::new();
+    for option in &result.options {
+        let Some(date) = option.outbound.departure_time.get(..10) else {
+            continue;
+        };
+        let candidate = GridDay {
+            date: date.to_string(),
+            price: option.price,
+            price_formatted: option.price_formatted.clone(),
+            option_id: option.id.clone(),
+            booking_url: option.booking_url.clone(),
+            has_hidden_ground_transfer: !option.outbound.hidden_ground_transfers.is_empty()
+                || option
+                    .inbound
+                    .as_ref()
+                    .is_some_and(|leg| !leg.hidden_ground_transfers.is_empty()),
+        };
+        match by_day.get(date) {
+            Some(existing) if existing.price <= candidate.price => {}
+            _ => {
+                by_day.insert(date.to_string(), candidate);
+            }
+        }
+    }
+    by_day.into_values().collect()
+}
+
 pub struct KiwiClient {
     client: reqwest::blocking::Client,
 }
@@ -407,6 +451,45 @@ mod tests {
             leg.hidden_ground_transfers,
             vec![("STN".to_string(), "LGW".to_string())]
         );
+    }
+
+    #[test]
+    fn the_grid_keeps_the_cheapest_option_per_day_and_flags_self_transfers() {
+        let mut day_one = cgn_stn_itinerary();
+        day_one["id"] = json!("a");
+        day_one["price"] = json!(80.0);
+        let mut day_one_cheaper = cgn_stn_itinerary();
+        day_one_cheaper["id"] = json!("b");
+        day_one_cheaper["price"] = json!(50.0);
+        let mut day_two = cgn_stn_itinerary();
+        day_two["id"] = json!("c");
+        day_two["price"] = json!(65.0);
+        day_two["outbound"]["departureTime"] = json!("2026-08-21T08:15:00");
+        // The cheap day-two option rides a hidden self-transfer; the grid says so.
+        day_two["outbound"]["segments"].as_array_mut().unwrap().push(json!({
+            "from": "LGW", "to": "BCN",
+            "fromCountry": "United Kingdom", "toCountry": "Spain",
+            "departureTime": "2026-08-21T14:00:00",
+            "arrivalTime": "2026-08-21T17:10:00",
+            "durationSeconds": 7800,
+            "carrier": "VY", "carrierName": "Vueling",
+            "flightNumber": "VY7821", "cabinClass": "Economy"
+        }));
+
+        let envelope = json!({
+            "jsonrpc": "2.0", "id": 3,
+            "result": { "structuredContent": {
+                "currency": "EUR", "resultsCount": 3,
+                "itineraries": [day_one, day_one_cheaper, day_two]
+            }}
+        });
+        let parsed = parse_search_response(&format!("data: {envelope}\n")).unwrap();
+        let grid = cheapest_per_day(&parsed);
+        assert_eq!(grid.len(), 2);
+        assert_eq!((grid[0].date.as_str(), grid[0].price), ("2026-08-20", 50.0));
+        assert!(!grid[0].has_hidden_ground_transfer);
+        assert_eq!((grid[1].date.as_str(), grid[1].price), ("2026-08-21", 65.0));
+        assert!(grid[1].has_hidden_ground_transfer);
     }
 
     #[test]
