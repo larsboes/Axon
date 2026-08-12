@@ -119,6 +119,14 @@ const ROUTES: &[route_manifest::Route] = &[
          self-transfer are flagged. Date flexibility is the 40-54% price axis; this is \
          where the money is.",
     ),
+    r(
+        "GET",
+        "/api/flights/when",
+        "When could I go: every day of a span priced and joined with the calendar. \
+         Query: from, to, date_from, date_to (YYYY-MM-DD, span capped at 42 days). \
+         Free days rank cheapest-first, then planned, committed last with the \
+         colliding entries named. Costs one Kiwi search per 21 span days.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -751,6 +759,90 @@ async fn flight_grid(Query(params): Query<FlightGridParams>) -> ApiResponse {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct FlightWhenParams {
+    from: String,
+    to: String,
+    date_from: String,
+    date_to: String,
+}
+
+/// Where calendar-server listens. Mirrors punctuality.rs's rationale in
+/// transit verbatim -- and this is now the SECOND capability hardcoding a
+/// sibling's port, so the spine mechanism that comment deferred (service-runner
+/// exporting declared siblings' ports) is justified and tracked as follow-up.
+fn calendar_base_url() -> String {
+    std::env::var("AXON_CALENDAR_URL").unwrap_or_else(|_| "http://127.0.0.1:8087".to_string())
+}
+
+/// The fuzzy-timeframe answer: every day of the span priced via the grid,
+/// joined with committed calendar time, ranked free-cheapest-first. The
+/// calendar being down degrades to all-free rather than failing the search --
+/// same contract as punctuality enrichment in transit.
+async fn flight_when(Query(params): Query<FlightWhenParams>) -> ApiResponse {
+    let Some(from_day) = trips::windows::day_number(&params.date_from) else {
+        return response(StatusCode::BAD_REQUEST, json!({"error": "date_from is not ISO"}));
+    };
+    let Some(to_day) = trips::windows::day_number(&params.date_to) else {
+        return response(StatusCode::BAD_REQUEST, json!({"error": "date_to is not ISO"}));
+    };
+    if to_day < from_day || to_day - from_day > 42 {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "span must be 0-42 days, date_from first"}),
+        );
+    }
+
+    let date_from = params.date_from.clone();
+    let date_to = params.date_to.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = KiwiClient::new();
+        let mut grid: Vec<trips::kiwi::GridDay> = Vec::new();
+        for center in trips::windows::window_centers(from_day, to_day, 10) {
+            let center_iso = trips::windows::iso_of_day_number(center);
+            let search = client.search(&params.from, &params.to, &center_iso, 10, None)?;
+            grid.extend(
+                trips::kiwi::cheapest_per_day(&search)
+                    .into_iter()
+                    .filter(|d| d.date >= date_from && d.date <= date_to),
+            );
+        }
+        // Two windows can overlap at the seam; keep the cheaper day.
+        grid.sort_by(|a, b| a.date.cmp(&b.date).then(a.price.total_cmp(&b.price)));
+        grid.dedup_by(|later, earlier| later.date == earlier.date);
+
+        let entries: Vec<trips::windows::CalendarSpan> = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .ok()
+            .and_then(|c| {
+                c.get(format!(
+                    "{}/api/entries?from={date_from}&to={date_to}",
+                    calendar_base_url()
+                ))
+                .send()
+                .ok()
+            })
+            .and_then(|r| r.json().ok())
+            .unwrap_or_default();
+        let loads = trips::windows::day_loads(&date_from, &date_to, &entries);
+        Ok::<_, trips::kiwi::KiwiError>(trips::windows::rank(grid, &loads))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(days)) => response(StatusCode::OK, json!({ "days": days })),
+        Ok(Err(error)) => response(
+            StatusCode::BAD_GATEWAY,
+            json!({ "error": error.to_string() }),
+        ),
+        Err(join_error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": join_error.to_string() }),
+        ),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let config = Config::load();
@@ -775,6 +867,7 @@ async fn main() {
         .route("/api/places", get(list_places))
         .route("/api/flights/search", get(search_flights))
         .route("/api/flights/grid", get(flight_grid))
+        .route("/api/flights/when", get(flight_when))
         .route("/api/plans/:id/outcome", post(record_outcome))
         .route("/api/import/obsidian/scan", get(scan_obsidian))
         .route("/api/import/obsidian/all", post(import_all_obsidian))
