@@ -131,7 +131,34 @@ pub fn analyze(role: &ResolvedRole, document: &str) -> Result<CloudContentAnalys
         .and_then(|message| message.get("content"))
         .and_then(|content| content.as_str())
         .ok_or_else(|| "cloud provider returned no analysis".to_string())?;
-    parse_analysis(content)
+    let mut analysis = parse_analysis(content)?;
+    ground_important_dates(&mut analysis, document);
+    Ok(analysis)
+}
+
+/// The grounding gate (travel PRD X2): a date whose quote does not support it
+/// loses the date, keeping the label as an undated mention. Measured basis: a
+/// provider returned five real quotes with five invented dates and a bare
+/// existence check passed all five -- the quote must carry the claim. Demotion
+/// rather than deletion, and `date: null` is already schema-legal; the
+/// calendar-candidate path skips undated entries, so an invented date can no
+/// longer become a calendar proposal. Each demotion logs its verdict: those
+/// lines ARE the running measurement the PRD asks to read once twenty real
+/// analyses exist (one exists today).
+fn ground_important_dates(analysis: &mut CloudContentAnalysis, document: &str) {
+    for entry in &mut analysis.important_dates {
+        let Some(date) = entry.date.clone() else {
+            continue;
+        };
+        let verdict = crate::grounding::date_grounding(document, &entry.source_text, &date);
+        if verdict != crate::grounding::DateGrounding::Supported {
+            eprintln!(
+                "comms: grounding demoted '{}' ({verdict:?}): quote does not support {date}",
+                entry.label
+            );
+            entry.date = None;
+        }
+    }
 }
 
 fn analysis_system_prompt() -> &'static str {

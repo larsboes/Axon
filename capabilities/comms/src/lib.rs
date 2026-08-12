@@ -18,6 +18,7 @@ pub mod evaluation;
 pub mod extraction;
 pub mod extraction_eval;
 pub mod google;
+pub mod grounding;
 pub mod intake;
 pub mod local_gate;
 pub mod media;
