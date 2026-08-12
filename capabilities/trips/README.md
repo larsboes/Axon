@@ -40,6 +40,15 @@ three different shapes (a scouting opportunity, a whole search result, a calenda
 declaring one shape for it would reject two of them. A variant is declared where there is
 exactly one shape to promise, and nowhere else.
 
+The accommodation flow, for the agent surface: anchor the search on the stage's
+**destination coordinate**, not the city name — the provider takes coordinates directly, and a
+coordinate is what lets the result match places later. When the stage carries no coordinate
+(imported and drafted plans often don't), resolve one from `GET /api/places` before falling
+back to geocoding: a place already visited usually has it. Write the offers as one
+`option_set` (query, anchor provenance, every offer with its coordinate and URL), then the
+chosen candidate as a `stay`. First run 2026-08-12 against a real plan: the October Berlin
+stage had no coordinate, the December Berlin place did, and the search rode that one.
+
 The Travel workspace exposes plan editing for title, start, up to four destinations, dates,
 interests, travelers and transport modes through the existing `PATCH /api/plans/:id` contract.
 Deletion uses `DELETE /api/plans/:id` behind a two-step UI confirmation. Deleting an imported
