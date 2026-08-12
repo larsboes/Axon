@@ -125,6 +125,33 @@ pub enum SplitConfidence {
     Low,
 }
 
+/// One ticket boundary inside a split chain: the station where one
+/// Beförderungsvertrag ends and the next begins.
+///
+/// Separate tickets mean separate contracts (BB Nr. 1.3.4): a delayed first
+/// leg does not release the next ticket's Zugbindung, so every boundary where
+/// the traveller changes trains carries missed-connection risk the through
+/// ticket would not have. This struct carries the FACTS of that risk and
+/// deliberately no probability: punctuality's arrival-delay share is not a
+/// transfer-risk model (see punctuality.rs), and pretending otherwise would
+/// dress a guess as a measurement. Calibration is L2, gated on real outcome
+/// records.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContractBoundary {
+    pub station: Station,
+    /// True when both tickets ride the same train across the boundary -- a
+    /// mid-run ticket split, where no connection can be missed.
+    pub same_train: bool,
+    /// Scheduled transfer buffer, from the UTC instants when both sides carry
+    /// them. `None` when either side's zone is unknown.
+    pub transfer_minutes: Option<i64>,
+    /// Share of the incoming train type's stops at this station in this hour
+    /// that ran >= 6 minutes late, from delay history. Context for the buffer,
+    /// not a verdict. `None` when punctuality has no cell.
+    #[serde(default)]
+    pub incoming_share_late_6: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SplitResult {
     pub original_price: Option<f64>,
@@ -134,6 +161,10 @@ pub struct SplitResult {
     /// dashboard rendered exactly that as "Direct is cheapest".
     pub savings: Option<f64>,
     pub segments: Vec<SplitSegment>,
+    /// The ticket boundaries between consecutive segments, in chain order.
+    /// Empty on results stored before this field existed.
+    #[serde(default)]
+    pub contract_boundaries: Vec<ContractBoundary>,
     pub confidence: SplitConfidence,
     /// Stop pairs the solver asked HAFAS to price and got nothing back for. The
     /// chosen chain is fully priced by construction, so this does not invalidate

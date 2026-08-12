@@ -167,6 +167,64 @@ pub fn enrich_split(result: &mut SplitResult) {
     for (segment, journey) in result.segments.iter_mut().zip(journeys) {
         segment.journey = journey;
     }
+    enrich_boundaries(result);
+}
+
+/// Fills each contract boundary's `incoming_share_late_6`: how often the
+/// arriving train's type ran >= 6 minutes late at that station in that hour.
+/// Context for the transfer buffer, never a transfer-risk probability -- the
+/// module doc on `enrich` says why this data cannot produce one. Same
+/// degradation contract: punctuality being absent leaves the boundaries as
+/// the solver built them.
+fn enrich_boundaries(result: &mut SplitResult) {
+    let mut targets: Vec<usize> = Vec::new();
+    let mut stops: Vec<StopQuery> = Vec::new();
+    for (idx, boundary) in result.contract_boundaries.iter().enumerate() {
+        // Boundary i sits between segments i and i+1; the arriving train is
+        // segment i's last leg.
+        let Some(arriving) = result
+            .segments
+            .get(idx)
+            .and_then(|s| s.journey.legs.last())
+        else {
+            continue;
+        };
+        let Some(eva) = eva_of(&boundary.station.id) else {
+            continue;
+        };
+        let Some((hour, weekend)) = hour_and_weekend(&arriving.arrival_time) else {
+            continue;
+        };
+        targets.push(idx);
+        stops.push(StopQuery {
+            eva,
+            train_type: arriving.train_category.clone(),
+            hour,
+            weekend,
+        });
+    }
+    if stops.is_empty() {
+        return;
+    }
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let response = client
+        .post(format!("{}/lookup", base_url()))
+        .json(&LookupBody { stops })
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.json::<LookupResponse>());
+    let Ok(response) = response else { return };
+    for (idx, stat) in targets.into_iter().zip(response.stats) {
+        if let Some(stat) = stat {
+            result.contract_boundaries[idx].incoming_share_late_6 = Some(stat.share_late_6 as f64);
+        }
+    }
 }
 
 #[cfg(test)]

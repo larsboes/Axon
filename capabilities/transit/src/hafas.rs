@@ -25,7 +25,8 @@
 //! out of here.
 
 use crate::travel::{
-    Journey, Leg, SplitConfidence, SplitResult, SplitSegment, Station, TrainMatch,
+    ContractBoundary, Journey, Leg, SplitConfidence, SplitResult, SplitSegment, Station,
+    TrainMatch,
 };
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
@@ -321,17 +322,54 @@ impl HafasClient {
             .collect();
 
         let confidence = split_confidence(&segments, unpriced_pairs);
+        let contract_boundaries = contract_boundaries_of(&segments);
 
         Ok(SplitResult {
             original_price: direct_price,
             split_price,
             savings: direct_price.map(|p| p - split_price),
             segments,
+            contract_boundaries,
             confidence,
             unpriced_pairs,
             queried_pairs,
         })
     }
+}
+
+/// The ticket boundaries between consecutive chain segments.
+///
+/// The boundary station is where segment i's journey ends and segment i+1's
+/// begins. `same_train` compares the arriving and departing train numbers: a
+/// mid-run split has no connection to miss, while a train change across a
+/// contract boundary is the risk the through ticket would not have carried.
+/// The buffer uses the UTC instants X1 attached, so it stays right when a
+/// chain crosses a timezone.
+fn contract_boundaries_of(segments: &[crate::travel::SplitSegment]) -> Vec<ContractBoundary> {
+    segments
+        .windows(2)
+        .filter_map(|pair| {
+            let arriving = pair[0].journey.legs.last()?;
+            let departing = pair[1].journey.legs.first()?;
+            let same_train = !arriving.train_number.is_empty()
+                && arriving.train_number == departing.train_number;
+            // Both strings carry explicit offsets ("...Z"), so the station ids
+            // station-time would otherwise resolve a zone from are unused.
+            let transfer_minutes = match (&arriving.arrival_utc, &departing.departure_utc) {
+                (Some(arrival), Some(departure)) => {
+                    station_time::duration_between(arrival, "", departure, "")
+                        .map(|d| d.num_minutes())
+                }
+                _ => None,
+            };
+            Some(ContractBoundary {
+                station: arriving.destination.clone(),
+                same_train,
+                transfer_minutes,
+                incoming_share_late_6: None,
+            })
+        })
+        .collect()
 }
 
 struct Stop {
@@ -870,6 +908,72 @@ mod tests {
         assert_eq!(leg.departure_time, "2026-08-25T10:26:00");
         assert_eq!(leg.arrival_time, "2026-08-25T12:04:00");
         assert!(!leg.cancelled);
+    }
+
+    /// A split chain's ticket boundaries carry facts, not verdicts: which
+    /// station, whether the same train continues (no connection to miss),
+    /// and the UTC-correct transfer buffer. The delay-share slot stays None
+    /// here -- punctuality fills it, and its absence must not invent one.
+    #[test]
+    fn contract_boundaries_carry_the_facts_a_through_ticket_would_not_need() {
+        let station = |name: &str| Station {
+            id: format!("A=1@O={name}@L=8000105@"),
+            name: name.into(),
+            latitude: None,
+            longitude: None,
+        };
+        let seg = |train: &str, arr_utc: Option<&str>, dep_utc: Option<&str>| SplitSegment {
+            journey: Journey {
+                id: "j".into(),
+                start_station: station("From"),
+                end_station: station("Boundary"),
+                legs: vec![Leg {
+                    origin: station("From"),
+                    destination: station("Boundary"),
+                    departure_time: "2026-09-01T08:00:00".into(),
+                    arrival_time: "2026-09-01T10:00:00".into(),
+                    departure_utc: dep_utc.map(String::from),
+                    arrival_utc: arr_utc.map(String::from),
+                    train_name: format!("ICE {train}"),
+                    train_number: train.into(),
+                    train_category: "ICE".into(),
+                    platform: None,
+                    is_regional: false,
+                    scheduled_departure: None,
+                    realtime_departure: None,
+                    scheduled_arrival: None,
+                    realtime_arrival: None,
+                    cancelled: false,
+                }],
+                total_duration_minutes: 120,
+                total_price: Some(20.0),
+                delay_risk_score: None,
+            },
+            train_match: TrainMatch::Exact,
+            expected_trains: vec![train.into()],
+        };
+
+        // Train change with UTC on both sides: the buffer is measurable.
+        let chain = vec![
+            seg("100", Some("2026-09-01T08:00:00Z"), None),
+            seg("200", None, Some("2026-09-01T08:12:00Z")),
+        ];
+        let boundaries = contract_boundaries_of(&chain);
+        assert_eq!(boundaries.len(), 1);
+        assert!(!boundaries[0].same_train);
+        assert_eq!(boundaries[0].transfer_minutes, Some(12));
+        assert_eq!(boundaries[0].incoming_share_late_6, None);
+
+        // Same train across the boundary: a mid-run ticket split.
+        let mid_run = vec![
+            seg("100", Some("2026-09-01T08:00:00Z"), None),
+            seg("100", None, Some("2026-09-01T08:00:00Z")),
+        ];
+        assert!(contract_boundaries_of(&mid_run)[0].same_train);
+
+        // A side without UTC yields no buffer rather than a naive-subtraction lie.
+        let no_utc = vec![seg("100", None, None), seg("200", None, None)];
+        assert_eq!(contract_boundaries_of(&no_utc)[0].transfer_minutes, None);
     }
 
     /// The fare context reaches the wire in the exact shape bahn.de's own
