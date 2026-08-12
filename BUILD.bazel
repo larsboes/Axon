@@ -81,7 +81,6 @@ _ARCHITECTURE_INPUTS = [
     # anything else made ARCHITECTURE.md regenerate.
     "//capabilities/tasks:README.md",
     "//capabilities/tasks:service.toml",
-    "//libs/ai-client:README.md",
     "//libs/axon-config:README.md",
     "//libs/axon-server:README.md",
     "//libs/axon-store:README.md",
@@ -90,6 +89,9 @@ _ARCHITECTURE_INPUTS = [
     "//libs/markdown-root:README.md",
     "//libs/overlay:README.md",
     "//libs/route-manifest:README.md",
+    # station-time was missing here, which let the freshness gate pass green over a
+    # stale ARCHITECTURE.md -- the same false-green class as the tasks labels above.
+    "//libs/station-time:README.md",
     "//libs/summarize:README.md",
     # The generator discovers spine apps via the root-level */service.toml glob; the
     # sandbox only materializes declared files, so the manifest must be data here or

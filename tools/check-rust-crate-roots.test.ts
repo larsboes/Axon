@@ -81,10 +81,10 @@ describe("crateRootViolations", () => {
   test("many sources with a single root are fine without crate_root", () => {
     const t = target({
       srcs: [
-        "//libs/ai-client:src/lib.rs",
-        "//libs/ai-client:src/router.rs",
-        "//libs/ai-client:src/providers/mod.rs",
-        "//libs/ai-client:src/providers/gemini.rs",
+        "//libs/inference:src/lib.rs",
+        "//libs/inference:src/router.rs",
+        "//libs/inference:src/providers/mod.rs",
+        "//libs/inference:src/providers/gemini.rs",
       ],
     });
     expect(crateRootViolations([t])).toHaveLength(0);

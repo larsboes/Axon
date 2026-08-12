@@ -1,7 +1,7 @@
 module(name = "axon")
 
 # Rust build spine. Adopted now (not deferred) because more Rust capabilities
-# are coming (transit next, likely ai-client after) and will share this
+# are coming (transit landed next) and will share this
 # dependency graph -- see upstreams.toml [rules_rust] for the version pin
 # rationale (cooldown-driven: 0.71.1, not the newer 0.71.2/0.71.3).
 bazel_dep(name = "rules_rust", version = "0.71.1")

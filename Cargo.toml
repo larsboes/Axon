@@ -10,7 +10,6 @@ members = [
     "capabilities/tasks",
     "capabilities/transit",
     "capabilities/trips",
-    "libs/ai-client",
     "libs/axon-config",
     "libs/axon-server",
     "libs/axon-store",

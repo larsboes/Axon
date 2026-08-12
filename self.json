@@ -27,14 +27,6 @@
       }
     },
     {
-      "name": "ai-client",
-      "kind": "lib",
-      "code": {
-        "files": 6,
-        "nodes": 27
-      }
-    },
-    {
       "name": "axon",
       "kind": "pack",
       "code": {
@@ -113,8 +105,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 65,
-        "nodes": 1121
+        "files": 64,
+        "nodes": 991
       }
     },
     {
@@ -144,8 +136,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 96,
-        "nodes": 554
+        "files": 97,
+        "nodes": 555
       }
     },
     {
@@ -169,8 +161,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 14,
-        "nodes": 470
+        "files": 15,
+        "nodes": 528
       }
     },
     {
@@ -203,8 +195,8 @@
       "name": "home-automation",
       "kind": "pack",
       "code": {
-        "files": 22,
-        "nodes": 277
+        "files": 25,
+        "nodes": 331
       }
     },
     {
@@ -407,6 +399,21 @@
       }
     },
     {
+      "name": "sparpreis-watch",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "transit",
+          "trips"
+        ]
+      }
+    },
+    {
+      "name": "station-time",
+      "kind": "lib"
+    },
+    {
       "name": "summarize",
       "kind": "lib",
       "code": {
@@ -451,6 +458,10 @@
         "files": 10,
         "nodes": 172
       }
+    },
+    {
+      "name": "travel",
+      "kind": "pack"
     },
     {
       "name": "trips",
@@ -939,6 +950,16 @@
       ]
     },
     {
+      "from": "transit",
+      "to": "station-time",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/transit/BUILD.bazel"
+      ]
+    },
+    {
       "from": "trips",
       "to": "axon-config",
       "kinds": [
@@ -971,6 +992,16 @@
     {
       "from": "trips",
       "to": "route-manifest",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/trips/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "trips",
+      "to": "station-time",
       "kinds": [
         "bazel-label"
       ],
@@ -1348,9 +1379,17 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 9039,
+    "nodes": 9152,
     "external": 8,
-    "stale": [],
+    "stale": [
+      "capabilities/comms/src/server.rs",
+      "libs/ai-client/README.md",
+      "libs/ai-client/src/lib.rs",
+      "libs/ai-client/src/providers/gemini.rs",
+      "libs/ai-client/src/providers/local_openai.rs",
+      "libs/ai-client/src/providers/mod.rs",
+      "libs/ai-client/src/router.rs"
+    ],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",

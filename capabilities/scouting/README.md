@@ -108,7 +108,7 @@ main.rs                  ── CLI binary ("scout"), one lib crate "scouting"
 
 Bazel now builds this: `bazel build //capabilities/scouting:scout` /
 `bazel test //capabilities/scouting/...`. Adopted now, not deferred to the next Rust port —
-more Rust capabilities are coming (`transit` landed next, likely `ai-client` after) and share
+more Rust capabilities are coming (`transit` landed next) and share
 this dependency graph, so the build spine goes in before the second crate shows up, not
 after. Root `MODULE.bazel` wires `rules_rust` (pinned `0.71.1`, see
 `upstreams.toml`) and generates one `crate_index` from the root Cargo workspace

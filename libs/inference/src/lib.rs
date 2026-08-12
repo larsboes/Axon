@@ -2,7 +2,8 @@
 //!
 //! Before this existed there were four shapes for the same fact: comms'
 //! `SummarizerConfig` and `RelevanceConfig`, scouting's `EmbedConfig`,
-//! `libs/ai-client`'s `RouterConfig`, plus `tools/graphify.sh`'s env var. Each
+//! the since-deleted `libs/ai-client`'s `RouterConfig`, plus `tools/graphify.sh`'s
+//! env var. Each
 //! knew a base URL and a model name, and each had to be edited by hand to move
 //! a machine between runtimes. `systems.toml` already stated the rule this
 //! module implements, in the oMLX entry: *"Referenced by id, not by URL,

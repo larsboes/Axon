@@ -9,9 +9,12 @@ dependency and Bazel consumers depend on `//libs/inference:inference`.
 ## Why it exists
 
 The same fact had four homes: `comms`' `SummarizerConfig` and `RelevanceConfig`,
-`scouting`'s `EmbedConfig`, `libs/ai-client`'s `RouterConfig`, and `tools/graphify.sh`'s
-`GRAPHIFY_BACKEND`. Each knew a base URL and a model name, and moving a machine between
-runtimes meant editing all of them.
+`scouting`'s `EmbedConfig`, the since-deleted `libs/ai-client`'s `RouterConfig`, and
+`tools/graphify.sh`'s `GRAPHIFY_BACKEND`. Each knew a base URL and a model name, and moving
+a machine between runtimes meant editing all of them. `ai-client` was the last holdout and
+went on 2026-08-12: it had no consumers, and its README claimed its local provider was the
+vault-class safe path while its `LlmRequest` carried no data class at all and its router
+failed over to Gemini on any local error.
 
 `systems.toml` already stated the rule, in the oMLX entry:
 
