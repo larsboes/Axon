@@ -1,0 +1,17 @@
+# See schemas/service.toml.example for the field reference.
+#
+# The Sparpreis price watch (travel PRD R4): re-prices the rail searches upcoming trip
+# plans already record, appends the observation, and writes a note item on a drop. The
+# research behind the cadence: drops come from late-released contingents and DB promo
+# windows, both slow-moving — twice a day is already oversampling, and each run costs
+# real bahn.de requests through transit's self-paced client, so the ceiling stays low.
+kind     = "process"
+name     = "sparpreis-watch"
+# `bun` first, not a launcher script — service-runner.sh builds the generated unit's
+# PATH from command[0], and a launcher would hide the interpreter (see feed-sweep).
+command  = ["bun", "run", "tools/sparpreis-watch.ts"]
+schedule = "12h"
+
+# No `port`: this runs, observes, and exits. The contracts it calls, not the code it
+# shares — both must be enabled on a machine that schedules the watch.
+requires = ["transit", "trips"]
