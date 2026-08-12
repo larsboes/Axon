@@ -25,8 +25,7 @@
 //! out of here.
 
 use crate::travel::{
-    ContractBoundary, Journey, Leg, SplitConfidence, SplitResult, SplitSegment, Station,
-    TrainMatch,
+    ContractBoundary, Journey, Leg, SplitConfidence, SplitResult, SplitSegment, Station, TrainMatch,
 };
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
@@ -45,6 +44,27 @@ const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 
 const FAHRPLAN_URL: &str = "https://www.bahn.de/web/api/angebote/fahrplan";
 const ORTE_URL: &str = "https://www.bahn.de/web/api/reiseloesung/orte";
+
+/// The DB Navigator app's journey endpoint and its versioned vendor media
+/// type, both read from db-vendo-client's `p/dbnav/base.json` and
+/// `journeys-req.js` and then confirmed live (2026-08-12).
+const DBNAV_FAHRPLAN_URL: &str = "https://app.services-bahn.de/mob/angebote/fahrplan";
+const DBNAV_MEDIA_TYPE: &str = "application/x.db.vendo.mob.verbindungssuche.v9+json";
+
+/// `X-Correlation-ID` is REQUIRED by this endpoint and its *shape* is not:
+/// omitting it answers 405, while an arbitrary non-UUID string answers 200
+/// (both probed 2026-08-12). db-vendo-client sends two v4 UUIDs joined by
+/// `_`; matching that exactly would cost a `uuid` dependency for a value the
+/// server does not parse, so this derives a per-request value from the clock
+/// instead. Per-request rather than a constant, because one fixed id across
+/// every query is itself a fingerprint.
+fn dbnav_correlation_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos:032x}_{:032x}", nanos.rotate_left(64))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum HafasError {
@@ -81,14 +101,28 @@ pub struct FareOptions {
 /// Which bahn.de backend this client speaks. The seam R1 asked for: losing a
 /// backend costs one variant, and the selection is config, not a rewrite.
 ///
-/// `DbNav` is registered but deliberately UNIMPLEMENTED, with the evidence in
-/// the error it returns: on 2026-08-12 the DB Navigator endpoint answered
-/// OPS_BLOCKED to the canonical db-vendo-client itself (both stock and
-/// browser user agents), so no live response exists to build or verify a
-/// parser against -- writing one from reading the client's JS would be
-/// conjecture wearing a test suite. The moment a re-probe serves journeys,
-/// the parser gets built against captured reality. Until then dbweb stays
-/// primary by necessity, not just by choice.
+/// `DbNav` speaks journeys for real as of 2026-08-12. Getting there took two
+/// wrong premises, both worth keeping written down.
+///
+/// First probe: the endpoint answered OPS_BLOCKED to the canonical
+/// db-vendo-client, and that was generalized to "no client can speak dbnav".
+/// The re-probe falsified it. The block belongs to that client's HTTP stack,
+/// not to the endpoint: db-vendo-client 6.11.1 goes through cross-fetch /
+/// node-fetch@2 with ALPN pinned to http/1.1, and it still draws OPS_BLOCKED
+/// while curl and reqwest, sending a byte-identical body and the same two
+/// headers from the same address in the same minute, both get 200. Neither
+/// the HTTP version nor the User-Agent is the discriminator (all four
+/// combinations of {http/1.1, http/2} x {curl UA, client UA} serve), which
+/// leaves the TLS fingerprint as the remaining suspect. The operative point
+/// for this file: `reqwest` is the client transit uses, and reqwest is not
+/// blocked.
+///
+/// Lesson, since it generalizes past this endpoint: one blocked client is
+/// evidence about that client. Reaching "the endpoint is blocked" needs a
+/// second client, and the cheapest second client is curl.
+///
+/// dbweb stays the default. Split-ticketing stays dbweb-only for a reason
+/// that is now about shape rather than access -- see `dbnav_split_unsupported`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RailBackend {
     #[default]
@@ -123,14 +157,22 @@ impl Default for HafasClient {
 }
 
 impl HafasClient {
-    /// The dbnav refusal, in one place: every search on that backend answers
-    /// with the recorded evidence instead of pretending.
-    fn dbnav_unimplemented() -> HafasError {
+    /// The one thing dbnav still refuses, and why it is no longer about access.
+    ///
+    /// Journey search works on both backends. Split-ticketing does not, because
+    /// the solver does not read parsed `Journey` values: it reads the raw dbweb
+    /// body directly (`extract_stops`, `extract_section_spans`, `angebotsPreis`)
+    /// to learn which train covers which stop pair. dbnav names those facts
+    /// differently (`verbindung.verbindungsAbschnitte[].halte[].ort`, prices
+    /// under `angebote.preise.gesamt.ab`), and a chain of tickets priced off a
+    /// mapping nobody has verified is exactly the failure this solver already
+    /// reports contract boundaries to prevent. Refuse loudly until the stop and
+    /// span extractors are ported and tested against a captured dbnav body.
+    fn dbnav_split_unsupported() -> HafasError {
         HafasError::Other(
-            "dbnav backend is registered but unimplemented: the endpoint answered OPS_BLOCKED \
-             to the canonical client on 2026-08-12, so no live response exists to verify a \
-             parser against. Re-probe app.services-bahn.de; when it serves journeys, build \
-             the parser from a captured response."
+            "split-ticketing is dbweb-only: the solver reads dbweb-shaped stop and section \
+             fields off the raw response, and no verified dbnav mapping for them exists yet. \
+             Journey search works on dbnav; run the split on the dbweb backend."
                 .into(),
         )
     }
@@ -159,7 +201,11 @@ impl HafasClient {
         datetime: &str,
         fare: &FareOptions,
     ) -> Result<Value, HafasError> {
-        let klasse = if fare.first_class { "KLASSE_1" } else { "KLASSE_2" };
+        let klasse = if fare.first_class {
+            "KLASSE_1"
+        } else {
+            "KLASSE_2"
+        };
         let ermaessigung = match fare.bahncard {
             None => json!({"art": "KEINE_ERMAESSIGUNG", "klasse": "KLASSENLOS"}),
             // Enum strings verified against db-vendo-client's
@@ -191,6 +237,68 @@ impl HafasClient {
         }))
     }
 
+    /// The dbnav equivalent, keyed by German field names and a different fare
+    /// vocabulary. Two shapes verified live rather than assumed: the station
+    /// ids go in as the short lid form `A=1@L=<eva>@` (the canonical client
+    /// sends exactly that, no coordinates needed), and `reiseDatum` accepts the
+    /// same naive local string dbweb takes, so `datetime` passes through
+    /// unchanged and both backends keep one caller-facing contract.
+    ///
+    /// The discount is one space-joined string (`"BAHNCARD25 KLASSE_2"`), not
+    /// the object dbweb wants -- read from db-vendo-client's `journeys-req.js`,
+    /// which builds `art + ' ' + klasse` by hand.
+    fn dbnav_payload(
+        from_eva: &str,
+        to_eva: &str,
+        datetime: &str,
+        fare: &FareOptions,
+    ) -> Result<Value, HafasError> {
+        let klasse = if fare.first_class {
+            "KLASSE_1"
+        } else {
+            "KLASSE_2"
+        };
+        let ermaessigung = match fare.bahncard {
+            None => "KEINE_ERMAESSIGUNG KLASSENLOS".to_string(),
+            Some(25) => format!("BAHNCARD25 {klasse}"),
+            Some(50) => format!("BAHNCARD50 {klasse}"),
+            Some(other) => {
+                return Err(HafasError::Other(format!(
+                    "bahncard must be 25 or 50, got {other}"
+                )))
+            }
+        };
+        Ok(json!({
+            "autonomeReservierung": false,
+            "einstiegsTypList": ["STANDARD"],
+            "fahrverguenstigungen": {
+                "deutschlandTicketVorhanden": fare.deutschland_ticket,
+                "nurDeutschlandTicketVerbindungen": false
+            },
+            "klasse": klasse,
+            "reisendenProfil": {
+                "reisende": [{
+                    "ermaessigungen": [ermaessigung],
+                    "reisendenTyp": "ERWACHSENER"
+                }]
+            },
+            "reservierungsKontingenteVorhanden": false,
+            "reiseHin": {
+                "wunsch": {
+                    "abgangsLocationId": format!("A=1@L={from_eva}@"),
+                    "verkehrsmittel": ["ALL"],
+                    "alternativeHalteBerechnung": true,
+                    "zeitWunsch": {
+                        "reiseDatum": datetime,
+                        "zeitPunktArt": "ABFAHRT"
+                    },
+                    "zielLocationId": format!("A=1@L={to_eva}@"),
+                    "fahrradmitnahme": false
+                }
+            }
+        }))
+    }
+
     /// Direct journey search between two EVA station codes.
     pub fn search_connections(
         &self,
@@ -199,18 +307,24 @@ impl HafasClient {
         datetime: &str,
         fare: &FareOptions,
     ) -> Result<Vec<Journey>, HafasError> {
-        if self.backend == RailBackend::DbNav {
-            return Err(Self::dbnav_unimplemented());
-        }
-        let payload = Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?;
+        let request = match self.backend {
+            RailBackend::DbWeb => self
+                .client
+                .post(FAHRPLAN_URL)
+                .header("User-Agent", BROWSER_UA)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json; charset=UTF-8")
+                .json(&Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?),
+            RailBackend::DbNav => self
+                .client
+                .post(DBNAV_FAHRPLAN_URL)
+                .header("X-Correlation-ID", dbnav_correlation_id())
+                .header("Accept", DBNAV_MEDIA_TYPE)
+                .header("Content-Type", DBNAV_MEDIA_TYPE)
+                .json(&Self::dbnav_payload(from_eva, to_eva, datetime, fare)?),
+        };
 
-        let response = self
-            .client
-            .post(FAHRPLAN_URL)
-            .header("User-Agent", BROWSER_UA)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json; charset=UTF-8")
-            .json(&payload)
+        let response = request
             .send()
             .map_err(|e| HafasError::Request(e.to_string()))?;
 
@@ -227,7 +341,10 @@ impl HafasClient {
 
         let body: Value =
             serde_json::from_str(&text).map_err(|e| HafasError::Parse(e.to_string(), text))?;
-        Ok(parse_journeys_from_response(&body))
+        Ok(match self.backend {
+            RailBackend::DbWeb => parse_journeys_from_response(&body),
+            RailBackend::DbNav => parse_dbnav_journeys(&body),
+        })
     }
 
     /// Station name -> EVA id search (autocomplete-style).
@@ -273,7 +390,7 @@ impl HafasClient {
         fare: &FareOptions,
     ) -> Result<SplitResult, HafasError> {
         if self.backend == RailBackend::DbNav {
-            return Err(Self::dbnav_unimplemented());
+            return Err(Self::dbnav_split_unsupported());
         }
         let payload = Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?;
         let response = self
@@ -488,7 +605,10 @@ fn extract_section_spans(v: &Value, stops: &[Stop]) -> Vec<SectionSpan> {
         return spans;
     };
     for section in sections {
-        let verkehrsmittel = section.get("verkehrsmittel").cloned().unwrap_or(Value::Null);
+        let verkehrsmittel = section
+            .get("verkehrsmittel")
+            .cloned()
+            .unwrap_or(Value::Null);
         if verkehrsmittel.get("typ").and_then(|t| t.as_str()) == Some("WALK") {
             continue;
         }
@@ -564,11 +684,7 @@ pub fn split_confidence(segments: &[SplitSegment], unpriced_pairs: usize) -> Spl
     {
         return SplitConfidence::Low;
     }
-    if unpriced_pairs > 0
-        || segments
-            .iter()
-            .any(|s| s.train_match != TrainMatch::Exact)
-    {
+    if unpriced_pairs > 0 || segments.iter().any(|s| s.train_match != TrainMatch::Exact) {
         return SplitConfidence::Partial;
     }
     SplitConfidence::Exact
@@ -752,8 +868,7 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
 
                         let (scheduled_departure, realtime_departure) =
                             times_of(origin_halt, "abfahrt");
-                        let (scheduled_arrival, realtime_arrival) =
-                            times_of(dest_halt, "ankunft");
+                        let (scheduled_arrival, realtime_arrival) = times_of(dest_halt, "ankunft");
                         // Real-time wins for the primary field, because that is
                         // the time you have to be on the platform for.
                         let departure_time = realtime_departure
@@ -848,6 +963,170 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
     }
 
     journeys
+}
+
+/// Pure JSON -> `Journey` parser for the dbnav response, which is a different
+/// document from dbweb's rather than a renamed one. Built against a captured
+/// live body (Bonn Hbf -> Berlin Hbf, 2026-08-12, 97,671 bytes, `schemaVersion`
+/// 1.24.9), not against the client's JS.
+///
+/// Three shape differences worth naming, because each one is a silent-empty
+/// bug if assumed away:
+///
+/// 1. Journeys nest one level deeper: `verbindungen[].verbindung`, with the
+///    price on the *sibling* `verbindungen[].angebote`, so the price is read
+///    from the outer item and everything else from the inner one.
+/// 2. Sections carry their endpoints as `abgangsOrt`/`ankunftsOrt` objects
+///    with a plain `evaNr` and real coordinates, rather than needing the first
+///    and last entries of `halte`. Coordinates come out populated here and
+///    `None` on dbweb, which is a gain, not a divergence to paper over.
+/// 3. `typ` distinguishes `FAHRZEUG` from `FUSSWEG`. Walking transfers are
+///    skipped: `Leg` is a train (it has a name, number, category and a
+///    D-Ticket flag), and a footpath answers none of those. The capture shows
+///    footpaths both with and without `halte`, so filtering on stop count
+///    would have kept some of them.
+///
+/// One honest gap: dbweb marks Deutschlandticket coverage with the explicit
+/// HAFAS attribute `9G`, and the dbnav capture contains no `9G` anywhere.
+/// `is_regional` is therefore derived from `produktGattung` against the
+/// Nahverkehr categories the D-Ticket covers -- a category judgment, not the
+/// vendor's own claim. It is only ever surfaced and stored, never priced on
+/// (`server.rs` renders it, `store.rs` persists it, no fare logic reads it),
+/// which is what makes the approximation acceptable here rather than
+/// dangerous.
+pub fn parse_dbnav_journeys(body: &Value) -> Vec<Journey> {
+    let mut journeys = Vec::new();
+    let Some(verbindungen) = body.get("verbindungen").and_then(|v| v.as_array()) else {
+        return journeys;
+    };
+
+    for item in verbindungen {
+        let Some(v) = item.get("verbindung") else {
+            continue;
+        };
+        let mut legs = Vec::new();
+
+        for section in v
+            .get("verbindungsAbschnitte")
+            .and_then(|s| s.as_array())
+            .unwrap_or(&Vec::new())
+        {
+            if section.get("typ").and_then(|t| t.as_str()) != Some("FAHRZEUG") {
+                continue;
+            }
+            let (Some(origin), Some(destination)) = (
+                section.get("abgangsOrt").map(dbnav_station),
+                section.get("ankunftsOrt").map(dbnav_station),
+            ) else {
+                continue;
+            };
+
+            let departure_time = str_field(section, "abgangsDatum");
+            let arrival_time = str_field(section, "ankunftsDatum");
+            let departure_utc = station_time::rfc3339_utc(&departure_time, &origin.id);
+            let arrival_utc = station_time::rfc3339_utc(&arrival_time, &destination.id);
+            let category = str_field(section, "produktGattung");
+
+            legs.push(Leg {
+                // The platform lives on the first stop, not on the section.
+                platform: section
+                    .get("halte")
+                    .and_then(|h| h.as_array())
+                    .and_then(|halts| halts.first())
+                    .and_then(|halt| halt.get("gleis"))
+                    .and_then(|g| g.as_str())
+                    .map(|s| s.to_string()),
+                // `mitteltext` is the rider-facing name ("ICE 857", "RE5");
+                // `zugNummer` is the bare number.
+                train_name: str_field(section, "mitteltext"),
+                train_number: str_field(section, "zugNummer"),
+                is_regional: is_dbnav_regional(&category),
+                train_category: category,
+                // dbnav timestamps already carry their offset, and
+                // `rfc3339_utc` respects an offset rather than re-shifting it,
+                // so the scheduled fields are the same strings.
+                scheduled_departure: Some(departure_time.clone()),
+                scheduled_arrival: Some(arrival_time.clone()),
+                realtime_departure: section
+                    .get("ezAbgangsDatum")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string()),
+                realtime_arrival: section
+                    .get("ezAnkunftsDatum")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string()),
+                // No cancellation marker appeared in the capture (a search
+                // three weeks out has no real-time layer at all). Reported as
+                // "not cancelled" rather than guessed from `echtzeitNotizen`
+                // text, and left for a capture that actually contains one.
+                cancelled: false,
+                departure_time,
+                arrival_time,
+                departure_utc,
+                arrival_utc,
+                origin,
+                destination,
+            });
+        }
+
+        if legs.is_empty() {
+            continue;
+        }
+        let first_leg = &legs[0];
+        let last_leg = legs.last().unwrap();
+        journeys.push(Journey {
+            id: str_field(v, "checksum"),
+            start_station: first_leg.origin.clone(),
+            end_station: last_leg.destination.clone(),
+            total_duration_minutes: (v.get("reiseDauer").and_then(|d| d.as_u64()).unwrap_or(0) / 60)
+                as u32,
+            legs,
+            total_price: item
+                .get("angebote")
+                .and_then(|a| a.get("preise"))
+                .and_then(|p| p.get("gesamt"))
+                .and_then(|g| g.get("ab"))
+                .and_then(|ab| ab.get("betrag"))
+                .and_then(|b| b.as_f64()),
+            delay_risk_score: None,
+        });
+    }
+
+    journeys
+}
+
+fn str_field(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// A dbnav `abgangsOrt`/`ankunftsOrt`/`ort` object. `evaNr` is the plain EVA
+/// number station-time needs; the composite `locationId` would be rejected.
+fn dbnav_station(ort: &Value) -> Station {
+    let position = ort.get("position");
+    Station {
+        id: str_field(ort, "evaNr"),
+        name: str_field(ort, "name"),
+        latitude: position
+            .and_then(|p| p.get("latitude"))
+            .and_then(|l| l.as_f64()),
+        longitude: position
+            .and_then(|p| p.get("longitude"))
+            .and_then(|l| l.as_f64()),
+    }
+}
+
+/// Nahverkehr categories the Deutschlandticket covers. Long-distance (ICE, IC,
+/// EC, and the private FLX/RJ/TGV/NJ operators) is excluded, which is the line
+/// the ticket itself draws.
+fn is_dbnav_regional(gattung: &str) -> bool {
+    matches!(
+        gattung,
+        "RB" | "RE" | "IRE" | "S" | "STR" | "U" | "BUS" | "SCHIFF" | "ANRUFPFLICHTIG"
+    )
 }
 
 /// Pure JSON -> `Station` parser for the `/reiseloesung/orte` suggest
@@ -957,7 +1236,10 @@ mod tests {
             leg.realtime_departure.as_deref(),
             Some("2026-08-25T10:26:00")
         );
-        assert_eq!(leg.scheduled_arrival.as_deref(), Some("2026-08-25T11:49:00"));
+        assert_eq!(
+            leg.scheduled_arrival.as_deref(),
+            Some("2026-08-25T11:49:00")
+        );
         assert_eq!(leg.realtime_arrival.as_deref(), Some("2026-08-25T12:04:00"));
 
         // The primary field carries the time you have to be there for.
@@ -966,22 +1248,347 @@ mod tests {
         assert!(!leg.cancelled);
     }
 
-    /// The backend seam holds: default is dbweb, the env selects, and the
-    /// unimplemented dbnav variant answers with its evidence instead of a
-    /// silent fallback to the other backend -- a caller who asked for dbnav
-    /// must never receive dbweb data unlabeled.
+    /// One journey of a real dbnav response, trimmed structurally: the other
+    /// four journeys and the notice arrays are gone, every field this parser
+    /// reads is byte-identical to what the endpoint served on 2026-08-12
+    /// (Bonn Hbf -> Berlin Hbf, departing 09:00). A public timetable query,
+    /// so the fixture carries nothing personal.
+    const DBNAV_CAPTURE: &str = r#"{
+ "verbindungen": [
+  {
+   "verbindung": {
+    "checksum": "aaa67600_3",
+    "reiseDauer": 18480,
+    "umstiegeAnzahl": 1,
+    "verbindungsAbschnitte": [
+     {
+      "typ": "FAHRZEUG",
+      "abgangsDatum": "2026-09-15T09:04:00+02:00",
+      "ankunftsDatum": "2026-09-15T09:28:00+02:00",
+      "abschnittsDauer": 1440,
+      "mitteltext": "RE5",
+      "kurztext": "NX",
+      "produktGattung": "RB",
+      "zugNummer": "28510",
+      "verkehrsmittelNummer": "28510",
+      "abgangsOrt": {
+       "name": "Bonn Hbf",
+       "locationId": "A=1@O=Bonn Hbf@X=7097136@Y=50732008@U=80@L=8000044@i=U×008015485@",
+       "evaNr": "8000044",
+       "position": {
+        "latitude": 50.731964,
+        "longitude": 7.096678
+       }
+      },
+      "ankunftsOrt": {
+       "name": "Köln Hbf",
+       "locationId": "A=1@O=Köln Hbf@X=6958730@Y=50943029@U=80@L=8000207@i=U×008015458@",
+       "evaNr": "8000207",
+       "position": {
+        "latitude": 50.94282,
+        "longitude": 6.959197
+       }
+      },
+      "halte": [
+       {
+        "abgangsDatum": "2026-09-15T09:04:00+02:00",
+        "gleis": "1",
+        "ort": {
+         "name": "Bonn Hbf",
+         "locationId": "A=1@O=Bonn Hbf@X=7097136@Y=50732008@U=80@L=8000044@i=U×008015485@",
+         "evaNr": "8000044",
+         "position": {
+          "latitude": 50.731964,
+          "longitude": 7.096678
+         }
+        }
+       },
+       {
+        "ankunftsDatum": "2026-09-15T09:28:00+02:00",
+        "gleis": "1 A-C",
+        "ort": {
+         "name": "Köln Hbf",
+         "locationId": "A=1@O=Köln Hbf@X=6958730@Y=50943029@U=80@L=8000207@i=U×008015458@",
+         "evaNr": "8000207",
+         "position": {
+          "latitude": 50.94282,
+          "longitude": 6.959197
+         }
+        }
+       }
+      ]
+     },
+     {
+      "typ": "FUSSWEG",
+      "abgangsDatum": "2026-09-15T09:28:00+02:00",
+      "ankunftsDatum": "2026-09-15T09:45:00+02:00",
+      "abschnittsDauer": 1020,
+      "abgangsOrt": {
+       "name": "Köln Hbf",
+       "locationId": "A=1@O=Köln Hbf@X=6958730@Y=50943029@U=80@L=8000207@i=U×008015458@",
+       "evaNr": "8000207",
+       "position": {
+        "latitude": 50.94282,
+        "longitude": 6.959197
+       }
+      },
+      "ankunftsOrt": {
+       "name": "Köln Hbf",
+       "locationId": "A=1@O=Köln Hbf@X=6958730@Y=50943029@U=80@L=8000207@i=U×008015458@",
+       "evaNr": "8000207",
+       "position": {
+        "latitude": 50.94282,
+        "longitude": 6.959197
+       }
+      },
+      "halte": [
+       {
+        "ankunftsDatum": "2026-09-15T09:28:00+02:00",
+        "gleis": "1 A-C",
+        "ort": {
+         "name": "Köln Hbf",
+         "locationId": "A=1@O=Köln Hbf@X=6958730@Y=50943029@U=80@L=8000207@i=U×008015458@",
+         "evaNr": "8000207",
+         "position": {
+          "latitude": 50.94282,
+          "longitude": 6.959197
+         }
+        }
+       },
+       {
+        "abgangsDatum": "2026-09-15T09:45:00+02:00",
+        "gleis": "2 A-C",
+        "ort": {
+         "name": "Köln Hbf",
+         "locationId": "A=1@O=Köln Hbf@X=6958730@Y=50943029@U=80@L=8000207@i=U×008015458@",
+         "evaNr": "8000207",
+         "position": {
+          "latitude": 50.94282,
+          "longitude": 6.959197
+         }
+        }
+       }
+      ]
+     },
+     {
+      "typ": "FAHRZEUG",
+      "abgangsDatum": "2026-09-15T09:45:00+02:00",
+      "ankunftsDatum": "2026-09-15T14:12:00+02:00",
+      "abschnittsDauer": 16020,
+      "mitteltext": "ICE 857",
+      "kurztext": "ICE",
+      "produktGattung": "ICE",
+      "zugNummer": "857",
+      "verkehrsmittelNummer": "857",
+      "abgangsOrt": {
+       "name": "Köln Hbf",
+       "locationId": "A=1@O=Köln Hbf@X=6958730@Y=50943029@U=80@L=8000207@i=U×008015458@",
+       "evaNr": "8000207",
+       "position": {
+        "latitude": 50.94282,
+        "longitude": 6.959197
+       }
+      },
+      "ankunftsOrt": {
+       "name": "Berlin Hbf",
+       "locationId": "A=1@O=Berlin Hbf@X=13369549@Y=52525589@U=80@L=8098160@i=U×008031922@",
+       "evaNr": "8098160",
+       "position": {
+        "latitude": 52.52585,
+        "longitude": 13.368892
+       }
+      },
+      "halte": [
+       {
+        "abgangsDatum": "2026-09-15T09:45:00+02:00",
+        "gleis": "2 A-C",
+        "ort": {
+         "name": "Köln Hbf",
+         "locationId": "A=1@O=Köln Hbf@X=6958730@Y=50943029@U=80@L=8000207@i=U×008015458@",
+         "evaNr": "8000207",
+         "position": {
+          "latitude": 50.94282,
+          "longitude": 6.959197
+         }
+        }
+       },
+       {
+        "ankunftsDatum": "2026-09-15T14:12:00+02:00",
+        "gleis": "3",
+        "ort": {
+         "name": "Berlin Hbf",
+         "locationId": "A=1@O=Berlin Hbf@X=13369549@Y=52525589@U=80@L=8098160@i=U×008031922@",
+         "evaNr": "8098160",
+         "position": {
+          "latitude": 52.52585,
+          "longitude": 13.368892
+         }
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "angebote": {
+    "preise": {
+     "istTeilpreis": false,
+     "hinRueckPauschalpreis": false,
+     "gesamt": {
+      "klasse": "KLASSE_2",
+      "ab": {
+       "waehrung": "EUR",
+       "betrag": 59.99
+      }
+     }
+    }
+   }
+  }
+ ]
+}"#;
+
+    /// The parser against captured reality. Asserts the three shape traps
+    /// named on `parse_dbnav_journeys`: the extra `verbindung` nesting, the
+    /// price living on the sibling `angebote`, and the footpath between the
+    /// two trains being dropped rather than becoming a nameless leg.
     #[test]
-    fn the_dbnav_backend_refuses_with_its_evidence_instead_of_pretending() {
+    fn the_dbnav_parser_reads_a_captured_live_response() {
+        let body: Value = serde_json::from_str(DBNAV_CAPTURE).expect("fixture parses");
+        let journeys = parse_dbnav_journeys(&body);
+
+        assert_eq!(journeys.len(), 1);
+        let j = &journeys[0];
+        assert_eq!(j.id, "aaa67600_3");
+        assert_eq!(
+            j.total_price,
+            Some(59.99),
+            "price comes off the sibling angebote"
+        );
+        assert_eq!(j.total_duration_minutes, 308, "18480s / 60");
+        assert_eq!(j.start_station.name, "Bonn Hbf");
+        assert_eq!(
+            j.start_station.id, "8000044",
+            "evaNr, not the composite locationId"
+        );
+        assert_eq!(j.end_station.name, "Berlin Hbf");
+
+        // Three sections in the response, one of them a FUSSWEG.
+        assert_eq!(j.legs.len(), 2, "the footpath is not a leg");
+        let first = &j.legs[0];
+        assert_eq!(first.train_name, "RE5");
+        assert_eq!(first.train_number, "28510");
+        assert_eq!(first.train_category, "RB");
+        assert!(first.is_regional, "RB is Nahverkehr");
+        assert_eq!(first.platform.as_deref(), Some("1"));
+        let second = &j.legs[1];
+        assert_eq!(second.train_name, "ICE 857");
+        assert!(!second.is_regional, "ICE is not covered by the D-Ticket");
+
+        // Coordinates survive: dbnav carries them, dbweb does not.
+        assert_eq!(j.start_station.latitude, Some(50.731964));
+    }
+
+    /// dbnav timestamps arrive with their offset already on them, so the UTC
+    /// fields must respect it rather than shift a second time. 09:04+02:00 is
+    /// 07:04Z, and a double shift would read 05:04Z.
+    #[test]
+    fn an_offset_carrying_dbnav_time_is_not_shifted_twice() {
+        let body: Value = serde_json::from_str(DBNAV_CAPTURE).expect("fixture parses");
+        let leg = &parse_dbnav_journeys(&body).remove(0).legs[0];
+        assert_eq!(leg.departure_time, "2026-09-15T09:04:00+02:00");
+        assert_eq!(leg.departure_utc.as_deref(), Some("2026-09-15T07:04:00Z"));
+        assert_eq!(leg.arrival_utc.as_deref(), Some("2026-09-15T07:28:00Z"));
+        assert_eq!(
+            leg.realtime_departure, None,
+            "a search weeks out has no real-time layer"
+        );
+    }
+
+    /// An empty or foreign document yields no journeys instead of a panic or a
+    /// journey full of empty strings -- the same contract dbweb's parser has.
+    #[test]
+    fn the_dbnav_parser_answers_nothing_for_a_document_it_does_not_recognize() {
+        assert!(parse_dbnav_journeys(&json!({})).is_empty());
+        assert!(parse_dbnav_journeys(&json!({"verbindungen": []})).is_empty());
+        assert!(
+            parse_dbnav_journeys(&json!({"verbindungen": [{"verbindung": {"checksum": "x"}}]}))
+                .is_empty(),
+            "a journey with no train sections is not a journey"
+        );
+    }
+
+    /// The two backends build genuinely different requests from one call, and
+    /// the fare context survives the translation into dbnav's vocabulary: the
+    /// discount is a space-joined string there, an object on dbweb.
+    #[test]
+    fn the_backend_seam_translates_the_fare_context_rather_than_dropping_it() {
         assert_eq!(RailBackend::default(), RailBackend::DbWeb);
+
+        let bc25 = FareOptions {
+            bahncard: Some(25),
+            first_class: false,
+            deutschland_ticket: true,
+        };
+        let dbnav = HafasClient::dbnav_payload("8000044", "8011160", "2026-09-15T09:00:00", &bc25)
+            .expect("bahncard 25 is valid");
+        assert_eq!(
+            dbnav["reisendenProfil"]["reisende"][0]["ermaessigungen"][0],
+            "BAHNCARD25 KLASSE_2"
+        );
+        assert_eq!(
+            dbnav["fahrverguenstigungen"]["deutschlandTicketVorhanden"],
+            true
+        );
+        assert_eq!(
+            dbnav["reiseHin"]["wunsch"]["abgangsLocationId"],
+            "A=1@L=8000044@"
+        );
+        assert_eq!(
+            dbnav["reiseHin"]["wunsch"]["zeitWunsch"]["reiseDatum"],
+            "2026-09-15T09:00:00"
+        );
+
+        let dbweb =
+            HafasClient::fahrplan_payload("8000044", "8011160", "2026-09-15T09:00:00", &bc25)
+                .expect("same options on the other backend");
+        assert_eq!(
+            dbweb["reisende"][0]["ermaessigungen"][0]["art"],
+            "BAHNCARD25"
+        );
+
+        // A rejected BahnCard is rejected on both, not silently dropped by one.
+        let bogus = FareOptions {
+            bahncard: Some(17),
+            ..Default::default()
+        };
+        assert!(
+            HafasClient::dbnav_payload("8000044", "8011160", "2026-09-15T09:00:00", &bogus)
+                .is_err()
+        );
+    }
+
+    /// Split-ticketing still refuses on dbnav, and the refusal now names the
+    /// real reason. Checked before any request is built, so this test makes no
+    /// network call.
+    #[test]
+    fn split_ticketing_refuses_on_dbnav_for_a_shape_reason_not_an_access_one() {
         let client = HafasClient::with_backend(RailBackend::DbNav);
         let err = client
-            .search_connections("8000207", "8000105", "2026-09-01T08:00:00", &Default::default())
-            .expect_err("dbnav must refuse, not fall back");
-        assert!(err.to_string().contains("OPS_BLOCKED"), "the evidence travels: {err}");
-        let err = client
-            .search_split_tickets("8000207", "8000105", "2026-09-01T08:00:00", &Default::default())
-            .expect_err("split on dbnav must refuse too");
-        assert!(err.to_string().contains("unimplemented"));
+            .search_split_tickets(
+                "8000207",
+                "8000105",
+                "2026-09-01T08:00:00",
+                &Default::default(),
+            )
+            .expect_err("split on dbnav must refuse");
+        let message = err.to_string();
+        assert!(
+            message.contains("dbweb-only"),
+            "names the working path: {message}"
+        );
+        assert!(
+            !message.contains("OPS_BLOCKED"),
+            "the access story is over: {message}"
+        );
     }
 
     /// A split chain's ticket boundaries carry facts, not verdicts: which
@@ -1088,10 +1695,13 @@ mod tests {
             bahncard: Some(17),
             ..Default::default()
         };
-        assert!(
-            HafasClient::fahrplan_payload("8000207", "8000105", "2026-09-01T08:00:00", &fantasy)
-                .is_err()
-        );
+        assert!(HafasClient::fahrplan_payload(
+            "8000207",
+            "8000105",
+            "2026-09-01T08:00:00",
+            &fantasy
+        )
+        .is_err());
     }
 
     /// A zone-crossing leg gets unambiguous UTC instants next to its naive
@@ -1290,11 +1900,17 @@ mod tests {
             SplitConfidence::Exact
         );
         assert_eq!(
-            split_confidence(&[segment(TrainMatch::Exact), segment(TrainMatch::Partial)], 0),
+            split_confidence(
+                &[segment(TrainMatch::Exact), segment(TrainMatch::Partial)],
+                0
+            ),
             SplitConfidence::Partial
         );
         assert_eq!(
-            split_confidence(&[segment(TrainMatch::Exact), segment(TrainMatch::Unknown)], 0),
+            split_confidence(
+                &[segment(TrainMatch::Exact), segment(TrainMatch::Unknown)],
+                0
+            ),
             SplitConfidence::Partial
         );
         // All exact, but a failed pairwise query means a cheaper split may exist
