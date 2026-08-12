@@ -15,16 +15,46 @@ pub struct ObsidianConfig {
     pub trips_dir: PathBuf,
 }
 
+/// A city where sleeping costs nothing and staying is wanted -- a friend, family.
+/// The pivot-routing search (PRD F4) enumerates itineraries THROUGH these, which
+/// is the one thing no commercial engine can offer: it does not know where you
+/// are welcome. Personal by nature, so it lives in the overlay's trips.json,
+/// never in this repository.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PivotConfig {
+    pub name: String,
+    pub iata: String,
+    /// How many nights staying there is welcome, which becomes the offset range
+    /// for the onward leg. Defaults to 2.
+    #[serde(default = "default_pivot_nights")]
+    pub max_nights: u8,
+}
+
+fn default_pivot_nights() -> u8 {
+    2
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TravelPrefs {
+    /// Where searches start when the caller names no origin.
+    pub home_airport: Option<String>,
+    #[serde(default)]
+    pub pivots: Vec<PivotConfig>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
     pub port: u16,
     pub obsidian: Option<ObsidianConfig>,
+    pub travel: TravelPrefs,
 }
 
 #[derive(Debug, Deserialize)]
 struct TripsFileConfig {
     obsidian: Option<TripsFileObsidian>,
+    #[serde(default)]
+    travel: Option<TravelPrefs>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,12 +68,15 @@ fn default_trips_dir() -> String {
     "Atlas/Events".into()
 }
 
-fn obsidian_from_personal_config() -> Option<ObsidianConfig> {
+fn file_config() -> Option<TripsFileConfig> {
     let overlay = std::env::var("AXON_PERSONAL_ROOT").ok()?;
     let path = expand_tilde(&overlay).join("config").join("trips.json");
     let body = std::fs::read_to_string(path).ok()?;
-    let config: TripsFileConfig = serde_json::from_str(&body).ok()?;
-    let obsidian = config.obsidian?;
+    serde_json::from_str(&body).ok()
+}
+
+fn obsidian_from_personal_config() -> Option<ObsidianConfig> {
+    let obsidian = file_config()?.obsidian?;
     Some(ObsidianConfig {
         root: expand_tilde(&obsidian.root),
         trips_dir: PathBuf::from(obsidian.trips_dir),
@@ -69,10 +102,12 @@ impl Config {
             }),
             Err(_) => obsidian_from_personal_config(),
         };
+        let travel = file_config().and_then(|c| c.travel).unwrap_or_default();
         Self {
             database_url,
             port,
             obsidian,
+            travel,
         }
     }
 }

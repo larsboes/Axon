@@ -127,6 +127,16 @@ const ROUTES: &[route_manifest::Route] = &[
          Free days rank cheapest-first, then planned, committed last with the \
          colliding entries named. Costs one Kiwi search per 21 span days.",
     ),
+    r(
+        "GET",
+        "/api/flights/pivot",
+        "Itineraries through the friend graph: origin to each configured pivot city, a \
+         free night or two there, then onward -- the routing no commercial engine can \
+         know. Query: to, date (YYYY-MM-DD); optional from (defaults to the configured \
+         home airport). Pivots come from the overlay's trips.json travel section; without \
+         them this answers 400, not an empty success. Every option is separate tickets \
+         with no through-protection, and says so.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -146,6 +156,7 @@ async fn routes() -> Json<Value> {
 struct AppState {
     database_url: Arc<String>,
     obsidian: Option<ObsidianConfig>,
+    travel: Arc<trips::config::TravelPrefs>,
 }
 
 type ApiResponse = (StatusCode, Json<Value>);
@@ -843,12 +854,110 @@ async fn flight_when(Query(params): Query<FlightWhenParams>) -> ApiResponse {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct FlightPivotParams {
+    to: String,
+    date: String,
+    #[serde(default)]
+    from: Option<String>,
+}
+
+/// The Mallorca move (PRD F4): fly to a city where a friend's couch is free,
+/// stay a night or two, fly on. Enumerated over the configured pivot graph
+/// because that graph is the one thing no commercial engine knows. Not
+/// general virtual interlining -- rebuilding Kiwi loses; a handful of pivots
+/// times a couple of offsets is bounded and personal.
+async fn flight_pivot(
+    State(state): State<AppState>,
+    Query(params): Query<FlightPivotParams>,
+) -> ApiResponse {
+    let travel = state.travel.clone();
+    let Some(from) = params.from.or_else(|| travel.home_airport.clone()) else {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "no origin: pass from= or configure travel.home_airport"}),
+        );
+    };
+    if travel.pivots.is_empty() {
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "no pivots configured: add travel.pivots to the overlay's trips.json"}),
+        );
+    }
+    let Some(date_number) = trips::windows::day_number(&params.date) else {
+        return response(StatusCode::BAD_REQUEST, json!({"error": "date is not ISO"}));
+    };
+
+    let to = params.to.clone();
+    let date = params.date.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = KiwiClient::new();
+        let cheapest = |r: &trips::kiwi::FlightSearchResult| {
+            r.options
+                .iter()
+                .min_by(|a, b| a.price.total_cmp(&b.price))
+                .cloned()
+        };
+        let direct = client
+            .search(&from, &to, &date, 0, None)
+            .ok()
+            .and_then(|r| cheapest(&r));
+
+        const PIVOT_CAP: usize = 4;
+        let skipped = travel.pivots.len().saturating_sub(PIVOT_CAP);
+        let mut options = Vec::new();
+        for pivot in travel.pivots.iter().take(PIVOT_CAP) {
+            let Ok(leg_in) = client.search(&from, &pivot.iata, &date, 0, None) else {
+                continue;
+            };
+            let Some(leg_in) = cheapest(&leg_in) else { continue };
+            for nights in 1..=pivot.max_nights.max(1) {
+                let onward_date = trips::windows::iso_of_day_number(date_number + i64::from(nights));
+                let Ok(leg_out) = client.search(&pivot.iata, &to, &onward_date, 0, None) else {
+                    continue;
+                };
+                let Some(leg_out) = cheapest(&leg_out) else { continue };
+                let total = leg_in.price + leg_out.price;
+                options.push(json!({
+                    "pivot": { "name": pivot.name, "iata": pivot.iata },
+                    "nights_at_pivot": nights,
+                    "total_price": total,
+                    "savings_vs_direct": direct.as_ref().map(|d| d.price - total),
+                    "separate_tickets": true,
+                    "note": "two contracts, no through-protection; a delayed first leg is your own risk",
+                    "legs": [leg_in, leg_out.clone()],
+                }));
+            }
+        }
+        options.sort_by(|a, b| {
+            let pa = a["total_price"].as_f64().unwrap_or(f64::MAX);
+            let pb = b["total_price"].as_f64().unwrap_or(f64::MAX);
+            pa.total_cmp(&pb)
+        });
+        json!({
+            "direct": direct,
+            "options": options,
+            "pivots_skipped_over_cap": skipped,
+        })
+    })
+    .await;
+
+    match result {
+        Ok(body) => response(StatusCode::OK, body),
+        Err(join_error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": join_error.to_string() }),
+        ),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let config = Config::load();
     let state = AppState {
         database_url: Arc::new(config.database_url),
         obsidian: config.obsidian,
+        travel: Arc::new(config.travel),
     };
     let app = Router::new()
         .route("/routes", get(routes))
@@ -868,6 +977,7 @@ async fn main() {
         .route("/api/flights/search", get(search_flights))
         .route("/api/flights/grid", get(flight_grid))
         .route("/api/flights/when", get(flight_when))
+        .route("/api/flights/pivot", get(flight_pivot))
         .route("/api/plans/:id/outcome", post(record_outcome))
         .route("/api/import/obsidian/scan", get(scan_obsidian))
         .route("/api/import/obsidian/all", post(import_all_obsidian))
@@ -894,6 +1004,7 @@ mod readiness_tests {
                 "host=127.0.0.1 port=1 user=axon password=axon dbname=axon".to_string(),
             ),
             obsidian: None,
+            travel: Arc::new(Default::default()),
         };
 
         let (status, Json(body)) = ready(State(state)).await;
