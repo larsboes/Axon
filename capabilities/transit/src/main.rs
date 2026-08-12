@@ -295,7 +295,7 @@ fn main() {
             let client = HafasClient::new();
             if cmd == "search" {
                 eprintln!("Searching direct connections from {from} to {to} at {time}...");
-                match client.search_connections(&from, &to, &time) {
+                match client.search_connections(&from, &to, &time, &Default::default()) {
                     Ok(journeys) => println!(
                         "{}",
                         serde_json::to_string_pretty(&journeys).unwrap_or_default()
@@ -309,7 +309,7 @@ fn main() {
                 eprintln!(
                     "Calculating cheapest split-ticket connection from {from} to {to} at {time}..."
                 );
-                match client.search_split_tickets(&from, &to, &time) {
+                match client.search_split_tickets(&from, &to, &time, &Default::default()) {
                     Ok(result) => println!(
                         "{}",
                         serde_json::to_string_pretty(&result).unwrap_or_default()
@@ -596,7 +596,7 @@ fn run_plan(args: &[String], cfg: &Config) {
             if found + errors > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
-            match client.search_connections(&from, &cand.eva, &departure) {
+            match client.search_connections(&from, &cand.eva, &departure, &Default::default()) {
                 Ok(journeys) => {
                     for j in &journeys {
                         match store.record_journey(

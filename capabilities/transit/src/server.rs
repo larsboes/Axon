@@ -30,9 +30,17 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "GET",
         "/api/search",
-        "Fare search between two stations on a date.",
+        "Fare search between two stations on a date. Query: from, to (EVA), time \
+         (YYYY-MM-DDTHH:MM:SS); optional bc (25|50), first_class, d_ticket carry the \
+         fare context, so returned prices are discount-correct.",
     ),
-    r("GET", "/api/split", "Split-ticket options for a search."),
+    r(
+        "GET",
+        "/api/split",
+        "Split-ticket options for a search. Same query as /api/search including the \
+         fare context: BahnCard applies per Fahrkarte, so every candidate segment is \
+         priced the way it would actually be bought.",
+    ),
     r(
         "GET",
         "/api/trips",
@@ -72,6 +80,23 @@ struct RouteQuery {
     from: String,
     to: String,
     time: String,
+    /// 25 or 50; the payload builder rejects anything else loudly.
+    #[serde(default)]
+    bc: Option<u8>,
+    #[serde(default)]
+    first_class: bool,
+    #[serde(default)]
+    d_ticket: bool,
+}
+
+impl RouteQuery {
+    fn fare(&self) -> transit::hafas::FareOptions {
+        transit::hafas::FareOptions {
+            bahncard: self.bc,
+            first_class: self.first_class,
+            deutschland_ticket: self.d_ticket,
+        }
+    }
 }
 
 /// Every capability server answers a failure as `{"error": "..."}` -- the dashboard's
@@ -123,7 +148,7 @@ async fn handle_search(
     // service is unreachable, so a search never fails for want of a delay figure.
     match tokio::task::spawn_blocking(move || {
         client
-            .search_connections(&params.from, &params.to, &params.time)
+            .search_connections(&params.from, &params.to, &params.time, &params.fare())
             .map(|mut journeys| {
                 transit::punctuality::enrich(&mut journeys);
                 journeys
@@ -144,7 +169,7 @@ async fn handle_split(
     let client = state.hafas_client;
     match tokio::task::spawn_blocking(move || {
         client
-            .search_split_tickets(&params.from, &params.to, &params.time)
+            .search_split_tickets(&params.from, &params.to, &params.time, &params.fare())
             .map(|mut result| {
                 transit::punctuality::enrich_split(&mut result);
                 result

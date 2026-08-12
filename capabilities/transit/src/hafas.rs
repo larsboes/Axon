@@ -63,6 +63,20 @@ pub enum HafasError {
     Other(String),
 }
 
+/// Fare context carried into every bahn.de query. The vendor's own pricing
+/// engine applies the discount, so returned fares are discount-correct per
+/// leg -- which is what the split solver needs, because BahnCard applies per
+/// Fahrkarte (BB C.2 Nr. 2.1) and every split segment is its own Fahrkarte.
+/// A Deutschlandticket additionally zeroes pure regional connections on the
+/// vendor's side.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FareOptions {
+    /// 25 or 50; anything else fails the payload builder loudly.
+    pub bahncard: Option<u8>,
+    pub first_class: bool,
+    pub deutschland_ticket: bool,
+}
+
 pub struct HafasClient {
     client: Client,
 }
@@ -88,23 +102,42 @@ impl HafasClient {
         Self { client }
     }
 
-    fn fahrplan_payload(from_eva: &str, to_eva: &str, datetime: &str) -> Value {
-        json!({
+    fn fahrplan_payload(
+        from_eva: &str,
+        to_eva: &str,
+        datetime: &str,
+        fare: &FareOptions,
+    ) -> Result<Value, HafasError> {
+        let klasse = if fare.first_class { "KLASSE_1" } else { "KLASSE_2" };
+        let ermaessigung = match fare.bahncard {
+            None => json!({"art": "KEINE_ERMAESSIGUNG", "klasse": "KLASSENLOS"}),
+            // Enum strings verified against db-vendo-client's
+            // format/loyalty-cards.js (fetched 2026-08-12): the ermaessigung
+            // klasse is the CARD's class; one first_class knob drives both.
+            Some(25) => json!({"art": "BAHNCARD25", "klasse": klasse}),
+            Some(50) => json!({"art": "BAHNCARD50", "klasse": klasse}),
+            Some(other) => {
+                return Err(HafasError::Other(format!(
+                    "bahncard must be 25 or 50, got {other}"
+                )))
+            }
+        };
+        Ok(json!({
             "abfahrtsHalt": from_eva,
             "anfrageZeitpunkt": datetime,
             "ankunftsHalt": to_eva,
             "ankunftSuche": "ABFAHRT",
-            "klasse": "KLASSE_2",
+            "klasse": klasse,
             "produktgattungen": ["ICE", "EC_IC", "IR", "REGIONAL", "SBAHN", "BUS", "SCHIFF", "UBAHN", "TRAM", "ANRUFPFLICHTIG"],
             "reisende": [{
                 "typ": "ERWACHSENER",
-                "ermaessigungen": [{"art": "KEINE_ERMAESSIGUNG", "klasse": "KLASSENLOS"}],
+                "ermaessigungen": [ermaessigung],
                 "anzahl": 1,
                 "alter": []
             }],
             "schnelleVerbindungen": true,
-            "deutschlandTicketVorhanden": false
-        })
+            "deutschlandTicketVorhanden": fare.deutschland_ticket
+        }))
     }
 
     /// Direct journey search between two EVA station codes.
@@ -113,8 +146,9 @@ impl HafasClient {
         from_eva: &str,
         to_eva: &str,
         datetime: &str,
+        fare: &FareOptions,
     ) -> Result<Vec<Journey>, HafasError> {
-        let payload = Self::fahrplan_payload(from_eva, to_eva, datetime);
+        let payload = Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?;
 
         let response = self
             .client
@@ -182,8 +216,9 @@ impl HafasClient {
         from_eva: &str,
         to_eva: &str,
         datetime: &str,
+        fare: &FareOptions,
     ) -> Result<SplitResult, HafasError> {
-        let payload = Self::fahrplan_payload(from_eva, to_eva, datetime);
+        let payload = Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?;
         let response = self
             .client
             .post(FAHRPLAN_URL)
@@ -243,10 +278,14 @@ impl HafasClient {
                 // A failed query used to disappear here, so the DP quietly ran
                 // against a table with holes in it and the caller was told the
                 // answer was the cheapest chain that exists. It is counted now.
+                // Same fare context as the direct query: BahnCard applies per
+                // Fahrkarte, so every candidate segment is priced the way it
+                // would actually be bought.
                 let priced = match self.search_connections(
                     &stops[i].ext_id,
                     &stops[j].ext_id,
                     &stops[i].departure_iso,
+                    fare,
                 ) {
                     Ok(journeys) => match journeys.first() {
                         Some(first) => first.total_price.map(|price| (price, first.clone())),
@@ -831,6 +870,50 @@ mod tests {
         assert_eq!(leg.departure_time, "2026-08-25T10:26:00");
         assert_eq!(leg.arrival_time, "2026-08-25T12:04:00");
         assert!(!leg.cancelled);
+    }
+
+    /// The fare context reaches the wire in the exact shape bahn.de's own
+    /// clients send (enum strings from db-vendo-client's loyalty-cards
+    /// formatter), the no-options default stays byte-compatible with what
+    /// always worked, and a card that does not exist fails loudly instead of
+    /// pricing as no card.
+    #[test]
+    fn the_fare_context_reaches_the_payload_and_rejects_fantasy_cards() {
+        let fare = FareOptions {
+            bahncard: Some(25),
+            first_class: false,
+            deutschland_ticket: true,
+        };
+        let p = HafasClient::fahrplan_payload("8000207", "8000105", "2026-09-01T08:00:00", &fare)
+            .unwrap();
+        assert_eq!(p["klasse"], "KLASSE_2");
+        assert_eq!(
+            p["reisende"][0]["ermaessigungen"][0],
+            serde_json::json!({"art": "BAHNCARD25", "klasse": "KLASSE_2"})
+        );
+        assert_eq!(p["deutschlandTicketVorhanden"], true);
+
+        let default = HafasClient::fahrplan_payload(
+            "8000207",
+            "8000105",
+            "2026-09-01T08:00:00",
+            &FareOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            default["reisende"][0]["ermaessigungen"][0],
+            serde_json::json!({"art": "KEINE_ERMAESSIGUNG", "klasse": "KLASSENLOS"})
+        );
+        assert_eq!(default["deutschlandTicketVorhanden"], false);
+
+        let fantasy = FareOptions {
+            bahncard: Some(17),
+            ..Default::default()
+        };
+        assert!(
+            HafasClient::fahrplan_payload("8000207", "8000105", "2026-09-01T08:00:00", &fantasy)
+                .is_err()
+        );
     }
 
     /// A zone-crossing leg gets unambiguous UTC instants next to its naive
