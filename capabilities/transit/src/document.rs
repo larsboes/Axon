@@ -40,12 +40,7 @@ pub struct Document {
 pub fn read(bytes: &[u8], file_name: &str, config: &Config) -> Result<Document, String> {
     match config.document_backend {
         DocumentBackend::Builtin => builtin(bytes, file_name),
-        DocumentBackend::Xberg => xberg(
-            bytes,
-            file_name,
-            &config.xberg_bin,
-            &config.ocr_language,
-        ),
+        DocumentBackend::Xberg => xberg(bytes, file_name, &config.xberg_bin, &config.ocr_language),
     }
 }
 
@@ -96,10 +91,7 @@ impl TempFile {
         let name = if extension.is_empty() {
             format!("axon-transit-{}-{unique:x}", std::process::id())
         } else {
-            format!(
-                "axon-transit-{}-{unique:x}.{extension}",
-                std::process::id()
-            )
+            format!("axon-transit-{}-{unique:x}.{extension}", std::process::id())
         };
         let path = std::env::temp_dir().join(name);
         let mut file =
@@ -203,7 +195,10 @@ fn content_from_json(stdout: &str) -> Option<String> {
             .and_then(|c| c.as_str())
             .map(str::to_string)
     };
-    value.get("result").and_then(content).or_else(|| content(&value))
+    value
+        .get("result")
+        .and_then(content)
+        .or_else(|| content(&value))
 }
 
 #[cfg(test)]

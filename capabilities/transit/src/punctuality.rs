@@ -182,11 +182,7 @@ fn enrich_boundaries(result: &mut SplitResult) {
     for (idx, boundary) in result.contract_boundaries.iter().enumerate() {
         // Boundary i sits between segments i and i+1; the arriving train is
         // segment i's last leg.
-        let Some(arriving) = result
-            .segments
-            .get(idx)
-            .and_then(|s| s.journey.legs.last())
-        else {
+        let Some(arriving) = result.segments.get(idx).and_then(|s| s.journey.legs.last()) else {
             continue;
         };
         let Some(eva) = eva_of(&boundary.station.id) else {

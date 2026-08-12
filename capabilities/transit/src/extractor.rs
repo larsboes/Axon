@@ -164,12 +164,16 @@ pub fn extract_with_config(
     Ok(ticket)
 }
 
-pub(crate) fn extract_pdf_text(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) fn extract_pdf_text(
+    bytes: &[u8],
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let text = pdf_extract::extract_text_from_mem(bytes)?;
     Ok(text)
 }
 
-pub(crate) fn extract_email_text(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) fn extract_email_text(
+    bytes: &[u8],
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let parsed = mailparse::parse_mail(bytes)?;
     let ct = parsed
         .headers
@@ -240,10 +244,7 @@ fn parse_ticket_text(text: &str, file_name: &str) -> ExtractedTicket {
         airline_legs
     } else if !table_legs.is_empty() {
         table_legs
-    } else if !trains.is_empty()
-        && stations.origin.is_some()
-        && stations.destination.is_some()
-    {
+    } else if !trains.is_empty() && stations.origin.is_some() && stations.destination.is_some() {
         let default_time = format!("{}T00:00:00", chrono_now_date());
         let dep = departure.as_deref().unwrap_or(&default_time).to_string();
         let arr = arrival.as_deref().unwrap_or(&dep).to_string();
@@ -336,24 +337,28 @@ static AIRLINE_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// flattens the layout differently while the label words survive them all
 /// (structure verified against a real Buchungsbestätigung, 2026-08-12).
 static FLIGHT_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?x)
+    Regex::new(
+        r"(?x)
         Flug:?\s*(\d{2})\.(\d{2})\.(\d{4})        # leg date
         [\s|]* Flugnummer:?\s*
         ([A-Z]{1,3})\s*(\d{2,4})                  # carrier + number
-    ")
+    ",
+    )
     .unwrap()
 });
 
 /// The departure/arrival pair under each flight header: times are local
 /// ("Zeiten sind Ortszeiten"), stations are city names.
 static FLIGHT_TIMES_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?x)
+    Regex::new(
+        r"(?x)
         Abflug\s*(\d{2}:\d{2})\s*Uhr\s*
         ([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s.\-]{1,30}?)
         [\s|]+ Ankunft\s*(\d{2}:\d{2})\s*Uhr\s*
         ([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s.\-]{1,30}?)
         (?:[\s|]|$)
-    ")
+    ",
+    )
     .unwrap()
 });
 
@@ -606,7 +611,10 @@ mod tests {
                     Preis: 68,47 EUR\n";
         let result = parse_ticket_text(text, "ticket.txt");
 
-        assert!(result.legs.is_empty(), "precondition: this text yields no legs");
+        assert!(
+            result.legs.is_empty(),
+            "precondition: this text yields no legs"
+        );
         assert!(!result.ok, "a parse with no legs must not report ok");
         assert_eq!(result.confirmation_number.as_deref(), Some("XJ4K7Q"));
         assert_eq!(result.meta.trains_found, vec!["ICE 1513"]);

@@ -198,9 +198,18 @@ mod tests {
     fn an_unknown_document_backend_falls_back_to_builtin() {
         assert_eq!(DocumentBackend::parse(None), DocumentBackend::Builtin);
         assert_eq!(DocumentBackend::parse(Some("")), DocumentBackend::Builtin);
-        assert_eq!(DocumentBackend::parse(Some("builtin")), DocumentBackend::Builtin);
-        assert_eq!(DocumentBackend::parse(Some(" XBerg ")), DocumentBackend::Xberg);
-        assert_eq!(DocumentBackend::parse(Some("dolphin")), DocumentBackend::Builtin);
+        assert_eq!(
+            DocumentBackend::parse(Some("builtin")),
+            DocumentBackend::Builtin
+        );
+        assert_eq!(
+            DocumentBackend::parse(Some(" XBerg ")),
+            DocumentBackend::Xberg
+        );
+        assert_eq!(
+            DocumentBackend::parse(Some("dolphin")),
+            DocumentBackend::Builtin
+        );
     }
 
     #[test]

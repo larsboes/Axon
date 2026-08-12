@@ -306,10 +306,7 @@ impl TransitStore {
     /// How many trips match the same filter `list_trips` takes, so a bounded
     /// read can say how much it left behind instead of implying it returned
     /// everything.
-    pub fn count_trips(
-        &self,
-        session_id: Option<&str>,
-    ) -> Result<i64, Box<dyn std::error::Error>> {
+    pub fn count_trips(&self, session_id: Option<&str>) -> Result<i64, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let row = conn.query_one(
             &format!(

@@ -21,7 +21,7 @@ pub struct Leg {
     /// otherwise. Kept as the primary field because every existing consumer
     /// reads it and "when does this actually leave" is the usual question.
     pub departure_time: String, // ISO 8601 datetime
-    pub arrival_time: String,   // ISO 8601 datetime
+    pub arrival_time: String, // ISO 8601 datetime
     /// Scheduled and real-time, kept apart.
     ///
     /// HAFAS serves `sollzeit` (scheduled) and `istzeit` (real-time) separately
