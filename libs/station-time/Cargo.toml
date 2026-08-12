@@ -1,0 +1,24 @@
+[package]
+name = "station-time"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Timezone-correct station-local time arithmetic: UIC prefix to IANA zone, naive local to UTC."
+publish = false
+
+[lib]
+name = "station_time"
+path = "src/lib.rs"
+
+[dependencies]
+# Adopted (not built): the Rust-standard time pair. chrono does the calendar
+# math, chrono-tz embeds the IANA tzdb as data -- no I/O, deterministic,
+# DST-correct. Both dual-licensed MIT/Apache-2.0. Pinned minor versions;
+# the tzdb snapshot updates with the pin, which is the maintenance cost of
+# correctness here. Reason: bahn.de serves every stop's time naive in that
+# stop's OWN local zone (verified live 2026-08-12, Köln->London: wall-clock
+# subtraction was short by exactly the zone offset), so cross-zone arithmetic
+# needs real zone rules, not offset guesses.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+chrono-tz = "0.10"

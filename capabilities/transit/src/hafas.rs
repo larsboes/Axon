@@ -635,11 +635,29 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
                             || is_cancelled(origin_halt)
                             || is_cancelled(dest_halt);
 
+                        // Live halts carry the plain EVA number in `extId` and a
+                        // composite lid in `id`; older fixtures only the latter.
+                        // station-time rejects anything that is not a plain
+                        // 7-digit id, so trying both is safe.
+                        let ext_id_of = |halt: &Value| -> String {
+                            halt.get("extId")
+                                .or_else(|| halt.get("id"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string()
+                        };
+                        let departure_utc =
+                            station_time::rfc3339_utc(&departure_time, &ext_id_of(origin_halt));
+                        let arrival_utc =
+                            station_time::rfc3339_utc(&arrival_time, &ext_id_of(dest_halt));
+
                         legs.push(Leg {
                             origin: origin_station,
                             destination: dest_station,
                             departure_time,
                             arrival_time,
+                            departure_utc,
+                            arrival_utc,
                             train_name: name,
                             train_number: number,
                             train_category: category,
@@ -815,6 +833,63 @@ mod tests {
         assert!(!leg.cancelled);
     }
 
+    /// A zone-crossing leg gets unambiguous UTC instants next to its naive
+    /// station-local strings. Shape captured from a real Köln->London response
+    /// on 2026-08-12: live halts carry the plain EVA in `extId` and a composite
+    /// lid in `id`, and London's naive arrival is BST, one hour behind CEST --
+    /// the naive strings must survive byte-identical while the UTC pair carries
+    /// the true elapsed time.
+    #[test]
+    fn a_zone_crossing_leg_carries_utc_instants_next_to_its_local_times() {
+        let body = serde_json::json!({
+            "verbindungen": [{
+                "verbindungsAbschnitte": [{
+                    "verkehrsmittel": { "typ": "ZUG", "name": "ICE 316", "nummer": "316" },
+                    "halte": [
+                        { "id": "A=1@O=Köln Hbf@X=6958730@Y=50943029@L=8000207@",
+                          "extId": "8000207", "name": "Köln Hbf",
+                          "abfahrt": { "sollzeit": "2026-08-13T09:43:00" } },
+                        { "id": "A=1@O=London St. Pancras@X=-126361@Y=51531922@L=7004428@",
+                          "extId": "7004428", "name": "London St. Pancras International",
+                          "ankunft": { "sollzeit": "2026-08-13T13:57:00" } }
+                    ]
+                }]
+            }]
+        });
+        let leg = &parse_journeys_from_response(&body)[0].legs[0];
+
+        // The naive station-local strings are untouched -- the dashboard
+        // renders them as-is.
+        assert_eq!(leg.departure_time, "2026-08-13T09:43:00");
+        assert_eq!(leg.arrival_time, "2026-08-13T13:57:00");
+        // The UTC pair is what arithmetic uses: 07:43Z -> 12:57Z is 5h14m,
+        // where naive subtraction would have said 4h14m.
+        assert_eq!(leg.departure_utc.as_deref(), Some("2026-08-13T07:43:00Z"));
+        assert_eq!(leg.arrival_utc.as_deref(), Some("2026-08-13T12:57:00Z"));
+    }
+
+    /// A station whose UIC prefix station-time does not know yields absent UTC
+    /// fields, never a zone guess.
+    #[test]
+    fn an_unknown_station_prefix_leaves_the_utc_fields_absent() {
+        let body = serde_json::json!({
+            "verbindungen": [{
+                "verbindungsAbschnitte": [{
+                    "verkehrsmittel": { "typ": "ZUG", "name": "X 1", "nummer": "1" },
+                    "halte": [
+                        { "id": "2000001", "name": "Somewhere in a multi-zone country",
+                          "abfahrt": { "sollzeit": "2026-08-13T09:43:00" } },
+                        { "id": "8000207", "extId": "8000207", "name": "Köln Hbf",
+                          "ankunft": { "sollzeit": "2026-08-13T13:57:00" } }
+                    ]
+                }]
+            }]
+        });
+        let leg = &parse_journeys_from_response(&body)[0].legs[0];
+        assert_eq!(leg.departure_utc, None);
+        assert_eq!(leg.arrival_utc.as_deref(), Some("2026-08-13T11:57:00Z"));
+    }
+
     /// No real-time value is not the same as no delay, and must not read as
     /// "on time".
     #[test]
@@ -877,6 +952,8 @@ mod tests {
                     destination: station("B"),
                     departure_time: "2026-09-01T08:00:00".into(),
                     arrival_time: "2026-09-01T10:00:00".into(),
+                    departure_utc: None,
+                    arrival_utc: None,
                     train_name: format!("ICE {n}"),
                     train_number: (*n).into(),
                     train_category: "ICE".into(),

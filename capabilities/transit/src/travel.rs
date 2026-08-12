@@ -37,6 +37,18 @@ pub struct Leg {
     pub scheduled_arrival: Option<String>,
     #[serde(default)]
     pub realtime_arrival: Option<String>,
+    /// `departure_time`/`arrival_time` as unambiguous UTC instants ("...Z").
+    ///
+    /// The naive fields above are each stop's OWN local wall-clock (verified
+    /// live 2026-08-12: a London arrival comes back in BST), so subtracting
+    /// them across a zone boundary is wrong by the zone delta. Arithmetic uses
+    /// these; the naive fields stay untouched because the dashboard renders
+    /// them station-local as-is. `None` when the station's UIC prefix is not
+    /// in station-time's table -- absent, never guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub departure_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrival_utc: Option<String>,
     /// Whether HAFAS marked this leg cancelled. A cancelled train was previously
     /// invisible: it came back as an ordinary leg with times on it.
     #[serde(default)]

@@ -30,6 +30,7 @@ rust_library(
     deps = [
         "//libs/axon-config:axon-config",
         "//libs/axon-store:axon-store",
+        "//libs/station-time:station-time",
         "@crate_index//:html2text",
         "@crate_index//:mailparse",
         "@crate_index//:pdf-extract",

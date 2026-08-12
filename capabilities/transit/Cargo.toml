@@ -33,6 +33,9 @@ axon-config = { path = "../../libs/axon-config" }
 axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }
 route-manifest = { path = "../../libs/route-manifest" }
+# Leg times: bahn.de serves naive station-local strings; this turns them into
+# UTC instants for the additive departure_utc/arrival_utc fields (PRD X1).
+station-time = { path = "../../libs/station-time" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.12", features = ["json", "gzip", "blocking"] }
