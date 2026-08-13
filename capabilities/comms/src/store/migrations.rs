@@ -63,11 +63,11 @@ impl Store {
                 internal_date TIMESTAMPTZ,
                 stream TEXT NOT NULL CHECK (stream IN ('aktiv','issue','feed','werbung','belege','steuern','sonstiges')),
                 rationale TEXT NOT NULL,
-                classification_method TEXT NOT NULL DEFAULT 'rules',
+                classification_method TEXT NOT NULL DEFAULT 'deterministic',
                 classification_version TEXT NOT NULL DEFAULT 'mail-rules-v1',
                 data_class TEXT NOT NULL DEFAULT 'personal' CHECK (data_class IN ('public','personal','vault')),
                 data_class_rationale TEXT NOT NULL DEFAULT 'Mail metadata is Personal by default.',
-                data_classification_method TEXT NOT NULL DEFAULT 'rules' CHECK (data_classification_method IN ('rules','human')),
+                data_classification_method TEXT NOT NULL DEFAULT 'deterministic' CHECK (data_classification_method IN ('legacy','deterministic','model','human')),
                 data_classification_version TEXT NOT NULL DEFAULT 'data-class-rules-v1',
                 status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','approved','executed','dismissed')),
                 gmail_action TEXT,
@@ -359,20 +359,27 @@ impl Store {
                 ADD COLUMN IF NOT EXISTS waiting_at TIMESTAMPTZ;
 
             ALTER TABLE {schema}.triage_items
-                ADD COLUMN IF NOT EXISTS classification_method TEXT NOT NULL DEFAULT 'rules';
+                ADD COLUMN IF NOT EXISTS classification_method TEXT NOT NULL DEFAULT 'deterministic';
             ALTER TABLE {schema}.triage_items
                 ADD COLUMN IF NOT EXISTS classification_version TEXT NOT NULL DEFAULT 'mail-rules-v1';
             ALTER TABLE {schema}.triage_items
                 DROP CONSTRAINT IF EXISTS triage_items_classification_method_check;
+            -- Backfill BEFORE the constraint, not after. 'rules' is what both
+            -- of triage's method columns have always held, and it is not a
+            -- value in the tier vocabulary they are moving onto -- ADD
+            -- CONSTRAINT validates existing rows, so the reverse order fails
+            -- the whole migration against any database with mail in it.
+            UPDATE {schema}.triage_items
+                SET classification_method = 'deterministic' WHERE classification_method = 'rules';
             ALTER TABLE {schema}.triage_items
                 ADD CONSTRAINT triage_items_classification_method_check
-                CHECK (classification_method IN ('rules','human'));
+                CHECK (classification_method IN ('legacy','deterministic','model','human'));
             ALTER TABLE {schema}.triage_items
                 ADD COLUMN IF NOT EXISTS data_class TEXT NOT NULL DEFAULT 'personal';
             ALTER TABLE {schema}.triage_items
                 ADD COLUMN IF NOT EXISTS data_class_rationale TEXT NOT NULL DEFAULT 'Mail metadata is Personal by default.';
             ALTER TABLE {schema}.triage_items
-                ADD COLUMN IF NOT EXISTS data_classification_method TEXT NOT NULL DEFAULT 'rules';
+                ADD COLUMN IF NOT EXISTS data_classification_method TEXT NOT NULL DEFAULT 'deterministic';
             ALTER TABLE {schema}.triage_items
                 ADD COLUMN IF NOT EXISTS data_classification_version TEXT NOT NULL DEFAULT 'data-class-rules-v1';
             ALTER TABLE {schema}.triage_items
@@ -382,9 +389,12 @@ impl Store {
                 CHECK (data_class IN ('public','personal','vault'));
             ALTER TABLE {schema}.triage_items
                 DROP CONSTRAINT IF EXISTS triage_items_data_classification_method_check;
+            UPDATE {schema}.triage_items
+                SET data_classification_method = 'deterministic'
+                WHERE data_classification_method = 'rules';
             ALTER TABLE {schema}.triage_items
                 ADD CONSTRAINT triage_items_data_classification_method_check
-                CHECK (data_classification_method IN ('rules','human'));
+                CHECK (data_classification_method IN ('legacy','deterministic','model','human'));
             ALTER TABLE {schema}.triage_items
                 ADD COLUMN IF NOT EXISTS gmail_action TEXT;
             ALTER TABLE {schema}.triage_items
