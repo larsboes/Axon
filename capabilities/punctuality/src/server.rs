@@ -8,7 +8,7 @@
 //! makes: serving needs an async runtime, the queries do not, so blocking work goes
 //! through `spawn_blocking` rather than dragging an async driver into the library.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::{
     extract::{Query, State},
@@ -148,7 +148,13 @@ const MIN_SAMPLE: i64 = 30;
 
 #[derive(Clone)]
 struct AppState {
-    store: Arc<Mutex<Store>>,
+    /// `Arc<Store>`, not `Arc<Mutex<Store>>`. `Store` is a pool handle plus a schema
+    /// name and mutates neither, so the lock guarded nothing while serialising every
+    /// query in front of an r2d2 pool that is already thread-safe. It also made any
+    /// panic inside a handler permanent: a poisoned `Mutex` fails every later request,
+    /// `/health` included, until the process restarts. Issue #175 was exactly that,
+    /// triggered by a projection bug two calls deep.
+    store: Arc<Store>,
 }
 
 type ApiResult = Result<Json<Value>, (axum::http::StatusCode, String)>;
@@ -166,10 +172,7 @@ fn fail(e: impl std::fmt::Display) -> (axum::http::StatusCode, String) {
 async fn handle_health(State(state): State<AppState>) -> ApiResult {
     let store = state.store;
     let covered = tokio::task::spawn_blocking(move || {
-        store
-            .lock()
-            .map_err(|e| e.to_string())
-            .and_then(|mut s| s.coverage().map_err(|e| e.to_string()))
+        store.coverage().map_err(|e| e.to_string())
     })
     .await
     .map_err(fail)?
@@ -196,7 +199,6 @@ async fn handle_lookup(State(state): State<AppState>, Json(body): Json<LookupBod
     }
     let store = state.store;
     let stats = tokio::task::spawn_blocking(move || -> Result<Vec<Option<StopStats>>, String> {
-        let mut store = store.lock().map_err(|e| e.to_string())?;
         body.stops
             .iter()
             .map(|s| {
@@ -228,7 +230,6 @@ struct StationQuery {
 async fn handle_station(State(state): State<AppState>, Query(p): Query<StationQuery>) -> ApiResult {
     let store = state.store;
     let value = tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let mut store = store.lock().map_err(|e| e.to_string())?;
         if let Some(q) = p.q {
             let hits = store.find_stations(&q).map_err(|e| e.to_string())?;
             return Ok(json!(hits
@@ -277,7 +278,7 @@ async fn main() {
             }
         };
     let state = AppState {
-        store: Arc::new(Mutex::new(store)),
+        store: Arc::new(store),
     };
 
     // AXON_PORT is what service-runner.sh exports from the manifest, so the port lives

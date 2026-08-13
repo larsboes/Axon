@@ -25,6 +25,17 @@ pub struct Store {
 
 pub type Coverage = (String, String, i32);
 
+/// The projection `row_to_stat` reads, in its exact order.
+///
+/// Both queries interpolate this rather than spelling the list out, because the two
+/// drifted: `station_stats` stopped at `cancel_rate` while `row_to_stat` reached for
+/// `counts` at index 12. A projection narrower than the reader is not a compile error,
+/// so it surfaced as a panic at request time, and the panic poisoned the server's store
+/// lock for every later request (#175).
+const STAT_COLUMNS: &str = "s.eva, st.station_name, s.train_type, s.hour, s.weekend, s.n, \
+     s.canceled, s.mean_delay, s.p50, s.p90, s.share_late_6, s.cancel_rate, s.counts";
+
+
 /// The dataset writes EVA numbers zero-padded to eight digits (`08000044`); HAFAS, and
 /// therefore `capabilities/transit`, returns them unpadded (`8000044`). Joining the two
 /// without this returns zero rows and looks exactly like "we have no data for that
@@ -155,7 +166,7 @@ impl Store {
     /// window: narrowing the window and merging into what was there would leave rows
     /// from months no longer covered, and nothing in the table would show it.
     pub fn replace_stats(
-        &mut self,
+        &self,
         cells: &HashMap<CellKey, Cell>,
         stations: &HashMap<String, String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -202,7 +213,7 @@ impl Store {
     }
 
     pub fn record_run(
-        &mut self,
+        &self,
         from: &str,
         to: &str,
         months: i32,
@@ -225,16 +236,18 @@ impl Store {
     /// `min_n` drops cells too thin to mean anything — a 100% late rate over three
     /// observations is noise wearing a percentage sign.
     pub fn station_stats(
-        &mut self,
+        &self,
         eva: &str,
         train_type: Option<&str>,
         min_n: i64,
     ) -> Result<Vec<StatRow>, Box<dyn std::error::Error>> {
         let schema = &self.schema;
         let eva = normalize_eva(eva);
+        // Projects `s.counts` for the same reason `stop_stats` does: `row_to_stat` reads
+        // thirteen columns, so a projection that stops at twelve panics on the last `get`
+        // instead of returning a row whose histogram is absent.
         let sql = format!(
-            "SELECT s.eva, st.station_name, s.train_type, s.hour, s.weekend, s.n, s.canceled,
-                    s.mean_delay, s.p50, s.p90, s.share_late_6, s.cancel_rate
+            "SELECT {STAT_COLUMNS}
              FROM {schema}.stop_stats s
              LEFT JOIN {schema}.stations st ON st.eva = s.eva
              WHERE s.eva = $1 AND ($2::text IS NULL OR s.train_type = $2) AND s.n >= $3
@@ -250,7 +263,7 @@ impl Store {
     /// average. Both would answer a question nobody asked and would be indistinguishable
     /// from a real reading downstream.
     pub fn stop_stats(
-        &mut self,
+        &self,
         eva: &str,
         train_type: &str,
         hour: i16,
@@ -261,8 +274,7 @@ impl Store {
         let eva = normalize_eva(eva);
         let rows = self.conn()?.query(
             &format!(
-                "SELECT s.eva, st.station_name, s.train_type, s.hour, s.weekend, s.n, s.canceled,
-                        s.mean_delay, s.p50, s.p90, s.share_late_6, s.cancel_rate, s.counts
+                "SELECT {STAT_COLUMNS}
                  FROM {schema}.stop_stats s
                  LEFT JOIN {schema}.stations st ON st.eva = s.eva
                  WHERE s.eva = $1 AND s.train_type = $2 AND s.hour = $3 AND s.weekend = $4
@@ -276,7 +288,7 @@ impl Store {
     /// The window the current aggregate covers, from the most recent ingest run.
     /// `None` means nothing has been ingested — which a caller must be able to tell
     /// apart from "this train is never late".
-    pub fn coverage(&mut self) -> Result<Option<Coverage>, Box<dyn std::error::Error>> {
+    pub fn coverage(&self) -> Result<Option<Coverage>, Box<dyn std::error::Error>> {
         let schema = &self.schema;
         let rows = self.conn()?.query(
             &format!(
@@ -290,7 +302,7 @@ impl Store {
 
     /// EVA numbers whose station name contains `needle`, case-insensitively.
     pub fn find_stations(
-        &mut self,
+        &self,
         needle: &str,
     ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         let schema = &self.schema;
@@ -326,6 +338,13 @@ fn row_to_stat(r: &postgres::Row) -> StatRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `row_to_stat` reads indices 0..=12. A projection of any other width is not a
+    /// compile error; it panics on the first request that reaches the missing index.
+    #[test]
+    fn the_projection_is_as_wide_as_row_to_stat_reads() {
+        assert_eq!(STAT_COLUMNS.split(',').count(), 13);
+    }
 
     #[test]
     fn eva_normalization_bridges_the_dataset_and_hafas() {
