@@ -371,6 +371,13 @@ impl Store {
             -- the whole migration against any database with mail in it.
             UPDATE {schema}.triage_items
                 SET classification_method = 'deterministic' WHERE classification_method = 'rules';
+            -- ADD COLUMN IF NOT EXISTS above is a no-op on a database that
+            -- already has the column, so it never touched the DEFAULT that
+            -- database was created with. Left alone, the column would default
+            -- to a value its own CHECK rejects: an INSERT that omitted it would
+            -- fail, and only that one.
+            ALTER TABLE {schema}.triage_items
+                ALTER COLUMN classification_method SET DEFAULT 'deterministic';
             ALTER TABLE {schema}.triage_items
                 ADD CONSTRAINT triage_items_classification_method_check
                 CHECK (classification_method IN ('legacy','deterministic','model','human'));
@@ -392,6 +399,8 @@ impl Store {
             UPDATE {schema}.triage_items
                 SET data_classification_method = 'deterministic'
                 WHERE data_classification_method = 'rules';
+            ALTER TABLE {schema}.triage_items
+                ALTER COLUMN data_classification_method SET DEFAULT 'deterministic';
             ALTER TABLE {schema}.triage_items
                 ADD CONSTRAINT triage_items_data_classification_method_check
                 CHECK (data_classification_method IN ('legacy','deterministic','model','human'));
