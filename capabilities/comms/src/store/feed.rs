@@ -28,10 +28,30 @@ impl Store {
             .as_ref()
             .map(|_| provenance::NORMALIZATION_REVISION);
         let existing = conn.query_opt(
-            &format!("SELECT id FROM {}.feed_items WHERE id = $1", self.schema),
+            &format!(
+                "SELECT data_class FROM {}.feed_items WHERE id = $1",
+                self.schema
+            ),
             &[&item.id],
         )?;
         let is_new = existing.is_none();
+
+        // Escalation only, decided in one place. A re-ingest may raise a class
+        // -- a collector reclassifying its own source, or a first declaration
+        // landing on a row that was undeclared -- and may never lower one. The
+        // rule lives in `content_item::admit_reclassification` rather than in
+        // this statement so there is one copy of it: this path proposes a
+        // machine decision, so a lowering is refused here whatever the item
+        // says, and the row keeps what it had.
+        let reclassifies = existing.as_ref().is_none_or(|row| {
+            crate::content_item::admit_reclassification(
+                row.get::<_, String>(0).as_str(),
+                &item.data_class,
+                &item.data_classification_method,
+                &item.data_class_rationale,
+            )
+            .is_ok()
+        });
 
         conn.execute(
             &format!(
@@ -39,10 +59,13 @@ impl Store {
                     (id, stream, kind, title, url, author, summary, transcript, day, created_at,
                      status, content_status, transcript_source, captured_via, normalization_tier,
                      normalization_revision, normalization_completed_at,
-                     summary_tier, summary_revision, summary_completed_at)
+                     summary_tier, summary_revision, summary_completed_at,
+                     data_class, data_class_rationale,
+                     data_classification_method, data_classification_version)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8, CURRENT_DATE, now(), 'new',
                          $9,$10,$11,$12,$13, CASE WHEN $8::text IS NOT NULL THEN now() END,
-                         $14,$15, CASE WHEN $7::text IS NOT NULL THEN now() END)
+                         $14,$15, CASE WHEN $7::text IS NOT NULL THEN now() END,
+                         $17,$18,$19,$20)
                  ON CONFLICT (id) DO UPDATE SET
                      stream = excluded.stream,
                      kind = excluded.kind,
@@ -107,7 +130,16 @@ impl Store {
                            CASE f.normalization_tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END
                          THEN excluded.transcript_source
                          ELSE f.transcript_source
-                     END",
+                     END,
+                     data_class = CASE WHEN $16 THEN excluded.data_class ELSE f.data_class END,
+                     data_class_rationale = CASE WHEN $16
+                         THEN excluded.data_class_rationale ELSE f.data_class_rationale END,
+                     data_classification_method = CASE WHEN $16
+                         THEN excluded.data_classification_method
+                         ELSE f.data_classification_method END,
+                     data_classification_version = CASE WHEN $16
+                         THEN excluded.data_classification_version
+                         ELSE f.data_classification_version END",
                 schema = self.schema
             ),
             &[
@@ -126,6 +158,11 @@ impl Store {
                 &normalization_revision,
                 &summary_tier,
                 &summary_revision,
+                &reclassifies,
+                &item.data_class,
+                &item.data_class_rationale,
+                &item.data_classification_method,
+                &item.data_classification_version,
             ],
         )?;
 
@@ -150,6 +187,66 @@ impl Store {
         }
 
         Ok(is_new)
+    }
+
+    /// Set a feed item's class by hand.
+    ///
+    /// The only path that can lower one, and only because a human is on the
+    /// other end of it. `rationale` is optional for an escalation and required
+    /// for a de-escalation — the refusal comes back as an `Err`, which the
+    /// server turns into a 400, so "I made it Public and cannot say why" never
+    /// reaches the database.
+    ///
+    /// `Ok(false)` is a missing item, never a refusal: a caller has to be able
+    /// to tell "no such item" from "not allowed".
+    pub fn set_feed_data_class(
+        &self,
+        id: &str,
+        data_class: &str,
+        rationale: Option<&str>,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        // Checked before the row is read, so an unknown class is a 400 whatever
+        // id it was aimed at -- a caller with a typo learns it from the error
+        // rather than from a 404 about the item.
+        if !crate::content_item::valid(data_class) {
+            return Err(format!(
+                "data class must be one of: {}",
+                crate::content_item::DATA_CLASSES.join(", ")
+            )
+            .into());
+        }
+        let mut conn = self.conn()?;
+        let Some(row) = conn.query_opt(
+            &format!(
+                "SELECT data_class FROM {}.feed_items WHERE id = $1",
+                self.schema
+            ),
+            &[&id],
+        )?
+        else {
+            return Ok(false);
+        };
+        let classification =
+            human_reclassification(row.get::<_, String>(0).as_str(), data_class, rationale)?;
+        let affected = conn.execute(
+            &format!(
+                "UPDATE {}.feed_items SET
+                    data_class = $1,
+                    data_class_rationale = $2,
+                    data_classification_method = $3,
+                    data_classification_version = $4
+                 WHERE id = $5",
+                self.schema
+            ),
+            &[
+                &classification.value,
+                &classification.rationale,
+                &classification.method,
+                &classification.version,
+                &id,
+            ],
+        )?;
+        Ok(affected > 0)
     }
 
     /// The extractor's output for an item, if it was stored with one. Items
@@ -470,7 +567,8 @@ impl Store {
         let row = conn.query_opt(
             &format!(
                 "SELECT id, stream, kind, title, url, author, summary, transcript, day::text, created_at::text, status,
-                       content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via, transcript_source
+                       content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via, transcript_source,
+                       data_class, data_class_rationale, data_classification_method, data_classification_version
                  FROM {}.feed_items WHERE id = $1",
                 self.schema
             ),
@@ -492,7 +590,8 @@ impl Store {
         let mut conn = self.conn()?;
         let mut sql = format!(
             "SELECT DISTINCT f.id, f.stream, f.kind, f.title, f.url, f.author, f.summary, NULL::text, f.day::text, f.created_at::text, f.status,
-                    f.content_status, f.summary_attempts, f.summary_last_error, f.summary_next_attempt::text, f.captured_via, f.transcript_source, f.created_at
+                    f.content_status, f.summary_attempts, f.summary_last_error, f.summary_next_attempt::text, f.captured_via, f.transcript_source,
+                    f.data_class, f.data_class_rationale, f.data_classification_method, f.data_classification_version, f.created_at
              FROM {schema}.feed_items f",
             schema = self.schema
         );
@@ -534,7 +633,8 @@ impl Store {
         let rows = conn.query(
             &format!(
                 "SELECT id, stream, kind, title, url, author, summary, transcript, day::text, created_at::text, status,
-                        content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via, transcript_source
+                        content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via, transcript_source,
+                        data_class, data_class_rationale, data_classification_method, data_classification_version
                  FROM {}.feed_items
                  WHERE transcript IS NOT NULL
                    AND (summary IS NULL OR ($1::text IS NOT NULL AND
@@ -582,7 +682,8 @@ impl Store {
         let rows = conn.query(
             &format!(
                 "SELECT id, stream, kind, title, url, author, summary, transcript, day::text, created_at::text, status,
-                        content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via, transcript_source
+                        content_status, summary_attempts, summary_last_error, summary_next_attempt::text, captured_via, transcript_source,
+                        data_class, data_class_rationale, data_classification_method, data_classification_version
                  FROM {}.feed_items
                  WHERE day >= CURRENT_DATE - $1::int
                  ORDER BY created_at DESC

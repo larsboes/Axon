@@ -180,6 +180,11 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r(
         "POST",
+        "/feed/:id/data-class",
+        "Set a feed item's data classification by hand. Lowering one needs a rationale.",
+    ),
+    r(
+        "POST",
         "/triage/:id/gmail",
         "Apply a Gmail action (archive, trash, restore).",
     ),
@@ -297,6 +302,7 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
         .route("/feed/relevance/refresh", post(relevance_refresh_handler))
         .route("/feed/quality/refresh", post(quality_refresh_handler))
         .route("/feed/:id/status", post(feed_status_handler))
+        .route("/feed/:id/data-class", post(feed_data_class_handler))
         .route("/triage/sweep", post(triage_sweep_handler))
         .route("/triage/relevance/refresh", post(triage_relevance_handler))
         .route("/triage/redact", post(triage_redact_handler))
@@ -466,6 +472,10 @@ mod tests {
                 "/triage/bulk",
                 json!({ "ids": ["18f17d0a9bc123ef"], "action": "dismiss" }),
             ),
+            (
+                "/feed/0123456789abcdef/data-class",
+                json!({ "data_class": "public" }),
+            ),
         ] {
             let response = client
                 .post(format!("{base}{path}"))
@@ -475,6 +485,31 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), 401, "{path} must stay behind auth");
         }
+    }
+
+    /// The de-escalation door answers 400 — not 404, not 500 — and says what it
+    /// refused on. The class is checked before the item is looked up, so this
+    /// reaches the refusal without a stored row being involved in the answer.
+    #[tokio::test]
+    async fn a_reclassification_the_rule_refuses_comes_back_as_a_bad_request() {
+        let base = serve(Some("s3cret")).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/feed/0123456789abcdef/data-class"))
+            .header("x-axon-token", "s3cret")
+            .json(&json!({ "data_class": "confidential" }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 400);
+        let body: Value = response.json().await.unwrap();
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("public, personal, vault"),
+            "the refusal names the vocabulary, got: {body}"
+        );
     }
 
     #[test]
@@ -550,11 +585,11 @@ mod tests {
             internal_date_text: Some("2026-08-04 09:30:00+02".into()),
             stream: "aktiv".into(),
             rationale: "Safe fallback.".into(),
-            classification_method: "rules".into(),
+            classification_method: content_item::METHOD_DETERMINISTIC.into(),
             classification_version: "mail-rules-v1".into(),
             data_class: "personal".into(),
             data_class_rationale: "Mail metadata is Personal by default.".into(),
-            data_classification_method: "rules".into(),
+            data_classification_method: content_item::METHOD_DETERMINISTIC.into(),
             data_classification_version: "data-class-rules-v1".into(),
             status: "proposed".into(),
             gmail_action: None,

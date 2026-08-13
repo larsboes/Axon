@@ -39,14 +39,16 @@ impl StageProvenance {
     }
 }
 
+/// Who produced a stage's output, ranked, so a weaker producer cannot overwrite
+/// a stronger one.
+///
+/// The same question as "who classified this", and now literally the same
+/// function: `content_item::method_rank` is the one home, the contract schema
+/// spells out its four values, and every CHECK constraint on a tier or a
+/// classification-method column lists them. The name stays because `tier` is
+/// what the pipeline calls a producer.
 pub fn tier_rank(tier: &str) -> Option<i16> {
-    match tier {
-        "legacy" => Some(0),
-        "deterministic" => Some(10),
-        "model" => Some(20),
-        "human" => Some(30),
-        _ => None,
-    }
+    crate::content_item::method_rank(tier)
 }
 
 pub fn ranking_tier(mode: &str) -> &'static str {

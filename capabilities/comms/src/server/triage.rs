@@ -233,6 +233,10 @@ pub(super) struct TriageBulkBody {
     action: String,
     stream: Option<String>,
     data_class: Option<String>,
+    /// One reason for the whole batch. Required when the change lowers a class
+    /// for any item in it, which is decided per item: a batch that raises nine
+    /// and lowers one refuses exactly that one, by id, in `failures`.
+    rationale: Option<String>,
 }
 
 pub(super) fn thread_action_for_job(job: &GmailActionJob) -> Result<ThreadAction, String> {
@@ -407,6 +411,7 @@ pub(super) async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> Htt
     let action = body.action;
     let stream = body.stream;
     let selected_data_class = body.data_class;
+    let rationale = body.rationale;
     if !matches!(
         action.as_str(),
         "dismiss"
@@ -478,6 +483,7 @@ pub(super) async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> Htt
                     .set_triage_data_class(
                         &id,
                         selected_data_class.as_deref().unwrap_or_default(),
+                        rationale.as_deref(),
                     )
                     .map_err(|error| error.to_string())
                     .map(|updated| updated.then_some(())),
@@ -615,6 +621,10 @@ pub(super) async fn triage_stream_handler(
 #[derive(Debug, Deserialize)]
 pub(super) struct TriageDataClassBody {
     data_class: String,
+    /// Required when the change lowers the class, ignored when it raises it.
+    /// Which of the two this is depends on what is stored, so the store
+    /// decides and this handler stays out of it.
+    rationale: Option<String>,
 }
 
 pub(super) async fn triage_data_class_handler(
@@ -625,7 +635,7 @@ pub(super) async fn triage_data_class_handler(
         let cfg = Config::load();
         let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
         store
-            .set_triage_data_class(&id, &body.data_class)
+            .set_triage_data_class(&id, &body.data_class, body.rationale.as_deref())
             .map_err(|error| error.to_string())
     })
     .await;

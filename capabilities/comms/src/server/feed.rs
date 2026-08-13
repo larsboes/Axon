@@ -30,6 +30,45 @@ pub(super) async fn feed_status_handler(
 }
 
 #[derive(Debug, Deserialize)]
+pub(super) struct FeedDataClassBody {
+    data_class: String,
+    /// Required when the change lowers the class, ignored when it raises it.
+    /// Which of the two this is depends on what is stored, so the store decides
+    /// and this handler stays out of it.
+    rationale: Option<String>,
+}
+
+/// The only path by which a feed item's class goes down, and the reason the
+/// endpoint exists at all: everything automatic may escalate, so escalation
+/// needs no door — de-escalation needs one that can say no.
+pub(super) async fn feed_data_class_handler(
+    Path(id): Path<String>,
+    Json(body): Json<FeedDataClassBody>,
+) -> HttpResponse {
+    let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        store
+            .set_feed_data_class(&id, &body.data_class, body.rationale.as_deref())
+            .map_err(|error| error.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(true)) => (StatusCode::OK, Json(json!({ "ok": true }))),
+        Ok(Ok(false)) => error_response(StatusCode::NOT_FOUND, "not found"),
+        // A refused de-escalation and an unknown class are both the caller
+        // asking for something that cannot be granted. Both carry the store's
+        // own sentence, so the operator reads why rather than just "400".
+        Ok(Err(error)) => error_response(StatusCode::BAD_REQUEST, error),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub(super) struct IngestBody {
     url: String,
     content: Option<String>,

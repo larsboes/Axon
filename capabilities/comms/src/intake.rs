@@ -76,7 +76,7 @@ pub fn from_thread(meta: ThreadMeta, config_rules: &[rules::Rule]) -> Intake {
             internal_date_text: None,
             stream,
             rationale,
-            classification_method: "rules".into(),
+            classification_method: content_item::METHOD_DETERMINISTIC.into(),
             classification_version: "mail-rules-v1".into(),
             data_class: classification.value,
             data_class_rationale: classification.rationale,

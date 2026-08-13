@@ -352,7 +352,18 @@ impl ContentItemOut {
         processing: Vec<StageProvenance>,
         origins: Vec<FeedOrigin>,
     ) -> Self {
-        let classification = DataClass::public_source_default();
+        // The stored class, not a literal. This line used to call a constructor
+        // that stamped Public on every feed item on its way out of the store --
+        // and Public is precisely the value `cloud_tier_allows` admits, so the
+        // entire feed was cloud-eligible verbatim without anyone having decided
+        // that about a single item. The row carries the answer now, and it
+        // defaults to Personal.
+        let classification = DataClass::stored(
+            &item.data_class,
+            &item.data_class_rationale,
+            &item.data_classification_method,
+            &item.data_classification_version,
+        );
         let processing_policy = content_item::processing_policy(&classification.value);
         let content_label = match item.kind.as_str() {
             "github" => "README",

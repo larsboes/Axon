@@ -177,12 +177,40 @@ impl DataClass {
         }
     }
 
-    pub fn public_source_default() -> Self {
+    /// Read a stored classification back out of a row.
+    ///
+    /// The label is re-derived rather than stored, so a row written before the
+    /// product renamed `vault` to Private still reads back correctly.
+    pub fn stored(value: &str, rationale: &str, method: &str, version: &str) -> Self {
+        Self::new(value, rationale, method, version)
+    }
+
+    /// What an item nobody classified is worth: Personal, decided by nobody.
+    ///
+    /// The fail-closed default, and the reason it is a real value rather than a
+    /// NULL. `legacy` is rank 0, so any later decision — a collector's, a
+    /// rule's, a human's — outranks it without a special case for "unset".
+    pub fn undeclared() -> Self {
         Self::new(
-            "public",
-            "Publicly fetched source content is Public by default.",
-            "source-default",
-            "data-class-source-v1",
+            "personal",
+            UNDECLARED_RATIONALE,
+            METHOD_LEGACY,
+            LEGACY_CLASSIFIER_VERSION,
+        )
+    }
+
+    /// A class a collector positively declared for everything it fetches.
+    ///
+    /// `public` is only reachable through here. A collector that declares
+    /// nothing gets [`DataClass::undeclared`], which is Personal — that is the
+    /// entire difference from the literal this replaced, which stamped `public`
+    /// on every feed item whether or not anyone had ever looked at the source.
+    pub fn declared_by_source(value: &str, rationale: &str) -> Self {
+        Self::new(
+            value,
+            rationale,
+            METHOD_DETERMINISTIC,
+            SOURCE_CLASSIFIER_VERSION,
         )
     }
 
@@ -193,9 +221,14 @@ impl DataClass {
         Self::new(
             "personal",
             rationale,
-            "source-default",
-            "data-class-source-v1",
+            METHOD_DETERMINISTIC,
+            SOURCE_CLASSIFIER_VERSION,
         )
+    }
+
+    /// A class a human set by hand, carrying the reason they gave for it.
+    pub fn set_by_human(value: &str, rationale: &str) -> Self {
+        Self::new(value, rationale, METHOD_HUMAN, MANUAL_CLASSIFIER_VERSION)
     }
 
     /// Classify a mail from the metadata a read-only sweep has already
@@ -209,11 +242,16 @@ impl DataClass {
     pub fn classify_mail(stream: &str, from: &str, subject: &str) -> Self {
         let text = format!("{from} {subject}").to_ascii_lowercase();
         match mail_vault_reason(stream, &text) {
-            Some(rationale) => Self::new("vault", rationale, "rules", MAIL_CLASSIFIER_VERSION),
+            Some(rationale) => Self::new(
+                "vault",
+                rationale,
+                METHOD_DETERMINISTIC,
+                MAIL_CLASSIFIER_VERSION,
+            ),
             None => Self::new(
                 "personal",
                 "Mail metadata is Personal by default.",
-                "rules",
+                METHOD_DETERMINISTIC,
                 MAIL_CLASSIFIER_VERSION,
             ),
         }
@@ -228,8 +266,107 @@ pub const DATA_CLASSES: [&str; 3] = ["public", "personal", "vault"];
 /// which rule set decided it. Bump with any change to [`mail_vault_reason`].
 pub const MAIL_CLASSIFIER_VERSION: &str = "data-class-rules-v1";
 
+/// Stamped by a collector that declared a class for what it fetches.
+pub const SOURCE_CLASSIFIER_VERSION: &str = "data-class-source-v1";
+
+/// Stamped on a row nobody ever classified, including every row that predates
+/// the class existing on its table.
+pub const LEGACY_CLASSIFIER_VERSION: &str = "data-class-legacy-v1";
+
+/// Stamped when a human set the class by hand.
+pub const MANUAL_CLASSIFIER_VERSION: &str = "manual-v1";
+
+/// Why an undeclared item is Personal. Kept next to the DB DEFAULT that writes
+/// the same sentence, because the two have to agree for a backfilled row and a
+/// freshly ingested one to read alike.
+pub const UNDECLARED_RATIONALE: &str =
+    "No collector declared a class for this item; Personal by default.";
+
+pub const METHOD_LEGACY: &str = "legacy";
+pub const METHOD_DETERMINISTIC: &str = "deterministic";
+pub const METHOD_MODEL: &str = "model";
+pub const METHOD_HUMAN: &str = "human";
+
+/// Who decided, in order. One vocabulary for every classification and every
+/// processing stage in the contract — `comms::provenance::tier_rank` is this
+/// function, and the DB CHECK constraints spell out this list.
+///
+/// The order is the point. Without a rank there is no way to say "a rule may
+/// not overwrite what a human decided" except by enumerating pairs, and the
+/// enumeration is what drifts.
+pub const CLASSIFICATION_METHODS: [&str; 4] = [
+    METHOD_LEGACY,
+    METHOD_DETERMINISTIC,
+    METHOD_MODEL,
+    METHOD_HUMAN,
+];
+
+pub fn method_rank(method: &str) -> Option<i16> {
+    match method {
+        METHOD_LEGACY => Some(0),
+        METHOD_DETERMINISTIC => Some(10),
+        METHOD_MODEL => Some(20),
+        METHOD_HUMAN => Some(30),
+        _ => None,
+    }
+}
+
+/// How exposed the content is, ascending: Public < Personal < Private.
+///
+/// A higher rank is a stricter class, so "escalate" is "raise the rank" and the
+/// whole escalation-only rule is one comparison rather than a table of cases.
+pub fn class_rank(data_class: &str) -> Option<i16> {
+    match data_class {
+        "public" => Some(0),
+        "personal" => Some(10),
+        "vault" => Some(20),
+        _ => None,
+    }
+}
+
 pub fn valid(data_class: &str) -> bool {
     DATA_CLASSES.contains(&data_class)
+}
+
+/// Whether a proposed reclassification may be written over the stored one.
+///
+/// The single home of the escalation rule, and the reason it is a function
+/// rather than a check each caller performs: a gate every caller has to
+/// remember to call is the shape that produced three disagreeing copies of the
+/// cloud verdict already.
+///
+/// Escalation — proposing an equal or stricter class — is always admitted,
+/// whoever proposes it. De-escalation is admitted only for a human, and only
+/// with a rationale they actually wrote. Both halves matter. A rule that can
+/// lower a class is a declassification primitive: it runs over attacker-
+/// controlled feed text, and "this looks like a public blog post" is a sentence
+/// an injected page can arrange to be true of itself. And a de-escalation with
+/// no reason recorded is indistinguishable afterwards from a mistake.
+pub fn admit_reclassification(
+    current: &str,
+    proposed: &str,
+    method: &str,
+    rationale: &str,
+) -> Result<(), &'static str> {
+    let Some(current_rank) = class_rank(current) else {
+        return Err("stored data class is not a known class");
+    };
+    let Some(proposed_rank) = class_rank(proposed) else {
+        return Err("data class must be one of: public, personal, vault");
+    };
+    if method_rank(method).is_none() {
+        return Err("classification method must be one of: legacy, deterministic, model, human");
+    }
+    if proposed_rank >= current_rank {
+        return Ok(());
+    }
+    if method != METHOD_HUMAN {
+        return Err("only a human may lower a data class");
+    }
+    if rationale.trim().is_empty() {
+        return Err("lowering a data class requires a written rationale");
+    }
+    Ok(())
 }
 
 /// Whether a stored *review representation* of this class must be redacted
@@ -503,7 +640,7 @@ mod tests {
             created_at: "2026-08-04T00:00:00Z".into(),
             status: "committed".into(),
             content_status: "none",
-            data_class: DataClass::public_source_default(),
+            data_class: DataClass::declared_by_source("public", "Test fixture."),
             processing_policy: processing_policy("public"),
             cloud_processing: CloudProcessing::not_prepared(),
             relevance: Vec::new(),
@@ -571,10 +708,13 @@ mod tests {
     fn the_stored_vault_class_is_labelled_private() {
         assert_eq!(DataClass::new("vault", "r", "human", "v1").label, "Private");
         assert_eq!(
-            DataClass::new("personal", "r", "rules", "v1").label,
+            DataClass::new("personal", "r", "deterministic", "v1").label,
             "Personal"
         );
-        assert_eq!(DataClass::public_source_default().label, "Public");
+        assert_eq!(
+            DataClass::declared_by_source("public", "Declared.").label,
+            "Public"
+        );
     }
 
     /// Personal content must never come back cloud-eligible; that mapping is
@@ -592,11 +732,85 @@ mod tests {
         assert!(processing_policy("something-new").pseudonymization_required);
     }
 
+    /// The escalation rule over its whole input space, not over the three pairs
+    /// someone thought of. Nine ordered class pairs times four methods, with
+    /// and without a rationale: every combination is decided here, and the
+    /// assertion is the rule restated independently rather than the
+    /// implementation called twice.
+    #[test]
+    fn no_method_below_human_can_lower_a_class_and_no_human_can_do_it_silently() {
+        for current in DATA_CLASSES {
+            for proposed in DATA_CLASSES {
+                for method in CLASSIFICATION_METHODS {
+                    for rationale in ["", "   ", "The paper is on arXiv."] {
+                        let admitted =
+                            admit_reclassification(current, proposed, method, rationale).is_ok();
+                        let lowers = class_rank(proposed) < class_rank(current);
+                        let expected = if lowers {
+                            method == METHOD_HUMAN && !rationale.trim().is_empty()
+                        } else {
+                            true
+                        };
+                        assert_eq!(
+                            admitted, expected,
+                            "{current} -> {proposed} by {method} with rationale {rationale:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rank is what the rule is written in terms of, so its order is part of
+    /// the contract rather than an implementation detail of the match arm.
+    #[test]
+    fn a_stricter_class_and_a_more_authoritative_method_rank_higher() {
+        assert!(class_rank("public") < class_rank("personal"));
+        assert!(class_rank("personal") < class_rank("vault"));
+        assert_eq!(class_rank("something-new"), None);
+        assert!(method_rank(METHOD_LEGACY) < method_rank(METHOD_DETERMINISTIC));
+        assert!(method_rank(METHOD_DETERMINISTIC) < method_rank(METHOD_MODEL));
+        assert!(method_rank(METHOD_MODEL) < method_rank(METHOD_HUMAN));
+        assert_eq!(method_rank("source-default"), None);
+    }
+
+    /// A class outside the vocabulary is refused rather than ranked, in both
+    /// positions. Reaching the comparison with an unknown value would make
+    /// `None < Some(_)` decide it, and `None` sorts lowest — an unknown stored
+    /// class would then be silently overwritable by anything.
+    #[test]
+    fn an_unknown_class_is_refused_rather_than_ranked() {
+        assert!(admit_reclassification("something-new", "public", METHOD_HUMAN, "why").is_err());
+        assert!(admit_reclassification("vault", "something-new", METHOD_HUMAN, "why").is_err());
+        assert!(admit_reclassification("vault", "public", "source-default", "why").is_err());
+    }
+
+    /// The fail-closed default is a value, not an absence: Personal, decided by
+    /// nobody, and therefore replaceable by the first real decision of any kind
+    /// without needing a special case for "unset".
+    #[test]
+    fn an_undeclared_item_is_personal_and_outranked_by_every_real_decision() {
+        let undeclared = DataClass::undeclared();
+        assert_eq!(undeclared.value, "personal");
+        assert_eq!(undeclared.method, METHOD_LEGACY);
+        assert_eq!(
+            processing_policy(&undeclared.value).cloud_handling,
+            "pseudonymization_required"
+        );
+        for method in CLASSIFICATION_METHODS {
+            assert!(method_rank(method) >= method_rank(&undeclared.method));
+        }
+        // Escalating it needs nobody's permission; lowering it to Public still
+        // needs a human with a reason.
+        assert!(admit_reclassification("personal", "vault", METHOD_DETERMINISTIC, "").is_ok());
+        assert!(admit_reclassification("personal", "public", METHOD_DETERMINISTIC, "").is_err());
+    }
+
     #[test]
     fn ordinary_mail_is_personal_and_never_public() {
         let result = DataClass::classify_mail("aktiv", "friend@example.com", "Weekend plan");
         assert_eq!(result.value, "personal");
-        assert_eq!(result.method, "rules");
+        assert_eq!(result.method, METHOD_DETERMINISTIC);
         assert_eq!(
             processing_policy(&result.value).cloud_handling,
             "pseudonymization_required"

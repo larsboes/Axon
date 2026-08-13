@@ -22,6 +22,15 @@ impl Store {
         // Gmail internalDate is epoch-ms; convert to fractional epoch-seconds so
         // the bound param is plain double precision for to_timestamp().
         let internal_secs: Option<f64> = item.internal_date_ms.map(|ms| ms as f64 / 1000.0);
+        // One predicate, four columns: keep the stored classification when a
+        // human set it, and also when the incoming one would be *less* strict.
+        // A resweep re-runs the rules, so without the second half an edit that
+        // made the classifier less suspicious would walk the whole inbox
+        // quietly downgrading rows it had previously called Private -- a rule
+        // lowering a class, which is the one thing the escalation rule forbids.
+        let preserve_class = "t.data_classification_method = 'human' OR \
+             (CASE excluded.data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END) < \
+             (CASE t.data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)";
         let mut conn = self.conn()?;
         let existing = conn.query_opt(
             &format!("SELECT id FROM {}.triage_items WHERE id = $1", self.schema),
@@ -52,13 +61,13 @@ impl Store {
                         THEN t.classification_method ELSE excluded.classification_method END,
                      classification_version = CASE WHEN t.classification_method = 'human'
                         THEN t.classification_version ELSE excluded.classification_version END,
-                     data_class = CASE WHEN t.data_classification_method = 'human'
+                     data_class = CASE WHEN {preserve_class}
                         THEN t.data_class ELSE excluded.data_class END,
-                     data_class_rationale = CASE WHEN t.data_classification_method = 'human'
+                     data_class_rationale = CASE WHEN {preserve_class}
                         THEN t.data_class_rationale ELSE excluded.data_class_rationale END,
-                     data_classification_method = CASE WHEN t.data_classification_method = 'human'
+                     data_classification_method = CASE WHEN {preserve_class}
                         THEN t.data_classification_method ELSE excluded.data_classification_method END,
-                     data_classification_version = CASE WHEN t.data_classification_method = 'human'
+                     data_classification_version = CASE WHEN {preserve_class}
                         THEN t.data_classification_version ELSE excluded.data_classification_version END,
                      status = CASE WHEN t.status IN ('archived','trashed','missing','executed')
                         THEN 'proposed' ELSE t.status END,
@@ -68,7 +77,8 @@ impl Store {
                      gmail_sync_error = NULL,
                      purge_after = NULL,
                      last_seen = now()",
-                schema = self.schema
+                schema = self.schema,
+                preserve_class = preserve_class
             ),
             &[
                 &item.id,
@@ -120,36 +130,67 @@ impl Store {
         Ok(affected > 0)
     }
 
+    /// Set a mail's class by hand. Same rule as [`Store::set_feed_data_class`],
+    /// decided by the same function, on the other table.
     pub fn set_triage_data_class(
         &self,
         id: &str,
         data_class: &str,
+        rationale: Option<&str>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
+        // Checked before the row is read, so an unknown class is a 400 whatever
+        // id it was aimed at -- a caller with a typo learns it from the error
+        // rather than from a 404 about the item.
         if !crate::content_item::valid(data_class) {
             return Err(format!(
-                "invalid data class '{data_class}' -- must be one of: {}",
+                "data class must be one of: {}",
                 crate::content_item::DATA_CLASSES.join(", ")
             )
             .into());
         }
         let mut conn = self.conn()?;
+        let Some(row) = conn.query_opt(
+            &format!(
+                "SELECT data_class FROM {}.triage_items WHERE id = $1",
+                self.schema
+            ),
+            &[&id],
+        )?
+        else {
+            return Ok(false);
+        };
+        let classification =
+            human_reclassification(row.get::<_, String>(0).as_str(), data_class, rationale)?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.triage_items SET
                     data_class = $1,
-                    data_class_rationale = 'Data class set manually in Axon.',
-                    data_classification_method = 'human',
-                    data_classification_version = 'manual-v1'
-                 WHERE id = $2",
+                    data_class_rationale = $2,
+                    data_classification_method = $3,
+                    data_classification_version = $4
+                 WHERE id = $5",
                 self.schema
             ),
-            &[&data_class, &id],
+            &[
+                &classification.value,
+                &classification.rationale,
+                &classification.method,
+                &classification.version,
+                &id,
+            ],
         )?;
         Ok(affected > 0)
     }
 
     /// Refresh a rule-produced data class while preserving an explicit human
     /// override. Returns false for a missing item or a preserved override.
+    ///
+    /// The rank comparison in the WHERE clause is the escalation rule, and it
+    /// is here rather than only in the human path because this is the one that
+    /// runs unattended: a rule edit that made the classifier *less* suspicious
+    /// would otherwise walk the whole table quietly downgrading rows it had
+    /// previously called Private. It may raise a class, never lower one, and
+    /// the human override is preserved on top of that.
     pub fn refresh_triage_data_class(
         &self,
         id: &str,
@@ -163,7 +204,9 @@ impl Store {
                     data_class_rationale = $2,
                     data_classification_method = $3,
                     data_classification_version = $4
-                 WHERE id = $5 AND data_classification_method <> 'human'",
+                 WHERE id = $5 AND data_classification_method <> 'human'
+                   AND (CASE $1::text WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)
+                     >= (CASE data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)",
                 self.schema
             ),
             &[

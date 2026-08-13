@@ -511,6 +511,15 @@ identity, description and visible momentum metadata, and preserves the Trending
 page as provenance. `arxiv` calls the official Atom query API with a configured
 `search_query`, newest submissions first. Both clamp a run to at most 30 items.
 
+Each source declares a `data_class`, and it is required with no default. That
+declaration is what every item the source stores is classified with, and the
+only way a feed item becomes `public` at all — an item that arrives through
+`/ingest` or a Vault link, where no collector declared anything, is stored
+`personal` with method `legacy` and stays local. A collector may raise an
+item's class on a later scan and may never lower one, so a `legacy` row has no
+machine route to `public`: only `POST /feed/:id/data-class`, with a written
+rationale, can lower a class, and it answers 400 without one.
+
 A scan upserts by the canonical target URL, preserving `keeper`/`dismissed`
 state, then records `feed_origins` and `source_state`. Re-seeing an existing item
 is reported as known rather than new. Background enrichment compares the
@@ -665,7 +674,7 @@ profile note may define a single-line `relevance_query` in
 its frontmatter; this is the inspectable embedding input and changes that profile's revision,
 while `summary`, `current_focus` and `category_affinity` remain reader-facing metadata,
 `vault_link_sources[] {id, path, heading?, enabled}`,
-`feed_sources[] {id, adapter, enabled, query?, language?, since?, limit}`,
+`feed_sources[] {id, adapter, enabled, query?, language?, since?, limit, data_class}`,
 `rules[]`, `keeper_export_dir`. See
 `comms.config.example.json`. Nothing personal lives in this repo — sender
 addresses and personal rules belong in the overlay.

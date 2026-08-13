@@ -80,11 +80,26 @@ pub struct FeedItem {
     /// rule change re-run over stored content instead of re-fetching the web.
     pub raw_content: Option<String>,
     pub summary_provenance: Option<StageProvenance>,
+    /// What this item is worth protecting: `public`, `personal` or `vault`.
+    /// Never absent — an item nobody classified reads back Personal, decided by
+    /// `legacy`, which is the value the cloud gate is meant to see.
+    pub data_class: String,
+    pub data_class_rationale: String,
+    pub data_classification_method: String,
+    pub data_classification_version: String,
 }
 
 impl FeedItem {
-    /// Build a fresh item for ingest. DB-owned fields are left blank/defaulted.
+    /// Build a fresh item for ingest. DB-owned fields are left blank/defaulted,
+    /// and the class starts undeclared — Personal, method `legacy`.
+    ///
+    /// Every ingest path goes through here, which is what makes the default
+    /// actually default: a page pasted by hand, a link imported from the vault
+    /// and a URL captured from a logged-in session all arrive Personal unless
+    /// something positively declares otherwise. Only a collector that declares
+    /// a class calls [`FeedItem::declare_class`] on top.
     pub fn new(url: &str, stream: &str, kind: &str) -> Self {
+        let undeclared = crate::content_item::DataClass::undeclared();
         Self {
             id: feed_id(url),
             stream: stream.to_string(),
@@ -105,7 +120,19 @@ impl FeedItem {
             captured_via: None,
             raw_content: None,
             summary_provenance: None,
+            data_class: undeclared.value,
+            data_class_rationale: undeclared.rationale,
+            data_classification_method: undeclared.method,
+            data_classification_version: undeclared.version,
         }
+    }
+
+    /// Stamp a collector's declaration onto an item it discovered.
+    pub fn declare_class(&mut self, classification: &crate::content_item::DataClass) {
+        self.data_class = classification.value.clone();
+        self.data_class_rationale = classification.rationale.clone();
+        self.data_classification_method = classification.method.clone();
+        self.data_classification_version = classification.version.clone();
     }
 }
 
@@ -412,6 +439,36 @@ pub fn feed_id(url: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// The classification a human's reclassification request should write, or the
+/// reason it is refused.
+///
+/// Shared by feed and mail because it is one rule, and the two tables having
+/// their own copy of it is how they would come to disagree. Escalating needs no
+/// reason and none is invented: the canned sentence is honest about being a
+/// manual change. Lowering needs the operator's own words, and gets them —
+/// stored, so the decision is answerable afterwards.
+pub(crate) fn human_reclassification(
+    current: &str,
+    proposed: &str,
+    rationale: Option<&str>,
+) -> Result<crate::content_item::DataClass, Box<dyn std::error::Error>> {
+    let written = rationale.map(str::trim).unwrap_or_default();
+    crate::content_item::admit_reclassification(
+        current,
+        proposed,
+        crate::content_item::METHOD_HUMAN,
+        written,
+    )?;
+    let rationale = if written.is_empty() {
+        "Data class set manually in Axon.".to_string()
+    } else {
+        written.to_string()
+    };
+    Ok(crate::content_item::DataClass::set_by_human(
+        proposed, &rationale,
+    ))
+}
+
 fn cloud_job_id(request: &CloudQueueRequest) -> String {
     let mut hasher = Sha256::new();
     for part in [
@@ -578,11 +635,11 @@ mod tests {
             internal_date_text: None,
             stream: stream.into(),
             rationale: "test".into(),
-            classification_method: "rules".into(),
+            classification_method: content_item::METHOD_DETERMINISTIC.into(),
             classification_version: "mail-rules-v1".into(),
             data_class: "personal".into(),
             data_class_rationale: "Mail metadata is Personal by default.".into(),
-            data_classification_method: "rules".into(),
+            data_classification_method: content_item::METHOD_DETERMINISTIC.into(),
             data_classification_version: "data-class-rules-v1".into(),
             status: "proposed".into(),
             gmail_action: None,
@@ -940,7 +997,7 @@ mod tests {
             .upsert_triage(&mk_triage("thread:private", "aktiv"))
             .unwrap();
         assert!(store
-            .set_triage_data_class("thread:private", "vault")
+            .set_triage_data_class("thread:private", "vault", None)
             .unwrap());
 
         let rules =
@@ -958,7 +1015,7 @@ mod tests {
         assert_eq!(row.data_classification_version, "manual-v1");
         assert_eq!(row.data_class_rationale, "Data class set manually in Axon.");
         assert!(store
-            .set_triage_data_class("thread:private", "secret")
+            .set_triage_data_class("thread:private", "secret", Some("why"))
             .is_err());
     }
 
@@ -1250,6 +1307,169 @@ mod tests {
         // Other fields legitimately update.
         let rows = store.list_triage(None).unwrap();
         assert_eq!(rows[0].rationale, "re-swept");
+    }
+
+    /// The fail-closed default, proved against the database rather than against
+    /// the constructor. A pasted URL is what an operator ingests from a page
+    /// they were logged into, and it must not come back cloud-eligible.
+    #[test]
+    fn an_ingested_item_nobody_declared_is_stored_personal_and_legacy() {
+        let (store, _schema) = open_test_store("feed_class_default");
+        let item = mk_feed("https://example.com/undeclared", "article", "news");
+        store.upsert_feed(&item).unwrap();
+
+        let stored = store.get_feed(&item.id).unwrap().unwrap();
+        assert_eq!(stored.data_class, "personal");
+        assert_eq!(stored.data_classification_method, "legacy");
+        assert_eq!(
+            content_item::processing_policy(&stored.data_class).cloud_handling,
+            "pseudonymization_required"
+        );
+    }
+
+    /// A collector declares at discovery. That is the whole window: the class
+    /// lands with the INSERT, and every later pass may only raise it.
+    #[test]
+    fn a_collector_declares_its_class_when_it_first_stores_the_item() {
+        let (store, _schema) = open_test_store("feed_class_declared");
+        let mut item = mk_feed("https://example.com/declared", "arxiv", "news");
+        item.declare_class(&content_item::DataClass::declared_by_source(
+            "public",
+            "Declared by feed source 'arxiv-ai-recent'.",
+        ));
+        store.upsert_feed(&item).unwrap();
+
+        let stored = store.get_feed(&item.id).unwrap().unwrap();
+        assert_eq!(stored.data_class, "public");
+        assert_eq!(stored.data_classification_method, "deterministic");
+        assert_eq!(
+            content_item::processing_policy(&stored.data_class).cloud_handling,
+            "eligible",
+            "a positively declared public item is the only kind that is"
+        );
+    }
+
+    /// Ingest is a machine path: it may raise a class and never lower one.
+    ///
+    /// The first assertion is the one the anti-claim rests on. A row stored
+    /// undeclared is Personal, and no collector can relabel it afterwards --
+    /// so a `legacy` item has no machine route to Public at all, and the 187
+    /// backfilled rows can only be lifted by a human who says why.
+    #[test]
+    fn a_re_ingest_can_raise_a_feed_class_but_never_lower_one() {
+        let (store, _schema) = open_test_store("feed_class_escalation");
+        let mut item = mk_feed("https://example.com/escalate", "article", "news");
+        store.upsert_feed(&item).unwrap();
+
+        item.declare_class(&content_item::DataClass::declared_by_source(
+            "public",
+            "Declared by feed source 'test'.",
+        ));
+        store.upsert_feed(&item).unwrap();
+        let stored = store.get_feed(&item.id).unwrap().unwrap();
+        assert_eq!(
+            stored.data_class, "personal",
+            "a collector cannot lift a row that was already stored undeclared"
+        );
+        assert_eq!(stored.data_classification_method, "legacy");
+
+        // Escalation, on the other hand, needs nobody's permission.
+        item.declare_class(&content_item::DataClass::declared_by_source(
+            "vault",
+            "Declared Private by its collector.",
+        ));
+        store.upsert_feed(&item).unwrap();
+        assert_eq!(
+            store.get_feed(&item.id).unwrap().unwrap().data_class,
+            "vault"
+        );
+
+        // A human lowers it, with a reason. The collector then re-scans and
+        // re-declares Private, which is an escalation, so that one lands.
+        store
+            .set_feed_data_class(&item.id, "public", Some("Published preprint."))
+            .unwrap();
+        store.upsert_feed(&item).unwrap();
+        let stored = store.get_feed(&item.id).unwrap().unwrap();
+        assert_eq!(stored.data_class, "vault");
+        assert_eq!(stored.data_classification_method, "deterministic");
+    }
+
+    /// The de-escalation door: it opens for a human with a reason, and for
+    /// nobody else. `Ok(false)` is reserved for a missing item, so a refusal is
+    /// distinguishable from a typo'd id — that distinction is what lets the
+    /// server answer 400 rather than 404.
+    #[test]
+    fn lowering_a_feed_class_needs_a_written_reason_and_says_so() {
+        let (store, _schema) = open_test_store("feed_class_deescalation");
+        let mut item = mk_feed("https://example.com/lower", "article", "news");
+        item.declare_class(&content_item::DataClass::declared_by_source(
+            "vault",
+            "Declared Private by its collector.",
+        ));
+        store.upsert_feed(&item).unwrap();
+
+        for empty in [None, Some(""), Some("   ")] {
+            let error = store
+                .set_feed_data_class(&item.id, "public", empty)
+                .expect_err("a silent de-escalation must be refused");
+            assert!(
+                error.to_string().contains("rationale"),
+                "the refusal must name what is missing, got: {error}"
+            );
+        }
+        assert_eq!(
+            store.get_feed(&item.id).unwrap().unwrap().data_class,
+            "vault",
+            "a refused request writes nothing"
+        );
+
+        assert!(store
+            .set_feed_data_class(&item.id, "public", Some("Published preprint, no session."))
+            .unwrap());
+        let stored = store.get_feed(&item.id).unwrap().unwrap();
+        assert_eq!(stored.data_class, "public");
+        assert_eq!(
+            stored.data_class_rationale, "Published preprint, no session.",
+            "the operator's own words are what gets stored"
+        );
+
+        assert!(
+            !store
+                .set_feed_data_class("no-such-id", "vault", None)
+                .unwrap(),
+            "a missing item is false, not an error"
+        );
+        assert!(
+            store
+                .set_feed_data_class(&item.id, "confidential", Some("why"))
+                .is_err(),
+            "a class outside the vocabulary is refused"
+        );
+    }
+
+    /// The mail sweep re-runs the rules on every pass. A rule edit that made
+    /// the classifier less suspicious must not walk the inbox downgrading rows
+    /// it had already called Private.
+    #[test]
+    fn a_resweep_cannot_downgrade_a_mail_the_rules_once_called_private() {
+        let (store, _schema) = open_test_store("triage_class_escalation");
+        let mut item = mk_triage("thread:class", "aktiv");
+        item.data_class = "vault".into();
+        item.data_class_rationale = "Authentication metadata is Private.".into();
+        item.data_classification_method = content_item::METHOD_DETERMINISTIC.into();
+        store.upsert_triage(&item).unwrap();
+
+        item.data_class = "personal".into();
+        item.data_class_rationale = "Mail metadata is Personal by default.".into();
+        store.upsert_triage(&item).unwrap();
+
+        let stored = store.list_triage(None).unwrap();
+        assert_eq!(stored[0].data_class, "vault");
+        assert_eq!(
+            stored[0].data_class_rationale,
+            "Authentication metadata is Private."
+        );
     }
 
     #[test]

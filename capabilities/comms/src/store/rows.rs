@@ -67,6 +67,22 @@ pub(super) fn row_to_feed_list(r: &postgres::Row) -> FeedItem {
         // the only reader, and only the renormalize path asks for it.
         raw_content: None,
         summary_provenance: None,
+        // By name for the same reason as transcript_source, and NOT NULL in the
+        // schema with a fail-closed DEFAULT -- so a read that somehow misses
+        // the column falls back to Personal rather than to the empty string,
+        // which no gate would recognise as a class at all.
+        data_class: r
+            .get::<_, Option<String>>("data_class")
+            .unwrap_or_else(|| "personal".into()),
+        data_class_rationale: r
+            .get::<_, Option<String>>("data_class_rationale")
+            .unwrap_or_else(|| content_item::UNDECLARED_RATIONALE.into()),
+        data_classification_method: r
+            .get::<_, Option<String>>("data_classification_method")
+            .unwrap_or_else(|| content_item::METHOD_LEGACY.into()),
+        data_classification_version: r
+            .get::<_, Option<String>>("data_classification_version")
+            .unwrap_or_else(|| content_item::LEGACY_CLASSIFIER_VERSION.into()),
     }
 }
 
@@ -101,6 +117,22 @@ pub(super) fn row_to_feed_full(r: &postgres::Row) -> FeedItem {
         // the only reader, and only the renormalize path asks for it.
         raw_content: None,
         summary_provenance: None,
+        // By name for the same reason as transcript_source, and NOT NULL in the
+        // schema with a fail-closed DEFAULT -- so a read that somehow misses
+        // the column falls back to Personal rather than to the empty string,
+        // which no gate would recognise as a class at all.
+        data_class: r
+            .get::<_, Option<String>>("data_class")
+            .unwrap_or_else(|| "personal".into()),
+        data_class_rationale: r
+            .get::<_, Option<String>>("data_class_rationale")
+            .unwrap_or_else(|| content_item::UNDECLARED_RATIONALE.into()),
+        data_classification_method: r
+            .get::<_, Option<String>>("data_classification_method")
+            .unwrap_or_else(|| content_item::METHOD_LEGACY.into()),
+        data_classification_version: r
+            .get::<_, Option<String>>("data_classification_version")
+            .unwrap_or_else(|| content_item::LEGACY_CLASSIFIER_VERSION.into()),
     }
 }
 

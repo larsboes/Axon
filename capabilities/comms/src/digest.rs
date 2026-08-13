@@ -156,11 +156,14 @@ fn source_text(store: &Store, cfg: &Config, source: &str, id: &str) -> Result<Op
             .get_feed(id)
             .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?
             .map(|item| SourceText {
+                // The stored class, not a literal. `data_class: "public"` here
+                // meant every feed digest reported itself remotely eligible and
+                // skipped redaction, on an item nobody had classified.
+                data_class: item.data_class,
                 // The transcript is the source; the stored summary is a
                 // previous answer, and digesting an answer compounds whatever
                 // it got wrong.
                 text: item.transcript.unwrap_or_default(),
-                data_class: "public".into(),
             })),
         "mail" => {
             let Some(item) = store

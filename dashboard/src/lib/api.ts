@@ -917,11 +917,15 @@ export function contentItem(source: ContentSource, id: string, signal?: AbortSig
 }
 export type DataClass = 'public' | 'personal' | 'vault';
 
+/** Who decided, ascending. `legacy` means nobody did — a row from before its
+ * table had a class, or an item no collector declared anything about. */
+export type ClassificationMethod = 'legacy' | 'deterministic' | 'model' | 'human';
+
 export interface ContentDataClass {
   value: DataClass;
   label: 'Public' | 'Personal' | 'Private';
   rationale: string;
-  method: 'source-default' | 'rules' | 'human';
+  method: ClassificationMethod;
   version: string;
 }
 
@@ -997,7 +1001,7 @@ export interface CloudDerivativePreview {
 export interface MailContentExtension {
   category: MailCategory;
   rationale: string;
-  classification_method: 'rules' | 'human';
+  classification_method: ClassificationMethod;
   classification_version: string;
   gmail_action: 'archive' | 'trash' | 'restore' | null;
   gmail_action_at: string | null;
@@ -1219,11 +1223,11 @@ export interface TriageItem {
   snippet: string | null;
   stream: MailCategory;
   rationale: string;
-  classification_method: 'rules' | 'human';
+  classification_method: ClassificationMethod;
   classification_version: string;
   data_class: DataClass;
   data_class_rationale: string;
-  data_classification_method: 'rules' | 'human';
+  data_classification_method: ClassificationMethod;
   data_classification_version: string;
   status: TriageStatus;
   gmail_action: 'archive' | 'trash' | 'restore' | null;

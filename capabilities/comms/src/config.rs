@@ -11,6 +11,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use crate::content_item;
 use crate::rules::Rule;
 use axon_inference::{InferenceConfig, ResolvedRole};
 
@@ -113,22 +114,50 @@ impl Default for VaultLinkSourceConfig {
     }
 }
 
+/// A declared collector, and what its content is worth.
+///
+/// Deliberately **not** `#[serde(default)]` at the container level any more.
+/// That attribute made every field optional, which is the right call for a
+/// window or a language slug and the wrong one for `data_class`: an operator
+/// adding a source would have silently got whatever the Default impl said, and
+/// the only classification that can be got by silence is the one nobody chose.
+/// So the per-field defaults are spelled out individually and `data_class` is
+/// left off the list — a source that does not say what it collects fails to
+/// load, loudly, before it fetches anything.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
 pub struct FeedSourceConfig {
     /// Stable provenance id shown in the Feed.
+    #[serde(default)]
     pub id: String,
     /// `github-trending` or `arxiv`.
+    #[serde(default)]
     pub adapter: String,
+    #[serde(default = "enabled_by_default")]
     pub enabled: bool,
     /// arXiv search_query. Empty for GitHub Trending.
+    #[serde(default)]
     pub query: Option<String>,
     /// Optional GitHub Trending language slug, for example `rust`.
+    #[serde(default)]
     pub language: Option<String>,
     /// GitHub Trending window: daily, weekly or monthly.
+    #[serde(default)]
     pub since: Option<String>,
     /// Hard per-run bound. Clamped again by the adapter.
+    #[serde(default = "default_source_limit")]
     pub limit: usize,
+    /// What this collector's content is: `public`, `personal` or `vault`. The
+    /// declaration every item it fetches is stored with, and the only way an
+    /// item becomes `public` at all. Required — see the type doc.
+    pub data_class: String,
+}
+
+fn enabled_by_default() -> bool {
+    true
+}
+
+fn default_source_limit() -> usize {
+    10
 }
 
 impl Default for FeedSourceConfig {
@@ -140,7 +169,10 @@ impl Default for FeedSourceConfig {
             query: None,
             language: None,
             since: None,
-            limit: 10,
+            limit: default_source_limit(),
+            // Serde no longer reaches this, but a programmatic caller does, and
+            // it must fail closed the same way an omission in the file does.
+            data_class: "personal".into(),
         }
     }
 }
@@ -155,6 +187,9 @@ fn default_feed_sources() -> Vec<FeedSourceConfig> {
             language: None,
             since: Some("daily".into()),
             limit: 12,
+            // The Trending page is world-readable and fetched anonymously; no
+            // session of the operator's is involved in what it returns.
+            data_class: "public".into(),
         },
         FeedSourceConfig {
             id: "arxiv-ai-recent".into(),
@@ -164,6 +199,10 @@ fn default_feed_sources() -> Vec<FeedSourceConfig> {
             language: None,
             since: None,
             limit: 12,
+            // Published preprints. The query itself can be personal, which is
+            // why a saved personal query belongs in the overlay and can declare
+            // itself otherwise; the abstracts it returns are not.
+            data_class: "public".into(),
         },
     ]
 }
@@ -387,7 +426,26 @@ impl Config {
                 source
             })
             .collect();
-        let feed_sources = file.feed_sources.unwrap_or_else(default_feed_sources);
+        // A declared class outside the vocabulary is a typo, and a typo must not
+        // be more permissive than saying nothing. Refused down to `personal`
+        // and reported, rather than passed through to a CHECK constraint that
+        // would reject the item hours later at ingest.
+        let feed_sources = file
+            .feed_sources
+            .unwrap_or_else(default_feed_sources)
+            .into_iter()
+            .map(|mut source| {
+                if !content_item::valid(&source.data_class) {
+                    eprintln!(
+                        "comms: feed source '{}' declares an unknown data_class '{}'; \
+                         treating it as personal",
+                        source.id, source.data_class
+                    );
+                    source.data_class = "personal".into();
+                }
+                source
+            })
+            .collect();
         let travel_context = file.travel_context.unwrap_or_default();
         let calendar_context = file.calendar_context.unwrap_or_default();
         let quality_flags = file.quality_flags.unwrap_or_default();
@@ -451,6 +509,42 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fail-closed rule as a type error rather than a runtime default. A
+    /// source that does not say what it collects must not load at all: the
+    /// alternative is a collector quietly inheriting whatever the Default impl
+    /// happens to say, which is exactly how the feed ended up with a `public`
+    /// nobody had chosen.
+    #[test]
+    fn a_feed_source_that_declares_no_data_class_fails_to_deserialize() {
+        let without = r#"{"id":"x","adapter":"arxiv","limit":5}"#;
+        let error = serde_json::from_str::<FeedSourceConfig>(without)
+            .expect_err("a source with no declared class must not deserialize");
+        assert!(
+            error.to_string().contains("data_class"),
+            "the error must name the missing field, got: {error}"
+        );
+
+        let with = r#"{"id":"x","adapter":"arxiv","limit":5,"data_class":"public"}"#;
+        let parsed: FeedSourceConfig =
+            serde_json::from_str(with).expect("a declared source loads normally");
+        assert_eq!(parsed.data_class, "public");
+        assert!(parsed.enabled, "the other per-field defaults still apply");
+    }
+
+    /// The shipped defaults are declarations, not omissions — if this ever
+    /// reads `personal` it means someone dropped the declaration and the
+    /// general-awareness feed silently stopped being cloud-eligible.
+    #[test]
+    fn every_shipped_collector_declares_its_class() {
+        for source in default_feed_sources() {
+            assert!(
+                content_item::valid(&source.data_class),
+                "{} declares an unknown class",
+                source.id
+            );
+        }
+    }
 
     #[test]
     fn expand_tilde_uses_home() {

@@ -112,8 +112,18 @@ pub(super) async fn source_scan_handler(Json(body): Json<SourceScanBody>) -> Htt
             // The collector discovered URLs; the extractor builds the items, so
             // a repository found here and one pasted by hand land identical
             // (#79). One URL failing to extract does not fail the run.
+            // The one place a feed item can become anything other than
+            // Personal: a declared collector, saying in config what it
+            // collects. `media::fetch` leaves every item undeclared, so a
+            // source that never reaches this line keeps the fail-closed
+            // default -- which is what the ingest and vault-import paths do.
+            let declared = content_item::DataClass::declared_by_source(
+                &source.data_class,
+                &format!("Declared by feed source '{}'.", source.id),
+            );
+
             for discovered in &found {
-                let item = match media::fetch(&discovered.url) {
+                let mut item = match media::fetch(&discovered.url) {
                     Ok(item) => item,
                     Err(error) => {
                         eprintln!("source {}: {} -> {error}", source.id, discovered.url);
@@ -121,6 +131,7 @@ pub(super) async fn source_scan_handler(Json(body): Json<SourceScanBody>) -> Htt
                         continue;
                     }
                 };
+                item.declare_class(&declared);
 
                 if store
                     .upsert_feed(&item)
