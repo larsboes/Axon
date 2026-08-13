@@ -45,6 +45,19 @@ pub(super) async fn feed_data_class_handler(
     Path(id): Path<String>,
     Json(body): Json<FeedDataClassBody>,
 ) -> HttpResponse {
+    // Before the connection, not after. A class outside the vocabulary is
+    // decidable from the request alone, and answering it here keeps a
+    // malformed request from opening a database handle at all — which is also
+    // what lets this route be tested without a live store behind it.
+    if !content_item::valid(&body.data_class) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "data class must be one of: {}",
+                content_item::DATA_CLASSES.join(", ")
+            ),
+        );
+    }
     let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
