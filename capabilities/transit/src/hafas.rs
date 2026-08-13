@@ -80,8 +80,59 @@ pub enum HafasError {
     /// it to a different status than a broken upstream.
     #[error("no split-ticket combination is cheaper than the direct fare here")]
     NoSplitFound,
+    /// The caller's departure time is not a datetime this client will post. Its own
+    /// variant for the same reason as `NoSplitFound`: it is the caller's input, so the
+    /// HTTP layer has to answer 400 rather than relay it as a server fault.
+    #[error("time must be YYYY-MM-DDTHH:MM:SS or YYYY-MM-DDTHH:MM, got {0:?}")]
+    InvalidDatetime(String),
     #[error("{0}")]
     Other(String),
+}
+
+/// bahn.de's `anfrageZeitpunkt` is a naive local datetime, and the endpoint is stricter
+/// about it than its own answer admits: given a timestamp without seconds
+/// (`2026-08-16T13:00`) `/web/api/angebote/fahrplan` returns 500 with an EMPTY body.
+/// That relayed out as `BadStatus` and left the HTTP layer answering its own 500 with
+/// nothing in it, which on 2026-08-13 read as "the upstream is blocking us" and cost an
+/// evening of investigation. Every programmed caller already sends seconds; a
+/// hand-written query is where the minute-precision form comes from.
+///
+/// So the seconds are filled in here, once, ahead of both payload builders, and a value
+/// that is not a datetime at all is refused before it becomes a request -- an upstream
+/// 500 is a terrible way to learn you mistyped a date.
+///
+/// Field ranges are checked, the calendar is not: `2026-02-31` has the right shape and
+/// goes upstream, where the timetable is the authority on which days exist.
+fn normalize_datetime(datetime: &str) -> Result<String, HafasError> {
+    /// One fixed-width numeric field, present and in range.
+    fn field(part: Option<&str>, width: usize, range: std::ops::RangeInclusive<u32>) -> bool {
+        match part {
+            Some(p) if p.len() == width && p.bytes().all(|b| b.is_ascii_digit()) => {
+                p.parse().map(|n| range.contains(&n)).unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    let invalid = || HafasError::InvalidDatetime(datetime.to_string());
+    let (date, time) = datetime.split_once('T').ok_or_else(invalid)?;
+    let (mut date, mut time) = (date.split('-'), time.split(':'));
+
+    let shape = field(date.next(), 4, 1..=9999)
+        && field(date.next(), 2, 1..=12)
+        && field(date.next(), 2, 1..=31)
+        && date.next().is_none()
+        && field(time.next(), 2, 0..=23)
+        && field(time.next(), 2, 0..=59);
+    let seconds = time.next();
+    if !shape || time.next().is_some() || seconds.is_some_and(|s| !field(Some(s), 2, 0..=59)) {
+        return Err(invalid());
+    }
+
+    Ok(match seconds {
+        Some(_) => datetime.to_string(),
+        None => format!("{datetime}:00"),
+    })
 }
 
 /// Fare context carried into every bahn.de query. The vendor's own pricing
@@ -201,6 +252,7 @@ impl HafasClient {
         datetime: &str,
         fare: &FareOptions,
     ) -> Result<Value, HafasError> {
+        let datetime = normalize_datetime(datetime)?;
         let klasse = if fare.first_class {
             "KLASSE_1"
         } else {
@@ -241,8 +293,8 @@ impl HafasClient {
     /// vocabulary. Two shapes verified live rather than assumed: the station
     /// ids go in as the short lid form `A=1@L=<eva>@` (the canonical client
     /// sends exactly that, no coordinates needed), and `reiseDatum` accepts the
-    /// same naive local string dbweb takes, so `datetime` passes through
-    /// unchanged and both backends keep one caller-facing contract.
+    /// same naive local string dbweb takes, so `datetime` goes through the same
+    /// `normalize_datetime` and both backends keep one caller-facing contract.
     ///
     /// The discount is one space-joined string (`"BAHNCARD25 KLASSE_2"`), not
     /// the object dbweb wants -- read from db-vendo-client's `journeys-req.js`,
@@ -253,6 +305,7 @@ impl HafasClient {
         datetime: &str,
         fare: &FareOptions,
     ) -> Result<Value, HafasError> {
+        let datetime = normalize_datetime(datetime)?;
         let klasse = if fare.first_class {
             "KLASSE_1"
         } else {
@@ -1564,6 +1617,56 @@ mod tests {
             HafasClient::dbnav_payload("8000044", "8011160", "2026-09-15T09:00:00", &bogus)
                 .is_err()
         );
+    }
+
+    /// A departure time without seconds reaches bahn.de with seconds, on both
+    /// backends, and a time that is not a datetime never reaches it at all.
+    ///
+    /// The regression: `time=2026-08-16T13:00` posted verbatim made the fahrplan
+    /// endpoint answer 500 with an empty body, every search 500'd for a caller who
+    /// had typed the query by hand, and the emptiness of it read as the upstream
+    /// blocking us. Deterministic then and deterministic now -- the same route with
+    /// `:00` appended returned journeys in the same minute.
+    #[test]
+    fn a_departure_time_without_seconds_is_completed_and_a_non_datetime_is_refused() {
+        let fare = FareOptions::default();
+        let dbweb = HafasClient::fahrplan_payload("8000044", "8000261", "2026-08-16T13:00", &fare)
+            .expect("minute precision is a caller's shorthand, not an error");
+        assert_eq!(dbweb["anfrageZeitpunkt"], "2026-08-16T13:00:00");
+
+        let dbnav = HafasClient::dbnav_payload("8000044", "8000261", "2026-08-16T13:00", &fare)
+            .expect("the other backend takes the same shorthand");
+        assert_eq!(
+            dbnav["reiseHin"]["wunsch"]["zeitWunsch"]["reiseDatum"],
+            "2026-08-16T13:00:00"
+        );
+
+        // A full timestamp is passed through byte-identically, seconds and all.
+        let exact =
+            HafasClient::fahrplan_payload("8000044", "8000261", "2026-08-16T13:00:42", &fare)
+                .unwrap();
+        assert_eq!(exact["anfrageZeitpunkt"], "2026-08-16T13:00:42");
+
+        for junk in [
+            "2026-08-16",
+            "16.08.2026T13:00",
+            "2026-08-16 13:00",
+            "2026-08-16T13:00:00Z",
+            "2026-08-16T13:00:00+02:00",
+            "2026-8-16T13:00",
+            "2026-13-16T13:00",
+            "2026-08-16T25:00",
+            "tomorrow",
+            "",
+        ] {
+            let err = HafasClient::fahrplan_payload("8000044", "8000261", junk, &fare)
+                .expect_err("refused before it becomes a request");
+            assert!(
+                matches!(err, HafasError::InvalidDatetime(ref got) if got == junk),
+                "{junk:?} should name itself in its own error, got {err:?}"
+            );
+            assert!(HafasClient::dbnav_payload("8000044", "8000261", junk, &fare).is_err());
+        }
     }
 
     /// Split-ticketing still refuses on dbnav, and the refusal now names the

@@ -31,8 +31,9 @@ const ROUTES: &[route_manifest::Route] = &[
         "GET",
         "/api/search",
         "Fare search between two stations on a date. Query: from, to (EVA), time \
-         (YYYY-MM-DDTHH:MM:SS); optional bc (25|50), first_class, d_ticket carry the \
-         fare context, so returned prices are discount-correct.",
+         (YYYY-MM-DDTHH:MM:SS, seconds optional; anything else is a 400); optional \
+         bc (25|50), first_class, d_ticket carry the fare context, so returned prices \
+         are discount-correct.",
     ),
     r(
         "GET",
@@ -113,8 +114,15 @@ fn fail(
 fn hafas_fail(e: transit::hafas::HafasError) -> (axum::http::StatusCode, String) {
     // "no cheaper split exists" is a result. Answering 500 made the absence of a bargain
     // look like a broken server, and the dashboard had to render it as one.
+    //
+    // A malformed `time` is the caller's, and relaying it was the worst answer this
+    // server gave: bahn.de refuses a timestamp without seconds with an empty-bodied 500,
+    // which came back out of here as `{"error":"HAFAS query failed with status 500: "}`
+    // -- a sentence naming neither the caller's mistake nor a real fault, and read as the
+    // upstream blocking us for an evening. 400, and the message names the format.
     let status = match e {
         transit::hafas::HafasError::NoSplitFound => axum::http::StatusCode::NOT_FOUND,
+        transit::hafas::HafasError::InvalidDatetime(_) => axum::http::StatusCode::BAD_REQUEST,
         _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
     };
     fail(status, e)
