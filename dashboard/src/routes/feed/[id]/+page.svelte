@@ -33,6 +33,7 @@
     tasks,
     type CloudDerivativePreview,
     type CloudProvider,
+    type CloudProviderUnavailableReason,
     type CalendarCommitment,
     type CalendarContentExtension,
     type CalendarUpdateEntry,
@@ -741,6 +742,48 @@
     } finally {
       queueingCloudDerivative = false;
     }
+  }
+
+  /// One sentence per reason the server can refuse a role. The roster used to
+  /// collapse all four into "setup required", which read as "you forgot a key"
+  /// even when the real cause was an exhausted daily budget.
+  const PROVIDER_UNAVAILABLE_LABEL: Record<CloudProviderUnavailableReason, string> = {
+    missing_credential: "No API key materialized on this machine",
+    billing_expired_or_unknown: "Billing window expired or unknown",
+    budget_unavailable: "Today's call ledger could not be read",
+    daily_request_limit_reached: "Daily request limit reached",
+  };
+
+  /// `available` is a state, not a reason, so it gets its own branch rather
+  /// than a fifth entry in the map.
+  function providerStateLabel(provider: CloudProvider): string {
+    if (provider.available) return "Available";
+    return provider.unavailable_reason === null
+      ? "Unavailable, with no reason reported"
+      : PROVIDER_UNAVAILABLE_LABEL[provider.unavailable_reason];
+  }
+
+  /// Remaining budget, keeping "the ledger did not answer" distinct from a
+  /// genuine zero — the server reports the first as a null, not as 0 used.
+  function providerBudgetLabel(provider: CloudProvider): string {
+    const limit = `${provider.max_requests_per_day}/day`;
+    if (provider.requests_remaining_today === null || provider.requests_used_today === null) {
+      return `Unknown · ${limit} configured`;
+    }
+    return `${provider.requests_remaining_today} left · ${provider.requests_used_today} used · ${limit}`;
+  }
+
+  function providerTierLabel(tier: CloudProvider["data_tier"]): string {
+    return tier === "pseudonymized_personal"
+      ? "Reviewed Personal derivatives"
+      : "Public derivatives only";
+  }
+
+  function providerBillingLabel(provider: CloudProvider): string {
+    const mode = provider.billing_mode === "free_only" ? "Free tier only" : "Prepaid credit";
+    return provider.credit_expires_on
+      ? `${mode} · credit expires ${provider.credit_expires_on}`
+      : `${mode} · no credit expiry`;
   }
 
   function cloudDispatchLabel(status: ContentItemDetail["cloud_processing"]["dispatch_status"]): string {
@@ -1483,42 +1526,73 @@
                   {/if}
                 </div>
               {/if}
-            {:else if cloudProviders.length > 0}
-              <label class="provider-control">
-                <span>Provider</span>
-                <select bind:value={selectedProviderRole} disabled={queueingCloudDerivative}>
-                  {#each cloudProviders as provider (provider.role)}
-                    <option value={provider.role} disabled={!provider.available}>
-                      {provider.name} · {provider.model}{provider.available ? "" : " · setup required"}
-                    </option>
-                  {/each}
-                </select>
-              </label>
-              {#if selectedProviderRole}
-                {@const selectedProvider = cloudProviders.find((provider) => provider.role === selectedProviderRole)}
-                {#if selectedProvider}
-                  <p class="provider-detail">
-                    {selectedProvider.provider_label} · {selectedProvider.data_tier === "pseudonymized_personal"
-                      ? "Reviewed Personal derivatives"
-                      : "Public only"} · {selectedProvider.billing_mode === "free_only" ? "Free only" : "Prepaid credit"}
-                  </p>
-                {/if}
-              {/if}
+            {/if}
+          {/if}
+          {#if entry.cloud_processing.dispatch_status === "not_queued"}
+            <!-- The roster sits outside the `staged` branch on purpose. Which
+                 providers exist, what data class each accepts and how much of
+                 today's budget is left are facts about this machine, not about
+                 this item's derivative. Gating them behind a Preview press made
+                 a working cloud path look like an unbuilt one. -->
+            {#if cloudProviders.length > 0}
+              <div class="provider-roster" role="radiogroup" aria-labelledby="cloud-provider-roster-title">
+                <p class="section-label" id="cloud-provider-roster-title">Cloud providers</p>
+                {#each cloudProviders as provider (provider.role)}
+                  <label
+                    class="provider-option"
+                    class:provider-selected={provider.role === selectedProviderRole}
+                    class:provider-unavailable={!provider.available}
+                  >
+                    <span class="provider-head">
+                      <input
+                        type="radio"
+                        name="cloud-provider"
+                        value={provider.role}
+                        bind:group={selectedProviderRole}
+                        disabled={!provider.available || queueingCloudDerivative}
+                      />
+                      <strong>{provider.name}</strong>
+                      <span class="mono">{provider.model}</span>
+                    </span>
+                    <dl class="provider-facts">
+                      <div><dt>Role</dt><dd class="mono">{provider.role}</dd></div>
+                      <div><dt>Endpoint</dt><dd>{provider.provider_label} · {provider.location}</dd></div>
+                      <div><dt>Accepts</dt><dd>{providerTierLabel(provider.data_tier)}</dd></div>
+                      <div><dt>Billing</dt><dd>{providerBillingLabel(provider)}</dd></div>
+                      <div><dt>Failover</dt><dd>Priority {provider.failover_priority}</dd></div>
+                      <div><dt>Budget today</dt><dd>{providerBudgetLabel(provider)}</dd></div>
+                      <div><dt>Input ceiling</dt><dd>{provider.max_input_tokens.toLocaleString("en-GB")} tokens</dd></div>
+                      <div>
+                        <dt>State</dt>
+                        <dd>
+                          {providerStateLabel(provider)}
+                          {#if provider.unavailable_reason}
+                            <span class="mono">{provider.unavailable_reason}</span>
+                          {/if}
+                        </dd>
+                      </div>
+                    </dl>
+                  </label>
+                {/each}
+              </div>
               <button
                 class="btn cloud-queue-button"
-                disabled={queueingCloudDerivative || !selectedProviderRole}
+                disabled={queueingCloudDerivative
+                  || !selectedProviderRole
+                  || entry.cloud_processing.status !== "staged"}
                 onclick={queueCloudDerivative}
               >
                 {queueingCloudDerivative ? "Queueing…" : "Queue for cloud processing"}
               </button>
+              {#if entry.cloud_processing.status !== "staged"}
+                <p class="provider-missing">Queueing needs a reviewed copy of this item first — preview one above.</p>
+              {/if}
               {#if !cloudProviders.some((provider) => provider.available)}
                 <p class="provider-missing">The reviewed providers are configured, but their keys have not been materialized on this machine.</p>
               {/if}
             {:else if providerListLoaded}
               <p class="provider-missing">No reviewed HTTPS cloud role is configured.</p>
             {/if}
-          {/if}
-          {#if entry.cloud_processing.dispatch_status === "not_queued"}
             <p class="cloud-boundary">Approval stages only the reviewed copy. Queueing records provider intent without sending it.</p>
           {:else if entry.cloud_processing.dispatch_status === "queued"}
             <p class="cloud-boundary">Queued locally. Nothing has been sent until you run the approved analysis.</p>
@@ -2167,26 +2241,64 @@
     margin-top: 0.8rem;
   }
 
-  .provider-control {
+  .provider-roster {
     display: grid;
-    gap: 0.35rem;
+    gap: 0.5rem;
     margin-top: 0.85rem;
-    color: var(--text-tertiary);
-    font-size: 0.6875rem;
   }
 
-  .provider-control select {
-    width: 100%;
-    min-height: 2.25rem;
-    padding: 0.4rem 0.55rem;
+  .provider-roster .section-label {
+    margin: 0;
+  }
+
+  .provider-option {
+    display: grid;
+    gap: 0.3rem;
+    padding: 0.55rem 0.6rem;
     border: 1px solid var(--card-border);
     border-radius: var(--radius-md);
     background: var(--card-bg);
-    color: var(--text-primary);
-    font: inherit;
+    cursor: pointer;
   }
 
-  .provider-detail,
+  .provider-selected {
+    border-color: var(--primary);
+  }
+
+  .provider-unavailable {
+    cursor: not-allowed;
+    opacity: 0.72;
+  }
+
+  .provider-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+  }
+
+  .provider-head .mono {
+    color: var(--text-tertiary);
+    font-size: 0.625rem;
+    overflow-wrap: anywhere;
+  }
+
+  .provider-facts div {
+    gap: 0.6rem;
+    padding: 0.12rem 0;
+    font-size: 0.625rem;
+  }
+
+  .provider-facts dd {
+    overflow-wrap: anywhere;
+  }
+
+  .provider-facts .mono {
+    color: var(--text-tertiary);
+  }
+
   .provider-missing {
     margin: 0.4rem 0 0;
     color: var(--text-tertiary);

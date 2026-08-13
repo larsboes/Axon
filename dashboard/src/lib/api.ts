@@ -962,6 +962,19 @@ export interface CloudContentAnalysis {
   topics: string[];
 }
 
+/// Why a configured cloud role cannot be picked right now. Kept as a union
+/// rather than a bare string so a new server reason fails the build here
+/// instead of rendering as an unlabelled token in the roster.
+export type CloudProviderUnavailableReason =
+  | 'missing_credential'
+  | 'billing_expired_or_unknown'
+  | 'budget_unavailable'
+  | 'daily_request_limit_reached';
+
+/// Every field `CloudProviderOut` serializes, in the order the server writes
+/// them. The interface used to declare eight of the fifteen, so the budget,
+/// the context ceiling, the credit expiry and the reason a role was refused
+/// existed on the wire and nowhere in the UI.
 export interface CloudProvider {
   role: string;
   name: string;
@@ -970,7 +983,16 @@ export interface CloudProvider {
   location: 'cloud';
   data_tier: 'public' | 'pseudonymized_personal';
   billing_mode: 'free_only' | 'prepaid_credit';
+  failover_priority: number;
+  max_requests_per_day: number;
+  /// Null when the call ledger could not be read; that is a distinct state
+  /// from zero calls made, and `budget_unavailable` is the reason it carries.
+  requests_used_today: number | null;
+  requests_remaining_today: number | null;
+  max_input_tokens: number;
+  credit_expires_on: string | null;
   available: boolean;
+  unavailable_reason: CloudProviderUnavailableReason | null;
 }
 
 export interface RedactionFinding {
