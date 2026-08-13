@@ -72,8 +72,24 @@ impl SourceAdapter for TransitFareAdapter {
         };
 
         let client = HafasClient::new();
+        // Undiscounted second class, no Deutschlandticket. `search_connections` grew a
+        // `&FareOptions` argument in aec53b4 and this call site was not updated, which is
+        // why scouting stopped compiling; `FareOptions::default()` is what restores the
+        // behaviour it had before, not a new choice. It is also exactly what transit's own
+        // HTTP surface serves an unspecified request: every field of `RouteQuery`'s fare
+        // trio is `#[serde(default)]` (transit/src/server.rs:83-89).
+        //
+        // There is deliberately no fare profile in config to read here. A watch that should
+        // price against a BahnCard needs that stated per source, and no source declares one
+        // yet -- inventing a discount would silently under-report every fare this adapter
+        // reports as a bargain.
         let journeys = client
-            .search_connections(&self.from_eva, &self.to_eva, datetime)
+            .search_connections(
+                &self.from_eva,
+                &self.to_eva,
+                datetime,
+                &transit::hafas::FareOptions::default(),
+            )
             .map_err(|e| SourceError::Fetch(e.to_string()))?;
 
         if let Some(store) = &self.store {
@@ -170,6 +186,15 @@ mod tests {
                 realtime_departure: None,
                 scheduled_arrival: None,
                 realtime_arrival: None,
+                // `None`, not a hand-computed CEST offset. These two tests read
+                // `starts_at`/`ends_at`, which map from the naive `departure_time` and
+                // `arrival_time` above; nothing here exercises UTC arithmetic. `None` is
+                // a state production genuinely produces (transit/src/travel.rs: absent
+                // when the station's UIC prefix is not in station-time's table), whereas
+                // writing "2026-08-01T06:00:00Z" would assert a conversion this fixture
+                // does not test and scouting does not depend on station-time to perform.
+                departure_utc: None,
+                arrival_utc: None,
                 cancelled: false,
             }],
             total_duration_minutes: 240,
