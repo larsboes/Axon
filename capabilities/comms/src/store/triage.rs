@@ -151,7 +151,7 @@ impl Store {
         let mut conn = self.conn()?;
         let Some(row) = conn.query_opt(
             &format!(
-                "SELECT data_class FROM {}.triage_items WHERE id = $1",
+                "SELECT data_class, data_classification_method FROM {}.triage_items WHERE id = $1",
                 self.schema
             ),
             &[&id],
@@ -159,8 +159,12 @@ impl Store {
         else {
             return Ok(false);
         };
-        let classification =
-            human_reclassification(row.get::<_, String>(0).as_str(), data_class, rationale)?;
+        let classification = human_reclassification(
+            row.get::<_, String>(0).as_str(),
+            row.get::<_, String>(1).as_str(),
+            data_class,
+            rationale,
+        )?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.triage_items SET

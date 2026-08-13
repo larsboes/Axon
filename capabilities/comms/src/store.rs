@@ -449,12 +449,14 @@ pub fn feed_id(url: &str) -> String {
 /// stored, so the decision is answerable afterwards.
 pub(crate) fn human_reclassification(
     current: &str,
+    current_method: &str,
     proposed: &str,
     rationale: Option<&str>,
 ) -> Result<crate::content_item::DataClass, Box<dyn std::error::Error>> {
     let written = rationale.map(str::trim).unwrap_or_default();
     crate::content_item::admit_reclassification(
         current,
+        current_method,
         proposed,
         crate::content_item::METHOD_HUMAN,
         written,
@@ -1389,6 +1391,54 @@ mod tests {
         store
             .set_feed_data_class(&item.id, "public", Some("Published preprint."))
             .unwrap();
+        store.upsert_feed(&item).unwrap();
+        let stored = store.get_feed(&item.id).unwrap().unwrap();
+        assert_eq!(stored.data_class, "vault");
+        assert_eq!(stored.data_classification_method, "deterministic");
+    }
+
+    /// The erasure a verifier found live on 2026-08-13, pinned in the shape it
+    /// happened: an authenticated `POST /ingest` of a URL already in the feed
+    /// reverted a hand-classified arXiv row's method to `legacy` and replaced
+    /// the operator's rationale with the undeclared-default sentence. The class
+    /// never moved, which is why the escalation rule waved it through — at
+    /// equal class the only thing an ingest can write is the record of who
+    /// decided, and that record was the one thing worth keeping.
+    #[test]
+    fn a_re_ingest_at_equal_class_keeps_a_humans_feed_record() {
+        let (store, _schema) = open_test_store("feed_class_human_record");
+        let mut item = mk_feed("https://arxiv.org/abs/1706.03762", "article", "news");
+        store.upsert_feed(&item).unwrap();
+        assert!(store
+            .set_feed_data_class(
+                &item.id,
+                "personal",
+                Some("Hand-ingested from a page I was reading; the capture is mine.")
+            )
+            .unwrap());
+
+        // The probe: the same URL ingested again, declaring nothing, so the
+        // item arrives Personal/legacy -- equal class, machine method.
+        store.upsert_feed(&item).unwrap();
+        let stored = store.get_feed(&item.id).unwrap().unwrap();
+        assert_eq!(stored.data_class, "personal");
+        assert_eq!(
+            stored.data_classification_method, "human",
+            "the re-ingest reverted a human decision to a machine one"
+        );
+        assert_eq!(
+            stored.data_class_rationale,
+            "Hand-ingested from a page I was reading; the capture is mine.",
+            "the operator's own words were overwritten by the default sentence"
+        );
+        assert_eq!(stored.data_classification_version, "manual-v1");
+
+        // Escalation is untouched by any of this: the collector may still raise
+        // the class of a row a human classified, record and all.
+        item.declare_class(&content_item::DataClass::declared_by_source(
+            "vault",
+            "Declared Private by its collector.",
+        ));
         store.upsert_feed(&item).unwrap();
         let stored = store.get_feed(&item.id).unwrap().unwrap();
         assert_eq!(stored.data_class, "vault");

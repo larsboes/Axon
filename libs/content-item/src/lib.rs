@@ -335,32 +335,57 @@ pub fn valid(data_class: &str) -> bool {
 /// remember to call is the shape that produced three disagreeing copies of the
 /// cloud verdict already.
 ///
-/// Escalation — proposing an equal or stricter class — is always admitted,
-/// whoever proposes it. De-escalation is admitted only for a human, and only
-/// with a rationale they actually wrote. Both halves matter. A rule that can
-/// lower a class is a declassification primitive: it runs over attacker-
-/// controlled feed text, and "this looks like a public blog post" is a sentence
-/// an injected page can arrange to be true of itself. And a de-escalation with
-/// no reason recorded is indistinguishable afterwards from a mistake.
+/// Escalation — proposing a stricter class — is always admitted, whoever
+/// proposes it. De-escalation is admitted only for a human, and only with a
+/// rationale they actually wrote. Both halves matter. A rule that can lower a
+/// class is a declassification primitive: it runs over attacker-controlled feed
+/// text, and "this looks like a public blog post" is a sentence an injected
+/// page can arrange to be true of itself. And a de-escalation with no reason
+/// recorded is indistinguishable afterwards from a mistake.
+///
+/// The third case is equality, and it is why the *stored* method is a parameter
+/// rather than an implementation detail of whoever stored it. A write proposing
+/// the class already on the row changes no class, so both rules above wave it
+/// through — yet it still overwrites the method and the rationale. A machine
+/// re-ingest arriving at `personal` on a row a human had classified `personal`
+/// erased the human's record exactly that way: the class survived, the reason
+/// it was chosen did not. So at equal class a non-human write over a stored
+/// human decision writes nothing. There is no classification to make there,
+/// only a record to lose.
+///
+/// Deliberately narrow: `human` is protected this way, method rank in general
+/// is not. A rules resweep re-deciding at the same class is the classifier
+/// doing its job and has to keep landing; only what a person wrote is
+/// unreproducible.
 pub fn admit_reclassification(
-    current: &str,
-    proposed: &str,
-    method: &str,
+    stored_class: &str,
+    stored_method: &str,
+    proposed_class: &str,
+    proposed_method: &str,
     rationale: &str,
 ) -> Result<(), &'static str> {
-    let Some(current_rank) = class_rank(current) else {
+    let Some(stored_rank) = class_rank(stored_class) else {
         return Err("stored data class is not a known class");
     };
-    let Some(proposed_rank) = class_rank(proposed) else {
+    let Some(proposed_rank) = class_rank(proposed_class) else {
         return Err("data class must be one of: public, personal, vault");
     };
-    if method_rank(method).is_none() {
+    if method_rank(stored_method).is_none() {
+        return Err("stored classification method is not a known method");
+    }
+    if method_rank(proposed_method).is_none() {
         return Err("classification method must be one of: legacy, deterministic, model, human");
     }
-    if proposed_rank >= current_rank {
+    if proposed_rank > stored_rank {
         return Ok(());
     }
-    if method != METHOD_HUMAN {
+    if proposed_rank == stored_rank {
+        if stored_method == METHOD_HUMAN && proposed_method != METHOD_HUMAN {
+            return Err("only a human may replace a human's classification at the same class");
+        }
+        return Ok(());
+    }
+    if proposed_method != METHOD_HUMAN {
         return Err("only a human may lower a data class");
     }
     if rationale.trim().is_empty() {
@@ -733,32 +758,76 @@ mod tests {
     }
 
     /// The escalation rule over its whole input space, not over the three pairs
-    /// someone thought of. Nine ordered class pairs times four methods, with
-    /// and without a rationale: every combination is decided here, and the
-    /// assertion is the rule restated independently rather than the
-    /// implementation called twice.
+    /// someone thought of. Nine ordered class pairs times four stored methods
+    /// times four proposing methods, with and without a rationale: every one of
+    /// the 432 combinations is decided here, and the assertion is the rule
+    /// restated independently rather than the implementation called twice.
     #[test]
-    fn no_method_below_human_can_lower_a_class_and_no_human_can_do_it_silently() {
-        for current in DATA_CLASSES {
-            for proposed in DATA_CLASSES {
-                for method in CLASSIFICATION_METHODS {
-                    for rationale in ["", "   ", "The paper is on arXiv."] {
-                        let admitted =
-                            admit_reclassification(current, proposed, method, rationale).is_ok();
-                        let lowers = class_rank(proposed) < class_rank(current);
-                        let expected = if lowers {
-                            method == METHOD_HUMAN && !rationale.trim().is_empty()
-                        } else {
-                            true
-                        };
-                        assert_eq!(
-                            admitted, expected,
-                            "{current} -> {proposed} by {method} with rationale {rationale:?}"
-                        );
+    fn no_machine_lowers_a_class_or_overwrites_a_human_and_no_human_lowers_silently() {
+        for stored_class in DATA_CLASSES {
+            for stored_method in CLASSIFICATION_METHODS {
+                for proposed_class in DATA_CLASSES {
+                    for proposed_method in CLASSIFICATION_METHODS {
+                        for rationale in ["", "   ", "The paper is on arXiv."] {
+                            let admitted = admit_reclassification(
+                                stored_class,
+                                stored_method,
+                                proposed_class,
+                                proposed_method,
+                                rationale,
+                            )
+                            .is_ok();
+                            let stored_rank = class_rank(stored_class);
+                            let proposed_rank = class_rank(proposed_class);
+                            let expected = if proposed_rank < stored_rank {
+                                proposed_method == METHOD_HUMAN && !rationale.trim().is_empty()
+                            } else if proposed_rank == stored_rank {
+                                stored_method != METHOD_HUMAN || proposed_method == METHOD_HUMAN
+                            } else {
+                                true
+                            };
+                            assert_eq!(
+                                admitted, expected,
+                                "{stored_class}/{stored_method} -> {proposed_class} by \
+                                 {proposed_method} with rationale {rationale:?}"
+                            );
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// The equal-class case stated on its own, because the property test above
+    /// proves it holds everywhere and this one says what it is: a machine
+    /// re-ingest of an item a human already classified keeps the human's
+    /// record, and a genuine raise by that same machine still lands.
+    #[test]
+    fn a_machine_may_raise_a_humans_class_but_not_restate_it() {
+        for machine in [METHOD_LEGACY, METHOD_DETERMINISTIC, METHOD_MODEL] {
+            assert!(
+                admit_reclassification("personal", METHOD_HUMAN, "personal", machine, "").is_err(),
+                "{machine} restated a human's class and would have taken the record with it"
+            );
+            assert!(
+                admit_reclassification("personal", METHOD_HUMAN, "vault", machine, "").is_ok(),
+                "escalation is allowed to everyone, human-decided row or not"
+            );
+        }
+        // A human revisiting their own decision is not a machine overwriting it.
+        assert!(
+            admit_reclassification("personal", METHOD_HUMAN, "personal", METHOD_HUMAN, "").is_ok()
+        );
+        // And nothing here loosened the rules-over-rules case: a resweep that
+        // re-decides at the same class still lands.
+        assert!(admit_reclassification(
+            "personal",
+            METHOD_DETERMINISTIC,
+            "personal",
+            METHOD_DETERMINISTIC,
+            ""
+        )
+        .is_ok());
     }
 
     /// Rank is what the rule is written in terms of, so its order is part of
@@ -780,9 +849,33 @@ mod tests {
     /// class would then be silently overwritable by anything.
     #[test]
     fn an_unknown_class_is_refused_rather_than_ranked() {
-        assert!(admit_reclassification("something-new", "public", METHOD_HUMAN, "why").is_err());
-        assert!(admit_reclassification("vault", "something-new", METHOD_HUMAN, "why").is_err());
-        assert!(admit_reclassification("vault", "public", "source-default", "why").is_err());
+        assert!(admit_reclassification(
+            "something-new",
+            METHOD_HUMAN,
+            "public",
+            METHOD_HUMAN,
+            "why"
+        )
+        .is_err());
+        assert!(admit_reclassification(
+            "vault",
+            METHOD_HUMAN,
+            "something-new",
+            METHOD_HUMAN,
+            "why"
+        )
+        .is_err());
+        assert!(
+            admit_reclassification("vault", METHOD_HUMAN, "public", "source-default", "why")
+                .is_err()
+        );
+        // Same reasoning one column over: an unranked *stored* method would
+        // make `None == Some(30)` false and quietly leave a human's record
+        // overwritable at equal class.
+        assert!(
+            admit_reclassification("vault", "source-default", "public", METHOD_HUMAN, "why")
+                .is_err()
+        );
     }
 
     /// The fail-closed default is a value, not an absence: Personal, decided by
@@ -802,8 +895,22 @@ mod tests {
         }
         // Escalating it needs nobody's permission; lowering it to Public still
         // needs a human with a reason.
-        assert!(admit_reclassification("personal", "vault", METHOD_DETERMINISTIC, "").is_ok());
-        assert!(admit_reclassification("personal", "public", METHOD_DETERMINISTIC, "").is_err());
+        assert!(admit_reclassification(
+            &undeclared.value,
+            &undeclared.method,
+            "vault",
+            METHOD_DETERMINISTIC,
+            ""
+        )
+        .is_ok());
+        assert!(admit_reclassification(
+            &undeclared.value,
+            &undeclared.method,
+            "public",
+            METHOD_DETERMINISTIC,
+            ""
+        )
+        .is_err());
     }
 
     #[test]

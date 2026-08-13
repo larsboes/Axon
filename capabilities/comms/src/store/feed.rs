@@ -29,7 +29,7 @@ impl Store {
             .map(|_| provenance::NORMALIZATION_REVISION);
         let existing = conn.query_opt(
             &format!(
-                "SELECT data_class FROM {}.feed_items WHERE id = $1",
+                "SELECT data_class, data_classification_method FROM {}.feed_items WHERE id = $1",
                 self.schema
             ),
             &[&item.id],
@@ -43,9 +43,15 @@ impl Store {
         // this statement so there is one copy of it: this path proposes a
         // machine decision, so a lowering is refused here whatever the item
         // says, and the row keeps what it had.
+        //
+        // Who decided the stored class is read alongside it, because the four
+        // columns move together: at equal class there is no class to change,
+        // only a human's method and rationale to erase, and this path erased
+        // them until the stored method became an input to the rule.
         let reclassifies = existing.as_ref().is_none_or(|row| {
             crate::content_item::admit_reclassification(
                 row.get::<_, String>(0).as_str(),
+                row.get::<_, String>(1).as_str(),
                 &item.data_class,
                 &item.data_classification_method,
                 &item.data_class_rationale,
@@ -218,7 +224,7 @@ impl Store {
         let mut conn = self.conn()?;
         let Some(row) = conn.query_opt(
             &format!(
-                "SELECT data_class FROM {}.feed_items WHERE id = $1",
+                "SELECT data_class, data_classification_method FROM {}.feed_items WHERE id = $1",
                 self.schema
             ),
             &[&id],
@@ -226,8 +232,12 @@ impl Store {
         else {
             return Ok(false);
         };
-        let classification =
-            human_reclassification(row.get::<_, String>(0).as_str(), data_class, rationale)?;
+        let classification = human_reclassification(
+            row.get::<_, String>(0).as_str(),
+            row.get::<_, String>(1).as_str(),
+            data_class,
+            rationale,
+        )?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}.feed_items SET
