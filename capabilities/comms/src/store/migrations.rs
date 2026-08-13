@@ -528,6 +528,43 @@ impl Store {
             ALTER TABLE {schema}.feed_evaluations DROP CONSTRAINT IF EXISTS feed_evaluations_tier_check;
             ALTER TABLE {schema}.feed_evaluations ADD CONSTRAINT feed_evaluations_tier_check
                 CHECK (tier IN ('legacy','deterministic','model','human'));
+
+            -- Data classification on feed items. triage_items has carried these
+            -- four columns since mail got a class; feed never did, and the
+            -- absence was not neutral -- two literals stamped 'public' on every
+            -- item on the way out, which is the one value that satisfies
+            -- `cloud_tier_allows`'s public branch. The whole feed was therefore
+            -- cloud-eligible verbatim by construction.
+            --
+            -- The default is the fail-closed pair, and both halves carry weight.
+            -- An item nobody classified is 'personal', so a collector cannot
+            -- produce a cloud-eligible row by omission; and its method is
+            -- 'legacy', rank 0, so the first real decision of any kind outranks
+            -- it. 'public' now has to be positively declared.
+            --
+            -- Existing rows are filled by these DEFAULTs in the same statement
+            -- that adds the columns, which is why the CHECK lands here rather
+            -- than after a separate pass: there is no moment at which a row
+            -- exists that the constraint would reject.
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS data_class TEXT NOT NULL DEFAULT 'personal';
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS data_class_rationale TEXT NOT NULL
+                    DEFAULT 'No collector declared a class for this item; Personal by default.';
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS data_classification_method TEXT NOT NULL DEFAULT 'legacy';
+            ALTER TABLE {schema}.feed_items
+                ADD COLUMN IF NOT EXISTS data_classification_version TEXT NOT NULL
+                    DEFAULT 'data-class-legacy-v1';
+            ALTER TABLE {schema}.feed_items DROP CONSTRAINT IF EXISTS feed_items_data_class_check;
+            ALTER TABLE {schema}.feed_items ADD CONSTRAINT feed_items_data_class_check
+                CHECK (data_class IN ('public','personal','vault'));
+            ALTER TABLE {schema}.feed_items
+                DROP CONSTRAINT IF EXISTS feed_items_data_classification_method_check;
+            ALTER TABLE {schema}.feed_items
+                ADD CONSTRAINT feed_items_data_classification_method_check
+                CHECK (data_classification_method IN ('legacy','deterministic','model','human'));
+
             UPDATE {schema}.feed_items SET
                 normalization_tier = 'legacy', normalization_revision = 'legacy-unknown',
                 normalization_completed_at = created_at
