@@ -98,16 +98,20 @@
   "$defs": {
     "dataClass": {
       "type": "object",
-      "description": "Stored trust classification. The vault value is labelled Private in the product.",
+      "description": "Stored trust classification. The vault value is labelled Private in the product. An item that never had a class declared for it reads back as personal/legacy — the fail-closed default, not an absent field.",
       "required": ["value", "label", "rationale", "method", "version"],
       "properties": {
         "value": { "enum": ["public", "personal", "vault"] },
         "label": { "enum": ["Public", "Personal", "Private"] },
         "rationale": { "type": "string", "minLength": 1 },
-        "method": { "enum": ["source-default", "rules", "human"] },
+        "method": { "$ref": "#/$defs/classificationMethod" },
         "version": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
+    },
+    "classificationMethod": {
+      "description": "Who decided, ranked: legacy (0, nobody did — a backfilled or undeclared row) < deterministic (10, a collector declaration or a rule) < model (20) < human (30). One vocabulary for every classification in the contract, shared with the processing tier so a reader compares two decisions without a translation table. The rank is what makes escalation-only expressible: a decision may only be replaced by one of equal or higher rank, and only a human may lower a class.",
+      "enum": ["legacy", "deterministic", "model", "human"]
     },
     "processingPolicy": {
       "type": "object",
@@ -350,7 +354,7 @@
       "properties": {
         "category": { "enum": ["aktiv", "issue", "feed", "werbung", "belege", "steuern", "sonstiges"] },
         "rationale": { "type": "string" },
-        "classification_method": { "enum": ["rules", "human"] },
+        "classification_method": { "$ref": "#/$defs/classificationMethod" },
         "classification_version": { "type": "string" },
         "gmail_action": { "type": ["string", "null"], "enum": ["archive", "trash", "restore", null] },
         "gmail_action_at": { "type": ["string", "null"] },
