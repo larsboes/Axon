@@ -16,11 +16,19 @@
 //!
 //! ## Personal and Private content never leaves the machine
 //!
-//! The data class decides. `public` may use any configured target; everything
-//! else passes `allow_remote: false`, and `libs/summarize` refuses a non-loopback
-//! endpoint outright rather than downgrading it. Mail is never `public` by
-//! construction (`content_item::DataClass::classify_mail`), so a mail digest is
-//! loopback-only by the same rule that already governs mail relevance.
+//! The stored data class decides, and it decides through the same gate the
+//! reviewed-derivative queue uses: [`cloud_derivative::tier_allows`], asked
+//! about the passthrough representation, because a digest hands the model the
+//! source text as it stands. Anything it does not admit becomes
+//! `Reach::LoopbackOnly`, and `libs/summarize` refuses a non-loopback endpoint
+//! outright rather than downgrading it. Mail is never `public` by construction
+//! (`content_item::DataClass::classify_mail`), so a mail digest is loopback-only
+//! by the same rule that already governs mail relevance.
+//!
+//! This used to be its own `data_class == "public"` expression here — a second
+//! copy of a policy that already had a home, and a laxer one: it admitted any
+//! non-loopback target for a public item, including an https endpoint with no
+//! reviewed cloud policy on it at all.
 //!
 //! ## A Private digest is redacted before it is stored
 //!
@@ -30,27 +38,18 @@
 //! detector the sweep uses on subject and snippet, and the count is recorded, so
 //! a digest cannot republish what the sweep redacted.
 
-use crate::cloud_derivative::{redact_review_field, RedactionFinding};
+use crate::cloud_derivative::{self, redact_review_field, RedactionFinding};
 use crate::config::Config;
 use crate::content_item;
 use crate::google;
 use crate::store::{Store, StoredDigest};
-use crate::summarize::{self, Depth, Directive, Outcome, Target};
+use crate::summarize::{self, Depth, Directive, Outcome, Reach, Target};
 use crate::Result;
 
 /// How many retryable failures a row accumulates before the automatic pass
 /// leaves it alone. An explicit press always runs regardless — the operator can
 /// see the model is back up.
 pub const MAX_ATTEMPTS: i32 = 3;
-
-/// The configured summarization target, if there is one.
-///
-/// The `Target` shape is deliberately plain data: `libs/summarize` never learns
-/// what an `InferenceConfig` is, so calendar can include it without also
-/// including `libs/inference`.
-pub fn target(cfg: &Config) -> Option<Target> {
-    cfg.summarization_role().map(|role| to_target(cfg, &role))
-}
 
 /// The target for one specific piece of work.
 ///
@@ -95,6 +94,11 @@ pub fn producer_revisions(cfg: &Config) -> Vec<String> {
         .collect()
 }
 
+/// Where one resolved role's requests go.
+///
+/// The `Target` shape is deliberately plain data: `libs/summarize` never learns
+/// what an `InferenceConfig` is, so a capability with no inference dependency
+/// can still call it.
 fn to_target(cfg: &Config, role: &axon_inference::ResolvedRole) -> Target {
     let loopback = role.is_loopback();
     Target {
@@ -140,15 +144,40 @@ struct SourceText {
 }
 
 impl SourceText {
-    /// Public content may use any configured target; everything else is
-    /// loopback-only. One expression, read by both the digest and the diagram
-    /// path, because a policy spelled out twice is a policy that drifts.
-    fn allow_remote(&self) -> bool {
-        self.data_class == "public"
+    /// How far this text may travel to reach `cloud_data_tier`.
+    ///
+    /// A digest sends the source text as it stands — nothing is redacted on the
+    /// way out — which is exactly what `verbatim_send_allowed` answers. Handing
+    /// the question to the reviewed-derivative gate is the point: the answer
+    /// used to be an independent `data_class == "public"` here, which is a
+    /// second copy of a policy that already had a home and, being a copy, was
+    /// already laxer than it.
+    ///
+    /// `None` — every loopback role, and any endpoint nobody gave a reviewed
+    /// cloud policy — admits nothing. That is not a restriction on local models:
+    /// `libs/summarize` only consults the verdict for a non-loopback target.
+    fn reach(&self, cloud_data_tier: Option<&str>) -> Reach {
+        if cloud_derivative::verbatim_send_allowed(cloud_data_tier, &self.data_class) {
+            Reach::CloudCleared
+        } else {
+            Reach::LoopbackOnly
+        }
     }
 
     fn redact_before_persistence(&self) -> bool {
         content_item::redact_before_persistence(&self.data_class)
+    }
+}
+
+/// The verdict for one resolved role, or `LoopbackOnly` when no role resolved.
+///
+/// An unresolved role produces `Outcome::Unconfigured` before the verdict is
+/// consulted at all, so the value is unobservable — but defaulting it closed
+/// keeps that true if the order ever changes.
+fn reach_for(gathered: &SourceText, role: Option<&axon_inference::ResolvedRole>) -> Reach {
+    match role {
+        Some(role) => gathered.reach(role.cloud_data_tier.map(|tier| tier.as_str())),
+        None => Reach::LoopbackOnly,
     }
 }
 
@@ -290,7 +319,7 @@ pub fn generate(
         role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
         &gathered.text,
         directive,
-        gathered.allow_remote(),
+        reach_for(&gathered, role.as_ref()),
     );
 
     let mut redactions: Vec<RedactionFinding> = Vec::new();
@@ -367,7 +396,16 @@ pub fn generate_diagram(
         .and_then(|row| row.text.clone())
         .unwrap_or_else(|| gathered.text.clone());
 
-    let outcome = summarize::diagram(target(cfg).as_ref(), &input, gathered.allow_remote());
+    // Resolved once, so the verdict is asked about the role that will actually
+    // serve the request. Deriving the target and the verdict from two separate
+    // lookups is how a gate ends up answering about a different endpoint than
+    // the one the payload goes to.
+    let role = cfg.summarization_role();
+    let outcome = summarize::diagram(
+        role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
+        &input,
+        reach_for(&gathered, role.as_ref()),
+    );
     let producer = diagram_producer_revision(cfg).unwrap_or_else(|| "unconfigured".into());
 
     // A diagram hangs off a digest row, so an item digested for the first time
@@ -411,10 +449,11 @@ pub fn generate_chart(
         .content_digest(source, id)
         .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
 
+    let role = cfg.summarization_role();
     let outcome = summarize::chart::chart(
-        target(cfg).as_ref(),
+        role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
         &gathered.text,
-        gathered.allow_remote(),
+        reach_for(&gathered, role.as_ref()),
     );
     let producer = chart_producer_revision(cfg).unwrap_or_else(|| "unconfigured".into());
 
@@ -596,22 +635,52 @@ mod tests {
         );
     }
 
-    /// The one rule that keeps mail off a cloud endpoint: mail is never
-    /// `public`, and only `public` allows a remote target.
-    #[test]
-    fn only_public_content_may_use_a_remote_target() {
-        for class in ["personal", "vault", "something-new"] {
-            let gathered = SourceText {
-                text: String::new(),
-                data_class: class.into(),
-            };
-            assert!(!gathered.allow_remote(), "{class} must stay local");
-        }
-        assert!(SourceText {
+    fn gathered(class: &str) -> SourceText {
+        SourceText {
             text: String::new(),
-            data_class: "public".into(),
+            data_class: class.into(),
         }
-        .allow_remote());
+    }
+
+    /// The one rule that keeps mail off a cloud endpoint: mail is never
+    /// `public`, and nothing but `public` may be sent verbatim. A digest sends
+    /// the source text verbatim, so this is the whole question.
+    #[test]
+    fn nothing_but_a_public_item_may_reach_a_cloud_tier() {
+        for tier in [None, Some("public"), Some("pseudonymized_personal")] {
+            for class in ["personal", "vault", "something-new"] {
+                assert_eq!(
+                    gathered(class).reach(tier),
+                    Reach::LoopbackOnly,
+                    "{class} must stay local against tier {tier:?}"
+                );
+            }
+        }
+        assert_eq!(
+            gathered("public").reach(Some("public")),
+            Reach::CloudCleared
+        );
+        assert_eq!(
+            gathered("public").reach(Some("pseudonymized_personal")),
+            Reach::CloudCleared
+        );
+    }
+
+    /// A role with no reviewed cloud policy has no `cloud_data_tier`, and an
+    /// undeclared tier admits nothing — including public content. The previous
+    /// rule was laxer: it read the class alone and would have sent a public
+    /// item to any https endpoint somebody pointed the summarization role at.
+    #[test]
+    fn an_endpoint_with_no_declared_tier_receives_nothing() {
+        for class in ["public", "personal", "vault"] {
+            assert_eq!(gathered(class).reach(None), Reach::LoopbackOnly);
+        }
+    }
+
+    /// No role resolved means no request; the verdict still defaults closed.
+    #[test]
+    fn an_unresolved_role_is_loopback_only() {
+        assert_eq!(reach_for(&gathered("public"), None), Reach::LoopbackOnly);
     }
 
     #[test]

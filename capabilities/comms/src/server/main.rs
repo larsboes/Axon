@@ -521,40 +521,6 @@ mod tests {
     }
 
     #[test]
-    fn cloud_tiers_accept_only_the_exact_reviewed_representation() {
-        assert!(cloud_tier_allows(
-            Some("public"),
-            "public",
-            "public",
-            cloud_derivative::PASSTHROUGH_VERSION,
-        ));
-        assert!(!cloud_tier_allows(
-            Some("public"),
-            "personal",
-            "personal",
-            cloud_derivative::REDACTION_VERSION,
-        ));
-        assert!(cloud_tier_allows(
-            Some("pseudonymized_personal"),
-            "personal",
-            "personal",
-            cloud_derivative::REDACTION_VERSION,
-        ));
-        assert!(!cloud_tier_allows(
-            Some("pseudonymized_personal"),
-            "personal",
-            "personal",
-            cloud_derivative::PASSTHROUGH_VERSION,
-        ));
-        assert!(!cloud_tier_allows(
-            Some("pseudonymized_personal"),
-            "vault",
-            "personal",
-            cloud_derivative::REDACTION_VERSION,
-        ));
-    }
-
-    #[test]
     fn reconciled_gmail_location_maps_to_truthful_local_status() {
         assert_eq!(
             reconciled_status("proposed", ThreadLocation::Archive),

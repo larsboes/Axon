@@ -62,7 +62,7 @@ year does not pay it.
 ## No cloud AI for itinerary ranking
 
 The cloud path in comms gates on trust class before anything leaves the machine.
-`cloud_tier_allows` in `capabilities/comms/src/server/cloud.rs` refuses `vault` content outright,
+`tier_allows` in `capabilities/comms/src/cloud_derivative.rs` refuses `vault` content outright,
 lets a `public` tier through only for a public original with a `bounded-public-v1` passthrough
 derivative, and lets `pseudonymized_personal` through only when a personal original produced a
 personal derivative under `deterministic-entity-redaction-v2`. Ranking an itinerary in the cloud

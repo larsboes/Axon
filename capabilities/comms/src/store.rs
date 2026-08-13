@@ -1029,7 +1029,11 @@ mod tests {
             item_id: "thread:cloud".into(),
             source_revision: "source-v1".into(),
             preview_hash: "preview-v1".into(),
-            original_data_class: "vault".into(),
+            // Was 'vault' until the column stopped accepting it. Nothing else
+            // about this test is about the class — it is about staleness — and
+            // 'vault' had only ever reached this row through a `prepare()` that
+            // used to hand out a preview for Private content.
+            original_data_class: "personal".into(),
             derivative_data_class: "personal".into(),
             transformation: "deterministic-entity-redaction-v2".into(),
             document: "Title\n[identity removed]".into(),
@@ -1057,6 +1061,36 @@ mod tests {
             .cloud_derivative_state("mail", "thread:cloud", "source-v1", "preview-v2")
             .unwrap();
         assert_eq!(changed_policy.status, "stale");
+    }
+
+    /// The column carries the same refusal `cloud_derivative::prepare` does.
+    /// Belt and braces on purpose: `prepare` is the door every current caller
+    /// goes through, and the CHECK is what still holds if a future one does not
+    /// — or if an older binary is pointed at this database.
+    #[test]
+    fn a_vault_derivative_cannot_be_staged_at_all() {
+        let (store, _schema) = open_test_store("cloud_vault_refused");
+        let error = store
+            .stage_cloud_derivative(&CloudDerivativeApproval {
+                source: "mail".into(),
+                item_id: "thread:vault".into(),
+                source_revision: "source-v1".into(),
+                preview_hash: "preview-v1".into(),
+                original_data_class: "vault".into(),
+                derivative_data_class: "personal".into(),
+                transformation: "deterministic-entity-redaction-v2".into(),
+                document: "Title\n[identity removed]".into(),
+                redaction_count: 1,
+            })
+            .expect_err("vault must not be stageable");
+        assert!(
+            error
+                .to_string()
+                .contains("content_cloud_derivatives_original_data_class_check")
+                || format!("{error:?}")
+                    .contains("content_cloud_derivatives_original_data_class_check"),
+            "the refusal must come from the class CHECK, got: {error:?}"
+        );
     }
 
     #[test]

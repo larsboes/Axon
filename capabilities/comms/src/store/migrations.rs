@@ -281,7 +281,7 @@ impl Store {
                 item_id TEXT NOT NULL,
                 source_revision TEXT NOT NULL,
                 preview_hash TEXT NOT NULL,
-                original_data_class TEXT NOT NULL CHECK (original_data_class IN ('public','personal','vault')),
+                original_data_class TEXT NOT NULL CHECK (original_data_class IN ('public','personal')),
                 derivative_data_class TEXT NOT NULL CHECK (derivative_data_class IN ('public','personal')),
                 transformation TEXT NOT NULL,
                 document TEXT NOT NULL,
@@ -552,7 +552,7 @@ impl Store {
             -- four columns since mail got a class; feed never did, and the
             -- absence was not neutral -- two literals stamped 'public' on every
             -- item on the way out, which is the one value that satisfies
-            -- `cloud_tier_allows`'s public branch. The whole feed was therefore
+            -- `cloud_derivative::tier_allows`'s public branch. The feed was therefore
             -- cloud-eligible verbatim by construction.
             --
             -- The default is the fail-closed pair, and both halves carry weight.
@@ -583,6 +583,26 @@ impl Store {
             ALTER TABLE {schema}.feed_items
                 ADD CONSTRAINT feed_items_data_classification_method_check
                 CHECK (data_classification_method IN ('legacy','deterministic','model','human'));
+
+            -- `cloud_derivative::prepare` returns Err for vault, so no code can
+            -- produce a vault derivative to stage any more. The column said
+            -- otherwise: it accepted a value only a binary predating that
+            -- refusal could write, which is a vocabulary describing history
+            -- rather than what may exist. CREATE TABLE above narrows it for a
+            -- fresh database and is a no-op on an existing one, so the same
+            -- narrowing has to be spelled out as an ALTER as well.
+            --
+            -- The DELETE runs first because ADD CONSTRAINT validates existing
+            -- rows: on any database that ever staged one, the reverse order
+            -- fails the whole migration. Nothing is lost that a re-preview
+            -- would not rebuild -- a derivative is a cache of a local
+            -- transformation, and its cloud job (if any) FKs nothing to it.
+            DELETE FROM {schema}.content_cloud_derivatives WHERE original_data_class = 'vault';
+            ALTER TABLE {schema}.content_cloud_derivatives
+                DROP CONSTRAINT IF EXISTS content_cloud_derivatives_original_data_class_check;
+            ALTER TABLE {schema}.content_cloud_derivatives
+                ADD CONSTRAINT content_cloud_derivatives_original_data_class_check
+                CHECK (original_data_class IN ('public','personal'));
 
             UPDATE {schema}.feed_items SET
                 normalization_tier = 'legacy', normalization_revision = 'legacy-unknown',

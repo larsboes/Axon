@@ -153,10 +153,12 @@ through the same extractor the article path uses), hands it to the model and dro
 writes it. The digest row is the only thing that survives the call, which is the whole point:
 mail is distilled into an outcome, never retained as a local copy of the message.
 
-Two gates follow the data class rather than the caller. Only `public` content may use a
-non-loopback target, and mail is never `public` by construction — so a mail digest is
-loopback-only under the same rule that already governs mail relevance, and a cloud endpoint is
-refused outright rather than downgraded. For `vault` content the produced digest passes the same
+Two gates follow the data class rather than the caller. Whether a digest may use a non-loopback
+target is decided by the same function the reviewed-derivative queue uses — `tier_allows` in
+`cloud_derivative.rs`, asked about the passthrough representation, because a digest sends the
+source text as it stands. Nothing but `public` survives that question, mail is never `public` by
+construction, and an endpoint carrying no reviewed cloud policy admits nothing at all. A cloud
+endpoint is refused outright rather than downgraded. For `vault` content the produced digest passes the same
 deterministic detector the sweep runs on subject and snippet **before** it is stored, and the
 count is recorded: a model asked to summarize a one-time-code mail will quote the code, and the
 digest must not be where it gets published.
@@ -566,11 +568,13 @@ Routes:
   pass over items with no digest, a stale producer, or a retryable failure with attempts left.
   It never touches a row an operator refined.
 - `POST /content/:source/:id/cloud-preview` → builds a bounded local preview. Public content
-  is copied as-is; Personal and Private content receives local deterministic entity redaction
-  for recognized people after salutations, addresses, links, phone/account numbers and
-  token-like secrets. The response lists the recognized entity types, names the limitations,
-  and always reports zero provider calls. A Private preview is inspectable local evidence only;
-  it cannot be approved, queued or dispatched to cloud processing.
+  is copied as-is; Personal content receives local deterministic entity redaction for recognized
+  people after salutations, addresses, links, phone/account numbers and token-like secrets. The
+  response lists the recognized entity types, names the limitations, and always reports zero
+  provider calls. **Private content has no preview**: the request is refused with 400, because a
+  preview is a hashable, approvable object and producing one for content that may never leave the
+  machine means the refusal has to be remembered again at every later step. The store agrees —
+  `content_cloud_derivatives.original_data_class` accepts only `public` and `personal`.
 - `POST /content/:source/:id/cloud-approval` `{"preview_hash":"..."}` → regenerates the
   current preview, rejects a stale hash, and stages the exact reviewed derivative locally.
   It does not select or contact a cloud provider.

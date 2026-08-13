@@ -306,8 +306,8 @@ impl std::fmt::Debug for Admission {
 /// and blocking `reqwest` (see the dependency rule at the top of this file) and
 /// so cannot hold a database handle, a socket, or a lock file. The *policy*
 /// still lives here: [`complete`] will not make a loopback request without a
-/// permit when a gate is configured, for the same reason the `allow_remote`
-/// refusal lives here rather than in each caller.
+/// permit when a gate is configured, for the same reason the [`Reach`] refusal
+/// lives here rather than in each caller.
 ///
 /// Why this exists: on 2026-08-05 four concurrent prefills pushed oMLX past its
 /// hard watermark and it aborted all four. Nothing in Axon knew the others were
@@ -318,6 +318,33 @@ pub trait LocalGate: Send + Sync {
     /// of the request: the caller reports it as a capacity condition and the
     /// item is retried later.
     fn acquire(&self) -> Result<Admission, String>;
+}
+
+/// How far one payload is allowed to travel.
+///
+/// Deliberately not a `bool`. This is a verdict the caller's cloud gate reached
+/// about one specific item's stored data class, and `digest(t, text, &d, false)`
+/// records neither what was decided nor about what — the two literals that
+/// stamped `public` on every feed item were exactly that shape, and both read as
+/// valid Rust at the call site. A named variant does not make a verdict correct,
+/// but it makes an unconsidered one visible in review.
+///
+/// [`Reach::CloudCleared`] is a claim about a *specific* endpoint: the gate was
+/// asked whether this class, in this representation, may go to that provider's
+/// tier. It is not a general permission and does not travel with the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// Loopback endpoints only. A non-loopback target is refused outright —
+    /// [`Outcome::RemoteRefused`], never a quiet downgrade to a local model.
+    LoopbackOnly,
+    /// The caller's cloud gate admitted this payload for this endpoint.
+    CloudCleared,
+}
+
+impl Reach {
+    fn admits(self, target: &Target) -> bool {
+        target.loopback || self == Self::CloudCleared
+    }
 }
 
 /// Where to send the request. Built by the caller from whatever role it
@@ -463,16 +490,16 @@ pub fn digest_prompt(input: &str, shape: Shape, directive: &Directive) -> String
 
 /// Produce a digest of `text`.
 ///
-/// `allow_remote` is the caller's data-class verdict: Personal and Private
-/// content passes `false`, and a non-loopback target is then refused outright
-/// rather than quietly downgraded. That check lives here, at the one place that
-/// makes the request, because a policy enforced by each caller separately is a
-/// policy with as many holes as there are callers.
+/// [`Reach`] is the caller's data-class verdict: anything its cloud gate did not
+/// admit arrives as [`Reach::LoopbackOnly`], and a non-loopback target is then
+/// refused outright rather than quietly downgraded. That check lives here, at
+/// the one place that makes the request, because a policy enforced by each
+/// caller separately is a policy with as many holes as there are callers.
 pub fn digest(
     target: Option<&Target>,
     text: &str,
     directive: &Directive,
-    allow_remote: bool,
+    reach: Reach,
 ) -> Outcome {
     // Empty is not "short" — there is nothing for the operator to have seen
     // that the count missed, so the Detailed override does not apply. Asking a
@@ -488,7 +515,7 @@ pub fn digest(
     let Some(target) = target else {
         return Outcome::Unconfigured;
     };
-    if !allow_remote && !target.loopback {
+    if !reach.admits(target) {
         return Outcome::RemoteRefused;
     }
     let input = truncate(text, INPUT_CAP);
@@ -561,11 +588,11 @@ pub fn extract_mermaid(answer: &str) -> Result<String, String> {
 
 /// Produce a Mermaid diagram of `text`. Same remote refusal as [`digest`]: a
 /// diagram of a private mail is still that mail.
-pub fn diagram(target: Option<&Target>, text: &str, allow_remote: bool) -> Outcome {
+pub fn diagram(target: Option<&Target>, text: &str, reach: Reach) -> Outcome {
     let Some(target) = target else {
         return Outcome::Unconfigured;
     };
-    if !allow_remote && !target.loopback {
+    if !reach.admits(target) {
         return Outcome::RemoteRefused;
     }
     if text.trim().is_empty() {
@@ -763,13 +790,13 @@ mod tests {
     fn an_explicit_detailed_press_overrides_the_short_skip() {
         let text = "Two lines. Nothing more.";
         assert_eq!(
-            digest(None, text, &Directive::default(), true),
+            digest(None, text, &Directive::default(), Reach::LoopbackOnly),
             Outcome::SkippedShort
         );
         // Past the floor check, an absent target is what stops it — proving the
         // skip is no longer what returned.
         assert_eq!(
-            digest(None, text, &Directive::new(Depth::Detailed, []), true),
+            digest(None, text, &Directive::new(Depth::Detailed, []), Reach::LoopbackOnly),
             Outcome::Unconfigured
         );
     }
@@ -782,7 +809,7 @@ mod tests {
     fn nothing_at_all_is_skipped_even_when_the_operator_insists() {
         for empty in ["", "   ", "\n\t "] {
             assert_eq!(
-                digest(None, empty, &Directive::new(Depth::Detailed, []), true),
+                digest(None, empty, &Directive::new(Depth::Detailed, []), Reach::LoopbackOnly),
                 Outcome::SkippedShort,
                 "{empty:?} should stay skipped"
             );
@@ -843,8 +870,9 @@ mod tests {
         );
     }
 
-    /// Personal and Private content passes `allow_remote: false`. A cloud
-    /// target must then be refused outright — not truncated, not downgraded.
+    /// Anything the caller's cloud gate did not admit arrives as
+    /// `Reach::LoopbackOnly`. A cloud target must then be refused outright —
+    /// not truncated, not downgraded.
     #[test]
     fn a_non_loopback_target_is_refused_for_restricted_content() {
         let cloud = Target {
@@ -856,10 +884,39 @@ mod tests {
         };
         let text = "x".repeat(1_000);
         assert_eq!(
-            digest(Some(&cloud), &text, &Directive::default(), false),
+            digest(
+                Some(&cloud),
+                &text,
+                &Directive::default(),
+                Reach::LoopbackOnly
+            ),
             Outcome::RemoteRefused
         );
-        assert_eq!(diagram(Some(&cloud), &text, false), Outcome::RemoteRefused);
+        assert_eq!(
+            diagram(Some(&cloud), &text, Reach::LoopbackOnly),
+            Outcome::RemoteRefused
+        );
+        assert_eq!(
+            chart::chart(Some(&cloud), &text, Reach::LoopbackOnly),
+            Outcome::RemoteRefused
+        );
+    }
+
+    /// A loopback target is reachable whatever the verdict says: `Reach` is
+    /// about leaving the machine, and a local model is not leaving it. Getting
+    /// this backwards would make every Personal digest `RemoteRefused` against
+    /// the model that is supposed to serve it.
+    #[test]
+    fn a_loopback_target_is_never_refused_on_reach() {
+        let local = Target {
+            endpoint: "http://127.0.0.1:8000/v1/chat/completions".into(),
+            model: "m".into(),
+            api_key: None,
+            loopback: true,
+            gate: None,
+        };
+        assert!(Reach::LoopbackOnly.admits(&local));
+        assert!(Reach::CloudCleared.admits(&local));
     }
 
     /// The bodies below are verbatim from oMLX on 2026-08-06: six concurrent
@@ -983,7 +1040,7 @@ mod tests {
                 Some(&local),
                 &"x".repeat(1_000),
                 &Directive::default(),
-                true
+                Reach::LoopbackOnly
             ),
             Outcome::CapacityAborted("another local inference request held the machine".into())
         );
@@ -1014,7 +1071,7 @@ mod tests {
                 Some(&cloud),
                 &"x".repeat(1_000),
                 &Directive::default(),
-                false
+                Reach::LoopbackOnly
             ),
             Outcome::RemoteRefused
         );
@@ -1024,7 +1081,7 @@ mod tests {
                 Some(&cloud),
                 &"x".repeat(1_000),
                 &Directive::default(),
-                true
+                Reach::CloudCleared
             ),
             Outcome::HttpError(_) | Outcome::Timeout | Outcome::ModelError(_)
         ));
@@ -1067,7 +1124,7 @@ mod tests {
             Some(&target),
             &"x".repeat(1_000),
             &Directive::default(),
-            true,
+            Reach::LoopbackOnly,
         );
         assert_eq!(counting.taken.load(Ordering::SeqCst), 1);
         assert_eq!(counting.given_back.load(Ordering::SeqCst), 1);

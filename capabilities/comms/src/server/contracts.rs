@@ -354,7 +354,8 @@ impl ContentItemOut {
     ) -> Self {
         // The stored class, not a literal. This line used to call a constructor
         // that stamped Public on every feed item on its way out of the store --
-        // and Public is precisely the value `cloud_tier_allows` admits, so the
+        // and Public is precisely the value `cloud_derivative::tier_allows`
+        // admits for a verbatim document, so the
         // entire feed was cloud-eligible verbatim without anyone having decided
         // that about a single item. The row carries the answer now, and it
         // defaults to Personal.
@@ -497,7 +498,14 @@ impl ContentItemOut {
         mut self,
         store: &Store,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let preview = cloud_derivative::prepare(&self.cloud_input());
+        // A vault item has no derivative and never could have had one, so there
+        // is no state to read and the field keeps its `not_prepared` value. The
+        // reader sees what it saw before; what changed is that the document is
+        // no longer assembled and hashed on the way to discovering that nobody
+        // may use it.
+        let Ok(preview) = cloud_derivative::prepare(&self.cloud_input()) else {
+            return Ok(self);
+        };
         self.cloud_processing = store.cloud_derivative_state(
             self.source,
             &self.id,

@@ -54,11 +54,17 @@ can show what was asked for rather than leaving a differently-shaped digest unex
 
 ## The remote refusal lives here
 
-`digest()` and `diagram()` take the caller's data-class verdict as `allow_remote`. Personal
-and Private content passes `false`, and a non-loopback target is then refused outright —
-`Outcome::RemoteRefused`, never a quiet downgrade and never retried into success. The check
-sits at the one place that makes the request, because a policy enforced by each caller
-separately has as many holes as it has callers.
+`digest()`, `diagram()` and `chart()` take the caller's data-class verdict as a `Reach`.
+Anything the caller's cloud gate did not admit arrives as `Reach::LoopbackOnly`, and a
+non-loopback target is then refused outright — `Outcome::RemoteRefused`, never a quiet
+downgrade and never retried into success. The check sits at the one place that makes the
+request, because a policy enforced by each caller separately has as many holes as it has
+callers.
+
+`Reach` is an enum rather than a `bool` because the value is a verdict about one item's
+stored class, reached against one specific endpoint. `digest(t, text, &d, false)` records
+neither half, which is the shape the two hardcoded `"public"` literals in the feed path had:
+both compiled, both read as deliberate, and neither had asked anything.
 
 ## Diagrams are validated, not trusted
 
@@ -112,5 +118,5 @@ let target = role.map(|role| Target {
     // the dependency rule above.
     gate: None,
 });
-let outcome = summarize::digest(target.as_ref(), text, &directive, allow_remote);
+let outcome = summarize::digest(target.as_ref(), text, &directive, reach);
 ```

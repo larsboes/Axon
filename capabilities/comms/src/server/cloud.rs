@@ -63,30 +63,6 @@ pub(super) fn cloud_provider_options(
         .collect()
 }
 
-pub(super) fn cloud_tier_allows(
-    tier: Option<&str>,
-    original_data_class: &str,
-    derivative_data_class: &str,
-    transformation: &str,
-) -> bool {
-    if original_data_class == "vault" {
-        return false;
-    }
-    let public_derivative = original_data_class == "public"
-        && derivative_data_class == "public"
-        && transformation == cloud_derivative::PASSTHROUGH_VERSION;
-    match tier {
-        Some("public") => public_derivative,
-        Some("pseudonymized_personal") => {
-            public_derivative
-                || (original_data_class == "personal"
-                    && derivative_data_class == "personal"
-                    && transformation == cloud_derivative::REDACTION_VERSION)
-        }
-        _ => false,
-    }
-}
-
 pub(super) async fn cloud_providers_handler() -> Json<Value> {
     let providers = tokio::task::spawn_blocking(|| {
         let cfg = Config::load();
@@ -106,14 +82,21 @@ pub(super) async fn cloud_preview_handler(
         tokio::task::spawn_blocking(move || -> Result<Option<CloudDerivativePreview>, String> {
             let cfg = Config::load();
             let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
-            Ok(load_content_item(&store, &source, &id)?
-                .map(|item| cloud_derivative::prepare(&item.cloud_input())))
+            let Some(item) = load_content_item(&store, &source, &id)? else {
+                return Ok(None);
+            };
+            cloud_derivative::prepare(&item.cloud_input())
+                .map(Some)
+                .map_err(|refusal| refusal.to_string())
         })
         .await;
 
     match result {
         Ok(Ok(Some(preview))) => (StatusCode::OK, Json(json!(preview))),
         Ok(Ok(None)) => error_response(StatusCode::NOT_FOUND, "not found"),
+        Ok(Err(error)) if error.starts_with("vault content") => {
+            error_response(StatusCode::BAD_REQUEST, error)
+        }
         Ok(Err(error)) if error == "source must be 'feed' or 'mail'" => {
             error_response(StatusCode::BAD_REQUEST, error)
         }
@@ -140,14 +123,16 @@ pub(super) async fn cloud_approval_handler(
             let Some(item) = load_content_item(&store, &source, &id)? else {
                 return Ok(None);
             };
-            let preview = cloud_derivative::prepare(&item.cloud_input());
+            // The vault check that used to sit below this line is gone: there
+            // is no preview to compare a hash against in the first place, so
+            // the refusal happens one step earlier and cannot be reached with a
+            // stale hash instead.
+            let preview = cloud_derivative::prepare(&item.cloud_input())
+                .map_err(|refusal| refusal.to_string())?;
             if preview.preview_hash != body.preview_hash {
                 return Err(
                     "preview is stale; prepare and review the current document again".into(),
                 );
-            }
-            if preview.original_data_class == "vault" {
-                return Err("vault content cannot be staged for cloud processing".into());
             }
             let approval = CloudDerivativeApproval {
                 source: preview.source,
@@ -215,11 +200,12 @@ pub(super) async fn cloud_queue_handler(
             let Some(item) = load_content_item(&store, &source, &id)? else {
                 return Ok(None);
             };
-            let preview = cloud_derivative::prepare(&item.cloud_input());
+            let preview = cloud_derivative::prepare(&item.cloud_input())
+                .map_err(|refusal| refusal.to_string())?;
             if preview.preview_hash != body.preview_hash {
                 return Err("approved derivative is stale; prepare and review it again".into());
             }
-            if !cloud_tier_allows(
+            if !cloud_derivative::tier_allows(
                 role.cloud_data_tier.map(|tier| tier.as_str()),
                 &preview.original_data_class,
                 &preview.derivative_data_class,
@@ -267,6 +253,9 @@ pub(super) async fn cloud_queue_handler(
         Ok(Err(error)) if error.contains("stale") || error.starts_with("approved derivative") => {
             (StatusCode::CONFLICT, Json(json!({ "error": error })))
         }
+        Ok(Err(error)) if error.starts_with("vault content") => {
+            error_response(StatusCode::BAD_REQUEST, error)
+        }
         Ok(Err(error)) if error == "source must be 'feed' or 'mail'" => {
             error_response(StatusCode::BAD_REQUEST, error)
         }
@@ -295,7 +284,7 @@ pub(super) async fn cloud_run_handler(Path(job_id): Path<String>) -> HttpRespons
             .role(&job.provider_role)
             .filter(|role| role.has_cloud_policy())
             .ok_or_else(|| "provider role is no longer a reviewed HTTPS cloud role".to_string())?;
-        if !cloud_tier_allows(
+        if !cloud_derivative::tier_allows(
             selected_role.cloud_data_tier.map(|tier| tier.as_str()),
             &job.original_data_class,
             &job.derivative_data_class,
@@ -309,7 +298,7 @@ pub(super) async fn cloud_run_handler(Path(job_id): Path<String>) -> HttpRespons
         let mut outcomes = Vec::new();
 
         for (candidate_name, role) in cfg.inference.cloud_failover_roles(&job.provider_role) {
-            if !cloud_tier_allows(
+            if !cloud_derivative::tier_allows(
                 role.cloud_data_tier.map(|tier| tier.as_str()),
                 &job.original_data_class,
                 &job.derivative_data_class,

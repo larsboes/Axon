@@ -610,28 +610,33 @@ impl ResolvedRole {
         rerank_scores_in_input_order(body.results, documents.len())
     }
 
-    /// Embeds a batch. `Err` carries a reason worth printing; callers are
-    /// expected to degrade rather than abort.
-    /// Refuses to send text off this machine unless the same policy chain that
-    /// gates `analyze` has been satisfied.
+    /// Refuses to send text off this machine at all.
     ///
-    /// `embed`/`rerank` are transport-agnostic and consulted no cloud policy at
-    /// all, while `has_cloud_policy()` was only ever called from comms' cloud
-    /// handlers. So calling `role.embed()` on an https role reached a cloud
+    /// `embed`/`rerank` are transport-agnostic and originally consulted no cloud
+    /// policy whatsoever, while `has_cloud_policy()` was only ever called from
+    /// comms' cloud handlers. So `role.embed()` on an https role reached a cloud
     /// provider with no preview, no redaction, no approval, no budget check and
-    /// no ledger entry -- the entire review discipline bypassed by a code path
-    /// that never mentions the cloud.
+    /// no ledger entry — the entire review discipline bypassed by a code path
+    /// that never mentions the cloud. Requiring a declared policy closed most of
+    /// that, and left the part that matters: a *policy* says which class of
+    /// content a provider may receive, and neither of these functions is given a
+    /// class. There is nothing here to check it against.
     ///
-    /// Nothing configured today embeds against a remote endpoint, which is
-    /// exactly why this is cheap to close now rather than after the first
-    /// feature that wants cloud embeddings builds on the hole.
+    /// The reviewed-derivative path has an item, a stored class and a preview,
+    /// and `cloud_derivative::tier_allows` asks the policy about that exact
+    /// pair. Embedding has a `&[String]` and nothing else. So this is loopback
+    /// or nothing until something gives it an item to reason about — cloud
+    /// embeddings are a design conversation, not a config flip. Nothing
+    /// configured today embeds remotely, so the narrowing costs nothing now and
+    /// would cost a redesign after the first feature built on the gap.
     fn refuse_ungoverned_cloud_call(&self, what: &str) -> Result<(), String> {
-        if self.is_loopback() || self.has_cloud_policy() {
+        if self.is_loopback() {
             return Ok(());
         }
         Err(format!(
-            "this role would send {what} to {} (backend '{}') with no cloud policy: declare \
-             cloud_provider, cloud_data_tier and cloud_billing_mode on it, or point it at loopback",
+            "this role would send {what} to {} (backend '{}'), and no data class travels with it \
+             to check against a cloud policy: point the role at loopback, or route the content \
+             through the reviewed cloud-derivative queue, which does carry one",
             self.backend.base_url, self.backend_name
         ))
     }
@@ -1100,8 +1105,13 @@ mod tests {
     /// no preview, no redaction, no approval, no budget check and no ledger
     /// entry: the whole review discipline bypassed by a path that never mentions
     /// the cloud.
+    ///
+    /// A declared policy is no longer enough either. A policy says which class
+    /// of content a provider may receive; these two functions take a `&[String]`
+    /// and are handed no class at all, so there is nothing to check the policy
+    /// against. Loopback or nothing.
     #[test]
-    fn embedding_off_this_machine_needs_the_same_policy_analyze_needs() {
+    fn nothing_embeds_off_this_machine_policy_or_no_policy() {
         let mut cfg = config();
         cfg.backends.insert(
             "hosted".into(),
@@ -1133,10 +1143,36 @@ mod tests {
 
         let refused = role
             .refuse_ungoverned_cloud_call("text")
-            .expect_err("a remote endpoint with no cloud policy must be refused");
-        // Named, so the fix is obvious from the message rather than from the source.
-        assert!(refused.contains("cloud_provider"), "got: {refused}");
+            .expect_err("a remote endpoint must be refused");
+        // Named, so the fix is obvious from the message rather than the source.
+        assert!(refused.contains("data class"), "got: {refused}");
         assert!(refused.contains("api.example.com"), "got: {refused}");
+
+        // And a *fully governed* cloud role is refused just the same. This is
+        // the case the earlier version let through: a reviewed policy on the
+        // role says which class the provider may receive, and `embed` never
+        // learns the class of what it was handed.
+        cfg.roles.insert(
+            "cloud_governed".into(),
+            Role {
+                backend: "hosted".into(),
+                model: "hosted-model".into(),
+                provider_name: Some("Hosted test".into()),
+                cloud_data_tier: Some(CloudDataTier::PseudonymizedPersonal),
+                billing_mode: Some(BillingMode::FreeOnly),
+                failover_priority: Some(10),
+                max_requests_per_day: Some(20),
+                max_input_tokens: Some(8_000),
+                credit_expires_on: None,
+                query_prefix: String::new(),
+                document_prefix: String::new(),
+            },
+        );
+        let governed = cfg.role("cloud_governed").unwrap();
+        assert!(governed.has_cloud_policy());
+        assert!(governed
+            .refuse_ungoverned_cloud_call("text to embed")
+            .is_err());
 
         // A local role is unaffected, which is what makes this cheap to land:
         // every configured embedding role today is loopback.

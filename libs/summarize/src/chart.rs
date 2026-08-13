@@ -32,7 +32,7 @@
 
 // This is an ordinary submodule of axon-summarize; keep sibling imports grouped
 // through the parent module.
-use super::{complete, truncate, Outcome, Target, INPUT_CAP};
+use super::{complete, truncate, Outcome, Reach, Target, INPUT_CAP};
 
 /// Bump with any change to [`chart_prompt`] or the extraction contract.
 pub const CHART_PROMPT_REVISION: &str = "content-chart-v1-single-measure";
@@ -327,11 +327,11 @@ pub fn parse_chart(answer: &str, source: &str) -> Result<Option<ChartData>, Stri
 /// Same remote refusal as the digest: a chart of a private mail is still that
 /// mail. [`Outcome::SkippedShort`] carries "there is nothing chartable here",
 /// which for most content is the right answer.
-pub fn chart(target: Option<&Target>, text: &str, allow_remote: bool) -> Outcome {
+pub fn chart(target: Option<&Target>, text: &str, reach: Reach) -> Outcome {
     let Some(target) = target else {
         return Outcome::Unconfigured;
     };
-    if !allow_remote && !target.loopback {
+    if !reach.admits(target) {
         return Outcome::RemoteRefused;
     }
     if text.trim().is_empty() {
@@ -507,6 +507,6 @@ mod tests {
             loopback: false,
             gate: None,
         };
-        assert_eq!(chart(Some(&cloud), SOURCE, false), Outcome::RemoteRefused);
+        assert_eq!(chart(Some(&cloud), SOURCE, Reach::LoopbackOnly), Outcome::RemoteRefused);
     }
 }

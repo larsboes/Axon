@@ -43,6 +43,11 @@ pub enum SummarizeOutcome {
     CapacityAborted(String),
     EmptyResponse,
     Timeout,
+    /// The configured summarization role is not loopback, and the item's stored
+    /// data class does not clear it for that endpoint. Same verdict and same
+    /// spelling as `summarize::Outcome::RemoteRefused`, because it is the same
+    /// refusal about the same item.
+    RemoteRefused,
 }
 
 impl SummarizeOutcome {
@@ -56,6 +61,7 @@ impl SummarizeOutcome {
             SummarizeOutcome::CapacityAborted(_) => "capacity_aborted",
             SummarizeOutcome::EmptyResponse => "empty_response",
             SummarizeOutcome::Timeout => "timeout",
+            SummarizeOutcome::RemoteRefused => "remote_refused",
         }
     }
 }
@@ -1108,7 +1114,7 @@ pub fn ingest(url: &str, cfg: &Config) -> Result<FeedItem> {
     let mut item = fetch(url)?;
     let summary_producer = summary_producer_revision(cfg);
     if let Some(text) = &item.transcript {
-        if let SummarizeOutcome::Ok(summary) = summarize(text, cfg) {
+        if let SummarizeOutcome::Ok(summary) = summarize(text, cfg, &item.data_class) {
             item.summary = Some(summary);
             item.summary_provenance = summary_producer.map(StageProvenance::model);
         }
@@ -1156,11 +1162,30 @@ pub fn summary_producer_revision(cfg: &Config) -> Option<String> {
 /// same transcript at the same backend on the same tick, one of them holding a
 /// lock the other had never heard of. The lock is only admission control if
 /// everything that prefills asks for it.
-pub fn summarize(text: &str, cfg: &Config) -> SummarizeOutcome {
+///
+/// ## And why it takes the class too
+///
+/// This function speaks HTTP itself rather than going through `libs/summarize`,
+/// so it inherited none of that lib's remote refusal. It asked no question about
+/// the item at all: point the summarization role at an https endpoint and every
+/// feed transcript the enrichment drain touched went there, whatever its class.
+/// `data_class` is the item's stored value, and the verdict is
+/// `cloud_derivative::tier_allows` asked about the passthrough representation —
+/// the same question the digest path asks, because this sends the same text in
+/// the same unredacted form.
+pub fn summarize(text: &str, cfg: &Config, data_class: &str) -> SummarizeOutcome {
     let role = match cfg.summarization_role() {
         Some(role) => role,
         None => return SummarizeOutcome::Unconfigured,
     };
+    if !role.is_loopback()
+        && !crate::cloud_derivative::verbatim_send_allowed(
+            role.cloud_data_tier.map(|tier| tier.as_str()),
+            data_class,
+        )
+    {
+        return SummarizeOutcome::RemoteRefused;
+    }
     let input = truncate_for_summary(text, SUMMARY_INPUT_CAP);
     let prompt = summary_prompt(&input);
 
@@ -1273,7 +1298,7 @@ pub fn summarize_item(store: &Store, cfg: &Config, id: &str) -> Result<bool> {
         Some(t) => t,
         None => return Ok(false),
     };
-    match summarize(text, cfg) {
+    match summarize(text, cfg, &item.data_class) {
         SummarizeOutcome::Ok(summary) => {
             store
                 .update_feed_summary(id, &summary, &producer_revision)
@@ -1311,7 +1336,7 @@ pub fn summarize_pending(store: &Store, cfg: &Config) -> Result<usize> {
                 Ok(false) => continue,
                 Err(e) => return Err(CommsError::Other(e.to_string())),
             }
-            match summarize(text, cfg) {
+            match summarize(text, cfg, &item.data_class) {
                 SummarizeOutcome::Ok(summary) => {
                     store
                         .update_feed_summary(&item.id, &summary, &producer_revision)
