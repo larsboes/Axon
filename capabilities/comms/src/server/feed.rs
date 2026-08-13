@@ -336,6 +336,9 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
         let content_status = store
             .feed_content_status_counts()
             .map_err(|error| error.to_string())?;
+        let capacity_state = store
+            .get_source_state(comms::capacity::LOCAL_INFERENCE_SOURCE)
+            .map_err(|error| error.to_string())?;
         let summarizer_reachable = media::summarizer_reachable(&cfg);
         let relevance_reachable =
             relevance::embedding_backend_reachable(embedding_role.as_ref());
@@ -367,6 +370,30 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
                     .unwrap_or(""),
                 "configured": summarization_role.is_some(),
                 "reachable": summarizer_reachable,
+                // The durable half of the capacity alert. The drain says it on
+                // stderr when the streak crosses the threshold; this is where
+                // it can still be read an hour later by someone who was not
+                // watching. Same `source_state` row, same shape the inbox
+                // sweep's own streak is served in at /triage/sweep/status.
+                "capacity": {
+                    "alert_after": cfg.capacity_alert_after,
+                    "consecutive_aborts": capacity_state
+                        .as_ref()
+                        .map(|state| state.consecutive_failures)
+                        .unwrap_or(0),
+                    "alerting": cfg.capacity_alert_after > 0
+                        && capacity_state
+                            .as_ref()
+                            .map(|state| state.consecutive_failures)
+                            .unwrap_or(0)
+                            >= cfg.capacity_alert_after,
+                    "last_abort_at": capacity_state
+                        .as_ref()
+                        .and_then(|state| state.last_failure_at.clone()),
+                    "last_success_at": capacity_state
+                        .as_ref()
+                        .and_then(|state| state.last_success_at.clone()),
+                },
             },
             "enrichment": {
                 "pending_summaries": enrichment.pending_summaries,

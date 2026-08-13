@@ -19,6 +19,12 @@
   "_comment_enrichment_drain_minutes": "How often comms-server drains the summary backlog, in minutes (default 15). Ingest-triggered enrichment only reaches items that arrive while the inference server is up; without this pass, items ingested during an outage stay empty until someone runs `comms summarize --pending` by hand. The retry ledger bounds it: three failed attempts with exponential backoff, each failure recording its error class. Set 0 to disable when something else owns the schedule.",
   "enrichment_drain_minutes": 15,
 
+  "_comment_digest_drain_minutes": "How often comms-server retries feed digests that failed retryably, in minutes (default 15). Separate from enrichment_drain_minutes because the two write different things — that one fills feed_items.summary, this one fills content_digests. It runs offset half a period from the enrichment drain rather than alongside it: both prefill the same transcripts on the same local backend, so firing together is the one schedule guaranteed to make them contend. Set 0 to leave digests manual-press-only.",
+  "digest_drain_minutes": 15,
+
+  "_comment_capacity_alert_after": "How many consecutive capacity aborts from the local inference server before the automatic passes raise it instead of absorbing it (default 3). One abort is another prefill in flight and self-heals; three in a row means waiting will not write the row. The alert is a line on the server's stderr plus `summarizer.capacity` on GET /feed/evaluation/status, which carries the streak for anyone who was not watching at the time. Set 0 to disable.",
+  "capacity_alert_after": 3,
+
   "_comment_gmail_maintenance_minutes": "How often comms-server retries durable Gmail actions and reconciles up to 200 stored thread locations from metadata labels (default 15 minutes). It reads labels only, never bodies or attachments. Set 0 to disable automatic maintenance; the authenticated manual reconciliation route remains available.",
   "gmail_maintenance_minutes": 15,
 

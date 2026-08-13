@@ -10,6 +10,7 @@
 pub use axon_summarize as summarize;
 pub use content_item;
 
+pub mod capacity;
 pub mod cloud_derivative;
 pub mod cloud_dispatch;
 pub mod config;

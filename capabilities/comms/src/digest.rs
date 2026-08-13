@@ -105,7 +105,14 @@ fn to_target(cfg: &Config, role: &axon_inference::ResolvedRole) -> Target {
         // Only a local target gets a gate. A hosted provider queues for itself
         // and shares no GPU with anything here, so serialising against it would
         // cost latency and buy nothing.
-        gate: loopback.then(|| crate::local_gate::AdvisoryGate::shared(&cfg.database_url)),
+        //
+        // Keyed by backend, not by machine: AFM and oMLX are both loopback and
+        // both local, and they share no memory pool. One key for both meant a
+        // two-second AFM digest waited out a twenty-second oMLX prefill and
+        // then reported the machine busy.
+        gate: loopback.then(|| {
+            crate::local_gate::AdvisoryGate::shared(&cfg.database_url, &role.backend_name)
+        }),
     }
 }
 
@@ -470,6 +477,24 @@ pub fn refresh_pending(store: &Store, cfg: &Config, source: &str, limit: i64) ->
         match generate(store, cfg, source, &id, &directive) {
             Ok(Some(row)) => {
                 written += 1;
+                // The streak the alert threshold counts. Recorded here rather
+                // than in `generate` because this is the *unattended* pass: an
+                // operator pressing Regenerate on a busy machine is told so on
+                // the spot and is not an alert condition.
+                match row.state.as_str() {
+                    "capacity_aborted" => {
+                        if let Some(streak) =
+                            crate::capacity::record_failure(store, cfg.capacity_alert_after)
+                        {
+                            eprintln!(
+                                "digest drain: ALERT — {streak} consecutive capacity aborts from \
+                                 the local inference server; digests are not being written"
+                            );
+                        }
+                    }
+                    "generated" => crate::capacity::record_success(store),
+                    _ => {}
+                }
                 // A model that is not configured or not answering will not
                 // answer for the next hundred items either.
                 if row.state == "unconfigured" {

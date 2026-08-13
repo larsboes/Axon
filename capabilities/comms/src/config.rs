@@ -216,6 +216,7 @@ struct FileConfig {
     dashboard_origin: Option<String>,
     enrichment_drain_minutes: Option<u64>,
     digest_drain_minutes: Option<u64>,
+    capacity_alert_after: Option<i32>,
     gmail_maintenance_minutes: Option<u64>,
     inbox_sweep_minutes: Option<u64>,
     inbox_sweep_max_threads: Option<usize>,
@@ -262,6 +263,16 @@ pub struct Config {
     /// `content_digests` — and a machine may reasonably want one without the
     /// other. Bounded by the same ledger: three attempts, then the row rests.
     pub digest_drain_minutes: u64,
+    /// How many *consecutive* capacity aborts from the local inference server
+    /// before the automatic passes raise it rather than absorbing it. `0`
+    /// disables the alert.
+    ///
+    /// Three because that is a full period of the shipped 15-minute drains plus
+    /// change: one abort is another prefill in flight and self-heals, two is
+    /// a busy half-hour, three in a row means the row is not going to be
+    /// written by waiting. Owned here rather than in `capacity.rs` so the
+    /// number lives with every other cadence this server runs on.
+    pub capacity_alert_after: i32,
     /// Retry durable Gmail actions and reconcile labels on this interval. `0`
     /// disables automatic maintenance; manual reconciliation remains available.
     pub gmail_maintenance_minutes: u64,
@@ -403,6 +414,9 @@ impl Config {
             .unwrap_or_else(|| "http://127.0.0.1:47117".into());
         let enrichment_drain_minutes = file.enrichment_drain_minutes.unwrap_or(15);
         let digest_drain_minutes = file.digest_drain_minutes.unwrap_or(15);
+        // Clamped at zero rather than rejected: a negative threshold is a typo,
+        // and the safe reading of a typo is "off", not "alert on everything".
+        let capacity_alert_after = file.capacity_alert_after.unwrap_or(3).max(0);
         let gmail_maintenance_minutes = file.gmail_maintenance_minutes.unwrap_or(15);
         let inbox_sweep_minutes = file.inbox_sweep_minutes.unwrap_or(0);
         let inbox_sweep_max_threads = file.inbox_sweep_max_threads.unwrap_or(25).clamp(1, 100);
@@ -458,6 +472,7 @@ impl Config {
             dashboard_origin,
             enrichment_drain_minutes,
             digest_drain_minutes,
+            capacity_alert_after,
             gmail_maintenance_minutes,
             inbox_sweep_minutes,
             inbox_sweep_max_threads,

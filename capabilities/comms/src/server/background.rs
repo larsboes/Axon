@@ -30,6 +30,134 @@ impl Drop for BackgroundServices {
     }
 }
 
+/// A ticker for a periodic pass, offset by `phase` of its own period.
+///
+/// `tokio::time::interval` fires immediately and then every period, so two
+/// drains spawned in the same breath with the same period fire together
+/// forever — which is exactly what `enrichment_drain_minutes` and
+/// `digest_drain_minutes` both defaulting to 15 produced. Both passes prefill
+/// the same feed transcripts on the same local backend, so firing together is
+/// the one schedule guaranteed to make them contend.
+///
+/// Expressed as a fraction of the period rather than a fixed number of minutes
+/// so the offset survives someone setting the drains to 5 minutes or 60: at
+/// equal periods a phase of 0 and a phase of 0.5 never coincide, whatever the
+/// period is.
+fn staggered_ticker(every_minutes: u64, phase: f64) -> tokio::time::Interval {
+    let period = drain_period(every_minutes);
+    let start = tokio::time::Instant::now() + phase_offset(period, phase);
+    let mut ticker = tokio::time::interval_at(start, period);
+    // A pass that overran its period must not then run back-to-back trying to
+    // catch up; the next tick is a fresh period from when this one finished.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker
+}
+
+fn drain_period(every_minutes: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(every_minutes * 60)
+}
+
+/// How long after spawn this drain's first pass runs. Split out from
+/// [`staggered_ticker`] so the property that matters — that two schedules on
+/// the same period never land on the same instant — can be checked as
+/// arithmetic instead of by waiting out two real fifteen-minute intervals.
+fn phase_offset(period: std::time::Duration, phase: f64) -> std::time::Duration {
+    period.mul_f64(phase)
+}
+
+/// The enrichment drain keeps the immediate first tick: a machine that just
+/// booted with a backlog should start on it.
+const ENRICHMENT_PHASE: f64 = 0.0;
+
+/// The digest drain waits half a period. At equal intervals — the shipped
+/// default and the only configuration anyone runs — this is the offset that
+/// makes the two passes maximally far apart and never simultaneous.
+const DIGEST_PHASE: f64 = 0.5;
+
+#[cfg(test)]
+mod drain_schedule_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Every instant this schedule fires within `passes` periods of spawn,
+    /// measured from the shared spawn instant. Both drains are spawned in the
+    /// same breath by [`BackgroundServices::start`], so a shared origin is not
+    /// an idealisation — it is what actually happens.
+    fn fire_times(every_minutes: u64, phase: f64, passes: u32) -> Vec<Duration> {
+        let period = drain_period(every_minutes);
+        let offset = phase_offset(period, phase);
+        (0..passes).map(|n| offset + period * n).collect()
+    }
+
+    /// C16. Both drains prefill the same feed transcripts on the same local
+    /// backend. `tokio::time::interval` fires immediately and then every
+    /// period, so the two of them — spawned together, both defaulting to 15
+    /// minutes — fired together on every single tick, forever.
+    #[test]
+    fn the_two_drains_never_fire_on_the_same_tick() {
+        let enrichment = fire_times(15, ENRICHMENT_PHASE, 4);
+        let digest = fire_times(15, DIGEST_PHASE, 4);
+        assert!(
+            enrichment.len() >= 2 && digest.len() >= 2,
+            "the probe needs two intervals of each to say anything"
+        );
+        for at in &enrichment {
+            assert!(
+                !digest.contains(at),
+                "both drains fire at {at:?}: {enrichment:?} / {digest:?}"
+            );
+        }
+    }
+
+    /// The offset is a fraction of the period, not a fixed number of minutes,
+    /// so it survives someone setting the drains to something other than 15 —
+    /// including a period short enough that a fixed offset would overrun it and
+    /// land back on the other drain's tick.
+    #[test]
+    fn the_offset_holds_at_any_interval() {
+        for minutes in [1_u64, 5, 15, 60, 240] {
+            let enrichment = fire_times(minutes, ENRICHMENT_PHASE, 4);
+            let digest = fire_times(minutes, DIGEST_PHASE, 4);
+            for at in &enrichment {
+                assert!(
+                    !digest.contains(at),
+                    "at {minutes} min both drains fire at {at:?}"
+                );
+            }
+        }
+    }
+
+    /// Coinciding is congruence mod the period, so the two phases must differ
+    /// by something that is not a whole period. Pinned as the property rather
+    /// than as a pair of literals: setting `DIGEST_PHASE` to `1.0` would leave
+    /// both constants looking staggered and both drains firing together again.
+    #[test]
+    fn the_two_phases_are_not_a_whole_period_apart() {
+        let gap = (DIGEST_PHASE - ENRICHMENT_PHASE).abs();
+        assert!(
+            gap.fract() > f64::EPSILON,
+            "phases {ENRICHMENT_PHASE} and {DIGEST_PHASE} are a whole period apart"
+        );
+    }
+
+    /// The enrichment drain keeps its immediate first pass — a machine that
+    /// booted with a backlog should start on it — and the digest drain must
+    /// not, or the stagger only exists after the first fifteen minutes.
+    #[test]
+    fn only_one_drain_runs_at_boot() {
+        assert_eq!(
+            fire_times(15, ENRICHMENT_PHASE, 1),
+            vec![Duration::ZERO],
+            "the enrichment drain starts on its backlog immediately"
+        );
+        assert_eq!(
+            fire_times(15, DIGEST_PHASE, 1),
+            vec![Duration::from_secs(450)],
+            "the digest drain waits half a period rather than joining it at boot"
+        );
+    }
+}
+
 /// Start the bounded enrichment drain. The persistence ledger owns retry and
 /// backoff state, so this loop only owns scheduling and task isolation.
 fn spawn_enrichment_drain(every_minutes: u64) -> Option<tokio::task::JoinHandle<()>> {
@@ -40,9 +168,10 @@ fn spawn_enrichment_drain(every_minutes: u64) -> Option<tokio::task::JoinHandle<
 
     eprintln!("enrichment drain: every {every_minutes} min");
     Some(tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(every_minutes * 60));
+        let mut ticker = staggered_ticker(every_minutes, ENRICHMENT_PHASE);
         loop {
             ticker.tick().await;
+            eprintln!("enrichment drain: pass starting");
             // The join result is inspected, not discarded: a panic inside the
             // blocking half would otherwise take the drain down without a word,
             // which is the same silence this issue exists to remove.
@@ -112,11 +241,14 @@ fn spawn_digest_drain(every_minutes: u64) -> Option<tokio::task::JoinHandle<()>>
         return None;
     }
 
-    eprintln!("digest drain: every {every_minutes} min, feed only");
+    eprintln!(
+        "digest drain: every {every_minutes} min, feed only, offset half a period from enrichment"
+    );
     Some(tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(every_minutes * 60));
+        let mut ticker = staggered_ticker(every_minutes, DIGEST_PHASE);
         loop {
             ticker.tick().await;
+            eprintln!("digest drain: pass starting");
             // Inspected rather than discarded, matching the enrichment drain: a
             // panic in the blocking half would otherwise take the drain down
             // silently, rebuilding the exact silence this exists to end.

@@ -1145,6 +1145,17 @@ pub fn summary_producer_revision(cfg: &Config) -> Option<String> {
 /// chat-completions endpoint. Returns a typed outcome so the caller can
 /// distinguish "not configured" from "server down" from "empty response" and
 /// record the failure class for bounded retry.
+///
+/// ## Why this path takes the gate too
+///
+/// This is the *other* thing that prefills a feed item's transcript on the
+/// local server: `feed_items.summary`, where `digest::generate` writes
+/// `content_digests`. Until 2026-08-13 only the digest path went through
+/// [`local_gate::AdvisoryGate`], so the two drains — which both defaulted to 15
+/// minutes and both started their tickers at spawn — sent two prefills of the
+/// same transcript at the same backend on the same tick, one of them holding a
+/// lock the other had never heard of. The lock is only admission control if
+/// everything that prefills asks for it.
 pub fn summarize(text: &str, cfg: &Config) -> SummarizeOutcome {
     let role = match cfg.summarization_role() {
         Some(role) => role,
@@ -1152,6 +1163,21 @@ pub fn summarize(text: &str, cfg: &Config) -> SummarizeOutcome {
     };
     let input = truncate_for_summary(text, SUMMARY_INPUT_CAP);
     let prompt = summary_prompt(&input);
+
+    // Held to the end of the function by drop, on every return path below.
+    // Loopback only, for the reason `summarize::complete` gives: a hosted
+    // provider queues for itself and shares no GPU with anything here.
+    let _admission = if role.is_loopback() {
+        let gate = crate::local_gate::AdvisoryGate::new(&cfg.database_url, &role.backend_name);
+        match crate::summarize::LocalGate::acquire(&gate) {
+            Ok(admission) => Some(admission),
+            // Not a failure of the request: the same text succeeds later, and
+            // the drain brings the row back.
+            Err(reason) => return SummarizeOutcome::CapacityAborted(reason),
+        }
+    } else {
+        None
+    };
 
     let http = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -1274,15 +1300,41 @@ pub fn summarize_pending(store: &Store, cfg: &Config) -> Result<usize> {
     let mut done = 0;
     for item in pending {
         if let Some(text) = &item.transcript {
+            // Re-read, because the batch above is a snapshot and the pass takes
+            // minutes. `POST /ingest` summarizes its own row inline, and a
+            // drain tick that overlapped an ingest prefilled the same
+            // transcript twice on the same backend — the second call paid for
+            // an answer the first had already written. Cheap indexed read
+            // against a 12-20s model call; skipping it is what cost the double.
+            match store.feed_summary_needs_revision(&item.id, &producer_revision) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(e) => return Err(CommsError::Other(e.to_string())),
+            }
             match summarize(text, cfg) {
                 SummarizeOutcome::Ok(summary) => {
                     store
                         .update_feed_summary(&item.id, &summary, &producer_revision)
                         .map_err(|e| CommsError::Other(e.to_string()))?;
+                    crate::capacity::record_success(store);
                     done += 1;
                 }
                 SummarizeOutcome::Unconfigured => break, // no point continuing
                 outcome => {
+                    // Same streak the digest drain counts, because it is the
+                    // same server running out of the same room. Two counters
+                    // would each sit below the threshold while the machine was
+                    // plainly broken.
+                    if let SummarizeOutcome::CapacityAborted(_) = outcome {
+                        if let Some(streak) =
+                            crate::capacity::record_failure(store, cfg.capacity_alert_after)
+                        {
+                            eprintln!(
+                                "enrichment drain: ALERT — {streak} consecutive capacity aborts \
+                                 from the local inference server; summaries are not being written"
+                            );
+                        }
+                    }
                     let _ = store.record_summary_attempt(
                         &item.id,
                         outcome.error_class(),

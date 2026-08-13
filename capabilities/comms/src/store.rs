@@ -2570,6 +2570,58 @@ mod tests {
         );
     }
 
+    /// C17, against the real ledger rather than the arithmetic alone. Three
+    /// consecutive capacity aborts alert; the two before them do not, and one
+    /// answered request puts the machine back to silent — which is the half
+    /// that makes "consecutive" mean anything. Runs on the same `source_state`
+    /// table the inbox sweep's own streak uses, because a second counter for
+    /// the same idea is the duplicate home this whole design refuses.
+    #[test]
+    fn three_consecutive_capacity_aborts_alert_and_one_success_silences_it() {
+        let (store, _schema) = open_test_store("capacity_streak");
+        let threshold = 3;
+
+        assert_eq!(crate::capacity::record_failure(&store, threshold), None);
+        assert_eq!(crate::capacity::record_failure(&store, threshold), None);
+        assert_eq!(
+            crate::capacity::record_failure(&store, threshold),
+            Some(3),
+            "the third consecutive abort is the alert"
+        );
+        assert_eq!(
+            crate::capacity::record_failure(&store, threshold),
+            Some(4),
+            "still broken on the next pass is still an alert"
+        );
+
+        let alerting = store
+            .get_source_state(crate::capacity::LOCAL_INFERENCE_SOURCE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(alerting.consecutive_failures, 4);
+        assert_eq!(
+            alerting.last_error.as_deref(),
+            Some("capacity"),
+            "a stable class, never a provider message"
+        );
+
+        crate::capacity::record_success(&store);
+        assert_eq!(
+            store
+                .get_source_state(crate::capacity::LOCAL_INFERENCE_SOURCE)
+                .unwrap()
+                .unwrap()
+                .consecutive_failures,
+            0,
+            "one answered request ends the streak"
+        );
+        assert_eq!(
+            crate::capacity::record_failure(&store, threshold),
+            None,
+            "and the count starts over rather than resuming at four"
+        );
+    }
+
     /// The window that wraps midnight is the one people actually configure, so
     /// it is the one worth a test. Uses the store's own clock, so the assertion
     /// is on the two windows that must always disagree.
