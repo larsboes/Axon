@@ -47,10 +47,10 @@
   /// a reader who wants to judge 47 observations for themselves should be able to.
   const confidence = $derived.by(() => {
     if (!punctuality) return null;
-    if (punctuality.n >= 1000) return { label: "viele Daten", bars: 4 };
-    if (punctuality.n >= 300) return { label: "solide Datenbasis", bars: 3 };
-    if (punctuality.n >= 100) return { label: "schmale Datenbasis", bars: 2 };
-    return { label: "wenige Fahrten", bars: 1 };
+    if (punctuality.n >= 1000) return { label: "lots of data", bars: 4 };
+    if (punctuality.n >= 300) return { label: "solid sample", bars: 3 };
+    if (punctuality.n >= 100) return { label: "narrow sample", bars: 2 };
+    return { label: "few journeys", bars: 1 };
   });
 
   const tone = $derived.by(() => {
@@ -81,13 +81,15 @@
     <span class="journey-route">
       <strong>{journey.legs.map((leg) => leg.train_name || leg.train_number).join(" · ")}</strong>
       <span>
-        {journey.legs.length - 1 === 0 ? "direkt" : `${journey.legs.length - 1} Umstieg`}
+        {journey.legs.length - 1 === 0
+          ? "direct"
+          : `${journey.legs.length - 1} change${journey.legs.length - 1 === 1 ? "" : "s"}`}
         {#if punctuality}
           <span class="dot" aria-hidden="true">·</span>
-          <span class="risk {tone}">{percent(punctuality.share_late_6)} ≥ 6 Min</span>
+          <span class="risk {tone}">{percent(punctuality.share_late_6)} ≥ 6 min late</span>
         {:else}
           <span class="dot" aria-hidden="true">·</span>
-          <span class="risk unknown">keine Verspätungsdaten</span>
+          <span class="risk unknown">no delay history</span>
         {/if}
       </span>
     </span>
@@ -96,24 +98,24 @@
 
   <div class="journey-action">
     <strong>
-      {journey.total_price === null ? "Preis offen" : `${journey.total_price.toFixed(2)} €`}
+      {journey.total_price === null ? "price unknown" : `${journey.total_price.toFixed(2)} €`}
     </strong>
     <button class="save" type="button" disabled={saved} onclick={onSave}>
       {#if saved}
-        <Icon name="check" size={13} /> Gespeichert
+        <Icon name="check" size={13} /> Saved
       {:else}
-        <Icon name="plus" size={13} /> Ablauf
+        <Icon name="plus" size={13} /> Add
       {/if}
     </button>
   </div>
 
   {#if anyCancelled}
-    <p class="cancelled-banner">Mindestens ein Abschnitt ist als ausgefallen gemeldet.</p>
+    <p class="cancelled-banner">At least one leg is reported cancelled.</p>
   {/if}
 
   {#if expanded}
     <div class="detail">
-      <h4>Reiseplan</h4>
+      <h4>Itinerary</h4>
       <ol class="leg-list">
         {#each journey.legs as leg, index (`${journey.id}:${index}`)}
           {@const delay = legDelay(leg)}
@@ -126,7 +128,7 @@
                 {leg.origin.name}
                 {#if delay.departure !== null && delay.departure !== 0}
                   <span class="delay {delay.departure > 0 ? 'late' : 'early'}">
-                    {signed(delay.departure)} Min
+                    {signed(delay.departure)} min
                   </span>
                 {/if}
               </span>
@@ -135,44 +137,44 @@
                 {leg.destination.name}
                 {#if delay.arrival !== null && delay.arrival !== 0}
                   <span class="delay {delay.arrival > 0 ? 'late' : 'early'}">
-                    {signed(delay.arrival)} Min
+                    {signed(delay.arrival)} min
                   </span>
                 {/if}
               </span>
               {#if leg.cancelled}
-                <span class="badge danger">Ausfall gemeldet</span>
+                <span class="badge danger">Cancelled</span>
               {/if}
             </div>
             <small>
-              {#if leg.platform}Gleis {leg.platform}{:else}Gleis offen{/if}
+              {#if leg.platform}Platform {leg.platform}{:else}Platform TBA{/if}
               {#if leg.is_regional}<br />Deutschland-Ticket{/if}
             </small>
           </li>
         {/each}
       </ol>
 
-      <h4>Pünktlichkeit am Ziel</h4>
+      <h4>Punctuality at destination</h4>
       {#if punctuality}
         <p class="cell-key">
           {punctuality.station_name ?? journey.end_station.name} · {punctuality.train_type} ·
-          {punctuality.weekend ? "Wochenende" : "Werktag"}, {punctuality.hour} Uhr
+          {punctuality.weekend ? "weekend" : "weekday"}, {punctuality.hour}:00
         </p>
 
         <dl class="stats">
           <div>
-            <dt>meist</dt>
-            <dd class="mono">{signed(punctuality.p50)} Min</dd>
+            <dt>typically</dt>
+            <dd class="mono">{signed(punctuality.p50)} min</dd>
           </div>
           <div>
-            <dt>ungünstig bis</dt>
-            <dd class="mono">{signed(punctuality.p90)} Min</dd>
+            <dt>unlucky case</dt>
+            <dd class="mono">{signed(punctuality.p90)} min</dd>
           </div>
           <div>
-            <dt>≥ 6 Min zu spät</dt>
+            <dt>≥ 6 min late</dt>
             <dd class="mono {tone}">{percent(punctuality.share_late_6)}</dd>
           </div>
           <div>
-            <dt>Ausfallquote</dt>
+            <dt>cancelled</dt>
             <dd class="mono">{percent(punctuality.cancel_rate)}</dd>
           </div>
         </dl>
@@ -192,16 +194,16 @@
               <span class:on={confidence !== null && bar <= confidence.bars}></span>
             {/each}
           </span>
-          {confidence?.label} · {punctuality.n.toLocaleString("de-DE")} Fahrten gemessen
+          {confidence?.label} · {punctuality.n.toLocaleString("en-GB")} journeys measured
         </p>
         <p class="caveat">
-          Gemessen an vergleichbaren Zügen an diesem Halt, keine Prognose für diese Fahrt
-          und keine Umstiegsrisiko-Aussage.
+          Measured on comparable trains at this stop. Not a forecast for this journey,
+          and not a statement about transfer risk.
         </p>
       {:else}
         <p class="caveat">
-          Keine Verspätungsdaten für diesen Halt, diese Zuggattung und diese Stunde. Das
-          heißt nicht pünktlich, sondern ungemessen.
+          No delay history for this stop, train type and hour. That means unmeasured,
+          not punctual.
         </p>
       {/if}
     </div>
