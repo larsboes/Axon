@@ -27,6 +27,28 @@ pub struct CloudDocumentInput {
     pub data_class: String,
 }
 
+impl CloudDocumentInput {
+    /// The cloud input for one stored feed item.
+    ///
+    /// The dashboard's own path builds this from `ContentItemOut` (which for a
+    /// feed row carries exactly these fields, unchanged), and the drain has a
+    /// `FeedItem` in hand and no reason to assemble a wire contract first. The
+    /// two must produce identical fields or the same item would hash to two
+    /// different `preview_hash` values and each would call the other stale —
+    /// `a_drain_and_the_reader_prepare_the_same_document` pins that.
+    pub fn from_feed(item: &crate::store::FeedItem) -> Self {
+        Self {
+            source: "feed".into(),
+            id: item.id.clone(),
+            title: item.title.clone(),
+            author: item.author.clone(),
+            summary: item.summary.clone(),
+            content: item.transcript.clone(),
+            data_class: item.data_class.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RedactionFinding {
     pub entity_type: &'static str,
@@ -105,12 +127,7 @@ pub fn tier_allows(
 /// a personal item handed over unchanged is a different question with a
 /// different answer.
 pub fn verbatim_send_allowed(cloud_data_tier: Option<&str>, data_class: &str) -> bool {
-    tier_allows(
-        cloud_data_tier,
-        data_class,
-        data_class,
-        PASSTHROUGH_VERSION,
-    )
+    tier_allows(cloud_data_tier, data_class, data_class, PASSTHROUGH_VERSION)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

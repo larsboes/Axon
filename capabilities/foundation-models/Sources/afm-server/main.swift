@@ -214,6 +214,27 @@ func handle(_ connection: NWConnection) {
             let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
             send(connection, httpResponse(status: 200, reason: "OK", body: data))
 
+        // The OpenAI-compatible roster. One model, always, because that is what
+        // this server is — but the route has to exist: `libs/inference`'s
+        // readiness probe is a GET of `{base_url}/models`, which is how every
+        // other backend is checked without loading anything or generating a
+        // token. Without it a working on-device model reported itself
+        // unreachable on the dashboard, and the drains that now run on it
+        // looked broken while they were writing digests.
+        case ("GET", "/v1/models"):
+            let payload: [String: Any] = [
+                "object": "list",
+                "data": [
+                    [
+                        "id": "apple-on-device",
+                        "object": "model",
+                        "owned_by": "apple",
+                    ]
+                ],
+            ]
+            let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+            send(connection, httpResponse(status: 200, reason: "OK", body: data))
+
         case ("POST", "/v1/chat/completions"):
             guard let request = try? JSONDecoder().decode(ChatRequest.self, from: body) else {
                 let envelope = ErrorEnvelope(message: "could not parse the request body", code: "invalid_request")

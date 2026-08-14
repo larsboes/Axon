@@ -256,6 +256,13 @@ pub struct CloudQueueRequest {
     pub source_revision: String,
     pub preview_hash: String,
     pub provider_role: String,
+    /// Which question this job asks of the provider. Carried rather than
+    /// defaulted in SQL: two tasks now exist over the same reviewed derivative
+    /// — `cloud_dispatch::TASK_VERSION` (structured analysis) and
+    /// `cloud_dispatch::DIGEST_TASK_VERSION` (a digest for a long public item)
+    /// — and a column default is not a thing a caller can be wrong about in
+    /// review.
+    pub task: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -288,12 +295,16 @@ pub enum CloudAttemptClaim {
 /// upsert that decides whether to arm a backoff. Two hand-maintained copies is
 /// how a state ends up retryable in one and terminal in the other, which strands
 /// rows in a way nothing reports.
-pub const RETRYABLE_DIGEST_STATES: [&str; 5] = [
+pub const RETRYABLE_DIGEST_STATES: [&str; 6] = [
     "http_error",
     "model_error",
     "capacity_aborted",
     "empty_response",
     "timeout",
+    // A cloud provider that was unreachable, rate-limited or in a bad mood.
+    // Retryable for the same reason as the local ones, and bounded by the same
+    // three attempts — the daily request budget is a separate ceiling on top.
+    crate::digest::CLOUD_ERROR,
 ];
 
 /// The states above, as a SQL literal list. Built from the const rather
@@ -479,6 +490,7 @@ fn cloud_job_id(request: &CloudQueueRequest) -> String {
         request.source_revision.as_str(),
         request.preview_hash.as_str(),
         request.provider_role.as_str(),
+        request.task.as_str(),
     ] {
         hasher.update((part.len() as u64).to_be_bytes());
         hasher.update(part.as_bytes());
@@ -547,7 +559,7 @@ mod unit_tests {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     // Only the test helpers still connect directly: `drop_test_schema` tears down a
     // schema outside the pool, deliberately, so it works even when the pool is
@@ -559,7 +571,7 @@ mod tests {
     /// `postgres.env` via `AXON_PERSONAL_ROOT`; `COMMS_TEST_DATABASE_URL`
     /// overrides it for a throwaway database. A second hardcoded default here
     /// is what made these tests fail against a live server for weeks.
-    fn test_database_url() -> String {
+    pub(crate) fn test_database_url() -> String {
         static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         // Resolved once: the config tests mutate process-global env while these
         // run alongside them, and every store test must agree on one database.
@@ -570,7 +582,10 @@ mod tests {
         .clone()
     }
 
-    fn open_test_store(name: &str) -> (Store, TestSchema) {
+    /// `pub(crate)` because `cloud_run`'s tests need a real schema too: the
+    /// enqueue refusal they pin is only worth pinning against a store that
+    /// would happily have written the row.
+    pub(crate) fn open_test_store(name: &str) -> (Store, TestSchema) {
         let schema = format!("comms_test_{name}_{}", std::process::id());
         let store = Store::open_with_schema(&test_database_url(), &schema).unwrap_or_else(|e| {
             panic!(
@@ -606,7 +621,7 @@ mod tests {
     /// runs, and the schema stays behind -- four of them were sitting in the shared
     /// database on 2026-07-28, from two long-finished processes, and every one would have
     /// gone into the next pg_dumpall. A guard runs on the way out either way.
-    struct TestSchema(String);
+    pub(crate) struct TestSchema(String);
 
     impl Drop for TestSchema {
         fn drop(&mut self) {
@@ -1115,6 +1130,7 @@ mod tests {
             source_revision: "source-v1".into(),
             preview_hash: "preview-v1".into(),
             provider_role: "cloud_summarization".into(),
+            task: crate::cloud_dispatch::TASK_VERSION.into(),
         };
 
         let first = store.queue_cloud_derivative(&request).unwrap();
@@ -1158,6 +1174,7 @@ mod tests {
                 source_revision: "source-v1".into(),
                 preview_hash: "preview-v1".into(),
                 provider_role: "cloud_summarization".into(),
+                task: crate::cloud_dispatch::TASK_VERSION.into(),
             })
             .unwrap();
         let job_id = queued.job_id.unwrap();
@@ -1247,6 +1264,7 @@ mod tests {
                 source_revision: "source-v1".into(),
                 preview_hash: "preview-v1".into(),
                 provider_role: "cloud_primary".into(),
+                task: crate::cloud_dispatch::TASK_VERSION.into(),
             })
             .unwrap()
             .job_id
@@ -2232,6 +2250,10 @@ mod tests {
         // light model for short sources and a strong one for long sources, and
         // a digest from either is current.
         let producers = vec!["current-producer".to_string()];
+        // The subset an unattended pass can produce. Here it is the whole set:
+        // the split only matters on a machine that also has a strong local
+        // role, which the attempt-cap case below pins separately.
+        let unattended = producers.clone();
 
         store
             .upsert_content_digest(&mk_digest("feed", &stale.id, "old-producer"))
@@ -2249,7 +2271,7 @@ mod tests {
         store.upsert_content_digest(&parked_row).unwrap();
 
         let queued = store
-            .items_needing_digest("feed", &producers, 3, 50)
+            .items_needing_digest("feed", &producers, &unattended, 3, 50)
             .unwrap();
         assert!(queued.contains(&missing.id), "no digest at all");
         assert!(queued.contains(&stale.id), "produced by an older model");
@@ -2269,7 +2291,7 @@ mod tests {
         store.upsert_content_digest(&parked_row).unwrap();
         assert!(
             !store
-                .items_needing_digest("feed", &producers, 3, 50)
+                .items_needing_digest("feed", &producers, &unattended, 3, 50)
                 .unwrap()
                 .contains(&parked.id),
             "a failure just written is inside its own backoff window"
@@ -2278,12 +2300,41 @@ mod tests {
         // Once it has, the retry is due.
         expire_digest_backoff(&store, "feed", &parked.id);
         assert!(store
-            .items_needing_digest("feed", &producers, 3, 50)
+            .items_needing_digest("feed", &producers, &unattended, 3, 50)
             .unwrap()
             .contains(&parked.id));
 
+        // The attempt cap is scoped to the producers the pass can actually
+        // write. A row that spent every attempt on a model the unattended pass
+        // no longer uses is offered back to it — which is the whole of why six
+        // long public items were invisible to the cloud rung while sitting at
+        // `http_error`, attempt 4, against a stopped local server.
+        parked_row.attempts = 9;
+        store.upsert_content_digest(&parked_row).unwrap();
+        expire_digest_backoff(&store, "feed", &parked.id);
+        assert!(
+            !store
+                .items_needing_digest("feed", &producers, &unattended, 3, 50)
+                .unwrap()
+                .contains(&parked.id),
+            "a row parked by the rung this pass uses stays parked"
+        );
+        assert!(
+            store
+                .items_needing_digest(
+                    "feed",
+                    &producers,
+                    &["a-rung-this-pass-cannot-use".to_string()],
+                    3,
+                    50
+                )
+                .unwrap()
+                .contains(&parked.id),
+            "attempts spent by another model are not this pass's attempts"
+        );
+
         assert!(store
-            .items_needing_digest("scouting", &producers, 3, 50)
+            .items_needing_digest("scouting", &producers, &unattended, 3, 50)
             .is_err());
     }
 

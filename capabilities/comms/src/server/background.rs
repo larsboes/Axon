@@ -196,12 +196,17 @@ fn spawn_enrichment_drain(every_minutes: u64) -> Option<tokio::task::JoinHandle<
                 };
 
                 match media::summarize_pending(&store, &cfg) {
-                    Ok(n) if n > 0 => eprintln!("enrichment drain: summarized {n} item(s)"),
-                    // A backlog that did not move is the case this whole issue
-                    // is about. Staying quiet here would rebuild the silence
-                    // the ledger was supposed to end.
+                    Ok(pass) if pass.summarized > 0 || pass.over_window > 0 => eprintln!(
+                        "enrichment drain: summarized {}, {} past the on-device window (left for a press)",
+                        pass.summarized, pass.over_window
+                    ),
+                    // A backlog that did not move *and* was not skipped on
+                    // purpose is the case this logging exists for. Staying quiet
+                    // here would rebuild the silence the ledger was supposed to
+                    // end — and naming the light role matters, because that is
+                    // the one an unattended pass uses now.
                     Ok(_) if before.pending_summaries > 0 => eprintln!(
-                        "enrichment drain: {} pending, {} failed, none summarized — the 'summarization' inference role is unreachable or unconfigured",
+                        "enrichment drain: {} pending, {} failed, none summarized — the 'summarization_light' inference role is unreachable or unconfigured",
                         before.pending_summaries, before.failed_summaries
                     ),
                     Ok(_) => {}
@@ -262,7 +267,25 @@ fn spawn_digest_drain(every_minutes: u64) -> Option<tokio::task::JoinHandle<()>>
                     }
                 };
                 match digest::refresh_pending(&store, &cfg, "feed", 25) {
-                    Ok(n) if n > 0 => eprintln!("digest drain: wrote {n} digest row(s)"),
+                    Ok(report) if report.unconfigured => eprintln!(
+                        "digest drain: no 'summarization_light' inference role on this machine; \
+                         unattended digests are off"
+                    ),
+                    Ok(report)
+                        if report.written > 0
+                            || report.over_window > 0
+                            || report.cloud_digested > 0
+                            || report.cloud_failed > 0 =>
+                    {
+                        eprintln!(
+                            "digest drain: wrote {} on-device, {} from the cloud ({} cloud \
+                             failure(s)), {} past the window and left for a press",
+                            report.written,
+                            report.cloud_digested,
+                            report.cloud_failed,
+                            report.over_window
+                        )
+                    }
                     Ok(_) => {}
                     Err(error) => eprintln!("digest drain: {error}"),
                 }

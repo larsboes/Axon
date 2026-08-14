@@ -787,10 +787,31 @@ export interface CommsEvaluationStatus {
     unscored: number;
   };
   summarizer: {
+    // The unattended rung: the small local model every drain runs on. Named
+    // here rather than the strong one because that is what an empty feed is a
+    // question about.
     provider: string;
     model: string;
     configured: boolean;
     reachable: boolean;
+    // The rung only an explicit press engages. Declared even though no
+    // component reads it yet: a field on the wire that the interface does not
+    // know about is how five provider fields went missing before (#C11).
+    strong: {
+      provider: string;
+      model: string;
+      configured: boolean;
+      reachable: boolean;
+    };
+    // The durable half of the capacity alert, on the wire since the drains
+    // started counting streaks and undeclared here until now.
+    capacity: {
+      alert_after: number;
+      consecutive_aborts: number;
+      alerting: boolean;
+      last_abort_at: string | null;
+      last_success_at: string | null;
+    };
   };
   relevance: {
     provider: string;

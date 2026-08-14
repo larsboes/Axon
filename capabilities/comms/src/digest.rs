@@ -82,14 +82,36 @@ pub fn role_for(
 /// Every producer string this machine could currently write for a digest.
 ///
 /// A list rather than one string because the role is chosen per item: a short
-/// source may be digested by the light model and a long one by the strong model
-/// on the same pass, and both are current. Checking staleness against a single
-/// producer would mark every light-model digest stale on the next sweep and
-/// re-digest it forever, which is worse than the gap it was meant to close.
+/// source may be digested by the light model, a long one by the strong model on
+/// the same pass, and a long `public` one by a cloud provider, and all three are
+/// current. Checking staleness against a single producer would mark the other
+/// two stale on the next sweep and re-digest them forever, which is worse than
+/// the gap it was meant to close — and for the cloud rung it would mean paying
+/// for the same digest every fifteen minutes.
 pub fn producer_revisions(cfg: &Config) -> Vec<String> {
-    [cfg.summarization_role(), cfg.light_summarization_role()]
+    cfg.summarization_role()
         .into_iter()
-        .flatten()
+        .map(|role| summarize::producer(&role.cache_key(), summarize::DIGEST_PROMPT_REVISION))
+        .chain(unattended_producer_revisions(cfg))
+        .collect()
+}
+
+/// The producer strings an **unattended** pass can write: the light local rung
+/// and the cloud rungs, and deliberately not the strong local one, which only a
+/// press reaches.
+///
+/// Used as the scope of the retry-attempt cap. Attempts spent by a model this
+/// pass will not use are not this pass's attempts.
+pub fn unattended_producer_revisions(cfg: &Config) -> Vec<String> {
+    cfg.light_summarization_role()
+        .into_iter()
+        .chain(
+            cfg.inference
+                .roles_with_prefix("cloud_")
+                .into_iter()
+                .filter(|(_, role)| role.has_cloud_policy())
+                .map(|(_, role)| role),
+        )
         .map(|role| summarize::producer(&role.cache_key(), summarize::DIGEST_PROMPT_REVISION))
         .collect()
 }
@@ -299,17 +321,38 @@ pub fn generate(
     let Some(gathered) = source_text(store, cfg, source, id)? else {
         return Ok(None);
     };
+    // The press ladder: light rung when the source fits it, strong local rung
+    // otherwise. Unattended passes do not come through here — see
+    // [`refresh_pending`] and `crate::quiet`.
+    let role = role_for(cfg, directive, gathered.text.chars().count());
+    write_digest(store, cfg, source, id, directive, &gathered, role).map(Some)
+}
+
+/// Run one resolved role over gathered text and store what came back.
+///
+/// Split from [`generate`] so the unattended pass can hand in the rung it is
+/// allowed to use instead of re-deriving it. The role arrives resolved rather
+/// than as a name: this function must not be able to pick a different one than
+/// the caller's policy decided.
+fn write_digest(
+    store: &Store,
+    cfg: &Config,
+    source: &str,
+    id: &str,
+    directive: &Directive,
+    gathered: &SourceText,
+    role: Option<axon_inference::ResolvedRole>,
+) -> Result<StoredDigest> {
     let previous = store
         .content_digest(source, id)
         .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
     let chars = gathered.text.chars().count();
     let source_chars = chars as i64;
     let shape = directive.shape_for(chars);
-    // Resolved once, so the stored producer names the role that actually ran.
-    // Deriving it separately from `summarization_role` would label a light-model
-    // digest as the strong model's work, and provenance that lies is worse than
+    // The stored producer names the role that actually ran. Deriving it
+    // separately from `summarization_role` would label a light-model digest as
+    // the strong model's work, and provenance that lies is worse than
     // provenance that is missing.
-    let role = role_for(cfg, directive, chars);
     let producer = role
         .as_ref()
         .map(|role| summarize::producer(&role.cache_key(), summarize::DIGEST_PROMPT_REVISION))
@@ -319,7 +362,7 @@ pub fn generate(
         role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
         &gathered.text,
         directive,
-        reach_for(&gathered, role.as_ref()),
+        reach_for(gathered, role.as_ref()),
     );
 
     let mut redactions: Vec<RedactionFinding> = Vec::new();
@@ -368,9 +411,20 @@ pub fn generate(
     store
         .upsert_content_digest(&stored)
         .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
+    read_back(store, source, id)
+}
+
+/// The row that was just written, read back so the caller sees the stored
+/// `generated_at` rather than the empty placeholder above.
+fn read_back(store: &Store, source: &str, id: &str) -> Result<StoredDigest> {
     store
         .content_digest(source, id)
-        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?
+        .ok_or_else(|| {
+            crate::CommsError::Other(
+                "the digest row was not there immediately after being written".into(),
+            )
+        })
 }
 
 /// Produce and store a Mermaid diagram beside an existing digest.
@@ -502,25 +556,38 @@ fn detail(error: &(dyn std::error::Error + 'static)) -> String {
     out
 }
 
-pub fn refresh_pending(store: &Store, cfg: &Config, source: &str, limit: i64) -> Result<usize> {
+pub fn refresh_pending(
+    store: &Store,
+    cfg: &Config,
+    source: &str,
+    limit: i64,
+) -> Result<DrainReport> {
     let producers = producer_revisions(cfg);
     if producers.is_empty() {
-        return Ok(0);
+        return Ok(DrainReport::default());
     }
     let ids = store
-        .items_needing_digest(source, &producers, MAX_ATTEMPTS, limit.clamp(1, 500))
+        .items_needing_digest(
+            source,
+            &producers,
+            &unattended_producer_revisions(cfg),
+            MAX_ATTEMPTS,
+            limit.clamp(1, 500),
+        )
         .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
     let directive = Directive::new(Depth::Standard, []);
-    let mut written = 0;
+    let mut report = DrainReport::default();
     for id in ids {
-        match generate(store, cfg, source, &id, &directive) {
-            Ok(Some(row)) => {
-                written += 1;
+        match refresh_one(store, cfg, source, &id, &directive) {
+            Ok(Pass::Written(state)) => {
+                report.written += 1;
                 // The streak the alert threshold counts. Recorded here rather
-                // than in `generate` because this is the *unattended* pass: an
-                // operator pressing Regenerate on a busy machine is told so on
-                // the spot and is not an alert condition.
-                match row.state.as_str() {
+                // than in `write_digest` because this is the *unattended* pass:
+                // an operator pressing Regenerate on a busy machine is told so
+                // on the spot and is not an alert condition. `OverWindow` never
+                // reaches this arm, which is the point — a rung this pass
+                // declined to use is not the local server failing.
+                match state.as_str() {
                     "capacity_aborted" => {
                         if let Some(streak) =
                             crate::capacity::record_failure(store, cfg.capacity_alert_after)
@@ -534,17 +601,320 @@ pub fn refresh_pending(store: &Store, cfg: &Config, source: &str, limit: i64) ->
                     "generated" => crate::capacity::record_success(store),
                     _ => {}
                 }
-                // A model that is not configured or not answering will not
-                // answer for the next hundred items either.
-                if row.state == "unconfigured" {
-                    break;
-                }
             }
-            Ok(None) => {}
+            // No light rung on this machine, so no unattended pass will get
+            // anywhere for the next hundred items either.
+            Ok(Pass::Unconfigured) => {
+                report.unconfigured = true;
+                break;
+            }
+            Ok(Pass::OverWindow) => report.over_window += 1,
+            Ok(Pass::CloudDigested) => report.cloud_digested += 1,
+            Ok(Pass::CloudFailed) => report.cloud_failed += 1,
+            Ok(Pass::Missing) => {}
             Err(_) => {}
         }
     }
-    Ok(written)
+    Ok(report)
+}
+
+/// What one unattended pass did across the items it looked at.
+///
+/// Counted rather than summed into "wrote N": on this machine most of the
+/// backlog is over the on-device window, so a pass that writes nothing and one
+/// where nothing needed doing look identical from a single number — which is
+/// exactly the silence the drain logging exists to end.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DrainReport {
+    /// Digest rows written by the light local rung.
+    pub written: usize,
+    /// Items too long for it, recorded as such and left for a press.
+    pub over_window: usize,
+    /// Long `public` items digested by a cloud provider on this pass.
+    pub cloud_digested: usize,
+    /// Long `public` items whose cloud attempt failed. The honest count, kept
+    /// separate from `over_window` so a provider outage is not read as a
+    /// windowing decision.
+    pub cloud_failed: usize,
+    /// This machine has no light role, so the pass stopped early.
+    pub unconfigured: bool,
+}
+
+/// What happened to one item on the unattended pass.
+enum Pass {
+    /// A digest row was written by the light rung, carrying this state.
+    Written(String),
+    /// Over the light window, recorded and left alone. No model was called.
+    OverWindow,
+    CloudDigested,
+    CloudFailed,
+    Unconfigured,
+    Missing,
+}
+
+/// One item, through the quiet lane.
+///
+/// The whole of C20 and C21 as a single decision, in the one place that makes
+/// it: the light rung when the source fits it, the cloud door when it does not
+/// and the item is positively `public`, and a recorded skip otherwise. Nothing
+/// here can reach the strong local model — `crate::quiet::rung` has no branch
+/// that returns it.
+fn refresh_one(
+    store: &Store,
+    cfg: &Config,
+    source: &str,
+    id: &str,
+    directive: &Directive,
+) -> Result<Pass> {
+    let Some(gathered) = source_text(store, cfg, source, id)? else {
+        return Ok(Pass::Missing);
+    };
+    let chars = gathered.text.chars().count();
+    let shape = directive.shape_for(chars);
+    match crate::quiet::rung(&cfg.inference, chars, shape.max_tokens()) {
+        crate::quiet::Rung::Unconfigured => Ok(Pass::Unconfigured),
+        crate::quiet::Rung::Light(role) => {
+            let row = write_digest(store, cfg, source, id, directive, &gathered, Some(*role))?;
+            Ok(Pass::Written(row.state))
+        }
+        crate::quiet::Rung::OverWindow => over_window(store, cfg, source, id, shape),
+    }
+}
+
+/// A source no unattended local rung can hold.
+///
+/// For a `public` feed item this is the cloud door: one job on the existing
+/// ledger, dispatched immediately, budget and retry cap unchanged. For anything
+/// else — every `personal` item, every `vault` item, every source that is not
+/// the feed — it is a recorded verdict and nothing else.
+///
+/// The verdict is written down rather than left implicit because the queue is
+/// `ORDER BY created_at DESC LIMIT 25`: on this machine 120 of 190 items with a
+/// transcript are over the on-device window, so a pass that silently skipped
+/// them would hand the same twenty-five back every fifteen minutes and never
+/// reach anything it could actually digest.
+fn over_window(
+    store: &Store,
+    cfg: &Config,
+    source: &str,
+    id: &str,
+    shape: summarize::Shape,
+) -> Result<Pass> {
+    if source != "feed" {
+        skip_over_window(store, cfg, source, id, shape)?;
+        return Ok(Pass::OverWindow);
+    }
+    let Some(item) = store
+        .get_feed(id)
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?
+    else {
+        return Ok(Pass::Missing);
+    };
+    match crate::cloud_run::enqueue_digest_job(store, cfg, &item) {
+        Ok(queued) => match crate::cloud_run::run_job(store, cfg, &queued.job_id) {
+            Ok(_) => {
+                eprintln!(
+                    "digest drain: cloud digest for {id} via {}",
+                    queued.provider_role
+                );
+                Ok(Pass::CloudDigested)
+            }
+            // Every way the dispatch can fail to produce a digest, not only
+            // the one where the roster ran out: a job already at its five-call
+            // cap, a role that stopped being reviewed, a claim another request
+            // won. Recorded on the digest row rather than left to the job
+            // table, because the reader asks the digest row — and because
+            // without it this item is selected again on every single pass,
+            // forever, ahead of items the drain could actually digest.
+            Err(error) => {
+                eprintln!("digest drain: cloud digest for {id} failed: {error}");
+                store_cloud_failure(
+                    store,
+                    source,
+                    id,
+                    &cloud_producer(cfg, &queued.provider_role),
+                    &error,
+                );
+                Ok(Pass::CloudFailed)
+            }
+        },
+        // The class or the machine says there is no cloud lane for this item at
+        // all, which will still be true in fifteen minutes. Record the skip.
+        Err(
+            crate::cloud_run::DigestNotQueued::ClassNotCleared { .. }
+            | crate::cloud_run::DigestNotQueued::VaultRefused,
+        ) => {
+            skip_over_window(store, cfg, source, id, shape)?;
+            Ok(Pass::OverWindow)
+        }
+        // Budget spent, credential missing, billing lapsed, store unreachable:
+        // all transient. Left untouched so the next pass, or tomorrow's budget,
+        // picks it up. Public items are a small, bounded set, so leaving them in
+        // the queue does not starve it.
+        Err(_) => Ok(Pass::OverWindow),
+    }
+}
+
+/// Record that no unattended rung could hold this source.
+///
+/// Producer is the light rung's, so the row counts as current and the queue
+/// stops returning it. A press writes over it with the full ladder.
+fn skip_over_window(
+    store: &Store,
+    cfg: &Config,
+    source: &str,
+    id: &str,
+    shape: summarize::Shape,
+) -> Result<()> {
+    let Some(role) = cfg.light_summarization_role() else {
+        return Ok(());
+    };
+    let previous = store
+        .content_digest(source, id)
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
+    let stored = StoredDigest {
+        source: source.to_string(),
+        item_id: id.to_string(),
+        text: None,
+        state: SKIPPED_OVER_WINDOW.to_string(),
+        shape: shape.as_str().to_string(),
+        depth: Depth::Standard.as_str().to_string(),
+        focus: String::new(),
+        producer: summarize::producer(&role.cache_key(), summarize::DIGEST_PROMPT_REVISION),
+        source_chars: previous.as_ref().map(|row| row.source_chars).unwrap_or(0),
+        redactions: 0,
+        attempts: 0,
+        last_error: None,
+        diagram: previous.as_ref().and_then(|row| row.diagram.clone()),
+        diagram_state: previous.as_ref().and_then(|row| row.diagram_state.clone()),
+        diagram_error: previous.as_ref().and_then(|row| row.diagram_error.clone()),
+        chart: previous.as_ref().and_then(|row| row.chart.clone()),
+        chart_state: previous.as_ref().and_then(|row| row.chart_state.clone()),
+        chart_error: previous.as_ref().and_then(|row| row.chart_error.clone()),
+        generated_at: String::new(),
+    };
+    store
+        .upsert_content_digest(&stored)
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))
+}
+
+/// The verdict for a source no unattended rung can hold. Terminal: a later pass
+/// on the same machine would reach the same conclusion, and only a press or a
+/// different light role changes the answer.
+pub const SKIPPED_OVER_WINDOW: &str = "skipped_over_window";
+
+/// A cloud digest attempt that reached no provider or came back an error.
+/// Retryable — see `store::RETRYABLE_DIGEST_STATES` — so the existing backoff
+/// and three-attempt cap apply without a second ledger.
+pub const CLOUD_ERROR: &str = "cloud_error";
+
+/// The producer string a cloud-written digest carries.
+///
+/// Same shape as every other producer — backend, model, prompt revision — so
+/// `producer_revisions` can hold it and the reader can see at a glance which
+/// provider wrote what. "Honest" here means it names Cloudflare and the Llama
+/// build, not "cloud".
+pub fn cloud_producer_revision(role: &axon_inference::ResolvedRole) -> String {
+    summarize::producer(&role.cache_key(), summarize::DIGEST_PROMPT_REVISION)
+}
+
+/// Store the digest a cloud provider produced for a queued job.
+///
+/// Called from `cloud_run::run_job` before the attempt is marked succeeded: a
+/// completed attempt with no digest row behind it is a call that was paid for
+/// and cannot be read.
+pub fn store_cloud_digest(
+    store: &Store,
+    job: &crate::store::CloudDispatchJob,
+    role: &axon_inference::ResolvedRole,
+    text: &str,
+    shape: summarize::Shape,
+) -> std::result::Result<(), String> {
+    let previous = store
+        .content_digest(&job.source, &job.item_id)
+        .map_err(|error| detail(error.as_ref()))?;
+    let stored = StoredDigest {
+        source: job.source.clone(),
+        item_id: job.item_id.clone(),
+        text: Some(text.to_string()),
+        state: "generated".into(),
+        shape: shape.as_str().to_string(),
+        depth: Depth::Standard.as_str().to_string(),
+        focus: String::new(),
+        producer: cloud_producer_revision(role),
+        // The reviewed document is what the provider read, so it is what this
+        // digest was made from. Recording the raw transcript length instead
+        // would describe a text nobody sent.
+        source_chars: job.document.chars().count() as i64,
+        redactions: 0,
+        attempts: 0,
+        last_error: None,
+        diagram: previous.as_ref().and_then(|row| row.diagram.clone()),
+        diagram_state: previous.as_ref().and_then(|row| row.diagram_state.clone()),
+        diagram_error: previous.as_ref().and_then(|row| row.diagram_error.clone()),
+        chart: previous.as_ref().and_then(|row| row.chart.clone()),
+        chart_state: previous.as_ref().and_then(|row| row.chart_state.clone()),
+        chart_error: previous.as_ref().and_then(|row| row.chart_error.clone()),
+        generated_at: String::new(),
+    };
+    store
+        .upsert_content_digest(&stored)
+        .map_err(|error| detail(error.as_ref()))
+}
+
+/// The producer string a queued cloud role would write, for a job that never
+/// got far enough to have one. Falls back to the role name, which is still a
+/// truthful answer to "who was this asked of".
+fn cloud_producer(cfg: &Config, provider_role: &str) -> String {
+    match cfg.inference.role(provider_role) {
+        Some(role) => cloud_producer_revision(&role),
+        None => summarize::producer(provider_role, summarize::DIGEST_PROMPT_REVISION),
+    }
+}
+
+/// Record that a cloud digest did not arrive.
+///
+/// Best effort: failing to write the note must not turn a reported dispatch
+/// failure into a store error nobody can act on. The producer is the cloud
+/// role's own, so the row counts as current against `producer_revisions` and
+/// the `cloud_error` backoff is what schedules the next attempt — a producer
+/// nothing recognises would put this row back in the queue on every pass.
+pub fn store_cloud_failure(
+    store: &Store,
+    source: &str,
+    item_id: &str,
+    producer: &str,
+    detail: &str,
+) {
+    let previous = store.content_digest(source, item_id).ok().flatten();
+    let stored = StoredDigest {
+        source: source.to_string(),
+        item_id: item_id.to_string(),
+        text: None,
+        state: CLOUD_ERROR.into(),
+        shape: previous
+            .as_ref()
+            .map(|row| row.shape.clone())
+            .unwrap_or_else(|| summarize::Shape::Sectioned.as_str().to_string()),
+        depth: Depth::Standard.as_str().to_string(),
+        focus: String::new(),
+        producer: producer.to_string(),
+        source_chars: previous.as_ref().map(|row| row.source_chars).unwrap_or(0),
+        redactions: 0,
+        attempts: previous
+            .as_ref()
+            .map(|row| row.attempts.saturating_add(1))
+            .unwrap_or(1),
+        last_error: Some(detail.chars().take(500).collect()),
+        diagram: previous.as_ref().and_then(|row| row.diagram.clone()),
+        diagram_state: previous.as_ref().and_then(|row| row.diagram_state.clone()),
+        diagram_error: previous.as_ref().and_then(|row| row.diagram_error.clone()),
+        chart: previous.as_ref().and_then(|row| row.chart.clone()),
+        chart_state: previous.as_ref().and_then(|row| row.chart_state.clone()),
+        chart_error: previous.as_ref().and_then(|row| row.chart_error.clone()),
+        generated_at: String::new(),
+    };
+    let _ = store.upsert_content_digest(&stored);
 }
 
 /// The wire shape, built from the stored row.
@@ -602,6 +972,14 @@ pub fn state_explanation(state: &str, shape: &str) -> &'static str {
         "remote_refused" => {
             "This item is Personal or Private and the configured model is not local."
         }
+        // Deliberately says what to do about it. This state is not a failure of
+        // anything — it is the automatic pass declining to wake the big local
+        // model, which is policy, and the reader is the one who can override it.
+        SKIPPED_OVER_WINDOW => {
+            "Too long for the on-device model. Press Regenerate to run it on the larger local \
+             model."
+        }
+        CLOUD_ERROR => "The cloud provider could not produce a digest. It will retry.",
         "unconfigured" => "No summarization model is configured on this machine.",
         "timeout" => "The local model did not answer in time.",
         // Deliberately about the machine, not the model. The server took this

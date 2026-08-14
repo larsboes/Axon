@@ -511,13 +511,24 @@ impl Config {
     /// twelve to twenty for the 26B — because moving the short rungs onto it
     /// takes them off the shared GPU budget entirely.
     ///
-    /// The role must declare `max_input_tokens`. Without it there is no way to
-    /// tell whether a source fits, and guessing is how you get a context error
-    /// instead of a digest, so an undeclared window means the role is skipped.
+    /// Resolved by `crate::quiet`, which is where "the light rung" is defined,
+    /// because every unattended pass on this machine is now pinned to it. This
+    /// method is the convenience view for a caller that already holds a Config.
     pub fn light_summarization_role(&self) -> Option<ResolvedRole> {
-        self.inference
-            .role("summarization_light")
-            .filter(|role| role.max_input_tokens.is_some())
+        crate::quiet::light_role(&self.inference)
+    }
+
+    /// This machine's config with a chosen inference roster substituted in.
+    ///
+    /// Built by overriding the loaded one rather than by listing twenty
+    /// defaults, so a new field cannot silently arrive here as a zero value
+    /// that no real machine would have.
+    #[cfg(test)]
+    pub(crate) fn with_inference(inference: InferenceConfig) -> Self {
+        Self {
+            inference,
+            ..Self::load()
+        }
     }
 }
 

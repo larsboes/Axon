@@ -236,6 +236,10 @@ pub(super) async fn cloud_queue_handler(
                     source_revision: preview.source_revision,
                     preview_hash: preview.preview_hash,
                     provider_role: body.provider_role,
+                    // The reviewed queue asks for the structured analysis. The
+                    // digest task exists too now and is queued by the drain, not
+                    // from here — this endpoint is the human-approval lane.
+                    task: cloud_dispatch::TASK_VERSION.into(),
                 })
                 .map(Some)
                 .map_err(|error| error.to_string())
@@ -266,115 +270,17 @@ pub(super) async fn cloud_queue_handler(
     }
 }
 
+/// The HTTP shell around `cloud_run::run_job`.
+///
+/// The roster walk, the budget claim and the tier checks moved into
+/// `capabilities/comms/src/cloud_run.rs` when the digest drain became a second
+/// caller of the same path. Keeping a copy here would have meant two
+/// implementations of the five-call cap and the `preview_hash` pin.
 pub(super) async fn cloud_run_handler(Path(job_id): Path<String>) -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<CloudDerivativeState, String> {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
-        let job = store
-            .cloud_job_for_dispatch(&job_id)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| {
-                "cloud job is completed, running, stale, or past its retry limit".to_string()
-            })?;
-        if job.task != cloud_dispatch::TASK_VERSION {
-            return Err("cloud job task is unsupported".into());
-        }
-        let selected_role = cfg
-            .inference
-            .role(&job.provider_role)
-            .filter(|role| role.has_cloud_policy())
-            .ok_or_else(|| "provider role is no longer a reviewed HTTPS cloud role".to_string())?;
-        if !cloud_derivative::tier_allows(
-            selected_role.cloud_data_tier.map(|tier| tier.as_str()),
-            &job.original_data_class,
-            &job.derivative_data_class,
-            &job.transformation,
-        ) {
-            return Err("provider role no longer allows the staged derivative".into());
-        }
-        let utc_date = store.utc_date().map_err(|error| error.to_string())?;
-        let input_upper_bound = cloud_dispatch::input_token_upper_bound(&job.document);
-        let mut requested = false;
-        let mut outcomes = Vec::new();
-
-        for (candidate_name, role) in cfg.inference.cloud_failover_roles(&job.provider_role) {
-            if !cloud_derivative::tier_allows(
-                role.cloud_data_tier.map(|tier| tier.as_str()),
-                &job.original_data_class,
-                &job.derivative_data_class,
-                &job.transformation,
-            ) {
-                continue;
-            }
-            if !role.credential_ready() {
-                outcomes.push(format!("{candidate_name}: credential unavailable"));
-                continue;
-            }
-            if !role.billing_active_on(&utc_date) {
-                outcomes.push(format!("{candidate_name}: billing policy inactive"));
-                continue;
-            }
-            if input_upper_bound > role.max_input_tokens.unwrap_or(0) {
-                outcomes.push(format!("{candidate_name}: input ceiling exceeded"));
-                continue;
-            }
-
-            let attempt_id = match store
-                .claim_cloud_job_attempt(
-                    &job.job_id,
-                    &candidate_name,
-                    &role.model,
-                    role.max_requests_per_day.unwrap_or(0),
-                )
-                .map_err(|error| error.to_string())?
-            {
-                CloudAttemptClaim::Started(attempt_id) => attempt_id,
-                CloudAttemptClaim::DailyLimitReached => {
-                    outcomes.push(format!("{candidate_name}: daily request ceiling reached"));
-                    continue;
-                }
-                CloudAttemptClaim::JobUnavailable => {
-                    return Err("cloud job was claimed by another request".into());
-                }
-            };
-            requested = true;
-            let analysis = match cloud_dispatch::analyze(&role, &job.document) {
-                Ok(analysis) => analysis,
-                Err(error) => {
-                    store
-                        .fail_cloud_job_attempt(&job.job_id, attempt_id, &error)
-                        .map_err(|store_error| store_error.to_string())?;
-                    outcomes.push(format!("{candidate_name}: {error}"));
-                    continue;
-                }
-            };
-            let result = serde_json::to_value(analysis).map_err(|error| error.to_string())?;
-            if !store
-                .complete_cloud_job_attempt(&job.job_id, attempt_id, &result)
-                .map_err(|error| error.to_string())?
-            {
-                return Err("cloud job result could not be committed".into());
-            }
-            return store
-                .cloud_derivative_state(
-                    &job.source,
-                    &job.item_id,
-                    &job.source_revision,
-                    &job.preview_hash,
-                )
-                .map_err(|error| error.to_string());
-        }
-
-        let detail = if outcomes.is_empty() {
-            "no same-tier provider is configured".to_string()
-        } else {
-            outcomes.join("; ")
-        };
-        if requested {
-            Err(format!("dispatch failed: {detail}"))
-        } else {
-            Err(format!("provider policy blocked dispatch: {detail}"))
-        }
+        cloud_run::run_job(&store, &cfg, &job_id)
     })
     .await;
 

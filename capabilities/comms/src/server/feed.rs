@@ -339,7 +339,14 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
         let capacity_state = store
             .get_source_state(comms::capacity::LOCAL_INFERENCE_SOURCE)
             .map_err(|error| error.to_string())?;
+        let unattended_role = cfg.light_summarization_role();
         let summarizer_reachable = media::summarizer_reachable(&cfg);
+        // Probed rather than assumed: an operator deciding whether to press
+        // Regenerate on an over-window item is asking exactly this, and a
+        // stopped oMLX is the ordinary state of this machine now.
+        let strong_reachable = summarization_role
+            .as_ref()
+            .is_some_and(|role| role.model_reachable());
         let relevance_reachable =
             relevance::embedding_backend_reachable(embedding_role.as_ref());
         let reranking_reachable =
@@ -359,17 +366,40 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
                 "lexical": summary.lexical,
                 "unscored": summary.unscored,
             },
+            // Two rungs, named separately, because they are now used by
+            // different callers and one number cannot describe both. `model`
+            // and `reachable` are the *unattended* rung — the light local role
+            // every drain runs on — since that is what the reader is asking
+            // about when the feed has no digests. Reporting the strong role's
+            // name beside the light role's reachability, which is what this
+            // block did for one build, is worse than reporting neither: it
+            // said the 9B model was up while its server was stopped.
             "summarizer": {
-                "provider": summarization_role
+                "provider": unattended_role
                     .as_ref()
                     .map(|role| role.provider_label())
-                    .unwrap_or("No summarization role configured"),
-                "model": summarization_role
+                    .unwrap_or("No unattended summarization role configured"),
+                "model": unattended_role
                     .as_ref()
                     .map(|role| role.model.as_str())
                     .unwrap_or(""),
-                "configured": summarization_role.is_some(),
+                "configured": unattended_role.is_some(),
                 "reachable": summarizer_reachable,
+                // The rung only a press reaches. Kept in the payload because a
+                // reader looking at `skipped_over_window` rows wants to know
+                // what pressing Regenerate would actually engage.
+                "strong": {
+                    "provider": summarization_role
+                        .as_ref()
+                        .map(|role| role.provider_label())
+                        .unwrap_or("No summarization role configured"),
+                    "model": summarization_role
+                        .as_ref()
+                        .map(|role| role.model.as_str())
+                        .unwrap_or(""),
+                    "configured": summarization_role.is_some(),
+                    "reachable": strong_reachable,
+                },
                 // The durable half of the capacity alert. The drain says it on
                 // stderr when the streak crosses the threshold; this is where
                 // it can still be read an hour later by someone who was not

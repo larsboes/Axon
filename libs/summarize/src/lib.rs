@@ -162,10 +162,21 @@ pub const PROMPT_OVERHEAD_TOKENS: u32 = 400;
 /// sends the long ones to a large one, rather than discovering the ceiling by
 /// hitting it.
 pub fn fits_context(source_chars: usize, shape: Shape, context_tokens: u32) -> bool {
+    fits_window(source_chars, shape.max_tokens(), context_tokens)
+}
+
+/// The same question for a caller whose reply ceiling is not a [`Shape`].
+///
+/// The feed-summary prefill in `capabilities/comms/src/media.rs` asks for a
+/// fixed 800 tokens rather than climbing this ladder, and it has to decide
+/// whether a small model can hold the job for exactly the same reason. Two
+/// arithmetics for one question is how one of them ends up sizing only the
+/// prompt and offering a 4,096-token model a request it cannot answer.
+pub fn fits_window(source_chars: usize, reply_tokens: u32, context_tokens: u32) -> bool {
     let input = source_chars.min(INPUT_CAP) / CHARS_PER_TOKEN;
     let needed = (input as u64)
         .saturating_add(PROMPT_OVERHEAD_TOKENS as u64)
-        .saturating_add(shape.max_tokens() as u64);
+        .saturating_add(reply_tokens as u64);
     needed <= context_tokens as u64
 }
 

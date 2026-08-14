@@ -23,6 +23,11 @@ use crate::{CommsError, Result};
 
 /// Max characters of article/transcript text fed to the summarizer prompt.
 const SUMMARY_INPUT_CAP: usize = 15_000;
+/// Room the summary prompt asks the model to answer in. A named constant
+/// because the window check in [`crate::quiet`] has to count the same number
+/// this request sends: a fit computed against the prompt alone offers a
+/// 4,096-token model a job it has no room to finish.
+const SUMMARY_REPLY_TOKENS: u32 = 800;
 pub const SUMMARY_PROMPT_REVISION: &str = "feed-summary-v2-english";
 /// Transcript length at or above which `content_status` is `full` (not `thin`).
 /// One threshold, read by the classifier here and by the evaluator grading a
@@ -48,6 +53,11 @@ pub enum SummarizeOutcome {
     /// spelling as `summarize::Outcome::RemoteRefused`, because it is the same
     /// refusal about the same item.
     RemoteRefused,
+    /// The source does not fit the light local rung, and an unattended pass may
+    /// not reach past it (`crate::quiet`). Not a failure and not an attempt:
+    /// nothing was sent anywhere, so nothing is counted against the row's retry
+    /// ledger or the capacity-alert streak.
+    OverWindow,
 }
 
 impl SummarizeOutcome {
@@ -62,6 +72,7 @@ impl SummarizeOutcome {
             SummarizeOutcome::EmptyResponse => "empty_response",
             SummarizeOutcome::Timeout => "timeout",
             SummarizeOutcome::RemoteRefused => "remote_refused",
+            SummarizeOutcome::OverWindow => "over_window",
         }
     }
 }
@@ -1142,8 +1153,15 @@ fn summary_prompt(input: &str) -> String {
     )
 }
 
+/// The producer string this machine's unattended summary pass writes.
+///
+/// The **light** role, because that is the only rung an unattended pass may use
+/// now (`crate::quiet`). It moved here from `summarization`: leaving it on the
+/// strong role would have every summary the drain writes labelled as the big
+/// model's work, and the staleness query would then hand every one of them
+/// straight back on the next pass.
 pub fn summary_producer_revision(cfg: &Config) -> Option<String> {
-    cfg.summarization_role()
+    cfg.light_summarization_role()
         .map(|role| format!("{}:{SUMMARY_PROMPT_REVISION}", role.cache_key()))
 }
 
@@ -1174,9 +1192,19 @@ pub fn summary_producer_revision(cfg: &Config) -> Option<String> {
 /// the same question the digest path asks, because this sends the same text in
 /// the same unredacted form.
 pub fn summarize(text: &str, cfg: &Config, data_class: &str) -> SummarizeOutcome {
-    let role = match cfg.summarization_role() {
-        Some(role) => role,
-        None => return SummarizeOutcome::Unconfigured,
+    // The quiet lane, and only the quiet lane. Every caller of this function is
+    // an unattended pass — the enrichment drain, the prefill behind
+    // `POST /ingest`, `comms summarize --pending` — and none of them is an
+    // operator watching an item. Resolving `summarization` here is what fed 182
+    // transcripts through a 9B model on the GPU on 2026-08-13.
+    let role = match crate::quiet::rung(
+        &cfg.inference,
+        text.chars().count().min(SUMMARY_INPUT_CAP),
+        SUMMARY_REPLY_TOKENS,
+    ) {
+        crate::quiet::Rung::Light(role) => *role,
+        crate::quiet::Rung::OverWindow => return SummarizeOutcome::OverWindow,
+        crate::quiet::Rung::Unconfigured => return SummarizeOutcome::Unconfigured,
     };
     if !role.is_loopback()
         && !crate::cloud_derivative::verbatim_send_allowed(
@@ -1265,8 +1293,10 @@ pub fn summarize(text: &str, cfg: &Config, data_class: &str) -> SummarizeOutcome
 
 /// Cheap readiness probe for the configured OpenAI-compatible summarizer.
 /// `/models` does not trigger a generation or load a model into memory.
+/// The rung the unattended passes actually use, so a health probe answers about
+/// the model that is going to be asked rather than about one that is not.
 pub fn summarizer_reachable(cfg: &Config) -> bool {
-    cfg.summarization_role()
+    cfg.light_summarization_role()
         .as_ref()
         .is_some_and(axon_inference::ResolvedRole::model_reachable)
 }
@@ -1305,7 +1335,11 @@ pub fn summarize_item(store: &Store, cfg: &Config, id: &str) -> Result<bool> {
                 .map_err(|e| CommsError::Other(e.to_string()))?;
             Ok(true)
         }
-        SummarizeOutcome::Unconfigured => Ok(false),
+        // Neither is an attempt: one says this machine has no unattended rung
+        // at all, the other says this source is past it. Writing either to the
+        // retry ledger would burn the row's three attempts on a decision no
+        // retry can change.
+        SummarizeOutcome::Unconfigured | SummarizeOutcome::OverWindow => Ok(false),
         outcome => {
             let _ = store.record_summary_attempt(id, outcome.error_class(), &producer_revision);
             Ok(false)
@@ -1313,16 +1347,31 @@ pub fn summarize_item(store: &Store, cfg: &Config, id: &str) -> Result<bool> {
     }
 }
 
+/// What one unattended enrichment pass did.
+///
+/// Two numbers rather than one, for the reason `digest::DrainReport` gives:
+/// most of this machine's backlog is longer than the on-device window, so
+/// "summarized 0" on its own reads as a broken model server when it is in fact
+/// the quiet policy working exactly as ratified.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EnrichmentPass {
+    /// Summaries written by the light local rung.
+    pub summarized: usize,
+    /// Items it could not hold, skipped without a request and without a mark on
+    /// their retry ledger.
+    pub over_window: usize,
+}
+
 /// Retry summarization for eligible feed items (bounded by attempt cap and
-/// exponential backoff). Returns how many were newly summarized.
-pub fn summarize_pending(store: &Store, cfg: &Config) -> Result<usize> {
+/// exponential backoff).
+pub fn summarize_pending(store: &Store, cfg: &Config) -> Result<EnrichmentPass> {
     let Some(producer_revision) = summary_producer_revision(cfg) else {
-        return Ok(0);
+        return Ok(EnrichmentPass::default());
     };
     let pending = store
         .feed_pending_summaries(Some(&producer_revision))
         .map_err(|e| CommsError::Other(e.to_string()))?;
-    let mut done = 0;
+    let mut pass = EnrichmentPass::default();
     for item in pending {
         if let Some(text) = &item.transcript {
             // Re-read, because the batch above is a snapshot and the pass takes
@@ -1342,8 +1391,13 @@ pub fn summarize_pending(store: &Store, cfg: &Config) -> Result<usize> {
                         .update_feed_summary(&item.id, &summary, &producer_revision)
                         .map_err(|e| CommsError::Other(e.to_string()))?;
                     crate::capacity::record_success(store);
-                    done += 1;
+                    pass.summarized += 1;
                 }
+                // Left pending by design. No request was made, so there is
+                // nothing to count — not against this row's three attempts,
+                // and not against the capacity streak, which exists to say the
+                // local server is failing requests it accepted.
+                SummarizeOutcome::OverWindow => pass.over_window += 1,
                 SummarizeOutcome::Unconfigured => break, // no point continuing
                 outcome => {
                     // Same streak the digest drain counts, because it is the
@@ -1369,7 +1423,7 @@ pub fn summarize_pending(store: &Store, cfg: &Config) -> Result<usize> {
             }
         }
     }
-    Ok(done)
+    Ok(pass)
 }
 
 /// The payoff for retaining raw content: re-run normalization over everything

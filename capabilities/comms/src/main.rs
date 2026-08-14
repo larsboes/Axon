@@ -490,7 +490,10 @@ fn cmd_summarize(args: &[String], cfg: &Config) {
     }
     let store = open_store(cfg);
     match media::summarize_pending(&store, cfg) {
-        Ok(n) => println!("summarized {n} pending feed item(s)"),
+        Ok(pass) => println!(
+            "summarized {} pending feed item(s); {} past the on-device window, left for a press",
+            pass.summarized, pass.over_window
+        ),
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);

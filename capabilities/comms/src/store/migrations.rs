@@ -307,7 +307,14 @@ impl Store {
                 completed_at TIMESTAMPTZ,
                 last_error TEXT,
                 result_json TEXT,
-                UNIQUE (source, item_id, preview_hash, provider_role)
+                -- `task` is part of the intent, not decoration: one reviewed
+                -- derivative can be asked two different questions (an analysis
+                -- and a digest), and without the task in the key the second
+                -- upsert would silently overwrite the first job's task.
+                -- Named explicitly so a fresh database and a migrated one carry
+                -- the same constraint name.
+                CONSTRAINT content_cloud_jobs_intent_key
+                    UNIQUE (source, item_id, preview_hash, provider_role, task)
             );
 
             -- One row per actual provider request. Policy-disabled candidates
@@ -463,6 +470,22 @@ impl Store {
             ALTER TABLE {schema}.content_cloud_jobs
                 ADD CONSTRAINT content_cloud_jobs_provider_calls_check
                 CHECK (provider_calls BETWEEN 0 AND 5);
+            -- The intent key gains `task`. A database created before cloud
+            -- digests existed keys one job per (item, hash, provider), so
+            -- queueing a digest for an item that already has an analysis would
+            -- take the ON CONFLICT branch and rewrite the analysis job's task.
+            -- Postgres named the original constraint itself and truncated it at
+            -- 63 characters, so the old name is spelled out rather than derived.
+            ALTER TABLE {schema}.content_cloud_jobs
+                DROP CONSTRAINT IF EXISTS content_cloud_jobs_source_item_id_preview_hash_provider_rol_key;
+            DO $intent$
+            BEGIN
+                ALTER TABLE {schema}.content_cloud_jobs
+                    ADD CONSTRAINT content_cloud_jobs_intent_key
+                    UNIQUE (source, item_id, preview_hash, provider_role, task);
+            EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL;
+            END
+            $intent$;
 
             -- Share-link extractors (github/arxiv/reddit) widen the kind CHECK. The
             -- inline `CHECK (kind IN (...))` above was auto-named

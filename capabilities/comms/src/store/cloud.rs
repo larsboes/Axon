@@ -79,6 +79,12 @@ impl Store {
         if !request.provider_role.starts_with("cloud_") {
             return Err("cloud queue provider role must start with 'cloud_'".into());
         }
+        if !matches!(
+            request.task.as_str(),
+            crate::cloud_dispatch::TASK_VERSION | crate::cloud_dispatch::DIGEST_TASK_VERSION
+        ) {
+            return Err("cloud queue task is unsupported".into());
+        }
 
         let job_id = cloud_job_id(request);
         let mut conn = self.conn()?;
@@ -91,9 +97,9 @@ impl Store {
                       AND source_revision = $3 AND preview_hash = $4
                  ), queued AS (
                     INSERT INTO {schema}.content_cloud_jobs
-                        (job_id, source, item_id, source_revision, preview_hash, provider_role)
-                    SELECT $5, $1, $2, $3, $4, $6 FROM approved
-                    ON CONFLICT (source, item_id, preview_hash, provider_role)
+                        (job_id, source, item_id, source_revision, preview_hash, provider_role, task)
+                    SELECT $5, $1, $2, $3, $4, $6, $7 FROM approved
+                    ON CONFLICT (source, item_id, preview_hash, provider_role, task)
                     DO UPDATE SET provider_role = excluded.provider_role
                     RETURNING job_id, provider_role, queued_at::text, status,
                               provider_calls, task, started_at::text, completed_at::text,
@@ -113,6 +119,7 @@ impl Store {
                 &request.preview_hash,
                 &job_id,
                 &request.provider_role,
+                &request.task,
             ],
         )?;
         let Some(row) = row else {
@@ -310,10 +317,22 @@ impl Store {
     /// by a light model and a long one by the strong model on the same pass and
     /// both are current. A row is stale only when its producer is in none of
     /// them.
+    ///
+    /// `unattended_producers` is the subset an *automatic* pass can produce —
+    /// the light local role and the cloud roles, never the strong local one.
+    /// The attempt cap only applies against those. A row that spent its three
+    /// attempts on a model this pass will not use has not spent this pass's
+    /// budget, and treating it as though it had is how six long public items on
+    /// this machine ended up parked at `http_error`, attempt 4, against an oMLX
+    /// that had been stopped for good — permanently invisible to the cloud rung
+    /// that could have digested every one of them. The row is rewritten with an
+    /// unattended producer the moment this pass touches it, so the ordinary cap
+    /// governs from then on and this cannot loop.
     pub fn items_needing_digest(
         &self,
         source: &str,
         producers: &[String],
+        unattended_producers: &[String],
         max_attempts: i32,
         limit: i64,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -332,16 +351,22 @@ impl Store {
                   WHERE d.item_id IS NULL
                      OR (d.producer <> ALL($2) AND d.depth = 'standard')
                      OR (d.state IN ({retryable})
-                         AND d.attempts < $3
+                         AND (d.producer <> ALL($3) OR d.attempts < $4)
                          AND (d.next_attempt IS NULL OR d.next_attempt <= now()))
                   ORDER BY i.{order}
-                  LIMIT $4",
+                  LIMIT $5",
                 schema = self.schema,
                 table = table,
                 order = order,
                 retryable = retryable_digest_states_sql()
             ),
-            &[&source, &producers, &max_attempts, &limit],
+            &[
+                &source,
+                &producers,
+                &unattended_producers,
+                &max_attempts,
+                &limit,
+            ],
         )?;
         Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
     }

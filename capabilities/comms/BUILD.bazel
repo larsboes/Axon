@@ -57,14 +57,19 @@ rust_library(
     ],
 )
 
-# Runs every hermetic #[cfg(test)] module. The store module is filtered here
-# and selected by comms_postgres_test below, so the two targets compile the
-# same crate but make different service requirements explicit.
+# Runs every hermetic #[cfg(test)] module. The modules that need the shared
+# Postgres are filtered here and selected by comms_postgres_test below, so the
+# two targets compile the same crate but make different service requirements
+# explicit. Two paths now: the store's own tests, and the cloud-digest enqueue
+# refusal, which is only worth asserting against a store that would otherwise
+# have written the row.
 rust_test(
     name = "comms_test",
     args = [
         "--skip",
         "store::tests::",
+        "--skip",
+        "cloud_run::tests::postgres_tests::",
     ],
     crate = ":comms",
     data = glob(["eval/**"]),
@@ -73,7 +78,10 @@ rust_test(
 
 rust_test(
     name = "comms_postgres_test",
-    args = ["store::tests::"],
+    args = [
+        "store::tests::",
+        "cloud_run::tests::postgres_tests::",
+    ],
     crate = ":comms",
     data = glob(["eval/**"]),
     size = "small",

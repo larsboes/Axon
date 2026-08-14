@@ -408,19 +408,31 @@ pub(super) struct DigestRefreshBody {
 /// background job that quietly pulls every body out of a mailbox is not
 /// something a machine should start doing on its own.
 pub(super) async fn digest_refresh_handler(Json(body): Json<DigestRefreshBody>) -> HttpResponse {
-    let result = tokio::task::spawn_blocking(move || -> Result<(String, usize), String> {
-        let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
-        let written = digest::refresh_pending(&store, &cfg, &body.source, body.limit.unwrap_or(25))
-            .map_err(|error| error.to_string())?;
-        Ok((body.source, written))
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<(String, digest::DrainReport), String> {
+            let cfg = Config::load();
+            let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+            let report =
+                digest::refresh_pending(&store, &cfg, &body.source, body.limit.unwrap_or(25))
+                    .map_err(|error| error.to_string())?;
+            Ok((body.source, report))
+        })
+        .await;
 
     match result {
-        Ok(Ok((source, written))) => (
+        // `digested` keeps its meaning — rows this pass wrote on-device — and
+        // the rest is additive, so a caller reading only that field still reads
+        // the same number it did before the quiet lane existed.
+        Ok(Ok((source, report))) => (
             StatusCode::OK,
-            Json(json!({ "source": source, "digested": written })),
+            Json(json!({
+                "source": source,
+                "digested": report.written,
+                "cloud_digested": report.cloud_digested,
+                "cloud_failed": report.cloud_failed,
+                "over_window": report.over_window,
+                "unconfigured": report.unconfigured,
+            })),
         ),
         Ok(Err(error)) if error.contains("no digest queue for source") => {
             error_response(StatusCode::BAD_REQUEST, error)
