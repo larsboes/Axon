@@ -828,6 +828,7 @@ mod tests {
             total_duration_minutes: 240,
             total_price: Some(79.90),
             delay_risk_score: None,
+            arrival_punctuality: None,
         }
     }
 
@@ -953,6 +954,7 @@ mod tests {
             total_duration_minutes: dur,
             total_price: price,
             delay_risk_score: None,
+            arrival_punctuality: None,
         }
     }
 

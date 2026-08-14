@@ -68,13 +68,50 @@ pub struct Journey {
     pub legs: Vec<Leg>,
     pub total_duration_minutes: u32,
     pub total_price: Option<f64>,
-    /// ML delay-risk prediction slot (0.0-1.0). Always `None` in this port --
-    /// see README's "Known gaps" section: the ONNX model + tract-onnx
-    /// machinery that used to populate this was deliberately NOT ported
-    /// (no model artifact exists in Axon yet, would be dead-weight code that
-    /// can never predict anything real). The field stays so wiring it back in
-    /// later, once a real model exists, is additive, not a schema change.
+    /// `arrival_punctuality.share_late_6`, flattened, and nothing more.
+    ///
+    /// It began as an ML prediction slot that was never ported, then
+    /// `punctuality::enrich` started filling it with a *measured* historical
+    /// share, which is a different quantity under the old name. Kept because
+    /// consumers read it; read `arrival_punctuality` instead, which says how
+    /// many observations the number rests on.
     pub delay_risk_score: Option<f64>,
+    /// The delay history behind `delay_risk_score`, unflattened.
+    ///
+    /// Absent when punctuality has no cell for this train type at this station
+    /// in this hour, when the cell is thinner than punctuality's own sample
+    /// floor, or when punctuality is not running. Those are three different
+    /// states and only the last is a fault, but none of them is a low risk --
+    /// a consumer that renders absence as "punctual" is inventing a
+    /// measurement. Carrying `n` is what lets one be told from another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrival_punctuality: Option<ArrivalPunctuality>,
+}
+
+/// One punctuality cell: the arriving train's type, at the journey's destination,
+/// in the arrival hour, split weekday/weekend.
+///
+/// Emphatically not a forecast for this journey and not transfer risk -- the
+/// module doc on `punctuality::enrich` says why this data cannot produce either.
+/// It is what happened to comparable trains at that stop, and `n` says how many.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArrivalPunctuality {
+    pub station_name: Option<String>,
+    pub train_type: String,
+    pub hour: i16,
+    pub weekend: bool,
+    /// Observations behind every other field here.
+    ///
+    /// The difference between a statistic and a coincidence, and the only reason
+    /// a consumer can show its own confidence rather than a bare float. Never
+    /// below punctuality's sample floor, because thinner cells come back as no
+    /// cell at all.
+    pub n: i64,
+    pub mean_delay: f32,
+    pub p50: i16,
+    pub p90: i16,
+    pub share_late_6: f32,
+    pub cancel_rate: f32,
 }
 
 /// Whether a priced segment is priced for the train the traveller will be on.

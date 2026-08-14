@@ -10,7 +10,7 @@
 //! that breaks because a statistics service is down would be a worse product than one
 //! without statistics.
 
-use crate::travel::{Journey, SplitResult};
+use crate::travel::{ArrivalPunctuality, Journey, SplitResult};
 use serde::{Deserialize, Serialize};
 
 /// Where punctuality-server listens.
@@ -40,11 +40,43 @@ struct LookupBody {
     stops: Vec<StopQuery>,
 }
 
+/// Punctuality's cell, in full.
+///
+/// This used to declare `share_late_6` alone, so six of the seven fields the
+/// endpoint returns were discarded at deserialization -- `n` among them, which is
+/// what tells a measurement over four thousand observations from one over thirty-one.
 #[derive(Debug, Deserialize)]
 struct StopStats {
+    station_name: Option<String>,
+    train_type: String,
+    hour: i16,
+    #[serde(default)]
+    weekend: bool,
+    n: i64,
+    mean_delay: f32,
+    p50: i16,
+    p90: i16,
     /// Share of this train type's stops at this station in this hour that were at least
     /// six minutes off schedule. Six is DB's own punctuality threshold.
     share_late_6: f32,
+    cancel_rate: f32,
+}
+
+impl From<StopStats> for ArrivalPunctuality {
+    fn from(s: StopStats) -> Self {
+        Self {
+            station_name: s.station_name,
+            train_type: s.train_type,
+            hour: s.hour,
+            weekend: s.weekend,
+            n: s.n,
+            mean_delay: s.mean_delay,
+            p50: s.p50,
+            p90: s.p90,
+            share_late_6: s.share_late_6,
+            cancel_rate: s.cancel_rate,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,7 +182,11 @@ pub fn enrich(journeys: &mut [Journey]) {
     let Ok(response) = response else { return };
     for (idx, stat) in targets.into_iter().zip(response.stats) {
         if let Some(stat) = stat {
+            // Both, from one lookup: the flattened score every existing consumer
+            // reads, and the cell it came from for the ones that want the sample
+            // size with it.
             journeys[idx].delay_risk_score = Some(stat.share_late_6 as f64);
+            journeys[idx].arrival_punctuality = Some(stat.into());
         }
     }
 }

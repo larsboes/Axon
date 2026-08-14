@@ -1011,6 +1011,7 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
                 legs,
                 total_price: price,
                 delay_risk_score: None,
+                arrival_punctuality: None,
             });
         }
     }
@@ -1142,6 +1143,7 @@ pub fn parse_dbnav_journeys(body: &Value) -> Vec<Journey> {
                 .and_then(|ab| ab.get("betrag"))
                 .and_then(|b| b.as_f64()),
             delay_risk_score: None,
+            arrival_punctuality: None,
         });
     }
 
@@ -1732,6 +1734,7 @@ mod tests {
                 total_duration_minutes: 120,
                 total_price: Some(20.0),
                 delay_risk_score: None,
+                arrival_punctuality: None,
             },
             train_match: TrainMatch::Exact,
             expected_trains: vec![train.into()],
@@ -1943,6 +1946,7 @@ mod tests {
             total_duration_minutes: 120,
             total_price: Some(30.0),
             delay_risk_score: None,
+            arrival_punctuality: None,
         }
     }
 
