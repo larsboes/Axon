@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Thin launcher: host-watch's logic lives in host-watch.ts. TypeScript runs through
+# bun (Axon rule 8) — the overlay's host-watch-policy.toml is array-of-tables
+# ([[allow_process]]), which tools/lib/toml.sh's grep/sed contract can't parse, so
+# it's TS rather than bash. Same reasoning as tools/storage.
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bun run "$_here/host-watch.ts" "$@"

@@ -216,6 +216,16 @@
       }
     },
     {
+      "name": "host-watch",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "tasks"
+        ]
+      }
+    },
+    {
       "name": "inference",
       "kind": "lib",
       "code": {

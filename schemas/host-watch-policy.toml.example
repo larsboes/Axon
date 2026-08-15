@@ -1,0 +1,45 @@
+# host-watch-policy.toml — what "a process misbehaving" means on THIS machine.
+#
+# The overlay half of Axon#177. Core Axon's tools/host-watch.ts owns the parsing, the
+# ratio arithmetic and the task hand-off, and knows no process name; every number and
+# name below is machine-specific and therefore lives in the active overlay
+# (README.md#generic-in-axon-specific-in-the-overlay).
+#
+# The disk half is NOT declared here. tools/storage.ts already reads its thresholds from
+# storage-policy.toml and host-watch consumes that verdict; a second set of free-space
+# numbers would be exactly the duplication both policies exist to prevent.
+#
+# Copy to <overlay>/config/host-watch-policy.toml and fill in.
+
+[process]
+# BOTH conditions must hold before a process is a finding, and each catches the error the
+# other makes.
+#
+# min_cpu_seconds is the floor: a compiler at 100% for five minutes has a perfect ratio
+# and is a build, not a runaway. Something has to have been wrong for a while.
+#
+# min_cpu_ratio is the actual signal — CPU seconds divided by seconds alive, i.e. how much
+# of a core the process has held for its entire life. Ranking by raw CPU time is the
+# obvious rule and it is wrong: the compositor accumulates more CPU than anything else on
+# the machine simply by being alive since boot.
+min_cpu_seconds = 3600
+min_cpu_ratio = 0.15
+
+
+# ── Allowed ────────────────────────────────────────────────────────────────────
+#
+# Processes that are supposed to be busy. Each entry records WHY, because the reason is
+# exactly what a scanner cannot infer — the same contract as storage-policy.toml's
+# [[protected]] entries.
+#
+# Keep this list SHORT. Every name here is a process this watcher can never warn about
+# again, so an allowlist grown to silence noise is how the check quietly stops working.
+# Prefer raising min_cpu_ratio over adding a name.
+
+[[allow_process]]
+comm = "WindowServer"
+reason = "The compositor. Busy is its job, and it has been alive since boot, so its lifetime ratio is low anyway."
+
+[[allow_process]]
+comm = "kernel_task"
+reason = "The kernel's own accounting bucket, including thermal management. Not a process you would act on."
