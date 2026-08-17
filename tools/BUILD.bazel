@@ -75,6 +75,7 @@ sh_test(
     srcs = ["manifest-resolution.test.sh"],
     data = [
         "lib/paths.sh",
+        "lib/test-support.sh",
         "lib/toml.sh",
     ],
 )
@@ -85,6 +86,7 @@ sh_test(
     srcs = ["machine-resolution.test.sh"],
     data = [
         "lib/paths.sh",
+        "lib/test-support.sh",
         "lib/toml.sh",
     ],
 )
