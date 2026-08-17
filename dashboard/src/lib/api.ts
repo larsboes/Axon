@@ -416,6 +416,30 @@ export interface SplitResult {
   queried_pairs: number;
 }
 
+/**
+ * What happened to comparable trains at this journey's destination: the arriving
+ * train's type, in the arrival hour, weekday or weekend.
+ *
+ * Not a forecast for this journey and not transfer risk -- transit's punctuality
+ * module says why this data cannot produce either. Absent means punctuality has
+ * no cell, or the cell was thinner than its sample floor, or the service is not
+ * running. None of the three is a low risk, so absence renders as unknown and
+ * never as punctual.
+ */
+export interface ArrivalPunctuality {
+  station_name: string | null;
+  train_type: string;
+  hour: number;
+  weekend: boolean;
+  /** Observations behind every other field. What separates a statistic from a coincidence. */
+  n: number;
+  mean_delay: number;
+  p50: number;
+  p90: number;
+  share_late_6: number;
+  cancel_rate: number;
+}
+
 export interface Journey {
   id: string;
   start_station: Station;
@@ -423,14 +447,30 @@ export interface Journey {
   legs: ConnectionLeg[];
   total_duration_minutes: number;
   total_price: number | null;
+  /** `arrival_punctuality.share_late_6`, flattened. Prefer the cell: it carries `n`. */
   delay_risk_score: number | null;
+  arrival_punctuality?: ArrivalPunctuality | null;
 }
 
 export interface ConnectionLeg {
   origin: { name: string; id: string };
   destination: { name: string; id: string };
+  /** The time to plan around: real-time where HAFAS has one, scheduled otherwise. */
   departure_time: string;
   arrival_time: string;
+  /**
+   * Scheduled and real-time kept apart, exactly as transit sends them.
+   *
+   * These were on the wire on every search and absent from this interface, which
+   * is why a leg running twenty minutes late rendered identically to one on time.
+   * A null real-time value means HAFAS offered none -- not that there is no delay.
+   */
+  scheduled_departure?: string | null;
+  realtime_departure?: string | null;
+  scheduled_arrival?: string | null;
+  realtime_arrival?: string | null;
+  /** HAFAS marked the leg cancelled. Previously invisible: it arrived as an ordinary leg. */
+  cancelled?: boolean;
   train_name: string;
   train_number: string;
   train_category: string;

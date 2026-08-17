@@ -200,6 +200,11 @@ mod tests {
             total_duration_minutes: 240,
             total_price: Some(79.90),
             delay_risk_score: None,
+            // `None` for the same reason `delay_risk_score` is: this fixture
+            // exercises the fare mapping, and scouting reads neither. Absent is
+            // a state production genuinely returns — transit fills it only when
+            // the route's punctuality history is available.
+            arrival_punctuality: None,
         }
     }
 
