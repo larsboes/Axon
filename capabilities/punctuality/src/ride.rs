@@ -87,9 +87,7 @@ pub fn month_of(date: &str) -> Option<String> {
 /// `611` for the same train depending on the column, and a string compare that
 /// misses is indistinguishable from a train that did not run.
 pub fn same_train_number(left: &str, right: &str) -> bool {
-    let digits = |value: &str| -> String {
-        value.chars().filter(char::is_ascii_digit).collect()
-    };
+    let digits = |value: &str| -> String { value.chars().filter(char::is_ascii_digit).collect() };
     let left_digits = digits(left);
     !left_digits.is_empty() && left_digits == digits(right)
 }
@@ -320,7 +318,11 @@ pub fn stations_seen(stops: &[Stop]) -> HashMap<String, usize> {
     let mut seen = HashMap::new();
     for stop in stops {
         *seen
-            .entry(stop.station_name.clone().unwrap_or_else(|| stop.eva.clone()))
+            .entry(
+                stop.station_name
+                    .clone()
+                    .unwrap_or_else(|| stop.eva.clone()),
+            )
             .or_insert(0) += 1;
     }
     seen

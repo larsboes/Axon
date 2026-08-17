@@ -7,6 +7,14 @@ use serde_json::Value;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
+/// What `list_places` accumulates per place id, in order: display name, number
+/// of visits, first date seen, last date seen, and whether the place carries a
+/// coordinate. A named alias rather than the bare tuple because the tuple is
+/// built in one place and read positionally (`entry.1`, `entry.2`) in another,
+/// which is precisely the shape clippy's `type_complexity` asks to be given a
+/// name — the fields stay positional, but the signature says what they are.
+type PlaceVisit = (String, usize, Option<String>, Option<String>, bool);
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlaceKind {
@@ -602,13 +610,15 @@ impl TripsStore {
     ) -> Result<Option<PlanItem>, Box<dyn std::error::Error>> {
         if let Some(day) = day {
             // A date the index can order. Anything else silently sorts wrong.
-            if day.len() != 10 || !day.as_bytes().iter().enumerate().all(|(i, b)| {
-                if i == 4 || i == 7 {
-                    *b == b'-'
-                } else {
-                    b.is_ascii_digit()
-                }
-            }) {
+            if day.len() != 10
+                || !day.as_bytes().iter().enumerate().all(|(i, b)| {
+                    if i == 4 || i == 7 {
+                        *b == b'-'
+                    } else {
+                        b.is_ascii_digit()
+                    }
+                })
+            {
                 return Err("day must be YYYY-MM-DD, or null to unset it".into());
             }
         }
@@ -686,7 +696,10 @@ impl TripsStore {
                 item_type: "outcome".into(),
                 day: stage.date.clone(),
                 external_id: format!("outcome:{stage_id}"),
-                title: format!("How {} → {} went", stage.origin.name, stage.destination.name),
+                title: format!(
+                    "How {} → {} went",
+                    stage.origin.name, stage.destination.name
+                ),
                 payload,
             },
         )
@@ -705,8 +718,7 @@ impl TripsStore {
     pub fn list_places(&self) -> Result<Value, Box<dyn std::error::Error>> {
         use std::collections::BTreeMap;
 
-        let mut visits: BTreeMap<String, (String, usize, Option<String>, Option<String>, bool)> =
-            BTreeMap::new();
+        let mut visits: BTreeMap<String, PlaceVisit> = BTreeMap::new();
         for plan in self.list_plans()? {
             let dated = std::iter::once(&plan.origin)
                 .chain(plan.destinations.iter())
@@ -792,11 +804,7 @@ impl TripsStore {
         input: &CreatePlanItem,
     ) -> Result<PlanItem, Box<dyn std::error::Error>> {
         if !ITEM_TYPES.contains(&input.item_type.as_str()) {
-            return Err(format!(
-                "item_type must be one of {}",
-                ITEM_TYPES.join(", ")
-            )
-            .into());
+            return Err(format!("item_type must be one of {}", ITEM_TYPES.join(", ")).into());
         }
         if input.external_id.trim().is_empty() || input.title.trim().is_empty() {
             return Err("external_id and title are required".into());
@@ -1095,18 +1103,30 @@ mod tests {
     fn every_payload_the_dashboard_already_writes_still_validates() {
         let existing = [
             // saveJourney -- the one transport producer, and the shape now declared.
-            ("transport", json!({ "mode": "train", "journey": { "id": "j:1" } })),
+            (
+                "transport",
+                json!({ "mode": "train", "journey": { "id": "j:1" } }),
+            ),
             // addTravelCandidate: a scouting opportunity.
             (
                 "event",
                 json!({ "opportunity_id": "o:1", "source": "luma", "url": "https://example.org" }),
             ),
             // saveEvent: the whole search result, shape not ours to fix.
-            ("event", json!({ "title": "t", "score": 0.5, "date": "2026-09-01" })),
+            (
+                "event",
+                json!({ "title": "t", "score": 0.5, "date": "2026-09-01" }),
+            ),
             // saveCalendarEvent: a calendar anchor.
-            ("event", json!({ "calendar_entry_id": "e:1", "commitment": "planned" })),
+            (
+                "event",
+                json!({ "calendar_entry_id": "e:1", "commitment": "planned" }),
+            ),
             // savePlace.
-            ("activity", json!({ "url": "https://example.org", "latitude": 50.7 })),
+            (
+                "activity",
+                json!({ "url": "https://example.org", "latitude": 50.7 }),
+            ),
         ];
         for (item_type, payload) in existing {
             assert!(

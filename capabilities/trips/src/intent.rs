@@ -248,7 +248,11 @@ fn strip_fence(raw: &str) -> String {
         .strip_prefix("```json")
         .or_else(|| trimmed.strip_prefix("```"))
         .unwrap_or(trimmed);
-    without.strip_suffix("```").unwrap_or(without).trim().to_string()
+    without
+        .strip_suffix("```")
+        .unwrap_or(without)
+        .trim()
+        .to_string()
 }
 
 fn preview(raw: &str) -> String {
@@ -327,8 +331,9 @@ mod tests {
 
         // Garbage that is not a date at all is also dropped.
         let bad = r#"{"destinations":["X"],"date_start":"next tuesday","unresolved":[]}"#;
-        assert!(draft_from_model_json_on("x", bad, "2026-08-11").unwrap().draft
-            ["date_start"]
+        assert!(draft_from_model_json_on("x", bad, "2026-08-11")
+            .unwrap()
+            .draft["date_start"]
             .is_null());
     }
 

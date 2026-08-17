@@ -30,8 +30,8 @@
       "name": "axon",
       "kind": "pack",
       "code": {
-        "files": 16,
-        "nodes": 65
+        "files": 15,
+        "nodes": 60
       }
     },
     {
@@ -1102,6 +1102,11 @@
       "pin": "2026.5.3"
     },
     {
+      "name": "event-horizon",
+      "verdict": "quarry",
+      "pin": ""
+    },
+    {
       "name": "exo",
       "verdict": "inspiration",
       "pin": ""
@@ -1292,6 +1297,11 @@
       "pin": "1.168.0"
     },
     {
+      "name": "slm-finetuning-talk",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
       "name": "stevenblack-hosts",
       "verdict": "adopt",
       "pin": "master"
@@ -1392,6 +1402,7 @@
     "nodes": 9152,
     "external": 8,
     "stale": [
+      "Packs/axon/skills/axon/references/on-issues.md",
       "capabilities/comms/src/server.rs",
       "libs/ai-client/README.md",
       "libs/ai-client/src/lib.rs",

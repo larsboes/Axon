@@ -774,10 +774,7 @@ struct MaterializeBody {
 /// `trip:stage:<id>` or `trip:booking:<id>`, so running it twice updates in
 /// place. Nothing is deleted -- a stage that stops being booked leaves its entry
 /// behind, and removing it is the operator's call, not a sync's.
-async fn sync_trip_plan(
-    State(state): State<AppState>,
-    Path(plan_id): Path<String>,
-) -> ApiResponse {
+async fn sync_trip_plan(State(state): State<AppState>, Path(plan_id): Path<String>) -> ApiResponse {
     let database_url = state.database_url.clone();
     let config = state.config.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {

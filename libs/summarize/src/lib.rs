@@ -506,12 +506,7 @@ pub fn digest_prompt(input: &str, shape: Shape, directive: &Directive) -> String
 /// refused outright rather than quietly downgraded. That check lives here, at
 /// the one place that makes the request, because a policy enforced by each
 /// caller separately is a policy with as many holes as there are callers.
-pub fn digest(
-    target: Option<&Target>,
-    text: &str,
-    directive: &Directive,
-    reach: Reach,
-) -> Outcome {
+pub fn digest(target: Option<&Target>, text: &str, directive: &Directive, reach: Reach) -> Outcome {
     // Empty is not "short" — there is nothing for the operator to have seen
     // that the count missed, so the Detailed override does not apply. Asking a
     // model to summarize an empty string produces confident invention.
@@ -807,7 +802,12 @@ mod tests {
         // Past the floor check, an absent target is what stops it — proving the
         // skip is no longer what returned.
         assert_eq!(
-            digest(None, text, &Directive::new(Depth::Detailed, []), Reach::LoopbackOnly),
+            digest(
+                None,
+                text,
+                &Directive::new(Depth::Detailed, []),
+                Reach::LoopbackOnly
+            ),
             Outcome::Unconfigured
         );
     }
@@ -820,7 +820,12 @@ mod tests {
     fn nothing_at_all_is_skipped_even_when_the_operator_insists() {
         for empty in ["", "   ", "\n\t "] {
             assert_eq!(
-                digest(None, empty, &Directive::new(Depth::Detailed, []), Reach::LoopbackOnly),
+                digest(
+                    None,
+                    empty,
+                    &Directive::new(Depth::Detailed, []),
+                    Reach::LoopbackOnly
+                ),
                 Outcome::SkippedShort,
                 "{empty:?} should stay skipped"
             );

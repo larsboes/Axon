@@ -35,7 +35,6 @@ pub type Coverage = (String, String, i32);
 const STAT_COLUMNS: &str = "s.eva, st.station_name, s.train_type, s.hour, s.weekend, s.n, \
      s.canceled, s.mean_delay, s.p50, s.p90, s.share_late_6, s.cancel_rate, s.counts";
 
-
 /// The dataset writes EVA numbers zero-padded to eight digits (`08000044`); HAFAS, and
 /// therefore `capabilities/transit`, returns them unpadded (`8000044`). Joining the two
 /// without this returns zero rows and looks exactly like "we have no data for that

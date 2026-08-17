@@ -792,10 +792,16 @@ fn calendar_base_url() -> String {
 /// same contract as punctuality enrichment in transit.
 async fn flight_when(Query(params): Query<FlightWhenParams>) -> ApiResponse {
     let Some(from_day) = trips::windows::day_number(&params.date_from) else {
-        return response(StatusCode::BAD_REQUEST, json!({"error": "date_from is not ISO"}));
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "date_from is not ISO"}),
+        );
     };
     let Some(to_day) = trips::windows::day_number(&params.date_to) else {
-        return response(StatusCode::BAD_REQUEST, json!({"error": "date_to is not ISO"}));
+        return response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "date_to is not ISO"}),
+        );
     };
     if to_day < from_day || to_day - from_day > 42 {
         return response(

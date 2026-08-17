@@ -5,7 +5,7 @@
 # both end their headers with "Committing stays a human step." That was the right call
 # for a tool you run by hand, and it is exactly what failed. Measured 2026-08-17: four
 # mirrored USER files sat modified and ten KNOWLEDGE notes sat untracked since 2026-08-16,
-# because the mirror only ever lands when somebody commits axon-personal for some other
+# because the mirror only ever lands when somebody commits the overlay for some other
 # reason. A backup that never leaves the disk holding the original is not a backup.
 #
 # So this script is the deliberate exception to that sentence, and nothing else in the
@@ -25,8 +25,8 @@
 # that does not exist. A second, smaller install path is the honest cost.
 #
 # EGRESS: the push sends the principal's identity and memory mirror to GitHub unattended.
-# axon-personal is private, which bounds it, and --no-push exists for anyone who would
-# rather that stayed a human decision.
+# The overlay it lands in is private, which bounds it, and --no-push exists for anyone who
+# would rather that stayed a human decision.
 #
 # bash 3.2-safe.
 set -euo pipefail

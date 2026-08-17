@@ -60,9 +60,15 @@ rust_library(
 # Runs every hermetic #[cfg(test)] module. The modules that need the shared
 # Postgres are filtered here and selected by comms_postgres_test below, so the
 # two targets compile the same crate but make different service requirements
-# explicit. Two paths now: the store's own tests, and the cloud-digest enqueue
+# explicit. Three paths now: the store's own tests, the cloud-digest enqueue
 # refusal, which is only worth asserting against a store that would otherwise
-# have written the row.
+# have written the row, and the advisory gate's cross-session case.
+#
+# The lists below are the whole mechanism, so a database test that does not sit
+# under one of these paths runs HERE, in the hermetic target. That is not a
+# theoretical hole: local_gate's cross-session test sat directly in
+# `local_gate::tests` and turned this target red on every runner while staying
+# green on any machine with a container up and the overlay exported.
 rust_test(
     name = "comms_test",
     args = [
@@ -70,6 +76,8 @@ rust_test(
         "store::tests::",
         "--skip",
         "cloud_run::tests::postgres_tests::",
+        "--skip",
+        "local_gate::tests::postgres_tests::",
     ],
     crate = ":comms",
     data = glob(["eval/**"]),
@@ -81,6 +89,7 @@ rust_test(
     args = [
         "store::tests::",
         "cloud_run::tests::postgres_tests::",
+        "local_gate::tests::postgres_tests::",
     ],
     crate = ":comms",
     data = glob(["eval/**"]),

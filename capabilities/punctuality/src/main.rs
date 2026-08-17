@@ -184,13 +184,8 @@ fn ride_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let date = flag(args, "--date").ok_or("ride needs --date YYYY-MM-DD")?;
     let eva = flag(args, "--eva");
 
-    let answer = punctuality::ride::find(
-        &cfg.raw_dir,
-        &train_type,
-        &number,
-        &date,
-        eva.as_deref(),
-    )?;
+    let answer =
+        punctuality::ride::find(&cfg.raw_dir, &train_type, &number, &date, eva.as_deref())?;
     if answer.stops.is_empty() && answer.unavailable.is_none() {
         eprintln!(
             "punctuality: no stops for {train_type} {number} on {date}. Cached months: {}",

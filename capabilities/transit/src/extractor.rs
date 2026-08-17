@@ -721,7 +721,6 @@ mod tests {
         assert!(result.ok);
     }
 
-    #[test]
     /// An airline confirmation parses into flight legs. The fixture mirrors a
     /// real Eurowings Buchungsbestätigung's structure (verified 2026-08-12)
     /// with every personal value fabricated: the label words and layout are
