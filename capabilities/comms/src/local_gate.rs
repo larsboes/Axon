@@ -264,70 +264,87 @@ mod tests {
         assert_eq!(lock_key("foundation-models"), 0x41_58_4F_4E_54_17_33_81);
     }
 
-    /// The same connection the binaries use — see `store.rs`'s note on why a
-    /// second hardcoded default here is what once left these tests passing
-    /// against nothing.
-    fn test_database_url() -> String {
-        std::env::var("COMMS_TEST_DATABASE_URL")
-            .unwrap_or_else(|_| crate::config::Config::load().database_url)
-    }
-
-    /// C15 against real Postgres, not the key arithmetic: two loopback
-    /// backends must hold admission **at the same time**, and a second caller
-    /// on one of them must not. Advisory locks are database-wide rather than
-    /// schema-scoped, so this needs no test schema — but it does need the same
-    /// live database every other store test needs.
+    /// Everything above this line is arithmetic and drop semantics, and runs
+    /// anywhere. Everything below needs a live Postgres, so it lives in its own
+    /// module for one reason: `//capabilities/comms:comms_test` is the hermetic
+    /// target and selects by module path (`--skip store::tests::`, `--skip
+    /// cloud_run::tests::postgres_tests::`), while `:comms_postgres_test` runs
+    /// exactly those paths. A database test sitting directly in `local_gate::tests`
+    /// is therefore invisible to that split and runs in the hermetic target, where
+    /// it passes on any machine with the overlay exported and a container up, and
+    /// fails on every runner that has neither. It did: `comms_test` was red in CI
+    /// and green locally for exactly that reason.
     ///
-    /// The self-contention half is checked on a *third* backend name unique to
-    /// this test, so a concurrently running comms-server holding the real
-    /// `omlx` lock cannot turn this green or red by accident.
-    #[test]
-    fn afm_and_omlx_hold_admission_at_the_same_time() {
-        let url = test_database_url();
-        let afm = AdvisoryGate::new(&url, "foundation-models");
-        let omlx = AdvisoryGate::new(&url, "omlx-gate-test");
+    /// Named `postgres_tests` to match `cloud_run`'s module of the same name — the
+    /// selector is a string in two BUILD targets, so the convention IS the contract.
+    mod postgres_tests {
+        use super::*;
 
-        let held_afm = afm.acquire().unwrap_or_else(|error| {
-            panic!(
-                "could not take the AFM gate: {error} — needs capabilities/postgres running \
+        /// The same connection the binaries use — see `store.rs`'s note on why a
+        /// second hardcoded default here is what once left these tests passing
+        /// against nothing.
+        fn test_database_url() -> String {
+            std::env::var("COMMS_TEST_DATABASE_URL")
+                .unwrap_or_else(|_| crate::config::Config::load().database_url)
+        }
+
+        /// C15 against real Postgres, not the key arithmetic: two loopback
+        /// backends must hold admission **at the same time**, and a second caller
+        /// on one of them must not. Advisory locks are database-wide rather than
+        /// schema-scoped, so this needs no test schema — but it does need the same
+        /// live database every other store test needs.
+        ///
+        /// The self-contention half is checked on a *third* backend name unique to
+        /// this test, so a concurrently running comms-server holding the real
+        /// `omlx` lock cannot turn this green or red by accident.
+        #[test]
+        fn afm_and_omlx_hold_admission_at_the_same_time() {
+            let url = test_database_url();
+            let afm = AdvisoryGate::new(&url, "foundation-models");
+            let omlx = AdvisoryGate::new(&url, "omlx-gate-test");
+
+            let held_afm = afm.acquire().unwrap_or_else(|error| {
+                panic!(
+                    "could not take the AFM gate: {error} — needs capabilities/postgres running \
                  and AXON_PERSONAL_ROOT exported (or COMMS_TEST_DATABASE_URL set)"
-            )
-        });
-        let held_omlx = omlx
-            .acquire()
-            .expect("a second backend must not queue behind the first");
+                )
+            });
+            let held_omlx = omlx
+                .acquire()
+                .expect("a second backend must not queue behind the first");
 
-        // Same backend, different gate object: this is the cross-process case,
-        // and it must still be refused. `pg_try_advisory_lock` is per session,
-        // and each gate opens its own, so this is a genuine second holder.
-        let mut second_conn = Client::connect(&url, NoTls).expect("a second session");
-        let got_again: bool = second_conn
-            .query_one(
-                "SELECT pg_try_advisory_lock($1)",
+            // Same backend, different gate object: this is the cross-process case,
+            // and it must still be refused. `pg_try_advisory_lock` is per session,
+            // and each gate opens its own, so this is a genuine second holder.
+            let mut second_conn = Client::connect(&url, NoTls).expect("a second session");
+            let got_again: bool = second_conn
+                .query_one(
+                    "SELECT pg_try_advisory_lock($1)",
+                    &[&lock_key("omlx-gate-test")],
+                )
+                .expect("try_advisory_lock answers")
+                .get(0);
+            assert!(
+                !got_again,
+                "one backend must still admit only one request at a time"
+            );
+
+            drop(held_afm);
+            drop(held_omlx);
+
+            // And it is released, not leaked: the next caller gets straight in.
+            let after: bool = second_conn
+                .query_one(
+                    "SELECT pg_try_advisory_lock($1)",
+                    &[&lock_key("omlx-gate-test")],
+                )
+                .expect("try_advisory_lock answers")
+                .get(0);
+            assert!(after, "the lock survived the request that held it");
+            let _ = second_conn.execute(
+                "SELECT pg_advisory_unlock($1)",
                 &[&lock_key("omlx-gate-test")],
-            )
-            .expect("try_advisory_lock answers")
-            .get(0);
-        assert!(
-            !got_again,
-            "one backend must still admit only one request at a time"
-        );
-
-        drop(held_afm);
-        drop(held_omlx);
-
-        // And it is released, not leaked: the next caller gets straight in.
-        let after: bool = second_conn
-            .query_one(
-                "SELECT pg_try_advisory_lock($1)",
-                &[&lock_key("omlx-gate-test")],
-            )
-            .expect("try_advisory_lock answers")
-            .get(0);
-        assert!(after, "the lock survived the request that held it");
-        let _ = second_conn.execute(
-            "SELECT pg_advisory_unlock($1)",
-            &[&lock_key("omlx-gate-test")],
-        );
+            );
+        }
     }
 }

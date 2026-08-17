@@ -78,7 +78,9 @@ fn draft(sentence: &str) -> Result<(), String> {
     if !response.status().is_success() {
         return Err(format!("{url} answered {}", response.status()));
     }
-    let body: serde_json::Value = response.json().map_err(|e| format!("unreadable reply: {e}"))?;
+    let body: serde_json::Value = response
+        .json()
+        .map_err(|e| format!("unreadable reply: {e}"))?;
     let content = body["choices"][0]["message"]["content"]
         .as_str()
         .ok_or("the reply carried no message content")?;

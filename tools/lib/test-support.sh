@@ -1,13 +1,19 @@
 # tools/lib/test-support.sh — shared helpers for Axon's shell tests.
 #
-# Exists for one rule so far, and that rule earned its own file: a test may skip a
-# platform-dependent assertion on a developer machine, and may never skip it in CI.
+# Two rules so far, and both earned a place here for the same reason: each is an assumption a
+# test makes that nobody can see failing.
 #
-# The case that prompted it: tools/backup.test.sh forces its short-write path with /dev/full,
-# which Linux has and macOS does not. On macOS the test printed a note and passed, and the note
-# claimed "it runs in CI" — an assumption nobody could see failing, because Bazel runs passing
-# tests with --test_output=errors and prints nothing at all. A platform-dependent assertion is
-# not unusual, so the guard belongs to the convention rather than to that one test.
+# The first: a test may skip a platform-dependent assertion on a developer machine, and may
+# never skip it in CI. The case that prompted it: tools/backup.test.sh forces its short-write
+# path with /dev/full, which Linux has and macOS does not. On macOS the test printed a note and
+# passed, and the note claimed "it runs in CI" — an assumption nobody could see failing, because
+# Bazel runs passing tests with --test_output=errors and prints nothing at all. A
+# platform-dependent assertion is not unusual, so the guard belongs to the convention rather
+# than to that one test.
+#
+# The second: a test that builds a scratch Axon root must not inherit the AXON_* environment.
+# Same shape, opposite direction — green in CI, red only on the machine of whoever exported the
+# variables. See isolate_axon_env below.
 #
 # bash 3.2-safe (README.md#portable-shell).
 
@@ -36,4 +42,31 @@ skippable() {
   fi
   echo "NOTE: reduced coverage on this host — $reason"
   return 0
+}
+
+# isolate_axon_env — drop the AXON_* environment before a test builds its scratch root.
+#
+# tools/lib/paths.sh answers "which overlay am I" from an exported AXON_OVERLAY_ROOT first, and
+# only then from axon.local.toml / axon.toml. That precedence is deliberate: it is the
+# per-invocation override tools/demo-up uses to run the published demo against demo/overlay
+# while the operator's real overlay stays put.
+#
+# A test inherits it. An operator whose shell exports the set — which the overlay's own
+# config/shell does — hands every scratch-root test the REAL overlay and the REAL
+# config/machine.toml, so a sandbox that writes `os = "linux"` into its own machine.toml is
+# read back as this machine's `os = "macos"`, and every env-block assertion reads the operator's
+# declarations instead of the fixture's. The test does not error; it quietly measures the wrong
+# machine.
+#
+# CI exports none of it, so the suite is green there and red only for whoever set the variables
+# locally — the same invisible assumption skippable() exists for, which is why this lives beside
+# it rather than in four test files. Measured when it was found: persistence, manifest-resolution,
+# machine-resolution and state-mount-resolution all failed on the author's machine and all passed
+# with the environment cleared.
+#
+# Call once, before resolving any scratch path. A test that wants its sandbox named explicitly
+# still exports AXON_OVERLAY_ROOT itself AFTER this (tools/check-site-payload.test.sh does).
+isolate_axon_env() {
+  unset AXON_ROOT AXON_OVERLAY_ROOT AXON_PERSONAL_ROOT AXON_MACHINE_TOML \
+        AXON_MACHINES_DIR AXON_CAPS_DIR AXON_OVERLAY_CAPS_DIR
 }

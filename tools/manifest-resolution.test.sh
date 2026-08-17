@@ -30,6 +30,13 @@ if [ -z "$LIB_DIR" ]; then
   echo "manifest resolution: cannot find paths.sh next to $_dir" >&2
   exit 1
 fi
+
+# An operator's exported AXON_OVERLAY_ROOT outranks the scratch root's own axon.toml inside
+# paths.sh, which would make this test resolve the real overlay it is supposed to be replacing
+# (tools/lib/test-support.sh#isolate_axon_env).
+source "$LIB_DIR/test-support.sh"
+isolate_axon_env
+
 mkdir -p "$ROOT/tools/lib"
 cp "$LIB_DIR/paths.sh" "$LIB_DIR/toml.sh" "$ROOT/tools/lib/"
 

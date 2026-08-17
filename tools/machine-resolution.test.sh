@@ -26,6 +26,13 @@ if [ -z "$LIB_DIR" ]; then
   echo "machine resolution: cannot find paths.sh next to $_dir" >&2
   exit 1
 fi
+
+# This test's whole subject is which machine.toml paths.sh picks. An operator's exported
+# AXON_MACHINE_TOML/AXON_OVERLAY_ROOT answers that question before the scratch root gets to,
+# so the assertions measured the real machine (tools/lib/test-support.sh#isolate_axon_env).
+source "$LIB_DIR/test-support.sh"
+isolate_axon_env
+
 mkdir -p "$ROOT/tools/lib" "$OVERLAY/config/machines"
 cp "$LIB_DIR/paths.sh" "$LIB_DIR/toml.sh" "$ROOT/tools/lib/"
 printf 'overlay = "%s"\n' "$OVERLAY" > "$ROOT/axon.toml"

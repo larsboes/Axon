@@ -30,6 +30,14 @@ for _c in "$_dir" "$_dir/tools"; do
 done
 [ -n "$SRC_TOOLS" ] || { echo "persistence: cannot find service-runner.sh next to $_dir" >&2; exit 1; }
 
+# Before the scratch root exists, and for the same reason the launchctl stubs above exist: an
+# operator's exported AXON_OVERLAY_ROOT outranks this sandbox's own axon.toml inside paths.sh, so
+# every `os = "linux"` case here read the author's real macOS machine.toml and every env-block
+# assertion read the author's real declarations. 14 checks failed locally and none in CI, which is
+# exactly the shape a test cannot warn you about (tools/lib/test-support.sh#isolate_axon_env).
+source "$SRC_TOOLS/lib/test-support.sh"
+isolate_axon_env
+
 SCRATCH="$(mktemp -d "${TEST_TMPDIR:-/tmp}/persistence.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 ROOT="$SCRATCH/axon"

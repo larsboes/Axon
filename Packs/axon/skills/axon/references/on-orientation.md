@@ -4,14 +4,13 @@ Run this sequence before planning, reviewing, or editing:
 
 1. Run `git status --short --branch`. Preserve unrelated changes and identify the active branch.
 2. Run `tools/doctor`. Treat its findings independently and keep unrelated failures outside the
-   issue scope.
+   change scope.
 3. Run `scripts/axon-context on [unit-or-path]`.
 4. Read only the paths it returns plus the reference selected in `SKILL.md`.
-5. Query current GitHub issue or PR metadata when the task is issue-driven.
 
 Use `tools/self explain <unit>` for ownership and local coupling, and `tools/self coupling` for a
 relationship question. Use `rg` and tracked source for exact implementation evidence. Use
 Graphify only for symbol-level traversal when a current graph is available.
 
-State the intended file and issue scope before editing. Do not absorb nearby cleanup merely
+State the intended file and change scope before editing. Do not absorb nearby cleanup merely
 because doctor, status, or a search exposed it.

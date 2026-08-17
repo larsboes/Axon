@@ -30,7 +30,15 @@ use serde_json::{json, Value};
 
 /// One endpoint, described for whoever is trying to use it rather than for
 /// whoever wrote it.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+///
+/// No `PartialEq`: `request_schema` is a function pointer, and a derived
+/// comparison would compare its address — which Rust does not guarantee to be
+/// unique per function, so two routes carrying the same schema could compare
+/// unequal and two carrying different ones could compare equal. Nothing ever
+/// asked whether two `Route`s were equal (`undeclared_routes` compares `path`,
+/// a `&'static str`), so the derive bought nothing and rustc's
+/// `unpredictable_function_pointer_comparisons` lint is right to refuse it.
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct Route {
     pub method: &'static str,
     pub path: &'static str,

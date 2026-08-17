@@ -132,11 +132,9 @@ impl StopStats {
     fn with_threshold(mut self, row: &StatRow, minutes: Option<i32>) -> Self {
         let Some(minutes) = minutes else { return self };
         self.at_least_minutes = Some(minutes);
-        self.share_delay_at_least = Some(
-            row.counts.as_ref().and_then(|counts| {
-                punctuality::stats::Cell::share_at_least_from_counts(counts, minutes)
-            }),
-        );
+        self.share_delay_at_least = Some(row.counts.as_ref().and_then(|counts| {
+            punctuality::stats::Cell::share_at_least_from_counts(counts, minutes)
+        }));
         self
     }
 }
@@ -171,12 +169,10 @@ fn fail(e: impl std::fmt::Display) -> (axum::http::StatusCode, String) {
 
 async fn handle_health(State(state): State<AppState>) -> ApiResult {
     let store = state.store;
-    let covered = tokio::task::spawn_blocking(move || {
-        store.coverage().map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(fail)?
-    .map_err(fail)?;
+    let covered = tokio::task::spawn_blocking(move || store.coverage().map_err(|e| e.to_string()))
+        .await
+        .map_err(fail)?
+        .map_err(fail)?;
 
     Ok(Json(json!({
         "ok": covered.is_some(),

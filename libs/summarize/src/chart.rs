@@ -507,6 +507,9 @@ mod tests {
             loopback: false,
             gate: None,
         };
-        assert_eq!(chart(Some(&cloud), SOURCE, Reach::LoopbackOnly), Outcome::RemoteRefused);
+        assert_eq!(
+            chart(Some(&cloud), SOURCE, Reach::LoopbackOnly),
+            Outcome::RemoteRefused
+        );
     }
 }

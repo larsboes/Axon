@@ -156,7 +156,10 @@ const AIRPORT_ZONE_EXCEPTIONS: &[(&str, Tz)] = &[
 /// including every airport in a multi-zone country -- returns `None`, never a
 /// guess.
 pub fn zone_for_airport(iata: &str, country: &str) -> Option<Tz> {
-    if let Some((_, tz)) = AIRPORT_ZONE_EXCEPTIONS.iter().find(|(code, _)| *code == iata) {
+    if let Some((_, tz)) = AIRPORT_ZONE_EXCEPTIONS
+        .iter()
+        .find(|(code, _)| *code == iata)
+    {
         return Some(*tz);
     }
     COUNTRY_ZONES
@@ -181,9 +184,11 @@ pub fn rfc3339_utc_airport(time: &str, iata: &str, country: &str) -> Option<Stri
         NaiveDateTime::parse_from_str(time, "%Y-%m-%dT%H:%M:%S").ok()?
     };
     match zone.from_local_datetime(&naive) {
-        LocalResult::Single(t) | LocalResult::Ambiguous(t, _) => {
-            Some(t.with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string())
-        }
+        LocalResult::Single(t) | LocalResult::Ambiguous(t, _) => Some(
+            t.with_timezone(&Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string(),
+        ),
         LocalResult::None => None,
     }
 }
@@ -274,7 +279,10 @@ mod tests {
         assert_eq!(zone_for_station("2000001"), None); // RU: spans zones, excluded
         assert_eq!(zone_for_station("999"), None); // not a 7-digit EVA id
         assert_eq!(zone_for_station("A=1@O=x"), None); // composite lid, not an id
-        assert_eq!(utc_from_station_local("2026-08-13T09:43:00", "2000001"), None);
+        assert_eq!(
+            utc_from_station_local("2026-08-13T09:43:00", "2000001"),
+            None
+        );
     }
 
     /// The flight-side twin of the London rail case, captured live 2026-08-12:
@@ -298,7 +306,10 @@ mod tests {
     #[test]
     fn dst_boundaries_resolve_by_rule_not_by_fixed_offset() {
         // 2026-03-29 02:30 does not exist in Berlin (spring-forward gap).
-        assert_eq!(utc_from_station_local("2026-03-29T02:30:00", "8000207"), None);
+        assert_eq!(
+            utc_from_station_local("2026-03-29T02:30:00", "8000207"),
+            None
+        );
         // 2026-10-25 02:30 exists twice; the earlier instant (CEST, 00:30Z) wins.
         let folded = utc_from_station_local("2026-10-25T02:30:00", "8000207").unwrap();
         assert_eq!(folded.format("%H:%M").to_string(), "00:30");

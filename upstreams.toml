@@ -595,3 +595,19 @@ verdict = "adopt"
 license = "Apache-2.0"
 pin = "b4577f49e18adb53ed9e557192094f69f3dc2c1c"
 why = "adopted multilingual cross-encoder for Comms' second relevance stage after clearing the unchanged public DE/EN gate at 6/6 useful top-1, 0.912 pairwise accuracy and 0.993 mean nDCG. The exact tree was inspected before execution: XLMRobertaForSequenceClassification config, tokenizer data, one 1,135,556,833-byte safetensors shard and its index, with no loader.py or other executable model code; the downloaded shard matched its published SHA-256. It is a BF16 MLX conversion of Apache-2.0 BAAI/bge-reranker-v2-m3. The first six-query run, including cold load, took about 2.6 seconds and left the disposable oMLX process at about 1.68 GiB RSS on this host."
+
+# --- own quarries: repos mined for ideas, not consumed as code ---------------
+
+[event-horizon]
+url = "https://github.com/larsboes/Event-Horizon"
+verdict = "quarry"
+license = "own work, no LICENSE file at repo root; repository and working tree both deleted 2026-08-17, url no longer resolves"
+pin = ""
+why = "the transit agent [plan-bahn]'s entry already names as the ancestor of today's typed Transit capability. Quarried 2026-08-16 at e75b78d (55 commits, last touched 2026-03-14): one idea survived the read, the journey-level reliability composition in infrastructure/transit/reliability.py, now issue 179. Everything else was judged and left -- a LangGraph workflow engine, a Redis LangGraph checkpointer, an MCP-exporting Python tool registry and a prompt-template registry, all bound to a runtime Axon does not run and thinner than the skills and Workflow tool LifeOS already provides. Its own docs/tech-decisions.md rejected an MCP server for a Rust CLI plus one agent skill, which is the shape Axon reached independently. Nothing was copied. Retired 2026-08-17: a second independent read reproduced this same verdict before finding this entry, which is the argument for the register existing at all. The GitHub repository was deleted and the 3.6 GB working tree removed, so this row is now the whole surviving record -- there is nothing left to re-quarry, and the transit reliability idea lives on only in issue 179."
+
+[slm-finetuning-talk]
+url = "https://github.com/Buchhold/slm_finetuning_talk"
+verdict = "inspiration"
+license = "none declared (all rights reserved by default) -- no LICENSE file; ideas only, no code or text taken"
+pin = ""
+why = "Björn Buchhold's reference implementation for the M3 2026 Karlsruhe talk on SLM fine-tuning for agentic AI, read 2026-08-16 at 50d1f70 and then deleted locally. Two things it argues that capabilities/learning needs. First, its result: a fine-tuned 4B Qwen3 matched a frontier model on text-to-SQL, with SFT, schema-agnostic SFT and GRPO/RLVR compared side by side -- external evidence for the oMLX bet in that capability's ISA, from someone else's experiment rather than our own hope. Second, its evaluation shape: correctness is scored by EXECUTING the generated SQL, not by comparing strings, which is the same move punctuality makes by being the number a model has to beat. capabilities/learning currently specifies freeze-on-compile and no way at all to say whether a compiled guide is any good; execution-scored evaluation is the missing rung. Not adopted: the training code is AWS-specific, undeclared-licence and explicitly not a library."

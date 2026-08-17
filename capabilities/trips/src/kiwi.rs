@@ -250,14 +250,19 @@ fn parse_search_response(sse_body: &str) -> Result<FlightSearchResult, KiwiError
             let text = result
                 .pointer("/content/0/text")
                 .and_then(|t| t.as_str())
-                .ok_or_else(|| KiwiError::Parse("neither structuredContent nor content text".into()))?;
+                .ok_or_else(|| {
+                    KiwiError::Parse("neither structuredContent nor content text".into())
+                })?;
             serde_json::from_str(text)
                 .map_err(|e| KiwiError::Parse(format!("content text is not JSON: {e}")))?
         }
     };
     Ok(FlightSearchResult {
         currency: str_of(&payload, "currency"),
-        results_count: payload.get("resultsCount").and_then(|v| v.as_u64()).unwrap_or(0),
+        results_count: payload
+            .get("resultsCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         options: payload
             .get("itineraries")
             .and_then(|i| i.as_array())
@@ -301,13 +306,21 @@ fn parse_leg(v: &Value) -> FlightLeg {
         route: v
             .get("route")
             .and_then(|r| r.as_array())
-            .map(|arr| arr.iter().filter_map(|x| x.as_str()).map(String::from).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str())
+                    .map(String::from)
+                    .collect()
+            })
             .unwrap_or_default(),
         departure_time: str_of(v, "departureTime"),
         arrival_time: str_of(v, "arrivalTime"),
         departure_utc,
         arrival_utc,
-        duration_seconds: v.get("durationSeconds").and_then(|d| d.as_u64()).unwrap_or(0),
+        duration_seconds: v
+            .get("durationSeconds")
+            .and_then(|d| d.as_u64())
+            .unwrap_or(0),
         stops: v.get("stops").and_then(|s| s.as_u64()).unwrap_or(0),
         cabin_class: str_of(v, "cabinClass"),
         segments,
@@ -335,7 +348,10 @@ fn parse_segment(v: &Value) -> FlightSegment {
         arrival_time,
         departure_utc,
         arrival_utc,
-        duration_seconds: v.get("durationSeconds").and_then(|d| d.as_u64()).unwrap_or(0),
+        duration_seconds: v
+            .get("durationSeconds")
+            .and_then(|d| d.as_u64())
+            .unwrap_or(0),
         carrier: str_of(v, "carrier"),
         carrier_name: str_of(v, "carrierName"),
         flight_number: str_of(v, "flightNumber"),
@@ -359,7 +375,10 @@ fn empty_leg() -> FlightLeg {
 }
 
 fn str_of(v: &Value, key: &str) -> String {
-    v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -466,15 +485,18 @@ mod tests {
         day_two["price"] = json!(65.0);
         day_two["outbound"]["departureTime"] = json!("2026-08-21T08:15:00");
         // The cheap day-two option rides a hidden self-transfer; the grid says so.
-        day_two["outbound"]["segments"].as_array_mut().unwrap().push(json!({
-            "from": "LGW", "to": "BCN",
-            "fromCountry": "United Kingdom", "toCountry": "Spain",
-            "departureTime": "2026-08-21T14:00:00",
-            "arrivalTime": "2026-08-21T17:10:00",
-            "durationSeconds": 7800,
-            "carrier": "VY", "carrierName": "Vueling",
-            "flightNumber": "VY7821", "cabinClass": "Economy"
-        }));
+        day_two["outbound"]["segments"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "from": "LGW", "to": "BCN",
+                "fromCountry": "United Kingdom", "toCountry": "Spain",
+                "departureTime": "2026-08-21T14:00:00",
+                "arrivalTime": "2026-08-21T17:10:00",
+                "durationSeconds": 7800,
+                "carrier": "VY", "carrierName": "Vueling",
+                "flightNumber": "VY7821", "cabinClass": "Economy"
+            }));
 
         let envelope = json!({
             "jsonrpc": "2.0", "id": 3,

@@ -165,7 +165,11 @@ mod tests {
             DateGrounding::Supported
         );
         assert_eq!(
-            date_grounding("The gala is on August 10 this year.", "on August 10", "2026-08-10"),
+            date_grounding(
+                "The gala is on August 10 this year.",
+                "on August 10",
+                "2026-08-10"
+            ),
             DateGrounding::Supported
         );
     }
@@ -190,7 +194,11 @@ mod tests {
     #[test]
     fn containment_survives_whitespace_and_case_but_not_paraphrase() {
         assert_eq!(
-            date_grounding(DOCUMENT, "das GROSSE Feuerwerk findet am 10. August 2026", "2026-08-10"),
+            date_grounding(
+                DOCUMENT,
+                "das GROSSE Feuerwerk findet am 10. August 2026",
+                "2026-08-10"
+            ),
             DateGrounding::QuoteMissing, // "GROSSE" != "große": paraphrase is not a quote
         );
         assert_eq!(

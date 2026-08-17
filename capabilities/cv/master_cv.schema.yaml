@@ -13,6 +13,13 @@
 #     is a starting point carried over from the old LaTeX targets — add/drop freely, it's
 #     just data read at build time, nothing else references this list.
 
+# Optional. Restricts which languages a profile builds for; any profile not listed here builds
+# in every language. Only `cv build --all` consults it — an explicit
+# `cv build --profile x --lang de` still builds what you asked for. Added 2026-08-16, when the
+# full matrix was producing variants that existed only because it multiplied them out.
+profile_langs:
+  # hackathon: [en]
+
 name: "Firstname Lastname"
 
 contact:
@@ -51,6 +58,13 @@ skills:
   - category: {en: "Languages & Frameworks", de: "Sprachen & Frameworks"}
     # profiles: [swe]            # omit to include this category in every build
     items: ["Item A", "Item B"]
+  # `items` may instead be a {en: [...], de: [...]} map, for the rare category where every item
+  # differs by language. Tool and product names don't translate, so a plain list is the norm;
+  # spoken languages are the exception that needs this.
+  - category: {en: "Spoken Languages", de: "Sprachkenntnisse"}
+    items:
+      en: ["First language (native)", "Second language (B2)"]
+      de: ["Erstsprache (Muttersprache)", "Zweitsprache (B2)"]
 
 # Anything the four sections above cannot express. Optional — omit the key entirely and
 # nothing renders. Added 2026-08-05, when a CV master turned out to carry Hackathons &
@@ -66,10 +80,14 @@ sections:
     # profiles: [swe, hackathon]     # omit to include in every build
     intro: {en: "Optional lead-in sentence.", de: "..."}
     entries:                          # label/meta/detail rows — an event, a talk, an award
-      - label: "Event or award name"
-        meta: "Mon. YYYY · City"      # optional right-aligned line
+      - label: "Event or award name"  # or {en, de} where the name itself differs
+        meta: "Mon. YYYY · City"      # optional right-aligned line; also accepts {en, de},
+                                      # which is what "since Jun 2025" / "seit Juni 2025" needs
         detail: {en: "What it was and what came of it.", de: "..."}
         # profiles: [hackathon]
+    # Height note: an entry costs two lines (label/meta row, then detail). A bullet costs one.
+    # Four entries added to a one-page CV pushed it to two; the same four as bullets, with the
+    # date folded into the text, fit. Reach for `entries` when the meta column earns its line.
   - title: {en: "Soft Skills", de: "Soziale Kompetenzen"}
     bullets:
       # `label` renders bold, `text` follows it. Keep markup OUT of both: these are

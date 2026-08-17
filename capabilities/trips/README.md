@@ -152,7 +152,7 @@ mature tool when that tool already owns the immediate job:
 | [TripIt](https://www.tripit.com/web/free) | Turning forwarded booking confirmations into one itinerary | The strongest reference for automatic intake. It remains a cloud handoff because using it sends travel and booking data to an external service |
 | [Besser Bahn](https://github.com/chuk-development/Besser-Bahn) | Android-first live rail assistance, connection predictions, disruption alerts and split-ticket booking links | Better during a running rail journey; Axon keeps the result in the broader trip plan |
 | [BetterBahn](https://betterbahn.de) | A focused, inspectable split-ticket workflow | Product and algorithm inspiration. Upstream currently provides local/self-hosted use, not an official hosted calculator |
-| [Plan Bahn](https://github.com/troyriverabusiness/msg-code-create) | The earlier Vue, FastAPI and LangGraph take on agent-assisted rail planning | Historical implementation lineage only. Its repository was unavailable during the 2026-07-29 re-check, so the dashboard does not present it as a working handoff |
+| Plan Bahn (`troyriverabusiness/msg-code-create`, gone) | The earlier Vue, FastAPI and LangGraph take on agent-assisted rail planning | Lineage only, and no longer reachable in any form. Upstream was already unavailable at the 2026-07-29 re-check; the one vendored copy, which lived inside the Event Horizon repository, went with that repository on 2026-08-17. Named without a link because the URL resolves to nothing, and the dashboard does not present it as a handoff |
 
 The dashboard renders the useful subset as contextual disclosures: planning shows TREK and
 TripIt; connection search shows Besser Bahn and BetterBahn. MapLibre, OpenFreeMap and

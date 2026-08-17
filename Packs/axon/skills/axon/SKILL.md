@@ -1,6 +1,6 @@
 ---
 name: axon
-description: Operates Axon and guides work on the Axon repository through dynamic discovery, bounded self-context, capability APIs, architecture placement, issue-driven branches, and proportionate verification. Use when operating Axon services or feeds, diagnosing Axon, planning or coding inside the Axon repository, deciding where Axon code belongs, or handling Axon GitHub issues and PRs. Do not use for unrelated repositories, direct Home Assistant or device control, or generic prose and skill authoring with no Axon decision.
+description: Operates Axon and guides work on the Axon repository through dynamic discovery, bounded self-context, capability APIs, architecture placement, focused branches, and proportionate verification. Use when operating Axon services or feeds, diagnosing Axon, planning or coding inside the Axon repository, deciding where Axon code belongs, or handling Axon branches and PRs. Do not use for unrelated repositories, direct Home Assistant or device control, or generic prose and skill authoring with no Axon decision.
 ---
 
 # Axon
@@ -48,7 +48,7 @@ Use this mode to understand, review, plan, or change the repository.
 | Dependencies, language, shell, or Bazel | `references/on-dependencies-and-build.md` |
 | README, generated docs, manifests, Packs, or skills | `references/on-documentation.md` |
 | Tests, gates, review, or completion claims | `references/on-verification.md` |
-| GitHub issue, branch, commit, or PR | `references/on-issues.md` |
+| Branch, commit, or PR | `references/on-changes.md` |
 
 For symbol-level traversal, use Graphify only when a current graph and Graphify integration
 are present. Treat it as a drill-down after bounded orientation, never as the bootstrap.
