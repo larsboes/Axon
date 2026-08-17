@@ -1,18 +1,27 @@
 #!/usr/bin/env bun
 /**
- * obsidian-deploy — materialize the declared Obsidian plugin set in the vault.
+ * obsidian-deploy — materialize the plugins Obsidian's own UI cannot install.
  *
- * The overlay's config/obsidian-plugins.toml is the whole contract. Every plugin is
- * either `upstream` (pinned by repo + version, fetched from that GitHub release) or
- * `overlay` (artifacts tracked in the overlay, because no upstream release matches —
- * own code, or a build newer than anything tagged). Deploy copies manifest.json +
+ * Scope, narrowed 2026-08-18: this tool owns ONLY plugins with no installable upstream —
+ * own code, forks, and builds newer than any tag. Everything on the community registry
+ * is installed and updated through Obsidian's UI, which gives update notifications,
+ * changelogs and mobile installs that a pinned TOML never will. The vault repo already
+ * tracks each plugin's main.js under .obsidian, so the plugin set is reproducible from a vault
+ * clone with or without this tool; declaring public plugins here only created a second
+ * source of truth for a fact the vault already carried.
+ *
+ * The overlay's config/obsidian-plugins.toml declares that narrow set. Each plugin is
+ * `overlay` (artifacts tracked in the overlay) or `upstream` (pinned by repo + version,
+ * fetched from that GitHub release). The upstream path is kept for the case it was built
+ * for and still serves: a plugin currently running a build newer than its newest tag,
+ * which flips back to a pin the moment upstream catches up. Deploy copies manifest.json +
  * main.js (+ styles.css) into the vault's .obsidian/plugins/ as real files, so plugins
  * reach mobile through the vault's own git repo. Per-vault settings (data.json) are
  * preserved — rescued from a symlink's target before the link goes, never overwritten
  * after.
  *
- * Fetching is what lets an overlay stop vendoring public plugin code: the pin, not a
- * checked-in copy, is what makes the set reproducible.
+ * Pruning is deliberately confined to ids this file declares. A plugin the tool never
+ * declared is a UI install, and deleting it is not this tool's business.
  *
  * Zero hardcoded paths (README.md#one-manifest-per-concern): overlay from
  * axon.local.toml/axon.toml, vault from this machine's machine.toml [[state_mount]]
@@ -63,7 +72,6 @@ const sourceDir = expand(cfg.source_dir);
 const declared = cfg.plugin ?? [];
 if (declared.length === 0) throw new Error(`${cfgPath}: no [[plugin]] entries`);
 const active = declared.filter((p) => p.active !== false);
-const activeIds = active.map((p) => p.id);
 
 const pluginsDir = join(vault, ".obsidian", "plugins");
 // styles.css is optional: plenty of plugins ship none, and a 404 for it is not a failure.
@@ -178,24 +186,25 @@ for (const plugin of active) {
   console.log(`✓ ${plugin.id}${manifest.isDesktopOnly ? " (desktop-only)" : ""}${rescuedData ? " [settings rescued]" : ""}`);
 }
 
-// Prune: anything in the vault plugins dir not in the active set.
+// Prune only what this file declares and then deactivates. Everything else in the
+// plugins dir is a UI install the tool does not own; the old sweep of "anything not in
+// the active set" silently deleted those on the next run.
+const inactiveIds = declared.filter((p) => p.active === false).map((p) => p.id);
 const pruned: string[] = [];
-if (existsSync(pluginsDir)) {
-  for (const entry of readdirSync(pluginsDir)) {
-    if (!activeIds.includes(entry)) {
-      pruned.push(entry);
-      if (!DRY) rmSync(join(pluginsDir, entry), { recursive: true });
-    }
-  }
+for (const id of inactiveIds) {
+  if (!existsSync(join(pluginsDir, id))) continue;
+  pruned.push(id);
+  if (!DRY) rmSync(join(pluginsDir, id), { recursive: true });
 }
 
-// Enable-state check: community-plugins.json is owned by Obsidian's UI, but an
-// enabled id with no deployed dir produces "Failed to load" on every startup.
+// Enable-state check: community-plugins.json is owned by Obsidian's UI, but an enabled
+// id with no directory at all produces "Failed to load" on every startup. Only a missing
+// directory is the fault — an enabled id this file never declared is the normal case now.
 const cpPath = join(vault, ".obsidian", "community-plugins.json");
 if (existsSync(cpPath)) {
   const enabled: string[] = JSON.parse(await Bun.file(cpPath).text());
-  const orphans = enabled.filter((id) => !activeIds.includes(id));
-  if (orphans.length) console.warn(`⚠ enabled but not deployed (will fail to load): ${orphans.join(", ")}`);
+  const orphans = enabled.filter((id) => !existsSync(join(pluginsDir, id)));
+  if (orphans.length) console.warn(`⚠ enabled but no plugin directory (will fail to load): ${orphans.join(", ")}`);
 }
 
 console.log(
