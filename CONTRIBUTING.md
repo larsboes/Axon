@@ -6,19 +6,20 @@ operator-specific policy.
 
 ## Before writing code
 
-Search the issue tracker first. Open a focused issue when the change affects architecture, data
-ownership, a capability contract, an upstream dependency, or more than one package. Name the
-consumer and the outcome. An interesting technology without a concrete Axon consumer remains an
-idea, not an implementation commitment.
+Name the consumer and the outcome. An interesting technology without a concrete Axon consumer
+remains an idea, not an implementation commitment.
+
+No tracker entry is required to start. File an issue only when something must outlive the change
+itself: a defect being left unfixed, or a decision that needs a record.
 
 Before external code or adopted design influence enters the tree, record its canonical source and
 exact pin in `upstreams.toml`. Record the license and verdict there too, then state precisely what
 Axon adopts.
 
-## Work on one issue
+## Work on one change
 
-Start from current `main` and create `issue-<number>-<short-slug>`. Keep the diff inside that
-issue's acceptance boundary. Put reusable code and doctrine in Axon; use synthetic fixtures for
+Start from current `main` and create a branch named for the change: `<area>-<short-slug>`. Keep
+the diff inside one coherent boundary. Put reusable code and doctrine in Axon; use synthetic fixtures for
 data-shaped tests. Never copy an active overlay or secret value into public work. Workstation paths
 and private logs must also stay out of commits and GitHub text, including screenshots and test
 failures.
@@ -87,9 +88,10 @@ coverage was lost, and inside CI it fails.
 
 ## Open the pull request
 
-Open a draft pull request first. State the outcome and linked issue, then bound the exact scope.
-List every completed validation command with its result and name the known limits. Keep separable
-follow-ups as issues rather than widening the pull request. A merge should close one coherent issue
-and remain easy to review or revert.
+Open a draft pull request first. State the outcome, then bound the exact scope. List every
+completed validation command with its result and name the known limits. Keep separable follow-ups
+out of the pull request rather than widening it. A merge should land one coherent change and
+remain easy to review or revert.
 
-Security findings follow [SECURITY.md](SECURITY.md), not the public issue workflow.
+Security findings follow [SECURITY.md](SECURITY.md); never report one in a public issue or pull
+request.
