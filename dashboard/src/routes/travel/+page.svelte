@@ -3,7 +3,11 @@
   import { page } from "$app/state";
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
+  import Overlay from "$lib/Overlay.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
+  import Rail from "$lib/rail/Rail.svelte";
+  import RailGroup from "$lib/rail/RailGroup.svelte";
+  import RailSection from "$lib/rail/RailSection.svelte";
   import RelatedTools from "$lib/RelatedTools.svelte";
   import JourneyOption from "$lib/travel/JourneyOption.svelte";
   import PlanEditor from "$lib/travel/PlanEditor.svelte";
@@ -112,7 +116,10 @@
   let travelCandidateNotice = $state<string | null>(null);
   let travelCandidateSaving = $state<string | null>(null);
   let savedTravelCandidates = $state<Set<string>>(new Set());
-  let plannerElement: HTMLElement | undefined = $state();
+  // The planner is a dialog now, not a slab further down the page: a trip is
+  // created rarely, the board is what you come here to read.
+  let plannerOpen = $state(false);
+  let plannerNotice = $state<string | null>(null);
   let openedPlanFromLink = "";
   let tripSpending = $state<TripSpendingSummary[]>([]);
   let tripSpendingRequested = false;
@@ -154,6 +161,11 @@
       (candidate) => candidate.issues.length === 0 && !candidate.imported_plan_id,
     ).length,
   );
+  // What the rail badges count: anything scanned but not yet a trip here.
+  const obsidianPendingCount = $derived(
+    obsidianCandidates.filter((candidate) => !candidate.imported_plan_id).length,
+  );
+  const travelReviewCount = $derived(travelCandidates.length + obsidianPendingCount);
   const overviewMapPoints = $derived.by<MapPoint[]>(() =>
     filteredPlans.flatMap((plan) =>
       [plan.origin, ...plan.destinations]
@@ -322,8 +334,19 @@
     startDate = day;
     endDate = end && end >= day ? end : day;
     interests = opportunity.title;
-    travelCandidateNotice = `The new-trip form now carries “${opportunity.title}”; review the origin and route before saving.`;
-    plannerElement?.scrollIntoView({ behavior: "smooth", block: "start" });
+    plannerNotice = `Carried over from “${opportunity.title}”. Review the origin and route before saving.`;
+    plannerOpen = true;
+  }
+
+  function openPlanner(): void {
+    plannerNotice = null;
+    plannerOpen = true;
+  }
+
+  function closePlanner(): void {
+    if (creating) return;
+    plannerOpen = false;
+    plannerNotice = null;
   }
 
   // Calendar materialisation names the new plan in the URL. Resolve it only
@@ -570,6 +593,8 @@
       });
       plans = [plan, ...plans];
       items = [];
+      plannerOpen = false;
+      plannerNotice = null;
       await explorePlan(plan);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -967,6 +992,8 @@
     savedNotice = null;
     editingPlan = false;
     mapOpen = false;
+    plannerOpen = false;
+    plannerNotice = null;
   }
 
   function orderedJourneys(journeys: Journey[]): Journey[] {
@@ -1012,377 +1039,405 @@
     <a href={link("/travel/connections")}><Icon name="train" size={14} /> Connections</a>
   </nav>
 
-  <section class="travel-candidates" aria-labelledby="travel-candidate-heading">
-    <header>
-      <div>
-        <span class="eyebrow">From Scouting</span>
-        <h2 id="travel-candidate-heading">Travel candidates</h2>
-        <p>Far events matched to dated trip destinations or checked against your Calendar.</p>
-      </div>
-      <button
-        class="btn"
-        type="button"
-        disabled={travelCandidatesLoading}
-        onclick={() => void loadTravelCandidates()}
-      >
-        <Icon name={travelCandidatesLoading ? "loader" : "refresh"} size={14} />
-        {travelCandidatesLoading ? "Checking…" : "Refresh"}
-      </button>
-    </header>
-
-    {#if travelCandidateNotice}
-      <p class="candidate-notice" aria-live="polite">{travelCandidateNotice}</p>
-    {/if}
-
-    {#if travelCandidatesLoading}
-      <p class="candidate-empty">Checking Scouting, Trips, and Calendar…</p>
-    {:else if travelCandidates.length === 0}
-      <p class="candidate-empty">No undismissed travel-candidate events are waiting.</p>
-    {:else}
-      <ol>
-        {#each travelCandidates as candidate (candidate.opportunity.id)}
-          <li class:blocked={candidate.state === "conflicts"}>
-            <div class="candidate-date">
-              <strong>{shortDate(candidate.opportunity.starts_at.slice(0, 10))}</strong>
-              <span>{candidate.opportunity.city || candidate.opportunity.location || "Place open"}</span>
+  <!-- The board is the page; what is merely waiting for a decision sits in the rail
+       beside it, the same way /calendar keeps its review lists. -->
+  <div class="hub">
+    <div class="hub-main">
+      {#if plans.length > 0}
+        <section class="journey-index" aria-label="Trip overview">
+          <div>
+            <span class="index-value">{upcomingPlans.length}</span>
+            <span class="index-label">upcoming</span>
+          </div>
+          <div>
+            <span class="index-value">{pastPlans.length}</span>
+            <span class="index-label">past</span>
+          </div>
+          {#if upcomingPlans[0]}
+            <button type="button" onclick={() => void openPlan(upcomingPlans[0])}>
+              <span class="index-label">up next</span>
+              <strong>{upcomingPlans[0].title}</strong>
+              <small>{shortDate(upcomingPlans[0].date_start)}</small>
+            </button>
+          {:else}
+            <div class="next-empty">
+              <span class="index-label">up next</span>
+              <strong>Still open</strong>
             </div>
-            <div class="candidate-copy">
-              <span class="candidate-state {candidate.state}">{travelCandidateLabel(candidate)}</span>
-              <a href={candidate.opportunity.url} target="_blank" rel="noreferrer">
-                {candidate.opportunity.title}
-              </a>
-              <small title={candidate.reason}>{candidate.reason}</small>
+          {/if}
+        </section>
+
+        <section class="travel-board">
+          <header class="board-toolbar">
+            <div>
+              <h2>Trips on the map</h2>
+              <p>The markers and list show the same saved plans.</p>
             </div>
-            <div class="candidate-actions">
-              {#if candidate.plan_match}
+            <div class="board-actions">
+              <div class="plan-filters" aria-label="Filter trips">
                 <button
                   type="button"
-                  disabled={travelCandidateSaving !== null || savedTravelCandidates.has(candidate.opportunity.id)}
-                  onclick={() => void addTravelCandidate(candidate)}
+                  class:active={planFilter === "upcoming"}
+                  onclick={() => {
+                    planFilter = "upcoming";
+                    highlightedPlanId = null;
+                  }}>Upcoming <span>{upcomingPlans.length}</span></button
                 >
-                  <Icon
-                    name={savedTravelCandidates.has(candidate.opportunity.id) ? "check" : "plus"}
-                    size={13}
-                  />
-                  {savedTravelCandidates.has(candidate.opportunity.id)
-                    ? "Added"
-                    : travelCandidateSaving === candidate.opportunity.id
-                      ? "Adding…"
-                      : "Add to trip"}
-                </button>
-                <button type="button" onclick={() => void openPlan(candidate.plan_match!.plan)}>
-                  Open trip
-                </button>
-              {:else if ["free_window", "needs_travel_day"].includes(candidate.state)}
-                <button type="button" onclick={() => seedPlanFromCandidate(candidate)}>
-                  <Icon name="map-pin" size={13} /> Plan around event
-                </button>
+                <button
+                  type="button"
+                  class:active={planFilter === "past"}
+                  onclick={() => {
+                    planFilter = "past";
+                    highlightedPlanId = null;
+                  }}>Past <span>{pastPlans.length}</span></button
+                >
+                <button
+                  type="button"
+                  class:active={planFilter === "all"}
+                  onclick={() => {
+                    planFilter = "all";
+                    highlightedPlanId = null;
+                  }}>All <span>{plans.length}</span></button
+                >
+              </div>
+              <button class="btn btn-primary" type="button" onclick={openPlanner}>
+                <Icon name="plus" size={14} /> New trip
+              </button>
+            </div>
+          </header>
+
+          <div class="board-layout">
+            <div class="overview-map">
+              <TripMap
+                points={overviewMapPoints}
+                onSelect={(planId) => (highlightedPlanId = planId)}
+              />
+              <div class="map-legend" aria-label="Map legend">
+                <span><i class="upcoming"></i> upcoming</span>
+                <span><i class="past"></i> past</span>
+                <span><i class="selected"></i> selected</span>
+              </div>
+            </div>
+
+            <div class="trip-options" aria-live="polite">
+              {#if filteredPlans.length === 0}
+                <p class="empty-history">
+                  {planFilter === "past"
+                    ? "Completed trips appear here automatically."
+                    : "There are no trips for this filter yet."}
+                </p>
+              {:else}
+                <ol>
+                  {#each filteredPlans as plan (plan.id)}
+                    <li>
+                      <button
+                        type="button"
+                        class:highlighted={highlightedPlanId === plan.id}
+                        onmouseenter={() => (highlightedPlanId = plan.id)}
+                        onfocus={() => (highlightedPlanId = plan.id)}
+                        onclick={() => void openPlan(plan)}
+                      >
+                        <span class="option-date">
+                          <strong>{shortDate(plan.date_start)}</strong>
+                          <small>{shortDate(plan.date_end)}</small>
+                        </span>
+                        <span class="option-route">
+                          <span class:past={planPhase(plan) === "Past"} class="phase">
+                            {planPhase(plan)}
+                          </span>
+                          <strong>{placeName(plan.origin)} → {plan.destinations.map(placeName).join(" → ")}</strong>
+                          <small>
+                            {plan.destinations.length} {plan.destinations.length === 1 ? "destination" : "destinations"}
+                            · {plan.status === "saved" ? "Itinerary saved" : "Draft"}
+                          </small>
+                        </span>
+                        <Icon name="arrow-right" size={15} />
+                      </button>
+                    </li>
+                  {/each}
+                </ol>
               {/if}
             </div>
-          </li>
-        {/each}
-      </ol>
-    {/if}
-  </section>
-
-  {#if plans.length > 0}
-    <section class="journey-index" aria-label="Trip overview">
-      <div>
-        <span class="index-value">{upcomingPlans.length}</span>
-        <span class="index-label">upcoming</span>
-      </div>
-      <div>
-        <span class="index-value">{pastPlans.length}</span>
-        <span class="index-label">past</span>
-      </div>
-      {#if upcomingPlans[0]}
-        <button type="button" onclick={() => void openPlan(upcomingPlans[0])}>
-          <span class="index-label">up next</span>
-          <strong>{upcomingPlans[0].title}</strong>
-          <small>{shortDate(upcomingPlans[0].date_start)}</small>
-        </button>
-      {:else}
-        <div class="next-empty">
-          <span class="index-label">up next</span>
-          <strong>Still open</strong>
-        </div>
-      {/if}
-    </section>
-
-    <section class="travel-board">
-      <header class="board-toolbar">
-        <div>
-          <h2>Trips on the map</h2>
-          <p>The markers and list show the same saved plans.</p>
-        </div>
-        <div class="plan-filters" aria-label="Filter trips">
-          <button
-            type="button"
-            class:active={planFilter === "upcoming"}
-            onclick={() => {
-              planFilter = "upcoming";
-              highlightedPlanId = null;
-            }}>Upcoming <span>{upcomingPlans.length}</span></button
-          >
-          <button
-            type="button"
-            class:active={planFilter === "past"}
-            onclick={() => {
-              planFilter = "past";
-              highlightedPlanId = null;
-            }}>Past <span>{pastPlans.length}</span></button
-          >
-          <button
-            type="button"
-            class:active={planFilter === "all"}
-            onclick={() => {
-              planFilter = "all";
-              highlightedPlanId = null;
-            }}>All <span>{plans.length}</span></button
-          >
-        </div>
-      </header>
-
-      <div class="board-layout">
-        <div class="overview-map">
-          <TripMap
-            points={overviewMapPoints}
-            onSelect={(planId) => (highlightedPlanId = planId)}
-          />
-          <div class="map-legend" aria-label="Map legend">
-            <span><i class="upcoming"></i> upcoming</span>
-            <span><i class="past"></i> past</span>
-            <span><i class="selected"></i> selected</span>
           </div>
-        </div>
+        </section>
+      {:else}
+        <!-- With the planner behind a button, a first-time page needs its own way in. -->
+        <section class="board-empty">
+          <div>
+            <h2>No trips planned yet</h2>
+            <p>Start one from scratch, plan around a candidate in the rail, or import from Obsidian.</p>
+          </div>
+          <button class="btn btn-primary" type="button" onclick={openPlanner}>
+            <Icon name="plus" size={14} /> New trip
+          </button>
+        </section>
+      {/if}
 
-        <div class="trip-options" aria-live="polite">
-          {#if filteredPlans.length === 0}
-            <p class="empty-history">
-              {planFilter === "past"
-                ? "Completed trips appear here automatically."
-                : "There are no trips for this filter yet."}
-            </p>
+      <RelatedTools
+        context="travel-planning"
+        title="When another tool fits better"
+        description="Plan together or collect booking confirmations automatically."
+      />
+    </div>
+
+    <Rail label="Travel review and planning">
+      <RailGroup title="Review" count={travelReviewCount}>
+        <RailSection label="Candidates" count={travelCandidates.length}>
+          <p class="rail-hint">
+            Far events matched to dated trip destinations or checked against your Calendar.
+          </p>
+
+          {#if travelCandidateNotice}
+            <p class="rail-notice" aria-live="polite">{travelCandidateNotice}</p>
+          {/if}
+
+          {#if travelCandidatesLoading}
+            <p class="rail-empty">Checking Scouting, Trips, and Calendar…</p>
+          {:else if travelCandidates.length === 0}
+            <p class="rail-empty">No undismissed travel-candidate events are waiting.</p>
           {:else}
-            <ol>
-              {#each filteredPlans as plan (plan.id)}
-                <li>
-                  <button
-                    type="button"
-                    class:highlighted={highlightedPlanId === plan.id}
-                    onmouseenter={() => (highlightedPlanId = plan.id)}
-                    onfocus={() => (highlightedPlanId = plan.id)}
-                    onclick={() => void openPlan(plan)}
-                  >
-                    <span class="option-date">
-                      <strong>{shortDate(plan.date_start)}</strong>
-                      <small>{shortDate(plan.date_end)}</small>
-                    </span>
-                    <span class="option-route">
-                      <span class:past={planPhase(plan) === "Past"} class="phase">
-                        {planPhase(plan)}
-                      </span>
-                      <strong>{placeName(plan.origin)} → {plan.destinations.map(placeName).join(" → ")}</strong>
-                      <small>
-                        {plan.destinations.length} {plan.destinations.length === 1 ? "destination" : "destinations"}
-                        · {plan.status === "saved" ? "Itinerary saved" : "Draft"}
-                      </small>
-                    </span>
-                    <Icon name="arrow-right" size={15} />
-                  </button>
+            <ol class="candidate-list">
+              {#each travelCandidates as candidate (candidate.opportunity.id)}
+                <li class:blocked={candidate.state === "conflicts"}>
+                  <p class="candidate-when">
+                    <strong>{shortDate(candidate.opportunity.starts_at.slice(0, 10))}</strong>
+                    <span>{candidate.opportunity.city || candidate.opportunity.location || "Place open"}</span>
+                  </p>
+                  <span class="candidate-state {candidate.state}">{travelCandidateLabel(candidate)}</span>
+                  <a class="candidate-title" href={candidate.opportunity.url} target="_blank" rel="noreferrer">
+                    {candidate.opportunity.title}
+                  </a>
+                  <small title={candidate.reason}>{candidate.reason}</small>
+                  <div class="candidate-actions">
+                    {#if candidate.plan_match}
+                      <button
+                        type="button"
+                        disabled={travelCandidateSaving !== null || savedTravelCandidates.has(candidate.opportunity.id)}
+                        onclick={() => void addTravelCandidate(candidate)}
+                      >
+                        <Icon
+                          name={savedTravelCandidates.has(candidate.opportunity.id) ? "check" : "plus"}
+                          size={13}
+                        />
+                        {savedTravelCandidates.has(candidate.opportunity.id)
+                          ? "Added"
+                          : travelCandidateSaving === candidate.opportunity.id
+                            ? "Adding…"
+                            : "Add to trip"}
+                      </button>
+                      <button type="button" onclick={() => void openPlan(candidate.plan_match!.plan)}>
+                        Open trip
+                      </button>
+                    {:else if ["free_window", "needs_travel_day"].includes(candidate.state)}
+                      <button type="button" onclick={() => seedPlanFromCandidate(candidate)}>
+                        <Icon name="map-pin" size={13} /> Plan around event
+                      </button>
+                    {/if}
+                  </div>
                 </li>
               {/each}
             </ol>
           {/if}
-        </div>
-      </div>
-    </section>
-  {/if}
 
-  <section class="planner" bind:this={plannerElement}>
-    <div class="planner-heading">
-      <span>New trip</span>
-      <small>Start with the route, dates, and intent</small>
-    </div>
-    <form
-      class="planner-form"
-      onsubmit={(event) => {
-        event.preventDefault();
-        void createPlan();
-      }}
-    >
-      <div class="route-fields">
-        <PlaceField label="Origin" placeholder="Address, city, or station" bind:place={origin} />
-        <PlaceField
-          label="Destination"
-          placeholder="Address, city, venue, or station"
-          bind:place={firstDestination}
-        />
-        {#if showSecondDestination}
-          <PlaceField
-            label="Another stop"
-            placeholder="Another place or stopover"
-            bind:place={secondDestination}
-          />
-        {:else}
           <button
-            class="add-stop"
+            class="btn btn-outline rail-action"
             type="button"
-            onclick={() => (showSecondDestination = true)}
+            disabled={travelCandidatesLoading}
+            onclick={() => void loadTravelCandidates()}
           >
-            <Icon name="plus" size={14} /> Add stop
+            <Icon name={travelCandidatesLoading ? "loader" : "refresh"} size={13} />
+            {travelCandidatesLoading ? "Checking…" : "Refresh"}
           </button>
-        {/if}
-      </div>
+        </RailSection>
 
-      <div class="intent-fields">
-        <label>
-          <span>From</span>
-          <input class="input" type="date" bind:value={startDate} />
-        </label>
-        <label>
-          <span>To</span>
-          <input class="input" type="date" min={startDate} bind:value={endDate} />
-        </label>
-        <label class="interest-field">
-          <span>What should happen?</span>
-          <input
-            class="input"
-            bind:value={interests}
-            placeholder="Live music, architecture, Rust, design…"
-          />
-        </label>
-        <label class="travelers-field">
-          <span>Who is travelling?</span>
-          <input
-            class="input"
-            bind:value={travelers}
-            placeholder="Separate names with commas"
-          />
-        </label>
-        <fieldset class="mode-field">
-          <legend>Possible transport modes</legend>
-          <div>
-            {#each MODE_OPTIONS as option (option.id)}
-              <button
-                type="button"
-                class:active={transportModes.includes(option.id)}
-                aria-pressed={transportModes.includes(option.id)}
-                onclick={() => toggleTransportMode(option.id)}
-              >
-                {option.label}
-              </button>
-            {/each}
-          </div>
-        </fieldset>
-        <button class="btn btn-primary plan-button" type="submit" disabled={creating}>
-          {#if creating}
-            <Icon name="loader" size={14} /> Planning…
-          {:else}
-            <Icon name="map-pin" size={14} /> Create trip plan
+        <RailSection label="Obsidian" count={obsidianPendingCount}>
+          <p class="rail-hint">
+            Scans only notes marked as trips. Everything remains unchanged until import.
+          </p>
+
+          {#if obsidianNotice}
+            <p class="rail-notice" aria-live="polite">{obsidianNotice}</p>
           {/if}
-        </button>
-      </div>
-    </form>
 
-    <div class="planner-context" aria-label="Planning scope">
-      <span><b>01</b> Places, legs, and travellers</span>
-      <span><b>02</b> Transport options for each leg</span>
-      <span><b>03</b> Activities, events, and itinerary</span>
-    </div>
-  </section>
-
-  <RelatedTools
-    context="travel-planning"
-    title="When another tool fits better"
-    description="Plan together or collect booking confirmations automatically."
-  />
-
-  <section class="obsidian-import">
-    <header>
-      <div>
-        <span class="eyebrow">Existing trips</span>
-        <h2>Import from Obsidian</h2>
-        <p>Scans only notes marked as trips. Everything remains unchanged until import.</p>
-      </div>
-      <div class="import-actions">
-        <button
-          class="btn"
-          type="button"
-          disabled={obsidianScanning || obsidianImportingAll}
-          onclick={() => void scanObsidian()}
-        >
-          <Icon name={obsidianScanning ? "loader" : "database"} size={14} />
-          {obsidianScanning ? "Scanning…" : "Scan entries"}
-        </button>
-        {#if obsidianCandidates.length > 0}
-          <button
-            class="btn btn-primary"
-            type="button"
-            disabled={obsidianReadyCount === 0 || obsidianImportingAll || obsidianImporting !== null}
-            onclick={() => void importAllObsidian()}
-          >
-            <Icon name={obsidianImportingAll ? "loader" : "check"} size={14} />
-            {obsidianImportingAll ? "Importing…" : `Import all (${obsidianReadyCount})`}
-          </button>
-        {/if}
-      </div>
-    </header>
-
-    {#if obsidianNotice}
-      <p class="import-notice" aria-live="polite">{obsidianNotice}</p>
-    {/if}
-
-    {#if obsidianCandidates.length > 0}
-      <div
-        class="import-origin"
-        class:missing={importOriginNeeded && !importOrigin}
-        bind:this={importOriginField}
-      >
-        <PlaceField
-          label="Origin for imports"
-          placeholder="Applies to the trips imported now"
-          bind:place={importOrigin}
-        />
-        <p>
-          {#if importOriginNeeded && !importOrigin}
-            Enter an origin or select one from the suggestions.
-          {:else}
-            Missing origins are not guessed. You can change them later for each trip.
-          {/if}
-        </p>
-      </div>
-      <ol class="import-list">
-        {#each obsidianCandidates as candidate (candidate.reference)}
-          <li>
-            <div>
-              <strong>{candidate.title}</strong>
-              <span>
-                {shortDate(candidate.date_start)} – {shortDate(candidate.date_end)}
-                · {candidate.destination?.name ?? "Destination open"}
-              </span>
-              {#if candidate.issues.length > 0}
-                <small>{candidate.issues.join(" · ")}</small>
-              {:else if candidate.travelers.length > 0}
-                <small>{candidate.travelers.join(", ")}</small>
-              {/if}
+          {#if obsidianCandidates.length > 0}
+            <div
+              class="import-origin"
+              class:missing={importOriginNeeded && !importOrigin}
+              bind:this={importOriginField}
+            >
+              <PlaceField
+                label="Origin for imports"
+                placeholder="Applies to the trips imported now"
+                bind:place={importOrigin}
+              />
+              <p>
+                {#if importOriginNeeded && !importOrigin}
+                  Enter an origin or select one from the suggestions.
+                {:else}
+                  Missing origins are not guessed. You can change them later for each trip.
+                {/if}
+              </p>
             </div>
-            {#if candidate.imported_plan_id}
-              <span class="imported"><Icon name="check" size={13} /> Imported</span>
-            {:else}
+            <ol class="import-list">
+              {#each obsidianCandidates as candidate (candidate.reference)}
+                <li>
+                  <div>
+                    <strong>{candidate.title}</strong>
+                    <span>
+                      {shortDate(candidate.date_start)} – {shortDate(candidate.date_end)}
+                      · {candidate.destination?.name ?? "Destination open"}
+                    </span>
+                    {#if candidate.issues.length > 0}
+                      <small>{candidate.issues.join(" · ")}</small>
+                    {:else if candidate.travelers.length > 0}
+                      <small>{candidate.travelers.join(", ")}</small>
+                    {/if}
+                  </div>
+                  {#if candidate.imported_plan_id}
+                    <span class="imported"><Icon name="check" size={13} /> Imported</span>
+                  {:else}
+                    <button
+                      type="button"
+                      disabled={candidate.issues.length > 0 || obsidianImportingAll || obsidianImporting !== null}
+                      onclick={() => void importObsidian(candidate)}
+                    >
+                      {obsidianImporting === candidate.reference ? "Importing…" : "Import"}
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+          {/if}
+
+          <div class="rail-actions">
+            <button
+              class="btn btn-outline"
+              type="button"
+              disabled={obsidianScanning || obsidianImportingAll}
+              onclick={() => void scanObsidian()}
+            >
+              <Icon name={obsidianScanning ? "loader" : "database"} size={13} />
+              {obsidianScanning ? "Scanning…" : "Scan"}
+            </button>
+            {#if obsidianCandidates.length > 0}
               <button
+                class="btn btn-primary"
                 type="button"
-                disabled={candidate.issues.length > 0 || obsidianImportingAll || obsidianImporting !== null}
-                onclick={() => void importObsidian(candidate)}
+                disabled={obsidianReadyCount === 0 || obsidianImportingAll || obsidianImporting !== null}
+                onclick={() => void importAllObsidian()}
               >
-                {obsidianImporting === candidate.reference ? "Importing…" : "Import"}
+                <Icon name={obsidianImportingAll ? "loader" : "check"} size={13} />
+                {obsidianImportingAll ? "Importing…" : `Import all (${obsidianReadyCount})`}
               </button>
             {/if}
-          </li>
-        {/each}
-      </ol>
-    {/if}
-  </section>
+          </div>
+        </RailSection>
+      </RailGroup>
+    </Rail>
+  </div>
+
+  {#if plannerOpen}
+    <Overlay
+      title="New trip"
+      eyebrow="Trip plans"
+      width="44rem"
+      busy={creating}
+      onClose={closePlanner}
+    >
+      <p class="planner-lede">Start with the route, dates, and intent.</p>
+
+      {#if plannerNotice}
+        <p class="planner-notice" aria-live="polite">{plannerNotice}</p>
+      {/if}
+
+      <form
+        class="planner-form"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void createPlan();
+        }}
+      >
+        <div class="route-fields">
+          <PlaceField label="Origin" placeholder="Address, city, or station" bind:place={origin} />
+          <PlaceField
+            label="Destination"
+            placeholder="Address, city, venue, or station"
+            bind:place={firstDestination}
+          />
+          {#if showSecondDestination}
+            <PlaceField
+              label="Another stop"
+              placeholder="Another place or stopover"
+              bind:place={secondDestination}
+            />
+          {:else}
+            <button
+              class="add-stop"
+              type="button"
+              onclick={() => (showSecondDestination = true)}
+            >
+              <Icon name="plus" size={14} /> Add stop
+            </button>
+          {/if}
+        </div>
+
+        <div class="intent-fields">
+          <label>
+            <span>From</span>
+            <input class="input" type="date" bind:value={startDate} />
+          </label>
+          <label>
+            <span>To</span>
+            <input class="input" type="date" min={startDate} bind:value={endDate} />
+          </label>
+          <label class="interest-field">
+            <span>What should happen?</span>
+            <input
+              class="input"
+              bind:value={interests}
+              placeholder="Live music, architecture, Rust, design…"
+            />
+          </label>
+          <label class="travelers-field">
+            <span>Who is travelling?</span>
+            <input
+              class="input"
+              bind:value={travelers}
+              placeholder="Separate names with commas"
+            />
+          </label>
+          <fieldset class="mode-field">
+            <legend>Possible transport modes</legend>
+            <div>
+              {#each MODE_OPTIONS as option (option.id)}
+                <button
+                  type="button"
+                  class:active={transportModes.includes(option.id)}
+                  aria-pressed={transportModes.includes(option.id)}
+                  onclick={() => toggleTransportMode(option.id)}
+                >
+                  {option.label}
+                </button>
+              {/each}
+            </div>
+          </fieldset>
+          <button class="btn btn-primary plan-button" type="submit" disabled={creating}>
+            {#if creating}
+              <Icon name="loader" size={14} /> Planning…
+            {:else}
+              <Icon name="map-pin" size={14} /> Create trip plan
+            {/if}
+          </button>
+        </div>
+      </form>
+
+      <div class="planner-context" aria-label="Planning scope">
+        <span><b>01</b> Places, legs, and travellers</span>
+        <span><b>02</b> Transport options for each leg</span>
+        <span><b>03</b> Activities, events, and itinerary</span>
+      </div>
+    </Overlay>
+  {/if}
 
 {:else}
   {#if editingPlan}
@@ -1879,91 +1934,111 @@
     background: var(--primary-soft);
   }
 
-  .travel-candidates {
+  /* The list view: the board is the page, the rail sits beside it. `minmax(0, 1fr)`
+   * so a wide board shrinks rather than pushing the rail off-screen, and the
+   * two-column breakpoint matches the one `$lib/rail/Rail.svelte` unsticks at. */
+  .hub {
+    display: grid;
+    gap: 1.25rem;
+    align-items: start;
+  }
+
+  .hub-main {
+    min-width: 0;
+  }
+
+  .board-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .board-empty {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
     margin-bottom: 1rem;
-    overflow: hidden;
+    padding: 1.5rem;
     border: 1px solid var(--card-border);
     border-radius: var(--radius);
     background: var(--card-bg);
     box-shadow: var(--card-shadow);
   }
 
-  .travel-candidates > header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 0.9rem 1rem;
-    border-bottom: 1px solid var(--card-border);
-  }
-
-  .travel-candidates h2,
-  .travel-candidates p {
+  .board-empty h2 {
     margin: 0;
+    font-size: 0.95rem;
   }
 
-  .travel-candidates h2 {
-    font-size: 0.875rem;
-  }
-
-  .travel-candidates header p {
-    margin-top: 0.1rem;
+  .board-empty p {
+    margin: 0.2rem 0 0;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
   }
 
-  .travel-candidates ol {
+  /* Candidate rows in the rail: when and where, what it is, why it surfaced, then
+   * what you can do about it — the reading order the calendar's inboxes use. */
+  .candidate-list {
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
-  .travel-candidates li {
-    display: grid;
-    gap: 0.6rem;
-    padding: 0.8rem 1rem;
-    border-bottom: 1px solid var(--card-border);
+  .candidate-list li {
+    padding: 0.55rem 0;
+    border-top: 1px solid var(--card-border);
   }
 
-  .travel-candidates li:last-child {
-    border-bottom: 0;
+  .candidate-list li.blocked .candidate-title {
+    color: var(--text-secondary);
   }
 
-  .travel-candidates li.blocked {
-    background: var(--danger-soft);
+  .candidate-when {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    margin: 0;
+    min-width: 0;
   }
 
-  .candidate-date strong,
-  .candidate-date span,
-  .candidate-copy a,
-  .candidate-copy small {
-    display: block;
-  }
-
-  .candidate-date strong {
+  .candidate-when strong {
     font-size: 0.75rem;
   }
 
-  .candidate-date span,
-  .candidate-copy small {
-    margin-top: 0.15rem;
+  .candidate-when span {
+    overflow: hidden;
     color: var(--text-tertiary);
     font-size: 0.625rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .candidate-copy a {
-    margin-top: 0.25rem;
+  .candidate-title {
+    display: block;
+    margin-top: 0.15rem;
     color: var(--text-primary);
-    font-size: 0.75rem;
+    font-size: 0.8125rem;
     font-weight: 600;
+    line-height: 1.3;
   }
 
-  .candidate-copy a:hover {
+  .candidate-title:hover {
     color: var(--primary);
+  }
+
+  .candidate-list small {
+    display: block;
+    margin-top: 0.2rem;
+    color: var(--text-tertiary);
+    font-size: 0.6875rem;
+    line-height: 1.4;
   }
 
   .candidate-state {
     display: inline-block;
+    margin-top: 0.25rem;
     padding: 0.12rem 0.3rem;
     border-radius: 999px;
     background: var(--surface);
@@ -1991,14 +2066,17 @@
   .candidate-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.35rem;
+    gap: 0.3rem;
+    margin-top: 0.45rem;
   }
 
   .candidate-actions button {
     display: inline-flex;
+    flex: 1;
     align-items: center;
+    justify-content: center;
     gap: 0.25rem;
-    padding: 0.35rem 0.5rem;
+    padding: 0.3rem 0.5rem;
     border: 0;
     border-radius: var(--radius-sm);
     background: var(--primary-soft);
@@ -2013,16 +2091,56 @@
     cursor: default;
   }
 
-  .candidate-notice,
-  .candidate-empty {
-    padding: 0.75rem 1rem;
+  /* Shared by both rail sections: the line that explains the list, the line that
+   * reports what just happened, the line that says nothing is waiting. */
+  .rail-hint {
+    margin: 0 0 0.4rem;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
+    line-height: 1.45;
   }
 
-  .candidate-notice {
-    border-bottom: 1px solid var(--card-border);
-    background: var(--warning-soft);
+  .rail-notice {
+    margin: 0 0 0.4rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: var(--primary-soft);
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.4;
+  }
+
+  .rail-empty {
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: 0.78rem;
+  }
+
+  .rail-action,
+  .rail-actions {
+    margin-top: 0.5rem;
+  }
+
+  .rail-action {
+    width: 100%;
+  }
+
+  .rail-actions {
+    display: flex;
+    gap: 0.3rem;
+  }
+
+  .rail-action,
+  .rail-actions .btn {
+    flex: 1;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.72rem;
+  }
+
+  .rail-actions .btn:disabled,
+  .rail-action:disabled {
+    opacity: 0.48;
+    cursor: not-allowed;
   }
 
   .journey-index {
@@ -2265,33 +2383,26 @@
     color: var(--text-tertiary);
   }
 
-  .planner {
-    overflow: visible;
-    border: 1px solid var(--card-border);
-    border-radius: var(--radius);
-    background: var(--card-bg);
-    box-shadow: var(--card-shadow);
-  }
-
-  .planner-heading {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.8rem 1.25rem;
-    border-bottom: 1px solid var(--card-border);
-  }
-
-  .planner-heading span {
-    font-weight: 600;
-  }
-
-  .planner-heading small {
+  /* The planner is a dialog now — `$lib/Overlay.svelte` carries its frame, so what
+   * is left here is the form itself. */
+  .planner-lede {
+    margin: -0.5rem 0 1rem;
     color: var(--text-tertiary);
+    font-size: 0.75rem;
+  }
+
+  .planner-notice {
+    margin: 0 0 1rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: var(--radius-sm);
+    background: var(--primary-soft);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.45;
   }
 
   .planner-form {
-    padding: 1.25rem;
+    padding: 0;
   }
 
   .route-fields,
@@ -2410,62 +2521,18 @@
     font-size: 0.625rem;
   }
 
-  .obsidian-import {
-    margin-top: 1rem;
-    overflow: visible;
-    border: 1px solid var(--card-border);
-    border-radius: var(--radius);
-    background: var(--card-bg);
-  }
-
-  .obsidian-import > header {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 1rem 1.25rem;
-  }
-
-  .obsidian-import h2 {
-    margin: 0.15rem 0 0;
-    font-size: 0.95rem;
-  }
-
-  .obsidian-import header p,
   .import-origin p {
     margin: 0.15rem 0 0;
     color: var(--text-tertiary);
     font-size: 0.6875rem;
   }
 
-  .obsidian-import header .btn {
-    align-self: flex-start;
-  }
-
-  .import-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-
-  .import-actions .btn:disabled {
-    opacity: 0.48;
-    cursor: not-allowed;
-  }
-
-  .import-notice {
-    margin: 0;
-    padding: 0.7rem 1.25rem;
-    border-top: 1px solid var(--card-border);
-    background: var(--primary-soft);
-    color: var(--text-secondary);
-    font-size: 0.6875rem;
-  }
-
   .import-origin {
     display: grid;
     gap: 0.4rem;
-    padding: 1rem 1.25rem;
-    border-top: 1px solid var(--card-border);
+    margin-bottom: 0.4rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: var(--radius-sm);
     background: var(--surface);
   }
 
@@ -2487,20 +2554,15 @@
     margin: 0;
     padding: 0;
     list-style: none;
-    border-top: 1px solid var(--card-border);
   }
 
   .import-list li {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.75rem;
+    gap: 0.5rem;
     align-items: center;
-    padding: 0.8rem 1.25rem;
-    border-bottom: 1px solid var(--card-border);
-  }
-
-  .import-list li:last-child {
-    border-bottom: 0;
+    padding: 0.55rem 0;
+    border-top: 1px solid var(--card-border);
   }
 
   .import-list strong,
@@ -3338,15 +3400,6 @@
   }
 
   @media (width >= 38rem) {
-    .travel-candidates li {
-      grid-template-columns: 7rem minmax(0, 1fr) auto;
-      align-items: center;
-    }
-
-    .candidate-actions {
-      justify-content: flex-end;
-    }
-
     .calendar-anchors li {
       grid-template-columns: 7.5rem minmax(0, 1fr) auto auto;
     }
@@ -3388,21 +3441,6 @@
     .mode-field,
     .travelers-field {
       grid-column: span 2;
-    }
-
-    .obsidian-import > header {
-      flex-direction: row;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .obsidian-import .import-actions {
-      justify-content: flex-end;
-    }
-
-    .import-origin {
-      grid-template-columns: minmax(16rem, 0.7fr) 1fr;
-      align-items: end;
     }
 
     .stage-fields {
@@ -3475,6 +3513,12 @@
 
     .activity-column {
       grid-column: 1 / -1;
+    }
+  }
+
+  @media (width >= 64rem) {
+    .hub {
+      grid-template-columns: minmax(0, 1fr) 19rem;
     }
   }
 </style>

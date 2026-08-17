@@ -1,5 +1,7 @@
 <script lang="ts">
-  import RailSection from "./RailSection.svelte";
+  import Rail from "$lib/rail/Rail.svelte";
+  import RailGroup from "$lib/rail/RailGroup.svelte";
+  import RailSection from "$lib/rail/RailSection.svelte";
   import GoogleDraftInbox from "./GoogleDraftInbox.svelte";
   import GoogleExportReview from "./GoogleExportReview.svelte";
   import GoogleImportReview from "./GoogleImportReview.svelte";
@@ -70,13 +72,8 @@
   }
 </script>
 
-<aside class="rail" aria-label="Calendar review and planning">
-  <div class="group">
-    <h2>
-      Review
-      {#if reviewCount > 0}<span class="total">{reviewCount}</span>{/if}
-    </h2>
-
+<Rail label="Calendar review and planning">
+  <RailGroup title="Review" count={reviewCount}>
     <RailSection label="Google" count={googleCount}>
       <GoogleDraftInbox
         refresh={refreshes.google}
@@ -100,11 +97,9 @@
     <RailSection label="Trips" count={tripCount}>
       <TripDraftInbox refresh={refreshes.trips} onCount={(count) => (tripCount = count)} />
     </RailSection>
-  </div>
+  </RailGroup>
 
-  <div class="group">
-    <h2>Plan</h2>
-
+  <RailGroup title="Plan">
     <RailSection label="Context" count={contexts.length} bind:open={contextOpen}>
       <ContextPanel
         {contexts}
@@ -137,8 +132,8 @@
       {/if}
       <button class="btn btn-outline add" onclick={() => (showRhythmForm = true)}>+ Rhythm</button>
     </RailSection>
-  </div>
-</aside>
+  </RailGroup>
+</Rail>
 
 {#if showGoogleImport}
   <GoogleImportReview onImported={onReviewChanged} onClose={() => (showGoogleImport = false)} />
@@ -153,59 +148,8 @@
 {/if}
 
 <style>
-  .rail {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    min-width: 0;
-
-    /* Sticky so triage stays reachable while the month grid scrolls; it scrolls on its
-     * own once expanded sections outgrow the viewport. `4.75rem` clears the sticky
-     * header (bar + nav row). */
-    position: sticky;
-    top: 4.75rem;
-    max-height: calc(100vh - 6rem);
-    overflow-y: auto;
-  }
-
-  /* Below the rail breakpoint it stacks under the grid, where sticky would trap it. */
-  @media (width < 64rem) {
-    .rail {
-      position: static;
-      max-height: none;
-      overflow-y: visible;
-    }
-  }
-
-  .group {
-    padding: 0.35rem 0.75rem 0.25rem;
-    border: 1px solid var(--card-border);
-    border-radius: var(--radius);
-    background-color: var(--card-bg);
-  }
-
-  h2 {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    margin: 0;
-    padding: 0.5rem 0.25rem 0.4rem;
-    color: var(--text-tertiary);
-    font-size: 0.625rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .total {
-    padding: 0.05rem 0.35rem;
-    border-radius: var(--radius-sm);
-    background-color: var(--primary);
-    color: var(--text-inverse);
-    font-size: 0.625rem;
-    font-variant-numeric: tabular-nums;
-  }
-
+  /* Rail chrome — the aside, its groups and their headings — lives in `$lib/rail`,
+   * because /travel wears the same one. What stays here is what only this rail has. */
   .section-actions {
     display: flex;
     gap: 0.3rem;

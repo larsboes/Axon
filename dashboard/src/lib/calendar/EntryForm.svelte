@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import Overlay from "$lib/Overlay.svelte";
   import {
     COMMITMENTS,
     KINDS,
@@ -43,7 +44,6 @@
     onClose: () => void;
   } = $props();
 
-  let dialog: HTMLDivElement;
   let titleInput: HTMLInputElement;
   let kind = $state("busy");
   // Typing something in by hand means it is real; scouting's promotions are
@@ -84,13 +84,8 @@
   onMount(() => {
     initialise();
     googleExported = Boolean(googleExport);
-    dialog.focus();
     titleInput.focus();
   });
-
-  function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && !saving) onClose();
-  }
 
   function googleExportUnavailable(): string | null {
     if (!entry) return null;
@@ -172,219 +167,134 @@
   }
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<Overlay
+  title={entry ? "Edit entry" : "New entry"}
+  eyebrow={eyebrow ?? (entry ? "Calendar entry" : draft ? "From Discover" : rangeEndDate ? "Date range" : "Calendar entry")}
+  busy={saving}
+  {onClose}
+>
+  {#if entry?.rhythm_id}
+    <p class="notice">Changes detach this entry from its rhythm. The rhythm itself remains unchanged.</p>
+  {:else if notice}
+    <p class="notice">{notice}</p>
+  {/if}
 
-<div class="overlay">
-  <button class="backdrop" aria-label="Close dialog" onclick={onClose}></button>
-  <div
-    class="sheet"
-    bind:this={dialog}
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="entry-form-title"
-    tabindex="-1"
-  >
-    <div class="heading">
-      <div>
-        <p class="eyebrow">{eyebrow ?? (entry ? "Calendar entry" : draft ? "From Discover" : rangeEndDate ? "Date range" : "Calendar entry")}</p>
-        <h2 id="entry-form-title">{entry ? "Edit entry" : "New entry"}</h2>
-      </div>
-      <button class="close" aria-label="Close dialog" onclick={onClose}>×</button>
-    </div>
+  {#if error}
+    <p class="error" role="alert">{error}</p>
+  {/if}
 
-    {#if entry?.rhythm_id}
-      <p class="notice">Changes detach this entry from its rhythm. The rhythm itself remains unchanged.</p>
-    {:else if notice}
-      <p class="notice">{notice}</p>
-    {/if}
-
-    {#if error}
-      <p class="error" role="alert">{error}</p>
-    {/if}
-
-    <fieldset>
-      <legend>Type</legend>
-      <div class="kind-picker">
-        {#each KINDS as option}
-          <button
-            type="button"
-            class="kind-btn"
-            class:selected={option.value === kind}
-            style={`--kind-color: ${option.color}`}
-            onclick={() => (kind = option.value)}
-          >
-            {option.label}
-          </button>
-        {/each}
-      </div>
-    </fieldset>
-
-    <fieldset>
-      <legend>Commitment</legend>
-      <div class="kind-picker">
-        {#each COMMITMENTS as option}
-          <button
-            type="button"
-            class="kind-btn commitment-btn"
-            class:selected={option.value === commitment}
-            title={option.hint}
-            onclick={() => (commitment = option.value)}
-          >
-            {option.label}
-          </button>
-        {/each}
-      </div>
-      <p class="fieldnote">{COMMITMENTS.find((c) => c.value === commitment)?.hint}</p>
-    </fieldset>
-
-    <label>
-      <span>Title</span>
-      <input bind:this={titleInput} type="text" bind:value={title} placeholder="What for?" />
-    </label>
-
-    <label class="checkbox">
-      <input type="checkbox" bind:checked={allDay} />
-      <span>All day</span>
-    </label>
-
-    <div class="dates">
-      <label>
-        <span>Start</span>
-        <input type="date" bind:value={startDate} />
-        {#if !allDay}
-          <input type="time" bind:value={startTime} />
-        {/if}
-      </label>
-      <label>
-        <span>{allDay ? "Last day" : "End"}</span>
-        <input type="date" bind:value={endDate} min={startDate} />
-        {#if !allDay}
-          <input type="time" bind:value={endTime} />
-        {/if}
-      </label>
-    </div>
-
-    <label>
-      <span>Location</span>
-      <input type="text" bind:value={location} placeholder="Optional" />
-    </label>
-
-    <label>
-      <span>Note</span>
-      <textarea bind:value={notes} rows="3" placeholder="Optional"></textarea>
-    </label>
-
-    {#if entry}
-      <fieldset class="google-export">
-        <legend>Google Calendar</legend>
-        {#if googleExportUnavailable()}
-          <p class="fieldnote">{googleExportUnavailable()}</p>
-        {:else}
-          <label class="checkbox">
-            <input
-              type="checkbox"
-              checked={googleExported}
-              disabled={updatingGoogleExport || saving}
-              onchange={toggleGoogleExport}
-            />
-            <span>Approve for Google export</span>
-          </label>
-          <p class="fieldnote">
-            {googleExported
-              ? "In the export queue. The entry is sent only when you run Google sync."
-              : "Not yet approved for Google."}
-          </p>
-        {/if}
-      </fieldset>
-    {/if}
-
-    <div class="actions">
-      {#if entry && onDelete}
-        <button class="btn danger" onclick={deleteEntry} disabled={saving}>
-          Delete
+  <fieldset>
+    <legend>Type</legend>
+    <div class="kind-picker">
+      {#each KINDS as option}
+        <button
+          type="button"
+          class="kind-btn"
+          class:selected={option.value === kind}
+          style={`--kind-color: ${option.color}`}
+          onclick={() => (kind = option.value)}
+        >
+          {option.label}
         </button>
-      {/if}
-      <div class="spacer"></div>
-      <button class="btn secondary" onclick={onClose} disabled={saving}>Cancel</button>
-      <button class="btn primary" onclick={save} disabled={saving}>
-        {saving ? "Saving…" : "Save"}
-      </button>
+      {/each}
     </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Commitment</legend>
+    <div class="kind-picker">
+      {#each COMMITMENTS as option}
+        <button
+          type="button"
+          class="kind-btn commitment-btn"
+          class:selected={option.value === commitment}
+          title={option.hint}
+          onclick={() => (commitment = option.value)}
+        >
+          {option.label}
+        </button>
+      {/each}
+    </div>
+    <p class="fieldnote">{COMMITMENTS.find((c) => c.value === commitment)?.hint}</p>
+  </fieldset>
+
+  <label>
+    <span>Title</span>
+    <input bind:this={titleInput} type="text" bind:value={title} placeholder="What for?" />
+  </label>
+
+  <label class="checkbox">
+    <input type="checkbox" bind:checked={allDay} />
+    <span>All day</span>
+  </label>
+
+  <div class="dates">
+    <label>
+      <span>Start</span>
+      <input type="date" bind:value={startDate} />
+      {#if !allDay}
+        <input type="time" bind:value={startTime} />
+      {/if}
+    </label>
+    <label>
+      <span>{allDay ? "Last day" : "End"}</span>
+      <input type="date" bind:value={endDate} min={startDate} />
+      {#if !allDay}
+        <input type="time" bind:value={endTime} />
+      {/if}
+    </label>
   </div>
-</div>
+
+  <label>
+    <span>Location</span>
+    <input type="text" bind:value={location} placeholder="Optional" />
+  </label>
+
+  <label>
+    <span>Note</span>
+    <textarea bind:value={notes} rows="3" placeholder="Optional"></textarea>
+  </label>
+
+  {#if entry}
+    <fieldset class="google-export">
+      <legend>Google Calendar</legend>
+      {#if googleExportUnavailable()}
+        <p class="fieldnote">{googleExportUnavailable()}</p>
+      {:else}
+        <label class="checkbox">
+          <input
+            type="checkbox"
+            checked={googleExported}
+            disabled={updatingGoogleExport || saving}
+            onchange={toggleGoogleExport}
+          />
+          <span>Approve for Google export</span>
+        </label>
+        <p class="fieldnote">
+          {googleExported
+            ? "In the export queue. The entry is sent only when you run Google sync."
+            : "Not yet approved for Google."}
+        </p>
+      {/if}
+    </fieldset>
+  {/if}
+
+  <div class="actions">
+    {#if entry && onDelete}
+      <button class="btn danger" onclick={deleteEntry} disabled={saving}>
+        Delete
+      </button>
+    {/if}
+    <div class="spacer"></div>
+    <button class="btn secondary" onclick={onClose} disabled={saving}>Cancel</button>
+    <button class="btn primary" onclick={save} disabled={saving}>
+      {saving ? "Saving…" : "Save"}
+    </button>
+  </div>
+</Overlay>
 
 <style>
-  .overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 100;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-  }
-
-  .backdrop {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    border: 0;
-    background: rgba(0, 0, 0, 0.48);
-    cursor: default;
-    animation: fade-in 0.15s ease-out;
-  }
-
-  .sheet {
-    position: relative;
-    width: min(520px, 100%);
-    max-height: 90vh;
-    overflow-y: auto;
-    padding: 24px;
-    border: 1px solid var(--card-border);
-    border-radius: 14px;
-    background: var(--card-bg);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
-  }
-
-  .sheet:focus {
-    outline: none;
-  }
-
-  .heading {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-    margin-bottom: 18px;
-  }
-
-  .eyebrow {
-    margin: 0 0 3px;
-    color: var(--text-secondary);
-    font-size: 0.6875rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 1.125rem;
-  }
-
-  .close {
-    width: 30px;
-    height: 30px;
-    border: 0;
-    border-radius: 50%;
-    background: var(--surface);
-    color: var(--text-primary);
-    font-size: 1.25rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-
+  /* Dialog chrome — backdrop, sheet, heading, close — lives in `$lib/Overlay.svelte`. */
   label {
     display: flex;
     flex-direction: column;
@@ -533,16 +443,7 @@
     font-size: 0.8125rem;
   }
 
-  @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
   @media (max-width: 560px) {
-    .sheet {
-      padding: 20px;
-    }
-
     .dates {
       grid-template-columns: 1fr;
       gap: 0;
