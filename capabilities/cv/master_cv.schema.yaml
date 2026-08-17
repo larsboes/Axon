@@ -63,8 +63,8 @@ skills:
   # spoken languages are the exception that needs this.
   - category: {en: "Spoken Languages", de: "Sprachkenntnisse"}
     items:
-      en: ["German (native)", "English (C1)"]
-      de: ["Deutsch (Muttersprache)", "Englisch (C1)"]
+      en: ["First language (native)", "Second language (B2)"]
+      de: ["Erstsprache (Muttersprache)", "Zweitsprache (B2)"]
 
 # Anything the four sections above cannot express. Optional — omit the key entirely and
 # nothing renders. Added 2026-08-05, when a CV master turned out to carry Hackathons &
