@@ -29,8 +29,13 @@
   else { profile in item.profiles }
 }
 
-// pick the `{en, de}` text variant for the active language
-#let loc(variant) = variant.at(lang, default: variant.at("en"))
+// pick the `{en, de}` text variant for the active language. A bare string passes through
+// unchanged, so a field may be plain where both languages share the text (an event name, a
+// city) and a `{en, de}` map where they don't (a section's "since Jun 2025" / "seit Juni 2025")
+// without the template needing to know which fields are which.
+#let loc(variant) = if type(variant) == str { variant } else {
+  variant.at(lang, default: variant.at("en"))
+}
 
 // pick the profile-specific override of a `{default: {en,de}, <profile>: {en,de}, ...}`
 // text-variant map, falling back to `default`
@@ -121,7 +126,11 @@
   if entries.len() > 0 {
     section-title(if lang == "de" { "Fähigkeiten" } else { "Skills" })
     for s in entries {
-      [#text(weight: "bold", size: 9pt)[#loc(s.category):] #s.items.join(", ")]
+      // `items` is normally one list shared by both languages (tool names don't translate).
+      // A `{en: [...], de: [...]}` map is the exception — spoken languages, where every item
+      // differs — and is selected the same way as any other localized field.
+      let items = if type(s.items) == dictionary { loc(s.items) } else { s.items }
+      [#text(weight: "bold", size: 9pt)[#loc(s.category):] #items.join(", ")]
       linebreak()
     }
   }
@@ -146,8 +155,8 @@
     for e in s.at("entries", default: ()).filter(included) {
       grid(
         columns: (1fr, auto),
-        text(weight: "bold", size: 9.8pt)[#e.label],
-        text(size: 8.6pt, style: "italic")[#e.at("meta", default: "")],
+        text(weight: "bold", size: 9.8pt)[#loc(e.label)],
+        text(size: 8.6pt, style: "italic")[#loc(e.at("meta", default: ""))],
       )
       if "detail" in e { [#loc(e.detail)]; linebreak() }
       v(0.2em)

@@ -16,6 +16,8 @@ usage() {
 Usage:
   cv build --profile <tag> --lang <en|de> [--out <path>]
   cv build --all [--lang <en|de>]     # every profile in master_cv.yaml x lang (both langs if --lang omitted)
+  cv watch --profile <tag> --lang <en|de> [--out <path>]
+                                      # rebuild on every save of the master file
   cv list-profiles                    # profile tags currently in use, read from master_cv.yaml
 EOF
 }
@@ -44,14 +46,41 @@ require_master() {
 list_profiles() {
   require_deps
   require_master
+  # `sections` is included because a tag can live only there — the free-section block carried
+  # `hackathon` for months while this list did not, so the tag looked undefined and
+  # `build --profile hackathon` silently produced a baseline CV instead.
   yq eval '
     ([.experience[].bullets[].profiles[]?] +
      [.skills[].profiles[]?] +
      [.education[].profiles[]?] +
+     [.sections[].profiles[]?] +
+     [.sections[].entries[]?.profiles[]?] +
+     [.sections[].bullets[]?.profiles[]?] +
      [.title | keys | .[] | select(. != "default")] +
      [.summary | keys | .[] | select(. != "default")]
     ) | unique | sort | .[]
   ' "$MASTER"
+}
+
+# `default` is always buildable — it is the fallback every text-variant map declares, not a tag
+# anyone writes in a `profiles:` list, so it never appears in list_profiles output.
+known_profile() {
+  candidate="$1"
+  if [ "$candidate" = "default" ]; then return 0; fi
+  list_profiles | grep -qx -- "$candidate"
+}
+
+# Languages a profile builds for. Declared in the master as `profile_langs: {<tag>: [en]}`;
+# a profile with no entry builds in every language. Keeps `build --all` from emitting variants
+# that exist only because the matrix multiplied them out.
+langs_for_profile() {
+  p="$1"
+  declared="$(yq eval "[.profile_langs.\"$p\"[]?] | join(\" \")" "$MASTER" 2>/dev/null || true)"
+  if [ -z "$declared" ] || [ "$declared" = "null" ]; then
+    echo "en de"
+  else
+    echo "$declared"
+  fi
 }
 
 build_one() {
@@ -83,11 +112,15 @@ cmd_build() {
   done
 
   if [ "$all" -eq 1 ]; then
-    langs="$lang"
-    if [ -z "$langs" ]; then langs="en de"; fi
-    profiles="default $(list_profiles | tr '\n' ' ')"
+    # Held in its own name because build_one assigns the global `lang` — reading `$lang` inside
+    # the loop below would compare against whatever the previous build set, which silently
+    # dropped every German variant after the first PDF.
+    want_lang="$lang"
+    profiles="$(printf 'default\n%s\n' "$(list_profiles)" | sort -u | tr '\n' ' ')"
     for p in $profiles; do
-      for l in $langs; do
+      for l in $(langs_for_profile "$p"); do
+        # an explicit --lang narrows the matrix; it never overrides a profile's own restriction
+        if [ -n "$want_lang" ] && [ "$want_lang" != "$l" ]; then continue; fi
         build_one "$p" "$l" "$DIST/CV_${p}_${l}.pdf"
       done
     done
@@ -99,13 +132,63 @@ cmd_build() {
     usage
     exit 1
   fi
+  # An unknown tag used to render silently: every `profiles:`-tagged item dropped out and the
+  # result was a thin baseline CV that looked like a successful build. A typo is a build error.
+  if ! known_profile "$profile"; then
+    echo "cv: unknown profile '$profile'" >&2
+    echo "cv: known profiles: default $(list_profiles | tr '\n' ' ')" >&2
+    exit 1
+  fi
   if [ -z "$lang" ]; then lang="en"; fi
   if [ -z "$out" ]; then out="$DIST/CV_${profile}_${lang}.pdf"; fi
   build_one "$profile" "$lang" "$out"
 }
 
+cmd_watch() {
+  require_deps
+  require_master
+  profile=""
+  lang=""
+  out=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --profile) profile="$2"; shift 2 ;;
+      --lang) lang="$2"; shift 2 ;;
+      --out) out="$2"; shift 2 ;;
+      *) echo "cv: unknown option $1" >&2; usage; exit 1 ;;
+    esac
+  done
+
+  if [ -z "$profile" ]; then
+    echo "cv: --profile is required" >&2
+    usage
+    exit 1
+  fi
+  if ! known_profile "$profile"; then
+    echo "cv: unknown profile '$profile'" >&2
+    echo "cv: known profiles: default $(list_profiles | tr '\n' ' ')" >&2
+    exit 1
+  fi
+  if [ -z "$lang" ]; then lang="en"; fi
+  if [ -z "$out" ]; then out="$DIST/CV_${profile}_${lang}.pdf"; fi
+  mkdir -p "$(dirname "$out")"
+
+  echo "cv: watching $MASTER -> $out (ctrl-c to stop)"
+  # typst tracks the files the template reads, the master included, so saving the YAML
+  # retriggers the compile even though its log line only names the template. It compares
+  # content, not mtime: `touch` alone will NOT rebuild, which looks like a broken watcher and
+  # is not one. No separate file watcher and no preview server — any PDF viewer that reloads
+  # on change (Preview, Skim, a browser tab) is the live view.
+  typst watch --root / \
+    --input master="$MASTER" \
+    --input profile="$profile" \
+    --input lang="$lang" \
+    "$TEMPLATE" "$out"
+}
+
 case "${1:-}" in
   build) shift; cmd_build "$@" ;;
+  watch) shift; cmd_watch "$@" ;;
   list-profiles) list_profiles ;;
   *) usage; exit 1 ;;
 esac
