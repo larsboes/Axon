@@ -1297,6 +1297,11 @@
       "pin": "1.168.0"
     },
     {
+      "name": "skills-best-practices",
+      "verdict": "reject",
+      "pin": "675ee84"
+    },
+    {
       "name": "slm-finetuning-talk",
       "verdict": "inspiration",
       "pin": ""

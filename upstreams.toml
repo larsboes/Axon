@@ -383,6 +383,15 @@ pin_kind = "commit"
 tracked_by = "nothing, deliberately: rejected twice and consumed nowhere. The sha is the state that was compared, kept so a third comparison starts from evidence"
 why = "same job as human-writing (prose AI-tell removal) with a smaller hand-written phrase/structure list, no data grounding. Declined twice. Re-evaluated 2026-07-25 during the human-writing merge: its distinctive contributions (false_agency, narrator_distance, negative_listing, dramatic_fragmentation, vague_declarative) are ALREADY present as pattern categories in the vendored human-voice linter, so it adds nothing new; and its absolutist framing ('kill all adverbs', 'no em dashes ever', 'two items beat three', 'no Wh- starters') manufactures exactly the fresh uniform signature that skill exists to prevent -- human-voice's own SKILL.md names it as the anti-pattern. Recorded here, not just in a pack README, so the pin/license survive if the comparison is ever revisited."
 
+[skills-best-practices]
+url = "https://github.com/mgechev/skills-best-practices"
+verdict = "reject"
+license = "NONE -- no LICENSE file at repo root and no licence field anywhere; all rights reserved by default"
+pin = "675ee84"         # 2026-06-22, cloned 2026-07-09 alongside the Anthropic skill docs, evaluated 2026-08-18
+pin_kind = "commit"
+tracked_by = "nothing, deliberately: rejected and consumed nowhere. The sha is the state that was compared, kept so a second comparison starts from evidence. Revisit only if upstream adds a LICENSE file, which is the single change that could move the verdict"
+why = "same job as Packs/writing/skills/writing-skills (authoring + validating agent skills) and smaller on every axis compared: its skill/SKILL.md is a 46-line 5-step procedure against that skill's SKILL.md plus 8 references, and its scripts/validate-metadata.py is 50 bare lines against the installed 126-line validator, which additionally combines the agentskills.io rules with Anthropic's requirements and the local directory-name convention and prints field-by-field errors an agent can self-correct from. Nothing in it is absent downstream. Licence is the hard blocker independent of that: no LICENSE file at all, which is stricter than the oberskills case above (MIT in plugin.json, no root file) that already earned quarry rather than overlay -- with no grant of any kind there is nothing to quarry from, so reject rather than paraphrase. One lead recorded and not taken: its README points at github.com/mgechev/skillgrade for skill eval and regression testing, which is adjacent to the Evals skill and is a separate evaluation if ever wanted. Retroactive entry: cloned 2026-07-09 into the gitignored staging dir alongside the Anthropic docs that writing-skills DID absorb, and never itself consumed -- recorded now so the folder's retirement does not erase the fact that it was looked at."
+
 [academic-researcher]
 url = "https://github.com/SiluPanda/academic-researcher"
 verdict = "overlay"
