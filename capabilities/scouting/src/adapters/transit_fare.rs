@@ -169,10 +169,12 @@ mod tests {
             longitude: None,
         };
         Journey {
+            reliability: None,
             id: "journey:abc".into(),
             start_station: bonn.clone(),
             end_station: berlin.clone(),
             legs: vec![Leg {
+                on_time_probability: None,
                 origin: bonn,
                 destination: berlin,
                 departure_time: "2026-08-01T08:00:00".into(),

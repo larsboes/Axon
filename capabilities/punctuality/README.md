@@ -186,9 +186,24 @@ for the arriving train's type and arrival hour.
 
 **That is not the probability the trip works out.** It says nothing about catching a
 transfer, and a journey whose first leg is late enough to miss a connection arrives on a
-different train than the one this describes. Transfer risk is a different quantity and
-this data cannot produce it — which is exactly the gap `bahnvorhersage` fills with a
-separate `verbindungsscore`.
+different train than the one this describes.
+
+`Journey.reliability` is the field that does try to answer it, added 2026-08-19, and it
+is composed entirely from this table: the product of P(the arriving train is less than
+the buffer late) at each transfer, asked at that transfer's own buffer, and P(the last
+leg arrives within six minutes). No fitted curve and no constants — every factor is an
+exceedance read off the stored histogram, which is exactly what persisting `counts`
+bought. This paragraph used to say the data could not produce transfer risk at all; that
+was true only while the array was being thrown away on the way to disk, as `store.rs`
+notes.
+
+Two things it still assumes and this data cannot settle. Each onward train departs on
+schedule, so every transfer term is an upper bound on that transfer's risk and the whole
+product is a floor on reliability rather than an estimate of it. And consecutive legs are
+independent, which two legs of the same line delayed by one cause are not, so the naive
+product overstates. Both are stated on the type rather than corrected, because correcting
+them needs recorded trip outcomes that do not exist yet. `min_sample` reports the thinnest
+cell in the product, because it is only as measured as its weakest term.
 
 Absence degrades and never fails: if this server is down, or has no cell, transit
 returns the same journeys with `delay_risk_score: null`. Verified by stopping the

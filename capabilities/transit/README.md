@@ -123,6 +123,45 @@ cargo run --bin transit-server
 bazel run //capabilities/transit:transit-server
 ```
 
+
+## How likely the journey holds together
+
+`Journey.reliability` is the product of catching every transfer and the last leg then
+arriving within six minutes. Every factor is an exceedance read off punctuality's stored
+histogram at the threshold that transfer actually has — no fitted curve, no constants.
+Each leg additionally carries its own `on_time_probability`, so a consumer can point at
+the weak leg rather than render one opaque score.
+
+The point of asking at the transfer's own buffer is that the answer moves. Live on
+2026-08-19, Bonn Hbf to Berlin Hbf on 2026-09-15, the same RE5-to-ICE shape at Köln Hbf:
+
+| Buffer | P(catch) | n | Final leg on time | Reliability |
+|---|---|---|---|---|
+| 10 min | 0.8747 | 1237 | 0.4829 | 0.4224 |
+| 16 min | 0.9422 | 1211 | 0.4829 | 0.4550 |
+
+A fixed six-minute figure would have given both journeys the same transfer term and made
+the six extra minutes invisible.
+
+**It is a floor, not an estimate.** Two assumptions are stated on the type and neither can
+be settled from this data: each onward train departs on schedule, so a transfer term is an
+upper bound on that transfer's risk; and consecutive legs are independent, which two legs
+of one line delayed by one cause are not. `min_sample` reports the thinnest cell in the
+product, because the number is only as measured as its weakest term.
+
+**A missing term costs the whole number, deliberately.** A journey with two transfers where
+only one can be scored returns `null`, not a product over the one that answered — which
+would read *higher* than the truth and be indistinguishable from a journey that really had
+one transfer. The third journey in that live run is exactly this case: its first leg is an
+`STR` tram, which DB's published dataset has no cell for, so it scores nothing.
+
+**On `dbweb` it scores almost nothing, and that is a vocabulary mismatch rather than a
+missing measurement.** punctuality's `train_type` comes verbatim from DB's open-data
+parquet (`RB`, `RE`, `ICE`). `dbnav`'s `produktGattung` is that same vocabulary, so its
+legs find cells. `dbweb`'s `kategorie` is HAFAS's own — the identical RE5 above comes back
+as `DRB`, which has no cell at all. That silently costs `delay_risk_score` on regional legs
+too, and predates this field. Unmapped, so no journey is scored off a guessed equivalence.
+
 ## What a split-ticket chain does and does not promise
 
 <!-- human-voice: ignore em_dash -->

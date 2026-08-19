@@ -1126,6 +1126,7 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
                             station_time::rfc3339_utc(&arrival_time, &ext_id_of(dest_halt));
 
                         legs.push(Leg {
+                            on_time_probability: None,
                             origin: origin_station,
                             destination: dest_station,
                             departure_time,
@@ -1165,6 +1166,8 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
             let total_duration_minutes = (duration_seconds / 60) as u32;
 
             journeys.push(Journey {
+                // Filled by punctuality::enrich when that capability answers.
+                reliability: None,
                 // The real bahn.de response field is "tripId", not "id" --
                 // found via live verification while wiring this adapter into
                 // scouting (capabilities/postgres/README.md, Phase 2): every journey in a
@@ -1255,6 +1258,7 @@ pub fn parse_dbnav_journeys(body: &Value) -> Vec<Journey> {
             let category = str_field(section, "produktGattung");
 
             legs.push(Leg {
+                on_time_probability: None,
                 // The platform lives on the first stop, not on the section.
                 platform: section
                     .get("halte")
@@ -1302,6 +1306,8 @@ pub fn parse_dbnav_journeys(body: &Value) -> Vec<Journey> {
         let first_leg = &legs[0];
         let last_leg = legs.last().unwrap();
         journeys.push(Journey {
+            // Filled by punctuality::enrich when that capability answers.
+            reliability: None,
             id: str_field(v, "checksum"),
             start_station: first_leg.origin.clone(),
             end_station: last_leg.destination.clone(),
@@ -1955,10 +1961,12 @@ mod tests {
         };
         let seg = |train: &str, arr_utc: Option<&str>, dep_utc: Option<&str>| SplitSegment {
             journey: Journey {
+                reliability: None,
                 id: "j".into(),
                 start_station: station("From"),
                 end_station: station("Boundary"),
                 legs: vec![Leg {
+                    on_time_probability: None,
                     origin: station("From"),
                     destination: station("Boundary"),
                     departure_time: "2026-09-01T08:00:00".into(),
@@ -2164,12 +2172,14 @@ mod tests {
             longitude: None,
         };
         Journey {
+            reliability: None,
             id: "j".into(),
             start_station: station("A"),
             end_station: station("B"),
             legs: trains
                 .iter()
                 .map(|n| Leg {
+                    on_time_probability: None,
                     origin: station("A"),
                     destination: station("B"),
                     departure_time: "2026-09-01T08:00:00".into(),

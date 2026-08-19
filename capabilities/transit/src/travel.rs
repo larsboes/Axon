@@ -58,6 +58,16 @@ pub struct Leg {
     pub train_category: String, // e.g. "ICE", "RE", "RB", "S"
     pub platform: Option<String>,
     pub is_regional: bool, // true if covered by Deutschland-Ticket (HAFAS attribute "9G")
+    /// P(this train arrives at this leg's own destination within punctuality's
+    /// six-minute threshold), measured from that station's history for this train
+    /// type in this arrival hour.
+    ///
+    /// Stored per leg rather than only multiplied into the journey's number, so a
+    /// consumer can show which leg is the weak one instead of one opaque score.
+    /// Absent for the same three reasons `Journey::arrival_punctuality` is, and
+    /// absence is never "on time".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_time_probability: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,14 +96,21 @@ pub struct Journey {
     /// measurement. Carrying `n` is what lets one be told from another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrival_punctuality: Option<ArrivalPunctuality>,
+    /// How likely this journey holds together end to end, composed from the same
+    /// measured history. Absent whenever any term is unknown -- a product with a
+    /// guessed factor in it is not a measurement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reliability: Option<JourneyReliability>,
 }
 
 /// One punctuality cell: the arriving train's type, at the journey's destination,
 /// in the arrival hour, split weekday/weekend.
 ///
-/// Emphatically not a forecast for this journey and not transfer risk -- the
-/// module doc on `punctuality::enrich` says why this data cannot produce either.
-/// It is what happened to comparable trains at that stop, and `n` says how many.
+/// Emphatically not a forecast for this journey, and not transfer risk: it is one
+/// destination cell, asked at the six-minute threshold. `Journey::reliability` is
+/// the field that composes transfer terms, and it asks each transfer at its own
+/// buffer rather than at this one. What happened to comparable trains at that
+/// stop, and `n` says how many.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArrivalPunctuality {
     pub station_name: Option<String>,
@@ -112,6 +129,49 @@ pub struct ArrivalPunctuality {
     pub p90: i16,
     pub share_late_6: f32,
     pub cancel_rate: f32,
+}
+
+/// A journey's reliability, composed from measured exceedances and nothing else.
+///
+/// `probability` is the product of catching every transfer and the last leg then
+/// arriving within `threshold_minutes`. Intermediate legs are represented by their
+/// transfer term rather than by their own on-time term, because a leg being late
+/// matters here exactly insofar as it loses the connection -- multiplying both in,
+/// as the originating issue's formula does, counts the same lateness twice.
+///
+/// Two things it assumes, and neither can be measured from this data today:
+/// each onward train departs on schedule (so a transfer term is an upper bound on
+/// the risk, making the whole product a floor on reliability), and consecutive legs
+/// are independent (two legs of the same line delayed by one cause are not, so a
+/// naive product overstates). Both are stated here rather than corrected, because
+/// correcting them needs trip outcomes that do not exist yet -- the same gate the
+/// contract-boundary penalty sits behind.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JourneyReliability {
+    pub probability: f64,
+    /// The lateness threshold the final arrival is judged against. Six is DB's own.
+    pub threshold_minutes: i32,
+    pub final_leg_on_time: f64,
+    pub transfers: Vec<TransferReliability>,
+    /// Observations behind the thinnest cell in the product.
+    ///
+    /// The product is only as measured as its weakest term, and a reader cannot
+    /// tell a chain resting on four thousand observations from one resting on
+    /// thirty once it is a single float.
+    pub min_sample: i64,
+}
+
+/// One transfer's measured catch probability.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TransferReliability {
+    pub station: Station,
+    /// Scheduled minutes between arriving and departing, from the UTC instants, so
+    /// it stays right across a zone boundary.
+    pub buffer_minutes: i64,
+    /// P(the arriving train is less than `buffer_minutes` late at this station),
+    /// read straight off the stored histogram at that exact threshold.
+    pub catch_probability: f64,
+    pub n: i64,
 }
 
 /// Whether a priced segment is priced for the train the traveller will be on.
