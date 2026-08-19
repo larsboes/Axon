@@ -149,6 +149,44 @@ that exists.
 `savings` is `null` when no direct fare came back. It used to be `0.0`, which the dashboard
 rendered as "Direct is cheapest" — a claim nobody had checked.
 
+
+## Which rail backend answers, and why there are two
+
+`AXON_TRANSIT_BACKEND` picks it: `dbweb` (the default) or `dbnav`. Anything else falls back to
+`dbweb` rather than failing, because an unrecognised value is a typo far more often than it is
+an intent.
+
+| | `dbweb` | `dbnav` |
+|---|---|---|
+| Endpoint | `bahn.de/web/api` | `app.services-bahn.de` (the DB Navigator app API) |
+| Headers | browser UA, plain JSON | `X-Correlation-ID`, versioned vendor media types |
+| db-vendo-client's rating | "less stable", aggressive IPv4/IPv6 blocking | more stable, with its own open 403 reports |
+| Times | naive local (`2026-09-15T09:04:00`) | offset-carrying (`...+02:00`) |
+| Coordinates | absent | present on every station |
+
+The point of the second one is that everything here sits on a reverse-engineered endpoint that
+can die without notice — the sibling `db` profile's host lost its DNS in May 2026 and took
+BetterBahn down with it. Two backends behind one seam means that costs a config change instead
+of a rewrite.
+
+Both answer journey search and split-ticketing. The split solver was `dbweb`-only until
+2026-08-19, not for access reasons but shape ones: it does not read parsed `Journey` values, it
+reads the raw response to learn which train covers which stop pair, and `dbnav` names all of
+those fields differently. `DirectJourney` is that seam now — the three facts the solver needs
+(cut points, the train per stop pair, the through fare) are read per backend, and the pairwise
+pricing, the DP, train matching and contract boundaries are not.
+
+One difference is load-bearing rather than cosmetic. `dbnav` stamps times with their offset, and
+`normalize_datetime` refuses those — an offset-carrying string splits into four colon-separated
+fields, not three. Since a stop's stamp is handed straight back as the moment to price from, the
+offset is dropped when the stop is read. Written from the field list instead of the capture, this
+port would have searched fine and then failed every priced pair, which surfaces as "no split
+exists" rather than as a malformed query.
+
+Verified live on 2026-08-19, Bonn Hbf to Berlin Hbf on 2026-09-15: both backends returned the
+same €73.99, the same `partial` confidence, the same 3 queried pairs with 1 unpriced, and the
+same `exact` train match over trains 28510 and 857.
+
 ## Reading a ticket: two backends, and what each is actually for
 
 `document_backend` in the overlay picks the reader. `builtin` is pdf_extract and

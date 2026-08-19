@@ -208,26 +208,6 @@ impl Default for HafasClient {
 }
 
 impl HafasClient {
-    /// The one thing dbnav still refuses, and why it is no longer about access.
-    ///
-    /// Journey search works on both backends. Split-ticketing does not, because
-    /// the solver does not read parsed `Journey` values: it reads the raw dbweb
-    /// body directly (`extract_stops`, `extract_section_spans`, `angebotsPreis`)
-    /// to learn which train covers which stop pair. dbnav names those facts
-    /// differently (`verbindung.verbindungsAbschnitte[].halte[].ort`, prices
-    /// under `angebote.preise.gesamt.ab`), and a chain of tickets priced off a
-    /// mapping nobody has verified is exactly the failure this solver already
-    /// reports contract boundaries to prevent. Refuse loudly until the stop and
-    /// span extractors are ported and tested against a captured dbnav body.
-    fn dbnav_split_unsupported() -> HafasError {
-        HafasError::Other(
-            "split-ticketing is dbweb-only: the solver reads dbweb-shaped stop and section \
-             fields off the raw response, and no verified dbnav mapping for them exists yet. \
-             Journey search works on dbnav; run the split on the dbweb backend."
-                .into(),
-        )
-    }
-
     pub fn new() -> Self {
         Self::with_backend(RailBackend::from_env())
     }
@@ -442,56 +422,68 @@ impl HafasClient {
         datetime: &str,
         fare: &FareOptions,
     ) -> Result<SplitResult, HafasError> {
-        if self.backend == RailBackend::DbNav {
-            return Err(Self::dbnav_split_unsupported());
-        }
-        let payload = Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?;
-        let response = self
-            .client
-            .post(FAHRPLAN_URL)
-            .header("User-Agent", BROWSER_UA)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json; charset=UTF-8")
-            .json(&payload)
+        // Same dispatch as `search_connections`, because this is the same query:
+        // one direct journey, read for its structure instead of returned. Keeping
+        // the two in step is the point -- a backend that can answer journeys can
+        // answer this, and split-ticketing stopped being dbweb-only the moment the
+        // stop and span readers below existed for both shapes.
+        let request = match self.backend {
+            RailBackend::DbWeb => self
+                .client
+                .post(FAHRPLAN_URL)
+                .header("User-Agent", BROWSER_UA)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json; charset=UTF-8")
+                .json(&Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?),
+            RailBackend::DbNav => self
+                .client
+                .post(DBNAV_FAHRPLAN_URL)
+                .header("X-Correlation-ID", dbnav_correlation_id())
+                .header("Accept", DBNAV_MEDIA_TYPE)
+                .header("Content-Type", DBNAV_MEDIA_TYPE)
+                .json(&Self::dbnav_payload(from_eva, to_eva, datetime, fare)?),
+        };
+
+        let response = request
             .send()
             .map_err(|e| HafasError::Request(e.to_string()))?;
 
         let status = response.status();
+        let text = response
+            .text()
+            .map_err(|e| HafasError::Request(e.to_string()))?;
         if !status.is_success() {
+            // The body used to be dropped here (`body: String::new()`) while
+            // `search_connections` kept it. On dbweb that cost little, because the
+            // same request shape was already debuggable through the other method.
+            // On dbnav it is the difference between a diagnosable rejection and a
+            // bare number, and a versioned vendor media type is exactly the kind of
+            // thing that starts failing with a message worth reading.
             return Err(HafasError::BadStatus {
                 status: status.as_u16(),
-                body: String::new(),
+                body: text,
             });
         }
 
-        let body: Value = response
-            .json()
-            .map_err(|e| HafasError::Request(e.to_string()))?;
-        let verbindungen = body
-            .get("verbindungen")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| HafasError::Other("no connections found in Vendo response".into()))?;
-        if verbindungen.is_empty() {
-            return Err(HafasError::Other("no connection found".into()));
-        }
-        let v = &verbindungen[0];
-        let direct_price = v
-            .get("angebotsPreis")
-            .and_then(|p| p.get("betrag"))
-            .and_then(|b| b.as_f64());
+        let body: Value =
+            serde_json::from_str(&text).map_err(|e| HafasError::Parse(e.to_string(), text))?;
 
-        let stops = extract_stops(v);
+        // Which train the traveller is actually on over each stop pair comes from
+        // this same payload, so classifying a segment costs no extra request.
+        let DirectJourney {
+            stops,
+            spans,
+            direct_price,
+        } = match self.backend {
+            RailBackend::DbWeb => dbweb_direct_journey(&body)?,
+            RailBackend::DbNav => dbnav_direct_journey(&body)?,
+        };
         let n = stops.len();
         if n < 2 {
             return Err(HafasError::Other(
                 "not enough stops to perform split-ticketing".into(),
             ));
         }
-
-        // Which train the traveller is actually on over each stop pair. Read from
-        // the same direct-journey payload the stops came from, so classifying a
-        // segment costs no extra request.
-        let spans = extract_section_spans(v, &stops);
 
         let mut prices: HashMap<(usize, usize), f64> = HashMap::new();
         let mut segments_data: HashMap<(usize, usize), Journey> = HashMap::new();
@@ -795,6 +787,187 @@ fn extract_stops(v: &Value) -> Vec<Stop> {
         }
     }
     stops
+}
+
+/// dbnav stamps every time with its offset (`2026-09-15T09:04:00+02:00`) where
+/// dbweb sends the same wall clock naive (`2026-07-15T08:30:00`).
+///
+/// The offset comes off here rather than `normalize_datetime` learning to
+/// tolerate it, because `dbnav_payload` documents the opposite contract on
+/// purpose: both backends take the same naive local string, so there is one
+/// caller-facing shape. Nothing downstream loses by it -- a stop's stamp is only
+/// ever handed back as "search from this moment" for the very station it was read
+/// at, and local time is what both endpoints want there.
+///
+/// Found from the capture rather than from reading. An offset-carrying string
+/// splits into four colon-separated fields, so `normalize_datetime` refuses it,
+/// and every priced pair on dbnav would have died as `InvalidDatetime` -- after
+/// the direct search had already succeeded, which is the shape of failure that
+/// reads like "no split exists" instead of "the query was malformed".
+fn naive_local(stamp: &str) -> String {
+    let Some((date, time)) = stamp.split_once('T') else {
+        return stamp.to_string();
+    };
+    let cut = time.find(['+', '-', 'Z']).unwrap_or(time.len());
+    format!("{date}T{}", &time[..cut])
+}
+
+/// The direct journey as the split solver needs it: the stops it may cut at, the
+/// train covering each stop pair, and what the through ticket costs.
+///
+/// Both backends answer those three questions, and name every field involved
+/// differently. Reading them is per-backend; everything after it -- the pairwise
+/// pricing, the DP, train matching, contract boundaries -- is not. That asymmetry
+/// is the whole reason this struct exists rather than a second copy of the solver.
+struct DirectJourney {
+    stops: Vec<Stop>,
+    spans: Vec<SectionSpan>,
+    direct_price: Option<f64>,
+}
+
+/// dbweb: the connection is the array element itself, and the through fare sits
+/// on it as `angebotsPreis`.
+fn dbweb_direct_journey(body: &Value) -> Result<DirectJourney, HafasError> {
+    let v = body
+        .get("verbindungen")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| HafasError::Other("no connections found in Vendo response".into()))?
+        .first()
+        .ok_or_else(|| HafasError::Other("no connection found".into()))?;
+    let stops = extract_stops(v);
+    let spans = extract_section_spans(v, &stops);
+    Ok(DirectJourney {
+        direct_price: v
+            .get("angebotsPreis")
+            .and_then(|p| p.get("betrag"))
+            .and_then(|b| b.as_f64()),
+        stops,
+        spans,
+    })
+}
+
+/// dbnav: the connection sits a level down under `verbindung`, and the fare hangs
+/// off the sibling `angebote` rather than off the connection -- the same place
+/// `parse_dbnav_journeys` already reads `total_price` from.
+fn dbnav_direct_journey(body: &Value) -> Result<DirectJourney, HafasError> {
+    let item = body
+        .get("verbindungen")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| HafasError::Other("no connections found in dbnav response".into()))?
+        .first()
+        .ok_or_else(|| HafasError::Other("no connection found".into()))?;
+    let v = item
+        .get("verbindung")
+        .ok_or_else(|| HafasError::Other("dbnav connection carries no `verbindung`".into()))?;
+    let stops = extract_dbnav_stops(v);
+    let spans = extract_dbnav_section_spans(v, &stops);
+    Ok(DirectJourney {
+        direct_price: item
+            .get("angebote")
+            .and_then(|a| a.get("preise"))
+            .and_then(|p| p.get("gesamt"))
+            .and_then(|g| g.get("ab"))
+            .and_then(|ab| ab.get("betrag"))
+            .and_then(|b| b.as_f64()),
+        stops,
+        spans,
+    })
+}
+
+/// `extract_stops` against dbnav's names.
+///
+/// Three differences, every one of them read off the capture: the ride/footpath
+/// discriminator is `typ` on the section rather than `verkehrsmittel.typ`; a
+/// stop's id is `ort.evaNr`, which is the same EVA number the pairwise fare
+/// queries are keyed on; and the stamp sits directly on the halt as
+/// `abgangsDatum`/`ankunftsDatum` instead of under an `abfahrt`/`ankunft` object.
+fn extract_dbnav_stops(v: &Value) -> Vec<Stop> {
+    let mut stops = Vec::new();
+    let Some(sections) = v.get("verbindungsAbschnitte").and_then(|s| s.as_array()) else {
+        return stops;
+    };
+    for section in sections {
+        let Some(halte) = dbnav_ride_halte(section) else {
+            continue;
+        };
+        for halt in [&halte[0], halte.last().unwrap()] {
+            let Some(ext_id) = dbnav_halt_id(halt) else {
+                continue;
+            };
+            if stops.iter().any(|s: &Stop| s.ext_id == ext_id) {
+                continue;
+            }
+            let departure_iso = ["abgangsDatum", "ankunftsDatum"]
+                .iter()
+                .find_map(|key| halt.get(*key).and_then(|t| t.as_str()))
+                .map(naive_local)
+                .unwrap_or_default();
+            stops.push(Stop {
+                ext_id,
+                departure_iso,
+            });
+        }
+    }
+    stops
+}
+
+/// `extract_section_spans` against dbnav's names, and a second pass for the same
+/// reason the dbweb one is: `extract_dbnav_stops` deduplicates by station, so a
+/// transfer stop is pushed while the arriving section is read, before the train
+/// it later departs on is known.
+fn extract_dbnav_section_spans(v: &Value, stops: &[Stop]) -> Vec<SectionSpan> {
+    let index_of = |ext_id: &str| stops.iter().position(|s| s.ext_id == ext_id);
+    let mut spans = Vec::new();
+    let Some(sections) = v.get("verbindungsAbschnitte").and_then(|s| s.as_array()) else {
+        return spans;
+    };
+    for section in sections {
+        let Some(halte) = dbnav_ride_halte(section) else {
+            continue;
+        };
+        let (Some(from_id), Some(to_id)) = (
+            dbnav_halt_id(&halte[0]),
+            dbnav_halt_id(halte.last().unwrap()),
+        ) else {
+            continue;
+        };
+        let (Some(from), Some(to)) = (index_of(&from_id), index_of(&to_id)) else {
+            continue;
+        };
+        spans.push(SectionSpan {
+            from,
+            to,
+            // `zugNummer` is the bare number `classify_train_match` compares a
+            // journey's `train_number` against. `mitteltext` is the rider-facing
+            // name ("ICE 857") and would never match one.
+            train_number: str_field(section, "zugNummer"),
+        });
+    }
+    spans
+}
+
+/// A section's stops, if the section is a ride at all.
+///
+/// dbnav puts the mode in `typ` on the section: `FAHRZEUG` is a ride, `FUSSWEG`
+/// is the footpath dbweb calls `WALK`. Matching `FAHRZEUG` rather than excluding
+/// `FUSSWEG` keeps an unknown future mode out of a priced chain instead of
+/// quietly selling it, which is the call `parse_dbnav_journeys` already makes.
+fn dbnav_ride_halte(section: &Value) -> Option<&Vec<Value>> {
+    if section.get("typ").and_then(|t| t.as_str()) != Some("FAHRZEUG") {
+        return None;
+    }
+    section
+        .get("halte")
+        .and_then(|h| h.as_array())
+        .filter(|halte| halte.len() >= 2)
+}
+
+/// A halt's EVA number, which is the id the pairwise fare queries take.
+fn dbnav_halt_id(halt: &Value) -> Option<String> {
+    halt.get("ort")
+        .and_then(|ort| ort.get("evaNr"))
+        .and_then(|id| id.as_str())
+        .map(str::to_string)
 }
 
 /// Pure DP core of the split-ticket solver: given `n` stops (0..n, in route
@@ -1671,29 +1844,101 @@ mod tests {
         }
     }
 
-    /// Split-ticketing still refuses on dbnav, and the refusal now names the
-    /// real reason. Checked before any request is built, so this test makes no
-    /// network call.
+    /// The three facts the split solver reads off a direct journey, now read off a
+    /// dbnav body: where the chain may be cut, which train covers each cut, and
+    /// what the through ticket costs. Same capture the journey parser is tested
+    /// against, so the mapping is checked against a real response rather than a
+    /// hand-written idea of one.
     #[test]
-    fn split_ticketing_refuses_on_dbnav_for_a_shape_reason_not_an_access_one() {
-        let client = HafasClient::with_backend(RailBackend::DbNav);
-        let err = client
-            .search_split_tickets(
-                "8000207",
-                "8000105",
-                "2026-09-01T08:00:00",
-                &Default::default(),
-            )
-            .expect_err("split on dbnav must refuse");
-        let message = err.to_string();
-        assert!(
-            message.contains("dbweb-only"),
-            "names the working path: {message}"
+    fn the_dbnav_split_reader_finds_the_three_facts_the_dbweb_one_does() {
+        let body: Value = serde_json::from_str(DBNAV_CAPTURE).expect("fixture parses");
+        let direct = dbnav_direct_journey(&body).expect("the capture is a usable direct journey");
+
+        let ids: Vec<&str> = direct.stops.iter().map(|s| s.ext_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["8000044", "8000207", "8098160"],
+            "EVA numbers off ort.evaNr, in route order, the transfer station once"
         );
-        assert!(
-            !message.contains("OPS_BLOCKED"),
-            "the access story is over: {message}"
+
+        let spans: Vec<(usize, usize, &str)> = direct
+            .spans
+            .iter()
+            .map(|s| (s.from, s.to, s.train_number.as_str()))
+            .collect();
+        assert_eq!(
+            spans,
+            [(0, 1, "28510"), (1, 2, "857")],
+            "bare zugNummer, not the rider-facing `mitteltext` a journey never carries"
         );
+
+        assert_eq!(
+            direct.direct_price,
+            Some(59.99),
+            "the through fare hangs off the sibling angebote, not off the connection"
+        );
+    }
+
+    /// The bug this port would have shipped with, had it been written from the
+    /// field list instead of the capture.
+    ///
+    /// dbnav stamps times with their offset. `search_split_tickets` hands a stop's
+    /// stamp straight back to `search_connections` as the moment to price from, and
+    /// `normalize_datetime` refuses an offset-carrying string -- it splits into four
+    /// colon-separated fields, not three. The direct search would have succeeded and
+    /// then every single priced pair would have failed, which surfaces as "no split
+    /// exists" rather than as a malformed query.
+    #[test]
+    fn a_dbnav_stop_stamp_loses_its_offset_or_every_priced_pair_dies() {
+        let body: Value = serde_json::from_str(DBNAV_CAPTURE).expect("fixture parses");
+        let direct = dbnav_direct_journey(&body).expect("usable direct journey");
+
+        assert_eq!(direct.stops[0].departure_iso, "2026-09-15T09:04:00");
+        assert_eq!(
+            direct.stops[2].departure_iso, "2026-09-15T14:12:00",
+            "a stop with only an arrival still yields a stamp"
+        );
+
+        // The half that makes it a bug rather than a cosmetic difference.
+        assert!(
+            normalize_datetime("2026-09-15T09:04:00+02:00").is_err(),
+            "the raw dbnav stamp is not a datetime this client will send"
+        );
+        assert!(normalize_datetime(&direct.stops[0].departure_iso).is_ok());
+    }
+
+    /// Köln appears three times in the capture -- twice as the ends of the ride
+    /// sections and twice more as the ends of the FUSSWEG between them -- and must
+    /// become exactly one stop the chain can be cut at.
+    ///
+    /// The footpath is skipped by matching `typ == "FAHRZEUG"` rather than by
+    /// excluding `FUSSWEG`, so a mode nobody has seen yet stays out of a priced
+    /// chain instead of being sold as a leg.
+    #[test]
+    fn the_footpath_is_not_somewhere_a_ticket_can_be_cut() {
+        let body: Value = serde_json::from_str(DBNAV_CAPTURE).expect("fixture parses");
+        let v = &body["verbindungen"][0]["verbindung"];
+
+        assert_eq!(
+            v["verbindungsAbschnitte"]
+                .as_array()
+                .map(|s| s.len())
+                .unwrap(),
+            3,
+            "the capture really does carry the footpath"
+        );
+        let stops = extract_dbnav_stops(v);
+        assert_eq!(stops.len(), 3, "three cut points from three sections");
+        assert_eq!(
+            stops.iter().filter(|s| s.ext_id == "8000207").count(),
+            1,
+            "the transfer station is one stop, not one per section that touches it"
+        );
+
+        // The transfer stop's stamp is its arrival, because dedup keeps the first
+        // sighting -- the same order dbweb produces, and the right one: pricing a
+        // segment out of Köln searches from when the traveller is standing there.
+        assert_eq!(stops[1].departure_iso, "2026-09-15T09:28:00");
     }
 
     /// A split chain's ticket boundaries carry facts, not verdicts: which
