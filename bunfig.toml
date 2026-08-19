@@ -1,0 +1,30 @@
+# bunfig.toml — Bun's config. One section so far, and one reason for it.
+#
+# Bazel drops convenience symlinks at the workspace root (bazel-Axon, bazel-bin, bazel-out,
+# bazel-testlogs), and bazel-Axon points at the execroot, which symlinks every source file
+# straight back here. `bun test` follows them, so from a checkout that has ever run Bazel it
+# discovered all 27 test files twice and reported 54.
+#
+# Double-counting was the visible half. The damaging half was that loading a test module
+# under two paths broke child-process spawning for the whole run: every execFileSync whose
+# child wrote to stdout failed with status 1 and an empty stderr, while a child that wrote
+# nothing still succeeded. tools/lib/demo-endpoints.test.ts calls `tools/capability.sh
+# registry` at collection time, so it died there — and the run still printed "0 fail",
+# because an unhandled error between tests is not a failed test. 385 tests passed where 391
+# exist; the six that never ran were not named anywhere.
+#
+# CI never saw any of this. The bun-tests job runs on a fresh checkout that never invokes
+# Bazel, so no symlinks exist to follow — which is exactly why this could sit in a working
+# tree for as long as it did while main stayed green. It is a local-only fault, and a local
+# gate that is red for a reason nobody can act on is a gate people stop reading.
+#
+# Anchored `bazel-*/**`, not `**/bazel-*/**`: the convenience symlinks live only at the
+# workspace root, and .gitignore already anchors its own `/bazel-*` for the same reason —
+# unanchored, that pattern swallowed real directories elsewhere in the tree.
+#
+# This deliberately does NOT list which directories hold tests. The one rootward `bun test`
+# is the point (Axon#116): a test file added anywhere is gated by existing, and the moment
+# this file starts naming directories, a new test's coverage depends on someone remembering
+# to come here.
+[test]
+pathIgnorePatterns = ["bazel-*/**"]
