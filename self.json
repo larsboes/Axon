@@ -1044,7 +1044,7 @@
     {
       "name": "arrow-rs",
       "verdict": "adopt",
-      "pin": "59.1.0"
+      "pin": "59.2.0"
     },
     {
       "name": "awesome-selfhosted",
