@@ -1034,7 +1034,7 @@
     {
       "name": "apple-container",
       "verdict": "adopt",
-      "pin": "1.0.0"
+      "pin": "1.2.2"
     },
     {
       "name": "ar5iv",
