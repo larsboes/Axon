@@ -48,13 +48,13 @@ tracker holds nothing, and no automation creates entries in it.
   code counts only when a code graph is present, and this machine's graph is behind main.
   Verify in a `git worktree` of origin/main, not in place.
 - **C3** — sweeps run `rg --no-ignore --hidden --follow`; plain `rg` honours `.gitignore`
-  and hides most of axon-personal's `config/`.
+  and hides most of the private overlay's `config/`.
 - **C4** — `service-runner.sh status` prints the DECLARED image tag; `container list`
   prints the running one. Only the second answers what is actually running.
 
 ## Goal
 
-Zero open issues in `larsboes/Axon` and `larsboes/axon-personal`, every live item they
+Zero open issues in this repository and in the private overlay, every live item they
 carried standing as a claim in an ISA, and no automation able to open a new one.
 
 ## Features
@@ -65,7 +65,7 @@ Why: two systems of record is the actual defect; closing the issues without movi
 doctrine and the automation would refill the tracker by Monday.
 
 - [x] ISC-1 — `gh issue list --state open` returns nothing in either repo. Evidence: 0 and 0, 2026-08-20. Falsifier:
-  any open issue in `larsboes/Axon` or `larsboes/axon-personal`.
+  any open issue in this repository or the private overlay.
 - [x] ISC-2 — every closed issue's live content stands as a claim or a Not-yet-specified
   entry in an ISA, and its closing comment names the file. Falsifier: a closing comment
   with no destination, or a destination that does not contain the content.
@@ -120,7 +120,8 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
 - **knowledge-graph link prediction over the vault.** `knowledge-graph` serves the code
   graph; the vault has one and nothing reads it. A completed run exists over 679 notes
   and 9,001 candidate pairs with structure, text and metadata features engineered
-  (quarry: `~/Developer/Inbox/labs/data-lab/projects/link-prediction`, read, not copied).
+  (the quarry is a completed link-prediction notebook in a private lab checkout, read rather
+  than copied; the overlay records where).
   Two things to know before consuming it: the snapshot uses the vault's old `Areas/`
   paths, so it predates the `Knowledge/` rename and the note count has roughly tripled;
   and precision matters more than recall, so the useful output is a short ranked list
@@ -138,7 +139,7 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
 
 | isc | type | check | threshold | tool | anchors_to |
 | --- | --- | --- | --- | --- | --- |
-| ISC-1 | command | `gh issue list --state open` in both repos | empty | gh | stated goal |
+| ISC-1 | command | `gh issue list --state open`, here and in the overlay | empty | gh | stated goal |
 | ISC-2 | file | read each closing comment and its named ISA | content present | Read | "carry through ISAs" |
 | ISC-3 | command | `rg -i "backlog is Issues"` over the four files | zero hits | rg | "no new issues" |
 | ISC-4 | command | `rg "gh issue create" .github/workflows` | zero hits | rg | "no new issues" |

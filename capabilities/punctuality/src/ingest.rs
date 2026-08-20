@@ -330,7 +330,10 @@ mod tests {
         assert_eq!(cells.len(), 2);
 
         // station_name rides along so the CLI can resolve a name without a second pass.
-        assert_eq!(stations.get("8000207").map(String::as_str), Some("Köln Hbf"));
+        assert_eq!(
+            stations.get("8000207").map(String::as_str),
+            Some("Köln Hbf")
+        );
         assert_eq!(
             stations.get("8000105").map(String::as_str),
             Some("Frankfurt(Main)Hbf")

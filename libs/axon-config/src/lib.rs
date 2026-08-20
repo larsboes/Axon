@@ -231,7 +231,10 @@ mod tests {
     #[test]
     fn the_database_override_is_derived_from_the_capability_name() {
         let _env = env_lock();
-        let _var = EnvGuard::set("AXON_TRANSIT_DATABASE_URL", "host=127.0.0.1 dbname=axon_demo");
+        let _var = EnvGuard::set(
+            "AXON_TRANSIT_DATABASE_URL",
+            "host=127.0.0.1 dbname=axon_demo",
+        );
         assert_eq!(
             database_url_override("transit").as_deref(),
             Some("host=127.0.0.1 dbname=axon_demo")

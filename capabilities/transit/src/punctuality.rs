@@ -11,8 +11,8 @@
 //! without statistics.
 
 use crate::travel::{
-    ArrivalPunctuality, Journey, JourneyReliability, Leg, SplitResult, Station, TransferReliability,
-    UnscoredLeg,
+    ArrivalPunctuality, Journey, JourneyReliability, Leg, SplitResult, Station,
+    TransferReliability, UnscoredLeg,
 };
 use serde::{Deserialize, Serialize};
 

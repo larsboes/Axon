@@ -1164,7 +1164,7 @@
     {
       "name": "maplibre-gl-js",
       "verdict": "adopt",
-      "pin": "v5.21.1"
+      "pin": "v6.4.1"
     },
     {
       "name": "mcp-audit",

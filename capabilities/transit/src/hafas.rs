@@ -1835,7 +1835,10 @@ mod tests {
         let overridden = Endpoints::resolve(stub);
         assert_eq!(overridden.fahrplan, "http://127.0.0.1:8099/fahrplan");
         assert_eq!(overridden.orte, "http://127.0.0.1:8099/orte");
-        assert_eq!(overridden.dbnav_fahrplan, "http://127.0.0.1:8099/dbnav/fahrplan");
+        assert_eq!(
+            overridden.dbnav_fahrplan,
+            "http://127.0.0.1:8099/dbnav/fahrplan"
+        );
 
         // Unset is the normal case and must reach the real endpoints, including the
         // dbnav one -- it is the default backend, so leaving it hardcoded would have
