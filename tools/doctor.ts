@@ -1945,7 +1945,23 @@ const CHECKS: Check[] = [
       const dirtyCount = dirtyProc.stdout.toString().split("\n").filter(Boolean).length;
       if (dirtyCount === 0) ctx.ok("working tree clean");
       else ctx.warn(`${dirtyCount} uncommitted change(s) — git status for detail`);
-      ctx.ok("open backlog: GitHub Issues (gh issue list) · doctrine: README.md");
+      // The backlog is ISAs (README.md#the-backlog-is-isas), so this counts unchecked claims
+      // across every tracked ISA.md rather than naming a tracker. Derived, not remembered: a
+      // hand-maintained number here would be the status doc this section exists to replace.
+      // `--others --exclude-standard` so an ISA written this session counts before it is
+      // committed; without it the number reads 0 while the file sits in front of you.
+      const isaFiles = gitOut("ls-files", "--cached", "--others", "--exclude-standard",
+        "ISA.md", "*/ISA.md", "*/*/ISA.md", "*/*/*/ISA.md")
+        .split("\n")
+        .filter(Boolean);
+      const openClaims = isaFiles.reduce((sum, f) => {
+        try {
+          return sum + (readFileSync(join(ctx.root, f), "utf8").match(/^- \[ \] /gm)?.length ?? 0);
+        } catch {
+          return sum;
+        }
+      }, 0);
+      ctx.ok(`open backlog: ${openClaims} claim(s) across ${isaFiles.length} ISA(s) · doctrine: README.md`);
     },
   },
 ];

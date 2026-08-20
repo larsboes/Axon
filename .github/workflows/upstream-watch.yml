@@ -2,7 +2,10 @@ name: upstream-watch
 
 # Watch pinned upstreams for newer releases past their cooldown so a bump stays a
 # deliberate, audited act (README.md#dependency-verdicts-and-provenance and README.md#pins-and-cooldown) instead of something noticed by
-# accident. This never bumps anything — it reports drift as a de-duplicated issue.
+# accident. This never bumps anything, and it opens nothing: the backlog is ISAs
+# (README.md#the-backlog-is-isas), so drift is reported to the run's job summary and the run goes
+# red. A red scheduled run is the notification; a tracker entry would be a second system of record
+# saying the same thing with no falsifier attached.
 # ci.yml has no schedule; the only other scheduled workflow is codeql.yml, which runs
 # two hours earlier so the two never contend for a runner. The drift check
 # is tools/upstream-checker (the same gate doctor and axon-status use) — one
@@ -15,7 +18,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: upstream-watch
@@ -65,32 +67,20 @@ jobs:
           {
             echo "count=$(jq -r 'length' /tmp/names.json)"
             echo "names=$(jq -r 'join(", ")' /tmp/names.json)"
-            echo "short=$(jq -r 'if length > 3 then (.[0:3] | join(", ")) + ", +\(length - 3) more" else join(", ") end' /tmp/names.json)"
           } >> "$GITHUB_OUTPUT"
 
       # Values cross into the shell as environment variables rather than ${{ }} interpolation.
       # An expression pasted straight into a `run:` block is executed by the shell, so a manifest
       # section name is enough to inject with; env is the form that cannot.
-      - name: Open or refresh the drift issue
+      - name: Report drift
         if: steps.check.outputs.count != '0'
         env:
-          GH_TOKEN: ${{ github.token }}
           DRIFT_COUNT: ${{ steps.check.outputs.count }}
           DRIFT_NAMES: ${{ steps.check.outputs.names }}
-          DRIFT_SHORT: ${{ steps.check.outputs.short }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -u
-          # Deduplicate on a label, not on a string in the body. The previous key was
-          # `gh issue list --search "in:body \"upstream-watch:drift\""`, which is a full-text
-          # search: any issue that merely QUOTES the marker matches. Axon#18 did exactly that
-          # while describing this workflow, and the first run of the refresh below overwrote its
-          # title and body with a drift report while the real drift issue sat untouched. A label
-          # is something a document cannot accidentally contain.
-          key_label="upstream-watch"
-          title="upstream drift: $DRIFT_COUNT pin(s) need attention ($DRIFT_SHORT)"
           {
-            echo "\`tools/upstream-checker\` reports **$DRIFT_COUNT** entr(ies) that are owed something:"
+            echo "## upstream drift: $DRIFT_COUNT pin(s) need attention"
             echo
             echo "**$DRIFT_NAMES**"
             echo
@@ -101,19 +91,9 @@ jobs:
             echo '```'
             cat /tmp/upstream-report.txt
             echo '```'
-            echo
-            echo "_Written by [this run]($RUN_URL) at $(date -u '+%Y-%m-%d %H:%M UTC'). Refreshed weekly while open._"
-          } > /tmp/issue-body.md
-          # Refresh, not skip. The step has always been named "open or refresh" and only ever
-          # opened: with an issue already open it printed "not duplicating" and exited, so every
-          # later week's drift was dropped and the open issue silently froze at whatever it said
-          # the day it was created.
-          existing="$(gh issue list --state open --label "$key_label" --json number --jq '.[0].number // empty' 2>/dev/null || true)"
-          if [ -n "$existing" ]; then
-            gh issue edit "$existing" --title "$title" --body-file /tmp/issue-body.md \
-              && echo "refreshed #$existing"
-          else
-            gh issue create --title "$title" --body-file /tmp/issue-body.md \
-              --label "$key_label" --label type:chore --label area:tooling \
-              || echo "issue create failed"
-          fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Red on purpose. A green run that quietly hides drift teaches everyone to ignore the
+          # summary, which is the failure the old weekly issue also had once it stopped refreshing.
+          # Anything worth carrying past this run becomes a claim under `## Features` in ISA.md.
+          echo "upstream drift: $DRIFT_COUNT pin(s) past cooldown — see the job summary" >&2
+          exit 1

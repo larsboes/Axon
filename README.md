@@ -548,7 +548,7 @@ decision-log directory.
 
 ### Scratch is not documentation
 
-`to-integrate/` is ignored pre-git scratch and may never be cited by permanent files. Unjudged external leads belong in GitHub Issues as `type:idea`; adopted dependencies and influences pass through `upstreams.toml` and the consuming owner.
+`to-integrate/` is ignored pre-git scratch and may never be cited by permanent files. Unjudged external leads belong in the owning ISA's `## Not yet specified`; adopted dependencies and influences pass through `upstreams.toml` and the consuming owner.
 
 
 ### Quarries and one-way migration
@@ -558,20 +558,28 @@ material into Axon deliberately, redact it, verify the new owner, and leave the 
 user explicitly approves removal. Never bulk-import their history or treat an archive location as
 permanent provenance.
 
-### The backlog is Issues
+### The backlog is ISAs
 
-Open work — plans, todos, phases, anything unfinished — lives in GitHub Issues and nowhere else.
-`TODO.md`, `PLAN.md`, `HANDOFF.md` and `ROADMAP.md` are a retired surface, including gitignored
-ones. An issue stays short and precise, carries a `type:` and an `area:` label, and its lifecycle
-is open or closed; closed issues are the history.
+Open work — plans, todos, phases, anything unfinished — lives in an `ISA.md` and nowhere else.
+The root `ISA.md` holds what is repo-wide; a capability or Pack with enough of its own carries one
+at its root (`Packs/travel/ISA.md`, `capabilities/learning/ISA.md`). `TODO.md`, `PLAN.md`,
+`HANDOFF.md` and `ROADMAP.md` remain a retired surface, including gitignored ones — and so is the
+issue tracker, which as of 2026-08-19 holds no backlog of ours and which no workflow writes to.
 
-Reasoning that outlives the work is not backlog and does not belong in an issue either: it moves
-into the owning README as it lands. A scratch file must never become the thing a permanent file
-points at for its "why" — that is how `capabilities/PLAN.md` ended up cited by ten tracked files
-while being gitignored, in flat contradiction of the rule directly above this one.
+An open item is a claim, and a claim names the probe that would falsify it. That is the whole
+reason this moved off a tracker: an issue carries a description and a lifecycle, so closing one
+proves nothing was verified, while a claim cannot be checked off without evidence. Git log is the
+history — the ISA carries no changelog section of its own.
 
-A single capability's testable ideal state may live in its own `## Done looks like` section,
-verified by its own doctor or self-test. Do not invent a new standing specification type.
+Reasoning that outlives the work is not backlog: it moves into the owning README as it lands. A
+scratch file must never become the thing a permanent file points at for its "why" — that is how
+`capabilities/PLAN.md` ended up cited by ten tracked files while being gitignored, in flat
+contradiction of the rule directly above this one.
+
+The tracker stays reachable for reports from outside the project. Those are inbound mail, not the
+backlog; anything adopted from one becomes a claim in the owning ISA. A capability's testable
+ideal state belongs in its `ISA.md`, verified by its own doctor or self-test. Do not invent a new
+standing specification type.
 
 ## Placement guide
 
@@ -587,8 +595,8 @@ verified by its own doctor or self-test. Do not invent a new standing specificat
 | Host executable required by Axon | `toolchain.toml` | Add `upstream = <id>` only when it is also consumed code |
 | Machine fact or private state | Active overlay | Resolve it dynamically; never copy it into public prose |
 | Shared operator logic | `tools/lib/` | Source it from every caller |
-| Interesting unjudged lead | GitHub Issue (`type:idea`) | Promote through the provenance gate when adopted |
-| Unfinished work, plan or todo | GitHub Issue | Reasoning that outlives the work moves into the owning README |
+| Interesting unjudged lead | The owning ISA's `## Not yet specified` | Promote to a claim through the provenance gate when adopted |
+| Unfinished work, plan or todo | A claim in the owning `ISA.md` | Reasoning that outlives the work moves into the owning README |
 
 ## Control surface
 

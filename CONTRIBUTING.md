@@ -9,8 +9,10 @@ operator-specific policy.
 Name the consumer and the outcome. An interesting technology without a concrete Axon consumer
 remains an idea, not an implementation commitment.
 
-No tracker entry is required to start. File an issue only when something must outlive the change
-itself: a defect being left unfixed, or a decision that needs a record.
+No backlog entry is required to start. Add a claim to the owning `ISA.md` only when something
+must outlive the change itself: a defect being left unfixed, or a decision that needs a record.
+Write it as a claim with the probe that would falsify it, not as a description. The issue tracker
+takes reports from outside the project; it is not where this project's work is planned.
 
 Before external code or adopted design influence enters the tree, record its canonical source and
 exact pin in `upstreams.toml`. Record the license and verdict there too, then state precisely what

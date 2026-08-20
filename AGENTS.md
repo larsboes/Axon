@@ -5,8 +5,8 @@ repository changes, follow this file's data-boundary, repository, and GitHub wor
 Graphify only as optional symbol-level drill-down after bounded Axon context is available.
 
 Before editing, run `git status --short --branch` and `tools/doctor`. Preserve unrelated worktree
-changes. Derive capabilities, ports, health, issue state and architecture from Axon tools and live
-metadata rather than remembered prose.
+changes. Derive capabilities, ports, health, open claims and architecture from Axon tools, the owning
+`ISA.md` and live metadata rather than remembered prose.
 
 Host requirements are scoped to what a machine actually does. After changing a machine's enabled
 capabilities, re-run `tools/toolchain-check` — the requirement set is derived from that list, so it
