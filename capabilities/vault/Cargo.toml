@@ -1,0 +1,18 @@
+[package]
+name = "vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Reads an Obsidian vault as data: link graph resolution and frontmatter conformance. The tool every vault operation calls before it touches a file."
+publish = false
+
+[[bin]]
+name = "vault"
+path = "src/main.rs"
+
+[dependencies]
+axon-config = { path = "../../libs/axon-config" }
+markdown-root = { path = "../../libs/markdown-root" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

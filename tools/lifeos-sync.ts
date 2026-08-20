@@ -305,17 +305,28 @@ function stripDocKeys(block: HookBlock): HookBlock {
   return out;
 }
 
-/** Identity of a block = its matcher plus the command/url of every entry, in order. */
-function blockKey(block: HookBlock): string {
-  const cmds = (block.hooks ?? []).map((h) => h.command ?? h.url ?? "?").join("|");
-  return `${block.matcher ?? "*"}::${cmds}`;
+/**
+ * Identity is per ENTRY — matcher plus that one command/url — never per block.
+ *
+ * It was per block until 2026-08-20: the key joined every command in the block,
+ * so a fragment block declaring one hook never matched the live block that
+ * already contained it alongside others. `status` reported three permanently
+ * "missing" hooks that were in fact registered and firing, and every `deploy`
+ * appended them again — three more duplicate registrations per run, each one a
+ * second execution of that hook on every matching event. Found after the 7.40.4
+ * update, when the deploy that was supposed to re-project the overlay silently
+ * doubled PostToolObserver, AlgorithmNudge and DriftReminder.
+ */
+function entryKey(matcher: string | undefined, h: HookEntry): string {
+  return `${matcher ?? "*"}::${h.command ?? h.url ?? "?"}`;
 }
 
 /**
  * Additive merge, pure so the decision is inspectable without touching disk.
- * Returns the merged hooks object and what was added. A block already present
- * (same matcher + same commands) is left exactly as-is — this is what makes a
- * second `deploy` a no-op even if the user retimed a timeout by hand.
+ * Returns the merged hooks object and what was added. An entry already present
+ * under the same matcher is left exactly as-is — this is what makes a second
+ * `deploy` a no-op even if the user retimed a timeout by hand — and a block is
+ * appended carrying ONLY the entries that were genuinely absent.
  */
 export function mergeHooks(
   live: Record<string, HookBlock[]>,
@@ -326,14 +337,18 @@ export function mergeHooks(
 
   for (const [event, blocks] of Object.entries(fragment)) {
     const existing = merged[event] ? [...merged[event]] : [];
-    const seen = new Set(existing.map(blockKey));
+    const seen = new Set<string>();
+    for (const b of existing) for (const h of b.hooks ?? []) seen.add(entryKey(b.matcher, h));
+
     for (const rawBlock of blocks) {
       const block = stripDocKeys(rawBlock);
-      const key = blockKey(block);
-      if (seen.has(key)) continue;
-      existing.push(block);
-      seen.add(key);
-      for (const h of block.hooks ?? []) added.push(`${event}: ${basename(h.command ?? h.url ?? "?")}`);
+      const fresh = (block.hooks ?? []).filter((h) => !seen.has(entryKey(block.matcher, h)));
+      if (fresh.length === 0) continue; // every entry already registered under this matcher
+      existing.push({ ...block, hooks: fresh });
+      for (const h of fresh) {
+        seen.add(entryKey(block.matcher, h));
+        added.push(`${event}: ${basename(h.command ?? h.url ?? "?")}`);
+      }
     }
     merged[event] = existing;
   }
