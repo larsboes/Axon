@@ -113,6 +113,33 @@ into an edge bucket, so a bound never gets printed as if it were a value.
 
 Why not an analytics engine: see § Why this shape: Rust over a second engine, below.
 
+### How the reader proves itself
+
+The parser reads someone else's binary format, and until 2026-08-20 it was the one
+component here with no test: the unit tests covered the hour/weekend derivation and the
+histogram arithmetic and never opened a file. Verifying the arrow-rs 59.1.0 → 59.2.0 bump
+therefore took a throwaway harness pointed at a private 100+ MB publication, and that
+evidence was discarded with the harness.
+
+`ingest::tests` now writes a six-row parquet file with `parquet`'s own `ArrowWriter` and
+folds it. Generated rather than committed, deliberately: the real files are private and
+too large, and a checked-in blob would freeze a byte layout nobody could regenerate once
+the crate moved — writing it with the stack that reads it is what makes the test move
+*with* an arrow bump rather than merely survive one.
+
+Six rows, one per behaviour worth pinning: two delay readings folding into one cell, a
+cancellation counted in `canceled` and kept out of `n`, a row with neither reading nor
+flag skipped, a null `eva` skipped, and a second cell at a different station, type and
+hour so the key is demonstrably all four fields. The timestamps are `2 * DAY + 9 * HOUR`
+and `4 * DAY + 17 * HOUR` from the epoch, so "Saturday 09:00" and "Monday 17:00" are
+arithmetic rather than a lookup — and they arrive through a file, which the old tests
+never did.
+
+The schema-change path gets its own red: the fixture is rewritten five times, each
+missing one required column, and each must come back as `MissingColumn` naming that
+column rather than a panic or a silent zero. That path already fired once upstream in
+2026-05 (`upstreams.toml [deutsche-bahn-data]`).
+
 ### The statistics, and why these
 
 | Column | What |
