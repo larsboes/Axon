@@ -27,6 +27,7 @@
   } from "$lib/api";
   import { entryLink } from "$lib/calendar/types";
   import { capabilities } from "$lib/capabilities.svelte";
+  import PinnedLinks from "$lib/PinnedLinks.svelte";
   import RepoStatusCard from "$lib/RepoStatusCard.svelte";
   import HomeHorizon from "$lib/home/HomeHorizon.svelte";
   import LocationView from "$lib/home/LocationView.svelte";
@@ -1152,6 +1153,8 @@
               <a class="mc-detail" href={link("/systems")}>Details <Icon name="arrow-right" size={11} /></a>
             </div>
           {/if}
+
+          <PinnedLinks />
 
           <RepoStatusCard />
 

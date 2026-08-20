@@ -581,6 +581,13 @@ export interface SelfModelResponse {
  * missing one. `ahead`/`behind` are null when the branch tracks no upstream — not 0,
  * which would claim it is in sync with something.
  */
+/** One operator-pinned link from the overlay's links.toml. Names and URLs only. */
+export interface PinnedLink {
+  name: string;
+  url: string;
+  note?: string;
+}
+
 export interface RepoStatus {
   name: string;
   role: 'spine' | 'overlay';
@@ -679,6 +686,7 @@ export const axonStatus = {
     ),
   self: () => request<SelfModelResponse>('/axon-status/api/axon-status/self'),
   repos: () => request<{ repos: RepoStatus[] }>('/axon-status/api/axon-status/repos'),
+  links: () => request<{ links: PinnedLink[] }>('/axon-status/api/axon-status/links'),
   upstreams: () => request<UpstreamAudit>('/axon-status/api/axon-status/upstreams'),
   start: (name: string, signal?: AbortSignal) =>
     request<{ name: string; up: boolean; detail: string }>(

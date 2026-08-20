@@ -35,6 +35,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/api/axon-status/capabilities", "Enabled capabilities, their ports and whether each is up."),
     r("GET", "/api/axon-status/self", "This machine's resolved Axon model."),
     r("GET", "/api/axon-status/repos", "Axon and overlay repo state."),
+    r("GET", "/api/axon-status/links", "Operator-pinned links from the overlay's links.toml."),
     r("GET", "/api/axon-status/upstreams", "Declared upstreams and their pins."),
     r("GET", "/api/axon-status/backups", "Every capability with a backup contract: last success, age, and whether it is overdue."),
     r("POST", "/api/axon-status/capabilities/:name/backup", "Request a backup of one capability. Accepts the run and returns; poll /backups for the outcome."),
@@ -75,6 +76,7 @@ async fn main() {
         .route("/api/axon-status/routes", get(routes_handler))
         .route("/api/axon-status/capabilities", get(capabilities_handler))
         .route("/api/axon-status/self", get(self_model_handler))
+        .route("/api/axon-status/links", get(links_handler))
         .route("/api/axon-status/repos", get(repos_handler))
         .route("/api/axon-status/upstreams", get(upstreams_handler))
         .route(
