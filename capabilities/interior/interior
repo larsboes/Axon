@@ -13,6 +13,7 @@ import { buildScene, exportScene } from "./src/scene.ts";
 import { checkLayout, type CheckResult } from "./src/clearance.ts";
 import { loadFurniture, loadLayout, loadRoom, uncertainties } from "./src/model.ts";
 import { LAYOUTS_DIR, MODEL_DIR, OUT_DIR } from "./src/paths.ts";
+import { renderPage } from "./src/page.ts";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 
@@ -162,6 +163,27 @@ async function main() {
       } finally {
         p.close();
       }
+      break;
+    }
+
+    case "page": {
+      // One self-contained HTML file: the layouts as plans, the photographs as camera
+      // positions standing on them. Generated rather than written, so the picture and the
+      // checker's verdict cannot drift apart.
+      const out = flag("out") ?? join(OUT_DIR, "layouts.html");
+      const { html, photos, bytes } = await renderPage({
+        title: flag("title") ?? "Floor Plans",
+        generatedAt: new Date().toISOString().slice(0, 10),
+      });
+      await mkdir(OUT_DIR, { recursive: true });
+      await Bun.write(out, html);
+      const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`;
+      console.log(`\n  wrote ${bold(out)}`);
+      console.log(`  ${photos} photos embedded, ${mb(bytes)} of image data, ${mb(html.length)} total`);
+      // The page embeds photographs of the inside of a home. It is written to the overlay, which
+      // is default-deny gitignored, and it is opened locally. It does not go to a hosted URL.
+      console.log(dim("  contains private photos — local file only, do not upload\n"));
+      if (argv.includes("--open")) Bun.spawnSync(["open", out]);
       break;
     }
 
