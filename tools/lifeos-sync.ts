@@ -305,17 +305,34 @@ function stripDocKeys(block: HookBlock): HookBlock {
   return out;
 }
 
-/** Identity of a block = its matcher plus the command/url of every entry, in order. */
-function blockKey(block: HookBlock): string {
-  const cmds = (block.hooks ?? []).map((h) => h.command ?? h.url ?? "?").join("|");
-  return `${block.matcher ?? "*"}::${cmds}`;
+/**
+ * Identity of a single hook = its matcher plus its own command/url.
+ *
+ * Deliberately per-HOOK, not per-block. Keying on the whole block (matcher plus
+ * every command joined) meant a fragment block could only match a live block
+ * holding exactly the same commands in the same order, so a fragment block that
+ * was a SUBSET of a live block always read as absent and `deploy` appended it
+ * again, registering those hooks twice. Real case, 2026-08-20: the fragment's
+ * two-hook UserPromptSubmit block (AlgorithmNudge, DriftReminder) never matched
+ * the live six-hook block that already contained both, so `status` reported them
+ * permanently missing and a `deploy` would have duplicated them.
+ *
+ * Timeouts and other per-entry fields stay out of the key on purpose: a hook
+ * retimed by hand must survive every later deploy untouched.
+ */
+function hookKey(matcher: string | undefined, entry: HookEntry): string {
+  return `${matcher ?? "*"}::${entry.command ?? entry.url ?? "?"}`;
 }
 
 /**
  * Additive merge, pure so the decision is inspectable without touching disk.
- * Returns the merged hooks object and what was added. A block already present
- * (same matcher + same commands) is left exactly as-is — this is what makes a
- * second `deploy` a no-op even if the user retimed a timeout by hand.
+ * Returns the merged hooks object and what was added.
+ *
+ * A hook already registered for an event under the same matcher is never added
+ * again, wherever in that event's blocks it currently sits — that is what makes
+ * a second `deploy` a no-op. When a fragment block is only PARTLY new, just the
+ * new entries are appended, as one block carrying the fragment's own matcher;
+ * live blocks are never rewritten, so nothing the user tuned by hand moves.
  */
 export function mergeHooks(
   live: Record<string, HookBlock[]>,
@@ -326,14 +343,18 @@ export function mergeHooks(
 
   for (const [event, blocks] of Object.entries(fragment)) {
     const existing = merged[event] ? [...merged[event]] : [];
-    const seen = new Set(existing.map(blockKey));
+    const seen = new Set<string>();
+    for (const b of existing) for (const h of b.hooks ?? []) seen.add(hookKey(b.matcher, h));
+
     for (const rawBlock of blocks) {
       const block = stripDocKeys(rawBlock);
-      const key = blockKey(block);
-      if (seen.has(key)) continue;
-      existing.push(block);
-      seen.add(key);
-      for (const h of block.hooks ?? []) added.push(`${event}: ${basename(h.command ?? h.url ?? "?")}`);
+      const fresh = (block.hooks ?? []).filter((h) => !seen.has(hookKey(block.matcher, h)));
+      if (fresh.length === 0) continue;
+      existing.push({ ...block, hooks: fresh });
+      for (const h of fresh) {
+        seen.add(hookKey(block.matcher, h));
+        added.push(`${event}: ${basename(h.command ?? h.url ?? "?")}`);
+      }
     }
     merged[event] = existing;
   }
