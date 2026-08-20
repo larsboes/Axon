@@ -2,7 +2,7 @@
 project: travel
 type: isa
 phase: climbing
-progress: 0
+progress: 60
 principal_stated_goal: "pls continue from last session to further improve my travel planning feature"
 ---
 
@@ -85,22 +85,28 @@ inference, and a parquet reader whose next arrow bump is verified by running a t
 Why: the number is already computed correctly and then discarded on the path almost
 every real search takes.
 
-- [ ] ISC-1 — dbnav is the default rail backend: `RailBackend::default()` is `DbNav`,
+- [x] ISC-1 — dbnav is the default rail backend: `RailBackend::default()` is `DbNav`,
   and with `AXON_TRANSIT_BACKEND` unset a live search whose arriving transfer leg is
-  regional returns a non-null `reliability`. Falsifier: unset the env var, run the
-  Bonn→Köln→Berlin search, `reliability` comes back null.
-- [ ] ISC-2 — an unresolvable train category is explicitly absent, not silent: the
-  response names the categories it could not resolve, so a reader can tell "no data"
-  from "no risk". Falsifier: force dbweb with a category outside the table and find no
-  diagnostic anywhere in the response.
-- [ ] ISC-3 — the `kategorie → train_type` table is checked, not pattern-matched: every
-  entry is justified by a `kategorie` value dbweb actually emitted and a `train_type`
-  present in the ingested cells, both recorded. Falsifier: a table entry with no
-  observed pair behind it.
-- [ ] ISC-4 — dbweb scores regional legs once the table lands: the same live search on
-  both backends returns a non-null `reliability` on each, agreeing within tolerance.
-  Falsifier: dbweb still null, or the two disagree beyond the stated tolerance.
-- [ ] ISC-5 — the stale seam comment is gone: no doc comment references
+  regional returns a non-null `reliability`. Evidence: Bonn→Berlin 2026-08-24T09:00,
+  `reliability.probability` 0.4374 over the RE5 + ICE 557 chain, `min_sample` 1327.
+- [x] ISC-2 — an unresolvable train type is explicitly absent, not silent: the response
+  names the legs it could not ask about, so a reader can tell "no data" from "no risk"
+  and "punctuality had no cell" from "nobody asked". Evidence: same search forced to
+  dbweb returns `reliability: null` beside `unscored_legs: [{leg_index: 0, train_name:
+  "28510", train_category: "DRB"}]`.
+- [x] ISC-3 — the train type punctuality is asked for is checked against observed data
+  on both sides, never inferred from a class code. Landed as the identity rather than a
+  table: `train_type_of` reads the label off `train_name`, and all eleven prefixes seen
+  live (ICE, RE, IC, S, RB, EC, RJ, FEX, FLX, EUR, ECE) exist in the ingested cells, so
+  nothing needed translating. Evidence: 104 legs over 16 routes on both backends,
+  2026-08-20; `the_train_type_is_the_label_not_the_product_class`.
+- [~] ISC-4 — **refuted, and kept as the record of why.** dbweb cannot score its
+  regional legs at all: it names them by bare number (`"28510"`), so no label exists to
+  read a type off, and its `kategorie` reports `DRB` for both the RE5 and the RB26 —
+  one class code over two populations punctuality holds apart at 10.8M and 14.4M
+  observations. There is no correct mapping to build. What replaced this claim is
+  ISC-2: dbweb says so explicitly instead of returning a bare null.
+- [x] ISC-5 — the stale seam comment is gone: no doc comment references
   `dbnav_split_unsupported`, a symbol deleted when split-ticketing stopped being
   dbweb-only (`cdacfbf`). Falsifier: `rg dbnav_split_unsupported` hits.
 
@@ -129,6 +135,19 @@ In scope, too dim to state as a claim yet.
 - **L1 · one outcome record.** `POST /api/plans/:id/outcome` after the next real trip.
   Not code. Gates L2's transfer-buffer calibration and the independence assumption
   journey reliability currently states rather than corrects.
+- **`is_regional` disagrees between the backends, and dbweb looks wrong.** Same RE5
+  Bonn→Köln, same search, 2026-08-20: dbnav reports `is_regional: true`, dbweb reports
+  `false`. dbweb derives the flag from the `9G` entry in `zugattribute`, which was absent
+  on this response; dbnav derives it from the product class. The flag decides whether a
+  leg is presented as Deutschlandticket-covered, so a false negative sends a traveller to
+  buy a ticket they already hold. Found while measuring the train-type vocabulary, not
+  chased: it needs its own spread of routes before the falsifier is worth stating, since
+  one absent attribute on one train is not yet a pattern.
+- **Recovering a type for dbweb's regional legs.** Both backends agree on
+  `train_number` (`28510` is the RE5 on each), so a number→label resolution would make
+  dbweb scorable. It costs a second lookup against something that holds the mapping, and
+  nothing in the system holds one today. Parked rather than dismissed: the default path
+  no longer needs it.
 - **The cancellation flag end to end.** `originCancelled`/`destinationCancelled` are
   captured from a real section and fixture-tested; no cancelled train has appeared in a
   live response yet. Opportunistic — keeping the vocabulary and waiting costs nothing.
@@ -153,19 +172,34 @@ In scope, too dim to state as a claim yet.
 
 ## Anti-claims
 
-- [ ] A1 — no mapping entry is inferred from the shape of the string. Falsifier: an
-  entry whose justification is "it looks like".
-- [ ] A2 — journey search never fails because punctuality is absent. Falsifier: stop
+- [x] A1 — no mapping entry is inferred from the shape of the string. Held by there
+  being no mapping at all: the label is the type, and where there is no label the answer
+  is absence.
+- [x] A2 — journey search never fails because punctuality is absent. `unscored_legs` is
+  written before the lookup, so it survives the service being down — which is also what
+  makes `an_unscorable_leg_is_reported_rather_than_left_silent` assertable without one. Falsifier: stop
   punctuality-server, search returns anything other than 200 with a null score.
-- [ ] A3 — no new tracking surface. Falsifier: a `TODO.md`, `PLAN.md`, `HANDOFF.md` or
+- [x] A3 — no new tracking surface. Falsifier: a `TODO.md`, `PLAN.md`, `HANDOFF.md` or
   `ROADMAP.md` appears anywhere under `Packs/travel/`.
 
 ## Decisions
 
-- **2026-08-19 — dbnav becomes the default, and the table gets built anyway.** The
-  cheap fix and the correct fix are not exclusive: making dbnav default fixes the path
-  real searches take today, and the checked table fixes dbweb rather than leaving a
-  second backend that quietly scores nothing. Ordered that way on the principal's call.
+- **2026-08-20 — the category was never the key.**
+  - *Conjectured:* dbweb's `kategorie` needed a checked equivalence table onto
+    punctuality's `train_type`, and dbnav's `produktGattung` already was that vocabulary.
+  - *Refuted by:* 104 legs over 16 routes, both backends, against the 109 distinct
+    `train_type` values in the cells. dbweb reports `DRB` for both the RE5 (`28510`) and
+    the RB26 (`33602`), so the distinction the table would need was already thrown away.
+    dbnav collapses the same way — `RB` for an RE5, `IC_EC` for both IC and EC — and it
+    *found* a cell, answering an RE journey with RB statistics. Worse than absence.
+  - *Learned:* punctuality's vocabulary is the train's own label, and both backends carry
+    it in `train_name`. All eleven observed prefixes exist in the cells; none needed
+    translating. dbweb's regional legs carry no label at all, which is why they are
+    genuinely unanswerable rather than merely unmapped.
+  - *Criterion now:* ISC-3 is the label resolver checked against both sides, and ISC-4 is
+    refuted rather than deferred.
+- **2026-08-19 — dbnav becomes the default.** It fixes the path real searches take, and
+  its own vocabulary bug is fixed by the same resolver.
 - **2026-08-19 — this file replaces the travel issues.** #185 and #186 were closed into
   F1 and F2 rather than tracked in parallel.
 

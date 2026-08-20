@@ -12,6 +12,7 @@
 
 use crate::travel::{
     ArrivalPunctuality, Journey, JourneyReliability, Leg, SplitResult, Station, TransferReliability,
+    UnscoredLeg,
 };
 use serde::{Deserialize, Serialize};
 
@@ -143,6 +144,38 @@ pub fn hour_and_weekend(iso: &str) -> Option<(u8, bool)> {
     Some((hour, dow == 0 || dow == 6))
 }
 
+/// punctuality's `train_type` for a leg: the label the train is announced under,
+/// read off `train_name`.
+///
+/// Neither backend's product class is this key, and using one was the bug. Measured
+/// 2026-08-20 over 104 legs on 16 routes, both backends, against the 109 distinct
+/// `train_type` values in the ingested cells:
+///
+/// - dbweb's `verkehrsmittel.kategorie` is HAFAS's class code. It reports `DRB` for
+///   BOTH the RE5 (`28510`) and the RB26 (`33602`), and punctuality holds RE and RB as
+///   separate populations of 10.8M and 14.4M observations. So no `DRB -> RB` table can
+///   be right: the mapping the field would need does not exist, because the field
+///   already threw the distinction away.
+/// - dbnav's `produktGattung` collapses the same way -- `RB` for an RE5, `IC_EC` for
+///   both IC and EC. It found a cell, which is worse than finding none: it answered an
+///   RE journey with RB statistics.
+/// - `train_name` carries the label itself, and the label IS the vocabulary. All
+///   eleven prefixes observed (ICE, RE, IC, S, RB, EC, RJ, FEX, FLX, EUR, ECE) exist
+///   in the ingested cells; none needed translating.
+///
+/// `None` when nothing is left after the trailing number, which is exactly dbweb's
+/// regional case: it names those trains `"28510"` and carries no label at all. That is
+/// honest absence, and it is reported as `Journey::unscored_legs` rather than passed
+/// off as a missing cell.
+pub fn train_type_of(leg: &Leg) -> Option<&str> {
+    let label = leg
+        .train_name
+        .trim()
+        .trim_end_matches(|c: char| c.is_ascii_digit())
+        .trim_end();
+    (!label.is_empty()).then_some(label)
+}
+
 /// Six minutes is DB's own punctuality threshold, and the one `share_late_6`
 /// reports. Final arrival is judged against it so this number means the same
 /// thing the rest of the system already means by "late".
@@ -255,6 +288,9 @@ pub fn enrich(journeys: &mut [Journey]) {
     }
     let mut wants: Vec<Want> = Vec::new();
     let mut stops: Vec<StopQuery> = Vec::new();
+    // A property of the response, not of the punctuality service: it is filled and
+    // written back even when the lookup never happens or fails.
+    let mut unscored: Vec<Vec<UnscoredLeg>> = vec![Vec::new(); journeys.len()];
 
     for (i, j) in journeys.iter().enumerate() {
         if let (Some(last), Some(eva)) = (
@@ -263,11 +299,13 @@ pub fn enrich(journeys: &mut [Journey]) {
                 eva_of(&j.end_station.id).or_else(|| eva_of(&last.destination.id))
             }),
         ) {
-            if let Some((hour, weekend)) = hour_and_weekend(&last.arrival_time) {
+            if let (Some((hour, weekend)), Some(train_type)) =
+                (hour_and_weekend(&last.arrival_time), train_type_of(last))
+            {
                 wants.push(Want::JourneyArrival(i));
                 stops.push(StopQuery {
                     eva,
-                    train_type: last.train_category.clone(),
+                    train_type: train_type.to_string(),
                     hour,
                     weekend,
                     at_least_minutes: None,
@@ -276,6 +314,18 @@ pub fn enrich(journeys: &mut [Journey]) {
         }
 
         for (k, leg) in j.legs.iter().enumerate() {
+            // Recorded before the other two guards on purpose: a leg with no label is
+            // unscorable whatever its station id or timestamp look like, and that is
+            // the fact worth reporting. An unparseable eva or arrival time is a
+            // different failure and stays a plain skip.
+            let Some(train_type) = train_type_of(leg) else {
+                unscored[i].push(UnscoredLeg {
+                    leg_index: k,
+                    train_name: leg.train_name.clone(),
+                    train_category: leg.train_category.clone(),
+                });
+                continue;
+            };
             let Some(eva) = eva_of(&leg.destination.id) else {
                 continue;
             };
@@ -285,7 +335,7 @@ pub fn enrich(journeys: &mut [Journey]) {
             wants.push(Want::LegArrival { journey: i, leg: k });
             stops.push(StopQuery {
                 eva,
-                train_type: leg.train_category.clone(),
+                train_type: train_type.to_string(),
                 hour,
                 weekend,
                 at_least_minutes: None,
@@ -303,6 +353,9 @@ pub fn enrich(journeys: &mut [Journey]) {
             let Some((hour, weekend)) = hour_and_weekend(&arriving.arrival_time) else {
                 continue;
             };
+            let Some(train_type) = train_type_of(arriving) else {
+                continue;
+            };
             wants.push(Want::Transfer {
                 journey: i,
                 station: arriving.destination.clone(),
@@ -310,7 +363,7 @@ pub fn enrich(journeys: &mut [Journey]) {
             });
             stops.push(StopQuery {
                 eva,
-                train_type: arriving.train_category.clone(),
+                train_type: train_type.to_string(),
                 hour,
                 weekend,
                 // The threshold IS the buffer: a train that loses the whole margin
@@ -320,6 +373,10 @@ pub fn enrich(journeys: &mut [Journey]) {
                 at_least_minutes: Some(i32::try_from(buffer).unwrap_or(i32::MAX)),
             });
         }
+    }
+
+    for (journey, legs) in journeys.iter_mut().zip(unscored) {
+        journey.unscored_legs = legs;
     }
 
     if stops.is_empty() {
@@ -423,10 +480,13 @@ fn enrich_boundaries(result: &mut SplitResult) {
         let Some((hour, weekend)) = hour_and_weekend(&arriving.arrival_time) else {
             continue;
         };
+        let Some(train_type) = train_type_of(arriving) else {
+            continue;
+        };
         targets.push(idx);
         stops.push(StopQuery {
             eva,
-            train_type: arriving.train_category.clone(),
+            train_type: train_type.to_string(),
             hour,
             weekend,
             // The six-minute figure, deliberately: this field is context for a
@@ -624,5 +684,82 @@ mod tests {
             is_regional: false,
             on_time_probability: None,
         }
+    }
+
+    fn named(train_name: &str, train_category: &str) -> Leg {
+        let mut leg = leg_at("2026-08-24T09:04:00", Some("2026-08-24T07:04:00Z"));
+        leg.train_name = train_name.into();
+        leg.train_category = train_category.into();
+        leg
+    }
+
+    /// Every pair here was read off a live search on 2026-08-20, and every type on
+    /// the right exists in the ingested cells. The two `DRB` rows are the whole
+    /// argument against a category table: one product class, two populations
+    /// punctuality holds apart.
+    #[test]
+    fn the_train_type_is_the_label_not_the_product_class() {
+        // dbnav: the label is right where the class is wrong. `produktGattung` says
+        // `RB` for an RE5, and RE and RB are 10.8M and 14.4M separate observations.
+        assert_eq!(train_type_of(&named("RE5", "RB")), Some("RE"));
+        assert_eq!(train_type_of(&named("RB26", "RB")), Some("RB"));
+        assert_eq!(train_type_of(&named("S12", "SBAHN")), Some("S"));
+        // `IC_EC` collapses two types the cells keep apart, 408k and 35k.
+        assert_eq!(train_type_of(&named("IC 2067", "IC_EC")), Some("IC"));
+        assert_eq!(train_type_of(&named("EC 135", "IC_EC")), Some("EC"));
+        assert_eq!(train_type_of(&named("ICE 1022", "ICE")), Some("ICE"));
+        assert_eq!(train_type_of(&named("FLX 1237", "IR")), Some("FLX"));
+
+        // dbweb: same trains, HAFAS class codes, and the same right answer from the
+        // label wherever there is one.
+        assert_eq!(train_type_of(&named("ICE 857", "ICE")), Some("ICE"));
+        assert_eq!(train_type_of(&named("S6", "DBS")), Some("S"));
+        assert_eq!(train_type_of(&named("EUR 9411", "THA")), Some("EUR"));
+    }
+
+    /// dbweb names a regional train by its bare number, so there is nothing to read a
+    /// type off. `None` is the whole point: a guess here would answer an RE journey
+    /// with whatever population the class code happened to collapse into.
+    #[test]
+    fn a_bare_number_yields_no_type_rather_than_a_guess() {
+        // The RE5 and the RB26 Bonn -> Köln, exactly as dbweb returns them.
+        assert_eq!(train_type_of(&named("28510", "DRB")), None);
+        assert_eq!(train_type_of(&named("33602", "DRB")), None);
+        assert_eq!(train_type_of(&named("16511", "NRE")), None);
+        assert_eq!(train_type_of(&named("", "DRB")), None);
+        assert_eq!(train_type_of(&named("   ", "DRB")), None);
+    }
+
+    /// The distinction the field exists to make: nobody asked, and which legs.
+    /// Filled before the lookup, so it survives punctuality being down -- which is
+    /// also what makes this assertable without a running service.
+    #[test]
+    fn an_unscorable_leg_is_reported_rather_than_left_silent() {
+        let mut journeys = vec![Journey {
+            id: "j".into(),
+            start_station: station("Bonn Hbf", "8000044"),
+            end_station: station("Köln Hbf", "8000207"),
+            legs: vec![named("28510", "DRB"), named("ICE 857", "ICE")],
+            total_duration_minutes: 60,
+            total_price: None,
+            delay_risk_score: None,
+            arrival_punctuality: None,
+            reliability: None,
+            unscored_legs: Vec::new(),
+        }];
+
+        enrich(&mut journeys);
+
+        assert_eq!(journeys[0].unscored_legs.len(), 1);
+        let unscored = &journeys[0].unscored_legs[0];
+        assert_eq!(unscored.leg_index, 0);
+        assert_eq!(unscored.train_name, "28510");
+        assert_eq!(unscored.train_category, "DRB");
+        // The labelled leg is not in the list; absence of a cell is a different state
+        // from absence of a question, and only the second one lands here.
+        assert!(journeys[0]
+            .unscored_legs
+            .iter()
+            .all(|u| u.train_name != "ICE 857"));
     }
 }

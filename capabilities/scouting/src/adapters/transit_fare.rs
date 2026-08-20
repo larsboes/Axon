@@ -170,6 +170,7 @@ mod tests {
         };
         Journey {
             reliability: None,
+            unscored_legs: Vec::new(),
             id: "journey:abc".into(),
             start_station: bonn.clone(),
             end_station: berlin.clone(),

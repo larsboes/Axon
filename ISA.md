@@ -2,7 +2,7 @@
 project: axon
 type: isa
 phase: climbing
-progress: 0
+progress: 40
 principal_stated_goal: "I want no new issues, I wanna get rid of all issues for axon and axon personal and only carry through normal ISAs etc."
 ---
 
@@ -64,19 +64,19 @@ carried standing as a claim in an ISA, and no automation able to open a new one.
 Why: two systems of record is the actual defect; closing the issues without moving the
 doctrine and the automation would refill the tracker by Monday.
 
-- [ ] ISC-1 — `gh issue list --state open` returns nothing in either repo. Falsifier:
+- [x] ISC-1 — `gh issue list --state open` returns nothing in either repo. Evidence: 0 and 0, 2026-08-20. Falsifier:
   any open issue in `larsboes/Axon` or `larsboes/axon-personal`.
-- [ ] ISC-2 — every closed issue's live content stands as a claim or a Not-yet-specified
+- [x] ISC-2 — every closed issue's live content stands as a claim or a Not-yet-specified
   entry in an ISA, and its closing comment names the file. Falsifier: a closing comment
   with no destination, or a destination that does not contain the content.
-- [ ] ISC-3 — the doctrine agrees with itself: `README.md`, `CONTRIBUTING.md`,
+- [x] ISC-3 — the doctrine agrees with itself: `README.md`, `CONTRIBUTING.md`,
   `AGENTS.md` and `tools/doctor.ts` all name ISAs as the backlog. Falsifier:
   `rg -i "backlog is Issues|GitHub Issue"` still describes the backlog anywhere in those
   four files.
-- [ ] ISC-4 — `upstream-watch` opens no issue: it writes the drift report to the job
+- [x] ISC-4 — `upstream-watch` opens no issue: it writes the drift report to the job
   summary and exits non-zero when an entry is past its cooldown. Falsifier: the workflow
   file still calls `gh issue create`, or a green run hides real drift.
-- [ ] ISC-5 — `bazel test //...` green on the landing commit, `ARCHITECTURE.md` included.
+- [x] ISC-5 — `bazel test //...` green on the landing commit, `ARCHITECTURE.md` included. Evidence: 68/68 pass, plus `//:architecture_up_to_date_test` forced uncached, 4050fe4.
   Falsifier: any failing target.
 
 ### F1 · Demo seeding for Comms, Scouting and Transit
@@ -135,12 +135,12 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
 
 ## Anti-claims
 
-- [ ] A1 — no new tracking surface replaces the tracker. Falsifier: a `TODO.md`,
+- [x] A1 — no new tracking surface replaces the tracker. Falsifier: a `TODO.md`,
   `PLAN.md`, `HANDOFF.md` or `ROADMAP.md` appears anywhere in the repo, gitignored ones
   included.
-- [ ] A2 — no issue is closed whose content exists nowhere else. Falsifier: ISC-2 fails
+- [x] A2 — no issue is closed whose content exists nowhere else. Falsifier: ISC-2 fails
   for any closed issue.
-- [ ] A3 — the public repo keeps a path for outside bug reports. Falsifier:
+- [x] A3 — the public repo keeps a path for outside bug reports. Falsifier:
   `.github/ISSUE_TEMPLATE/` is deleted or issues are disabled repo-wide.
 
 ## Decisions

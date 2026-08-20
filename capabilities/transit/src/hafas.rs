@@ -172,25 +172,37 @@ pub struct FareOptions {
 /// evidence about that client. Reaching "the endpoint is blocked" needs a
 /// second client, and the cheapest second client is curl.
 ///
-/// dbweb stays the default. Split-ticketing stays dbweb-only for a reason
-/// that is now about shape rather than access -- see `dbnav_split_unsupported`.
+/// `DbNav` is the default as of 2026-08-20, and the reason is punctuality, not
+/// stability. punctuality keys its cells on DB's open-data vocabulary (`RB`, `RE`,
+/// `ICE`). dbnav's `produktGattung` IS that vocabulary; dbweb's
+/// `verkehrsmittel.kategorie` is HAFAS's own, so the identical RE5 arrives as `DRB`
+/// and finds no cell. On dbweb every regional leg therefore lost its
+/// `on_time_probability`, and one missing term voids the whole reliability product by
+/// design -- so the default path answered `null` for exactly the journeys a traveller
+/// most wants scored. dbweb is one env var away and answers everything dbnav does,
+/// split-ticketing included since `cdacfbf`; what it no longer is, is the path a search
+/// takes when nobody chose one.
+///
+/// The mapping table in `punctuality::train_type_for_category` fixes dbweb too. Both
+/// were built: making dbnav default fixes the path real searches take, and the table
+/// stops the second backend from quietly scoring nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RailBackend {
-    #[default]
     DbWeb,
+    #[default]
     DbNav,
 }
 
 impl RailBackend {
     /// From `AXON_TRANSIT_BACKEND` ("dbweb" | "dbnav"); anything else falls
-    /// back to dbweb loudly via the log rather than failing the process.
+    /// back to the default loudly via the log rather than failing the process.
     pub fn from_env() -> Self {
         match std::env::var("AXON_TRANSIT_BACKEND").as_deref() {
-            Ok("dbnav") => Self::DbNav,
-            Ok("dbweb") | Err(_) => Self::DbWeb,
+            Ok("dbweb") => Self::DbWeb,
+            Ok("dbnav") | Err(_) => Self::DbNav,
             Ok(other) => {
-                eprintln!("transit: unknown AXON_TRANSIT_BACKEND '{other}', using dbweb");
-                Self::DbWeb
+                eprintln!("transit: unknown AXON_TRANSIT_BACKEND '{other}', using dbnav");
+                Self::default()
             }
         }
     }
@@ -1168,6 +1180,7 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
             journeys.push(Journey {
                 // Filled by punctuality::enrich when that capability answers.
                 reliability: None,
+                unscored_legs: Vec::new(),
                 // The real bahn.de response field is "tripId", not "id" --
                 // found via live verification while wiring this adapter into
                 // scouting (capabilities/postgres/README.md, Phase 2): every journey in a
@@ -1308,6 +1321,7 @@ pub fn parse_dbnav_journeys(body: &Value) -> Vec<Journey> {
         journeys.push(Journey {
             // Filled by punctuality::enrich when that capability answers.
             reliability: None,
+            unscored_legs: Vec::new(),
             id: str_field(v, "checksum"),
             start_station: first_leg.origin.clone(),
             end_station: last_leg.destination.clone(),
@@ -1755,7 +1769,7 @@ mod tests {
     /// discount is a space-joined string there, an object on dbweb.
     #[test]
     fn the_backend_seam_translates_the_fare_context_rather_than_dropping_it() {
-        assert_eq!(RailBackend::default(), RailBackend::DbWeb);
+        assert_eq!(RailBackend::default(), RailBackend::DbNav);
 
         let bc25 = FareOptions {
             bahncard: Some(25),
@@ -1962,6 +1976,7 @@ mod tests {
         let seg = |train: &str, arr_utc: Option<&str>, dep_utc: Option<&str>| SplitSegment {
             journey: Journey {
                 reliability: None,
+                unscored_legs: Vec::new(),
                 id: "j".into(),
                 start_station: station("From"),
                 end_station: station("Boundary"),
@@ -2173,6 +2188,7 @@ mod tests {
         };
         Journey {
             reliability: None,
+            unscored_legs: Vec::new(),
             id: "j".into(),
             start_station: station("A"),
             end_station: station("B"),

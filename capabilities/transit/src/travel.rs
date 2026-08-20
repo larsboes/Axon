@@ -101,6 +101,32 @@ pub struct Journey {
     /// guessed factor in it is not a measurement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reliability: Option<JourneyReliability>,
+    /// Legs no punctuality cell was ever asked for, because the backend gave no
+    /// train label to ask with.
+    ///
+    /// The distinction this field exists to make: `reliability: null` with an empty
+    /// list means punctuality answered and had nothing; `reliability: null` with
+    /// entries here means nobody asked, and which legs. Both used to look identical
+    /// from outside, which let a reader assume the data was missing upstream when the
+    /// query had simply never been built.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unscored_legs: Vec<UnscoredLeg>,
+}
+
+/// One leg that carries no train type punctuality can be keyed on.
+///
+/// dbweb names a regional train by its bare number -- the RE5 Bonn -> Koeln is
+/// `"28510"` -- so there is no label to read a type off. Reporting which leg, under
+/// which name, is what makes the gap diagnosable instead of a silent null.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnscoredLeg {
+    /// Index into `Journey::legs`.
+    pub leg_index: usize,
+    /// What the backend called the train, verbatim.
+    pub train_name: String,
+    /// The backend's own product class, kept because it is the field a reader will
+    /// reach for next and it explains why this is not simply absent data.
+    pub train_category: String,
 }
 
 /// One punctuality cell: the arriving train's type, at the journey's destination,

@@ -155,12 +155,28 @@ would read *higher* than the truth and be indistinguishable from a journey that 
 one transfer. The third journey in that live run is exactly this case: its first leg is an
 `STR` tram, which DB's published dataset has no cell for, so it scores nothing.
 
-**On `dbweb` it scores almost nothing, and that is a vocabulary mismatch rather than a
-missing measurement.** punctuality's `train_type` comes verbatim from DB's open-data
-parquet (`RB`, `RE`, `ICE`). `dbnav`'s `produktGattung` is that same vocabulary, so its
-legs find cells. `dbweb`'s `kategorie` is HAFAS's own — the identical RE5 above comes back
-as `DRB`, which has no cell at all. That silently costs `delay_risk_score` on regional legs
-too, and predates this field. Unmapped, so no journey is scored off a guessed equivalence.
+**The type punctuality is asked for comes off the train's label, not off either backend's
+product class.** That was a bug until 2026-08-20 and it read as a vocabulary mismatch: the
+lookup sent `verkehrsmittel.kategorie` on `dbweb` and `produktGattung` on `dbnav`, and
+neither is punctuality's `train_type`. Measured over 104 legs on 16 routes, both backends,
+against the 109 distinct types in the cells:
+
+| | reads | for the RE5 Bonn → Köln | consequence |
+|---|---|---|---|
+| `dbweb` `kategorie` | HAFAS class code | `DRB` — and `DRB` again for the RB26 | no cell; one code over two populations of 10.8M and 14.4M |
+| `dbnav` `produktGattung` | product class | `RB` | a cell, from the wrong population — an RE journey answered with RB statistics |
+| `train_name` | the label itself | `RE5` → `RE` | the cell that describes this train |
+
+All eleven prefixes seen live — `ICE`, `RE`, `IC`, `S`, `RB`, `EC`, `RJ`, `FEX`, `FLX`,
+`EUR`, `ECE` — exist in the ingested cells, so nothing needs translating. `train_type_of`
+is that read, and a category equivalence table was deliberately **not** built: `dbweb`
+already threw the distinction away, so no correct one exists.
+
+`dbweb` regional legs therefore stay unscored, and now say so. It names those trains by
+their bare number (`"28510"`), so there is no label to read — the journey comes back with
+`reliability: null` beside `unscored_legs: [{leg_index, train_name, train_category}]`.
+That separates three states a bare null used to flatten: punctuality is down, punctuality
+has no cell, and nobody asked.
 
 ## What a split-ticket chain does and does not promise
 
@@ -191,9 +207,16 @@ rendered as "Direct is cheapest" — a claim nobody had checked.
 
 ## Which rail backend answers, and why there are two
 
-`AXON_TRANSIT_BACKEND` picks it: `dbweb` (the default) or `dbnav`. Anything else falls back to
-`dbweb` rather than failing, because an unrecognised value is a typo far more often than it is
-an intent.
+`AXON_TRANSIT_BACKEND` picks it: `dbnav` (the default since 2026-08-20) or `dbweb`. Anything
+else falls back to the default rather than failing, because an unrecognised value is a typo far
+more often than it is an intent.
+
+`dbnav` is the default because of punctuality, not stability. punctuality keys its cells on DB's
+open-data vocabulary; `dbnav`'s `produktGattung` is that vocabulary and `dbweb`'s `kategorie` is
+HAFAS's own, so on `dbweb` the identical RE5 arrives as `DRB`, finds no cell, and takes the whole
+journey's `reliability` down with it — one missing term voids the product by design. `dbweb` is
+fixed too (see the category table below), but the path nobody chose should not be the one that
+needs a translation to answer.
 
 | | `dbweb` | `dbnav` |
 |---|---|---|
