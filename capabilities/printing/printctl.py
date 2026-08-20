@@ -333,12 +333,21 @@ def cmd_upload(cfg, args):
     ok(f"uploaded: {json.dumps(r.get('item', r))}")
 
 def cmd_arm(cfg, args):
-    """Full-auto-once-you-say-go: arm a specific gcode so start/heat is allowed for a window."""
+    """Full-auto-once-you-say-go: arm a specific gcode so start/heat is allowed for a window.
+
+    Arming is the only human 'go', so the temperature check is not optional here. Both holes
+    below used to arm silently: no --local at all, and a --local that does not resolve to a
+    file. The second is the worse one -- a typo'd path looks like a check that happened.
+    """
     fn = args.filename
-    noz = bed = None
-    if args.local and os.path.isfile(args.local):
-        noz, bed = gcode_temps(args.local)
-        check_temps(cfg, noz, bed, ctx="(arm check)")
+    if not args.local:
+        die(f"REFUSED: arming '{fn}' requires the gcode, so its temperatures can be checked.\n"
+            f"  Run `printctl arm {fn} --local <gcode>`.\n"
+            f"  (caps are enforced on the sliced file, never on the preset that produced it.)")
+    if not os.path.isfile(args.local):
+        die(f"REFUSED: --local '{args.local}' is not a file. Refusing to arm unchecked.")
+    noz, bed = gcode_temps(args.local)
+    check_temps(cfg, noz, bed, ctx="(arm check)")
     payload = {"filename": fn, "expires": time.time() + args.minutes * 60,
                "nozzle": noz, "bed": bed}
     json.dump(payload, open(cfg["arm_file"], "w"))
@@ -401,6 +410,31 @@ def cmd_selftest(cfg, args):
     if (n, b) != (250, 70): fails += 1
     # 4. arm guard refuses unarmed
     expect_die(lambda: _guard_heat(cfg, "definitely-not-armed.gcode"), "unarmed start guard")
+
+    # 5. arm refuses to authorize anything it could not temp-check.
+    #    The positive case really writes an arm file, so it gets a throwaway one -- a selftest
+    #    must never leave a live job armed on the real printer.
+    import tempfile, types
+    def arm_args(local, minutes=1):
+        return types.SimpleNamespace(filename="selftest.gcode", local=local, minutes=minutes)
+    with tempfile.TemporaryDirectory() as td:
+        tcfg = dict(cfg); tcfg["arm_file"] = os.path.join(td, "arm.json")
+        expect_die(lambda: cmd_arm(tcfg, arm_args(None)), "arm without --local")
+        expect_die(lambda: cmd_arm(tcfg, arm_args(os.path.join(td, "nope.gcode"))),
+                   "arm with a --local path that is not a file")
+        hot = os.path.join(td, "hot.gcode")
+        open(hot, "w").write("M104 S300\nM140 S120\nG1 X0\n")
+        expect_die(lambda: cmd_arm(tcfg, arm_args(hot)), "arm with over-cap gcode")
+        safe = os.path.join(td, "safe.gcode")
+        open(safe, "w").write("M104 S250\nM140 S70\nG1 X0\n")
+        try:
+            cmd_arm(tcfg, arm_args(safe))
+            armed = is_armed(tcfg, "selftest.gcode")
+            print(f"  {'✓' if armed else '✗'} arm with within-cap gcode: allowed")
+            if not armed: fails += 1
+        except SystemExit:
+            print("  ✗ arm with within-cap gcode: wrongly refused"); fails += 1
+
     print(f"\n{'ALL PASS ✓' if fails==0 else f'{fails} FAILURE(S) ✗'}")
     sys.exit(1 if fails else 0)
 

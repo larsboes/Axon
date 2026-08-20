@@ -17,9 +17,9 @@ later), klipper-config-mcp (subset of the former).
 - **Slicer:** [OrcaSlicer](https://github.com/SoftFever/OrcaSlicer), headless CLI
 - **Firmware/API:** Klipper + [Moonraker](https://github.com/Arksine/moonraker), Fluidd as UI
 - **CLI:** `printctl` (doctor / slice / upload / arm / start / monitor / estop), safety-first:
-  hard temp caps enforced on gcode at slice time, and at arm time when `arm --local <gcode>` is
-  used (arm without `--local` skips the temp check; the `3d-printing` pack's workflow always
-  passes it), and heating refuses unless the job was explicitly armed first
+  hard temp caps enforced on the gcode at slice time and again at arm time, `arm` refusing
+  outright if it cannot read the file to check it, and heating refusing unless the job was
+  explicitly armed first
 
 ## Experience (the parts nobody tells you)
 
