@@ -23,11 +23,13 @@ pub(crate) struct PinnedLink {
 pub(crate) fn parse_links(text: &str) -> Vec<PinnedLink> {
     let mut out: Vec<PinnedLink> = Vec::new();
     let mut current: Option<PinnedLink> = None;
-    let mut push = |entry: Option<PinnedLink>, out: &mut Vec<PinnedLink>| {
+    let push = |entry: Option<PinnedLink>, out: &mut Vec<PinnedLink>| {
         if let Some(link) = entry {
             // Only complete entries with a web URL render; anything else is a config
             // typo the card must not amplify into a dead or javascript: href.
-            if !link.name.is_empty() && (link.url.starts_with("https://") || link.url.starts_with("http://")) {
+            if !link.name.is_empty()
+                && (link.url.starts_with("https://") || link.url.starts_with("http://"))
+            {
                 out.push(link);
             }
         }
@@ -42,8 +44,12 @@ pub(crate) fn parse_links(text: &str) -> Vec<PinnedLink> {
             current = Some(PinnedLink::default());
             continue;
         }
-        let Some(entry) = current.as_mut() else { continue };
-        let Some((key, value)) = line.split_once('=') else { continue };
+        let Some(entry) = current.as_mut() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
         let value = value.trim().trim_matches('"').to_string();
         match key.trim() {
             "name" => entry.name = value,
