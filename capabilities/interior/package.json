@@ -1,0 +1,15 @@
+{
+  "name": "@axon-personal/interior",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Indoor planning for the 33qm flat: measured room model to live Pascal scene, plus the clearance checker Pascal lacks.",
+  "type": "module",
+  "bin": { "interior": "./interior" },
+  "scripts": {
+    "test": "bun test"
+  },
+  "//pascal": "Pinned deliberately. The MCP server is spawned via bunx at this exact version; a floating range would let the geometry engine change under a verified room model.",
+  "config": {
+    "pascalVersion": "0.3.2"
+  }
+}
