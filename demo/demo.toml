@@ -146,7 +146,7 @@ paths = [
 # `/api` rather than `/transit/api`: transit's service.toml proxies /api through unstripped,
 # which is how the dashboard's client has always called it.
 paths = [
-  "/api/suggest?query=Central",
+  "/api/suggest?q=Central",
   "/api/search?from=9900001&to=9900002&time=2026-03-16T09:00:00",
 ]
 

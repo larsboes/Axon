@@ -49,10 +49,23 @@ interface Ctx {
 
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
 
+/** Comms disables every mutating route unless a shared secret is configured, so /ingest is a
+ *  403 without this header rather than an open write path. tools/demo-up generates the token
+ *  per run and exports it; sent on every request because the capabilities that do not want it
+ *  ignore an unknown header, and one conditional per seeder would be the thing somebody
+ *  forgets. */
+function authHeaders(): Record<string, string> {
+  const token = process.env.AXON_DEMO_COMMS_TOKEN;
+  return token ? { "X-Axon-Token": token } : {};
+}
+
 async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    headers: {
+      ...authHeaders(),
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -214,10 +227,14 @@ const SEEDERS: Record<string, (ctx: Ctx) => Promise<string>> = {
     // what it finds and persists it. The source is `demo-origin`, declared in the generated
     // scouting.json — tools/demo-up writes that from demo.toml's origin, so the id here and
     // the URL there cannot drift apart into a scan of nothing.
-    const found = await get<{ scored?: unknown[]; opportunities?: unknown[] }>(
+    const found = await get<{ results?: unknown[]; total_scored?: number; store_total?: number }>(
       ctx.url("/discover?adapter=demo-origin&limit=20"),
     );
-    const rows = (found.scored ?? found.opportunities ?? []).length;
+    // `results` and `total_scored` are what /discover answers with; `store_total` is what it
+    // persisted. Reading the wrong name here failed as "discovered nothing", which is exactly
+    // the message the check below prints — so the guard fired correctly on a seeder bug rather
+    // than an empty scan, and cost a run to tell apart. Both counted now.
+    const rows = found.results?.length ?? found.total_scored ?? 0;
     if (rows === 0) {
       throw new Error(
         "scouting discovered nothing from the demo origin. Either the origin is not serving " +
@@ -225,7 +242,7 @@ const SEEDERS: Record<string, (ctx: Ctx) => Promise<string>> = {
           "capability — a silently empty Scout page is the thing this check exists to prevent.",
       );
     }
-    return `${rows} opportunities discovered through the rss adapter`;
+    return `${rows} opportunities discovered through the rss adapter (${found.store_total ?? rows} persisted)`;
   },
 
   async trips(ctx) {

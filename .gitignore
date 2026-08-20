@@ -65,3 +65,5 @@ demo/state/
 # without anything failing. The overlay's machine.toml stays tracked and reviewable; this one
 # file is a build product like the three above.
 demo/overlay/config/scouting.json
+# Comms' demo config, generated with a fresh throwaway API token on every run.
+demo/overlay/config/comms.json

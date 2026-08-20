@@ -394,11 +394,15 @@ impl Config {
         // Fallback is keyword/value form, not the `postgresql://` URL this used to
         // build: the URL userinfo form mangles a base64 password containing `/`, and
         // the sibling capabilities all fall back the same way.
-        let database_url = file.database_url.unwrap_or_else(|| {
-            axon_config::postgres_conn_from_shared_env().unwrap_or_else(|| {
-                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
-            })
-        });
+        // `$AXON_COMMS_DATABASE_URL` first: it is how a deployment is moved onto another
+        // database without editing config, and the fallback below names the REAL one.
+        let database_url = axon_config::database_url_override("comms")
+            .or(file.database_url)
+            .unwrap_or_else(|| {
+                axon_config::postgres_conn_from_shared_env().unwrap_or_else(|| {
+                    "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
+                })
+            });
 
         let google_env_path = file
             .google_env_path

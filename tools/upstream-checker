@@ -369,8 +369,15 @@ done
 
 if [ "$JSON" -eq 1 ]; then
   offline_bool=false; [ "$OFFLINE" -eq 1 ] && offline_bool=true
+  # Repo-relative, never absolute. This field says WHICH manifest was read, and the checkout's
+  # location is not part of that answer — but it is a workstation home path, and this JSON is
+  # served by axon-status and recorded into the published demo. tools/check-site-payload caught
+  # it there and refused to publish, which is exactly the job that gate has. A manifest outside
+  # the root (AXON_UPSTREAMS_MANIFEST) keeps its basename for the same reason.
+  manifest_rel="${MANIFEST#"$AXON_ROOT"/}"
+  case "$manifest_rel" in /*) manifest_rel="${manifest_rel##*/}" ;; esac
   printf '{"manifest":"%s","offline":%s,"totals":{"count":%d,"ok":%d,"na":%d,"warn":%d,"fail":%d},"entries":[%s]}\n' \
-    "$(json_escape "$MANIFEST")" "$offline_bool" "$count" "$ok" "$na" "$warn" "$fail" "${JSON_ENTRIES#,}"
+    "$(json_escape "$manifest_rel")" "$offline_bool" "$count" "$ok" "$na" "$warn" "$fail" "${JSON_ENTRIES#,}"
   exit 0
 fi
 

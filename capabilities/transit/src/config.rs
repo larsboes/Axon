@@ -139,11 +139,15 @@ pub fn redact_database_url(url: &str) -> String {
 impl Config {
     pub fn load() -> Self {
         let file = load_file_config();
-        let database_url = file.database_url.unwrap_or_else(|| {
-            postgres_conn_from_shared_env().unwrap_or_else(|| {
-                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
-            })
-        });
+        // `$AXON_TRANSIT_DATABASE_URL` first: it is how a deployment is moved onto
+        // another database without editing config, and the fallback below names the REAL one.
+        let database_url = axon_config::database_url_override("transit")
+            .or(file.database_url)
+            .unwrap_or_else(|| {
+                postgres_conn_from_shared_env().unwrap_or_else(|| {
+                    "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
+                })
+            });
         Self {
             default_from_eva: file.default_from_eva,
             default_to_eva: file.default_to_eva,

@@ -2,7 +2,7 @@
 project: axon
 type: isa
 phase: climbing
-progress: 55
+progress: 75
 principal_stated_goal: "I want no new issues, I wanna get rid of all issues for axon and axon personal and only carry through normal ISAs etc."
 ---
 
@@ -84,17 +84,15 @@ doctrine and the automation would refill the tracker by Monday.
 Why: three capabilities are missing from the published demo, so Feed, Scout and Travel
 are hidden and the shell looks thinner than the system is.
 
-- [~] ISC-6 — the demo shows Comms, Scouting and Transit, every recorded value having come
-  from a real server answering a real request, not a hand-written fixture. Falsifier: a
-  recorded response no capability actually produced. **Built, not yet closed.**
-  `tools/demo-origin` serves the RSS feed, the article pages and both backends' journey
-  payloads; the three capabilities are enabled in the demo overlay, Comms and Scouting have
-  seeders that only post URLs and call `/discover`, and demo-up starts the origin, exports
-  transit's overrides and generates Scouting's source declaration. Verified so far: Transit's
-  real parser reads the origin end to end on both backends, and 9 tests pin the payload
-  shapes against the parsers that consume them. What is left is one `tools/demo-up all` run —
-  it refuses to start while a real stack holds the ports, so it needs the machine's own
-  capabilities stopped first, which is the principal's call and not a side effect of this run.
+- [x] ISC-6 — the demo shows Comms, Scouting and Transit, every recorded value having come
+  from a real server answering a real request, not a hand-written fixture. Evidence, one
+  full `tools/demo-up all` on 2026-08-20: `seeded comms: 7 items ingested from the demo
+  origin (3 kept, 1 dismissed)` · `seeded scouting: 7 opportunities discovered through the
+  rss adapter (7 persisted)` · `recorded transit: 2 paths` · 41 fixtures, then
+  `tools/demo-site` wrote 52 reference pages and the hygiene gate passed over 251 files.
+  Spot-checked: comms' titles are its extractor's output from the served HTML, scouting's
+  rows carry `source: rss:demo-origin`, transit's journey is the origin's ICE 331 with
+  `reliability: null` because punctuality is absent — the declared degradation.
 - [x] ISC-7 — transit's endpoints are env-overridable, so the demo can point the real parser
   at a stub. Three, not the two this claim named: `AXON_TRANSIT_DBNAV_FAHRPLAN_URL` had to
   join them once dbnav became the default, or the default backend would have been the one
@@ -130,6 +128,11 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
   rather than in Features.
 - **Operator installs past cooldown**, neither a security item: tailscale 1.98.9 →
   1.102.2, xberg 1.0.5 → 1.0.14.
+- **The remaining four database-URL call sites.** calendar, finance, tasks and trips each
+  hand-roll the same `std::env::var("AXON_<CAP>_DATABASE_URL")` two-liner that
+  `axon_config::database_url_override` now owns. They work, so this is deduplication rather
+  than a defect, and the repo's rule is that shared logic moves into the lib. Not swept in
+  the run that added the helper, deliberately: that run was about the demo.
 
 ## Test Strategy
 
@@ -162,6 +165,19 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
   workflow that creates issues.
 - **2026-08-19 — `upstream-watch` reports to the job summary and reds the run** rather
   than being deleted. Deleting it would leave drift findable only when someone looks.
+- **2026-08-20 — three capabilities never read their database variable, and the demo is
+  what found it.** `tools/demo-up`'s whole mechanism is one exported
+  `AXON_<CAP>_DATABASE_URL` per capability. comms, scouting and transit ignored it, went
+  from their config file to `postgres_conn_from_shared_env`, and — the demo overlay having
+  no `postgres.env` — landed on a fallback naming the real database, `dbname=axon
+  password=axon`. The only thing between a demo seeding run and the live store was that the
+  real password is not the word `axon`. Fixed with one shared
+  `axon_config::database_url_override`, used by those three. The four that hand-roll the
+  same two lines (calendar, finance, tasks, trips) are left alone and recorded below.
+- **2026-08-20 — `upstream-checker` published the checkout's absolute path.** Its `--json`
+  `manifest` field was `$AXON_ROOT/upstreams.toml`, which axon-status serves and the demo
+  records. `tools/check-site-payload` refused to publish over it, which is the job that
+  gate has. Now repo-relative.
 - **2026-08-19 — `.github/ISSUE_TEMPLATE/` stays.** Axon is public and an external
   report still needs somewhere to land; what changed is that our own backlog is not there.
 

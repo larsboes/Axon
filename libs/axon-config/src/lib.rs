@@ -69,6 +69,29 @@ pub fn postgres_conn_from_shared_env() -> Option<String> {
     ))
 }
 
+/// `$AXON_<CAPABILITY>_DATABASE_URL`, the per-capability override.
+///
+/// This is the variable `tools/demo-up` exports to move a whole stack onto a throwaway
+/// database, and the one every capability was assumed to read. Three did not: comms,
+/// scouting and transit went straight from their config file to
+/// `postgres_conn_from_shared_env` and then to a fallback naming the REAL database,
+/// `dbname=axon password=axon`. The demo overlay has no `postgres.env`, so under it those
+/// three resolved to that fallback — the only thing standing between a demo seeding run and
+/// the live store was that the real password is not the word `axon`. An accident, not a guard.
+///
+/// The name is derived, never passed: `transit` → `AXON_TRANSIT_DATABASE_URL`, and a hyphen
+/// becomes an underscore the same way `tools/demo-up` builds it, so the two cannot disagree
+/// about what a capability's variable is called.
+pub fn database_url_override(capability: &str) -> Option<String> {
+    let var = format!(
+        "AXON_{}_DATABASE_URL",
+        capability.to_uppercase().replace('-', "_")
+    );
+    std::env::var(var)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
 /// The deployment's home timezone, from `<overlay>/config/deployment.env`.
 ///
 /// A timezone is a fact about the deployment, not about one capability: calendar
@@ -199,6 +222,40 @@ mod tests {
                 None => std::env::remove_var(self.0),
             }
         }
+    }
+
+    /// The variable a capability is moved onto another database with, and the reason it
+    /// exists: comms, scouting and transit ignored it until 2026-08-20 and fell through to a
+    /// fallback naming the real database. Under the demo overlay, which has no postgres.env,
+    /// that fallback was what they resolved to.
+    #[test]
+    fn the_database_override_is_derived_from_the_capability_name() {
+        let _env = env_lock();
+        let _var = EnvGuard::set("AXON_TRANSIT_DATABASE_URL", "host=127.0.0.1 dbname=axon_demo");
+        assert_eq!(
+            database_url_override("transit").as_deref(),
+            Some("host=127.0.0.1 dbname=axon_demo")
+        );
+
+        // A hyphen becomes an underscore, the same way tools/demo-up builds the name. The two
+        // deriving it differently would be a capability silently reading nothing.
+        let _hyphen = EnvGuard::set("AXON_AXON_STATUS_DATABASE_URL", "host=127.0.0.1 dbname=x");
+        assert_eq!(
+            database_url_override("axon-status").as_deref(),
+            Some("host=127.0.0.1 dbname=x")
+        );
+    }
+
+    #[test]
+    fn an_unset_or_blank_override_defers_rather_than_pointing_nowhere() {
+        let _env = env_lock();
+        let _unset = EnvGuard::take("AXON_TRIPS_DATABASE_URL");
+        assert_eq!(database_url_override("trips"), None);
+
+        // Exported-but-empty is a shell with nothing to put there, not an instruction to
+        // connect to "". Falling through to the config file is the only safe reading.
+        let _blank = EnvGuard::set("AXON_TRIPS_DATABASE_URL", "   ");
+        assert_eq!(database_url_override("trips"), None);
     }
 
     #[test]

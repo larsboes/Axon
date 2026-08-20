@@ -187,11 +187,15 @@ impl Config {
             .map(|p| expand_tilde(&p))
             .filter(|p| p.exists());
 
-        let database_url = file.database_url.unwrap_or_else(|| {
-            postgres_conn_from_shared_env().unwrap_or_else(|| {
-                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
-            })
-        });
+        // `$AXON_SCOUTING_DATABASE_URL` first: it is how a deployment is moved onto
+        // another database without editing config, and the fallback below names the REAL one.
+        let database_url = axon_config::database_url_override("scouting")
+            .or(file.database_url)
+            .unwrap_or_else(|| {
+                postgres_conn_from_shared_env().unwrap_or_else(|| {
+                    "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
+                })
+            });
 
         let opp_embeddings_path = file.opp_embeddings_path.map(|p| expand_tilde(&p));
         // Port contract lives in axon_config::resolve_port. The default is 8084,
