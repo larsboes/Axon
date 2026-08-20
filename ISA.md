@@ -2,7 +2,7 @@
 project: axon
 type: isa
 phase: climbing
-progress: 40
+progress: 55
 principal_stated_goal: "I want no new issues, I wanna get rid of all issues for axon and axon personal and only carry through normal ISAs etc."
 ---
 
@@ -84,11 +84,23 @@ doctrine and the automation would refill the tracker by Monday.
 Why: three capabilities are missing from the published demo, so Feed, Scout and Travel
 are hidden and the shell looks thinner than the system is.
 
-- [ ] ISC-6 — the demo shows Comms, Scouting and Transit, every recorded value having
-  come from a real server answering a real request, not a hand-written fixture.
-  Falsifier: a recorded response no capability actually produced.
-- [ ] ISC-7 — transit's `FAHRPLAN_URL` and `ORTE_URL` are env-overridable, so the seeder
-  can point the real parser at a stub. Falsifier: the consts are still hardcoded.
+- [~] ISC-6 — the demo shows Comms, Scouting and Transit, every recorded value having come
+  from a real server answering a real request, not a hand-written fixture. Falsifier: a
+  recorded response no capability actually produced. **Built, not yet closed.**
+  `tools/demo-origin` serves the RSS feed, the article pages and both backends' journey
+  payloads; the three capabilities are enabled in the demo overlay, Comms and Scouting have
+  seeders that only post URLs and call `/discover`, and demo-up starts the origin, exports
+  transit's overrides and generates Scouting's source declaration. Verified so far: Transit's
+  real parser reads the origin end to end on both backends, and 9 tests pin the payload
+  shapes against the parsers that consume them. What is left is one `tools/demo-up all` run —
+  it refuses to start while a real stack holds the ports, so it needs the machine's own
+  capabilities stopped first, which is the principal's call and not a side effect of this run.
+- [x] ISC-7 — transit's endpoints are env-overridable, so the demo can point the real parser
+  at a stub. Three, not the two this claim named: `AXON_TRANSIT_DBNAV_FAHRPLAN_URL` had to
+  join them once dbnav became the default, or the default backend would have been the one
+  path a stub cannot reach. Evidence: `every_endpoint_can_be_pointed_at_a_stub_and_otherwise_is_bahn_de`,
+  plus a live CLI search against `tools/demo-origin` returning three parsed journeys on both
+  backends.
 
 Correction carried over: `demo.toml`'s `[absent.comms]` blames `sources/rss.rs`, which
 is *scouting's* file, not Comms'. That reason was written from a bad reading of an `ls`

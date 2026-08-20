@@ -33,6 +33,19 @@ anchor = "2026-03-16"
 # should be able to tell that the dates are staged rather than stale.
 label = "Demo data — generated, not real"
 
+# Where tools/demo-origin listens: the synthetic remote Comms, Scouting and Transit fetch from.
+#
+# Those three were absent from the first wave for one shared reason — each one's job is to go
+# and get something from somewhere else, and a demo has nowhere else. Rather than hand-write a
+# fixture per capability, which would break the invariant above, the demo gives them a somewhere
+# else and lets their real collectors, adapters and parsers read it.
+#
+# Loopback only, and demo-endpoints refuses anything that is not: an origin off this machine
+# would make the published corpus depend on a host nobody here controls. 8099 sits clear of the
+# 8082-8091 block the capabilities occupy. Written once, here — demo-up exports it to Transit
+# and generates Scouting's source declaration from it.
+origin = "http://127.0.0.1:8099"
+
 [fixtures]
 # Where tools/demo-record writes, and where the demo bundle's fetch shim reads. Untracked:
 # fixtures are a build product of the seeder plus the capability servers, and committing
@@ -91,7 +104,51 @@ paths = [
   "/finance/api/import/investments/mappings",
 ]
 
+[capability.comms]
+writes = "comms"
+# Seeded through POST /ingest — the same public write route the dashboard's "add this link"
+# path uses. The seeder posts URLs; Comms fetches, extracts and normalises them itself, so
+# what is recorded here is its extractor's output rather than a fixture's.
+paths = [
+  "/comms/feed",
+  "/comms/feed/origins",
+  "/comms/sources",
+  "/comms/triage",
+]
+expand = [{ from = "/comms/feed", id_field = "id", into = "/comms/feed/{id}" }]
+
+[capability.scouting]
+writes = "scouting"
+# `/discover?adapter=demo-origin` names the source demo-up declares in the generated
+# scouting.json. Scouting's own rss adapter fetches and parses the synthetic feed; nothing
+# here writes an opportunity directly.
+# `/scouting/opportunities` first, deliberately: demo-seed proves a store is empty by reading
+# paths[0], and `/sources` answers with the declared source, which is never empty and would
+# refuse every run.
+paths = [
+  "/scouting/opportunities",
+  "/scouting/sources",
+  "/discover?adapter=demo-origin&limit=20",
+]
+
 # ─── Recorded without seeding ─────────────────────────────────────────────────
+
+[capability.transit]
+# No `writes`, and that is the honest shape: a journey search is a query, not a store, so
+# there is nothing to fill. Every answer here is Transit's own HAFAS parser reading the
+# synthetic origin, which returns the same three journeys for the same query — one direct and
+# two with a change, because a search that only ever returns direct trains demonstrates
+# neither the transfer buffer nor anything built on it.
+#
+# `reliability` and `delay_risk_score` come back null: punctuality is not in this demo, and
+# absence degrades rather than being invented. See [absent.punctuality].
+#
+# `/api` rather than `/transit/api`: transit's service.toml proxies /api through unstripped,
+# which is how the dashboard's client has always called it.
+paths = [
+  "/api/suggest?query=Central",
+  "/api/search?from=9900001&to=9900002&time=2026-03-16T09:00:00",
+]
 
 [capability.axon-status]
 # No `writes`: every answer here is derived from the manifests in this checkout plus the
@@ -112,27 +169,21 @@ paths = [
 # Read by tools/demo-site to hide these from the demo's navigation and to print the reason
 # on the demo landing card. A page that 404s teaches a visitor the software is broken; a
 # page that is honestly missing teaches them where the edge is.
+#
+# Comms, Scouting and Transit left this section on 2026-08-20. All three were absent for the
+# same reason — each fetches from somewhere else, and a demo has nowhere else — and all three
+# are here now because `[demo] origin` gives them one.
 
-[absent.comms]
+[absent.punctuality]
 reason = """
-Feed items enter Comms only through a collector, and both shipped collectors \
-(github-trending, arxiv) fetch from a fixed remote host. `feed_sources[]` declares no \
-URL, so there is no way to point one at a synthetic local feed without changing the \
-capability. Wiring the existing sources/rss.rs adapter to a configurable URL would make \
-Feed demoable — that is the change to make, not a hand-written fixture.\
+punctuality has no write API to seed through. Its whole input is Deutsche Bahn's monthly \
+open-data publication: 100+ MB of parquet per month, folded into cells by a batch job. \
+Nothing in that can be produced by a POST, and a synthetic histogram would be a hand-written \
+fixture wearing a measurement's clothes, which is the one thing this demo does not do.
+
+Its absence is visible rather than hidden, and it is worth reading as part of the \
+demonstration: Transit's `reliability` and `delay_risk_score` come back null here, because \
+the capability that measures them is not running. That is the designed behaviour — absence \
+degrades, it never fails — and the demo shows it rather than inventing a number.\
 """
 
-[absent.scouting]
-reason = """
-Same shape as Comms, one step closer: scouting's create_adapter() already has an `rss` arm \
-that takes a URL, so a synthetic local feed would work. Left out of the first wave only \
-because its opportunities reference calendar windows, and that cross-capability seeding \
-order is worth doing deliberately rather than in passing.\
-"""
-
-[absent.transit]
-reason = """
-Every answer comes from a live HAFAS query. Recording one would publish a real timetable \
-frozen at build time, which stops being true within the hour and cannot be regenerated \
-without hitting the same external service.\
-"""

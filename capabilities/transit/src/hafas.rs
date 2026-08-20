@@ -208,9 +208,59 @@ impl RailBackend {
     }
 }
 
+/// Where the client actually sends, resolved once per client.
+///
+/// The three literals above are the defaults and stay the defaults; these are the
+/// override, and the reason they exist is that every answer this capability gives comes
+/// from a live query to a reverse-engineered endpoint. That makes the client untestable
+/// offline and undemonstrable at all: recording a real timetable publishes something that
+/// stops being true within the hour, which is why transit was left out of the published
+/// demo entirely. Pointing the real client at a stub serving bahn.de-shaped payloads means
+/// the parser still does the work and what gets recorded is genuinely transit's own output.
+///
+/// One variable per endpoint rather than one base URL: the two backends live on different
+/// hosts under different path prefixes, so a single prefix would have to be split back
+/// apart by whichever of them was being replaced.
+struct Endpoints {
+    /// dbweb journey search. `AXON_TRANSIT_FAHRPLAN_URL`.
+    fahrplan: String,
+    /// dbweb station suggest. `AXON_TRANSIT_ORTE_URL`. dbnav has no suggest path here:
+    /// `suggest_stations` is dbweb-only regardless of backend.
+    orte: String,
+    /// dbnav journey search. `AXON_TRANSIT_DBNAV_FAHRPLAN_URL`. Overridable too, and not
+    /// optional now that dbnav is the default — without it the default backend is the one
+    /// a stub cannot reach.
+    dbnav_fahrplan: String,
+}
+
+impl Endpoints {
+    fn from_env() -> Self {
+        Self::resolve(|var| std::env::var(var).ok())
+    }
+
+    /// Split from `from_env` so the resolution rules are testable without mutating the
+    /// process environment, which Rust's parallel test threads share.
+    fn resolve(lookup: impl Fn(&str) -> Option<String>) -> Self {
+        // An empty or blank value falls back rather than pointing the client at "": a
+        // shell that exports the variable unconditionally sets it to empty when it has
+        // nothing to put there, and a request to "" fails in a way that names neither.
+        let or_default = |var: &str, default: &str| {
+            lookup(var)
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| default.to_string())
+        };
+        Self {
+            fahrplan: or_default("AXON_TRANSIT_FAHRPLAN_URL", FAHRPLAN_URL),
+            orte: or_default("AXON_TRANSIT_ORTE_URL", ORTE_URL),
+            dbnav_fahrplan: or_default("AXON_TRANSIT_DBNAV_FAHRPLAN_URL", DBNAV_FAHRPLAN_URL),
+        }
+    }
+}
+
 pub struct HafasClient {
     client: Client,
     backend: RailBackend,
+    endpoints: Endpoints,
 }
 
 impl Default for HafasClient {
@@ -235,7 +285,11 @@ impl HafasClient {
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .expect("reqwest client with a fixed timeout should always build");
-        Self { client, backend }
+        Self {
+            client,
+            backend,
+            endpoints: Endpoints::from_env(),
+        }
     }
 
     fn fahrplan_payload(
@@ -355,14 +409,14 @@ impl HafasClient {
         let request = match self.backend {
             RailBackend::DbWeb => self
                 .client
-                .post(FAHRPLAN_URL)
+                .post(&self.endpoints.fahrplan)
                 .header("User-Agent", BROWSER_UA)
                 .header("Accept", "application/json")
                 .header("Content-Type", "application/json; charset=UTF-8")
                 .json(&Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?),
             RailBackend::DbNav => self
                 .client
-                .post(DBNAV_FAHRPLAN_URL)
+                .post(&self.endpoints.dbnav_fahrplan)
                 .header("X-Correlation-ID", dbnav_correlation_id())
                 .header("Accept", DBNAV_MEDIA_TYPE)
                 .header("Content-Type", DBNAV_MEDIA_TYPE)
@@ -396,7 +450,7 @@ impl HafasClient {
     pub fn suggest_stations(&self, query: &str) -> Result<Vec<Station>, HafasError> {
         let response = self
             .client
-            .get(ORTE_URL)
+            .get(&self.endpoints.orte)
             .query(&[("suchbegriff", query), ("typ", "ALL"), ("limit", "10")])
             .header("User-Agent", BROWSER_UA)
             .header("Accept", "application/json")
@@ -442,14 +496,14 @@ impl HafasClient {
         let request = match self.backend {
             RailBackend::DbWeb => self
                 .client
-                .post(FAHRPLAN_URL)
+                .post(&self.endpoints.fahrplan)
                 .header("User-Agent", BROWSER_UA)
                 .header("Accept", "application/json")
                 .header("Content-Type", "application/json; charset=UTF-8")
                 .json(&Self::fahrplan_payload(from_eva, to_eva, datetime, fare)?),
             RailBackend::DbNav => self
                 .client
-                .post(DBNAV_FAHRPLAN_URL)
+                .post(&self.endpoints.dbnav_fahrplan)
                 .header("X-Correlation-ID", dbnav_correlation_id())
                 .header("Accept", DBNAV_MEDIA_TYPE)
                 .header("Content-Type", DBNAV_MEDIA_TYPE)
@@ -1762,6 +1816,40 @@ mod tests {
                 .is_empty(),
             "a journey with no train sections is not a journey"
         );
+    }
+
+    /// Every answer this capability gives comes from a live query, which is what kept
+    /// transit out of the published demo: a recorded timetable stops being true within
+    /// the hour. Overridable endpoints let the real client be pointed at a stub, so the
+    /// parser still does the work and the recording is transit's own output.
+    #[test]
+    fn every_endpoint_can_be_pointed_at_a_stub_and_otherwise_is_bahn_de() {
+        let stub = |var: &str| match var {
+            "AXON_TRANSIT_FAHRPLAN_URL" => Some("http://127.0.0.1:8099/fahrplan".to_string()),
+            "AXON_TRANSIT_ORTE_URL" => Some("http://127.0.0.1:8099/orte".to_string()),
+            "AXON_TRANSIT_DBNAV_FAHRPLAN_URL" => {
+                Some("http://127.0.0.1:8099/dbnav/fahrplan".to_string())
+            }
+            _ => None,
+        };
+        let overridden = Endpoints::resolve(stub);
+        assert_eq!(overridden.fahrplan, "http://127.0.0.1:8099/fahrplan");
+        assert_eq!(overridden.orte, "http://127.0.0.1:8099/orte");
+        assert_eq!(overridden.dbnav_fahrplan, "http://127.0.0.1:8099/dbnav/fahrplan");
+
+        // Unset is the normal case and must reach the real endpoints, including the
+        // dbnav one -- it is the default backend, so leaving it hardcoded would have
+        // made the default the one path a stub cannot reach.
+        let bare = Endpoints::resolve(|_| None);
+        assert_eq!(bare.fahrplan, FAHRPLAN_URL);
+        assert_eq!(bare.orte, ORTE_URL);
+        assert_eq!(bare.dbnav_fahrplan, DBNAV_FAHRPLAN_URL);
+
+        // Exported-but-empty is a shell that had nothing to put there, not an intent to
+        // POST to "".
+        let blank = Endpoints::resolve(|_| Some("   ".to_string()));
+        assert_eq!(blank.fahrplan, FAHRPLAN_URL);
+        assert_eq!(blank.dbnav_fahrplan, DBNAV_FAHRPLAN_URL);
     }
 
     /// The two backends build genuinely different requests from one call, and

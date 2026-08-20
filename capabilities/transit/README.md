@@ -226,6 +226,29 @@ needs a translation to answer.
 | Times | naive local (`2026-09-15T09:04:00`) | offset-carrying (`...+02:00`) |
 | Coordinates | absent | present on every station |
 
+### Pointing it somewhere else
+
+Three variables replace the endpoints, one per address, defaulting to the real ones:
+
+| Variable | Replaces |
+|---|---|
+| `AXON_TRANSIT_DBNAV_FAHRPLAN_URL` | dbnav journey search, the default backend's |
+| `AXON_TRANSIT_FAHRPLAN_URL` | dbweb journey search |
+| `AXON_TRANSIT_ORTE_URL` | station suggest, which is dbweb's regardless of backend |
+
+Empty or unset falls back to the real endpoint rather than requesting `""`, because a shell that
+exports unconditionally sets an empty value when it has nothing to put there.
+
+This exists for the published demo. Every answer this capability gives comes from a live query,
+which made it undemonstrable — recording a real timetable publishes something that stops being
+true within the hour. `tools/demo-origin` serves bahn.de-shaped payloads instead, and because
+the override replaces only the address, the real parser still does the work and what the demo
+records is genuinely this capability's output. The same seam makes the client testable offline.
+
+One variable per endpoint rather than one base URL: the two backends live on different hosts
+under different path prefixes, so a single prefix would have to be split apart again by whoever
+was replacing it.
+
 The point of the second one is that everything here sits on a reverse-engineered endpoint that
 can die without notice — the sibling `db` profile's host lost its DNS in May 2026 and took
 BetterBahn down with it. Two backends behind one seam means that costs a config change instead

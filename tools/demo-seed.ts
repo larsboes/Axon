@@ -169,6 +169,65 @@ const SEEDERS: Record<string, (ctx: Ctx) => Promise<string>> = {
     return `${VOCABULARY.rhythms.length} rhythms, ${count} entries, ${VOCABULARY.trips.filter((t) => t.offsetDays > 0).length} contexts`;
   },
 
+  // Comms and Scouting are the two capabilities whose job is to go and fetch something. They
+  // are seeded by pointing them at tools/demo-origin and letting them do exactly that: neither
+  // seeder writes an item, and neither knows what an item looks like. What lands in the store
+  // is the output of Comms' own extractor and Scouting's own rss adapter, which is the only
+  // reason these two can appear in a demo that forbids hand-written fixtures.
+
+  async comms(ctx) {
+    const ingest = ctx.url("/comms/ingest");
+    const status = (id: string) => ctx.url(`/comms/feed/${id}/status`);
+    const ingested: string[] = [];
+
+    for (const article of VOCABULARY.articles) {
+      // No `content`, deliberately. Passing the body would make this a fixture with extra
+      // steps; omitting it makes the server fetch and extract the page itself, which is the
+      // behaviour worth demonstrating and the one that breaks loudly when extraction does.
+      const item = await post<{ item?: { id: string } ; id?: string }>(ingest, {
+        url: `${ctx.manifest.origin}/articles/${article.slug}`,
+        client: "demo-seed",
+      });
+      const id = item.item?.id ?? item.id;
+      if (id) ingested.push(id);
+    }
+
+    // A feed where every row is `new` cannot demonstrate triage, which is the screen that
+    // exists to move rows out of it. Two decisions, taken deterministically rather than by
+    // dice, so the demo's triage counts are the same on every build.
+    let keepers = 0;
+    let dismissed = 0;
+    for (const [index, id] of ingested.entries()) {
+      if (index % 3 === 0) {
+        await post(status(id), { status: "keeper" });
+        keepers++;
+      } else if (index % 5 === 4) {
+        await post(status(id), { status: "dismissed" });
+        dismissed++;
+      }
+    }
+    return `${ingested.length} items ingested from the demo origin (${keepers} kept, ${dismissed} dismissed)`;
+  },
+
+  async scouting(ctx) {
+    // One GET, and it does the work: /discover runs the declared source's adapter, scores
+    // what it finds and persists it. The source is `demo-origin`, declared in the generated
+    // scouting.json — tools/demo-up writes that from demo.toml's origin, so the id here and
+    // the URL there cannot drift apart into a scan of nothing.
+    const found = await get<{ scored?: unknown[]; opportunities?: unknown[] }>(
+      ctx.url("/discover?adapter=demo-origin&limit=20"),
+    );
+    const rows = (found.scored ?? found.opportunities ?? []).length;
+    if (rows === 0) {
+      throw new Error(
+        "scouting discovered nothing from the demo origin. Either the origin is not serving " +
+          "/feed.xml, or the generated demo/overlay/config/scouting.json did not reach the " +
+          "capability — a silently empty Scout page is the thing this check exists to prevent.",
+      );
+    }
+    return `${rows} opportunities discovered through the rss adapter`;
+  },
+
   async trips(ctx) {
     const url = ctx.url("/trips/api/plans");
     const home = VOCABULARY.home;

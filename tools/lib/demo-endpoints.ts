@@ -47,6 +47,9 @@ export interface DemoManifest {
   seed: string;
   anchor: string;
   label: string;
+  /** Where tools/demo-origin listens, and the only place that address is written down.
+   *  Comms and Scouting are pointed at it by URL, Transit by its endpoint overrides. */
+  origin: string;
   fixturesDir: string;
   capabilities: DemoCapability[];
   /** Capability name → why the demo does not include it. Rendered, not just recorded. */
@@ -58,13 +61,20 @@ export function loadManifest(path = join(AXON_ROOT, "demo/demo.toml")): DemoMani
   // single-line grep contract cannot express arrays of tables, and this manifest is one.
   const raw = Bun.TOML.parse(readFileSync(path, "utf8")) as Record<string, any>;
   const demo = raw.demo ?? {};
-  for (const field of ["seed", "anchor", "label"]) {
+  for (const field of ["seed", "anchor", "label", "origin"]) {
     if (typeof demo[field] !== "string" || demo[field] === "") {
       throw new Error(`demo.toml: [demo] ${field} is required`);
     }
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(demo.anchor)) {
     throw new Error(`demo.toml: [demo] anchor must be YYYY-MM-DD, got ${demo.anchor}`);
+  }
+  // Loopback only, checked rather than trusted. The demo origin exists so three capabilities
+  // can fetch something; an origin pointing off-machine would make the published corpus depend
+  // on a host nobody in this repository controls, which is the failure the manifest's one
+  // invariant is about.
+  if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(demo.origin)) {
+    throw new Error(`demo.toml: [demo] origin must be http://127.0.0.1:<port>, got ${demo.origin}`);
   }
 
   const capabilities: DemoCapability[] = Object.entries(raw.capability ?? {}).map(
@@ -96,6 +106,7 @@ export function loadManifest(path = join(AXON_ROOT, "demo/demo.toml")): DemoMani
     seed: demo.seed,
     anchor: demo.anchor,
     label: demo.label,
+    origin: demo.origin,
     fixturesDir: raw.fixtures?.dir ?? "demo/fixtures",
     capabilities,
     absent,

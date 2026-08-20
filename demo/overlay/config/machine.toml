@@ -18,14 +18,21 @@ os = "linux"
 container_runtime = "docker"
 
 # The seeded set, and nothing else. Each of these can be filled entirely through its own HTTP
-# write API; a capability that cannot is listed under [absent] in demo/demo.toml with the
-# reason, rather than being enabled here and quietly rendering empty.
+# write API — or, for the three added 2026-08-20, by reading the synthetic origin `[demo] origin`
+# declares. A capability that can be filled neither way is listed under [absent] in
+# demo/demo.toml with the reason, rather than being enabled here and quietly rendering empty.
+#
+# comms, scouting and transit each fetch from somewhere else for a living, which is why they
+# were absent until an origin existed to fetch from. None of them gained a line of demo code:
+# Comms is fed by posting URLs to its ordinary /ingest route, Scouting by declaring an rss
+# source (tools/demo-up generates scouting.json from the manifest's origin), and Transit by
+# the endpoint overrides its HAFAS client already reads.
 #
 # postgres is deliberately NOT here even though all four declare `requires = ["postgres"]`.
 # The demo consumes a Postgres the environment already provides — GitHub Actions' service
 # container in CI, a scratch database locally — so there is no container for this overlay to
 # manage. Single line, per the tools/lib/toml.sh contract.
-capabilities = ["axon-status", "calendar", "finance", "tasks", "trips"]
+capabilities = ["axon-status", "calendar", "comms", "finance", "scouting", "tasks", "transit", "trips"]
 
 # No [[state_mount]] blocks. A state mount records where a tool on a real machine actually
 # persists data; this deployment persists nothing that outlives the job that built it.

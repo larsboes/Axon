@@ -276,6 +276,99 @@ export const VOCABULARY = {
     { description: "Salary — Halden Systems", account: "income:salary", cents: 289_000 },
     { description: "Invoice — Velten Studio", account: "income:freelance", cents: 62_500 },
   ],
+
+  /** Articles the synthetic origin publishes, for Comms to ingest and Scouting to scan.
+   *
+   *  No URL here, and that is not an oversight: the sweep below forbids one, because a
+   *  literal address in the vocabulary is how a real host gets published. tools/demo-origin
+   *  builds every link from `slug` against its own listening address at serve time, the same
+   *  way email() builds an address rather than storing one.
+   *
+   *  `kind` splits them: `reading` items are ordinary feed material, `opportunity` items
+   *  carry a date and a place so Scouting has something with a deadline to rank. */
+  articles: [
+    {
+      slug: "small-tools-that-outlive-their-authors",
+      title: "Small tools that outlive their authors",
+      kind: "reading" as const,
+      summary: "Why the utilities that survive a decade are the ones nobody had to maintain.",
+      body: "A tool that does one thing and states its contract can be left alone. One that grows a plugin system acquires an owner, and owners move on. The argument is not against ambition — it is about which parts you promise to keep.",
+    },
+    {
+      slug: "reading-a-binary-format-you-did-not-design",
+      title: "Reading a binary format you did not design",
+      kind: "reading" as const,
+      summary: "Schema drift, projection, and the columns you never noticed you depended on.",
+      body: "The failure is rarely a corrupt file. It is a column quietly renamed upstream, read as absent, and folded in as a zero — a number that looks like a measurement and is not.",
+    },
+    {
+      slug: "the-cost-of-a-second-system-of-record",
+      title: "The cost of a second system of record",
+      kind: "reading" as const,
+      summary: "Two places that describe the same work will disagree by Friday.",
+      body: "Every duplicated fact is a scheduled argument. The question is never whether the copies drift, only which one somebody trusts when they do.",
+    },
+    {
+      slug: "measuring-what-you-already-collect",
+      title: "Measuring what you already collect",
+      kind: "reading" as const,
+      summary: "Most systems throw away the number they were asked for.",
+      body: "Before adding a metric, check whether the value is already in the request and simply never read. The instrumentation you skip is the instrumentation you cannot get wrong.",
+    },
+    {
+      slug: "open-call-riverside-build-week",
+      title: "Open call: Riverside Build Week",
+      kind: "opportunity" as const,
+      summary: "A week of shared workshop time for people building physical things.",
+      body: "Bring a project and a plan for finishing it. Benches, tools and a kiln are provided; applications close a fortnight before the first session.",
+      offsetDays: 38,
+      city: "Ghent",
+    },
+    {
+      slug: "grant-window-small-software-commons",
+      title: "Grant window: Small Software Commons",
+      kind: "opportunity" as const,
+      summary: "Modest funding for maintained tools with no commercial path.",
+      body: "Applications want a maintenance plan rather than a roadmap. Preference is given to work already in use by somebody other than its author.",
+      offsetDays: 55,
+      city: "Copenhagen",
+    },
+    {
+      slug: "call-for-talks-northern-systems-days",
+      title: "Call for talks: Northern Systems Days",
+      kind: "opportunity" as const,
+      summary: "Two days on operating small systems well.",
+      body: "Thirty-minute slots, no keynotes, and a strong preference for talks about something that actually ran in production and broke.",
+      offsetDays: 72,
+      city: "Tallinn",
+    },
+  ],
+
+  /** Rail stations for the synthetic HAFAS origin.
+   *
+   *  Names are generic rather than the real station names in these cities, and the ids are
+   *  a deliberately synthetic 99xxxxx block — Deutsche Bahn's own EVA numbers start 80xxxxx
+   *  for German stations, so nothing here can be mistaken for a real one or accidentally
+   *  match a cell in punctuality's data. Seven digits, which keeps them clear of the
+   *  card-number shape the sweep rejects. */
+  stations: [
+    { id: "9900001", name: "Ghent Central", latitude: 51.0543, longitude: 3.7174 },
+    { id: "9900002", name: "Copenhagen Central", latitude: 55.6761, longitude: 12.5683 },
+    { id: "9900003", name: "Turin Central", latitude: 45.0703, longitude: 7.6869 },
+    { id: "9900004", name: "Kraków Central", latitude: 50.0647, longitude: 19.945 },
+    { id: "9900005", name: "Lisbon Central", latitude: 38.7223, longitude: -9.1393 },
+    { id: "9900006", name: "Tallinn Central", latitude: 59.437, longitude: 24.7536 },
+  ],
+
+  /** Train services the synthetic origin puts on those routes. `label` is what a real
+   *  backend would put in `mitteltext`, and it is the field transit reads the punctuality
+   *  train type off, so the shape matters: a label plus a number. */
+  services: [
+    { label: "ICE", gattung: "ICE", regional: false },
+    { label: "IC", gattung: "IC_EC", regional: false },
+    { label: "RE", gattung: "RB", regional: true },
+    { label: "RB", gattung: "RB", regional: true },
+  ],
 } as const;
 
 /** Every string anywhere in VOCABULARY, flattened. The test sweeps this; the payload gate
