@@ -37,6 +37,9 @@ it in — do not draft CV content yourself.
 4. `$CV build --profile $PROFILE --lang $LANG` → report the printed output path back to the
    user. Building every profile/lang at once: `$CV build --all` (optionally `--all --lang de`
    to restrict to one language).
+   Iterating on the master file rather than producing one PDF: `$CV watch --profile $PROFILE
+   --lang $LANG` recompiles on every save. Tell the user to open the PDF in a viewer that
+   reloads on change (Preview, Skim, a browser tab) — `watch` blocks until they stop it.
 5. Never edit `$MASTER` on the user's behalf mid-conversation to "tailor" wording for a specific
    posting — that recreates the AI-tailoring flow this design deliberately left out. If the
    user wants new content, tell them to add it (with the right `profiles:` tags) to the master
@@ -44,16 +47,20 @@ it in — do not draft CV content yourself.
 
 ## Gotchas
 
-- **No matching profile tag isn't a hard stop.** `$CV build --profile <anything>` still
-  produces a valid PDF — items without a `profiles` list are always included, so an unknown tag
-  just yields a generic/baseline CV. Don't treat a typo'd profile name as an error; it's a
-  silent quality issue instead. Always run `list-profiles` first and match against real output.
+- **An unknown profile tag now fails the build** (changed 2026-08-16). It used to render a
+  generic baseline CV, because items without a `profiles` list are always included — so a typo
+  produced a real-looking PDF that was quietly missing most of its content. `$CV build
+  --profile <unknown>` exits 1 and prints the known tags. Still run `list-profiles` first, but
+  a wrong tag is now a loud error rather than a silent quality problem.
+- **`--all` respects a profile's declared languages.** The master may carry
+  `profile_langs: {<tag>: [en]}`; `--all` skips the excluded pairs, so its output is not
+  always profiles × 2. An explicit `--profile x --lang de` is never blocked by this.
 - **`$CV` requires `typst` and `yq` on `PATH`** (`brew install typst yq`) — it checks and errors
   clearly if either is missing, no need to pre-check yourself.
-- **Dates aren't bilingual.** The master file's `date` fields are plain strings (e.g. "Sep.
-  2025 - Present"), not `{en, de}` pairs — a German-language build still shows English month
-  abbreviations by design (kept the schema simpler; per-field localization is easy to add later
-  if it ever matters enough to be worth the extra upkeep).
+- **Experience and education dates aren't bilingual.** Their `date` fields are plain strings
+  (e.g. "Sep. 2025 - Present"), so a German build still shows English month abbreviations by
+  design. Free-section entries are the exception: their `label` and `meta` accept either a
+  plain string or an `{en, de}` pair (added 2026-08-16 for "since Jun 2025" / "seit Juni 2025").
 - **Output PDFs and the master file are personal data** — they live under
   `$AXON_PERSONAL_ROOT/data/cv/`, gitignored, never in this skill or in Axon's own repo. Don't
   copy CV content into this skill file, a commit message, or anywhere else in the public repo.

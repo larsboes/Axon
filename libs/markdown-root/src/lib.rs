@@ -269,17 +269,25 @@ fn strip_markdown_glob(pattern: &str) -> &str {
 /// frontmatter *is* an error, because it means the file's structure is not what
 /// it claims and everything read after that point would be invented.
 pub fn frontmatter(md: &str) -> Result<HashMap<String, String>, String> {
-    let mut map = HashMap::new();
-
     if !md.starts_with("---") {
-        return Ok(map);
+        return Ok(HashMap::new());
     }
 
     let end = md[3..]
         .find("---")
         .map(|i| i + 3)
         .ok_or("unclosed frontmatter")?;
-    let block = &md[3..end];
+    Ok(parse_fields(&md[3..end]))
+}
+
+/// The field parser, extracted so two delimiters can share it.
+///
+/// `frontmatter` finds its closing fence by searching for the next `---`
+/// anywhere; `frontmatter_spanned` requires that fence to sit alone on a line.
+/// They disagree on where the block ends and must not disagree on what the
+/// block means, which is what a second copy of this loop would eventually do.
+fn parse_fields(block: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
     let mut in_list = false;
     let mut list_key = String::new();
     let mut list_items: Vec<String> = Vec::new();
@@ -356,7 +364,144 @@ pub fn frontmatter(md: &str) -> Result<HashMap<String, String>, String> {
         map.insert(list_key, list_items.join(", "));
     }
 
-    Ok(map)
+    map
+}
+
+// ---------------------------------------------------------------------------
+// Whole-root traversal and byte-addressable frontmatter.
+//
+// Added for `capabilities/vault`, which asks two questions the pattern-based
+// API above cannot answer. First: what is EVERY note in this root? The glob
+// shapes exist because a config declared them, and widening those would widen
+// what an operator asked for — but a vault-wide lint has no pattern to widen,
+// it has the vault. Second: where does the frontmatter END in bytes? A tool
+// that rewrites frontmatter and must leave the body untouched cannot work from
+// a HashMap; it needs an offset it can splice at.
+//
+// Both live here rather than in the capability for the reason the module doc
+// already gives: containment is the guarantee this type exists to provide, and
+// a caller that walks the tree itself has quietly opted out of it.
+
+/// A parsed frontmatter block plus the offsets that make it rewritable.
+///
+/// `body_start` is the byte index of the first character after the closing
+/// fence and its newline. Slicing a file at it yields the body exactly as it
+/// sits on disk, which is what lets a writer re-serialise the frontmatter and
+/// concatenate the original body bytes rather than round-tripping them through
+/// a parser that would reformat Bases embeds, Mermaid fences and callouts.
+#[derive(Debug, Clone)]
+pub struct Frontmatter {
+    pub fields: HashMap<String, String>,
+    /// Byte range of the YAML between the fences, absent when the file has none.
+    pub block: Option<(usize, usize)>,
+    pub body_start: usize,
+}
+
+impl MarkdownRoot {
+    /// Every `.md` file under the root, recursively, sorted, each proven inside it.
+    ///
+    /// Directories whose name starts with `.` are skipped. In an Obsidian vault
+    /// those are `.obsidian`, `.trash`, `.smart-env` and `.git`: plugin state,
+    /// deleted notes and the object store. Counting `.trash` is how a vault
+    /// reports 2,284 notes when it has 2,248, and a lint that walks `.git`
+    /// reports on blobs.
+    pub fn markdown_files_recursive(&self) -> Result<Vec<PathBuf>, RootError> {
+        let mut files = Vec::new();
+        let mut stack = vec![self.root.clone()];
+
+        while let Some(dir) = stack.pop() {
+            let entries = std::fs::read_dir(&dir).map_err(|e| RootError::Unreadable {
+                path: dir.clone(),
+                detail: e.to_string(),
+            })?;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with('.') {
+                    continue;
+                }
+                match entry.file_type() {
+                    Ok(t) if t.is_dir() => stack.push(path),
+                    Ok(t) if t.is_file() => {
+                        if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                            files.push(self.contained(path)?);
+                        }
+                    }
+                    // A symlink or an entry whose type we cannot read: `contained`
+                    // is the authority on whether it belongs, so ask it rather
+                    // than guessing from the dirent.
+                    _ => {
+                        if path.extension().and_then(|e| e.to_str()) == Some("md") && path.is_file()
+                        {
+                            files.push(self.contained(path)?);
+                        }
+                    }
+                }
+            }
+        }
+        files.sort();
+        Ok(files)
+    }
+}
+
+/// `frontmatter`, plus the offsets a rewriter needs.
+///
+/// One deliberate divergence from `frontmatter` above: the closing fence must
+/// sit alone on its own line. The older function searches for the next `---`
+/// anywhere, which is right for the fields it was written to read and wrong the
+/// moment a value contains a triple dash — there, it truncates the block early
+/// and every key below the dash vanishes. Reading fewer fields is survivable;
+/// splicing at an offset three lines above the real fence is not, so this one
+/// is line-anchored. The older function keeps its behaviour: scouting and
+/// calendar are calibrated against it and this crate does not get to change
+/// what they read on the way past.
+pub fn frontmatter_spanned(md: &str) -> Result<Frontmatter, String> {
+    let no_frontmatter = Frontmatter {
+        fields: HashMap::new(),
+        block: None,
+        body_start: 0,
+    };
+
+    // A leading `---` is only a fence when the line holds nothing else.
+    let first_line_end = md.find('\n').unwrap_or(md.len());
+    if md[..first_line_end].trim_end() != "---" {
+        return Ok(no_frontmatter);
+    }
+    let block_start = first_line_end + 1;
+
+    let mut cursor = block_start;
+    let close = loop {
+        if cursor >= md.len() {
+            return Err("unclosed frontmatter".to_string());
+        }
+        let line_end = md[cursor..]
+            .find('\n')
+            .map(|i| cursor + i)
+            .unwrap_or(md.len());
+        if md[cursor..line_end].trim_end() == "---" {
+            break (cursor, line_end);
+        }
+        cursor = line_end + 1;
+    };
+    let (fence_start, fence_end) = close;
+
+    // Share the field parser, not the delimiter. Handing the block back to
+    // `frontmatter` would re-run its unanchored search and undo the anchoring
+    // this function exists for — the test below is the one that caught it.
+    let fields = parse_fields(&md[block_start..fence_start]);
+
+    let body_start = if fence_end < md.len() {
+        fence_end + 1
+    } else {
+        md.len()
+    };
+
+    Ok(Frontmatter {
+        fields,
+        block: Some((block_start, fence_start)),
+        body_start,
+    })
 }
 
 #[cfg(test)]
@@ -587,5 +732,57 @@ mod tests {
             root.markdown_files("Nowhere/*.md"),
             Err(RootError::Unreadable { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+
+    #[test]
+    fn body_start_lands_after_the_closing_fence() {
+        let md = "---\ntype: note\n---\nBody line one.\n";
+        let fm = frontmatter_spanned(md).expect("parse");
+        assert_eq!(&md[fm.body_start..], "Body line one.\n");
+        assert_eq!(fm.fields.get("type").map(String::as_str), Some("note"));
+    }
+
+    /// The reason this function exists rather than reusing `frontmatter`: a
+    /// horizontal rule in the body must not be mistaken for the closing fence,
+    /// and a value containing a triple dash must not truncate the block.
+    #[test]
+    fn a_triple_dash_inside_a_value_does_not_close_the_block() {
+        let md = "---\nsummary: \"a --- b\"\ntype: note\n---\nBody.\n";
+        let fm = frontmatter_spanned(md).expect("parse");
+        assert_eq!(fm.fields.get("type").map(String::as_str), Some("note"));
+        assert_eq!(&md[fm.body_start..], "Body.\n");
+    }
+
+    /// The property A2 depends on: whatever a rewriter does to the frontmatter,
+    /// re-concatenating the original body bytes must reproduce them exactly,
+    /// including a Bases embed and a Mermaid fence it never parsed.
+    #[test]
+    fn body_bytes_survive_a_frontmatter_rewrite() {
+        let body = "# Title\n\n```base\nfilters:\n  and:\n    - file.inFolder(\"Knowledge\")\n```\n\n---\n\n```mermaid\ngraph TD; A-->B;\n```\n";
+        let md = format!("---\ntype: note\n---\n{body}");
+        let fm = frontmatter_spanned(&md).expect("parse");
+        let rewritten = format!(
+            "---\ntype: note\nunderstanding: none\n---\n{}",
+            &md[fm.body_start..]
+        );
+        assert!(rewritten.ends_with(body));
+    }
+
+    #[test]
+    fn a_file_without_frontmatter_is_all_body() {
+        let md = "Just prose.\n";
+        let fm = frontmatter_spanned(md).expect("parse");
+        assert_eq!(fm.body_start, 0);
+        assert!(fm.block.is_none());
+    }
+
+    #[test]
+    fn an_unclosed_block_is_an_error_not_a_guess() {
+        assert!(frontmatter_spanned("---\ntype: note\nno fence ever\n").is_err());
     }
 }
