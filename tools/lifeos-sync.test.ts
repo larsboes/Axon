@@ -150,4 +150,62 @@ describe("mergeHooks", () => {
     const { merged } = mergeHooks({}, { PostToolUse: [{ ...block("Edit", "bun x.ts"), _why: "explains the delta" }] });
     expect(merged.PostToolUse[0]).not.toHaveProperty("_why");
   });
+
+  // The subset bug, 2026-08-20. Identity used to be the whole block: matcher plus
+  // every command joined. So a fragment block whose commands were a SUBSET of a
+  // live block's never matched, and deploy appended it — registering hooks that
+  // were already there a second time. Found on a live install where the fragment's
+  // two-hook UserPromptSubmit block sat inside a live six-hook block; status called
+  // both permanently missing.
+  const multi = (matcher: string, ...commands: string[]) => ({
+    matcher,
+    hooks: commands.map((command) => ({ type: "command", command })),
+  });
+  const h = (name: string) => `bun hooks/${name}.hook.ts`;
+
+  test("a fragment block already contained in a bigger live block adds nothing", () => {
+    const live = { UserPromptSubmit: [multi("*", h("A"), h("B"), h("C"))] };
+    const { merged, added } = mergeHooks(live, { UserPromptSubmit: [multi("*", h("C"), h("A"))] });
+    expect(added).toEqual([]);
+    expect(merged.UserPromptSubmit).toHaveLength(1);
+  });
+
+  test("order within a block is not identity — the same commands reordered are the same hooks", () => {
+    const live = { PostToolUse: [multi("Edit", h("A"), h("B"))] };
+    const { added } = mergeHooks(live, { PostToolUse: [multi("Edit", h("B"), h("A"))] });
+    expect(added).toEqual([]);
+  });
+
+  test("a partly-new block contributes only its new hooks", () => {
+    const live = { PostToolUse: [multi("Edit", h("A"), h("B"))] };
+    const { merged, added } = mergeHooks(live, { PostToolUse: [multi("Edit", h("B"), h("New"))] });
+    expect(added).toEqual(["PostToolUse: New.hook.ts"]);
+    expect(merged.PostToolUse).toHaveLength(2);
+    expect(merged.PostToolUse[1].hooks).toHaveLength(1);
+    expect(merged.PostToolUse[0].hooks).toHaveLength(2);
+  });
+
+  test("the same command under a different matcher is a different hook", () => {
+    const live = { PostToolUse: [block("Edit", h("A"))] };
+    const { added } = mergeHooks(live, { PostToolUse: [block("Write", h("A"))] });
+    expect(added).toEqual(["PostToolUse: A.hook.ts"]);
+  });
+
+  test("a partial add is still idempotent — deploying twice settles", () => {
+    const live = { PostToolUse: [multi("Edit", h("A"))] };
+    const fragment = { PostToolUse: [multi("Edit", h("A"), h("New"))] };
+    const once = mergeHooks(live, fragment);
+    expect(once.added).toEqual(["PostToolUse: New.hook.ts"]);
+    expect(mergeHooks(once.merged, fragment).added).toEqual([]);
+  });
+
+  test("a hand-retimed hook inside a bigger block is not re-added or rewritten", () => {
+    const live = { UserPromptSubmit: [{ matcher: "*", hooks: [
+      { type: "command", command: h("A") },
+      { type: "command", command: h("B"), timeout: 90 },
+    ] }] };
+    const { merged, added } = mergeHooks(live, { UserPromptSubmit: [multi("*", h("B"))] });
+    expect(added).toEqual([]);
+    expect(merged.UserPromptSubmit[0].hooks[1].timeout).toBe(90);
+  });
 });
