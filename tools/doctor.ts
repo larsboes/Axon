@@ -28,6 +28,7 @@ import { basename, resolve, dirname, join, relative } from "node:path";
 // The offline doctor path never calls it, so the report stays network-free where it must be.
 import { lookup as dnsLookup } from "node:dns/promises";
 import { defaultCodexDeployConfig, getStatuses } from "./packs-codex.ts";
+import { defaultClaudeDeployConfig } from "./packs-claude.ts";
 import { resolveMachineToml, resolveOverlayRoot } from "./lib/overlay.ts";
 import { releaseTagGlob } from "./lib/release.ts";
 
@@ -1554,91 +1555,62 @@ const CHECKS: Check[] = [
     },
   },
 
-  // Packs — link state (read-only mirror of packs.sh's symlink check;
-  // packs.sh itself owns link/unlink, doctor only reports)
+  // Packs — Claude Code deployment state.
+  //
+  // This used to assert that every destination was a SYMLINK into Packs/. It stopped being
+  // true on 2026-08-09, when deployment changed to copy-with-a-ledger (principal: "we should
+  // only deploy from axon overlays never using symlinks"), and the check was not updated. The
+  // result was eight hard failures reading "occupied by a non-symlink" against skills that
+  // packs-claude reported as `current` — doctor calling correct state broken, which is worse
+  // than not checking at all, because it trains you to ignore the report.
+  //
+  // It now reads the same ledger the deployer writes, exactly as the Codex section below does.
+  // One source of truth, and it cannot drift from the tool again.
   {
-    name: "Packs (Claude Code links)",
-    async run(ctx) {
-      const packsDir = join(ctx.root, "Packs");
-      if (!existsSync(packsDir)) {
-        ctx.warn("no Packs/ yet");
-        return;
-      }
-
-      // Where the harness keeps its skills is declared, not assumed: the `lifeos`
-      // state_mount in machine.toml is this machine's answer, and it is already in
-      // ctx.mounts by the time this runs (Axon#26). The env overrides win because
-      // packs.sh reads the same two variables, and packs.sh is the writer this check
-      // mirrors — a doctor that resolved a different destination than the tool doing
-      // the linking would report on links nobody made.
-      const lifeosMount = ctx.mounts.find((m: { tool: string }) => m.tool === "lifeos");
-      const harnessRoot = lifeosMount ? expandHome(lifeosMount.path) : join(HOME, ".claude");
-      if (!lifeosMount) {
-        ctx.warn("no 'lifeos' state_mount declared — falling back to packs.sh's own default destination");
-      }
-      const skillsDest = process.env.CLAUDE_SKILLS_DIR ?? join(harnessRoot, "skills");
-      const agentsDest = process.env.CLAUDE_AGENTS_DIR ?? join(harnessRoot, "agents");
-
-      // One link, three ways to be wrong: absent, pointing elsewhere, or a real file
-      // sitting where the link belongs. packs.sh distinguishes the same three and refuses
-      // to touch the last two, so reporting them separately is what makes the report
-      // actionable rather than just red.
-      const reportLink = (label: string, src: string, dst: string, packName: string) => {
-        if (!existsSync(src)) {
-          ctx.bad(`${label}: source missing at ${src}`);
+    name: "Packs (Claude Code materialized)",
+    run(ctx) {
+      try {
+        const rows = getStatuses(defaultClaudeDeployConfig());
+        if (rows.length === 0) {
+          ctx.warn("no Packs/*/pack.toml found");
           return;
         }
-        try {
-          const st = lstatSync(dst);
-          if (!st.isSymbolicLink()) {
-            ctx.bad(`${label}: ${dst} occupied by a non-symlink`);
-            return;
+        for (const row of rows) {
+          const label = `${row.pack}/${row.skill}`;
+          const detail = row.detail ? ` — ${row.detail}` : "";
+          switch (row.status) {
+            case "current":
+              ctx.ok(`${label} current`);
+              break;
+            case "not-deployed":
+              ctx.warn(`${label} not deployed (tools/packs.sh link ${row.pack})`);
+              break;
+            case "outdated":
+              ctx.warn(`${label} outdated (tools/packs-claude sync ${row.pack})${detail}`);
+              break;
+            case "drifted":
+              ctx.bad(`${label} has destination-side changes; sync/remove will refuse`);
+              break;
+            case "migration-required":
+              ctx.warn(`${label} needs generated-artifact ledger migration${detail}`);
+              break;
+            case "missing":
+              ctx.bad(`${label} is ledger-owned but missing from the Claude skill root`);
+              break;
+            case "collision":
+              ctx.bad(`${label} destination is occupied by an unowned skill (tools/packs-claude adopt ${row.pack} if it is identical)`);
+              break;
+            case "invalid":
+              ctx.bad(`${label} invalid${detail}`);
+              break;
           }
-          const target = resolve(dirname(dst), readlinkSync(dst));
-          if (target === src) ctx.ok(`${label} linked`);
-          else ctx.bad(`${label}: ${dst} points elsewhere (${target})`);
-        } catch {
-          ctx.warn(`${label} not linked (tools/packs.sh link ${packName})`);
         }
-      };
-
-      const glob = new Bun.Glob("*/pack.toml");
-      let sawAny = false;
-      for await (const rel of glob.scan({ cwd: packsDir })) {
-        sawAny = true;
-        const packName = rel.split("/")[0];
-        const packToml = await readToml(join(packsDir, rel));
-        // A pack naming its own deployer is not linked from here; reporting it as
-        // "not linked" would contradict the section above, which reports the very
-        // same destination through that deployer's ledger.
-        if (typeof packToml.deployer === "string" && packToml.deployer.length > 0) {
-          ctx.ok(`${packName} deployed by ${packToml.deployer}, not linked`);
-          continue;
-        }
-        for (const skill of packToml.skills ?? []) {
-          reportLink(
-            `${packName}/${skill}`,
-            join(packsDir, packName, "skills", skill),
-            join(skillsDest, skill),
-            packName,
-          );
-        }
-        // A Pack MAY also carry agents/, linked by packs.sh as one directory symlink
-        // (Claude Code scans agent dirs recursively). It is a convention with no
-        // pack.toml field, which is exactly why doctor was not looking: nothing in the
-        // manifest mentions it, so a repointed agents link passed silently while every
-        // skill beside it reported clean (Axon#26). The presence of the directory is the
-        // declaration, the same signal packs.sh links on.
-        const agentsSrc = join(packsDir, packName, "agents");
-        if (existsSync(agentsSrc)) {
-          reportLink(`${packName}/agents`, agentsSrc, join(agentsDest, packName), packName);
-        }
+      } catch (error) {
+        ctx.bad(`Claude Pack state unreadable: ${(error as Error).message}`);
       }
-      if (!sawAny) ctx.warn("no Packs/*/pack.toml found");
     },
   },
 
-  // Codex Packs — materialized deployment state. Unlike Claude's symlinks,
   // Codex copies are owned through packs-codex's ledger; getStatuses is the
   // shared read-only source of truth for current/outdated/drift/collision state.
   {
