@@ -24,7 +24,7 @@ const LAZY_CHUNK_LIMIT_BYTES = 1_200_000;
 // `total` bounds the library across every chunk Rollup splits it into, measured with ~5%
 // headroom so an upstream bump that doubles something has to be looked at. It is a
 // footprint bound, not a per-load one, and the two differ by a lot for Mermaid: MapLibre
-// arrives as one real chunk of 1.05 MB, while Mermaid self-splits by diagram type across 52
+// arrives as one real chunk of 0.98 MB (v6.4.1; it was ~1.05 MB on v5), while Mermaid self-splits by diagram type across 52
 // chunks totalling 2.57 MB, of which a reader pulls the ~1.3 MB core plus only the diagram
 // types actually on the page. What bounds any single download is LAZY_CHUNK_LIMIT_BYTES
 // above; this bounds the library growing while nobody is watching.
