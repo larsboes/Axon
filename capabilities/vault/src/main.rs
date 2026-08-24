@@ -28,6 +28,7 @@
 
 mod graph;
 mod lint;
+mod names;
 mod note;
 
 fn flag(args: &[String], name: &str) -> Option<String> {
@@ -55,7 +56,8 @@ fn main() {
              \n\
              usage:\n  \
                vault links [--root PATH] [--json] [--dead] [--inbound FOLDER]\n  \
-               vault lint  [--root PATH] [--json] [--carrying KEY]\n\
+               vault lint  [--root PATH] [--json] [--carrying KEY]\n  \
+               vault names [--root PATH] [--json] [--folder Atlas/People]\n\
              \n\
              The root comes from the overlay's config/knowledge.toml unless --root says otherwise."
         );
@@ -176,6 +178,33 @@ fn main() {
                     println!("problems:");
                     for p in &rep.problems {
                         println!("  {p}");
+                    }
+                }
+            }
+        }
+
+        // Rung 0 of the redaction ladder. See src/names.rs for why the registry,
+        // not the matching, is the work.
+        "names" => {
+            let folder =
+                flag(&args, "--folder").unwrap_or_else(|| names::DEFAULT_FOLDER.to_string());
+            let reg = names::build(&notes, &folder);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&reg).unwrap_or_default());
+            } else {
+                println!("{} people -> {} tokens", reg.people, reg.tokens.len());
+                if !reg.withheld.is_empty() {
+                    // Withheld, never dropped: a name held back by the stoplist is a
+                    // decision the operator should be able to see and overrule.
+                    println!("\nwithheld as ambiguous ({}):", reg.withheld.len());
+                    for w in &reg.withheld {
+                        println!("  {w}");
+                    }
+                }
+                if !reg.refused.is_empty() {
+                    println!("\nrefused ({}):", reg.refused.len());
+                    for r in &reg.refused {
+                        println!("  {} — {}", r.note, r.reason);
                     }
                 }
             }
