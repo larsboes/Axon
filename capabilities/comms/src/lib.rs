@@ -25,6 +25,7 @@ pub mod intake;
 pub mod local_gate;
 pub mod media;
 pub mod normalize;
+pub mod people_registry;
 pub mod provenance;
 pub mod quality;
 pub mod quiet;

@@ -332,6 +332,12 @@ fn transform_text(value: &str, redact: bool, redactions: &mut Vec<RedactionFindi
             Some(("secret_token", "[token]"))
         } else if looks_like_sensitive_number(token) {
             Some(("long_number", "[number]"))
+        } else if crate::people_registry::is_known_person(token) {
+            // Rung 0. The salutation gate below cannot see a bare first name, and
+            // across 353 Journal notes it caught 2 of 2,802 known-person mentions.
+            // A list the operator wrote by hand beats a heuristic here, so it is
+            // consulted first.
+            Some(("person", "[person]"))
         } else if (redact_next_person || redact_person_tail) && looks_like_person_name(token) {
             Some(("person", "[person]"))
         } else {
