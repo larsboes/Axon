@@ -30,24 +30,24 @@
       "name": "axon",
       "kind": "pack",
       "code": {
-        "files": 15,
-        "nodes": 60
+        "files": 16,
+        "nodes": 66
       }
     },
     {
       "name": "axon-config",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 32
+        "files": 3,
+        "nodes": 36
       }
     },
     {
       "name": "axon-server",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 10
+        "files": 3,
+        "nodes": 11
       }
     },
     {
@@ -59,16 +59,16 @@
         "port": "8082"
       },
       "code": {
-        "files": 8,
-        "nodes": 79
+        "files": 10,
+        "nodes": 88
       }
     },
     {
       "name": "axon-store",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 20
+        "files": 3,
+        "nodes": 21
       }
     },
     {
@@ -82,8 +82,8 @@
         "port": "8087"
       },
       "code": {
-        "files": 24,
-        "nodes": 554
+        "files": 25,
+        "nodes": 556
       }
     },
     {
@@ -105,16 +105,16 @@
         "port": "8083"
       },
       "code": {
-        "files": 64,
-        "nodes": 991
+        "files": 70,
+        "nodes": 1113
       }
     },
     {
       "name": "content-item",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 42
+        "files": 3,
+        "nodes": 54
       }
     },
     {
@@ -122,7 +122,7 @@
       "kind": "pack",
       "code": {
         "files": 4,
-        "nodes": 24
+        "nodes": 27
       }
     },
     {
@@ -136,8 +136,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 97,
-        "nodes": 555
+        "files": 104,
+        "nodes": 612
       }
     },
     {
@@ -151,8 +151,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 15,
-        "nodes": 528
+        "files": 16,
+        "nodes": 534
       }
     },
     {
@@ -185,8 +185,8 @@
       "name": "home-automation",
       "kind": "pack",
       "code": {
-        "files": 25,
-        "nodes": 331
+        "files": 26,
+        "nodes": 335
       }
     },
     {
@@ -213,14 +213,26 @@
         "requires": [
           "tasks"
         ]
+      },
+      "code": {
+        "files": 1,
+        "nodes": 9
       }
     },
     {
       "name": "inference",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 77
+        "files": 3,
+        "nodes": 80
+      }
+    },
+    {
+      "name": "knowledge",
+      "kind": "pack",
+      "code": {
+        "files": 11,
+        "nodes": 169
       }
     },
     {
@@ -234,14 +246,6 @@
       "code": {
         "files": 3,
         "nodes": 25
-      }
-    },
-    {
-      "name": "llm-wiki",
-      "kind": "pack",
-      "code": {
-        "files": 2,
-        "nodes": 16
       }
     },
     {
@@ -261,8 +265,8 @@
       "name": "markdown-root",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 75
+        "files": 4,
+        "nodes": 84
       }
     },
     {
@@ -287,6 +291,21 @@
       }
     },
     {
+      "name": "places",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "postgres"
+        ],
+        "port": "8093"
+      },
+      "code": {
+        "files": 11,
+        "nodes": 202
+      }
+    },
+    {
       "name": "postgres",
       "kind": "capability",
       "service": {
@@ -303,8 +322,8 @@
       "name": "printing",
       "kind": "capability",
       "code": {
-        "files": 2,
-        "nodes": 51
+        "files": 3,
+        "nodes": 58
       }
     },
     {
@@ -318,16 +337,16 @@
         "port": "8085"
       },
       "code": {
-        "files": 10,
-        "nodes": 111
+        "files": 12,
+        "nodes": 144
       }
     },
     {
       "name": "route-manifest",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 15
+        "files": 3,
+        "nodes": 22
       }
     },
     {
@@ -335,7 +354,7 @@
       "kind": "spine",
       "code": {
         "files": 5,
-        "nodes": 909
+        "nodes": 1032
       }
     },
     {
@@ -349,8 +368,8 @@
         "port": "8084"
       },
       "code": {
-        "files": 29,
-        "nodes": 531
+        "files": 30,
+        "nodes": 532
       }
     },
     {
@@ -378,8 +397,8 @@
         "port": "8088"
       },
       "code": {
-        "files": 18,
-        "nodes": 279
+        "files": 19,
+        "nodes": 277
       }
     },
     {
@@ -395,14 +414,18 @@
     },
     {
       "name": "station-time",
-      "kind": "lib"
+      "kind": "lib",
+      "code": {
+        "files": 3,
+        "nodes": 16
+      }
     },
     {
       "name": "summarize",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 100
+        "files": 4,
+        "nodes": 105
       }
     },
     {
@@ -416,16 +439,16 @@
         "port": "8089"
       },
       "code": {
-        "files": 5,
-        "nodes": 61
+        "files": 6,
+        "nodes": 62
       }
     },
     {
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 137,
-        "nodes": 1107
+        "files": 139,
+        "nodes": 1149
       }
     },
     {
@@ -439,13 +462,17 @@
         "port": "3000"
       },
       "code": {
-        "files": 10,
-        "nodes": 172
+        "files": 12,
+        "nodes": 302
       }
     },
     {
       "name": "travel",
-      "kind": "pack"
+      "kind": "pack",
+      "code": {
+        "files": 4,
+        "nodes": 37
+      }
     },
     {
       "name": "trips",
@@ -458,8 +485,8 @@
         "port": "8086"
       },
       "code": {
-        "files": 6,
-        "nodes": 97
+        "files": 12,
+        "nodes": 200
       }
     },
     {
@@ -468,6 +495,14 @@
       "code": {
         "files": 8,
         "nodes": 85
+      }
+    },
+    {
+      "name": "vault",
+      "kind": "capability",
+      "code": {
+        "files": 7,
+        "nodes": 48
       }
     },
     {
@@ -701,6 +736,46 @@
       ],
       "evidence": [
         "capabilities/finance/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "places",
+      "to": "axon-config",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/places/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "places",
+      "to": "axon-server",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/places/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "places",
+      "to": "axon-store",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/places/BUILD.bazel"
+      ]
+    },
+    {
+      "from": "places",
+      "to": "route-manifest",
+      "kinds": [
+        "bazel-label"
+      ],
+      "evidence": [
+        "capabilities/places/BUILD.bazel"
       ]
     },
     {
@@ -1181,6 +1256,11 @@
       "pin": ""
     },
     {
+      "name": "nominatim-api",
+      "verdict": "adopt",
+      "pin": "search-and-reverse-api-v1"
+    },
+    {
       "name": "nvidia-skills",
       "verdict": "inspiration",
       "pin": ""
@@ -1204,6 +1284,11 @@
       "name": "paperless-ngx",
       "verdict": "inspiration",
       "pin": ""
+    },
+    {
+      "name": "pascal-editor",
+      "verdict": "adopt",
+      "pin": "0.3.2"
     },
     {
       "name": "pengsida-research-notes",
@@ -1378,17 +1463,24 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 9152,
-    "external": 8,
+    "nodes": 10346,
+    "external": 10,
     "stale": [
-      "Packs/axon/skills/axon/references/on-issues.md",
-      "capabilities/comms/src/server.rs",
-      "libs/ai-client/README.md",
-      "libs/ai-client/src/lib.rs",
-      "libs/ai-client/src/providers/gemini.rs",
-      "libs/ai-client/src/providers/local_openai.rs",
-      "libs/ai-client/src/providers/mod.rs",
-      "libs/ai-client/src/router.rs"
+      "capabilities/comms/src/server/auth.rs",
+      "capabilities/learning/ISA.md",
+      "capabilities/learning/README.md",
+      "capabilities/lifeos/README.md",
+      "capabilities/lifeos/overlay/RETIRED.md",
+      "capabilities/lifeos/overlay/hooks/ProseGate.hook.ts",
+      "tools/feed-sweep.ts",
+      "tools/lifeos-sync",
+      "tools/lifeos-sync.test.ts",
+      "tools/lifeos-sync.ts",
+      "tools/lifeos-user-sync.sh",
+      "tools/mirror-lifeos-commit.sh",
+      "tools/mirror-lifeos-memory.sh",
+      "tools/mirror-lifeos-user.sh",
+      "tools/pre-commit-lifeos-mirror.test.sh"
     ],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
@@ -1399,6 +1491,7 @@
       "CLAUDE.md",
       "CODE_OF_CONDUCT.md",
       "CONTRIBUTING.md",
+      "ISA.md",
       "README.md",
       "SECURITY.md",
       "axon",
