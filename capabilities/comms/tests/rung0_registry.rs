@@ -25,7 +25,11 @@ fn fixture(names: &[&str]) -> std::path::PathBuf {
         .collect::<Vec<_>>()
         .join(",");
     let mut f = std::fs::File::create(&p).unwrap();
-    write!(f, r#"{{"people":1,"tokens":[{tokens}],"withheld":[],"refused":[]}}"#).unwrap();
+    write!(
+        f,
+        r#"{{"people":1,"tokens":[{tokens}],"withheld":[],"refused":[]}}"#
+    )
+    .unwrap();
     p
 }
 
@@ -51,7 +55,10 @@ fn a_bare_first_name_is_redacted_and_an_unknown_word_survives() {
         .iter()
         .find(|f| f.entity_type == "person")
         .expect("no person finding recorded");
-    assert_eq!(person.count, 2, "both names must be counted for the receipt");
+    assert_eq!(
+        person.count, 2,
+        "both names must be counted for the receipt"
+    );
 
     // A token absent from the registry must pass through untouched rather than
     // being guessed at. Asserted against the same loaded registry, which is
@@ -62,8 +69,14 @@ fn a_bare_first_name_is_redacted_and_an_unknown_word_survives() {
         &mut findings,
     )
     .expect("a value in gives a value out");
-    assert!(out.contains("Tuesday"), "an ordinary word was redacted: {out}");
-    assert!(out.contains("deployment"), "an ordinary word was redacted: {out}");
+    assert!(
+        out.contains("Tuesday"),
+        "an ordinary word was redacted: {out}"
+    );
+    assert!(
+        out.contains("deployment"),
+        "an ordinary word was redacted: {out}"
+    );
 
     std::env::remove_var("AXON_PEOPLE_REGISTRY");
     let _ = std::fs::remove_file(&p);

@@ -86,16 +86,28 @@ fn load() -> Registry {
 /// happens to read it.
 fn load_from_path(p: Option<&std::path::Path>) -> Registry {
     let Some(p) = p else {
-        return Registry { single: BTreeSet::new(), state: State::Absent };
+        return Registry {
+            single: BTreeSet::new(),
+            state: State::Absent,
+        };
     };
     let Ok(text) = std::fs::read_to_string(p) else {
-        return Registry { single: BTreeSet::new(), state: State::Absent };
+        return Registry {
+            single: BTreeSet::new(),
+            state: State::Absent,
+        };
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return Registry { single: BTreeSet::new(), state: State::Unreadable };
+        return Registry {
+            single: BTreeSet::new(),
+            state: State::Unreadable,
+        };
     };
     let Some(tokens) = value.get("tokens").and_then(|t| t.as_array()) else {
-        return Registry { single: BTreeSet::new(), state: State::Unreadable };
+        return Registry {
+            single: BTreeSet::new(),
+            state: State::Unreadable,
+        };
     };
     // Multi-word entries are carried in the artifact and ignored here on
     // purpose: `transform_text` walks whitespace-separated tokens, so a phrase
@@ -108,7 +120,10 @@ fn load_from_path(p: Option<&std::path::Path>) -> Registry {
         .map(|t| t.to_ascii_lowercase())
         .collect();
     let n = single.len();
-    Registry { single, state: State::Loaded(n) }
+    Registry {
+        single,
+        state: State::Loaded(n),
+    }
 }
 
 fn registry() -> &'static Registry {
@@ -152,16 +167,26 @@ mod tests {
     #[test]
     fn loads_single_tokens_and_ignores_phrases() {
         let r = load_json("phrases", r#"{"tokens":["Erika","Mustermann","About Me"]}"#);
-        assert_eq!(r.state, State::Loaded(2), "a phrase cannot match a whitespace token");
+        assert_eq!(
+            r.state,
+            State::Loaded(2),
+            "a phrase cannot match a whitespace token"
+        );
         assert!(r.single.contains("erika"));
         assert!(r.single.contains("mustermann"));
     }
 
     #[test]
     fn a_missing_file_downgrades_to_rung_one_rather_than_failing() {
-        let r = load_from_path(Some(std::path::Path::new("/nonexistent/people-registry.json")));
+        let r = load_from_path(Some(std::path::Path::new(
+            "/nonexistent/people-registry.json",
+        )));
         assert_eq!(r.state, State::Absent);
-        assert_eq!(load_from_path(None).state, State::Absent, "no path resolves the same way");
+        assert_eq!(
+            load_from_path(None).state,
+            State::Absent,
+            "no path resolves the same way"
+        );
         assert!(r.single.is_empty());
     }
 
@@ -177,7 +202,9 @@ mod tests {
         // is_known_person() reads the process-wide OnceLock, so the comparison
         // logic is asserted against the loaded set directly.
         for probe in ["Erika,", "erika.", "ERIKA!"] {
-            let cleaned = probe.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase();
+            let cleaned = probe
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_ascii_lowercase();
             assert!(r.single.contains(&cleaned), "{probe} should match");
         }
     }
