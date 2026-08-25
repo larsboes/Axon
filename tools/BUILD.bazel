@@ -48,13 +48,6 @@ sh_test(
 )
 
 sh_test(
-    name = "lifeos_mirror_hook_test",
-    size = "small",
-    srcs = ["pre-commit-lifeos-mirror.test.sh"],
-    data = ["templates/hooks/pre-commit-lifeos-mirror.tmpl"],
-)
-
-sh_test(
     name = "upstream_declaration_test",
     size = "small",
     srcs = ["upstream-checker.test.sh"],

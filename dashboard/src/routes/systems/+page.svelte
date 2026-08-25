@@ -2,16 +2,8 @@
   import { onDestroy, onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
-  import { lifeosPulse, macmon, type MacmonSample } from "$lib/api";
+  import { macmon, type MacmonSample } from "$lib/api";
 
-  const PULSE_ORIGIN = "http://localhost:31337";
-
-  const DASHBOARDS = [
-    { label: "Pulse", desc: "System state, heartbeat, and current activity.", path: "/" },
-    { label: "Performance", desc: "Latency, inference times, and resources.", path: "/performance" },
-  ];
-
-  let pulseState = $state<"checking" | "up" | "down">("checking");
   let macmonState = $state<"checking" | "up" | "down">("checking");
   let sample = $state<MacmonSample | null>(null);
   let error = $state<string | null>(null);
@@ -45,11 +37,6 @@
   const topRssTotal = $derived(topProcs.reduce((s, p) => s + p.rss_mb, 0));
 
   onMount(() => {
-    lifeosPulse
-      .health()
-      .then(() => (pulseState = "up"))
-      .catch(() => (pulseState = "down"));
-
     // Fetch top memory consumers once; cold data is fine on this page since macmon
     // gives the live totals and these names change slowly.
     fetch("/api/top-processes")
@@ -237,30 +224,6 @@
     (every 3 s)
   </p>
 {/if}
-
-<!-- ─── LifeOS Pulse (extern) ─────────────────────────────────────────────── -->
-
-<hr class="section-divider" />
-
-<p class="status">
-  <span class="dot" class:up={pulseState === "up"} class:checking={pulseState === "checking"}></span>
-  LifeOS Pulse — {pulseState === "checking" ? "checking…" : pulseState === "up" ? "available" : "off"}
-  <span class="mono origin">{PULSE_ORIGIN}</span>
-</p>
-
-<ul>
-  {#each DASHBOARDS as d (d.path)}
-    <li>
-      <a class="card item" href="{PULSE_ORIGIN}{d.path}" target="_blank" rel="noreferrer">
-        <span>
-          <span class="label">{d.label}</span>
-          <span class="desc">{d.desc}</span>
-        </span>
-        <Icon name="external" size={14} />
-      </a>
-    </li>
-  {/each}
-</ul>
 
 <style>
   /* ── Loading / error ────────────────────────────────────────── */
@@ -570,77 +533,5 @@
     font-size: 0.6875rem;
     color: var(--text-tertiary);
     margin: 0 0 1.5rem;
-  }
-
-  /* ── Section divider ────────────────────────────────────────── */
-  .section-divider {
-    border: none;
-    border-top: 1px solid var(--card-border);
-    margin: 1.25rem 0 1rem;
-  }
-
-  /* ── Pulse section (unchanged from before) ──────────────────── */
-  .status {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin: 0 0 1rem;
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-  }
-
-  .origin {
-    color: var(--text-tertiary);
-    font-size: 0.6875rem;
-  }
-
-  .dot {
-    height: 0.4rem;
-    width: 0.4rem;
-    border-radius: 999px;
-    background-color: var(--text-tertiary);
-  }
-
-  .dot.up {
-    background-color: var(--success);
-  }
-
-  .dot.checking {
-    background-color: var(--primary);
-  }
-
-  ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.85rem;
-    color: var(--text-tertiary);
-  }
-
-  .item:hover {
-    border-color: var(--primary);
-  }
-
-  .label {
-    display: block;
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--text-primary);
-  }
-
-  .desc {
-    display: block;
-    font-size: 0.75rem;
-    color: var(--text-secondary);
   }
 </style>

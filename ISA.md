@@ -9,7 +9,7 @@ principal_stated_goal: "I want no new issues, I wanna get rid of all issues for 
 # ISA · Axon
 
 Repo-wide state of record. Open work that belongs to one capability or Pack lives in
-that owner's own `ISA.md` (`Packs/travel/ISA.md`, `capabilities/learning/ISA.md`); this
+that owner's own `ISA.md` (`Packs/travel/ISA.md`, `capabilities/places/ISA.md`); this
 file holds what is repo-wide or has no other owner.
 
 ## Problem

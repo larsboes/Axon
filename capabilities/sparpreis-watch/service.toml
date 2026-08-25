@@ -7,8 +7,9 @@
 # real bahn.de requests through transit's self-paced client, so the ceiling stays low.
 kind     = "process"
 name     = "sparpreis-watch"
-# `bun` first, not a launcher script — service-runner.sh builds the generated unit's
-# PATH from command[0], and a launcher would hide the interpreter (see feed-sweep).
+# `bun` first, not a launcher script that execs it. service-runner.sh builds the generated
+# unit's PATH from the interpreter it can see in command[0], and a launcher hides that: the
+# first scheduled manifest to get this wrong died on `exec: bun: not found`, exit 127.
 command  = ["bun", "run", "tools/sparpreis-watch.ts"]
 schedule = "12h"
 

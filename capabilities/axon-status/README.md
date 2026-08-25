@@ -97,8 +97,11 @@ scouting's true default is `8084`, since `8080` belongs to vaultwarden — see
 `dashboard/README.md`) — chosen simply as the next free, unclaimed port.
 
 **Forecloses:** no Axon capability may claim port `31337` or the name "Pulse"/"pulse" — that
-identity belongs to LifeOS. The root `dashboard` proxies LifeOS Pulse (read-only, if/when it wants
-that data) as a distinct upstream from `axon-status`, never conflated into one capability.
+identity belongs to LifeOS, whether or not any machine still runs it. The root `dashboard`
+proxied LifeOS Pulse as a distinct upstream from `axon-status`, never conflated into one
+capability; that proxy and the panel behind it were deleted on 2026-08-25 with the rest of
+the LifeOS delta (PRD D6). A reader who wants that data again adds it back as an upstream,
+not as a route on this capability.
 
 ## Considered and declined
 

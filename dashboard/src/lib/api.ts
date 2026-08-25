@@ -758,16 +758,6 @@ export interface MacmonSample {
   timestamp: string;
 }
 
-// The real, external LifeOS Life Dashboard — not an Axon capability, never
-// conflated with axon-status. See vite.config.ts's /lifeos-pulse proxy.
-export const lifeosPulse = {
-  // /healthz, not /health: Pulse deliberately moved the JSON health API off /health
-  // to make room for the Life Dashboard's HTML /health page — probing /health gets
-  // 200 text/html, JSON.parse throws, and the Systems page reports Pulse "down"
-  // while it is demonstrably up. That exact bug shipped once; the path is load-bearing.
-  health: () => request<unknown>('/lifeos-pulse/healthz'),
-};
-
 // macmon — sudoless Apple Silicon performance monitor. Not an Axon capability.
 // Proxied at /macmon → http://localhost:9911 (see vite.config.ts).
 export const macmon = {

@@ -113,11 +113,9 @@ another capability's notes by implication.
 
 The harness-swappable, public-core-plus-private-overlay shape isn't invented from nothing. It
 descends from Daniel Miessler's [LifeOS](https://github.com/danielmiessler/LifeOS), the upstream
-AI-operator project. Axon consumes LifeOS as a managed installation rather than a repository
-fork: `capabilities/lifeos/` owns the reusable delta, while the active overlay owns the install
-location and machine-specific state. `tools/lifeos-sync` projects that delta into the selected
-installation and reports drift. See `upstreams.toml`'s `[lifeos]` entry for the reviewed pin and
-the `overlay` verdict.
+AI-operator project. Axon carried a reviewed delta against a LifeOS installation until
+2026-08-25, when that delta and its sync tooling were deleted; the shape it taught stayed. See
+`upstreams.toml`'s `[lifeos]` entry for what was consumed and why it stopped.
 
 Two orthogonal decisions, kept separate on purpose:
 
@@ -562,7 +560,7 @@ permanent provenance.
 
 Open work — plans, todos, phases, anything unfinished — lives in an `ISA.md` and nowhere else.
 The root `ISA.md` holds what is repo-wide; a capability or Pack with enough of its own carries one
-at its root (`Packs/travel/ISA.md`, `capabilities/learning/ISA.md`). `TODO.md`, `PLAN.md`,
+at its root (`Packs/travel/ISA.md`, `capabilities/places/ISA.md`). `TODO.md`, `PLAN.md`,
 `HANDOFF.md` and `ROADMAP.md` remain a retired surface, including gitignored ones — and so is the
 issue tracker, which as of 2026-08-19 holds no backlog of ours and which no workflow writes to.
 

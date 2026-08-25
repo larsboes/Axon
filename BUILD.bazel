@@ -198,7 +198,6 @@ alias(name = "doc_self_reference_regression_test", actual = "//tools:doc_self_re
 alias(name = "expiry_classification_test", actual = "//tools:expiry_classification_test")
 alias(name = "external_ref_test", actual = "//tools:external_ref_test")
 alias(name = "installed_probe_test", actual = "//tools:installed_probe_test")
-alias(name = "lifeos_mirror_hook_test", actual = "//tools:lifeos_mirror_hook_test")
 alias(name = "machine_resolution_test", actual = "//tools:machine_resolution_test")
 alias(name = "manifest_resolution_test", actual = "//tools:manifest_resolution_test")
 alias(name = "materialize_inference_key_test", actual = "//tools:materialize_inference_key_test")

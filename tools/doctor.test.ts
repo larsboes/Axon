@@ -17,9 +17,6 @@ import {
   collectWhyBlocks,
   findDanglingDecisionRefs,
   extractSiblingRepoRefs,
-  parseMirrorDivergence,
-  parseProjectManifestPaths,
-  pointerSearchRoots,
   findDecisionPathRot,
   findPlaintextSecretsInEnvTemplate,
   parseEnvTemplateLines,
@@ -96,24 +93,24 @@ mod tests {
 describe("checkStateMountCoverage", () => {
   test("mount with a matching systems.toml identity is covered", () => {
     const { covered, uncovered } = checkStateMountCoverage(
-      [{ tool: "lifeos" }, { tool: "knowledge-base" }],
-      new Set(["lifeos", "knowledge-base", "mach-mono"]),
+      [{ tool: "mach-mono" }, { tool: "knowledge-base" }],
+      new Set(["mach-mono", "knowledge-base", "backup-target"]),
     );
-    expect(covered).toEqual(["lifeos", "knowledge-base"]);
+    expect(covered).toEqual(["mach-mono", "knowledge-base"]);
     expect(uncovered).toEqual([]);
   });
 
   test("mount with no systems.toml identity is uncovered — the real gap direction", () => {
     const { covered, uncovered } = checkStateMountCoverage(
-      [{ tool: "lifeos" }, { tool: "some-new-tool" }],
-      new Set(["lifeos"]),
+      [{ tool: "mach-mono" }, { tool: "some-new-tool" }],
+      new Set(["mach-mono"]),
     );
-    expect(covered).toEqual(["lifeos"]);
+    expect(covered).toEqual(["mach-mono"]);
     expect(uncovered).toEqual(["some-new-tool"]);
   });
 
   test("empty mounts is trivially fully covered", () => {
-    expect(checkStateMountCoverage([], new Set(["lifeos"]))).toEqual({ covered: [], uncovered: [] });
+    expect(checkStateMountCoverage([], new Set(["mach-mono"]))).toEqual({ covered: [], uncovered: [] });
   });
 });
 
@@ -442,88 +439,6 @@ describe("whyBlockBases", () => {
 
   test("root-level files contribute the root base and nothing else", () => {
     expect(whyBlockBases(["README.md", "axon.toml"])).toEqual([""]);
-  });
-});
-
-describe("LifeOS USER mirror divergence", () => {
-  test("the clean report reads as zero", () => {
-    expect(parseMirrorDivergence([
-      "── LifeOS USER mirror (dry-run) ──",
-      "  source: /somewhere/LIFEOS/USER",
-      "  mirror: /elsewhere/resources/backups/lifeos/USER",
-      "  up to date ✅",
-    ].join("\n"))).toBe(0);
-  });
-
-  test("the count is read from the summary line, not from the file listing above it", () => {
-    expect(parseMirrorDivergence([
-      "── LifeOS USER mirror (dry-run) ──",
-      "  Files /a/CACHE/freshness.json and /b/CACHE/freshness.json differ",
-      "  Files /a/TELOS/SUMMARY.md and /b/TELOS/SUMMARY.md differ",
-      "  2 path(s) diverged — run with --apply",
-    ].join("\n"))).toBe(2);
-  });
-
-  test("a reworded tool reads as unrecognized, never as clean", () => {
-    // The failure this exists for: a looser regex returning 0 here would report a
-    // healthy mirror on a tool that no longer says anything about divergence.
-    expect(parseMirrorDivergence("mirror sync complete, nothing to do")).toBeNull();
-  });
-});
-
-describe("LifeOS PROJECTS.md pointers", () => {
-  const manifest = [
-    "## Projects Table",
-    "",
-    "| Project | Path | URL | Visibility |",
-    "|---------|------|-----|-----------|",
-    "| **Axon** | `~/Developer/Axon` | `github.com/x/Axon` | public-safe |",
-    "| **widget-app** (Codename) | `~/Developer/Projects/widget-app` | _(no git)_ | private |",
-    "",
-    "## Open Sessions",
-    "",
-    "| Session | Stand | Offen |",
-    "|---|---|---|",
-    "| **Some Session** | still open | the next step |",
-    "",
-    "## Routing Aliases",
-    "",
-    "When the principal says... | the DA routes to...",
-    "---|---",
-    '"LifeOS", "this system" | `~/.claude`',
-  ].join("\n");
-
-  test("only the project table's rows are pointers", () => {
-    expect(parseProjectManifestPaths(manifest)).toEqual([
-      { name: "Axon", path: "~/Developer/Axon" },
-      { name: "widget-app", path: "~/Developer/Projects/widget-app" },
-    ]);
-  });
-
-  test("a bolded row with prose in cell two is not a pointer", () => {
-    // Open Sessions satisfies the bold half and nothing else. Matching on bold alone
-    // would turn every session line into a path that fails to resolve.
-    expect(parseProjectManifestPaths(manifest).map((r) => r.name)).not.toContain("Some Session");
-  });
-
-  test("a backticked path with no bolded name is not a pointer", () => {
-    // Routing Aliases satisfies the path half. It resolves today, so matching it would
-    // pass — and would break the day an alias names something that is not a directory.
-    expect(parseProjectManifestPaths('"LifeOS" | `~/.claude`')).toEqual([]);
-  });
-
-  test("a relative or bare-word cell is not a path", () => {
-    expect(parseProjectManifestPaths("| **Thing** | `Developer/Thing` |")).toEqual([]);
-    expect(parseProjectManifestPaths("| **Thing** | Axon |")).toEqual([]);
-  });
-
-  test("search roots are the manifest's own parents, deduped", () => {
-    expect(pointerSearchRoots([
-      "/h/Developer/Axon",
-      "/h/Developer/axon-overlay",
-      "/h/Developer/Projects/VBB",
-      "/h/.claude",
-    ])).toEqual(["/h", "/h/Developer", "/h/Developer/Projects"]);
   });
 });
 

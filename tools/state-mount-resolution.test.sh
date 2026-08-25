@@ -1,7 +1,6 @@
 #!/bin/bash
-# Tests for axon_state_mount_for / axon_lifeos_user_dir in tools/lib/paths.sh, over planted
-# overlays. What they resolve is the LifeOS USER tree; what they replaced is two scripts each
-# carrying their own hardcoded path to it.
+# Tests for axon_state_mount_for in tools/lib/paths.sh, over planted overlays. What it replaced
+# is scripts each carrying their own hardcoded path to a tool's state directory.
 #
 # Every case here is one that passes on the machine that wrote the fallback and fails on the
 # next one. On this workstation the hardcoded path and the declared mount agreed only because
@@ -79,30 +78,30 @@ want() { # want <desc> <got> <expected>
 #    on as a literal only a shell would understand.
 r="$(plant '
 [[state_mount]]
-tool = "lifeos"
+tool = "knowledge-base"
 path = "~/some/where"
 data_class = "personal"
 ')"
-want "a configured mount resolves, ~ expanded" "$(call_out "$r" axon_state_mount_for lifeos)" "$HOME/some/where"
+want "a configured mount resolves, ~ expanded" "$(call_out "$r" axon_state_mount_for knowledge-base)" "$HOME/some/where"
 
 # 2. An absolute path is passed through untouched.
 r="$(plant '
 [[state_mount]]
-tool = "lifeos"
+tool = "knowledge-base"
 path = "/opt/elsewhere"
 ')"
-want "an absolute mount is returned as-is" "$(call_out "$r" axon_state_mount_for lifeos)" "/opt/elsewhere"
+want "an absolute mount is returned as-is" "$(call_out "$r" axon_state_mount_for knowledge-base)" "/opt/elsewhere"
 
 # 3. Undeclared: must fail rather than answer. This is the case the hardcoded fallbacks used
 #    to absorb, which is how the manifest and the scripts could disagree indefinitely.
 r="$(plant '
 [[state_mount]]
-tool = "lifeos"
+tool = "knowledge-base"
 path = "/opt/x"
 ')"
-want "an undeclared tool exits 1" "$(call_rc "$r" axon_state_mount_for knowledge-base)" "1"
-case "$(call_err "$r" axon_state_mount_for knowledge-base)" in
-  *knowledge-base*) echo "  ok   the error names the tool it could not resolve" ;;
+want "an undeclared tool exits 1" "$(call_rc "$r" axon_state_mount_for mach-mono)" "1"
+case "$(call_err "$r" axon_state_mount_for mach-mono)" in
+  *mach-mono*) echo "  ok   the error names the tool it could not resolve" ;;
   *) echo "  FAIL the error does not name the tool"; fails=$((fails + 1)) ;;
 esac
 
@@ -110,58 +109,27 @@ esac
 #    call axon_manifest_for makes for a duplicate capability name.
 r="$(plant '
 [[state_mount]]
-tool = "lifeos"
+tool = "knowledge-base"
 path = "~/first"
 
 [[state_mount]]
-tool = "lifeos"
+tool = "knowledge-base"
 path = "~/second"
 ')"
-want "two declarations for one tool exit 2" "$(call_rc "$r" axon_state_mount_for lifeos)" "2"
+want "two declarations for one tool exit 2" "$(call_rc "$r" axon_state_mount_for knowledge-base)" "2"
 
 # 5. Non-default location: resolution follows the SELECTED machine manifest. A second machine
 #    declaring a different root is the entire reason this is not a constant.
 r="$(plant '
 [[state_mount]]
-tool = "lifeos"
+tool = "knowledge-base"
 path = "/opt/service-node"
 ' service-node)"
-want "the selected machine's mount wins" "$(call_out "$r" axon_state_mount_for lifeos)" "/opt/service-node"
+want "the selected machine's mount wins" "$(call_out "$r" axon_state_mount_for knowledge-base)" "/opt/service-node"
 
 # 6. A manifest with no mounts at all fails cleanly rather than returning empty-and-happy.
 r="$(plant '')"
-want "no state mounts at all exits 1" "$(call_rc "$r" axon_state_mount_for lifeos)" "1"
-
-# 7. axon_lifeos_user_dir appends the USER zone to whatever the mount resolved to.
-r="$(plant '
-[[state_mount]]
-tool = "lifeos"
-path = "/opt/state"
-')"
-want "the USER zone is appended to the mount" "$(call_out "$r" axon_lifeos_user_dir)" "/opt/state/LIFEOS/USER"
-
-# 8. ...and resolves it physically. A LifeOS install may put the USER zone behind a symlink;
-#    `find` does not descend into a symlinked start directory, so a caller handed the link
-#    walks zero files and reports a clean sync of an empty tree. That is not hypothetical —
-#    it is what this repo's own layout does.
-LINKED="$SCRATCH/linked"
-mkdir -p "$LINKED/real-tree" "$LINKED/mount/LIFEOS"
-ln -s "$LINKED/real-tree" "$LINKED/mount/LIFEOS/USER"
-r="$(plant "
-[[state_mount]]
-tool = \"lifeos\"
-path = \"$LINKED/mount\"
-")"
-want "a symlinked USER zone resolves to the real directory" \
-  "$(call_out "$r" axon_lifeos_user_dir)" "$(cd "$LINKED/real-tree" && pwd -P)"
-
-# 9. A missing lifeos mount fails rather than defaulting to a workstation path.
-r="$(plant '
-[[state_mount]]
-tool = "knowledge-base"
-path = "/opt/kb"
-')"
-want "a missing lifeos mount exits 1" "$(call_rc "$r" axon_lifeos_user_dir)" "1"
+want "no state mounts at all exits 1" "$(call_rc "$r" axon_state_mount_for knowledge-base)" "1"
 
 if [ "$fails" -gt 0 ]; then
   echo "state-mount-resolution: $fails check(s) failed" >&2
