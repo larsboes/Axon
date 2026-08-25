@@ -212,6 +212,13 @@ pub(crate) async fn capabilities_handler(
 pub(crate) async fn routes_handler() -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let services = registry().await.map_err(bad_gateway)?;
     let client = reqwest::Client::new();
+    // `/routes` sits behind the inbound gate on every capability that starts
+    // through axon_server (only `/health` and `/ready` are exempt). Without the
+    // token this aggregation would report every gated capability as "not
+    // running", which is the one wrong answer this endpoint must not give.
+    // Resolved per request rather than at startup so rotating the token file
+    // does not need a restart of this process too.
+    let bearer = axon_server::InboundAuth::from_deployment().bearer_header();
 
     let mut capabilities = Vec::with_capacity(services.len());
     for service in services {
@@ -219,9 +226,11 @@ pub(crate) async fn routes_handler() -> Result<Json<Value>, (StatusCode, Json<Va
             continue;
         }
         let url = format!("http://127.0.0.1:{}/routes", service.port);
-        let manifest = client
-            .get(&url)
-            .timeout(Duration::from_secs(2))
+        let mut request = client.get(&url).timeout(Duration::from_secs(2));
+        if let Some(bearer) = &bearer {
+            request = request.header(reqwest::header::AUTHORIZATION, bearer);
+        }
+        let manifest = request
             .send()
             .await
             .ok()

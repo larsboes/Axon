@@ -32,6 +32,13 @@ Bound to **127.0.0.1**, not `0.0.0.0`: this process starts and stops the machine
 capabilities, so it answers to this machine only. The dashboard reaches it through
 Vite's proxy, which runs here too.
 
+The bind was the whole boundary until `libs/axon-server` grew the inbound gate, and for
+`POST /api/axon-status/capabilities/:name/start|stop` that was never enough on its own —
+it is process control. When the deployment declares `AXON_INBOUND_TOKEN_FILE`
+(`schemas/deployment.env.example`), every route here except `/health` asks for that
+token. `/api/axon-status/routes` then presents it when polling siblings, because a gated
+capability that refused this process would otherwise be reported as not running.
+
 ## Endpoints
 
 - `GET /health` — basic liveness check for axon-status itself

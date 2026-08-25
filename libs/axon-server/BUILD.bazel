@@ -15,6 +15,7 @@ rust_library(
     deps = [
         "//libs/axon-config:axon-config",
         "@crate_index//:axum",
+        "@crate_index//:serde_json",
         "@crate_index//:tokio",
     ],
 )
@@ -23,4 +24,7 @@ rust_test(
     name = "axon_server_test",
     crate = ":axon-server",
     size = "small",
+    # Cargo dev-dependencies: the gate is a middleware layer, so its tests drive
+    # it over a real ephemeral loopback listener rather than calling a handler.
+    deps = ["@crate_index//:reqwest"],
 )

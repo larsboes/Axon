@@ -66,11 +66,18 @@ manifests as JSON, and two consumers read it:
   `/calendar/api` reaches Calendar. Changing the enabled set or a port means restarting
   this dev server, since the registry is read once at startup.
 
-  Comms is the one authenticated proxy contract. Its mutating routes stay guarded by
-  the capability's `api_secret_file`; Vite reads that private reference only in the
-  server process, rejects cross-origin mutations, and injects the bearer token without
-  exposing it to dashboard JavaScript. A token change therefore requires restarting
-  both `comms` and `dashboard`. Direct clients and `axon-clip` authenticate themselves.
+  Comms is the one authenticated proxy contract. Every one of its routes except
+  `/health` and `/ready` is guarded by the capability's `api_secret_file` — reads
+  included, since it moved onto `libs/axon-server`'s shared inbound gate. Vite reads
+  that private reference only in the server process, rejects cross-origin mutations,
+  and injects the bearer token on every proxied request without exposing it to
+  dashboard JavaScript. A token change therefore requires restarting both `comms` and
+  `dashboard`. Direct clients and `axon-clip` authenticate themselves.
+
+  The other capabilities are proxied unauthenticated, which is correct only while they
+  are loopback-only. A deployment that declares `AXON_INBOUND_TOKEN_FILE` gates them
+  too, and this proxy does not yet inject that token — the wiring belongs with
+  `tailscale serve`, which is what makes the token necessary in the first place.
 - `axon-status` serves the same registry plus live health at
   `/axon-status/api/axon-status/capabilities`, which is what the nav, the home page and
   the Capabilities page render.

@@ -683,12 +683,16 @@ while `summary`, `current_focus` and `category_affinity` remain reader-facing me
 `comms.config.example.json`. Nothing personal lives in this repo — sender
 addresses and personal rules belong in the overlay.
 
-Mutating HTTP routes require the shared token referenced by `api_secret_file`.
-The local dashboard never puts that token in its browser bundle: its Vite proxy
-resolves the same config at startup, rejects cross-origin mutations, and adds the
-bearer header on the server side. Restart both `comms` and `dashboard` after a
-token rotation. Browser-extension and direct HTTP clients must supply the token
-themselves.
+Every HTTP route except `/health` and `/ready` requires the shared token referenced
+by `api_secret_file` — reads included, since a feed entry and a mail proposal are
+personal content and the loopback bind is no longer treated as the boundary. The check
+itself is `libs/axon-server`'s inbound gate, shared with every other capability;
+`api_secret_file` still wins over the deployment-wide `AXON_INBOUND_TOKEN_FILE`, and an
+unconfigured token closes those routes with `403` rather than opening them. The local
+dashboard never puts the token in its browser bundle: its Vite proxy resolves the same
+config at startup, rejects cross-origin mutations, and adds the bearer header on the
+server side. Restart both `comms` and `dashboard` after a token rotation.
+Browser-extension and direct HTTP clients must supply the token themselves.
 
 Google credentials (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
 `GOOGLE_REFRESH_TOKEN`) live in the overlay `comms.env`; mint the refresh token

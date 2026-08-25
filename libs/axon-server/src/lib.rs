@@ -5,6 +5,12 @@
 //! exited cleanly on a bind failure while four panicked, and one had just
 //! stopped honouring the runner's port contract.
 //!
+//! It now also owns the inbound gate ([`auth`]), because the bind and the
+//! authentication are one decision: whether a request that arrives is allowed
+//! to. Keeping them apart is what let eleven of twelve capabilities serve
+//! process control and personal data with no check at all behind a loopback
+//! bind nobody was going to keep forever.
+//!
 //! What is deliberately NOT here: CORS. Whether a server carries
 //! `CorsLayer::permissive()` is a per-capability security decision that must
 //! stay visible in that capability's own source — axon-status, which can
@@ -17,24 +23,93 @@
 
 use std::net::SocketAddr;
 
+mod auth;
+
+pub use auth::{authenticated, token_from_file, InboundAuth};
+
 // Re-exported so a server binary that depends only on axon-server still gets the
 // port contract.
 pub use axon_config::resolve_port;
 
+/// How far a capability server's listener reaches.
+///
+/// An enum rather than a `SocketAddr` argument so that the pairing this crate
+/// refuses — reach beyond loopback with no token — is one comparison in one
+/// place instead of an IP-address predicate each caller could get wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// `127.0.0.1`. Requests arrive from this machine only. Every capability
+    /// today, and the only reach an unauthenticated server may have.
+    Loopback,
+    /// `0.0.0.0` — every interface the host has, including the tailnet one.
+    /// Admissible only with a configured inbound token.
+    AllInterfaces,
+}
+
 /// Loopback-only address for a capability server. 127.0.0.1 is the policy,
-/// not a default: these are local services with no auth, reached through the
-/// dashboard's proxy on the same machine. A capability that genuinely needs
-/// LAN exposure builds its own listener next to a comment saying why —
-/// none does today.
+/// not a default: these are local services reached through the dashboard's
+/// proxy on the same machine. A capability that genuinely needs reach beyond
+/// this machine goes through [`bind_addr_for`], which requires a token.
 pub fn bind_addr(port: u16) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], port))
 }
 
-/// Binds, logs, serves, never returns on success. On failure it exits with a
-/// named, single-line error instead of a panic backtrace — the runner captures
-/// stderr, and "cannot bind" with the address is the whole diagnosis.
+/// The only constructor of a non-loopback listening address in this crate.
+///
+/// Returns `Err` for [`Reach::AllInterfaces`] with no configured token: that
+/// pairing is exactly the one this gate exists to prevent, so it has no
+/// representation a caller can obtain and then use. The other half of the
+/// enforcement is doctor's "Server bind policy" section, which fails any
+/// `capabilities/*/src/*.rs` that builds a `Router` and its own listener
+/// (README.md, "What actually enforces this") — together they leave no path
+/// from a capability to an unauthenticated LAN or tailnet port.
+///
+/// `Err` carries the operator-facing sentence, not a code: the only caller
+/// prints it and exits.
+pub fn bind_addr_for(reach: Reach, port: u16, auth: &InboundAuth) -> Result<SocketAddr, String> {
+    match reach {
+        Reach::Loopback => Ok(bind_addr(port)),
+        Reach::AllInterfaces if auth.is_configured() => Ok(SocketAddr::from(([0, 0, 0, 0], port))),
+        Reach::AllInterfaces => Err(format!(
+            "refusing to bind 0.0.0.0:{port} with no inbound token. Declare \
+             AXON_INBOUND_TOKEN_FILE in <overlay>/config/deployment.env, or keep this \
+             server on loopback."
+        )),
+    }
+}
+
+/// Binds loopback, logs, serves, never returns on success.
+///
+/// The gate comes from [`InboundAuth::from_deployment`], so declaring the
+/// deployment's token file is the one act that authenticates every capability
+/// that starts here. Until that file exists this behaves exactly as it did
+/// before the gate: loopback, no per-request check.
 pub async fn serve_local(name: &str, port: u16, router: axum::Router) {
-    let addr = bind_addr(port);
+    serve(
+        name,
+        Reach::Loopback,
+        port,
+        router,
+        InboundAuth::from_deployment(),
+    )
+    .await
+}
+
+/// [`serve_local`] with the gate spelled out. For a capability that resolves
+/// its own token or refuses to serve without one — comms is both.
+///
+/// On failure it exits with a named, single-line error instead of a panic
+/// backtrace: the runner captures stderr, and "cannot bind" with the address is
+/// the whole diagnosis.
+pub async fn serve(name: &str, reach: Reach, port: u16, router: axum::Router, auth: InboundAuth) {
+    let addr = match bind_addr_for(reach, port, &auth) {
+        Ok(addr) => addr,
+        Err(refusal) => {
+            eprintln!("{name}: {refusal}");
+            std::process::exit(1);
+        }
+    };
+    let gated = authenticated(router, auth);
     println!("{name} starting on {addr}");
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
@@ -43,7 +118,7 @@ pub async fn serve_local(name: &str, port: u16, router: axum::Router) {
             std::process::exit(1);
         }
     };
-    if let Err(e) = axum::serve(listener, router).await {
+    if let Err(e) = axum::serve(listener, gated).await {
         eprintln!("{name}: {e}");
         std::process::exit(1);
     }
@@ -58,5 +133,117 @@ mod tests {
         let addr = bind_addr(8084);
         assert!(addr.ip().is_loopback());
         assert_eq!(addr.port(), 8084);
+    }
+
+    /// The whole point of `Reach`: an unauthenticated server cannot be handed
+    /// an address anything but this machine can reach.
+    #[test]
+    fn a_non_loopback_bind_without_a_token_is_refused() {
+        let open = InboundAuth::with_token(None);
+        let refusal = bind_addr_for(Reach::AllInterfaces, 8082, &open).unwrap_err();
+        assert!(
+            refusal.contains("AXON_INBOUND_TOKEN_FILE"),
+            "the refusal must name the fix, got: {refusal}"
+        );
+        assert!(
+            bind_addr_for(Reach::Loopback, 8082, &open)
+                .unwrap()
+                .ip()
+                .is_loopback(),
+            "an unauthenticated server keeps its loopback bind"
+        );
+    }
+
+    #[test]
+    fn a_token_is_what_permits_reach_beyond_this_machine() {
+        let gated = InboundAuth::with_token(Some("s3cret".into()));
+        let addr = bind_addr_for(Reach::AllInterfaces, 8082, &gated).unwrap();
+        assert!(!addr.ip().is_loopback());
+        assert_eq!(addr.port(), 8082);
+    }
+}
+
+/// The gate over real HTTP. A handler called directly would skip the layer that
+/// is the entire point, so these go through `authenticated` and a socket.
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+    use axum::routing::get;
+
+    async fn serve_router(auth: InboundAuth) -> String {
+        let router = axum::Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route("/ready", get(|| async { "ok" }))
+            .route("/routes", get(|| async { "{}" }))
+            .route("/api/thing", get(|| async { "{}" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = authenticated(router, auth);
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_gated_server_answers_401_without_a_token_and_200_with_either_header() {
+        let base = serve_router(InboundAuth::with_token(Some("s3cret".into()))).await;
+        let client = reqwest::Client::new();
+
+        assert_eq!(
+            client
+                .get(format!("{base}/api/thing"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            401,
+            "no token must not reach the handler"
+        );
+        for (name, value) in [
+            ("Authorization", "Bearer s3cret"),
+            ("X-Axon-Token", "s3cret"),
+        ] {
+            let response = client
+                .get(format!("{base}/api/thing"))
+                .header(name, value)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200, "{name} was refused");
+        }
+    }
+
+    #[tokio::test]
+    async fn health_and_ready_answer_through_the_gate_but_routes_does_not() {
+        let base = serve_router(InboundAuth::with_token(Some("s3cret".into()))).await;
+        let client = reqwest::Client::new();
+        for path in ["/health", "/ready"] {
+            let response = client.get(format!("{base}{path}")).send().await.unwrap();
+            assert_eq!(response.status(), 200, "{path} must stay pollable");
+        }
+        assert_eq!(
+            client
+                .get(format!("{base}/routes"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            401,
+            "the manifest is surface description, not liveness"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungated_server_is_byte_for_byte_the_server_that_predates_this_gate() {
+        let base = serve_router(InboundAuth::with_token(None)).await;
+        for path in ["/health", "/ready", "/routes", "/api/thing"] {
+            let response = reqwest::get(format!("{base}{path}")).await.unwrap();
+            assert_eq!(
+                response.status(),
+                200,
+                "{path} changed on a loopback-only deployment"
+            );
+        }
     }
 }
