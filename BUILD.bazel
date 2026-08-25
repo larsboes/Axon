@@ -81,6 +81,8 @@ _ARCHITECTURE_INPUTS = [
     # anything else made ARCHITECTURE.md regenerate.
     "//capabilities/tasks:README.md",
     "//capabilities/tasks:service.toml",
+    "//capabilities/places:README.md",
+    "//capabilities/places:service.toml",
     "//libs/axon-config:README.md",
     "//libs/axon-server:README.md",
     "//libs/axon-store:README.md",

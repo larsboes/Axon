@@ -4,6 +4,7 @@ members = [
     "capabilities/calendar",
     "capabilities/comms",
     "capabilities/finance",
+    "capabilities/places",
     "capabilities/punctuality",
     "capabilities/scouting",
     "capabilities/soundscape",

@@ -1,0 +1,82 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["README.md", "service.toml", "ISA.md"])
+
+rust_library(
+    name = "places_lib",
+    crate_name = "places",
+    crate_root = "src/lib.rs",
+    # Globbed rather than listed — see capabilities/scouting/BUILD.bazel for why the
+    # hand-maintained inventory was the drift risk (Axon#13). src/main.rs and
+    # src/server.rs are excluded because they are the server binary's own crate.
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = [
+            "src/main.rs",
+            "src/server.rs",
+        ],
+    ),
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//libs/axon-config:axon-config",
+        "//libs/axon-store:axon-store",
+        "@crate_index//:csv",
+        "@crate_index//:postgres",
+        "@crate_index//:r2d2",
+        "@crate_index//:r2d2_postgres",
+        "@crate_index//:reqwest",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:sha2",
+    ],
+)
+
+# Hermetic library tests. The Postgres-backed modules are named `pg_tests` and
+# skipped here; the tagged target below runs them — the same split as
+# capabilities/tasks (default suite must not depend on a running service).
+rust_test(
+    name = "places_lib_test",
+    size = "small",
+    args = ["--skip", "pg_tests"],
+    crate = ":places_lib",
+)
+
+rust_test(
+    name = "places_postgres_test",
+    size = "small",
+    args = ["pg_tests"],
+    crate = ":places_lib",
+    tags = [
+        "manual",
+        "postgres-integration",
+    ],
+)
+
+rust_binary(
+    name = "places-server",
+    srcs = [
+        "src/main.rs",
+        "src/server.rs",
+    ],
+    crate_root = "src/main.rs",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":places_lib",
+        "//libs/axon-server:axon-server",
+        "//libs/route-manifest:route-manifest",
+        "@crate_index//:axum",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:tokio",
+    ],
+)
+
+# The server crate's own tests, including the route-manifest coverage test
+# (ISA PLC-1). Hermetic: no database, no network.
+rust_test(
+    name = "places_test",
+    size = "small",
+    crate = ":places-server",
+)

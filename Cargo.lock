@@ -3380,6 +3380,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
+name = "places"
+version = "0.1.0"
+dependencies = [
+ "axon-config",
+ "axon-server",
+ "axon-store",
+ "axum",
+ "csv",
+ "postgres",
+ "r2d2",
+ "r2d2_postgres",
+ "reqwest",
+ "route-manifest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -288,6 +288,15 @@ license = "API output is source-specific; the Trips client requests freely licen
 pin = "action-api-pageimages"
 why = "provider-neutral destination orientation images for Trips. The dashboard validates the small PageImages response into an inert PlaceImage record (dashboard/src/lib/travel/place-image.ts); it never evaluates provider HTML or component code"
 
+[nominatim-api]
+url = "https://nominatim.org/release-docs/latest/api/Search/"
+verdict = "adopt"
+license = "API output is ODbL (OpenStreetMap data); places stores responses in its own local cache and the map keeps OSM attribution visible"
+pin = "search-and-reverse-api-v1"
+pin_kind = "hosted"
+tracked_by = "the hosted search and reverse endpoints themselves, which have no version to drift; a breaking change surfaces as geocode misses behind the one constant that names them (capabilities/places/src/geocode.rs NOMINATIM_URL; the reverse endpoint is derived from it in reverse_endpoint)"
+why = "forward and reverse geocoder for the places registry (capabilities/places decision D3: external API with a permanent local cache, chosen over bundled datasets). The usage constraints are part of the adoption, enforced in geocode.rs rather than remembered: at most 1 request/s with the identifying User-Agent axon-places/0.1 per the Nominatim usage policy; every response cached permanently in places.geocode_cache so a query egresses at most once; and a query carries place text or a bare coordinate pair only -- never a person name, an amount, or a date (PRD 6.1, places ISA PLC-3/A1)"
+
 [platforms]
 url = "https://github.com/bazelbuild/platforms"
 verdict = "adopt"
