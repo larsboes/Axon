@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
+  import { MAP_STYLE_URL } from "../map/style";
 
   export interface MapPoint {
     id: string;
@@ -120,7 +121,7 @@
         mapLibrary = maplibregl;
         map = new maplibregl.Map({
           container: host,
-          style: "https://tiles.openfreemap.org/styles/liberty",
+          style: MAP_STYLE_URL,
           center: [10.45, 51.16],
           zoom: 4.2,
           cooperativeGestures: true,

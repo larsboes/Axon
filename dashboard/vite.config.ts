@@ -276,6 +276,13 @@ export default defineConfig(({ command }) => ({
     ...(command === "serve" ? { proxy: buildProxy() } : {}),
   },
   preview: { host: "127.0.0.1", port, strictPort: true, allowedHosts },
+  // maplibre-gl spawns its worker with `new URL("maplibre-gl-worker.mjs",
+  // import.meta.url)`. Pre-bundled into .vite/deps that URL 404s (the optimizer
+  // emits no worker file), the worker dies with an opaque error, and every map
+  // hangs at "Loading map…" — dev only; the production build resolves the
+  // worker correctly. Excluding it makes dev serve the real ESM from
+  // node_modules, where import.meta.url points at the shipped worker.
+  optimizeDeps: { exclude: ["maplibre-gl"] },
   build: {
     // Vite's own warning, silenced up to the largest size bundleGuard() will actually
     // allow — otherwise it fires on every lazy renderer chunk the guard has already

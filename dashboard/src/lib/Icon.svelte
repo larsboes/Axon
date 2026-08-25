@@ -13,7 +13,7 @@
     | "map-pin" | "database" | "external" | "arrow-right" | "play" | "square"
     | "refresh" | "sun" | "moon" | "menu" | "close" | "clock" | "alert" | "wifi-off"
     | "check" | "loader" | "plus" | "search" | "swap" | "calendar" | "ticket"
-    | "git-branch" | "thermometer" | "cpu" | "activity" | "chevron" | "mail";
+    | "git-branch" | "thermometer" | "cpu" | "activity" | "chevron" | "mail" | "globe";
 
   let { name, size = 16 }: { name: Name; size?: number } = $props();
 
@@ -52,6 +52,7 @@
     "cpu": "M9 5v-2 M15 5v-2 M9 21v-2 M15 21v-2 M5 9h-2 M5 15h-2 M21 9h-2 M21 15h-2 M7 7h10v10H7z",
     "activity": "M22 12h-4l-3 9L9 3l-3 9H2",
     "chevron": "M9 18l6-6-6-6",
+    "globe": "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20 M2 12h20",
   };
 </script>
 

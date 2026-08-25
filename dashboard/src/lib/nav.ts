@@ -51,6 +51,7 @@ export const PRIMARY_NAV: NavItem[] = [
   { href: "/calendar", label: "Calendar", icon: "calendar", capability: "calendar" },
   { href: "/feed", label: "Feed", icon: "feed", capability: "comms" },
   { href: "/travel", label: "Travel", icon: "map-pin", capability: "transit" },
+  { href: "/map", label: "Map", icon: "globe", capability: "places" },
   { href: "/finance", label: "Finance", icon: "database", capability: "finance" },
 ];
 
