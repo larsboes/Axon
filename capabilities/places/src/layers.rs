@@ -757,7 +757,21 @@ mod postgres_tests {
     use super::*;
     use crate::store::postgres_tests::open_test_store;
 
+    /// The only test in the workspace that needs a *deployed* database rather than
+    /// an empty one: `spend_layer` and `travel_layer` name `finance.transaction_projection`
+    /// and `trips.plans` unqualified by any schema parameter, so they read whatever those
+    /// two capabilities have migrated. On a fresh CI database the relations do not exist
+    /// and the query fails at parse time — measured 2026-08-26, `relation
+    /// "finance.transaction_projection" does not exist`.
+    ///
+    /// `#[ignore]` rather than a second CI filter string: it keeps `postgres_tests` the one
+    /// selector, and it makes the exclusion visible as "1 ignored" in every run instead of
+    /// hiding in a workflow. Run it on a machine that has finance and trips deployed with
+    /// `cargo test -p places -- --ignored the_three_layers`. The lasting fix is the
+    /// `_in(store, schema)` shape `unplaced_groups_in` already has; until both layer
+    /// functions take their source schemas, this test cannot be hermetic.
     #[test]
+    #[ignore = "reads the deployed finance and trips schemas; empty CI database has neither"]
     fn the_three_layers_assemble_and_reconcile_against_an_empty_registry() {
         let (store, _schema) = open_test_store("layers");
 
