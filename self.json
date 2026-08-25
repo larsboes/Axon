@@ -447,8 +447,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 139,
-        "nodes": 1149
+        "files": 135,
+        "nodes": 1134
       }
     },
     {
@@ -532,540 +532,560 @@
       "from": "axon-server",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "libs/axon-server/BUILD.bazel"
+        "libs/axon-server/Cargo.toml"
       ]
     },
     {
       "from": "axon-status",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/axon-status/BUILD.bazel"
+        "capabilities/axon-status/Cargo.toml"
       ]
     },
     {
       "from": "axon-status",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/axon-status/BUILD.bazel"
+        "capabilities/axon-status/Cargo.toml"
       ]
     },
     {
       "from": "calendar",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/calendar/BUILD.bazel"
+        "capabilities/calendar/Cargo.toml"
       ]
     },
     {
       "from": "calendar",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/calendar/BUILD.bazel"
+        "capabilities/calendar/Cargo.toml"
       ]
     },
     {
       "from": "calendar",
       "to": "axon-store",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/calendar/BUILD.bazel"
+        "capabilities/calendar/Cargo.toml"
       ]
     },
     {
       "from": "calendar",
       "to": "content-item",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/calendar/BUILD.bazel"
+        "capabilities/calendar/Cargo.toml"
       ]
     },
     {
       "from": "calendar",
       "to": "markdown-root",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/calendar/BUILD.bazel"
+        "capabilities/calendar/Cargo.toml"
       ]
     },
     {
       "from": "calendar",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/calendar/BUILD.bazel"
+        "capabilities/calendar/Cargo.toml"
       ]
     },
     {
       "from": "comms",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/comms/BUILD.bazel"
+        "capabilities/comms/Cargo.toml"
       ]
     },
     {
       "from": "comms",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/comms/BUILD.bazel"
+        "capabilities/comms/Cargo.toml"
       ]
     },
     {
       "from": "comms",
       "to": "axon-store",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/comms/BUILD.bazel"
+        "capabilities/comms/Cargo.toml"
       ]
     },
     {
       "from": "comms",
       "to": "content-item",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/comms/BUILD.bazel"
+        "capabilities/comms/Cargo.toml"
       ]
     },
     {
       "from": "comms",
       "to": "inference",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/comms/BUILD.bazel"
+        "capabilities/comms/Cargo.toml"
       ]
     },
     {
       "from": "comms",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/comms/BUILD.bazel"
+        "capabilities/comms/Cargo.toml"
       ]
     },
     {
       "from": "comms",
       "to": "summarize",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/comms/BUILD.bazel"
+        "capabilities/comms/Cargo.toml"
       ]
     },
     {
       "from": "finance",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/finance/BUILD.bazel"
+        "capabilities/finance/Cargo.toml"
       ]
     },
     {
       "from": "finance",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/finance/BUILD.bazel"
+        "capabilities/finance/Cargo.toml"
       ]
     },
     {
       "from": "finance",
       "to": "axon-store",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/finance/BUILD.bazel"
+        "capabilities/finance/Cargo.toml"
       ]
     },
     {
       "from": "finance",
       "to": "markdown-root",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/finance/BUILD.bazel"
+        "capabilities/finance/Cargo.toml"
       ]
     },
     {
       "from": "finance",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/finance/BUILD.bazel"
+        "capabilities/finance/Cargo.toml"
       ]
     },
     {
       "from": "places",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/places/BUILD.bazel"
+        "capabilities/places/Cargo.toml"
       ]
     },
     {
       "from": "places",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/places/BUILD.bazel"
+        "capabilities/places/Cargo.toml"
       ]
     },
     {
       "from": "places",
       "to": "axon-store",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/places/BUILD.bazel"
+        "capabilities/places/Cargo.toml"
       ]
     },
     {
       "from": "places",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/places/BUILD.bazel"
+        "capabilities/places/Cargo.toml"
       ]
     },
     {
       "from": "punctuality",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/punctuality/BUILD.bazel"
+        "capabilities/punctuality/Cargo.toml"
       ]
     },
     {
       "from": "punctuality",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/punctuality/BUILD.bazel"
+        "capabilities/punctuality/Cargo.toml"
       ]
     },
     {
       "from": "punctuality",
       "to": "axon-store",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/punctuality/BUILD.bazel"
+        "capabilities/punctuality/Cargo.toml"
       ]
     },
     {
       "from": "punctuality",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/punctuality/BUILD.bazel"
+        "capabilities/punctuality/Cargo.toml"
       ]
     },
     {
       "from": "scouting",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/scouting/BUILD.bazel"
+        "capabilities/scouting/Cargo.toml"
       ]
     },
     {
       "from": "scouting",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/scouting/BUILD.bazel"
+        "capabilities/scouting/Cargo.toml"
       ]
     },
     {
       "from": "scouting",
       "to": "axon-store",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/scouting/BUILD.bazel"
+        "capabilities/scouting/Cargo.toml"
       ]
     },
     {
       "from": "scouting",
       "to": "inference",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/scouting/BUILD.bazel"
+        "capabilities/scouting/Cargo.toml"
       ]
     },
     {
       "from": "scouting",
       "to": "markdown-root",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/scouting/BUILD.bazel"
+        "capabilities/scouting/Cargo.toml"
       ]
     },
     {
       "from": "scouting",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/scouting/BUILD.bazel"
+        "capabilities/scouting/Cargo.toml"
       ]
     },
     {
       "from": "scouting",
       "to": "transit",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/scouting/BUILD.bazel"
+        "capabilities/scouting/Cargo.toml"
       ]
     },
     {
       "from": "soundscape",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/soundscape/BUILD.bazel"
+        "capabilities/soundscape/Cargo.toml"
       ]
     },
     {
       "from": "soundscape",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/soundscape/BUILD.bazel"
+        "capabilities/soundscape/Cargo.toml"
       ]
     },
     {
       "from": "soundscape",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/soundscape/BUILD.bazel"
+        "capabilities/soundscape/Cargo.toml"
       ]
     },
     {
       "from": "tasks",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/tasks/BUILD.bazel"
+        "capabilities/tasks/Cargo.toml"
       ]
     },
     {
       "from": "tasks",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/tasks/BUILD.bazel"
+        "capabilities/tasks/Cargo.toml"
       ]
     },
     {
       "from": "tasks",
       "to": "axon-store",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/tasks/BUILD.bazel"
+        "capabilities/tasks/Cargo.toml"
       ]
     },
     {
       "from": "tasks",
       "to": "content-item",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/tasks/BUILD.bazel"
+        "capabilities/tasks/Cargo.toml"
       ]
     },
     {
       "from": "tasks",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/tasks/BUILD.bazel"
+        "capabilities/tasks/Cargo.toml"
       ]
     },
     {
       "from": "transit",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/transit/BUILD.bazel"
+        "capabilities/transit/Cargo.toml"
       ]
     },
     {
       "from": "transit",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/transit/BUILD.bazel"
+        "capabilities/transit/Cargo.toml"
       ]
     },
     {
       "from": "transit",
       "to": "axon-store",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/transit/BUILD.bazel"
+        "capabilities/transit/Cargo.toml"
       ]
     },
     {
       "from": "transit",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/transit/BUILD.bazel"
+        "capabilities/transit/Cargo.toml"
       ]
     },
     {
       "from": "transit",
       "to": "station-time",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/transit/BUILD.bazel"
+        "capabilities/transit/Cargo.toml"
       ]
     },
     {
       "from": "trips",
       "to": "axon-config",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/trips/BUILD.bazel"
+        "capabilities/trips/Cargo.toml"
       ]
     },
     {
       "from": "trips",
       "to": "axon-server",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/trips/BUILD.bazel"
+        "capabilities/trips/Cargo.toml"
       ]
     },
     {
       "from": "trips",
       "to": "axon-store",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/trips/BUILD.bazel"
+        "capabilities/trips/Cargo.toml"
       ]
     },
     {
       "from": "trips",
       "to": "route-manifest",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/trips/BUILD.bazel"
+        "capabilities/trips/Cargo.toml"
       ]
     },
     {
       "from": "trips",
       "to": "station-time",
       "kinds": [
-        "bazel-label"
+        "cargo-dep"
       ],
       "evidence": [
-        "capabilities/trips/BUILD.bazel"
+        "capabilities/trips/Cargo.toml"
+      ]
+    },
+    {
+      "from": "vault",
+      "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/vault/Cargo.toml"
+      ]
+    },
+    {
+      "from": "vault",
+      "to": "markdown-root",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/vault/Cargo.toml"
       ]
     }
   ],
@@ -1472,6 +1492,10 @@
       "capabilities/lifeos/README.md",
       "capabilities/lifeos/overlay/RETIRED.md",
       "capabilities/lifeos/overlay/hooks/ProseGate.hook.ts",
+      "tools/check-bazel-package-labels.sh",
+      "tools/check-rust-crate-roots",
+      "tools/check-rust-crate-roots.test.ts",
+      "tools/check-rust-crate-roots.ts",
       "tools/feed-sweep.ts",
       "tools/lifeos-sync",
       "tools/lifeos-sync.test.ts",

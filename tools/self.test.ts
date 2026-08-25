@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   classifyPath,
-  couplingFromBazel,
+  couplingFromCargo,
   couplingFromRustPath,
   generateWouldDropCode,
   mergeCoupling,
@@ -212,46 +212,57 @@ describe("couplingFromRustPath", () => {
   });
 });
 
-describe("couplingFromBazel", () => {
-  test("a label naming another unit is coupling, in srcs or deps alike", () => {
-    const edges = couplingFromBazel(
-      "capabilities/axon-status/BUILD.bazel",
-      'srcs = ["src/main.rs", "//libs/axon-server:src/lib.rs", "//libs/axon-config:src/lib.rs"],',
+describe("couplingFromCargo", () => {
+  test("a path dependency naming another unit is coupling", () => {
+    const edges = couplingFromCargo(
+      "capabilities/axon-status/Cargo.toml",
+      [
+        "[dependencies]",
+        'axon-server = { path = "../../libs/axon-server" }',
+        'axon-config = { path = "../../libs/axon-config" }',
+      ].join("\n"),
     );
     expect(edges.map((e) => e.to).sort()).toEqual(["axon-config", "axon-server"]);
   });
 
-  test("external crate deps are not unit coupling", () => {
-    const edges = couplingFromBazel(
-      "capabilities/comms/BUILD.bazel",
-      'deps = ["@crate_index_comms//:axum", "@crate_index_comms//:serde"],',
+  test("registry dependencies are not unit coupling", () => {
+    const edges = couplingFromCargo(
+      "capabilities/comms/Cargo.toml",
+      '[dependencies]\naxum = "0.7"\nserde = { version = "1.0", features = ["derive"] }',
     );
     expect(edges).toEqual([]);
   });
 
-  test("a self-reference is not coupling", () => {
-    const edges = couplingFromBazel(
-      "capabilities/transit/BUILD.bazel",
-      'srcs = ["//capabilities/transit:src/lib.rs"],',
+  test("a [lib] or [[bin]] path inside the same unit is not coupling", () => {
+    const edges = couplingFromCargo(
+      "capabilities/transit/Cargo.toml",
+      '[lib]\npath = "src/lib.rs"\n\n[[bin]]\nname = "transit-server"\npath = "src/server.rs"',
     );
     expect(edges).toEqual([]);
+  });
+
+  test("a dev-dependency reaches just as far as a dependency", () => {
+    const edges = couplingFromCargo(
+      "capabilities/trips/Cargo.toml",
+      '[dev-dependencies]\nstation-time = { path = "../../libs/station-time" }',
+    );
+    expect(edges.map((e) => e.to)).toEqual(["station-time"]);
   });
 });
 
 describe("mergeCoupling", () => {
   test("both evidence kinds are kept per pair, so a one-sided pair stays visible", () => {
-    // A pair backed by bazel-label alone is the expected shape for a transitive include
-    // (axon-config reaches axon-status through axon-server's own #[path]) and for a real
-    // Bazel `deps` entry (scouting -> transit). Keeping the kinds is what lets a reader
-    // tell those apart from drift instead of guessing.
+    // A pair backed by cargo-dep alone is the expected shape for a crate that is linked
+    // but whose modules no source file includes by #[path]. Keeping the kinds is what
+    // lets a reader tell that apart from drift instead of guessing.
     const merged = mergeCoupling([
       { from: "calendar", to: "axon-config", kind: "rust-path", file: "a.rs", evidence: "x" },
-      { from: "calendar", to: "axon-config", kind: "bazel-label", file: "BUILD.bazel", evidence: "y" },
-      { from: "scouting", to: "transit", kind: "bazel-label", file: "BUILD.bazel", evidence: "z" },
+      { from: "calendar", to: "axon-config", kind: "cargo-dep", file: "Cargo.toml", evidence: "y" },
+      { from: "scouting", to: "transit", kind: "cargo-dep", file: "Cargo.toml", evidence: "z" },
     ]);
     expect(merged).toHaveLength(2);
-    expect(merged[0]).toMatchObject({ from: "calendar", to: "axon-config", kinds: ["bazel-label", "rust-path"] });
-    expect(merged[1]).toMatchObject({ from: "scouting", to: "transit", kinds: ["bazel-label"] });
+    expect(merged[0]).toMatchObject({ from: "calendar", to: "axon-config", kinds: ["cargo-dep", "rust-path"] });
+    expect(merged[1]).toMatchObject({ from: "scouting", to: "transit", kinds: ["cargo-dep"] });
   });
 
   test("output is sorted, so the committed artifact is stable", () => {

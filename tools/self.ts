@@ -35,7 +35,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  couplingFromBazel,
+  couplingFromCargo,
   couplingFromRustPath,
   generateWouldDropCode,
   mergeCoupling,
@@ -163,7 +163,7 @@ function readUpstreams(): SelfModel["upstreams"] {
  */
 function readCoupling(): SourceCoupling[] {
   const proc = Bun.spawnSync({
-    cmd: ["git", "-C", AXON_ROOT, "ls-files", "*.rs", "BUILD.bazel", "*/BUILD.bazel"],
+    cmd: ["git", "-C", AXON_ROOT, "ls-files", "*.rs", "Cargo.toml", "*/Cargo.toml"],
     stdout: "pipe",
   });
   const files = proc.stdout.toString().split("\n").filter(Boolean);
@@ -172,7 +172,7 @@ function readCoupling(): SourceCoupling[] {
     const text = readText(`${AXON_ROOT}/${file}`);
     if (text === null) continue;
     if (file.endsWith(".rs")) edges.push(...couplingFromRustPath(file, text));
-    if (file.endsWith("BUILD.bazel")) edges.push(...couplingFromBazel(file, text));
+    if (file.endsWith("Cargo.toml")) edges.push(...couplingFromCargo(file, text));
   }
   return edges;
 }
@@ -347,7 +347,7 @@ if (cmd === "generate") {
       "self.json carries per-unit code counts, and there is no code graph here to reproduce them.",
     );
     console.error("Writing now would drop that layer for everyone. Build the graph first:");
-    console.error("  tools/graphify.sh        (or: bazel run //:graphify)");
+    console.error("  tools/graphify.sh");
     process.exit(1);
   }
   const out = serialize(fresh);

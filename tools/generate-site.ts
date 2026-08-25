@@ -16,7 +16,7 @@
 //   units[].code   same reason: per-unit file and node counts come from that graph.
 //
 // Everything that remains traces to a tracked manifest: service.toml for kind/port/requires,
-// upstreams.toml for verdict/pin, and tools/self.ts's own coupling scan over BUILD.bazel and
+// upstreams.toml for verdict/pin, and tools/self.ts's own coupling scan over Cargo.toml and
 // source imports.
 //
 // Self-contained by requirement (#14) and by house rule: inline CSS, no script, no font, no image,
@@ -105,7 +105,7 @@ function renderCoupling(coupling: Coupling[]): string {
   return `
 <section id="coupling">
   <h2>Coupling <span class="count">${coupling.length}</span></h2>
-  <p class="blurb">Which unit reads which, found in BUILD.bazel labels and source imports rather than declared by hand.</p>
+  <p class="blurb">Which unit reads which, found in Cargo path dependencies and source imports rather than declared by hand.</p>
   <div class="scroll">
     <table>
       <thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col">Seen in</th></tr></thead>

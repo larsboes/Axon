@@ -140,7 +140,7 @@ function couplingSection(unit: Unit, coupling: Coupling[]): string {
   return `
 <section>
   <h2>Coupling</h2>
-  <p class="blurb">Found in BUILD.bazel labels and source imports, not declared by hand. Compile-time, unlike <code>Requires</code> above, which is what has to be running.</p>
+  <p class="blurb">Found in Cargo path dependencies and source imports, not declared by hand. Compile-time, unlike <code>Requires</code> above, which is what has to be running.</p>
   ${out.length ? `<h3>Reads <span class="count">${out.length}</span></h3>${list(out, (c) => c.to)}` : ""}
   ${inbound.length ? `<h3>Read by <span class="count">${inbound.length}</span></h3>${list(inbound, (c) => c.from)}` : ""}
 </section>`;

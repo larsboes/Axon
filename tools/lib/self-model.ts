@@ -13,8 +13,10 @@
 // global node owned by whichever file it extracted first, so every
 // `use std::collections::BTreeMap` became an edge into whichever capability happened to
 // own `btreemap`. It also missed all 20 files of real capability→lib coupling. Coupling
-// therefore comes from `#[path]` attributes and Bazel labels, which are literal strings
-// in tracked files. Evidence: MEMORY/WORK/axon-self-model/ISA.md changelog, 2026-07-30.
+// therefore comes from `#[path]` attributes and Cargo path dependencies, which are literal
+// strings in tracked files. Evidence: MEMORY/WORK/axon-self-model/ISA.md changelog,
+// 2026-07-30. The second kind read Bazel labels until 2026-08-25 (PRD Q44); the manifests
+// changed, the property did not.
 //
 // Why a separate node identity rather than reusing graphify's: graphify slugifies node
 // ids from the ABSOLUTE scan path, so they can read
@@ -241,16 +243,17 @@ export function rollUp(
  * How one unit's code reaches into another's, as declared in ground truth.
  *
  * Axon does not couple units by depending on published crates. A capability pulls a lib
- * in by path — `#[path = "../../../libs/axon-config/src/lib.rs"] mod axon_config;` — and
- * mirrors that as a Bazel label in its target's `srcs`. Both are literal strings in
- * tracked files, which makes them exact: there is nothing to infer and no graph to
- * trust. This is the ground truth that replaced graphify's import edges after those were
- * shown to be both false-positive and false-negative here (see the ISA changelog).
+ * in by path — `#[path = "../../../libs/axon-config/src/lib.rs"] mod axon_config;` in a
+ * source file, `axon-config = { path = "../../libs/axon-config" }` in its Cargo.toml.
+ * Both are literal strings in tracked files, which makes them exact: there is nothing to
+ * infer and no graph to trust. This is the ground truth that replaced graphify's import
+ * edges after those were shown to be both false-positive and false-negative here (see the
+ * ISA changelog).
  */
 export interface SourceCoupling {
   from: string;
   to: string;
-  kind: "rust-path" | "bazel-label";
+  kind: "rust-path" | "cargo-dep";
   /** The file the evidence lives in. */
   file: string;
   /** The literal string that proves it. */
@@ -290,23 +293,26 @@ export function couplingFromRustPath(file: string, text: string): SourceCoupling
 }
 
 /**
- * Bazel labels naming another unit, from any BUILD.bazel.
+ * Cargo path dependencies naming another unit, from any Cargo.toml.
  *
- * Matches `//libs/<X>` and `//capabilities/<X>` anywhere in the file — `srcs`, `deps`
- * and `data` all express a real build-time reach, and treating them alike keeps this
- * from silently missing a fourth attribute someone adds later. `@crate_index_*` external
- * crate deps are not unit coupling and never match this pattern.
+ * `file` is the repo-relative path of the manifest, so each `path = "…"` resolves against
+ * its directory. Matches every `path = "…"` in the file — dependencies, dev-dependencies
+ * and build-dependencies all express a real compile-time reach, and treating them alike
+ * keeps this from silently missing a fourth table someone adds later. A registry
+ * dependency carries no `path` and never matches; a path that stays inside the same unit
+ * is not coupling and is dropped.
  */
-export function couplingFromBazel(file: string, text: string): SourceCoupling[] {
+export function couplingFromCargo(file: string, text: string): SourceCoupling[] {
   const self = unitForPath(file);
   if (!self) return [];
+  const dir = file.split("/").slice(0, -1).join("/");
   const out = new Map<string, SourceCoupling>();
-  for (const m of text.matchAll(/"\/\/(libs|capabilities)\/([A-Za-z0-9._-]+)/g)) {
-    const name = m[2];
-    if (name === self.name) continue;
-    const key = `${self.name}->${name}`;
+  for (const m of text.matchAll(/\bpath\s*=\s*"([^"]+)"/g)) {
+    const unit = unitForPath(normalizeRelative(dir, m[1]));
+    if (!unit || unit.name === self.name) continue;
+    const key = `${self.name}->${unit.name}`;
     if (!out.has(key)) {
-      out.set(key, { from: self.name, to: name, kind: "bazel-label", file, evidence: m[0] + "…" });
+      out.set(key, { from: self.name, to: unit.name, kind: "cargo-dep", file, evidence: m[0] });
     }
   }
   return [...out.values()];
@@ -315,9 +321,9 @@ export function couplingFromBazel(file: string, text: string): SourceCoupling[] 
 /**
  * Merge per-file coupling into a deterministic, deduplicated unit-level map.
  *
- * Both evidence kinds are kept per pair rather than collapsed to a boolean: seeing that
- * a pair is backed by `rust-path` but NOT `bazel-label` is exactly the drift Bazel's
- * sandbox would fail on, and seeing the reverse is a stale label.
+ * Both evidence kinds are kept per pair rather than collapsed to a boolean: a pair backed
+ * by `rust-path` but NOT `cargo-dep` is a source include the manifest never declared, and
+ * the reverse is a dependency nothing imports.
  */
 export function mergeCoupling(edges: SourceCoupling[]): Array<{
   from: string;
