@@ -141,16 +141,6 @@
       }
     },
     {
-      "name": "feed-sweep",
-      "kind": "capability",
-      "service": {
-        "kind": "process",
-        "requires": [
-          "comms"
-        ]
-      }
-    },
-    {
       "name": "finance",
       "kind": "capability",
       "service": {
@@ -244,22 +234,6 @@
       "code": {
         "files": 3,
         "nodes": 25
-      }
-    },
-    {
-      "name": "learning",
-      "kind": "capability",
-      "code": {
-        "files": 2,
-        "nodes": 9
-      }
-    },
-    {
-      "name": "lifeos",
-      "kind": "capability",
-      "code": {
-        "files": 2,
-        "nodes": 14
       }
     },
     {
@@ -1143,7 +1117,7 @@
     },
     {
       "name": "lifeos",
-      "verdict": "overlay",
+      "verdict": "inspiration",
       "pin": "v7.1.1"
     },
     {
