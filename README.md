@@ -113,11 +113,9 @@ another capability's notes by implication.
 
 The harness-swappable, public-core-plus-private-overlay shape isn't invented from nothing. It
 descends from Daniel Miessler's [LifeOS](https://github.com/danielmiessler/LifeOS), the upstream
-AI-operator project. Axon consumes LifeOS as a managed installation rather than a repository
-fork: `capabilities/lifeos/` owns the reusable delta, while the active overlay owns the install
-location and machine-specific state. `tools/lifeos-sync` projects that delta into the selected
-installation and reports drift. See `upstreams.toml`'s `[lifeos]` entry for the reviewed pin and
-the `overlay` verdict.
+AI-operator project. Axon carried a reviewed delta against a LifeOS installation until
+2026-08-25, when that delta and its sync tooling were deleted; the shape it taught stayed. See
+`upstreams.toml`'s `[lifeos]` entry for what was consumed and why it stopped.
 
 Two orthogonal decisions, kept separate on purpose:
 

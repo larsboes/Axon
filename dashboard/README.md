@@ -88,7 +88,6 @@ the user starts one, then open as separate pages.
 | punctuality | `8085` | `/punctuality/*` (no UI consumer yet — transit reads it server-side) |
 | trips | `8086` | `/trips/*` |
 | server | `4243` | interactive deployment plan, opened from `/projects` when enabled |
-| LifeOS Pulse (external, not an Axon capability) | `31337` | `/lifeos-pulse/*` |
 
 The authoritative list is `tools/capability.sh registry` (which is where the dev server
 builds its proxy table from at startup); this table is the snapshot of the proxy quirks,
@@ -106,7 +105,7 @@ instead of embedding it, so each SvelteKit site owns its own navigation and stor
 ## Client
 
 All access goes through `src/lib/api.ts` (`transit`, `trips`, `scouting`, `wikimedia`,
-`axonStatus`, `comms`, `lifeosPulse`). Components must not call `fetch` directly: the
+`axonStatus`, `comms`). Components must not call `fetch` directly: the
 client is the one place that knows upstream shapes.
 
 That includes error shapes. Every capability server answers a failure as

@@ -167,15 +167,6 @@ function buildProxy(): Record<string, ProxyOptions> {
     }
   }
 
-  // The real LifeOS Life Dashboard (~/.claude/LIFEOS/PULSE/pulse.ts), an external
-  // system this shell links to and never an Axon capability. Not in the registry, so
-  // it stays declared here by hand.
-  proxy["/lifeos-pulse"] = {
-    target: "http://localhost:31337",
-    changeOrigin: true,
-    rewrite: (path) => path.replace(/^\/lifeos-pulse/, ""),
-  };
-
   // macmon used to be hand-proxied here, on a hardcoded 9911, because it was not a
   // capability. It is capabilities/macmon now, so the registry loop above already gives it
   // /macmon from its own `port` — one fewer place for that number to be wrong.

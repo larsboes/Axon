@@ -163,32 +163,4 @@ axon_state_mount_for() {
   echo "${out/#\~/$HOME}"
 }
 
-# The LifeOS USER tree on stdout — the zone inside the `lifeos` state mount that holds the
-# principal's identity files. Both sync tools resolve it through here so they cannot drift
-# apart, which was the whole defect: each carried its own fallback path.
-#
-# Resolved to its physical path. A LifeOS install may place the mount's USER zone behind a
-# symlink (a `~/.claude/LIFEOS/USER -> ~/.config/LIFEOS/USER` layout is normal), and `find`
-# does not descend into a symlinked start directory — a caller handed the link would walk
-# zero files and report a clean sync of an empty tree.
-axon_lifeos_user_dir() {
-  local mount="" dir=""
-  mount="$(axon_state_mount_for lifeos)" || return $?
-  dir="$mount/LIFEOS/USER"
-  [ -d "$dir" ] || { echo "$dir"; return 0; }
-  (cd "$dir" && pwd -P)
-}
-
-# The LifeOS MEMORY tree on stdout — the other zone inside the `lifeos` state mount, holding
-# what the system learned rather than who the principal is. Same symlink resolution and the
-# same reason for it as the USER zone above: a `~/.claude/LIFEOS/MEMORY -> ~/.config/LIFEOS/
-# MEMORY` layout is what a stock install produces.
-axon_lifeos_memory_dir() {
-  local mount="" dir=""
-  mount="$(axon_state_mount_for lifeos)" || return $?
-  dir="$mount/LIFEOS/MEMORY"
-  [ -d "$dir" ] || { echo "$dir"; return 0; }
-  (cd "$dir" && pwd -P)
-}
-
 unset _overlay_raw _lib
