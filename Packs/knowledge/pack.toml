@@ -1,8 +1,11 @@
 # See schemas/pack.toml.example for the field reference.
-# WIP — salvaged from LifeOS-mono; open TODO in README before activation.
-name        = "llm-wiki"
-description  = "LLM-maintained wiki inside an Obsidian vault — ingest, query, lint."
-skills      = ["llm-wiki"]
+# The pack is the purpose (knowledge work), the skill is the tool (obsidian). Collapsed
+# 2026-08-22 from eight skills to three: the syntax references carried triggers broad
+# enough to fire instead of the skill that gates writes on the vault contract, so they
+# are references/ inside it now and cannot win a trigger.
+name        = "knowledge"
+description = "Knowledge work on the Obsidian vault as the one durable surface — vault ops under the vault contract, the wiki layer, taught learning sessions, and clean web capture."
+skills      = ["obsidian", "teach", "defuddle"]
 license     = "MIT"
 personal    = ["config/knowledge.toml"]
 links       = ["knowledge-base"]

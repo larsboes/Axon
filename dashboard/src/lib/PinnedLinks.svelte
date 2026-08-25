@@ -70,6 +70,7 @@
     margin: 0;
     padding: 0;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.35rem;
   }
   a {
@@ -92,6 +93,7 @@
     color: var(--text-tertiary, #888);
     font-size: 0.75rem;
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

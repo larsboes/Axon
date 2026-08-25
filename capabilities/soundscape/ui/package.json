@@ -5,7 +5,8 @@
   "type": "module",
   "description": "The soundscape capability's own surface — the browser half, where Web Audio has to run.",
   "overrides": {
-    "cookie": "0.7.2"
+    "cookie": "0.7.2",
+    "nanoid": "3.3.18"
   },
   "scripts": {
     "dev": "vite dev",

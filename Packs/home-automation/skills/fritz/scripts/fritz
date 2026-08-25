@@ -116,7 +116,13 @@ def bw_secret(field: str, login_fallback: bool = False) -> str:
     if r.returncode != 0:
         die(f"`bw get item {item_name}` failed: {r.stderr.strip() or 'unknown error'} "
             f"(is the item name right and the session unlocked?)")
-    item = json.loads(r.stdout)
+    # A stale BW_SESSION still exits 0 here with a plain-text complaint instead of JSON, so
+    # the parse is where a locked vault surfaces — not the return code checked above.
+    try:
+        item = json.loads(r.stdout)
+    except ValueError:
+        die(f"`bw get item {item_name}` returned no JSON: {r.stdout.strip()[:160] or '(empty)'} "
+            "— the vault is probably locked; re-run `export BW_SESSION=$(bw unlock --raw)`.")
     fields = {f.get("name"): f.get("value") for f in (item.get("fields") or [])}
     if fields.get(field):
         return fields[field]

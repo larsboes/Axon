@@ -108,7 +108,15 @@ def bw_secret(field: str) -> str:
     if r.returncode != 0:
         die(f"`bw get item {BW_ITEM}` failed: {r.stderr.strip() or 'unknown error'} "
             f"(is the item name right and the session unlocked?)")
-    fields = {f.get("name"): f.get("value") for f in json.loads(r.stdout).get("fields", [])}
+    # A stale BW_SESSION passes the presence check above and `bw` still exits 0, printing a
+    # plain-text complaint instead of JSON — so the parse, not the return code, is where a
+    # locked vault actually surfaces. Say so, instead of raising JSONDecodeError at the caller.
+    try:
+        item = json.loads(r.stdout)
+    except ValueError:
+        die(f"`bw get item {BW_ITEM}` returned no JSON: {r.stdout.strip()[:160] or '(empty)'} "
+            "— the vault is probably locked; re-run `export BW_SESSION=$(bw unlock --raw)`.")
+    fields = {f.get("name"): f.get("value") for f in item.get("fields", [])}
     if not fields.get(field):
         die(f"bw item '{BW_ITEM}' is missing secret field: {field}")
     return fields[field]

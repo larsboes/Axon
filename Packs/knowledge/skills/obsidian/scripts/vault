@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""vault — resolve the Obsidian vault, and search what was already said about it.
+
+Two jobs the model should never do by hand:
+
+  root      print the vault path (from the overlay, never hardcoded)
+  contract  print the vault contract path, or fail loudly if it is missing
+  sessions  list vault-native session/planning notes with phase + progress
+  recall    search Claude Code transcripts by content, cwd, date, or title
+
+`recall` exists because the transcripts already hold everything a capture hook
+would stage — cwd, gitBranch, timestamp, aiTitle, every prompt — so the answer to
+"what did we do last week" is a search, not a second copy in the vault. The
+Vault-Planning Convention's guardrail ("no automatic work capture") says the same
+thing from the vault's side.
+
+Stdlib only, and no `tomllib`: this ships against macOS stock python3 (3.9), and
+knowledge.toml is single-line TOML by the same contract as tools/lib/toml.sh.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+TRANSCRIPT_ROOTS = [
+    Path.home() / ".claude" / "projects",
+    Path.home() / "Developer/Inbox/.claude-lifeos-archive-2026-08-22/projects",
+]
+
+
+def die(msg: str) -> "None":
+    sys.exit(f"vault: {msg}")
+
+
+def overlay_root() -> Path:
+    raw = os.environ.get("AXON_OVERLAY_ROOT") or os.environ.get("AXON_PERSONAL_ROOT")
+    if not raw:
+        # The machine already declares its overlay in axon.local.toml; read it rather
+        # than making every caller export something the shell init may not have run.
+        for candidate in (Path.home() / "Developer/Axon/axon.local.toml",):
+            if candidate.exists():
+                m = re.search(r'^overlay\s*=\s*"([^"]+)"', candidate.read_text(), re.M)
+                if m:
+                    raw = m.group(1)
+                    break
+    if not raw:
+        die("overlay unresolved — set AXON_OVERLAY_ROOT or `overlay` in axon.local.toml")
+    return Path(os.path.expanduser(raw))
+
+
+def vault_root() -> Path:
+    cfg = overlay_root() / "config/knowledge.toml"
+    if not cfg.exists():
+        die(f"missing {cfg} — it holds vault_root; never hardcode the path")
+    m = re.search(r'^vault_root\s*=\s*"([^"]+)"', cfg.read_text(), re.M)
+    if not m:
+        die(f"no single-line `vault_root = \"...\"` in {cfg}")
+    root = Path(os.path.expanduser(m.group(1)))
+    if not root.is_dir():
+        die(f"vault_root points at {root}, which does not exist")
+    return root
+
+
+def cmd_root(_args) -> None:
+    print(vault_root())
+
+
+def cmd_contract(_args) -> None:
+    path = vault_root() / "Projects/Soma/Vault-Contract.md"
+    if not path.exists():
+        die(f"vault contract missing at {path} — stop and say so; do not improvise structure")
+    print(path)
+
+
+def cmd_sessions(args) -> None:
+    """Every vault-native planning note, newest first — the CLI view of Projects/Sessions.base."""
+    root = vault_root()
+    rows = []
+    for note in root.glob("Projects/*/Sessions/*.md"):
+        head = note.read_text(errors="replace")[:1200]
+        fm = re.match(r"^---\s*\n(.*?)\n---", head, re.S)
+        meta = dict(re.findall(r"^(\w+):\s*(.+)$", fm.group(1), re.M)) if fm else {}
+        if args.phase and meta.get("phase") != args.phase:
+            continue
+        rows.append((note.stem, meta.get("phase", "?"), meta.get("progress", "?"),
+                     note.parent.parent.name))
+    for stem, phase, progress, project in sorted(rows, reverse=True):
+        print(f"{stem:<52} {phase:<12} {progress:<7} {project}")
+    if not rows:
+        print("(no session notes)", file=sys.stderr)
+
+
+def _transcript_meta(path: Path) -> dict:
+    """Pull the session's identity out of a .jsonl without parsing every line as JSON.
+
+    A substring test first: most lines are tool traffic and carry none of these keys,
+    and json.loads on a multi-megabyte transcript line-by-line is the slow path.
+    """
+    meta = {"path": str(path), "prompts": []}
+    try:
+        with path.open(errors="replace") as fh:
+            for line in fh:
+                if '"aiTitle"' in line or '"cwd"' in line or '"lastPrompt"' in line:
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    for key in ("aiTitle", "cwd", "gitBranch"):
+                        if d.get(key) and key not in meta:
+                            meta[key] = d[key]
+                    if d.get("timestamp"):
+                        meta.setdefault("first", d["timestamp"])
+                        meta["last"] = d["timestamp"]
+                    if isinstance(d.get("lastPrompt"), str):
+                        meta["prompts"].append(d["lastPrompt"][:200])
+    except OSError:
+        pass
+    return meta
+
+
+def cmd_recall(args) -> None:
+    roots = [r for r in TRANSCRIPT_ROOTS if r.is_dir()]
+    if not roots:
+        die("no transcript directories found")
+
+    hits = {}
+    if args.query:
+        # rg picks and ranks the candidates; parsing every transcript to filter afterwards
+        # would read hundreds of megabytes to discard most of it. Count, not just list:
+        # a term LifeOS injected into every system prompt matches ~every file, so presence
+        # alone ranks nothing — how often it was actually discussed does.
+        cmd = ["rg", "-c", "-i", "--fixed-strings", args.query] + [str(r) for r in roots]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        for line in res.stdout.splitlines():
+            path, _, count = line.rpartition(":")
+            if path.endswith(".jsonl") and count.isdigit():
+                hits[Path(path)] = int(count)
+        files = list(hits)
+    else:
+        files = [p for r in roots for p in r.rglob("*.jsonl")]
+
+    rows = []
+    for f in files:
+        meta = _transcript_meta(f)
+        if args.cwd and args.cwd not in meta.get("cwd", ""):
+            continue
+        if args.since and (meta.get("last") or "") < args.since:
+            continue
+        meta["hits"] = hits.get(f, 0)
+        rows.append(meta)
+
+    if args.query:
+        rows.sort(key=lambda m: (m.get("hits", 0), m.get("last") or ""), reverse=True)
+    else:
+        rows.sort(key=lambda m: m.get("last") or "", reverse=True)
+    for m in rows[: args.limit]:
+        when = (m.get("last") or "?")[:10]
+        title = m.get("aiTitle") or (m["prompts"][0][:60] if m["prompts"] else "(untitled)")
+        count = f"{m['hits']:>5}x " if args.query else ""
+        print(f"{when}  {count}{title[:56]:<56} {m.get('cwd', '?')}")
+        if args.verbose:
+            print(f"          branch={m.get('gitBranch', '-')}  {m['path']}")
+    if not rows:
+        print("(no matching sessions)", file=sys.stderr)
+    else:
+        print(f"\n{len(rows)} session(s); showing {min(len(rows), args.limit)}", file=sys.stderr)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(prog="vault")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("root").set_defaults(fn=cmd_root)
+    sub.add_parser("contract").set_defaults(fn=cmd_contract)
+
+    p = sub.add_parser("sessions")
+    p.add_argument("--phase", choices=["scaffolding", "climbing", "complete"])
+    p.set_defaults(fn=cmd_sessions)
+
+    p = sub.add_parser("recall")
+    p.add_argument("query", nargs="?", help="substring to search across transcripts")
+    p.add_argument("--cwd", help="only sessions whose cwd contains this")
+    p.add_argument("--since", help="ISO date, e.g. 2026-08-01")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.set_defaults(fn=cmd_recall)
+
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1107,6 +1107,8 @@
         </section>
       {/if}
 
+      <PinnedLinks />
+
       <!-- Machine status, not work. It stays one line until asked: health,
            temperature and memory are things you check, not things you do, and
            three sections of them outweighed the queue they sat beside. A
@@ -1153,8 +1155,6 @@
               <a class="mc-detail" href={link("/systems")}>Details <Icon name="arrow-right" size={11} /></a>
             </div>
           {/if}
-
-          <PinnedLinks />
 
           <RepoStatusCard />
 

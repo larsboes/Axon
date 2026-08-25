@@ -24,8 +24,8 @@ packs = ["writing", "unslop"]
 
 [[profile]]
 name = "knowledge"
-description = "LLM-maintained Obsidian wiki"
-packs = ["llm-wiki"]
+description = "Knowledge vault stack — teaching, LLM wiki, Obsidian operations"
+packs = ["knowledge"]
 
 [[profile]]
 name = "full"

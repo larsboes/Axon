@@ -42,6 +42,12 @@ deployer     = "packs-axon"              # optional: a dedicated tool owns this 
 # (see README.md#harness-neutral-packs). See Packs/academic-writing/ for a
 # worked example (5 review-lens agents + 3 adversarial-skeptic agents).
 #
+# A pack MAY likewise carry an extensions/ directory of pi-only .ts agent
+# extensions. tools/packs-pi registers them in Pi's settings `extensions`
+# array alongside the pack's skills; every other adapter ignores extensions/
+# — a pi-exclusive concept, kept out of the neutral manifest shape for the
+# same reason as agents/. See Packs/knowledge/ (quiz.ts).
+#
 # A pack MAY likewise carry Codex-only deployment fields under
 # codex/<skill>/, matching their final paths inside the skill. The common case
 # is codex/<skill>/agents/openai.yaml plus any Codex-only assets it references.

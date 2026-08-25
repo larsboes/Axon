@@ -19,12 +19,42 @@
 # diffs and easier overlay review.
 set -euo pipefail
 
-TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-source "$TOOLS_DIR/lib/paths.sh"
-source "$TOOLS_DIR/lib/toml.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+
+# This needs three things tools/lib/{paths,toml}.sh used to hand over: AXON_ROOT for
+# the capability manifest, the overlay root, and toml_get. A deployed skill is a copy
+# under ~/.claude/skills, so it cannot source the repo by relative path — resolve the
+# same way homectl does, environment first and walk-up second, and vendor the one
+# toml helper actually used here.
+toml_get() {  # toml_get <key> <file> — empty output, exit 0, if key absent
+  grep -E "^$1[[:space:]]*=" "$2" | sed -E "s/^$1[[:space:]]*=[[:space:]]*\"([^\"]*)\".*/\1/" || true
+}
+
+_resolve_axon_root() {
+  if [ -n "${AXON_ROOT:-}" ] && [ -f "$AXON_ROOT/axon.toml" ]; then
+    echo "$AXON_ROOT"
+    return
+  fi
+  local candidate="$SCRIPT_DIR"
+  while [ "$candidate" != "/" ]; do
+    if [ -f "$candidate/axon.toml" ]; then
+      echo "$candidate"
+      return
+    fi
+    candidate="$(dirname "$candidate")"
+  done
+}
+
+_resolve_overlay_root() {
+  local raw="${AXON_HOME_ROOT:-${AXON_OVERLAY_ROOT:-${AXON_PERSONAL_ROOT:-}}}"
+  if [ -z "$raw" ] && [ -n "${AXON_ROOT:-}" ] && [ -f "$AXON_ROOT/axon.local.toml" ]; then
+    raw="$(toml_get overlay "$AXON_ROOT/axon.local.toml")"
+  fi
+  echo "${raw/#\~/$HOME}"
+}
 
 usage() {
-  sed -n '2,24p' "$0"
+  sed -n '2,19p' "$0"
   exit 0
 }
 
@@ -40,8 +70,13 @@ require() {
 require curl
 require jq
 
-OVERLAY_ROOT="${AXON_PERSONAL_ROOT:-}"
-[ -n "$OVERLAY_ROOT" ] || die "AXON_PERSONAL_ROOT is not set — set it by running tools/install.sh first"
+AXON_ROOT="$(_resolve_axon_root)"
+[ -n "$AXON_ROOT" ] || die "Axon checkout not found; export AXON_ROOT=/path/to/Axon"
+export AXON_ROOT
+
+OVERLAY_ROOT="$(_resolve_overlay_root)"
+[ -n "$OVERLAY_ROOT" ] || die "overlay is unresolved; set \`overlay\` in axon.local.toml or export AXON_OVERLAY_ROOT"
+export AXON_OVERLAY_ROOT="$OVERLAY_ROOT" AXON_PERSONAL_ROOT="$OVERLAY_ROOT"
 
 CAP_MANIFEST="$AXON_ROOT/capabilities/home-assistant/service.toml"
 [ -f "$CAP_MANIFEST" ] || die "home-assistant manifest missing: $CAP_MANIFEST"

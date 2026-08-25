@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Axon — the spine's shell: what is enabled on this machine, what it is saying, and what starts on demand.",
   "overrides": {
-    "cookie": "0.7.2"
+    "cookie": "0.7.2",
+    "nanoid": "3.3.18"
   },
   "scripts": {
     "dev": "vite dev",
