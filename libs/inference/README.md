@@ -29,7 +29,8 @@ Two levels. Callers only ever touch the second.
 - A **backend** is a server: an API shape (`openai` or `ollama`), a base URL, optionally a
   file to read a bearer key out of. Declared once.
 - A **role** is a job: `embedding`, `reranking`, `summarization`, or an explicitly named
-  `cloud_*` task. It names a backend, the model on it, and that model's input conventions.
+  `cloud_*` task. It names a backend, the model on it, that model's input conventions, and
+  optionally what the same job is called on another local runtime (`on_backend`).
 
 ```rust
 let role = InferenceConfig::load(overlay_config).role("embedding");
@@ -49,7 +50,8 @@ uses the resolved role for model readiness, mixed query/document embedding batch
 OpenAI-compatible chat completion routing. Reranking roles use the Cohere/Jina-compatible
 `/v1/rerank` shape, restore sorted results to input order and reject incomplete, duplicate or
 out-of-range scores before a consumer can persist them. The Ollama-native API has no equivalent
-route, so callers degrade explicitly when a machine overrides that backend.
+route, so a reranking role names no Ollama model and simply does not resolve on a machine that
+declares that backend — callers degrade from `None` rather than from a failed request.
 
 ## Config
 
@@ -84,10 +86,45 @@ Secure Note into that local file; it never prints the value.
 
 ## Machine override
 
-`AXON_INFERENCE_BACKEND` replaces the backend for every role. `service-runner.sh` exports
-it from `machine.toml`'s `[inference] backend`, the same path `[capability.<name>] port`
-already takes to reach a process. A Linux or Raspberry Pi machine says so once, in the file
-that already holds machine-local facts, and no capability config changes.
+`machine.toml`'s `[inference] backend` names the one local model runtime this machine has.
+`service-runner.sh` exports it as `AXON_INFERENCE_BACKEND` for every process it starts —
+the same path `[capability.<name>] port` already takes to reach a process. An Intel,
+Raspberry Pi or Linux machine says so once, in the file that already holds machine-local
+facts, and no capability config changes.
+
+It moves a role only when both of these hold, and each one is a defect it prevents:
+
+- **The role's declared backend is loopback.** The override states which *local* runtime
+  exists here. A hosted backend answers from every machine, so there is nothing
+  machine-local to replace, and a reviewed `cloud_*` role is never dragged onto whatever
+  this host happens to run.
+- **The role names a model for that backend**, under `on_backend`. Model ids are
+  backend-specific: swapping the backend alone leaves `multilingual-e5-base-mlx` addressed
+  to Ollama, which 404s every request. A role that names none resolves to `None` — the
+  documented degrade path, taken at resolution rather than at the first failed call.
+
+```json
+"embedding": {
+  "backend": "omlx", "model": "multilingual-e5-base-mlx",
+  "query_prefix": "query: ", "document_prefix": "passage: ",
+  "on_backend": {
+    "ollama": { "model": "nomic-embed-text",
+                "query_prefix": "search_query: ", "document_prefix": "search_document: " }
+  }
+}
+```
+
+Prefixes are deliberately not inherited: they belong to the model, and the entry names a
+different one. `cache_key()` still separates the two producers — `omlx:multilingual-e5-base-mlx`
+against `ollama:nomic-embed-text` — so a cache written on one machine cannot be served on the
+other.
+
+**Rejected alternative: per-machine role definitions.** A `[roles]` block in `machine.toml`,
+or a second `inference.<machine>.json`, would put the model and its prefixes in as many places
+as there are machines. The pairing of a model with its input conventions is the one fact this
+library exists to keep in a single home, and duplicating it per host is how it drifts. The
+machine states only what is genuinely machine-local — which runtime it has — and the shared
+file keeps every model name.
 
 ## Two things portability actually requires
 

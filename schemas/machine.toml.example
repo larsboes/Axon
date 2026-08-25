@@ -1,7 +1,7 @@
 # Shape of <overlay>/config/machine.toml — everything true of ONE deployment instance.
 # Written by tools/install.sh, then maintained by tools/capability.sh (the capabilities
 # line) and by hand (state mounts). Read by tools/lib/platform.sh, tools/capability.sh,
-# tools/update.sh and tools/doctor.
+# tools/service-runner.sh, tools/update.sh and tools/doctor.
 #
 # Why it lives in the overlay and not in axon.toml: axon.toml is tracked and shared, so a
 # field that differs between two machines cannot live there — one overlay is one instance,
@@ -28,8 +28,12 @@
 # assuming macOS.
 #
 #   macOS workstation:  os = "macos"    container_runtime = "apple-container"
+#   macOS on Docker:    os = "macos"    container_runtime = "docker"
 #   Linux server:       os = "linux"    container_runtime = "docker"
 #
+# The two macOS rows are both real: the fields are independent and neither is inferred from
+# the other. A Mac running Docker Desktop or colima is a deployment this repo supports, not a
+# mistyped `apple-container`, and tools/lib/platform.sh branches on each field separately.
 os = "linux"                       # "macos" | "linux" | "windows"
 container_runtime = "docker"       # "apple-container" | "docker" | "podman"
 
@@ -45,6 +49,26 @@ capabilities = ["home-assistant", "vaultwarden"]
 # machine's facts in one shared file and makes each node's config grow with the node count —
 # accumulating blocks that are inert everywhere except one place. And `capabilities` has no
 # sensible per-machine encoding that way at all.
+
+# --- local model runtime (optional) --------------------------------------
+# Which inference backend this machine actually has. Read by tools/service-runner.sh, which
+# exports it as AXON_INFERENCE_BACKEND for every process it starts; libs/inference reads that
+# and resolves roles against it.
+#
+# The value is a backend id from <overlay>/config/inference.json, never a URL — the address
+# already has a home there (schema: libs/inference/inference.config.example.json). Absent
+# section or absent key = each role keeps the backend it declares, which is the right answer
+# for the machine the shared inference.json was written for.
+#
+# It moves a role only when BOTH hold, and each condition is a defect it prevents:
+#   * the role's declared backend is loopback — a hosted provider answers from every machine,
+#     so a reviewed cloud_* role is never dragged onto whatever this host runs;
+#   * the role names a model for this backend under `on_backend` — a backend id on its own
+#     would ask Ollama for an oMLX model name. A role that names none is simply unavailable
+#     here, and consumers already degrade from that (scouting falls back to hash embedding).
+#
+# [inference]
+# backend = "ollama"    # e.g. an Intel or Raspberry Pi host: no Metal, so no oMLX
 
 # --- per-capability overrides (optional) ---------------------------------
 # A capability's service.toml is tracked and shared, so it can only hold fields that are

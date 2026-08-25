@@ -60,6 +60,12 @@ Nothing else changes. `comms` picks the light role when the source demonstrably 
 falls back to the strong one otherwise, and a machine with no light role configured
 behaves exactly as it did before.
 
+`inference.json` is shared across the overlay's machines, and this backend exists on exactly
+one class of them. A machine that declares another local runtime in `machine.toml`
+(`[inference] backend`) resolves this role to nothing unless it names a model there under
+`on_backend` — which is the correct outcome, not a gap: `comms` then takes the strong role,
+the same as a machine with no light role at all.
+
 ## Requirements
 
 macOS 26+, Apple Silicon, Apple Intelligence enabled. Without them the binary refuses to
