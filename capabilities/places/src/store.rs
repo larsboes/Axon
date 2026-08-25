@@ -541,11 +541,14 @@ mod tests {
 }
 
 /// Postgres-backed tests, isolated schema-per-test-per-process exactly like
-/// `capabilities/tasks/src/store.rs` and transit's store tests. Named `pg_tests`
-/// so the hermetic Bazel target can `--skip` them and the tagged
-/// `postgres-integration` target can select them.
+/// `capabilities/tasks/src/store.rs` and transit's store tests. `postgres_tests` is
+/// the one selector every database-backed module in the workspace is named by:
+/// CI's hermetic job runs `--skip postgres_tests::` and its Postgres job runs
+/// `postgres_tests::`, so the module name IS the suite membership. This module was
+/// `pg_tests` until 2026-08-25 (PRD Q44), when the second spelling stopped being
+/// free — under Bazel each target listed its own filter, under Cargo there is one.
 #[cfg(test)]
-pub(crate) mod pg_tests {
+pub(crate) mod postgres_tests {
     use super::*;
     use postgres::NoTls;
 

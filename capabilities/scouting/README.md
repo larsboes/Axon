@@ -529,7 +529,7 @@ the new key.
 **The one correctness-critical piece:** `upsert()`'s `ON CONFLICT DO UPDATE` deliberately
 does **not** touch `status`. An opportunity re-fetched from its source tomorrow — same id,
 fresh score/rationale/`fetched_at` — still gets its title/score/etc. refreshed, but a prior
-dismiss/save decision survives untouched. `store::tests::upsert_preserves_status_across_refetch`
+dismiss/save decision survives untouched. `store::postgres_tests::upsert_preserves_status_across_refetch`
 is the test that proves this; it's the test that matters most in this file.
 
 - `scout --dismiss <id>` / `scout --save <id>` — one-shot actions (not part of a discovery

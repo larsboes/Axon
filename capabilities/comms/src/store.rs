@@ -558,8 +558,10 @@ mod unit_tests {
     }
 }
 
+/// Postgres-backed; named for the selector CI splits on — see
+/// `capabilities/scouting/src/store.rs` for why the name is the contract.
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) mod postgres_tests {
     use super::*;
     // Only the test helpers still connect directly: `drop_test_schema` tears down a
     // schema outside the pool, deliberately, so it works even when the pool is

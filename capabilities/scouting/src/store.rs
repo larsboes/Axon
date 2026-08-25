@@ -628,8 +628,13 @@ fn chrono_now() -> String {
     format!("{secs}")
 }
 
+/// Every test here needs a live Postgres, which is what the module name declares:
+/// `postgres_tests` is the one selector CI splits on (CONTRIBUTING.md, "Validate the
+/// changed boundary"). Renamed from `tests` on 2026-08-25 (PRD Q44) — Bazel spelled the
+/// filter once per target and tolerated three conventions; Cargo has one filter, so a
+/// database test not named this way runs in the hermetic job and is red on every runner.
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use crate::opportunity::{Opportunity, OpportunityType, SourceKind};
     use postgres::NoTls;

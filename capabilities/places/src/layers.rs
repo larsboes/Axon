@@ -750,11 +750,12 @@ mod tests {
 
 /// Cross-schema layer queries against the live local database (read-only over
 /// `finance.*`, `trips.*`, `transit.*`; writes only in a scratch places
-/// schema). In the manual `postgres-integration` group like the store tests.
+/// schema). Named `postgres_tests` like every other database-backed module, which
+/// is what keeps it out of CI's hermetic run — see `store.rs`'s note on the selector.
 #[cfg(test)]
-mod pg_tests {
+mod postgres_tests {
     use super::*;
-    use crate::store::pg_tests::open_test_store;
+    use crate::store::postgres_tests::open_test_store;
 
     #[test]
     fn the_three_layers_assemble_and_reconcile_against_an_empty_registry() {
@@ -830,7 +831,7 @@ mod pg_tests {
         // resolves a city relation, so the guard must derive kind city and
         // write city-precision links — a city bubble never pretends to be a
         // venue (README D1).
-        let (url, _hits) = crate::geocode::pg_tests::stub(
+        let (url, _hits) = crate::geocode::postgres_tests::stub(
             r#"[{"osm_type":"relation","osm_id":7002,"lat":"50.0","lon":"7.0","name":"Musterstadt","display_name":"Musterstadt, Germany","addresstype":"city","address":{"city":"Musterstadt","country_code":"de"}}]"#,
         );
         let geocoder = Geocoder::with_url(&store, url);

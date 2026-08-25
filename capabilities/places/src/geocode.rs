@@ -556,9 +556,9 @@ mod tests {
 /// env-overridable-URL pattern from transit, with the URL passed explicitly so
 /// parallel tests never race on process env.
 #[cfg(test)]
-pub(crate) mod pg_tests {
+pub(crate) mod postgres_tests {
     use super::*;
-    use crate::store::pg_tests::open_test_store;
+    use crate::store::postgres_tests::open_test_store;
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;

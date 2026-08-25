@@ -266,17 +266,16 @@ mod tests {
 
     /// Everything above this line is arithmetic and drop semantics, and runs
     /// anywhere. Everything below needs a live Postgres, so it lives in its own
-    /// module for one reason: `//capabilities/comms:comms_test` is the hermetic
-    /// target and selects by module path (`--skip store::tests::`, `--skip
-    /// cloud_run::tests::postgres_tests::`), while `:comms_postgres_test` runs
-    /// exactly those paths. A database test sitting directly in `local_gate::tests`
-    /// is therefore invisible to that split and runs in the hermetic target, where
-    /// it passes on any machine with the overlay exported and a container up, and
-    /// fails on every runner that has neither. It did: `comms_test` was red in CI
-    /// and green locally for exactly that reason.
+    /// module for one reason: CI splits the workspace by module path, `--skip
+    /// postgres_tests::` for the hermetic job and `postgres_tests::` for the
+    /// Postgres job. A database test sitting directly in `local_gate::tests` is
+    /// invisible to that split and runs in the hermetic job, where it passes on any
+    /// machine with the overlay exported and a container up, and fails on every
+    /// runner that has neither. It did: `comms_test` was red in CI and green
+    /// locally for exactly that reason.
     ///
-    /// Named `postgres_tests` to match `cloud_run`'s module of the same name — the
-    /// selector is a string in two BUILD targets, so the convention IS the contract.
+    /// The selector is one string in one workflow, so the module name IS the suite
+    /// membership — see `capabilities/scouting/src/store.rs`.
     mod postgres_tests {
         use super::*;
 

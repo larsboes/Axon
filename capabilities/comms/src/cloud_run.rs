@@ -511,10 +511,10 @@ mod tests {
         ));
     }
 
-    /// The two tests that need a real Postgres. Their own module so the
-    /// bazel split can name them: `comms_test` is the hermetic target and
-    /// skips this path, `comms_postgres_test` selects it, exactly as both
-    /// already do for `store::tests::`.
+    /// The two tests that need a real Postgres. Their own module because the module
+    /// name is what CI splits on: the hermetic job runs `--skip postgres_tests::`
+    /// and the Postgres job runs `postgres_tests::` — see
+    /// `capabilities/scouting/src/store.rs`.
     #[cfg(test)]
     mod postgres_tests {
         use super::*;
@@ -538,7 +538,8 @@ mod tests {
         /// derivative was staged and no job exists for a non-`public` item.
         #[test]
         fn a_personal_item_gets_no_cloud_digest_job() {
-            let (store, _schema) = crate::store::tests::open_test_store("cloud_digest_refusal");
+            let (store, _schema) =
+                crate::store::postgres_tests::open_test_store("cloud_digest_refusal");
             let cfg = Config::with_inference(inference(&[
                 ("cloud_public", "public", 30),
                 ("cloud_pseudonymized", "pseudonymized_personal", 10),
@@ -576,7 +577,8 @@ mod tests {
         /// where enqueueing never works at all.
         #[test]
         fn a_public_item_does_get_a_cloud_digest_job() {
-            let (store, _schema) = crate::store::tests::open_test_store("cloud_digest_enqueue");
+            let (store, _schema) =
+                crate::store::postgres_tests::open_test_store("cloud_digest_enqueue");
             let cfg = Config::with_inference(inference(&[("cloud_public", "public", 30)]));
             let item = feed_item("public");
 

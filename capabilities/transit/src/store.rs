@@ -45,7 +45,7 @@ impl TransitStore {
     }
 
     /// `schema` is always either the literal `"transit"` (production, via
-    /// `open()`) or a test-generated name (see `tests`) -- never user input.
+    /// `open()`) or a test-generated name (see `postgres_tests`) -- never user input.
     /// See `scouting::store`'s identical note for why `format!`-built DDL is
     /// safe specifically in that narrow case.
     fn open_with_schema(
@@ -806,13 +806,15 @@ mod unit_tests {
     }
 }
 
+/// Postgres-backed; named for the selector CI splits on — see
+/// `capabilities/scouting/src/store.rs` for why the name is the contract.
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use crate::travel::{Leg, Station};
     use postgres::NoTls;
 
-    // Same schema-per-test isolation pattern as scouting::store::tests --
+    // Same schema-per-test isolation pattern as scouting::store::postgres_tests --
     // see that module's doc comment for the full rationale.
     /// The same connection the binaries use, so a rotated Postgres password
     /// can't leave the tests behind. Resolved once: the config tests mutate
@@ -1336,7 +1338,7 @@ mod tests {
             .unwrap();
 
         // Hand-mark saved out-of-band (there's no CLI for it yet -- direct SQL
-        // is the test seam; same pattern scouting::store::tests uses to test
+        // is the test seam; same pattern scouting::store::postgres_tests uses to test
         // the status-preservation path before a CLI exists).
         {
             let mut conn = Client::connect(&test_database_url(), NoTls).unwrap();

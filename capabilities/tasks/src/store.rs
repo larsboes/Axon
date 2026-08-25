@@ -382,8 +382,10 @@ fn validate_schema(schema: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Postgres-backed; named for the selector CI splits on — see
+/// `capabilities/scouting/src/store.rs` for why the name is the contract.
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
 
     fn test_database_url() -> String {
@@ -398,8 +400,8 @@ mod tests {
         .clone()
     }
 
-    /// Schema per test *and* per process, so a parallel `cargo test` and a
-    /// Bazel run do not truncate each other's rows mid-assertion.
+    /// Schema per test *and* per process, so two `cargo test` runs against the same
+    /// local Postgres do not truncate each other's rows mid-assertion.
     fn open_test_store(suffix: &str) -> (Store, String) {
         let schema = format!("tasks_test_{suffix}_{}", std::process::id());
         let store = Store::open_in_schema(&test_database_url(), &schema).unwrap_or_else(|e| {

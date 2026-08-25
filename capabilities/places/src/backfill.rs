@@ -322,8 +322,14 @@ fn link_address(
             stats.cache_hits += 1;
         }
         if let Some(place) = outcome.place {
-            if store.link_transaction(source_id, &place.id, "venue", 9000, "amex-backfill", today)?
-            {
+            if store.link_transaction(
+                source_id,
+                &place.id,
+                "venue",
+                9000,
+                "amex-backfill",
+                today,
+            )? {
                 stats.linked += 1;
             } else {
                 stats.skipped_linked += 1;
@@ -1544,10 +1550,10 @@ mod tests {
 /// (`finance.transaction_candidates`, `trips.plans`) are scratch copies inside
 /// the test's own schema, which is what the schema parameters exist for.
 #[cfg(test)]
-mod pg_tests {
+mod postgres_tests {
     use super::*;
-    use crate::geocode::pg_tests::{stub, stub_with};
-    use crate::store::pg_tests::open_test_store;
+    use crate::geocode::postgres_tests::{stub, stub_with};
+    use crate::store::postgres_tests::open_test_store;
     use std::sync::atomic::Ordering;
 
     const SOURCE_ACCOUNT: &str = "liabilities:card:synthetic";
