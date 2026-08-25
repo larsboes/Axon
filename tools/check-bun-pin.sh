@@ -1,35 +1,39 @@
 #!/bin/bash
-# check-bun-pin.sh — sh_test body for //:bun_pin_equality_test.
-# The bun version is written in three files. tools/bazel/bun/repositories.bzl is
-# the declared source of truth (both the .bzl and .github/workflows/ci.yml say so
-# in comments), and until 2026-08-02 nothing enforced it: bumping one left the
-# others silently divergent and CI stayed green.
+# check-bun-pin.sh — one bun pin, three homes, and they have to agree (CI: repo gates).
 #
-# The workflow lives outside every package glob, so it is named explicitly in the
-# sh_test's `data` rather than globbed -- that is the whole reason this gate did
-# not already exist.
+# upstreams.toml [bun] `pin` is the source of truth, because README.md#one-manifest-per-concern
+# already makes upstreams.toml the owner of every external project's pin. It held that role
+# jointly with tools/bazel/bun/repositories.bzl until 2026-08-25, when PRD Q44 retired Bazel
+# and took the hermetic bun toolchain with it; the .bzl was the declared truth then, so this
+# gate moved rather than disappeared.
 #
-# Every declaration is compared, not just the first one per file, so a second
-# BUN_VERSION appearing in ci.yml is caught too. A home that yields no value at
-# all fails loudly: a renamed key must not read as "nothing to compare".
+# The two workflows cannot read a TOML file, so each repeats the version as a BUN_VERSION
+# env value. That is the divergence this gate exists for (#40): bumping one home left the
+# others silently behind with CI green.
+#
+# Every declaration is compared, not just the first one per file, so a second BUN_VERSION
+# appearing in a workflow is caught too. A home that yields no value at all fails loudly:
+# a renamed key must not read as "nothing to compare".
 set -e
 
 ROOT="${AXON_BUN_PIN_ROOT:-.}"
 
-TRUTH_FILE="$ROOT/tools/bazel/bun/repositories.bzl"
+TRUTH_FILE="$ROOT/upstreams.toml"
 CI_FILE="$ROOT/.github/workflows/ci.yml"
-UPSTREAMS_FILE="$ROOT/upstreams.toml"
+PAGES_FILE="$ROOT/.github/workflows/pages.yml"
 
-for f in "$TRUTH_FILE" "$CI_FILE" "$UPSTREAMS_FILE"; do
+for f in "$TRUTH_FILE" "$CI_FILE" "$PAGES_FILE"; do
   [ -r "$f" ] || { echo "FAIL: $f is missing or unreadable" >&2; exit 1; }
 done
 
-# Source of truth: exactly one BUN_VERSION assignment, or the contract is gone.
-truth=$(grep -E '^BUN_VERSION[[:space:]]*=' "$TRUTH_FILE" | sed -E 's/.*"([^"]*)".*/\1/')
+# Source of truth: exactly one `pin` in the [bun] section, or the contract is gone.
+# Section-scoped, so another table's pin can never stand in for it.
+truth=$(awk '/^\[/ { in_s = ($0 == "[bun]"); next } in_s' "$TRUTH_FILE" \
+          | grep -E '^pin[[:space:]]*=' | sed -E 's/.*"([^"]*)".*/\1/')
 truth_count=$(printf '%s\n' "$truth" | grep -c . || true)
 if [ "$truth_count" -ne 1 ]; then
-  echo "FAIL: expected exactly one BUN_VERSION in tools/bazel/bun/repositories.bzl, found $truth_count" >&2
-  echo "      that file is the declared source of truth; nothing else can be compared without it" >&2
+  echo "FAIL: expected exactly one pin in upstreams.toml [bun], found $truth_count" >&2
+  echo "      that entry is the declared source of truth; nothing else can be compared without it" >&2
   exit 1
 fi
 
@@ -46,16 +50,18 @@ check_home() { # check_home <label> <extractor-output>
   fi
   printf '%s\n' "$values" | while IFS= read -r v; do
     [ -n "$v" ] || continue
-    [ "$v" = "$truth" ] || echo "FAIL [$label]: pins $v, but repositories.bzl says $truth"
+    [ "$v" = "$truth" ] || echo "FAIL [$label]: pins $v, but upstreams.toml [bun] says $truth"
   done
 }
 
+workflow_pins() { # workflow_pins <file>
+  grep -E '^[[:space:]]*BUN_VERSION[[:space:]]*:' "$1" \
+    | sed -E 's/.*:[[:space:]]*"?([^"[:space:]]*)"?.*/\1/'
+}
+
 divergences=$(
-  check_home ".github/workflows/ci.yml" \
-    "$(grep -E '^[[:space:]]*BUN_VERSION[[:space:]]*:' "$CI_FILE" | sed -E 's/.*:[[:space:]]*"?([^"[:space:]]*)"?.*/\1/')"
-  check_home "upstreams.toml [bun]" \
-    "$(awk '/^\[/ { in_s = ($0 == "[bun]"); next } in_s' "$UPSTREAMS_FILE" \
-        | grep -E '^pin[[:space:]]*=' | sed -E 's/.*"([^"]*)".*/\1/')"
+  check_home ".github/workflows/ci.yml" "$(workflow_pins "$CI_FILE")"
+  check_home ".github/workflows/pages.yml" "$(workflow_pins "$PAGES_FILE")"
 )
 
 if [ -n "$divergences" ]; then
@@ -64,4 +70,4 @@ if [ -n "$divergences" ]; then
   exit 1
 fi
 
-echo "bun pin check passed (repositories.bzl, ci.yml and upstreams.toml all pin $truth)."
+echo "bun pin check passed (upstreams.toml, ci.yml and pages.yml all pin $truth)."

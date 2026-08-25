@@ -2,11 +2,7 @@
 # Planted-tree regression tests for the lifecycle-script install policy.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  CHECK="$TEST_SRCDIR/$TEST_WORKSPACE/tools/check-bun-install-policy.sh"
-else
-  CHECK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/check-bun-install-policy.sh"
-fi
+CHECK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/check-bun-install-policy.sh"
 
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
@@ -14,10 +10,11 @@ fails=0
 
 plant() { # plant <name> <ci-install>
   local root="$SCRATCH/$1"
-  mkdir -p "$root/.github/workflows" "$root/tools/bazel/bun" "$root/dashboard"
+  mkdir -p "$root/.github/workflows" "$root/dashboard" "$root/capabilities/soundscape"
   printf '%s\n' "$2" > "$root/.github/workflows/ci.yml"
-  printf '["./bun", "install", "--frozen-lockfile", "--ignore-scripts"]\n' > "$root/tools/bazel/bun/deps.bzl"
+  printf 'bun install --frozen-lockfile --ignore-scripts\n' > "$root/.github/workflows/pages.yml"
   printf 'bun install --frozen-lockfile --ignore-scripts\n' > "$root/dashboard/README.md"
+  printf 'bun install --frozen-lockfile --ignore-scripts\n' > "$root/capabilities/soundscape/README.md"
   printf '%s' "$root"
 }
 
