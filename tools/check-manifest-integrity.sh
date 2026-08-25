@@ -1,30 +1,23 @@
 #!/bin/bash
-# check-manifest-integrity.sh — sh_test body for //:manifest_integrity_test.
-# Referential integrity over the capability manifests, so a dangling name can never ship:
+# check-manifest-integrity.sh — the manifest referential-integrity gate (CI: repo gates).
+# So a dangling name can never ship:
 #   every entry in any capabilities/*/service.toml `requires = [...]` maps to a real
 #   capabilities/<name>/ dir.
-# Pure file-based (dir-existence) check: operates only on files/dirs materialized from the
-# sh_test's `data`, so it runs identically from the repo root or inside `bazel test`'s
-# runfiles sandbox where git and the wider checkout are absent.
+# Pure file-based (dir-existence) check: it reads the tracked manifests and the tree they
+# name, and nothing else — no git, no network, no live service.
 #
 # What this gate deliberately no longer checks, and where those checks went:
 # until 2026-07-26 it also validated the ENABLED capability set — that each enabled name
 # had a directory, and that the set was dependency-closed. Both read `capabilities = [...]`
 # from the tracked axon.toml. That field now lives in <overlay>/config/machine.toml, which
-# is per-machine and outside the hermetic sandbox by construction, so those two checks moved
+# is per-machine and absent from a fresh clone by construction, so those two checks moved
 # to tools/doctor, which runs on a real machine and can see its overlay. The split is the
-# honest one: a hermetic test checks what is true of the repo, doctor checks what is true of
+# honest one: this gate checks what is true of the repo, doctor checks what is true of
 # the machine. See schemas/machine.toml.example.
 set -e
 
-# Runfiles-relocation: identical to check-service-tomls.sh / check-architecture-fresh.sh —
-# resolve the lib dir from TEST_SRCDIR/TEST_WORKSPACE under `bazel test`, else self-locate
-# for a direct repo-root run. paths.sh sources toml.sh and exports AXON_ROOT.
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  _lib="$TEST_SRCDIR/$TEST_WORKSPACE/tools/lib"
-else
-  _lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
-fi
+# paths.sh sources toml.sh and exports AXON_ROOT.
+_lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
 source "$_lib/paths.sh"
 
 fail=0

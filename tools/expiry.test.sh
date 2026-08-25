@@ -11,11 +11,7 @@
 # failing on its own expiry — the bug under test wearing a different hat.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  _lib="$TEST_SRCDIR/$TEST_WORKSPACE/tools/lib"
-else
-  _lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib"
-fi
+_lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib"
 # shellcheck source=lib/expiry.sh
 . "$_lib/expiry.sh"
 

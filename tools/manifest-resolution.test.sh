@@ -6,27 +6,18 @@
 # The cases exist because getting any of them wrong is silent: a missed overlay root
 # makes a private capability unrunnable, and a silently-resolved duplicate starts the
 # wrong service under the right name.
-#
-# A Bazel sh_test, unlike delta.test.sh: this needs a writable temp dir but no git
-# repository, and TEST_TMPDIR covers that inside the sandbox.
 set -uo pipefail
 
-SCRATCH="$(mktemp -d "${TEST_TMPDIR:-/tmp}/manifest-resolution.XXXXXX")"
+SCRATCH="$(mktemp -d "/tmp/manifest-resolution.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 
 ROOT="$SCRATCH/axon"
 OVERLAY="$SCRATCH/overlay"
 
 # The real lib under test, copied so paths.sh self-locates into the scratch root.
-# Two layouts, because this runs both ways: invoked directly the script sits in tools/,
-# so the libs are at ./lib; under Bazel it sits in the runfiles root, so they keep their
-# repo-relative tools/lib path.
 _dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-LIB_DIR=""
-for _c in "$_dir/lib" "$_dir/tools/lib"; do
-  if [ -f "$_c/paths.sh" ]; then LIB_DIR="$_c"; break; fi
-done
-if [ -z "$LIB_DIR" ]; then
+LIB_DIR="$_dir/lib"
+if [ ! -f "$LIB_DIR/paths.sh" ]; then
   echo "manifest resolution: cannot find paths.sh next to $_dir" >&2
   exit 1
 fi

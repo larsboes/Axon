@@ -2,11 +2,7 @@
 # Synthetic backup ordering/retention matrix. No private overlay, live service, or SSH host.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  ROOT="$TEST_SRCDIR/$TEST_WORKSPACE"
-else
-  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-fi
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
 SCRATCH="$(mktemp -d /tmp/axon-backup-test.XXXXXX)"
 trap 'rm -rf "$SCRATCH"' EXIT

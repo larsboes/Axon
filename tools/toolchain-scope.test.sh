@@ -23,7 +23,7 @@ for _c in "$_dir" "$_dir/tools"; do
 done
 [ -n "$SRC_TOOLS" ] || { echo "toolchain-scope: cannot find toolchain-check next to $_dir" >&2; exit 1; }
 
-SCRATCH="$(mktemp -d "${TEST_TMPDIR:-/tmp}/toolchain-scope.XXXXXX")"
+SCRATCH="$(mktemp -d "/tmp/toolchain-scope.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 ROOT="$SCRATCH/axon"; OVERLAY="$SCRATCH/overlay"; STUB_BIN="$SCRATCH/bin"
 mkdir -p "$ROOT/tools/lib" "$OVERLAY/config" "$STUB_BIN" "$ROOT/capabilities"

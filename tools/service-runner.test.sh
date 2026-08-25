@@ -20,13 +20,12 @@ fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 
 # bun is what holds a real port, so the stop/start half of this file needs it and the
 # apple-container half does not. Skipped rather than fatal, matching protection-zones.test.sh:
-# under `bazel test` the sandbox has no bun on PATH, and refusing to run at all would mean the
-# runtime-gate regression below never executes in CI — which is the whole point of registering
-# this suite (#127). The skip is printed, never silent.
+# on a host with no bun, refusing to run at all would mean the runtime-gate regression below
+# never executes (#127). The skip is printed, never silent.
 HAVE_BUN=1
 command -v bun >/dev/null 2>&1 || HAVE_BUN=0
 
-SCRATCH="$(mktemp -d "${TEST_TMPDIR:-/tmp}/service-runner.XXXXXX")"
+SCRATCH="$(mktemp -d "/tmp/service-runner.XXXXXX")"
 ROOT="$SCRATCH/axon"
 OVERLAY="$SCRATCH/overlay"
 LISTENER_PID=""
@@ -39,8 +38,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Locate the real script and libs. Two layouts: invoked directly this file sits in tools/, so
-# they are siblings; under Bazel it sits in the runfiles root and they keep tools/lib.
+# Locate the real script and libs: this file sits in tools/, so they are siblings.
 _dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SRC_TOOLS=""
 for _c in "$_dir" "$_dir/tools"; do

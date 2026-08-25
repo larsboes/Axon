@@ -7,11 +7,9 @@
 # Each case is here because it fails silently otherwise: a missed hostname match reads
 # the legacy file and looks fine, and an explicit name pointing at nothing would fall
 # back to a different machine rather than stopping.
-#
-# A Bazel sh_test: writable temp dir, no git, no network.
 set -uo pipefail
 
-SCRATCH="$(mktemp -d "${TEST_TMPDIR:-/tmp}/machine-resolution.XXXXXX")"
+SCRATCH="$(mktemp -d "/tmp/machine-resolution.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 
 ROOT="$SCRATCH/axon"

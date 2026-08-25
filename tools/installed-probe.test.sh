@@ -9,11 +9,7 @@
 # one level up.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  _root="$TEST_SRCDIR/$TEST_WORKSPACE"
-else
-  _root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-fi
+_root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 # shellcheck source=lib/version.sh
 . "$_root/tools/lib/version.sh"
 

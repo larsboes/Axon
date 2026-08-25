@@ -6,12 +6,10 @@
 # next one. On this workstation the hardcoded path and the declared mount agreed only because
 # somebody made a symlink in July — a coincidence, holding up a contract.
 #
-# NOT a Bazel sh_test, deliberately. These functions read machine.toml's [[state_mount]], an
-# array-of-tables past tools/lib/toml.sh's single-line contract, so they go through Bun.TOML.
-# Bazel's sandbox PATH is `.:/bin:/usr/bin:/usr/local/bin` with no bun in it (measured, not
-# assumed), so a Bazel-hosted version of this file would skip every case and report green —
-# the one failure mode a test suite cannot warn you about. tools/service-runner.test.sh is
-# the existing precedent: bun-dependent, stays out of Bazel, fails hard rather than skipping.
+# Needs bun on PATH. These functions read machine.toml's [[state_mount]], an array-of-tables
+# past tools/lib/toml.sh's single-line contract, so they go through Bun.TOML. Without bun this
+# file fails hard rather than skipping every case and reporting green — the one failure mode a
+# test suite cannot warn you about. tools/service-runner.test.sh holds the same line.
 #
 # Run: tools/state-mount-resolution.test.sh
 set -uo pipefail
@@ -21,7 +19,7 @@ command -v bun >/dev/null 2>&1 || {
   exit 1
 }
 
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/state-mount.XXXXXX")"
+SCRATCH="$(mktemp -d "/tmp/state-mount.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 
 _dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"

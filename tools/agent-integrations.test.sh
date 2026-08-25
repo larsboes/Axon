@@ -1,13 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ] && [ -n "${TEST_WORKSPACE:-}" ]; then
-  AXON_ROOT="$TEST_SRCDIR/$TEST_WORKSPACE"
-  TOOLS_DIR="$AXON_ROOT/tools"
-else
-  TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  AXON_ROOT="$(cd "$TOOLS_DIR/.." && pwd)"
-fi
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AXON_ROOT="$(cd "$TOOLS_DIR/.." && pwd)"
 SCRIPT="$TOOLS_DIR/agent-integrations.sh"
 
 tmp="$(mktemp -d)"

@@ -38,7 +38,7 @@ done
 source "$SRC_TOOLS/lib/test-support.sh"
 isolate_axon_env
 
-SCRATCH="$(mktemp -d "${TEST_TMPDIR:-/tmp}/persistence.XXXXXX")"
+SCRATCH="$(mktemp -d "/tmp/persistence.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 ROOT="$SCRATCH/axon"
 OVERLAY="$SCRATCH/overlay"

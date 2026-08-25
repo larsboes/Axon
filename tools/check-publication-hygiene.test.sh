@@ -3,11 +3,7 @@
 # Git's index, so each case uses a throwaway repository and never needs private data.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  CHECK="$TEST_SRCDIR/$TEST_WORKSPACE/tools/check-publication-hygiene.sh"
-else
-  CHECK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/check-publication-hygiene.sh"
-fi
+CHECK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/check-publication-hygiene.sh"
 
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT

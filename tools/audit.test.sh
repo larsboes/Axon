@@ -3,11 +3,7 @@
 # Trivy owns expiry parsing; this test owns Axon's routing contract. Bash 3.2-safe.
 set -u
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  ROOT="$TEST_SRCDIR/${TEST_WORKSPACE:-_main}"
-else
-  ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-fi
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 MOCK_BIN="$SCRATCH/bin"

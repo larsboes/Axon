@@ -24,8 +24,8 @@
 # from the manifest port, and it should, because that is not a reference to anything.
 # Absent `provided_by`, nothing here has an opinion.
 #
-# bash 3.2-safe, single-line TOML only (tools/lib/toml.sh), because the Bazel sh_test
-# sandbox that gates this has no bun.
+# bash 3.2-safe, single-line TOML only (tools/lib/toml.sh), like every other manifest
+# reader on the shell side.
 #
 # Requires: tools/lib/paths.sh sourced first (AXON_MACHINE_TOML, AXON_OVERLAY_ROOT), which
 # already sources toml.sh.

@@ -1,11 +1,9 @@
 #!/bin/bash
-# check-service-tomls.sh — sh_test body for //:service_toml_schema_test.
+# check-service-tomls.sh — the service.toml schema gate (CI: repo gates).
 # Asserts every service.toml declares the load-bearing fields its kind needs, and that a
 # container's tag is a real pin: present, non-empty, and never "latest" (an unpinned tag
 # makes a deploy non-reproducible; see README.md#pins-and-cooldown). Pure file-based check:
-# operates only on
-# files declared in the sh_test's `data`, so it runs identically from the repo root or
-# inside `bazel test`'s runfiles sandbox where git and the wider checkout are absent.
+# it reads the tracked manifests and nothing else — no git, no network, no live service.
 #
 # Two kinds, two field sets (schemas/service.toml.example):
 #   container (the default when `kind` is absent) -> name, image, tag; tag pinned
@@ -19,16 +17,8 @@
 # by the same rules — the runner reads them through the same interpreter.
 set -e
 
-# Runfiles-relocation: same rationale as check-architecture-fresh.sh — under `bazel test`
-# the entrypoint is relocated and loses its tools/ context, so resolve the lib dir from
-# TEST_SRCDIR/TEST_WORKSPACE (Bazel's runfiles-root env vars). For a direct repo-root
-# invocation those are unset, so self-locate from this file's own dirname instead.
 # paths.sh sources toml.sh and exports AXON_ROOT — both are all we need here.
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  _lib="$TEST_SRCDIR/$TEST_WORKSPACE/tools/lib"
-else
-  _lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
-fi
+_lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
 # The one `schedule` parser, shared with tools/service-runner.sh — a gate that accepted a spec the
 # runner then refused would be worse than no gate at all. Sourced BEFORE paths.sh, which unsets
 # `_lib` on its way out (tools/lib/paths.sh:166) and would leave this reaching for "/schedule.sh".

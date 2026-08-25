@@ -4,15 +4,7 @@
 # called the older release "newer".
 set -uo pipefail
 
-# Under Bazel the script and its data land in separate spots of the runfiles tree, so the
-# lib is addressed the way the other sh_tests here address theirs. Run directly it falls
-# back to a path relative to this file, because a test worth having is one you can also
-# run without the build system.
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  _lib="$TEST_SRCDIR/$TEST_WORKSPACE/tools/lib"
-else
-  _lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib"
-fi
+_lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib"
 # shellcheck source=lib/version.sh
 . "$_lib/version.sh"
 

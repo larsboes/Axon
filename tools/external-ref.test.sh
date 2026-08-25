@@ -1,17 +1,13 @@
 #!/bin/bash
-# sh_test body for //:external_ref_test — tools/lib/external-ref.sh, the one resolver for a
-# capability this machine consumes but does not run (retired-tracker#169).
+# Test for tools/lib/external-ref.sh, the one resolver for a capability this machine
+# consumes but does not run (retired-tracker#169).
 #
 # Everything here runs against a scratch overlay in mktemp with synthetic `.test` hostnames.
 # The real overlay is never read: this gate must give the same answer on a machine that runs
 # every capability locally as on the one that provoked the feature.
 set -euo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ] && [ -n "${TEST_WORKSPACE:-}" ]; then
-  ROOT="$TEST_SRCDIR/$TEST_WORKSPACE"
-else
-  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-fi
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT

@@ -7,8 +7,8 @@
 # The overlay location is read from axon.local.toml (gitignored, one per machine,
 # written by tools/install.sh) and falls back to axon.toml's shipped default. That
 # order is what lets a second machine exist without editing a tracked file, and the
-# fallback is what keeps the Bazel gates working — the sandbox materializes the
-# tracked axon.toml and never sees a gitignored sibling.
+# fallback is what keeps a fresh clone working — CI has no axon.local.toml and
+# resolves the shipped default instead.
 
 # Self-locate this file's dir. Under bash, BASH_SOURCE[0] is the sourced path;
 # under zsh (e.g. sourced from ~/.zshrc) BASH_SOURCE is unset, so fall back to

@@ -10,9 +10,9 @@
 # Bun.TOML directly -- doctor.ts, self.ts, packs-codex.ts, obsidian-deploy.ts and
 # libs/overlay each do exactly that. A shared CLI wrapper for it existed until
 # 2026-08-02 and never had a caller: the callers are all TS already, and the ones
-# that are not are Bazel sh_test gates, which stay on this file because the
-# runfiles sandbox has no bun toolchain -- which is exactly why the gates'
-# manifests stay single-line.
+# that are not are the shell gates, which stay on this file so a manifest check
+# needs nothing but bash -- which is exactly why the gates' manifests stay
+# single-line.
 
 toml_get() {  # toml_get <key> <file> — empty output, exit 0, if key absent
   grep -E "^$1[[:space:]]*=" "$2" | sed -E "s/^$1[[:space:]]*=[[:space:]]*\"([^\"]*)\".*/\1/" || true

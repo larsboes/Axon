@@ -2,11 +2,7 @@
 # Synthetic restore matrix: no private paths, values, archives, or live runtimes.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  ROOT="$TEST_SRCDIR/$TEST_WORKSPACE"
-else
-  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-fi
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 RESTORE="$ROOT/tools/restore.sh"
 SCRATCH="$(mktemp -d /tmp/axon-restore-test.XXXXXX)"
 trap 'rm -rf "$SCRATCH"' EXIT

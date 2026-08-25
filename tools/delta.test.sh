@@ -4,9 +4,7 @@
 # print_manifest_delta names each kind of change (capability add/remove, upstream add + verdict
 # change, toolchain add).
 #
-# Direct-run, NOT a Bazel sh_test: it needs a real git repo and a writable temp dir, neither of
-# which the hermetic sandbox has (same reason doctor is run via bun, not Bazel — see
-# README.md#argue-bazel-per-case). Run it with: tools/delta.test.sh
+# Run it with: tools/delta.test.sh
 set -uo pipefail
 
 _dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"

@@ -7,7 +7,7 @@
 # never skip it in CI. The case that prompted it: tools/backup.test.sh forces its short-write
 # path with /dev/full, which Linux has and macOS does not. On macOS the test printed a note and
 # passed, and the note claimed "it runs in CI" — an assumption nobody could see failing, because
-# Bazel runs passing tests with --test_output=errors and prints nothing at all. A
+# nobody reads the log of a green job. A
 # platform-dependent assertion is not unusual, so the guard belongs to the convention rather
 # than to that one test.
 #

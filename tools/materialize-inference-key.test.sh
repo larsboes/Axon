@@ -1,11 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ] && [ -n "${TEST_WORKSPACE:-}" ]; then
-  ROOT="$TEST_SRCDIR/$TEST_WORKSPACE"
-else
-  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-fi
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 OVERLAY="$TEST_ROOT/overlay"

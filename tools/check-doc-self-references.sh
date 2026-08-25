@@ -1,13 +1,13 @@
 #!/bin/bash
-# check-doc-self-references.sh — sh_test body for //:doc_self_reference_test.
+# check-doc-self-references.sh — the self-reference gate (CI: repo gates).
 # A doc must never cite its own repo-relative path as if it were a pointer to
 # somewhere else ("see `capabilities/x/README.md`" written inside that very
 # file). The class is real: the 2026-07-28 decisions/ dissolution's link
 # rewriter left four such self-references (axon-status, punctuality — two
 # each), all reading like cross-references and all going nowhere.
 #
-# Pure file-based check over the files declared in the sh_test's `data`, same
-# sandbox contract as the sibling gates. Only paths with at least two segments
+# Pure file-based check over the tracked docs, same contract as the sibling
+# gates: no git, no network. Only paths with at least two segments
 # are checked: a root-level file's repo-relative path is just its basename,
 # which legitimately appears in prose ("ARCHITECTURE.md is generated").
 #

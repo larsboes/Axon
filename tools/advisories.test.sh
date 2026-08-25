@@ -11,9 +11,6 @@
 set -uo pipefail
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  _here="$TEST_SRCDIR/$TEST_WORKSPACE/tools"
-fi
 # shellcheck source=lib/advisories.sh
 . "$_here/lib/advisories.sh"
 

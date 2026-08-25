@@ -5,11 +5,7 @@
 # assumed. Both bugs below were live on 2026-08-02 and reproduced here first.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  CHECK="$TEST_SRCDIR/$TEST_WORKSPACE/tools/check-doc-self-references.sh"
-else
-  CHECK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/check-doc-self-references.sh"
-fi
+CHECK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/check-doc-self-references.sh"
 
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT

@@ -8,11 +8,7 @@
 # of git's refspec handling rather than of this file.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  _root="$TEST_SRCDIR/$TEST_WORKSPACE"
-else
-  _root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-fi
+_root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 BOOTSTRAP="$_root/bootstrap.sh"
 
 WORK="$(mktemp -d)"
@@ -141,8 +137,8 @@ esac
 say_profile() { # say_profile <checkout>
   ( cd "$1" && printf '' | bash "$_root/tools/install.sh" 2>&1 | head -8 )
 }
-# Three legitimate answers, not two: under `bazel test` the runfiles tree is not a git
-# checkout at all, and saying so is the correct third statement rather than a gap. The
+# Three legitimate answers, not two: a tree that is not a git checkout at all — an export,
+# a copy — has to say so, which is a correct third statement rather than a gap. The
 # criterion is that it states which profile it serves — asserting on one specific answer
 # would only be asserting on where the test happens to be running.
 PROFILE_LINE="$(say_profile "$_root" | grep '^Profile:' || true)"

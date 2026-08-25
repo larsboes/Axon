@@ -10,11 +10,7 @@
 # without a network call. gh_latest() prefers `gh` when it is present, so curl is never reached.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  CHECKER="$TEST_SRCDIR/$TEST_WORKSPACE/tools/upstream-checker"
-else
-  CHECKER="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/upstream-checker"
-fi
+CHECKER="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/upstream-checker"
 
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT

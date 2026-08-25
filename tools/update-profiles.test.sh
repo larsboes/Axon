@@ -10,11 +10,7 @@
 # depending on what they had uncommitted.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  _root="$TEST_SRCDIR/$TEST_WORKSPACE"
-else
-  _root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-fi
+_root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
 WORK="$(mktemp -d)"
 trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT

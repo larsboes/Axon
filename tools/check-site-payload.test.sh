@@ -7,11 +7,7 @@
 # and a gate that silently stops matching is worse than no gate, because the build stays green.
 set -uo pipefail
 
-if [ -n "${TEST_SRCDIR:-}" ]; then
-  CHECK="$TEST_SRCDIR/$TEST_WORKSPACE/tools/check-site-payload.sh"
-else
-  CHECK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/check-site-payload.sh"
-fi
+CHECK="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/check-site-payload.sh"
 
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
@@ -114,8 +110,8 @@ MACHINE="demohost-$(basename "$SCRATCH")"
 
 # The directory name is derived too. It used to be literally "overlay", which the check emits
 # as a derived term; the passing case below happened to contain that word, and only the
-# already-public filter finding "overlay" somewhere in the repo kept it green. Under Bazel
-# there is no repository to search, the filter correctly declined, and the case failed.
+# already-public filter finding "overlay" somewhere in the repo kept it green. Run against a
+# tree with no repository to search, the filter correctly declined and the case failed.
 OVERLAY="$SCRATCH/$MACHINE-root"
 mkdir -p "$OVERLAY/config/machines"
 touch "$OVERLAY/config/machines/$MACHINE.toml"
