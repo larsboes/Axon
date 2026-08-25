@@ -7,8 +7,7 @@
 // reported green, because no job knew that package existed.
 //
 // A hand-list of capability names would close today's instance and reopen the class the
-// next time a capability grows a UI, which is the same false-green shape
-// tools/check-bazel-package-labels.sh exists to prevent. So discovery reads what is
+// next time a capability grows a UI. So discovery reads what is
 // already committed: a package.json is how a UI declares itself, `scripts.check` is how it
 // declares it can be type-checked, and the lockfile is how it declares the check is
 // reproducible. Nothing here names a capability.
@@ -81,9 +80,9 @@ function packageDirs(root: string): string[] {
     }
     if (entries.some((e) => e.isFile() && e.name === "package.json")) found.push(dir);
     for (const entry of entries) {
-      // isDirectory() is false for a symlink, which is what keeps the bazel-* convenience
-      // symlinks at the repository root out of the walk: following them would re-enter the
-      // output tree and rediscover every package through a second path.
+      // isDirectory() is false for a symlink, and the walk deliberately does not follow
+      // one: a symlink back into the tree would rediscover every package through a second
+      // path. Bazel's bazel-* root symlinks were the case that proved it.
       if (entry.isDirectory() && !SKIP_DIRS.has(entry.name)) walk(join(dir, entry.name));
     }
   };
@@ -97,12 +96,12 @@ function packageDirs(root: string): string[] {
  * Not "is it untracked" (`ls-files --others`), which reports nothing for a file that is
  * ignored — and an ignored lockfile is exactly the case that matters: it exists on the
  * machine that wrote it and is absent from every clone. That is the local-green/CI-red
- * shape tools/check-bazel-package-labels.sh names for generator inputs, and a lockfile CI
- * cannot see fails the install instead of the check, which reads as infrastructure noise
+ * shape tools/check-generator-inputs-tracked.sh names for generator inputs, and a lockfile
+ * CI cannot see fails the install instead of the check, which reads as infrastructure noise
  * rather than the missing commit it is.
  *
- * Returns true when Git is unavailable: a Bazel sandbox has no .git, and this check is
- * about the commit.
+ * Returns true when Git is unavailable: this check is about the commit, and a tree that is
+ * not a checkout has none to report on.
  */
 function isTracked(root: string, relPath: string): boolean {
   const git = spawnSync("git", ["-C", root, "ls-files", "--", relPath], { encoding: "utf8" });

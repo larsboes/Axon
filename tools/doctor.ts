@@ -1596,11 +1596,8 @@ const CHECKS: Check[] = [
     },
   },
 
-  // self.json freshness — the committed self-model vs the working tree. Lives in doctor
-  // rather than Bazel for the same reason as the label check below: regenerating it needs
-  // `git ls-files` and the real checkout, neither of which a hermetic sandbox has. Stale
-  // is a warn, not a fail: an out-of-date self-model is a regenerate away and never
-  // breaks a build, unlike a label that makes a unit invisible.
+  // self.json freshness — the committed self-model vs the working tree. Stale is a warn,
+  // not a fail: an out-of-date self-model is a regenerate away and never breaks a build.
   {
     name: "Self-model freshness (self.json)",
     run(ctx) {
@@ -1618,16 +1615,13 @@ const CHECKS: Check[] = [
     },
   },
 
-  // Bazel-package labels — delegate to tools/check-bazel-package-labels.sh. Lives here
-  // rather than in Bazel because the check must enumerate the subpackage BUILD.bazel
-  // files that glob() cannot reach, which is the same limitation that makes the
-  // hand-maintained label list necessary in the first place; a Bazel target would need
-  // that list to find its own inputs. Same delegation shape as upstream-checker below:
-  // doctor reports, the script owns the rule.
+  // Architecture-generator inputs — delegate to tools/check-generator-inputs-tracked.sh.
+  // Needs `git ls-files` and the real checkout, which is what doctor already has. Same
+  // delegation shape as upstream-checker below: doctor reports, the script owns the rule.
   {
     name: "Architecture-generator input visibility (Axon#30)",
     run(ctx) {
-      const checkPath = join(ctx.root, "tools", "check-bazel-package-labels.sh");
+      const checkPath = join(ctx.root, "tools", "check-generator-inputs-tracked.sh");
       if (!existsSync(checkPath)) {
         ctx.warn(`missing ${checkPath}`);
         return;
