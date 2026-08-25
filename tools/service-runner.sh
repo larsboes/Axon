@@ -337,11 +337,12 @@ PID_FILE="/tmp/axon-$CAP.pid"
 PROC_LOG="/tmp/axon-$CAP.log"
 PROC_ERR="/tmp/axon-$CAP.err"
 
-COMMAND=(); BUILD_CMD=(); WORKDIR=""; PORT=""; HEALTH_PATH=""; BUILD_OUTPUT=""
+COMMAND=(); BUILD_CMD=(); PANEL_BUILD_CMD=(); WORKDIR=""; PORT=""; HEALTH_PATH=""; BUILD_OUTPUT=""
 
 process_init() {
   while IFS= read -r line; do [ -n "$line" ] && COMMAND+=("$line"); done < <(toml_array command "$MANIFEST")
   while IFS= read -r line; do [ -n "$line" ] && BUILD_CMD+=("$line"); done < <(toml_array build "$MANIFEST")
+  while IFS= read -r line; do [ -n "$line" ] && PANEL_BUILD_CMD+=("$line"); done < <(toml_array panel_build "$MANIFEST")
   BUILD_OUTPUT="$(toml_get build_output "$MANIFEST")"
   WORKDIR="$(toml_get workdir "$MANIFEST")"
   PORT="$(toml_get port "$MANIFEST")"
@@ -351,36 +352,6 @@ process_init() {
     echo "service-runner.sh: '$CAP' is kind=process but declares no command = [...]" >&2
     exit 1
   }
-
-  # Bazel-less fallback for a Rust capability. Bazel is the build spine
-  # (README.md#bazel-as-the-build-spine), and service.toml declares the bazel build unconditionally because that is
-  # the primary, tracked-and-shared path. But a machine can be a pure dev box with cargo
-  # and no bazel (WSL, a fresh laptop), and the same crate builds identically from its
-  # own Cargo.toml plus the root workspace lockfile — same source, same pins,
-  # a different build frontend, not
-  # a second build system with logic of its own. So this is the argued-per-case exception
-  # README.md#argue-bazel-per-case allows, not a hole in README.md#bazel-as-the-build-spine: it fires ONLY when the declared build tool is
-  # bazel AND bazel is absent AND a Cargo.toml sits beside the capability. When bazel is
-  # present, nothing here changes. Runs the crate's default binary (its package name);
-  # a capability that renames its [[bin]] away from the package name would teach it here.
-  # Anchored on the manifest's own directory, so this works identically for a capability
-  # the overlay owns. --manifest-path is absolute because the build runs from workdir,
-  # which a manifest may point anywhere it likes.
-  local _cap_dir="${MANIFEST%/service.toml}"
-  if [ "${BUILD_CMD[0]:-}" = "bazel" ] && ! command -v bazel >/dev/null 2>&1 \
-     && [ -f "$_cap_dir/Cargo.toml" ]; then
-    local _pkg _target_dir
-    _pkg="$(toml_get_in package name "$_cap_dir/Cargo.toml")"
-    _pkg="${_pkg:-$CAP}"
-    _target_dir="$(
-      cargo metadata --locked --no-deps --format-version 1 \
-        --manifest-path "$_cap_dir/Cargo.toml" |
-        jq -r '.target_directory'
-    )"
-    echo "service-runner.sh: bazel not on PATH — building '$CAP' with cargo (README.md#argue-bazel-per-case fallback)" >&2
-    BUILD_CMD=(cargo build --locked --release --manifest-path "$_cap_dir/Cargo.toml")
-    COMMAND=("$_target_dir/release/$_pkg")
-  fi
 
   # ${AXON_ROOT} and ${AXON_OVERLAY_ROOT} in any argument expand first. They exist so an
   # overlay capability can name a shared Axon tool, and hand that tool a path back into
@@ -394,8 +365,8 @@ process_init() {
   done
 
   # command[0] is resolved against the capability's own root, not against workdir: a
-  # manifest naming bazel-bin/... means that path in the checkout it came from, wherever
-  # the process then runs. A bare name (bun, uv) is left alone -- that one is PATH's job.
+  # manifest naming target/release/... means that path in the checkout it came from,
+  # wherever the process then runs. A bare name (bun, uv) is left alone -- PATH's job.
   case "${COMMAND[0]}" in
     /*) ;;
     */*) COMMAND[0]="$CAP_ROOT/${COMMAND[0]}" ;;
@@ -469,7 +440,7 @@ maybe_build() {  # [force] — build when the artifact is missing, or always on 
     #     whose command[0] is a bare interpreter (bun, uv): the old rule below returned
     #     early on those, so a manifest could declare a build that silently never ran.
     #     A panel serving a `dist/` that does not exist yet is exactly that case.
-    #   command[0] — the compiled binary, for the bazel capabilities. Unchanged.
+    #   command[0] — the compiled binary, for every Rust capability. Unchanged.
     if [ -n "$BUILD_OUTPUT" ]; then
       case "$BUILD_OUTPUT" in
         /*) if [ -e "$BUILD_OUTPUT" ]; then return 0; fi ;;
@@ -482,10 +453,20 @@ maybe_build() {  # [force] — build when the artifact is missing, or always on 
       esac
     fi
   fi
+  # The panel first, because the server binary serves that bundle: a start that compiles
+  # the binary and then fails on the UI leaves a capability answering /health with a 404
+  # panel. Fixed directory, not a declared one — README.md#placement-guide puts a
+  # capability's own UI at <capability>/ui/, so the manifest has no per-capability fact to
+  # state. node_modules is assumed installed, the same assumption dashboard/service.toml's
+  # `bun run dev` already makes.
+  if [ ${#PANEL_BUILD_CMD[@]} -gt 0 ]; then
+    echo "building $CAP panel: ${PANEL_BUILD_CMD[*]}"
+    ( cd "${MANIFEST%/service.toml}/ui" && "${PANEL_BUILD_CMD[@]}" )
+  fi
   echo "building $CAP: ${BUILD_CMD[*]}"
   # In the capability's own workdir, not the repo root: `bun run build` has to run where
-  # the package.json is. A capability without a workdir (every bazel one) still builds
-  # at the root, which is where those commands already expected to be.
+  # the package.json is. A capability without a workdir (every Rust one) still builds at
+  # the root, which is where cargo resolves the workspace and its shared target/.
   ( cd "$CAP_ROOT/${WORKDIR:-.}" && "${BUILD_CMD[@]}" )
 }
 
@@ -961,7 +942,7 @@ persistence_companion_path() {
 # something `persistence-status` reports as stale rather than something nobody notices.
 #
 # Same defect, same fix, for a process capability: what it needs on PATH is its own interpreter
-# (bun, uv) and its builder (bazel), resolved here rather than hardcoded.
+# (bun, uv) and its builder (cargo, bun), resolved here rather than hardcoded.
 persistence_path_dirs() {
   local runtime_dir cmd_bin build_bin
   if [ "$KIND" = container ]; then

@@ -1,8 +1,8 @@
 # punctuality — host process, not a container. Shape: schemas/service.toml.example.
 kind        = "process"
 name        = "punctuality"
-command     = ["bazel-bin/capabilities/punctuality/punctuality-server"]
-build       = ["bazel", "build", "//capabilities/punctuality:punctuality-server"]
+command     = ["target/release/punctuality-server"]
+build       = ["cargo", "build", "--locked", "--release", "--bin", "punctuality-server"]
 port        = "8085"
 health_path = "/health"
 

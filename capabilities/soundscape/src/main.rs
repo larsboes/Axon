@@ -677,12 +677,12 @@ fn spawn_persister(app: &App, path: std::path::PathBuf) {
     });
 }
 
-/// Where the built UI lives. Defaults to the Bazel output rather than a checked-in
-/// directory, because that bundle is the reproducible one; the runner overrides it
-/// when the capability is installed somewhere else.
+/// Where the built UI lives. Defaults to what `bun run build` writes (service.toml's
+/// `panel_build`), never a checked-in directory; the runner overrides it when the
+/// capability is installed somewhere else.
 fn ui_dir() -> String {
     std::env::var("AXON_SOUNDSCAPE_UI")
-        .unwrap_or_else(|_| "bazel-bin/capabilities/soundscape/ui/bundle".to_string())
+        .unwrap_or_else(|_| "capabilities/soundscape/ui/dist".to_string())
 }
 
 #[tokio::main]

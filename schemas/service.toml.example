@@ -35,7 +35,7 @@ tag      = "1.2.3"                        # ALWAYS pin — never "latest", never
 # Optional — runtime dependencies on OTHER capabilities, by directory name.
 # The dependency is on the capability's CONTRACT (HTTP surface + schema), never its
 # code (README.md#schemas-and-dependency-direction). tools/capability.sh resolves this transitively on enable;
-# bazel's manifest_integrity_test proves every target exists. NB: bare array line,
+# tools/check-manifest-integrity.sh proves every target exists. NB: bare array line,
 # no inline comment (toml_array contract).
 # requires = ["postgres"]
 
@@ -137,17 +137,31 @@ backup_stale_days  = "7"                  # past this age the last backup counts
 # both, because "which half is real" must never be a guess.
 #
 # kind        = "process"
-# command     = ["bazel-bin/capabilities/example/example-server"]
+# command     = ["target/release/example-server"]
 #                                           # argv ARRAY, never a shell string: the runner execs it
 #                                           # directly, so nothing is word-split, glob-expanded or
 #                                           # eval'd. Same reason comms shells out to yt-dlp with
-#                                           # argument arrays only.
-# build       = ["bazel", "build", "//capabilities/example:example-server"]
+#                                           # argument arrays only. A relative path resolves against
+#                                           # the checkout the manifest came from, so a Rust
+#                                           # capability names the workspace target dir the root
+#                                           # Cargo.toml gives every member: target/release/<bin>.
+# build       = ["cargo", "build", "--locked", "--release", "--bin", "example-server"]
 #                                           # optional. Run when the artifact does not exist yet
 #                                           # (first start after a clone), and unconditionally on
 #                                           # `restart`. Runs IN `workdir` when one is declared, at
 #                                           # the repo root otherwise — `bun run build` has to run
-#                                           # where the package.json is. Nothing to compile: omit.
+#                                           # where the package.json is, and cargo has to run where
+#                                           # the workspace is. Nothing to compile: omit.
+#                                           # --locked, so a start can never silently resolve a
+#                                           # dependency version the lockfile does not name.
+# panel_build = ["bun", "run", "build"]
+#                                           # optional, and only for a capability that ships its own
+#                                           # UI. Runs in <capability>/ui/ — fixed by
+#                                           # README.md#placement-guide, so it is not a manifest
+#                                           # fact — immediately BEFORE `build`, on the same
+#                                           # trigger. Assumes ui/node_modules is installed; that
+#                                           # install is an operator step (the capability's README),
+#                                           # never a start-time one.
 # build_output = "capabilities/example/ui/dist"
 #                                           # optional, repo-relative — what `build` produces, and
 #                                           # therefore how "already built" is decided. REQUIRED
@@ -155,7 +169,7 @@ backup_stale_days  = "7"                  # past this age the last backup counts
 #                                           # without it the runner tests command[0] for existence,
 #                                           # a bare name on PATH always exists, and the declared
 #                                           # build silently never runs. Omit when command[0] IS the
-#                                           # built artifact (every bazel capability).
+#                                           # built artifact (every Rust capability).
 # workdir     = "capabilities/example"      # optional, relative to AXON_ROOT; default the repo root
 # port        = "8085"                      # the host port it listens on — one per process capability.
 #                                           # Exported to the process as AXON_PORT, so a capability that

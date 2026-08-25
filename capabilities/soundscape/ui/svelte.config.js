@@ -16,8 +16,8 @@ const config = {
 
     // SvelteKit defaults this to Date.now(). It lands in _app/version.json, reaches
     // the entry chunks, and changes their content hashes — so two identical builds
-    // produce different bytes under different filenames, which defeats the point of
-    // building this under Bazel at all. Read from the environment instead, so a
+    // produce different bytes under different filenames, and a served bundle stops
+    // being comparable to the one CI built. Read from the environment instead, so a
     // deploy step can still stamp something meaningful (a commit sha) without the
     // default build being nondeterministic.
     version: { name: process.env.AXON_BUILD_VERSION ?? "dev" },

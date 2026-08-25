@@ -1,8 +1,8 @@
 # trips — persistent plan/itinerary state for the dashboard's cross-capability view.
 kind        = "process"
 name        = "trips"
-command     = ["bazel-bin/capabilities/trips/trips-server"]
-build       = ["bazel", "build", "//capabilities/trips:trips-server"]
+command     = ["target/release/trips-server"]
+build       = ["cargo", "build", "--locked", "--release", "--bin", "trips-server"]
 port        = "8086"
 health_path = "/health"
 ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)

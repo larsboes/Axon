@@ -1,8 +1,8 @@
 # tasks — owned task records, written by whatever observed the thing to do.
 kind        = "process"
 name        = "tasks"
-command     = ["bazel-bin/capabilities/tasks/tasks-server"]
-build       = ["bazel", "build", "//capabilities/tasks:tasks-server"]
+command     = ["target/release/tasks-server"]
+build       = ["cargo", "build", "--locked", "--release", "--bin", "tasks-server"]
 port        = "8089"
 health_path = "/health"
 ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)

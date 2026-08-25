@@ -5,8 +5,8 @@
 # be listening for that ask, and it is deliberately the smallest process in the set.
 kind        = "process"
 name        = "axon-status"
-command     = ["bazel-bin/capabilities/axon-status/axon-status"]
-build       = ["bazel", "build", "//capabilities/axon-status:axon-status"]
+command     = ["target/release/axon-status"]
+build       = ["cargo", "build", "--locked", "--release", "--bin", "axon-status"]
 port        = "8082"
 health_path = "/health"
 autostart   = "true"

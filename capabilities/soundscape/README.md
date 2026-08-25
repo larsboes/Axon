@@ -71,22 +71,32 @@ dashboard brings it up when its surface is opened.
 
 The UI is served from this same process, so the panel arrives and leaves with the
 capability (README.md#three-architectural-nouns) instead of living in the spine shell. The bundle
-path comes from `AXON_SOUNDSCAPE_UI` and defaults to the Bazel output
-(`bazel-bin/capabilities/soundscape/ui/bundle`) rather than a checked-in directory,
-because that is the reproducible one.
+path comes from `AXON_SOUNDSCAPE_UI` and defaults to `capabilities/soundscape/ui/dist`,
+the directory `bun run build` writes — a build output, never a checked-in one.
 
-## Building the UI under Bazel
+## Building the UI
 
-`ui/` is a bun package built by `//tools/bazel/bun:build.bzl`, not by `vite build`
-on a developer's machine. That rule and its fetch-time dependency install exist
-because of this capability: a capability-owned UI served over the capability's own
-HTTP surface is a build output with a named consumer, which is the trigger
-`dashboard/README.md` had been waiting for before wiring any frontend into Bazel.
+`ui/` is a bun package built by `bun run build` (`svelte-kit sync && vite build`).
+`service.toml` declares that as `panel_build`, so the runner produces the bundle
+before it compiles the server that serves it. Dependencies are an operator step,
+once per clone:
 
-`vite dev` is untouched and is still how you work on the UI. Bazel owns the
-produced bundle, not the edit loop.
+```bash
+cd capabilities/soundscape/ui
+bun install --frozen-lockfile --ignore-scripts
+```
 
-One nondeterminism had to be fixed before that was worth anything: SvelteKit
+`--ignore-scripts` is not optional here — see `tools/check-bun-install-policy.sh`.
+
+`vite dev` is untouched and is still how you work on the UI. `panel_build` owns the
+served bundle, not the edit loop.
+
+Until 2026-08-25 that bundle was a Bazel action (`//tools/bazel/bun:build.bzl`) with
+a fetch-time dependency install. PRD Q44 retired Bazel; what the hermetic toolchain
+bought here — a bundle nobody had to remember to rebuild — is now the `panel_build`
+line, and reproducibility of the bytes is the lockfile's job alone.
+
+One nondeterminism had to be fixed before any of that was worth anything: SvelteKit
 defaults its app version to `Date.now()`, which reaches the entry chunks and
 changes their content hashes, so two identical builds produced different bytes.
 It now reads `AXON_BUILD_VERSION`, defaulting to `dev`.

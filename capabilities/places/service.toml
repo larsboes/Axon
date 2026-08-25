@@ -1,8 +1,8 @@
 # places — canonical place registry, geocode cache, and the map layer endpoints.
 kind        = "process"
 name        = "places"
-command     = ["bazel-bin/capabilities/places/places-server"]
-build       = ["bazel", "build", "//capabilities/places:places-server"]
+command     = ["target/release/places-server"]
+build       = ["cargo", "build", "--locked", "--release", "--bin", "places-server"]
 port        = "8093"
 health_path = "/health"
 ready_path  = "/ready"

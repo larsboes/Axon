@@ -1,8 +1,8 @@
 # calendar — Axon's calendar layer: availability windows, scoped rhythms, events.
 kind        = "process"
 name        = "calendar"
-command     = ["bazel-bin/capabilities/calendar/calendar-server"]
-build       = ["bazel", "build", "//capabilities/calendar:calendar-server"]
+command     = ["target/release/calendar-server"]
+build       = ["cargo", "build", "--locked", "--release", "--bin", "calendar-server"]
 port        = "8087"
 health_path = "/health"
 ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)

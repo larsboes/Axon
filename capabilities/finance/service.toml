@@ -1,8 +1,8 @@
 # finance — reviewed imports, journal projections, budgets and subscriptions.
 kind        = "process"
 name        = "finance"
-command     = ["bazel-bin/capabilities/finance/finance-server"]
-build       = ["bazel", "build", "//capabilities/finance:finance-server"]
+command     = ["target/release/finance-server"]
+build       = ["cargo", "build", "--locked", "--release", "--bin", "finance-server"]
 port        = "8090"
 health_path = "/health"
 ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)
