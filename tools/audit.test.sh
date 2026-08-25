@@ -46,19 +46,26 @@ expect_policy() {
   }
 }
 
-expect_policy home-assistant ghcr.io/home-assistant/home-assistant:2026.7.4
-expect_policy pihole pihole/pihole:2026.07.2
-expect_policy postgres postgres:17.10-alpine
-
-if grep -F -- '--ignorefile' "$LOG" | grep -F -- 'vaultwarden/server:1.37.0-alpine' >/dev/null; then
-  echo "FAIL: clean Vaultwarden scan inherited another capability policy" >&2
-  exit 1
-fi
-
-grep -F -- 'vaultwarden/server:1.37.0-alpine' "$LOG" >/dev/null || {
-  echo "FAIL: Vaultwarden was not scanned" >&2
-  exit 1
+# A capability whose policy file was deleted must still be scanned — bare, with no
+# ignorefile. home-assistant and pihole moved to this state when their expired
+# policies were removed (da201f9, expiry 2026-08-15 under Axon#184).
+expect_bare_scan() {
+  cap="$1"
+  ref="$2"
+  grep -F -- "$ref" "$LOG" >/dev/null || {
+    echo "FAIL: $cap was not scanned" >&2
+    exit 1
+  }
+  if grep -F -- '--ignorefile' "$LOG" | grep -F -- "$ref" >/dev/null; then
+    echo "FAIL: $cap was scanned with a policy that no longer exists" >&2
+    exit 1
+  fi
 }
+
+expect_policy postgres postgres:17.10-alpine
+expect_bare_scan home-assistant ghcr.io/home-assistant/home-assistant:2026.7.4
+expect_bare_scan pihole pihole/pihole:2026.07.2
+expect_bare_scan vaultwarden vaultwarden/server:1.37.0-alpine
 
 # Repository detection must use Git plumbing: linked worktrees have a .git file,
 # not a directory. Run the real audit script against isolated repositories with
