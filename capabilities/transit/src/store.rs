@@ -155,6 +155,23 @@ impl TransitStore {
                 ADD CONSTRAINT trips_trigger_reason_check
                 CHECK (trigger_reason IN ('manual','auto','session'));
 
+            -- Station coordinates. hafas.rs has parsed latitude/longitude into
+            -- `Station` since the dbnav port (see `dbnav_station`), and this
+            -- table dropped them on the way in (survey 2026-08-25). Same
+            -- `ADD COLUMN IF NOT EXISTS` retrofit as `scouting::store`'s
+            -- opportunities latitude/longitude. Nullable: the dbweb parse path
+            -- carries no coordinates, and rows written before these columns
+            -- existed stay NULL -- backfill by EVA is the places capability's
+            -- job, not a migration here.
+            ALTER TABLE {schema}.trip_legs ADD COLUMN IF NOT EXISTS origin_latitude DOUBLE PRECISION;
+            ALTER TABLE {schema}.trip_legs ADD COLUMN IF NOT EXISTS origin_longitude DOUBLE PRECISION;
+            ALTER TABLE {schema}.trip_legs ADD COLUMN IF NOT EXISTS destination_latitude DOUBLE PRECISION;
+            ALTER TABLE {schema}.trip_legs ADD COLUMN IF NOT EXISTS destination_longitude DOUBLE PRECISION;
+            ALTER TABLE {schema}.trips ADD COLUMN IF NOT EXISTS origin_latitude DOUBLE PRECISION;
+            ALTER TABLE {schema}.trips ADD COLUMN IF NOT EXISTS origin_longitude DOUBLE PRECISION;
+            ALTER TABLE {schema}.trips ADD COLUMN IF NOT EXISTS destination_latitude DOUBLE PRECISION;
+            ALTER TABLE {schema}.trips ADD COLUMN IF NOT EXISTS destination_longitude DOUBLE PRECISION;
+
             CREATE INDEX IF NOT EXISTS idx_trips_status ON {schema}.trips(status);
             CREATE INDEX IF NOT EXISTS idx_trips_session ON {schema}.trips(session_id);
             "
@@ -207,15 +224,26 @@ impl TransitStore {
         tx.execute(
             &format!(
                 "INSERT INTO {schema}.trips (id, origin_eva, destination_eva, trigger_reason,
-                    total_duration_minutes, total_price, created_at, session_id, priced_at)
+                    total_duration_minutes, total_price, created_at, session_id, priced_at,
+                    origin_latitude, origin_longitude, destination_latitude, destination_longitude)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
-                    CASE WHEN $6::DOUBLE PRECISION IS NULL THEN NULL ELSE $7 END)
+                    CASE WHEN $6::DOUBLE PRECISION IS NULL THEN NULL ELSE $7 END,
+                    $9,$10,$11,$12)
                 ON CONFLICT (id) DO UPDATE SET
                     origin_eva = excluded.origin_eva,
                     destination_eva = excluded.destination_eva,
                     trigger_reason = excluded.trigger_reason,
                     total_duration_minutes = excluded.total_duration_minutes,
                     total_price = excluded.total_price,
+                    -- Coordinates follow the eva/leg refresh unconditionally --
+                    -- unlike priced_at below there is no keep-the-old-value
+                    -- branch, because trip_legs is replaced wholesale in this
+                    -- same transaction and a trip row keeping stale coordinates
+                    -- next to freshly replaced legs would let the two disagree.
+                    origin_latitude = excluded.origin_latitude,
+                    origin_longitude = excluded.origin_longitude,
+                    destination_latitude = excluded.destination_latitude,
+                    destination_longitude = excluded.destination_longitude,
                     -- Moves only when a price actually arrived. A refresh that
                     -- came back without a fare must not restamp the old one as
                     -- freshly observed.
@@ -234,6 +262,13 @@ impl TransitStore {
                 &journey.total_price,
                 &chrono_now(),
                 &session_id,
+                // Both hafas.rs parse paths set start/end_station from the
+                // first/last leg, so these are the journey's own endpoint
+                // coordinates -- in scope right here, no caller plumbing.
+                &journey.start_station.latitude,
+                &journey.start_station.longitude,
+                &journey.end_station.latitude,
+                &journey.end_station.longitude,
             ],
         )?;
 
@@ -250,7 +285,8 @@ impl TransitStore {
         let trip_row = conn.query_opt(
             &format!(
                 "SELECT id, status, origin_eva, destination_eva, trigger_reason,
-                    total_duration_minutes, total_price, created_at, session_id, priced_at
+                    total_duration_minutes, total_price, created_at, session_id, priced_at,
+                    origin_latitude, origin_longitude, destination_latitude, destination_longitude
                  FROM {}.trips WHERE id = $1",
                 self.schema
             ),
@@ -268,13 +304,18 @@ impl TransitStore {
             created_at: t.try_get(7)?,
             session_id: t.try_get::<_, Option<String>>(8)?,
             priced_at: t.try_get(9)?,
+            origin_latitude: t.try_get(10)?,
+            origin_longitude: t.try_get(11)?,
+            destination_latitude: t.try_get(12)?,
+            destination_longitude: t.try_get(13)?,
         };
 
         let leg_rows = conn.query(
             &format!(
                 "SELECT origin_eva, origin_name, destination_eva, destination_name,
                     departure_time, arrival_time, train_name, train_number, train_category,
-                    platform, is_regional
+                    platform, is_regional,
+                    origin_latitude, origin_longitude, destination_latitude, destination_longitude
                  FROM {}.trip_legs WHERE trip_id = $1 ORDER BY leg_index",
                 self.schema
             ),
@@ -294,6 +335,10 @@ impl TransitStore {
                 train_category: r.try_get(8)?,
                 platform: r.try_get(9)?,
                 is_regional: r.try_get(10)?,
+                origin_latitude: r.try_get(11)?,
+                origin_longitude: r.try_get(12)?,
+                destination_latitude: r.try_get(13)?,
+                destination_longitude: r.try_get(14)?,
             });
         }
         Ok(Some((trip, legs)))
@@ -435,7 +480,8 @@ impl TransitStore {
         let trips = conn.query(
             &format!(
                 "SELECT id, status, origin_eva, destination_eva, trigger_reason,
-                    total_duration_minutes, total_price, created_at, session_id, priced_at
+                    total_duration_minutes, total_price, created_at, session_id, priced_at,
+                    origin_latitude, origin_longitude, destination_latitude, destination_longitude
                  FROM {}.trips
                  WHERE ($1::text IS NULL OR session_id = $1)
                  ORDER BY total_price ASC NULLS LAST, total_duration_minutes ASC NULLS LAST
@@ -458,12 +504,17 @@ impl TransitStore {
                 created_at: t.try_get(7)?,
                 session_id: t.try_get::<_, Option<String>>(8)?,
                 priced_at: t.try_get(9)?,
+                origin_latitude: t.try_get(10)?,
+                origin_longitude: t.try_get(11)?,
+                destination_latitude: t.try_get(12)?,
+                destination_longitude: t.try_get(13)?,
             };
             let leg_rows = conn.query(
                 &format!(
                     "SELECT origin_eva, origin_name, destination_eva, destination_name,
                         departure_time, arrival_time, train_name, train_number, train_category,
-                        platform, is_regional
+                        platform, is_regional,
+                        origin_latitude, origin_longitude, destination_latitude, destination_longitude
                      FROM {}.trip_legs WHERE trip_id = $1 ORDER BY leg_index",
                     self.schema
                 ),
@@ -483,6 +534,10 @@ impl TransitStore {
                     train_category: r.try_get(8)?,
                     platform: r.try_get(9)?,
                     is_regional: r.try_get(10)?,
+                    origin_latitude: r.try_get(11)?,
+                    origin_longitude: r.try_get(12)?,
+                    destination_latitude: r.try_get(13)?,
+                    destination_longitude: r.try_get(14)?,
                 });
             }
             out.push((trip, legs));
@@ -510,8 +565,9 @@ fn insert_legs(
             &format!(
                 "INSERT INTO {schema}.trip_legs (trip_id, leg_index, origin_eva, origin_name,
                     destination_eva, destination_name, departure_time, arrival_time,
-                    train_name, train_number, train_category, platform, is_regional)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+                    train_name, train_number, train_category, platform, is_regional,
+                    origin_latitude, origin_longitude, destination_latitude, destination_longitude)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
                 schema = schema
             ),
             &[
@@ -528,6 +584,10 @@ fn insert_legs(
                 &leg.train_category,
                 &leg.platform,
                 &leg.is_regional,
+                &leg.origin.latitude,
+                &leg.origin.longitude,
+                &leg.destination.latitude,
+                &leg.destination.longitude,
             ],
         )?;
     }
@@ -608,6 +668,15 @@ pub struct TripRow {
     /// When this fare was last actually seen. `None` for a row written before
     /// the column existed, and for a trip stored without a price at all.
     pub priced_at: Option<String>,
+    /// Endpoint coordinates, from the journey's own first-leg origin /
+    /// last-leg destination `Station` (both hafas.rs parse paths set
+    /// `start_station`/`end_station` that way). `None` for a row written
+    /// before the columns existed and for the dbweb parse path, which
+    /// carries no coordinates -- absent, never guessed.
+    pub origin_latitude: Option<f64>,
+    pub origin_longitude: Option<f64>,
+    pub destination_latitude: Option<f64>,
+    pub destination_longitude: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -623,6 +692,13 @@ pub struct TripLegRow {
     pub train_category: String,
     pub platform: Option<String>,
     pub is_regional: bool,
+    /// `Station::latitude`/`longitude` of this leg's endpoints, persisted
+    /// instead of dropped (survey 2026-08-25). `None` under the same
+    /// conditions as the trip-level columns above.
+    pub origin_latitude: Option<f64>,
+    pub origin_longitude: Option<f64>,
+    pub destination_latitude: Option<f64>,
+    pub destination_longitude: Option<f64>,
 }
 
 fn chrono_now() -> String {
@@ -791,17 +867,21 @@ mod tests {
     }
 
     fn mk_journey(id: &str) -> Journey {
+        // Coordinates carried so the round-trip test can prove they survive
+        // persistence -- the dbnav parse path fills them (hafas.rs
+        // `dbnav_station`), and the store used to drop them. Values are the
+        // same fixtures hafas.rs's own tests use for these stations.
         let bonn = Station {
             id: "8000044".into(),
             name: "Bonn Hbf".into(),
-            latitude: None,
-            longitude: None,
+            latitude: Some(50.731964),
+            longitude: Some(7.096678),
         };
         let berlin = Station {
             id: "8098160".into(),
             name: "Berlin Hbf".into(),
-            latitude: None,
-            longitude: None,
+            latitude: Some(52.52585),
+            longitude: Some(13.368892),
         };
         Journey {
             reliability: None,
@@ -872,6 +952,17 @@ mod tests {
         assert_eq!(legs[0].train_number, "691");
         assert_eq!(legs[0].platform.as_deref(), Some("3"));
         assert!(!legs[0].is_regional);
+
+        // Coordinates round-trip on both tables -- they were parsed into
+        // `Station` and then dropped at this exact boundary before.
+        assert_eq!(trip.origin_latitude, Some(50.731964));
+        assert_eq!(trip.origin_longitude, Some(7.096678));
+        assert_eq!(trip.destination_latitude, Some(52.52585));
+        assert_eq!(trip.destination_longitude, Some(13.368892));
+        assert_eq!(legs[0].origin_latitude, Some(50.731964));
+        assert_eq!(legs[0].origin_longitude, Some(7.096678));
+        assert_eq!(legs[0].destination_latitude, Some(52.52585));
+        assert_eq!(legs[0].destination_longitude, Some(13.368892));
     }
 
     #[test]
@@ -887,6 +978,13 @@ mod tests {
         // legs, not the old ones appended alongside them.
         journey.legs.push(journey.legs[0].clone());
         journey.total_duration_minutes = 300;
+        // This refresh carries no destination coordinates (the dbweb parse
+        // path never does). The trip row must follow the refresh -- legs are
+        // replaced wholesale in the same transaction, and a kept-stale
+        // coordinate next to fresh legs would let the two disagree (see the
+        // ON CONFLICT comment in record_journey).
+        journey.end_station.latitude = None;
+        journey.end_station.longitude = None;
         store
             .record_journey(&journey, "8000044", "8098160", "manual", None)
             .unwrap();
@@ -898,6 +996,16 @@ mod tests {
             2,
             "leg set should be fully replaced, not appended to"
         );
+        assert_eq!(
+            trip.origin_latitude,
+            Some(50.731964),
+            "origin coordinates refresh from the re-recorded journey"
+        );
+        assert_eq!(
+            trip.destination_latitude, None,
+            "a refresh without coordinates must not keep the stale ones"
+        );
+        assert_eq!(trip.destination_longitude, None);
     }
 
     #[test]
@@ -1103,6 +1211,13 @@ mod tests {
         // Legs round-trip too.
         assert_eq!(trips[0].1.len(), 1);
         assert_eq!(trips[0].1[0].destination_name, "Valencia");
+        // A journey whose stations carry no coordinates (dbweb parse path,
+        // and every row written before the columns existed) reads back as
+        // None -- absent, never zero.
+        assert_eq!(trips[0].0.origin_latitude, None);
+        assert_eq!(trips[0].0.destination_longitude, None);
+        assert_eq!(trips[0].1[0].origin_latitude, None);
+        assert_eq!(trips[0].1[0].destination_longitude, None);
     }
 
     /// A refreshed fare restamps priced_at; a refresh that came back without one
