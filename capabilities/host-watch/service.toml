@@ -14,7 +14,7 @@ kind     = "process"
 name     = "host-watch"
 # `bun` first, not the tools/host-watch launcher: service-runner.sh derives the generated
 # unit's PATH from command[0], and a launcher script would hide the interpreter (the same
-# reason feed-sweep and sparpreis-watch spell out the interpreter here).
+# reason sparpreis-watch spells out the interpreter here).
 command  = ["bun", "run", "tools/host-watch.ts"]
 schedule = "1h"
 

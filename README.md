@@ -562,7 +562,7 @@ permanent provenance.
 
 Open work — plans, todos, phases, anything unfinished — lives in an `ISA.md` and nowhere else.
 The root `ISA.md` holds what is repo-wide; a capability or Pack with enough of its own carries one
-at its root (`Packs/travel/ISA.md`, `capabilities/learning/ISA.md`). `TODO.md`, `PLAN.md`,
+at its root (`Packs/travel/ISA.md`, `capabilities/places/ISA.md`). `TODO.md`, `PLAN.md`,
 `HANDOFF.md` and `ROADMAP.md` remain a retired surface, including gitignored ones — and so is the
 issue tracker, which as of 2026-08-19 holds no backlog of ours and which no workflow writes to.
 

@@ -35,6 +35,24 @@ Over-window requests are refused, never truncated. A silently shortened prompt p
 a digest of the first half of a document and says nothing about it, which is worse than
 no digest because the reader cannot tell.
 
+## The other local rung is oMLX
+
+oMLX serves every local role this one cannot: the sectioned rung above, plus embedding
+and reranking. It speaks the same OpenAI-compatible shape on loopback and is declared as
+a backend id in the same map this capability's role joins — see
+`libs/inference/inference.config.example.json`, which owns the ids, the addresses and the
+Metal/Apple-Silicon constraint.
+
+It is not an Axon capability. There is no `service.toml` for it and Axon neither installs
+nor supervises it: it is a `systems.toml` entry (`[omlx]`, host-native because Metal is
+unavailable inside the Linux runtime), and `upstreams.toml` pins the models it serves
+(`multilingual-e5-base-mlx`, `bge-reranker-v2-m3-mlx`) rather than the server. A machine
+either has it running or configures roles that do not name it.
+
+Recorded here on 2026-08-25 because `capabilities/learning` was deleted (PRD D6). That
+capability was a README and an ISA with no code, and the one claim in it nothing else owned
+was that oMLX is the local-AI rung Axon builds on.
+
 ## Wiring it up
 
 Add a second summarization role to `inference.json` in the overlay:

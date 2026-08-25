@@ -237,7 +237,7 @@ mod backup_tests {
 
     #[test]
     fn a_capability_with_neither_path_has_nothing_to_poll() {
-        let mut c = cap("feed-sweep");
+        let mut c = cap("sparpreis-watch");
         c.port = "8090".into();
         assert_eq!(c.readiness_url(), None);
     }

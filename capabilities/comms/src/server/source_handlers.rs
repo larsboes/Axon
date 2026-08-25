@@ -83,7 +83,7 @@ pub(super) async fn source_scan_handler(Json(body): Json<SourceScanBody>) -> Htt
             // was here meant a single upstream rate-limiting the collector took every other
             // source down with it: arXiv answered 429, and GitHub trending, which was fine, was
             // never asked. Invisible while a human clicked the button and retried; not invisible
-            // once capabilities/feed-sweep runs this on a timer with nobody watching.
+            // to any caller that runs this on a timer with nobody watching.
             let found = match sources::fetch(&source) {
                 Ok(found) => found,
                 Err(error) => {
