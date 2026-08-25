@@ -41,9 +41,6 @@ use comms::store::{
 use comms::travel;
 use comms::vault_links;
 
-/// Constant-time comparison for the shared secret. Avoids timing side-channels
-/// that could leak the secret length or prefix.
-mod auth;
 mod background;
 mod cloud;
 mod content;
@@ -54,7 +51,6 @@ mod source_handlers;
 mod triage;
 mod vault;
 
-use auth::*;
 use background::*;
 use cloud::*;
 use content::*;
@@ -245,11 +241,13 @@ async fn routes() -> Json<Value> {
     Json(route_manifest::manifest("comms", ROUTES))
 }
 
-/// Assemble the public HTTP surface and its authentication boundary.
+/// Assemble the public HTTP surface.
 ///
+/// The authentication boundary is no longer here: `axon_server::authenticated`
+/// wraps this router, and it gates every path except `/health` and `/ready`.
 /// Kept separate from `main` so tests can exercise the real middleware stack
 /// over an ephemeral loopback listener.
-fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
+fn build_router(dashboard_origin: &str) -> Router {
     // CORS: allow only the dashboard origin, not permissive.
     let cors = CorsLayer::new()
         .allow_origin(
@@ -264,7 +262,10 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
             HeaderName::from_static("x-axon-token"),
         ]);
 
-    // Read-only routes: no auth required.
+    // Read routes. They used to bypass authentication entirely; they no longer
+    // do. A feed entry and a mail proposal are personal content, and the split
+    // that let them answer unauthenticated only ever made sense while the bind
+    // was the whole boundary.
     let read_routes = Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health_handler))
@@ -281,7 +282,9 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
         .route("/triage", get(triage_handler))
         .route("/triage/sweep/status", get(triage_sweep_status_handler));
 
-    // Mutating routes: require shared secret.
+    // Mutating routes. Still listed apart from the read routes because the two
+    // sets differ in what they cost when they run, not because they differ in
+    // what admits a caller — one gate covers both.
     let write_routes = Router::new()
         .route("/content/:source/:id/digest", post(digest_handler))
         .route("/content/:source/:id/diagram", post(diagram_handler))
@@ -321,11 +324,7 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
         .route("/ingest", post(ingest_handler))
         .route("/vault-links/scan", post(vault_scan_handler))
         .route("/vault-links/import", post(vault_import_handler))
-        .route("/sources/scan", post(source_scan_handler))
-        .layer(axum::middleware::from_fn_with_state(
-            api_secret,
-            require_auth,
-        ));
+        .route("/sources/scan", post(source_scan_handler));
 
     Router::new()
         .merge(read_routes)
@@ -334,22 +333,46 @@ fn build_router(api_secret: Option<String>, dashboard_origin: &str) -> Router {
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024)) // 2 MiB
 }
 
+/// This capability's inbound gate.
+///
+/// `api_secret_file` still wins, because the dashboard's Vite proxy, the
+/// browser extension and `axon-clip` all already hold that value; a deployment
+/// converges on one token by pointing that reference and
+/// `AXON_INBOUND_TOKEN_FILE` at the same file.
+///
+/// `refuse_without_token` because comms is the capability where the loopback
+/// bind was never the boundary: `POST /ingest` fetches an attacker-chosen URL,
+/// and a page open in the operator's own browser is already inside loopback.
+/// Without this, an unconfigured secret would leave those routes open instead
+/// of closed, which is the one direction this must never move.
+fn inbound_auth(cfg: &Config) -> axon_server::InboundAuth {
+    axon_server::InboundAuth::resolve(cfg.api_secret.clone()).refuse_without_token()
+}
+
 #[tokio::main]
 async fn main() {
     let cfg = Config::load();
 
-    let api_secret = cfg.api_secret.clone();
-    if api_secret.is_none() || api_secret.as_deref() == Some("") {
-        eprintln!("warning: api_secret_file is not configured — mutating routes will reject all requests. See comms.config.example.json.");
+    let auth = inbound_auth(&cfg);
+    if !auth.is_configured() {
+        eprintln!("warning: no inbound token is configured — every route except /health and /ready will reject all requests. Set api_secret_file (comms.config.example.json) or AXON_INBOUND_TOKEN_FILE (schemas/deployment.env.example).");
     }
 
     let _background_services = BackgroundServices::start(&cfg);
 
-    let app = build_router(api_secret, &cfg.dashboard_origin);
+    let app = build_router(&cfg.dashboard_origin);
 
-    // Bind and the exit-on-failure behaviour live in axon_server now; this file
-    // used to hand-roll the same five lines with an unwrap panic instead.
-    axon_server::serve_local("comms-server", cfg.port, app).await;
+    // Bind, the gate and the exit-on-failure behaviour all live in axon_server
+    // now; this file used to hand-roll the first and the third, and owned a
+    // second copy of the second.
+    axon_server::serve(
+        "comms-server",
+        axon_server::Reach::Loopback,
+        cfg.port,
+        app,
+        auth,
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -375,7 +398,12 @@ mod tests {
     /// middleware stack — a handler called directly would skip the layer that
     /// is the entire point.
     async fn serve(api_secret: Option<&str>) -> String {
-        let app = build_router(api_secret.map(str::to_string), "http://127.0.0.1:47117");
+        // `with_token`, not `resolve`: `resolve` would fall back to the machine's
+        // own deployment.env, so a test would pass or fail on whether the
+        // operator running it has an overlay token.
+        let auth = axon_server::InboundAuth::with_token(api_secret.map(str::to_string))
+            .refuse_without_token();
+        let app = axon_server::authenticated(build_router("http://127.0.0.1:47117"), auth);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -627,7 +655,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_right_token_gets_past_the_layer_and_read_routes_never_need_one() {
+    async fn the_right_token_gets_past_the_layer_and_liveness_needs_none() {
         let base = serve(Some("s3cret")).await;
 
         // Past the auth layer the handler fails on its own (no database in a
@@ -646,7 +674,33 @@ mod tests {
         );
 
         let health = reqwest::get(format!("{base}/health")).await.unwrap();
-        assert_eq!(health.status(), 200, "read routes carry no auth layer");
+        assert_eq!(health.status(), 200, "liveness stays pollable");
+    }
+
+    /// The migration onto the shared gate, stated as a test: reads used to
+    /// answer without a token because the loopback bind was treated as the
+    /// boundary. A feed entry is personal content and the port is about to be
+    /// reachable from the tailnet, so it is not.
+    #[tokio::test]
+    async fn read_routes_now_need_the_token_too() {
+        let base = serve(Some("s3cret")).await;
+        let client = reqwest::Client::new();
+        for path in ["/feed", "/triage", "/sources", "/routes"] {
+            let refused = client.get(format!("{base}{path}")).send().await.unwrap();
+            assert_eq!(refused.status(), 401, "{path} answered without a token");
+
+            let allowed = client
+                .get(format!("{base}{path}"))
+                .header("X-Axon-Token", "s3cret")
+                .send()
+                .await
+                .unwrap();
+            assert!(
+                allowed.status() != 401 && allowed.status() != 403,
+                "{path} refused a valid token: {}",
+                allowed.status()
+            );
+        }
     }
 }
 

@@ -546,6 +546,8 @@ version = "0.1.0"
 dependencies = [
  "axon-config",
  "axum",
+ "reqwest",
+ "serde_json",
  "tokio",
 ]
 

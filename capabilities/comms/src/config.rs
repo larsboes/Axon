@@ -318,23 +318,13 @@ pub(crate) use axon_config::expand_tilde;
 /// JSON files use `.auth.api_key` (the oMLX settings shape); non-JSON files use
 /// their trimmed contents. Parsed JSON without that field deliberately has no
 /// raw-content fallback.
+///
+/// The reader itself moved to `libs/axon-server` when the inbound gate did:
+/// both this file and `<overlay>/config/deployment.env`'s
+/// `AXON_INBOUND_TOKEN_FILE` name a file holding the same kind of value, and two
+/// readers of one shape is the drift the move removes.
 pub(crate) fn api_key_from_file(path: Option<&str>) -> Option<String> {
-    let path = expand_tilde(path?);
-    let content = std::fs::read_to_string(path).ok()?;
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        return json
-            .get("auth")
-            .and_then(|auth| auth.get("api_key"))
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|key| !key.is_empty())
-            .map(str::to_string);
-    }
-    Some(trimmed.to_string())
+    axon_server::token_from_file(&expand_tilde(path?))
 }
 
 /// `"22-7"` -> `(22, 7)`. Returns `None` for anything it does not fully

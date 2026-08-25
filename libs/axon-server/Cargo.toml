@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The one way a capability server binds: 127.0.0.1, the runner's port contract, uniform startup logging and bind-failure behavior."
+description = "The one way a capability server binds and authenticates: 127.0.0.1 unless a token is configured, the runner's port contract, the shared inbound gate, uniform startup logging and bind-failure behavior."
 publish = false
 
 [lib]
@@ -14,4 +14,14 @@ path = "src/lib.rs"
 [dependencies]
 axon-config = { path = "../axon-config" }
 axum = "0.7"
+# The gate's refusal bodies are JSON because every consumer already parses the
+# capability's errors that way. No new build cost: axum's default features
+# already resolve serde_json for `axum::Json`.
+serde_json = "1"
 tokio = { version = "1", features = ["net"] }
+
+# The gate is a middleware layer, so a handler called directly would skip the
+# thing under test. Same reasoning, same client, as comms' server tests.
+[dev-dependencies]
+reqwest = "0.12"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -115,14 +115,23 @@ export function hasSameOrigin(headers: IncomingHttpHeaders): boolean {
   }
 }
 
-/** Attach the private token only to requests that can change Comms state. */
+/**
+ * Attach the private token to every proxied Comms request.
+ *
+ * Mutations only, until Comms moved onto the shared inbound gate in
+ * `libs/axon-server`: that gate admits `/health` and `/ready` and asks every
+ * other path for the token, reads included. Sending it on a read costs nothing —
+ * the value stays in this Vite process and never reaches browser JavaScript,
+ * exactly as on a write — while withholding it would 401 every Comms page.
+ *
+ * A preflight `OPTIONS` is harmless to sign and never reaches a handler; the
+ * gate lets it through to the CORS layer regardless.
+ */
 export function installCommsProxyAuthorization(
   proxy: ProxyEvents,
   authorization: string,
 ): void {
-  proxy.on("proxyReq", (proxyRequest, request) => {
-    if (isMutation(request.method)) {
-      proxyRequest.setHeader("Authorization", authorization);
-    }
+  proxy.on("proxyReq", (proxyRequest) => {
+    proxyRequest.setHeader("Authorization", authorization);
   });
 }

@@ -35,6 +35,9 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         "//libs/axon-config:axon-config",
+        # config.rs resolves api_secret_file through axon-server's token reader,
+        # the one shared with the inbound gate's own token file.
+        "//libs/axon-server:axon-server",
         "//libs/content-item:content-item",
         "//libs/axon-store:axon-store",
         "//libs/inference:inference",

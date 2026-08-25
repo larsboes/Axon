@@ -91,7 +91,10 @@ describe("Comms proxy request boundary", () => {
     expect(hasSameOrigin({ host: "127.0.0.1:47117", origin: "null" })).toBe(false);
   });
 
-  test("injects authorization for mutations only", () => {
+  // Reads used to go unsigned. libs/axon-server's inbound gate asks every path
+  // except /health and /ready for the token, so a read that arrives without one
+  // is a 401 and a blank Comms page, not a slightly safer request.
+  test("injects authorization for every proxied request, reads included", () => {
     let listener: ((request: { setHeader(name: string, value: string): void }, incoming: { method?: string }) => void) | undefined;
     installCommsProxyAuthorization({
       on(_event, next) {
@@ -99,11 +102,11 @@ describe("Comms proxy request boundary", () => {
       },
     }, "Bearer test-token");
 
-    const headers = new Map<string, string>();
-    const request = { setHeader: (name: string, value: string) => headers.set(name, value) };
-    listener?.(request, { method: "GET" });
-    expect(headers.size).toBe(0);
-    listener?.(request, { method: "POST" });
-    expect(headers.get("Authorization")).toBe("Bearer test-token");
+    for (const method of ["GET", "POST", "OPTIONS"]) {
+      const headers = new Map<string, string>();
+      const request = { setHeader: (name: string, value: string) => headers.set(name, value) };
+      listener?.(request, { method });
+      expect(headers.get("Authorization")).toBe("Bearer test-token");
+    }
   });
 });

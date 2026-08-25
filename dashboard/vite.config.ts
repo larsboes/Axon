@@ -136,7 +136,7 @@ function buildProxy(): Record<string, ProxyOptions> {
 
   if (!commsCredential.authorization) {
     console.warn(
-      `[dashboard] Comms write proxy has no credential (${commsCredential.reason}); write routes remain fail-closed.`,
+      `[dashboard] Comms proxy has no credential (${commsCredential.reason}); every route except /health and /ready remains fail-closed.`,
     );
   }
 

@@ -1540,7 +1540,11 @@ const CHECKS: Check[] = [
             checked++;
             const hand = findProductionListenerConstructs(text);
             if (hand.length === 0) {
-              if (!/axon_server::serve_local\s*\(/.test(production)) {
+              // Either entry point: `serve_local` is loopback with the deployment's
+              // inbound token, `serve` spells the reach and the gate out (comms passes
+              // its own `api_secret_file` token). Both go through the same bind and the
+              // same middleware, so accepting only the first would flag a correct server.
+              if (!/axon_server::serve(_local)?\s*\(/.test(production)) {
                 ctx.warn(`${label}/${cap.name}/src/${sourcePath} builds a Router but neither serves it nor uses axon_server`);
               }
               continue;
