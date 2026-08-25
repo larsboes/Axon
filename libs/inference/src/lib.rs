@@ -30,7 +30,9 @@
 //! `passage: ` role prefixes; `nomic-embed-text` wants `search_query: ` and
 //! `search_document: `. Sending the wrong ones costs retrieval quality and
 //! raises no error at all, so the prefixes belong to the role, beside the
-//! model, and travel with it.
+//! model, and travel with it. The names are backend-specific too, which is why
+//! the machine backend override moves a role only together with the
+//! [`Role::on_backend`] entry that says what the job is called there.
 //!
 //! **Cached vectors belong to the model that produced them.** A cache keyed on
 //! the profile alone silently serves e5 vectors to a nomic run after a backend
@@ -110,6 +112,31 @@ pub struct Role {
     /// Prefixed onto the *document* side.
     #[serde(default)]
     pub document_prefix: String,
+    /// The same job on another local runtime, keyed by backend id. Read only
+    /// when [`BACKEND_OVERRIDE_ENV`] names one of these; a role that names none
+    /// is simply not available on a machine that overrides its backend.
+    #[serde(default)]
+    pub on_backend: HashMap<String, BackendModel>,
+}
+
+/// What a role is called on one specific backend.
+///
+/// A model id is backend-specific: `multilingual-e5-base-mlx` exists on oMLX
+/// and nowhere else, so a machine override that swapped the backend alone would
+/// ask Ollama for an MLX name and get a 404 for every request. The name has to
+/// move with the backend or the override is not portability, only a different
+/// way to fail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendModel {
+    pub model: String,
+    /// Deliberately NOT inherited from the role. Prefixes belong to the model
+    /// and this entry names a different one: `query: ` on `nomic-embed-text`
+    /// costs retrieval quality and raises nothing, which is the failure the
+    /// per-role prefixes exist to prevent. Empty is the safe default.
+    #[serde(default)]
+    pub query_prefix: String,
+    #[serde(default)]
+    pub document_prefix: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +213,36 @@ fn model_ids_match(configured: &str, installed: &str) -> bool {
         || (!installed.contains('/') && installed_without_latest == configured_basename)
 }
 
+/// Whether a base URL addresses this machine. Backend-level rather than
+/// role-level because the machine override has to ask it of a declared backend
+/// before any role is resolved against it.
+fn is_loopback_url(base_url: &str) -> bool {
+    let address = base_url.trim().to_ascii_lowercase();
+    let authority = address
+        .strip_prefix("http://")
+        .or_else(|| address.strip_prefix("https://"))
+        .unwrap_or(&address)
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    let host = if authority.starts_with('[') {
+        authority
+            .strip_prefix('[')
+            .and_then(|value| value.split(']').next())
+            .unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    host == "localhost"
+        || host == "::1"
+        || host == "0.0.0.0"
+        || host == "127.0.0.1"
+        || host.starts_with("127.")
+}
+
 fn valid_iso_date(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
@@ -218,12 +275,16 @@ fn valid_iso_date(value: &str) -> bool {
     (1..=days).contains(&day)
 }
 
-/// Overrides the backend for every role, for one machine.
+/// Names the one local model runtime this machine actually has.
 ///
 /// `service-runner.sh` exports this from `machine.toml`'s `[inference] backend`,
 /// the same path `[capability.<name>] port` already takes to reach a process.
 /// A machine that cannot run the configured backend says so once, in the file
 /// that already holds machine-local facts, and no capability config changes.
+///
+/// It moves a role only when the role's declared backend is loopback and the
+/// role names a model on the target under `on_backend`. `InferenceConfig`'s
+/// resolution states why each of those two conditions is load-bearing.
 pub const BACKEND_OVERRIDE_ENV: &str = "AXON_INFERENCE_BACKEND";
 
 /// Points at the config file directly. Mainly for tests and one-off runs.
@@ -281,11 +342,56 @@ impl InferenceConfig {
     /// override. `None` means this machine has no way to do that job, which is
     /// a normal state a caller degrades from, not a crash.
     pub fn role(&self, name: &str) -> Option<ResolvedRole> {
-        let role = self.roles.get(name)?;
-        let backend_name = match std::env::var(BACKEND_OVERRIDE_ENV) {
-            Ok(over) if !over.trim().is_empty() => over.trim().to_string(),
-            _ => role.backend.clone(),
+        let machine_backend = match std::env::var(BACKEND_OVERRIDE_ENV) {
+            Ok(value) if !value.trim().is_empty() => Some(value.trim().to_string()),
+            _ => None,
         };
+        self.role_on(name, machine_backend.as_deref())
+    }
+
+    /// [`Self::role`] with the machine override handed in instead of read from
+    /// the environment. Separate because an env var is process-global while
+    /// `cargo test` runs threads in parallel, so a test that set one would
+    /// decide what every other test resolved.
+    ///
+    /// Two conditions gate the override, and each one is a defect it prevents:
+    ///
+    /// * **The declared backend must be loopback.** The override states which
+    ///   *local* runtime exists here. A hosted backend answers from every
+    ///   machine, so there is nothing machine-local to replace — and rewriting
+    ///   a `cloud_*` role's backend would point a reviewed provider policy at
+    ///   whatever this host happens to run.
+    /// * **The role must name a model on the target.** Swapping the backend
+    ///   alone leaves an MLX model id addressed to Ollama. `None` here is the
+    ///   documented degrade path (reranking has no Ollama equivalent at all),
+    ///   and it fails at resolution rather than at the first HTTP 404.
+    fn role_on(&self, name: &str, machine_backend: Option<&str>) -> Option<ResolvedRole> {
+        let role = self.roles.get(name)?;
+        let mut backend_name = role.backend.clone();
+        let mut model = role.model.as_str();
+        let mut query_prefix = role.query_prefix.as_str();
+        let mut document_prefix = role.document_prefix.as_str();
+
+        if let Some(target) = machine_backend.filter(|target| *target != role.backend) {
+            let declared_is_local = self
+                .backends
+                .get(&role.backend)
+                .is_some_and(|backend| is_loopback_url(&backend.base_url));
+            if declared_is_local {
+                let variant = role.on_backend.get(target).or_else(|| {
+                    eprintln!(
+                        "  inference: role '{name}' names no model on backend '{target}' \
+                         (machine.toml [inference] backend) — this machine cannot do that job"
+                    );
+                    None
+                })?;
+                backend_name = target.to_string();
+                model = &variant.model;
+                query_prefix = &variant.query_prefix;
+                document_prefix = &variant.document_prefix;
+            }
+        }
+
         let backend = self.backends.get(&backend_name).cloned().or_else(|| {
             eprintln!(
                 "  inference: role '{name}' wants backend '{backend_name}', which is not declared"
@@ -295,7 +401,7 @@ impl InferenceConfig {
         Some(ResolvedRole {
             backend_name,
             backend,
-            model: role.model.clone(),
+            model: model.to_string(),
             provider_name: role.provider_name.clone(),
             cloud_data_tier: role.cloud_data_tier,
             billing_mode: role.billing_mode,
@@ -303,8 +409,8 @@ impl InferenceConfig {
             max_requests_per_day: role.max_requests_per_day,
             max_input_tokens: role.max_input_tokens,
             credit_expires_on: role.credit_expires_on.clone(),
-            query_prefix: role.query_prefix.clone(),
-            document_prefix: role.document_prefix.clone(),
+            query_prefix: query_prefix.to_string(),
+            document_prefix: document_prefix.to_string(),
         })
     }
 
@@ -402,30 +508,7 @@ impl ResolvedRole {
     }
 
     pub fn is_loopback(&self) -> bool {
-        let address = self.backend.base_url.trim().to_ascii_lowercase();
-        let authority = address
-            .strip_prefix("http://")
-            .or_else(|| address.strip_prefix("https://"))
-            .unwrap_or(&address)
-            .split('/')
-            .next()
-            .unwrap_or_default()
-            .rsplit('@')
-            .next()
-            .unwrap_or_default();
-        let host = if authority.starts_with('[') {
-            authority
-                .strip_prefix('[')
-                .and_then(|value| value.split(']').next())
-                .unwrap_or_default()
-        } else {
-            authority.split(':').next().unwrap_or_default()
-        };
-        host == "localhost"
-            || host == "::1"
-            || host == "0.0.0.0"
-            || host == "127.0.0.1"
-            || host.starts_with("127.")
+        is_loopback_url(&self.backend.base_url)
     }
 
     /// Cloud dispatch is restricted to encrypted, non-loopback endpoints.
@@ -809,7 +892,11 @@ mod tests {
       },
       "roles": {
         "embedding": { "backend": "omlx", "model": "multilingual-e5-base-mlx",
-                       "query_prefix": "query: ", "document_prefix": "passage: " },
+                       "query_prefix": "query: ", "document_prefix": "passage: ",
+                       "on_backend": {
+                         "ollama": { "model": "nomic-embed-text",
+                                     "query_prefix": "search_query: ",
+                                     "document_prefix": "search_document: " } } },
         "reranking": { "backend": "omlx", "model": "bge-reranker-v2-m3-mlx" }
       }
     }"#;
@@ -865,6 +952,7 @@ mod tests {
                 credit_expires_on: None,
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                on_backend: HashMap::new(),
             },
         );
         let mut backup = cfg.roles["cloud_summarization"].clone();
@@ -1094,6 +1182,7 @@ mod tests {
                 credit_expires_on: None,
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                on_backend: HashMap::new(),
             },
         );
         assert!(!cfg.role("cloud_incomplete").unwrap().has_cloud_policy());
@@ -1135,6 +1224,7 @@ mod tests {
                 credit_expires_on: None,
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                on_backend: HashMap::new(),
             },
         );
         let role = cfg.role("ungoverned").unwrap();
@@ -1166,6 +1256,7 @@ mod tests {
                 credit_expires_on: None,
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                on_backend: HashMap::new(),
             },
         );
         let governed = cfg.role("cloud_governed").unwrap();
@@ -1207,6 +1298,7 @@ mod tests {
                 credit_expires_on: Some("2026-08-31".into()),
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                on_backend: HashMap::new(),
             },
         );
         let role = cfg.role("cloud_credit").unwrap();
@@ -1249,6 +1341,101 @@ mod tests {
     fn a_missing_config_file_is_an_empty_config_not_a_failure() {
         let cfg = InferenceConfig::from_path(Path::new("/nonexistent/inference.json"));
         assert!(cfg.roles.is_empty() && cfg.backends.is_empty());
+    }
+
+    /// The Intel always-on host: Ollama is the only runtime it has.
+    #[test]
+    fn the_machine_backend_carries_the_model_and_its_prefixes_with_it() {
+        let cfg = config();
+        let ollama = cfg.role_on("embedding", Some("ollama")).expect("declared");
+        assert_eq!(ollama.backend_name, "ollama");
+        assert_eq!(ollama.model, "nomic-embed-text");
+        assert_eq!(
+            (
+                ollama.query_prefix.as_str(),
+                ollama.document_prefix.as_str()
+            ),
+            ("search_query: ", "search_document: "),
+            "e5's prefixes on nomic cost retrieval quality and raise nothing"
+        );
+        assert_eq!(
+            ollama.embedding_endpoint(),
+            "http://127.0.0.1:11434/api/embed"
+        );
+
+        for unchanged in [None, Some("omlx")] {
+            let role = cfg.role_on("embedding", unchanged).expect("declared");
+            assert_eq!(role.backend_name, "omlx");
+            assert_eq!(role.model, "multilingual-e5-base-mlx");
+            assert_eq!(role.query_prefix, "query: ");
+        }
+    }
+
+    /// Swapping the backend alone would leave an MLX id addressed to Ollama.
+    /// Ollama has no `/v1/rerank` at all, so there is nothing to name here.
+    #[test]
+    fn a_role_with_no_model_on_the_machine_backend_is_none_not_a_wrong_name() {
+        assert!(config().role_on("reranking", Some("ollama")).is_none());
+        assert_eq!(
+            config().role_on("reranking", None).unwrap().model,
+            "bge-reranker-v2-m3-mlx"
+        );
+    }
+
+    /// The override says which *local* runtime exists. A hosted backend answers
+    /// from every machine, and moving a reviewed cloud role onto whatever this
+    /// host runs would hand its policy to a model that never passed review.
+    #[test]
+    fn the_machine_backend_leaves_a_hosted_role_where_it_is() {
+        let mut cfg = config();
+        cfg.backends.insert(
+            "hosted".into(),
+            Backend {
+                api: Api::OpenAi,
+                base_url: "https://api.example.com/v1".into(),
+                api_key_file: None,
+            },
+        );
+        cfg.roles.insert(
+            "cloud_summarization".into(),
+            Role {
+                backend: "hosted".into(),
+                model: "hosted-model".into(),
+                provider_name: Some("Hosted test".into()),
+                cloud_data_tier: Some(CloudDataTier::Public),
+                billing_mode: Some(BillingMode::FreeOnly),
+                failover_priority: Some(10),
+                max_requests_per_day: Some(20),
+                max_input_tokens: Some(8_000),
+                credit_expires_on: None,
+                query_prefix: String::new(),
+                document_prefix: String::new(),
+                on_backend: HashMap::new(),
+            },
+        );
+        let role = cfg
+            .role_on("cloud_summarization", Some("ollama"))
+            .expect("a hosted role survives a machine that overrides its local runtime");
+        assert_eq!(role.backend_name, "hosted");
+        assert_eq!(role.model, "hosted-model");
+        assert!(role.has_cloud_policy());
+    }
+
+    /// The claim that makes the override safe rather than silently wrong: two
+    /// machines running the same role still name different producers.
+    #[test]
+    fn the_cache_key_names_the_producer_on_both_sides_of_the_override() {
+        let cfg = config();
+        assert_eq!(
+            cfg.role_on("embedding", None).unwrap().cache_key(),
+            "omlx:multilingual-e5-base-mlx"
+        );
+        assert_eq!(
+            cfg.role_on("embedding", Some("ollama"))
+                .unwrap()
+                .cache_key(),
+            "ollama:nomic-embed-text"
+        );
     }
 
     #[test]

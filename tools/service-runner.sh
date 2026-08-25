@@ -222,6 +222,25 @@ AUTOSTART="$(toml_get autostart "$MANIFEST")"
 # answering both at once is a contradiction this file refuses rather than picks a winner for.
 SCHEDULE="$(toml_get schedule "$MANIFEST")"
 
+# The one local model runtime this machine has. `libs/inference` reads it as
+# AXON_INFERENCE_BACKEND and moves every role whose declared backend is loopback onto it,
+# taking that role's `on_backend` model id with it — a backend id on its own would ask
+# Ollama for an MLX model name. An Intel or Pi host that has only Ollama says so once here
+# and no capability config changes.
+#
+# Home: `[inference] backend` in the overlay's machine.toml, the same file and the same
+# single-line contract `[capability.<name>] port` below already uses, because it is the same
+# shape of fact — true for one machine, unable to live in a tracked shared file. Machine-global
+# rather than per-capability, so it is read once at this level and inherited by both the
+# supervised and the scheduled branch; a capability that does no inference never sees it used.
+# Passed through unvalidated on purpose: whether the id names a declared backend is a question
+# about inference.json, and libs/inference already answers it by name.
+if [ -f "$AXON_MACHINE_TOML" ]; then
+  _inference_backend="$(toml_get_in inference backend "$AXON_MACHINE_TOML")"
+  if [ -n "$_inference_backend" ]; then export AXON_INFERENCE_BACKEND="$_inference_backend"; fi
+  unset _inference_backend
+fi
+
 container_init() {  # every container-only manifest field, read only when it applies
 IMAGE="$(toml_get image "$MANIFEST")"
 TAG="$(toml_get tag "$MANIFEST")"

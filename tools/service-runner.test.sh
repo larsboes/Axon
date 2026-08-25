@@ -2,6 +2,7 @@
 # Tests for tools/service-runner.sh's stop/start contract:
 #   * `stop` cannot report success while the capability's declared port is still held
 #   * `down` followed by `up` brings services back, while an explicit `stop` still keeps one down
+#   * machine.toml's `[inference] backend` reaches the started process, and only when declared
 #
 # The case is real and was hit by hand on 2026-07-30: a panel capability's dev server survived
 # `stop`. `bun run dev` supervises its own child; when the supervisor exits first the child is
@@ -33,6 +34,8 @@ cleanup() {
   if [ -n "$LISTENER_PID" ]; then kill -TERM "$LISTENER_PID" 2>/dev/null; wait "$LISTENER_PID" 2>/dev/null; fi
   rm -rf "$SCRATCH"
   rm -f /tmp/axon-porthog.pid /tmp/axon-porthog.maintenance
+  rm -f /tmp/axon-inferhog.pid /tmp/axon-inferhog.maintenance
+  rm -f /tmp/axon-inferhog.log /tmp/axon-inferhog.err
 }
 trap cleanup EXIT
 
@@ -44,6 +47,13 @@ for _c in "$_dir" "$_dir/tools"; do
   if [ -f "$_c/service-runner.sh" ]; then SRC_TOOLS="$_c"; break; fi
 done
 [ -n "$SRC_TOOLS" ] || { echo "service-runner: cannot find service-runner.sh next to $_dir" >&2; exit 1; }
+
+# Every case below writes a machine.toml into its own scratch overlay and asserts on what the
+# runner reads back. An operator's exported AXON_OVERLAY_ROOT / AXON_MACHINE_TOML wins over the
+# scratch axon.toml, so without this the runner reads the REAL machine and the fixture is inert
+# (tools/lib/test-support.sh#isolate_axon_env).
+source "$SRC_TOOLS/lib/test-support.sh"
+isolate_axon_env
 
 mkdir -p "$ROOT/tools/lib" "$OVERLAY/config"
 cp "$SRC_TOOLS/service-runner.sh" "$SRC_TOOLS/capability.sh" "$ROOT/tools/"
@@ -160,6 +170,71 @@ if "$SR" stop porthog --nohold >/dev/null 2>&1; then
 fi
 
 fi  # HAVE_BUN
+
+# --- the machine's local model runtime reaches the process it starts --------
+# `[inference] backend` in machine.toml was documented in three places as the way a host
+# without oMLX names the runtime it does have, and libs/inference has read
+# AXON_INFERENCE_BACKEND since it existed — but nothing ever exported it. The documented
+# mechanism was fiction, so a host whose only runtime is Ollama had no way to say so, and
+# every role stayed pointed at a port with nothing behind it.
+#
+# Its own scratch root: the machine.toml above describes the porthog host, and this case is
+# about what a DIFFERENT machine declares.
+#
+# Ambient value cleared first — an operator who exports one for debugging would otherwise
+# make the control below pass for the wrong reason.
+unset AXON_INFERENCE_BACKEND
+
+INF_ROOT="$SCRATCH/inference"
+INF_OVERLAY="$SCRATCH/inference-overlay"
+ENV_DUMP="$SCRATCH/inference-backend-seen"
+INF_SR="$INF_ROOT/tools/service-runner.sh"
+
+mkdir -p "$INF_ROOT/tools/lib" "$INF_OVERLAY/config" "$INF_ROOT/capabilities/inferhog"
+cp "$SRC_TOOLS/service-runner.sh" "$SRC_TOOLS/capability.sh" "$INF_ROOT/tools/"
+cp "$SRC_TOOLS"/lib/*.sh "$INF_ROOT/tools/lib/"
+printf 'overlay = "%s"\n' "$INF_OVERLAY" > "$INF_ROOT/axon.toml"
+
+# No port and no health_path, so `start` execs the command and returns without waiting on
+# anything — which is why the assertion polls for the file rather than reading it once.
+cat > "$INF_ROOT/capabilities/inferhog/service.toml" <<'TOML'
+kind = "process"
+name = "inferhog"
+command = ["capabilities/inferhog/dump-backend"]
+TOML
+cat > "$INF_ROOT/capabilities/inferhog/dump-backend" <<SH
+#!/bin/bash
+printf '%s' "\${AXON_INFERENCE_BACKEND:-<unset>}" > "$ENV_DUMP"
+SH
+chmod +x "$INF_ROOT/capabilities/inferhog/dump-backend"
+
+inference_backend_seen() {  # start inferhog and echo what it was handed
+  rm -f "$ENV_DUMP" /tmp/axon-inferhog.pid
+  "$INF_SR" start inferhog >/dev/null 2>&1
+  local waited=0
+  while [ "$waited" -lt 40 ] && [ ! -s "$ENV_DUMP" ]; do sleep 0.25; waited=$((waited + 1)); done
+  cat "$ENV_DUMP" 2>/dev/null || true
+}
+
+cat > "$INF_OVERLAY/config/machine.toml" <<'TOML'
+os = "linux"
+container_runtime = "docker"
+capabilities = ["inferhog"]
+
+[inference]
+backend = "ollama"
+TOML
+seen="$(inference_backend_seen)"
+[ "$seen" = "ollama" ] \
+  || fail "[inference] backend never reached the started process (saw '$seen')"
+
+# The control. A machine that declares no runtime must not have one invented for it: an
+# exported value here would move every loopback role onto a backend nobody chose.
+printf 'os = "linux"\ncontainer_runtime = "docker"\ncapabilities = ["inferhog"]\n' \
+  > "$INF_OVERLAY/config/machine.toml"
+seen="$(inference_backend_seen)"
+[ "$seen" = "<unset>" ] \
+  || fail "a machine declaring no [inference] backend still exported one (saw '$seen')"
 
 # --- the runtime gate must precede every runtime call (#125) ----------------
 # apple-container's apiserver is a separate launchd XPC service. When it is down, every
