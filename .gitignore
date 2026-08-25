@@ -3,10 +3,12 @@
 # edit a shared file. See schemas/machine.toml.example.
 axon.local.toml
 
-# Anchored to the repo root: Bazel's convenience symlinks (bazel-bin, bazel-out,
-# bazel-testlogs, bazel-<workspace>) live only there. Unanchored, this pattern also swallowed
-# README.md#bazel-as-the-build-spine/ and README.md#generated-architecture/, which were
-# linked from root README and shipped in ARCHITECTURE.md while never being in the repo at all.
+# Bazel's convenience symlinks (bazel-bin, bazel-out, bazel-testlogs, bazel-<workspace>).
+# Kept after PRD Q44 retired Bazel (2026-08-25): every checkout that ever ran it still has
+# them on disk, and an untracked symlink into a stale output tree must not become a tracked
+# file. Anchored to the repo root, where they live — unanchored, this pattern also swallowed
+# two real directories that were linked from the README and shipped in ARCHITECTURE.md while
+# never being in the repo at all.
 /bazel-*
 .DS_Store
 **/target/
@@ -17,7 +19,7 @@ __pycache__/
 # graphify's node IDs are slugified from the ABSOLUTE scan path (confirmed by hand --
 # every id is prefixed with this machine's full home-directory path), so its output is
 # inherently machine-specific, not portable, and not something that belongs in a public
-# commit. Local build artifact, like bazel-out/target/ above. See
+# commit. Local build artifact, like target/ above. See
 # tools/graphify.sh.
 graphify-out/
 

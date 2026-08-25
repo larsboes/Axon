@@ -1,5 +1,0 @@
-# Pre-git scratch (README.md#scratch-is-not-documentation) — never Axon's own build graph. Without this,
-# to-integrate/maybe/LifeOS-mono's own nested Bazel workspace (it has its own
-# bazel-LifeOS-mono symlink + external/ tree) breaks `bazel test //...` at the root:
-# the recursive package scan tries to load its BUILD files as if they were Axon's.
-to-integrate

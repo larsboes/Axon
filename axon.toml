@@ -23,8 +23,8 @@ name = "axon"
 # Shipped DEFAULT only — a fresh install with no axon.local.toml resolves here.
 # Do not edit this to point at your own overlay; run tools/install.sh, which writes
 # axon.local.toml. tools/lib/paths.sh prefers that file and falls back to this value,
-# which is also what keeps the Bazel gates working: the sandbox materializes this
-# tracked file and never sees a gitignored one.
+# which is also what keeps a fresh clone working: CI has no axon.local.toml and resolves
+# this default instead.
 overlay = "~/.axon-overlay"
 
 [upstream]

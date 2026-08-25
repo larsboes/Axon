@@ -190,9 +190,10 @@ fi
 # (verified: 6879 in scouting/target). Same set .gitignore now excludes.
 # to-integrate/ joins the list for the same reason .gitignore excludes it
 # (README.md#scratch-is-not-documentation): pre-git scratch holding whole vendored projects
-# (verified: LifeOS-mono alone is 9.7G with its own nested Bazel workspace),
-# not Axon's own code -- scanning it is both wasted time and noise from
-# findings Axon has no business fixing.
+# (verified: LifeOS-mono alone is 9.7G), not Axon's own code -- scanning it is
+# both wasted time and noise from findings Axon has no business fixing.
+# bazel-* stays listed after PRD Q44 retired Bazel (2026-08-25): the symlinks it
+# left behind still point at multi-gigabyte output trees on existing checkouts.
 EXCLUDE_DIRS="target bazel-bin bazel-out bazel-testlogs node_modules to-integrate"
 
 # ---- semgrep: SAST over Axon's own code (bash/TS/Rust/Python) ----

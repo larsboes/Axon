@@ -18,14 +18,9 @@
 #
 # Usage: tools/graphify.sh
 # Check only: tools/graphify.sh --check
-# Bazel: bazel run //:graphify
 set -e
 
-if [ -n "${BUILD_WORKSPACE_DIRECTORY:-}" ]; then
-  _lib="$BUILD_WORKSPACE_DIRECTORY/tools/lib"
-else
-  _lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
-fi
+_lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
 source "$_lib/paths.sh"
 
 cd "$AXON_ROOT"

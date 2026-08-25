@@ -5,28 +5,15 @@
 # mapfile/readarray.
 #
 # Usage: tools/generate-architecture.sh
-# Bazel: bazel run //:generate_architecture (writes into the real checkout, not the
-# sandbox -- see the $BUILD_WORKSPACE_DIRECTORY override below); bazel test
-# //:architecture_up_to_date_test verifies without writing back.
+# Verify without writing back: tools/check-architecture-fresh.sh
 set -e
 
-# Plain invocation: this file's own dirname correctly finds tools/lib next to it.
-# `bazel run`: sh_binary relocates its entrypoint to <package>/<target-name> in the
-# ephemeral runfiles tree, losing the tools/ subdirectory context -- and that tree
-# is sandboxed anyway, not the real checkout this tool means to edit. Bazel sets
-# BUILD_WORKSPACE_DIRECTORY only for `bazel run`, precisely so a target like this
-# one can find the real source tree instead.
-if [ -n "${BUILD_WORKSPACE_DIRECTORY:-}" ]; then
-  _toollib="$BUILD_WORKSPACE_DIRECTORY/tools/lib"
-else
-  _toollib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
-fi
+_toollib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
 source "$_toollib/paths.sh"
 
-# Override for //:architecture_up_to_date_test: the sandboxed ARCHITECTURE.md is
-# read-only (Bazel's data deps are symlinked read-only), and a test must never
-# mutate anything anyway -- ARCHITECTURE_OUT lets the freshness check generate
-# into a scratch file and diff, instead of writing in place.
+# Override for tools/check-architecture-fresh.sh: a gate must never mutate what it
+# checks -- ARCHITECTURE_OUT lets it generate into a scratch file and diff, instead
+# of writing in place.
 OUT="${ARCHITECTURE_OUT:-$AXON_ROOT/ARCHITECTURE.md}"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 UP="$AXON_ROOT/upstreams.toml"
@@ -49,9 +36,9 @@ AX="$AXON_ROOT/axon.toml"
   for dir in "$AXON_ROOT"/capabilities/*/; do
     [ -d "$dir" ] || continue
     # No README.md means this is scaffolding, not a capability yet
-    # (README.md#documentation-stays-owned-and-current). Skipping keeps the working tree and the Bazel sandbox in agreement — the
-    # sandbox materializes capability dirs *via* their README.md, so a README-less dir exists
-    # in one and not the other, and the row it produced was empty in the What column anyway.
+    # (README.md#documentation-stays-owned-and-current). The row it produced was empty in the
+    # What column anyway, so skipping it costs nothing and keeps scaffolding out of a
+    # document that describes what exists.
     [ -f "$dir/README.md" ] || continue
     name="$(basename "$dir")"
     desc="$(awk '/^# /{h=1;next} h{ if (!NF) { if (got) exit; else next }; got=1; printf "%s ", $0 }' "$dir/README.md")"
@@ -152,8 +139,7 @@ AX="$AXON_ROOT/axon.toml"
   echo "**Not tabulated here.** The \`[[state_mount]]\` registry moved from \`axon.toml\` into"
   echo "\`<overlay>/config/machine.toml\` on 2026-07-26, because those paths describe one machine"
   echo "and this file is the shared repo snapshot — a generated public document cannot carry a"
-  echo "second machine's home directory, and the Bazel freshness gate that verifies this file is"
-  echo "hermetic and cannot see an overlay at all. Run \`tools/doctor\` to see this machine's"
+  echo "second machine's home directory. Run \`tools/doctor\` to see this machine's"
   echo "mounts and whether each path exists. See"
   echo "schemas/machine.toml.example."
   echo
@@ -256,7 +242,7 @@ AX="$AXON_ROOT/axon.toml"
   echo
   echo "The graph above is manifest-derived and coarse on purpose (Packs/capabilities/images,"
   echo "not functions). For a real, file-and-function-level code graph, run"
-  echo "\`bazel run //:graphify\` (or \`tools/graphify.sh\`) — output lands in \`graphify-out/\`,"
+  echo "\`tools/graphify.sh\` — output lands in \`graphify-out/\`,"
   echo "git-ignored and never embedded here: graphify's node ids are slugified from this"
   echo "machine's absolute path, so committing any of it would leak that path into a public"
   echo "repo. See tools/graphify.sh."
