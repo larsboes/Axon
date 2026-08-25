@@ -310,6 +310,10 @@ mod tests {
             },
             confidence_basis_points: 0,
             state: CandidateState::Confirmed,
+            location_street: None,
+            location_postal_code: None,
+            location_city: None,
+            location_country: None,
         }
     }
 

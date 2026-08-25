@@ -57,6 +57,25 @@ pub struct CsvMapping {
     pub date_formats: Vec<CsvDateFormat>,
     #[serde(default)]
     pub row_policy: CsvRowPolicy,
+    #[serde(default)]
+    pub location_columns: Option<CsvLocationColumns>,
+}
+
+/// Raw location columns preserved from the export for the places capability,
+/// which links spend to venues through these fields
+/// (`capabilities/places/README.md`, D1: forward imports must stop discarding
+/// them). Every column is optional because exports differ: the Amex shape keeps
+/// the city inside the street column's second line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CsvLocationColumns {
+    #[serde(default)]
+    pub street_column: Option<String>,
+    #[serde(default)]
+    pub postal_code_column: Option<String>,
+    #[serde(default)]
+    pub city_column: Option<String>,
+    #[serde(default)]
+    pub country_column: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +215,18 @@ pub struct TransactionCandidate {
     pub proposed_account: String,
     pub confidence_basis_points: u16,
     pub state: CandidateState,
+    /// Stored verbatim from the export, embedded newlines included, so the
+    /// places capability can geocode the exact text the bank printed. Never
+    /// part of the fingerprint: venue links key on fingerprints minted before
+    /// these fields existed (`capabilities/places/README.md`, D2).
+    #[serde(default)]
+    pub location_street: Option<String>,
+    #[serde(default)]
+    pub location_postal_code: Option<String>,
+    #[serde(default)]
+    pub location_city: Option<String>,
+    #[serde(default)]
+    pub location_country: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -251,6 +282,14 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
         .collect::<ImportResult<Vec<_>>>()?;
     let reference = optional_column(&headers, mapping.reference_column.as_deref())?;
     let currency = optional_column(&headers, mapping.currency_column.as_deref())?;
+    let location = mapping.location_columns.as_ref();
+    let street = optional_column(&headers, location.and_then(|l| l.street_column.as_deref()))?;
+    let postal_code = optional_column(
+        &headers,
+        location.and_then(|l| l.postal_code_column.as_deref()),
+    )?;
+    let city = optional_column(&headers, location.and_then(|l| l.city_column.as_deref()))?;
+    let country = optional_column(&headers, location.and_then(|l| l.country_column.as_deref()))?;
     let row_filter = mapping
         .row_filter
         .as_ref()
@@ -377,6 +416,14 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
             &headers,
             &record,
         )?;
+        // Verbatim by contract: no normalization, so the Amex two-line street
+        // value keeps its embedded newline. Blank cells become absent.
+        let location_value = |index: Option<usize>| {
+            index
+                .and_then(|index| record.get(index))
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned)
+        };
         candidates.push(TransactionCandidate {
             id: format!("candidate_{fingerprint}"),
             fingerprint,
@@ -389,6 +436,10 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
             proposed_account,
             confidence_basis_points,
             state: CandidateState::Pending,
+            location_street: location_value(street),
+            location_postal_code: location_value(postal_code),
+            location_city: location_value(city),
+            location_country: location_value(country),
         });
     }
     let outflow_count = candidates
@@ -911,6 +962,7 @@ mod tests {
             amount_rounding: AmountRounding::Reject,
             date_formats: default_date_formats(),
             row_policy: CsvRowPolicy::Strict,
+            location_columns: None,
         }
     }
 
@@ -1067,6 +1119,61 @@ mod tests {
             prepared.candidates[0].proposed_account,
             "expenses:food:canteen"
         );
+    }
+
+    #[test]
+    fn location_columns_capture_raw_address_fields_verbatim() {
+        let mut with_location = mapping();
+        with_location.location_columns = Some(CsvLocationColumns {
+            street_column: Some("Adresse".into()),
+            postal_code_column: Some("PLZ".into()),
+            city_column: None,
+            country_column: Some("Land".into()),
+        });
+        // The quoted street field carries two lines, as the Amex export does:
+        // line 1 street, line 2 city. It must survive byte-for-byte.
+        let csv = b"Buchung;Betrag;Text;Referenz;Waehrung;Adresse;PLZ;Land\n02.08.2026;-12,34;Synthetic market;row-1;EUR;\"Beispielstr. 1\nMusterstadt\";12345;Deutschland\n03.08.2026;-5,00;Synthetic service;row-2;EUR;; ;\n";
+
+        let rows = parse_csv(csv, &with_location).unwrap();
+
+        assert_eq!(
+            rows[0].location_street.as_deref(),
+            Some("Beispielstr. 1\nMusterstadt")
+        );
+        assert_eq!(rows[0].location_postal_code.as_deref(), Some("12345"));
+        assert_eq!(rows[0].location_city, None);
+        assert_eq!(rows[0].location_country.as_deref(), Some("Deutschland"));
+        // Blank and whitespace-only cells are absent, not empty strings.
+        assert_eq!(rows[1].location_street, None);
+        assert_eq!(rows[1].location_postal_code, None);
+
+        // Location never enters the fingerprint: venue links in the places
+        // capability key on identities minted before these fields existed.
+        let without_location = parse_csv(csv, &mapping()).unwrap();
+        assert_eq!(rows[0].fingerprint, without_location[0].fingerprint);
+        assert_eq!(without_location[0].location_street, None);
+
+        // A configured location column that is absent fails closed like every
+        // other configured column.
+        let error =
+            parse_csv(b"Buchung;Betrag;Text;Referenz;Waehrung\n", &with_location).unwrap_err();
+        assert!(error.0.contains("Adresse"));
+    }
+
+    #[test]
+    fn a_mapping_without_location_columns_parses_exactly_as_before() {
+        let json = r#"{"date_column":"Buchung","amount_column":"Betrag","description_column":"Text","source_account":"assets:bank:checking"}"#;
+        let parsed: serde_json::Result<CsvMapping> = serde_json::from_str(json);
+        let deserialized = parsed.unwrap();
+        assert_eq!(deserialized.location_columns, None);
+
+        let csv =
+            b"Buchung;Betrag;Text;Referenz;Waehrung\n02.08.2026;-12,34;Example market;row-1;EUR\n";
+        let rows = parse_csv(csv, &mapping()).unwrap();
+        assert_eq!(rows[0].location_street, None);
+        assert_eq!(rows[0].location_postal_code, None);
+        assert_eq!(rows[0].location_city, None);
+        assert_eq!(rows[0].location_country, None);
     }
 
     #[test]

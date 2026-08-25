@@ -1,7 +1,8 @@
 use finance::accounting::{Amount, JournalTransaction, Posting};
 use finance::analytics::{project, TransactionRow};
 use finance::import::{
-    parse_csv, AmountSign, CandidateState, CsvDateFormat, CsvMapping, CsvRowPolicy,
+    parse_csv, AmountSign, CandidateState, CsvDateFormat, CsvLocationColumns, CsvMapping,
+    CsvRowPolicy,
 };
 use finance::investment::{
     Holding, HoldingsCoverage, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource,
@@ -100,6 +101,7 @@ fn candidate_staging_is_idempotent_and_review_is_explicit() {
         amount_rounding: finance::import::AmountRounding::Reject,
         date_formats: vec![CsvDateFormat::IsoYearMonthDay],
         row_policy: CsvRowPolicy::Strict,
+        location_columns: None,
     };
     let first_export = parse_csv(
         b"Date;Amount;Description;Reference\n2026-08-01;-10.00;Synthetic market;one\n2026-08-02;-5.00;Synthetic service;two\n",
@@ -161,6 +163,120 @@ fn candidate_staging_is_idempotent_and_review_is_explicit() {
 }
 
 #[test]
+fn location_fields_round_trip_and_a_location_less_reimport_never_erases_them() {
+    let mut mapping = CsvMapping {
+        delimiter: ';',
+        decimal_separator: '.',
+        date_column: "Date".into(),
+        amount_column: "Amount".into(),
+        description_column: "Description".into(),
+        categorization_columns: Vec::new(),
+        reference_column: Some("Reference".into()),
+        currency_column: None,
+        default_currency: "EUR".into(),
+        source_account: "liabilities:card:review".into(),
+        default_outflow_account: "expenses:uncategorized".into(),
+        default_inflow_account: "income:uncategorized".into(),
+        categorization_rules: Vec::new(),
+        row_filter: None,
+        amount_sign: AmountSign::AsProvided,
+        amount_rounding: finance::import::AmountRounding::Reject,
+        date_formats: vec![CsvDateFormat::IsoYearMonthDay],
+        row_policy: CsvRowPolicy::Strict,
+        location_columns: Some(CsvLocationColumns {
+            street_column: Some("Adresse".into()),
+            postal_code_column: Some("PLZ".into()),
+            city_column: None,
+            country_column: Some("Land".into()),
+        }),
+    };
+    // The quoted street cell keeps the Amex two-line shape: street, then city.
+    let csv = b"Date;Amount;Description;Reference;Adresse;PLZ;Land\n2026-08-01;-10.00;Synthetic market;one;\"Beispielstr. 1\nMusterstadt\";12345;Deutschland\n";
+    let with_location = parse_csv(csv, &mapping).unwrap();
+    let (store, _schema) = store("candidate_location");
+    assert_eq!(
+        store.stage_candidates(&with_location, "2026-08-25").unwrap(),
+        (1, 0)
+    );
+    let stored = store.candidate(&with_location[0].id).unwrap().unwrap();
+    assert_eq!(stored, with_location[0]);
+    assert_eq!(
+        stored.location_street.as_deref(),
+        Some("Beispielstr. 1\nMusterstadt")
+    );
+
+    // Re-staging through a mapping without location columns keeps the captured
+    // values on the still-pending candidate.
+    mapping.location_columns = None;
+    let without_location = parse_csv(csv, &mapping).unwrap();
+    assert_eq!(without_location[0].id, with_location[0].id);
+    assert_eq!(
+        store
+            .stage_candidates(&without_location, "2026-08-25")
+            .unwrap(),
+        (0, 1)
+    );
+    assert_eq!(
+        store.candidate(&with_location[0].id).unwrap().unwrap(),
+        with_location[0]
+    );
+}
+
+#[test]
+fn a_pending_candidate_gains_location_when_the_mapping_learns_the_columns() {
+    let mut mapping = CsvMapping {
+        delimiter: ';',
+        decimal_separator: '.',
+        date_column: "Date".into(),
+        amount_column: "Amount".into(),
+        description_column: "Description".into(),
+        categorization_columns: Vec::new(),
+        reference_column: Some("Reference".into()),
+        currency_column: None,
+        default_currency: "EUR".into(),
+        source_account: "liabilities:card:review".into(),
+        default_outflow_account: "expenses:uncategorized".into(),
+        default_inflow_account: "income:uncategorized".into(),
+        categorization_rules: Vec::new(),
+        row_filter: None,
+        amount_sign: AmountSign::AsProvided,
+        amount_rounding: finance::import::AmountRounding::Reject,
+        date_formats: vec![CsvDateFormat::IsoYearMonthDay],
+        row_policy: CsvRowPolicy::Strict,
+        location_columns: None,
+    };
+    let csv = b"Date;Amount;Description;Reference;Adresse;PLZ;Land\n2026-08-01;-10.00;Synthetic market;one;Beispielstr. 1;12345;Deutschland\n";
+    let without_location = parse_csv(csv, &mapping).unwrap();
+    let (store, _schema) = store("candidate_location_backfill");
+    assert_eq!(
+        store
+            .stage_candidates(&without_location, "2026-08-25")
+            .unwrap(),
+        (1, 0)
+    );
+
+    mapping.location_columns = Some(CsvLocationColumns {
+        street_column: Some("Adresse".into()),
+        postal_code_column: Some("PLZ".into()),
+        city_column: None,
+        country_column: Some("Land".into()),
+    });
+    let with_location = parse_csv(csv, &mapping).unwrap();
+    assert_eq!(with_location[0].id, without_location[0].id);
+    assert_eq!(
+        store
+            .stage_candidates(&with_location, "2026-08-25")
+            .unwrap(),
+        (0, 1)
+    );
+    let stored = store.candidate(&without_location[0].id).unwrap().unwrap();
+    assert_eq!(stored.location_street.as_deref(), Some("Beispielstr. 1"));
+    assert_eq!(stored.location_postal_code.as_deref(), Some("12345"));
+    assert_eq!(stored.location_city, None);
+    assert_eq!(stored.location_country.as_deref(), Some("Deutschland"));
+}
+
+#[test]
 fn reference_less_overlap_preserves_multiplicity_without_reimporting_it() {
     let mapping = CsvMapping {
         delimiter: ';',
@@ -181,6 +297,7 @@ fn reference_less_overlap_preserves_multiplicity_without_reimporting_it() {
         amount_rounding: finance::import::AmountRounding::Reject,
         date_formats: vec![CsvDateFormat::IsoYearMonthDay],
         row_policy: CsvRowPolicy::Strict,
+        location_columns: None,
     };
     let first_export = parse_csv(
         b"Date;Amount;Description\n2026-08-01;-7.13;Synthetic market\n",
@@ -235,6 +352,7 @@ fn reconciled_transfer_pair_has_one_canonical_candidate() {
         amount_rounding: finance::import::AmountRounding::Reject,
         date_formats: vec![CsvDateFormat::IsoYearMonthDay],
         row_policy: CsvRowPolicy::Strict,
+        location_columns: None,
     };
     let mut bank = parse_csv(
         b"Date;Amount;Description;Reference\n2026-08-02;-12.34;Synthetic transfer;bank\n",

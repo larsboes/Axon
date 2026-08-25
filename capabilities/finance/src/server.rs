@@ -1951,6 +1951,7 @@ mod tests {
                 CsvDateFormat::DayMonthYearDots,
             ],
             row_policy: CsvRowPolicy::Strict,
+            location_columns: None,
         }
     }
 

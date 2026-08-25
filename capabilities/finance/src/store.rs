@@ -153,6 +153,18 @@ impl FinanceStore {
                 CHECK (state IN ('pending','confirmed','rejected','duplicate'));
             CREATE INDEX IF NOT EXISTS idx_transaction_candidates_state
                 ON {schema}.transaction_candidates(state, booked_at DESC);
+            -- Added after the table shipped, so they arrive as ALTERs rather
+            -- than in the CREATE. Nullable raw location columns preserved from
+            -- the export for the places capability, which reads candidates to
+            -- link spend to venues (capabilities/places/README.md, D1/D2).
+            ALTER TABLE {schema}.transaction_candidates
+                ADD COLUMN IF NOT EXISTS location_street TEXT;
+            ALTER TABLE {schema}.transaction_candidates
+                ADD COLUMN IF NOT EXISTS location_postal_code TEXT;
+            ALTER TABLE {schema}.transaction_candidates
+                ADD COLUMN IF NOT EXISTS location_city TEXT;
+            ALTER TABLE {schema}.transaction_candidates
+                ADD COLUMN IF NOT EXISTS location_country TEXT;
 
             CREATE TABLE IF NOT EXISTS {schema}.transaction_projection (
                 id TEXT PRIMARY KEY,
@@ -369,8 +381,10 @@ impl FinanceStore {
                     "INSERT INTO {schema}.transaction_candidates
                         (id, fingerprint, booked_at, description, amount_cents, currency,
                          source_account, source_reference, proposed_account,
-                         confidence_basis_points, state, created_at)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                         confidence_basis_points, state, created_at,
+                         location_street, location_postal_code, location_city,
+                         location_country)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                      ON CONFLICT (fingerprint) DO NOTHING"
                 ),
                 &[
@@ -386,21 +400,37 @@ impl FinanceStore {
                     &confidence,
                     &candidate.state.as_str(),
                     &today,
+                    &candidate.location_street,
+                    &candidate.location_postal_code,
+                    &candidate.location_city,
+                    &candidate.location_country,
                 ],
             )?;
             if inserted == 1 {
                 created += 1;
             } else {
+                // COALESCE, not plain assignment: a re-import through a mapping
+                // that gained location columns fills them in, while one through
+                // a mapping without them never erases what an earlier import
+                // captured.
                 conn.execute(
                     &format!(
                         "UPDATE {schema}.transaction_candidates
-                         SET proposed_account = $2, confidence_basis_points = $3
+                         SET proposed_account = $2, confidence_basis_points = $3,
+                             location_street = COALESCE($4, location_street),
+                             location_postal_code = COALESCE($5, location_postal_code),
+                             location_city = COALESCE($6, location_city),
+                             location_country = COALESCE($7, location_country)
                          WHERE fingerprint = $1 AND state = 'pending'"
                     ),
                     &[
                         &candidate.fingerprint,
                         &candidate.proposed_account,
                         &confidence,
+                        &candidate.location_street,
+                        &candidate.location_postal_code,
+                        &candidate.location_city,
+                        &candidate.location_country,
                     ],
                 )?;
                 existing += 1;
@@ -417,7 +447,8 @@ impl FinanceStore {
                 &format!(
                     "SELECT id, fingerprint, booked_at, description, amount_cents,
                             currency, source_account, source_reference, proposed_account,
-                            confidence_basis_points, state
+                            confidence_basis_points, state, location_street,
+                            location_postal_code, location_city, location_country
                      FROM {schema}.transaction_candidates
                      ORDER BY booked_at DESC, id"
                 ),
@@ -843,6 +874,10 @@ fn row_to_candidate(row: &Row) -> Option<TransactionCandidate> {
         proposed_account: row.get("proposed_account"),
         confidence_basis_points: confidence.try_into().ok()?,
         state: CandidateState::parse(row.get::<_, String>("state").as_str())?,
+        location_street: row.get("location_street"),
+        location_postal_code: row.get("location_postal_code"),
+        location_city: row.get("location_city"),
+        location_country: row.get("location_country"),
     })
 }
 
