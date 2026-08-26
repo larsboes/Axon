@@ -11,7 +11,7 @@
 # Parsing contract: the scalars and the capabilities array go through tools/lib/toml.sh,
 # which is single-line only (`key = "value"` / `key = ["a", "b"]`). The [[state_mount]]
 # array-of-tables is beyond that parser on purpose and is read by tools/doctor via Bun.TOML
-# — which is why doctor is TypeScript (README.md#argue-bazel-per-case).
+# — which is why doctor is TypeScript (README.md#cargo-and-bun-are-the-build-path).
 
 # THIS FILE IS THE ONLY COPY. An overlay does not carry its own machine.toml.example:
 # tools/install.sh writes a real machine.toml from the values it detects, and every overlay

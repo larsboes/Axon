@@ -34,12 +34,12 @@ which is the signal that answers "what am I using." Snapshots land in the overla
 
 ## Why this shape: build & language
 
-Bash, not Rust, and no Bazel target — the same call `cv` makes (see `capabilities/cv/README.md`
-and README.md#argue-bazel-per-case). This sits on the lowest rung of README.md#implementation-languages-and-intelligence's intelligence ladder
+Bash, not Rust, and no build step — the same call `cv` makes (see `capabilities/cv/README.md`
+and README.md#cargo-and-bun-are-the-build-path). This sits on the lowest rung of README.md#implementation-languages-and-intelligence's intelligence ladder
 (heuristic): run package managers, set-diff against a manifest, shell out to trivy. The shape
 and idioms are identical to `tools/audit` and `tools/toolchain-check` (both bash) — there are no
 Rust types crossing a serde boundary with another crate, no performance need, and no container.
-A Bazel target would drag in a toolchain and buy nothing; an interpreted tool with no build step
+Compiling this would drag in a toolchain and buy nothing; an interpreted tool with no build step
 is invoked directly here by design.
 
 Base-vs-extra classification is exact-name matching against `toolchain.toml`'s tool ids and bins

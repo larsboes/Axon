@@ -9,11 +9,10 @@ live preview + JD-tailoring call).
 
 **Build (CLI), adopt Typst underneath.** The actual job is small: filter a personal content
 file by a profile tag, render it. Typst does the templating *and* the selection logic itself
-(array `.filter()` over the parsed data) — no separate compiled glue needed, no Bazel wiring
-(this repo scopes Bazel to compiled capabilities sharing Rust types across a serde boundary;
-`cv` has no such cross-capability dependency — see
-`README.md#argue-bazel-per-case`, which already establishes interpreted
-tools here are invoked directly, never Bazel targets).
+(array `.filter()` over the parsed data) — no separate compiled glue needed, and no build step
+(this repo compiles the capabilities that share Rust types across a serde boundary; `cv` has no
+such cross-capability dependency — see `README.md#cargo-and-bun-are-the-build-path`, which already
+establishes that interpreted tools here are invoked directly).
 
 ## Considered and declined
 

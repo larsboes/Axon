@@ -218,19 +218,19 @@ Choose in this order: adopt, contribute upstream, overlay a pinned source, use a
 temporary contribution vehicle, then build. A maintained fork is another copy of the same logic
 and drifts for the same reason duplicated configuration does.
 
-### Bazel as the build spine
+### Cargo and bun are the build path
 
-Axon uses Bazel with bzlmod for cross-package dependency visibility, hermetic builds and polyglot
-wiring. Cross-package access goes through declared dependencies; a capability-local build path may
-not bypass the root graph.
+`cargo` builds and tests the Rust workspace: one root workspace, one `Cargo.lock`, and each member
+manifest owning its own direct dependencies. A service manifest names its `target/release` binary,
+and `tools/service-runner.sh` builds that binary on demand. `bun` owns TypeScript and the UI
+bundles. Generated-architecture freshness is a script gate, `tools/check-architecture-fresh.sh`,
+not a build-graph target. PRD Q44 (2026-08-25) decided this and retired the Bazel graph that held
+the same jobs before it.
 
-### Argue Bazel per case
-
-Bazel is a bias, not an automatic answer. Name what its dependency graph, hermeticity or freshness
-gate buys and what toolchain or runfiles cost it adds. Generated architecture earns Bazel because
-staleness is a dependency problem. `tools/doctor` stays an interpreted command because wrapping it
-would add machinery without improving correctness. The dashboard build was deliberately reopened
-when production began consuming capability-owned UI bundles; its README records that trigger.
+Any build layer above those two is argued per case, never assumed. Name what it buys and what
+toolchain cost it adds. `tools/doctor` stays an interpreted command because wrapping it would add
+machinery without improving correctness. The dashboard build was deliberately reopened when
+production began consuming capability-owned UI bundles; its README records that trigger.
 
 ### Implementation languages and intelligence
 
@@ -459,10 +459,10 @@ without reinstalling. The tree exists either way, because it has to — every to
 `AXON_ROOT` from its own location, and no shape of Axon runs without a directory tree.
 
 **A release tarball instead of a clone was rejected.** Measured at decision time, a `--depth 1`
-clone transfers 3.12 MiB and lands 11.4 MB in 586 files, of which `MODULE.bazel.lock` alone is
-5.7 MB — a Bazel artifact a usage install never reads. A tarball saves nothing measurable and costs
-the update path: `tools/update.sh` is fetch plus fast-forward, so a tarball install would need a
-second update mechanism for the same job.
+clone transferred 3.12 MiB and landed 11.4 MB in 586 files — most of that weight a lockfile the
+build has since dropped, so the tree is smaller now, not larger. A tarball saves nothing measurable
+and costs the update path: `tools/update.sh` is fetch plus fast-forward, so a tarball install would
+need a second update mechanism for the same job.
 
 **An install without git at all was rejected.** `git` is already a declared host requirement in
 `toolchain.toml`, so skipping it removes no dependency and only removes capability. The run path
@@ -529,8 +529,7 @@ the private route in [SECURITY.md](SECURITY.md), never through a public issue.
 
 `ARCHITECTURE.md` is generated from manifests and the tracked tree. Never edit it directly or
 maintain a second diagram that can drift. Change its source or generator, regenerate with
-`bazel run //:generate_architecture`, and verify with
-`bazel test //:architecture_up_to_date_test`.
+`tools/generate-architecture.sh`, and verify with `tools/check-architecture-fresh.sh`.
 
 Graphify is the optional file-and-symbol view. Its local output remains ignored because node IDs
 encode the scan path. The committed self-model fuses only reproducible layers with that local graph
@@ -586,7 +585,7 @@ standing specification type.
 | Bounded domain, external system or data store | `capabilities/<name>/` | Register an upstream verdict before consuming external code |
 | User-facing command for one capability | `capabilities/<name>/<name>` | The shell discovers commands by capability name |
 | UI serving one capability | `capabilities/<name>/ui/` | Serve it through that capability's HTTP surface |
-| Shared code with no domain | `libs/<name>/` | Requires a second consumer and its own Bazel package |
+| Shared code with no domain | `libs/<name>/` | Requires a second consumer and its own crate in the Cargo workspace |
 | Shared contract | `schemas/` | Import it; do not redefine it |
 | Agent workflow | `Packs/<pack>/skills/<name>/` | Public and runtime-configured through the overlay |
 | System or project Axon connects to | `systems.toml` | Private URLs go in the overlay extension |
@@ -624,7 +623,7 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 | `ARCHITECTURE.md` | generated snapshot of capabilities/Packs/upstreams/systems — never hand-edited, see `tools/generate-architecture.sh`. State mounts are machine-local and deliberately absent; `tools/doctor` reports those |
 | `capabilities/<name>/` | one dir per capability: curated README + its code as it lands; optional `ui/` panel served over its own HTTP surface |
 | `dashboard/` | the spine's shell — discovers installed capabilities via their manifests and mounts their panels (installer, doctor UI, service dashboards); owns no domain, no data |
-| `libs/<name>/` | spine-owned shared code with no domain of its own — statically linked into capability binaries at compile time, own `BUILD.bazel` from day one |
+| `libs/<name>/` | spine-owned shared code with no domain of its own — statically linked into capability binaries at compile time, own crate in the Cargo workspace from day one |
 | `schemas/` | shared contracts; import, never redefine |
 | `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit, upstream-checker, generate-architecture, graphify, agent-integrations (harness integrations from upstream pins), mini-tools |
 
@@ -632,14 +631,11 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 the upstream image each is pinned to) are derived straight from
 `axon.toml`/`upstreams.toml`/`systems.toml`/`Packs/*/pack.toml` — that's the live, generated
 view. Don't hand-edit it, and don't hand-maintain a second diagram somewhere else that it could
-drift from. `bazel test //:architecture_up_to_date_test` catches drift (fails if a manifest
-changed and nobody regenerated); `bazel run //:generate_architecture` fixes it. This script earns
-Bazel wiring because generated-file freshness is a dependency problem; most interpreted tools do
-not. For a real,
-file-and-function-level code graph rather than the manifest-derived one, `bazel run
-//:graphify` — output stays local and git-ignored (`graphify-out/`), never embedded here, since
-its node ids are slugified from this machine's absolute path
-(`tools/graphify.sh`).
+drift from. `tools/check-architecture-fresh.sh` catches drift (fails if a manifest changed and
+nobody regenerated); `tools/generate-architecture.sh` fixes it. For a real,
+file-and-function-level code graph rather than the manifest-derived one, `tools/graphify.sh` —
+output stays local and git-ignored (`graphify-out/`), never embedded here, since its node ids are
+slugified from this machine's absolute path.
 
 Graphify's semantic pass defaults to the same authenticated oMLX server as Comms and maps it
 onto graphify's pinned OpenAI-compatible backend. The script reads oMLX's key from its own

@@ -94,7 +94,7 @@ the box, one bridge between them.
   component with no third-party daemon. `<overlay>/config/machine.toml` already names it as this
   machine's runtime.
 
-  _Trigger that reopens this (README.md#argue-bazel-per-case and README.md#decisions-live-with-their-owner): a Linux/WSL host, where `apple-container` does not
+  _Trigger that reopens this (README.md#decisions-live-with-their-owner): a Linux/WSL host, where `apple-container` does not
   exist._ There, docker/podman is the available runtime and the boundary is namespaces, not a
   VM — weaker, and the README must say so plainly rather than imply parity. The host-side model
   premise also changes: no Metal/ANE, so inference is a different setup (a Linux GPU/CPU server),

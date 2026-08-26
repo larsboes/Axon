@@ -37,22 +37,22 @@ diff, `git diff --check`, and `git status --short` before committing. Common rep
 are:
 
 ~~~sh
-bazel test //...
-bun test ./tools/
+cargo test --workspace --locked -- --skip postgres_tests::
+bun test
 tools/check-publication-hygiene.sh
 ~~~
 
 Rust packages are members of the root `Cargo.toml` workspace and share the
 root `Cargo.lock`. Keep each package's direct dependencies in that package's
-manifest; do not add nested lockfiles or another Bazel crate universe. For a
-Rust change, verify the workspace view and Cargo build alongside Bazel:
+manifest; do not add a nested lockfile. For a Rust change, verify the workspace
+view and the build:
 
 ~~~sh
 cargo metadata --locked --no-deps --format-version 1
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo check --workspace --locked
-bazel test //...
+cargo test --workspace --locked -- --skip postgres_tests::
 ~~~
 
 Run the format and Clippy commands from the repository root. They use the exact
@@ -60,24 +60,27 @@ toolchain and components pinned in `rust-toolchain.toml`; do not replace a findi
 with a workspace-wide allowance. A narrow allowance belongs beside the affected
 item and must explain the invariant that makes the lint inapplicable.
 
-The default Bazel command is hermetic and does not require Postgres. Store
-integration tests are deliberately manual and fail rather than skip when their
-database is absent. Run all four against a synthetic database with:
+`--skip postgres_tests::` is what makes that command hermetic: it drops the
+database suites, which are deliberately manual and fail rather than skip when
+their database is absent. The `postgres_tests::` module name is the selector for
+both halves. Run those suites against a synthetic database with:
 
 ~~~sh
-bazel test //:postgres_integration_tests \
-  --test_env=SCOUTING_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-  --test_env=TRANSIT_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-  --test_env=COMMS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-  --test_env=TASKS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon
+SCOUTING_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+TRANSIT_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+COMMS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+FINANCE_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+TASKS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+PLACES_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
+  cargo test --workspace --locked -- postgres_tests::
 ~~~
 
 Run `bun run check` in `dashboard/` when dashboard code changes. Manifest or
 generated-architecture changes also require:
 
 ~~~sh
-bazel run //:generate_architecture
-bazel test //:architecture_up_to_date_test
+tools/generate-architecture.sh
+tools/check-architecture-fresh.sh
 ~~~
 
 Do not describe a skipped or unavailable check as passing.
