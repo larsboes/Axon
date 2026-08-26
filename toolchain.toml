@@ -120,17 +120,14 @@ install_linux = "apt-get install -y hledger"
 min_version = "1.52.1"
 version_cmd = "hledger --version"
 
-[bazel]
-required = "optional"
-needed_by = ["workflow:build"]
-why = "the build spine (README.md#bazel-as-the-build-spine). Optional on a pure dev box: service-runner.sh falls back to cargo for Rust capabilities when bazel is absent (README.md#argue-bazel-per-case)"
-install_macos = "brew install bazelisk"
-install_linux = "npm i -g @bazel/bazelisk   # or https://bazel.build/install"
+# [bazel] stood here until 2026-08-25, when PRD Q44 retired it. cargo below is the whole Rust
+# build path now, so the entry was deleted rather than kept: toolchain.toml declares what a
+# machine must have, and a host tool nothing calls is a check that can only be noise.
 
 [cargo]
 required = "optional"
 needed_by = ["workflow:build"]
-why = "Rust toolchain; the bazel-less build path for Rust capabilities (service-runner.sh README.md#argue-bazel-per-case fallback)"
+why = "the Rust toolchain, and the build path for every Rust capability: each service.toml declares `build = [\"cargo\", \"build\", ...]` and tools/service-runner.sh runs it before starting the binary (README.md#cargo-and-bun-are-the-build-path)"
 install_macos = "brew install rustup && rustup default stable   # or: brew install rust"
 install_linux = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
 
