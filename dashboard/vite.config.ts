@@ -217,9 +217,9 @@ function guardCommsMutations(
 
 // A function, not an object, so the proxy table is built only when a server is
 // actually starting. `buildProxy()` shells out to tools/capability.sh and reads
-// every manifest in the repo; a production build has no server, no need for the
-// table, and — under Bazel — neither the script nor the manifests in its sandbox.
-// Evaluating it at config load was what kept this app out of the build graph.
+// every manifest in the repo; a production build has no server and no need for the
+// table. Evaluating it at config load made `bun run build` depend on the whole manifest
+// tree to produce static files.
 // This shell is reached over the tailnet as well as over loopback. `tailscale serve`
 // terminates TLS on the machine's own MagicDNS name and proxies to 127.0.0.1, so the Host
 // header arrives as `<machine>.<tailnet>.ts.net` and Vite's DNS-rebinding guard refuses it

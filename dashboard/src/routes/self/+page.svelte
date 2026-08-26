@@ -365,7 +365,7 @@
   <p class="hint">
     Select a row to see its couplings. <b>runtime dependencies</b> come from
     <span class="mono">requires=</span>; <b>compiles in</b> comes from
-    <span class="mono">#[path]</span> or a Bazel label. They are different relationships.
+    <span class="mono">#[path]</span> or a Cargo path dependency. They are different relationships.
   </p>
 
   <div class="wrap">

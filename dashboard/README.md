@@ -192,32 +192,30 @@ Obsidian keeps capability ownership intact. The Trips page imports `category: tr
 Scouting reads only configured opportunity/profile globs, and the Comms CLI can export a
 distilled keeper. These are separate capability contracts, not one dashboard-level vault scan.
 
-## Wired into Bazel — the trigger this section named has fired
+## A built bundle is what a served machine hands out
 
-This section used to argue the opposite, and it was right at the time: real wiring only
-once a named consumer exists, because a `BUILD.bazel` that shells out to `bun run dev`
-underneath is ceremony without the property Bazel is for. The condition it set — *"once a
-deploy step actually consumes the build rather than the dev server"* — came true on
-2026-07-31, so the call was reopened under README.md#argue-bazel-per-case rather than left to rot.
+This section used to argue that the dashboard needed no build step at all, and it was right
+at the time: the condition it set — *"once a deploy step actually consumes the build rather
+than the dev server"* — came true on 2026-07-31, when capability-owned UIs started being
+served as build outputs over their own HTTP surface. `dist/` is what a server hands out, and a
+served artifact should be reproducible rather than whatever the last local build happened to
+leave behind.
 
-What changed is that capability-owned UIs are now served as build outputs over their own
-HTTP surface, which forced `bun_vite_build` and `bun_deps` into existence
-(`tools/bazel/bun/`). The custom rule work this section correctly priced is already paid
-for, and `dist/` is what a server hands out — a served artifact should be reproducible
-rather than whatever the last local `bun run build` happened to leave behind.
+`bun run build` produces it (`svelte-kit sync`, `svelte-check`, then `vite build`).
+`tools/service-runner.sh` runs that command in the package's own directory before it starts the
+service, so a machine that nobody edits on serves a bundle built from the checkout it is running.
 
-`bazel build //dashboard:bundle` produces it. Dependencies are installed at fetch time by
-a repository rule, so the build action itself needs no network.
-
-**The development path is untouched.** `vite dev` is still the hot-reload server, still
-what `service.toml` supervises, and still how you work on this app. Bazel owns the built
-bundle — what a machine with nobody editing on it serves.
+**The development path is untouched.** `vite dev` is still the hot-reload server, still what
+`service.toml` supervises, and still how you work on this app.
 
 One thing had to move for that to work: `vite.config.ts` exports a function instead of an
 object, so `buildProxy()` runs only when a server is actually starting. It shells out to
-`tools/capability.sh` and reads every manifest in the repo, which is fine for a dev server
-and impossible inside a sandbox that has neither. Evaluating it at config load was the
-concrete thing keeping this app out of the build graph.
+`tools/capability.sh` and reads every manifest in the repo, which is fine for a dev server and
+wrong for a build that produces static files. Evaluating it at config load made every build
+depend on the whole manifest tree.
+
+Between 2026-07-31 and 2026-08-25 the bundle was a Bazel target with a hand-rolled bun
+toolchain; PRD Q44 retired both. The trigger and the artifact survived the build tool.
 
 ## Trips and connection search
 
@@ -259,21 +257,21 @@ thing, so it lives with that thing (README.md#decisions-live-with-their-owner).
 **Decision:** `capabilities/transit` and `capabilities/scouting` each grow a second binary —
 `transit-server` / `scout-server` (Rust, Axum, per README.md#implementation-languages-and-intelligence) — alongside their existing CLI
 binary (`transit`, `scout`). Migrated back in one capability at a time from a shelved bulk port
-(preserved in Git history), Bazel-wired properly this time (`rust_binary` target in each
-capability's `BUILD.bazel`, crate universe repinned), not left as an untracked `cargo run`-only
-binary the way the shelved attempt was.
+(preserved in Git history), declared properly this time — a real `[[bin]]` in each capability's
+`Cargo.toml`, named by its `service.toml` — not left as an untracked `cargo run`-only binary the
+way the shelved attempt was.
 
 **Why:** both Cargo.toml files previously carried an explicit comment declining an HTTP
 server — transit's: *"No tokio/axum... out of scope here"*; scouting's: *"No HTTP server
 binary. The original had one... fronting a dashboard that was never adopted into Axon... zero
 consumers is exactly the 'way more machinery than needed' anti-pattern."* Both were correct
 when written — there was no consumer. A 2026-07-10 session silently deleted both comments and
-added the server binaries anyway, without a named consumer, without Bazel wiring, without a
-decision record — reopening the call by fiat instead of by the trigger it was explicitly
-waiting for. That work was shelved, not lost — the root `dashboard` is a real,
+added the server binaries anyway, without a named consumer, without a declared build target,
+without a decision record — reopening the call by fiat instead of by the trigger it was
+explicitly waiting for. That work was shelved, not lost — the root `dashboard` is a real,
 deliberately-scoped consumer now, which is the actual trigger the
 original comments named. This decision is that reopening, done properly: named consumer,
-Bazel-wired, recorded.
+declared binary, recorded.
 
 **Forecloses:** the "no server, zero consumers" comment doesn't get silently deleted again for
 the next capability that wants one — cite this decision instead, or write a new one if the
