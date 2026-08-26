@@ -12,9 +12,9 @@ name = "punctuality"
 path = "src/lib.rs"
 
 # punctuality-cli, not punctuality: capabilities/punctuality/punctuality is the shell
-# entry point this capability puts on PATH (README.md#placement-guide), and a Bazel target
-# named after it would collide with that file inside the same package. Same reason
-# capabilities/comms names its binary comms-cli.
+# entry point this capability puts on PATH (README.md#placement-guide), and it is that
+# script which execs this binary. Two things named `punctuality` on PATH is the collision
+# the suffix avoids. Same reason capabilities/comms names its binary comms-cli.
 [[bin]]
 name = "punctuality-cli"
 path = "src/main.rs"

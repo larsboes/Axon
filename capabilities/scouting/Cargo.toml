@@ -17,11 +17,7 @@ path = "src/main.rs"
 
 # scout-server: async (tokio + axum), reopens the prior "no HTTP server,
 # zero consumers" call now that dashboard is a named consumer — see
-# dashboard/README.md. The stale
-# "standalone Cargo crate, no Bazel plumbing" note this file used to carry
-# above [lib] predates capabilities/scouting/BUILD.bazel (already has real
-# rust_library/rust_test/rust_binary targets) — dropped rather than left
-# contradicting it.
+# dashboard/README.md.
 [[bin]]
 name = "scout-server"
 path = "src/server.rs"

@@ -17,9 +17,9 @@
 //! start and stop the machine's capabilities, correctly carries none, and a
 //! helper that silently added it would have widened that surface.
 
-//! This is a normal workspace crate. Cargo consumers declare a path dependency,
-//! and Bazel consumers depend on `//libs/axon-server:axon-server`; both build
-//! graphs therefore enforce the same boundary and resolve the same `axum` API.
+//! This is a normal workspace crate. Consumers declare a Cargo path dependency,
+//! which is what enforces the boundary and resolves one `axum` API across all of
+//! them.
 
 use std::net::SocketAddr;
 

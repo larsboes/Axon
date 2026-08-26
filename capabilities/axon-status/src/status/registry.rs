@@ -174,7 +174,8 @@ pub(crate) struct CapabilityView {
 }
 
 /// The repo this binary belongs to. Passed in rather than derived from the binary's
-/// own path, which under Bazel points into an output tree, not the checkout.
+/// own path: that path is `target/release/`, which locates a build output rather than
+/// the checkout, and says nothing once the binary is copied anywhere else.
 /// `tools/lib/paths.sh` exports it, so anything started by `service-runner.sh`
 /// inherits it; a hand-started run has to say where it is.
 pub(crate) fn axon_root() -> Result<PathBuf, String> {

@@ -113,7 +113,8 @@ impl Drop for TempFile {
 /// A subprocess rather than the `xberg` crate, on purpose and for now. Linking
 /// it would pull a bundled Tesseract and an ONNX runtime into this capability's
 /// build, and the crate is seven weeks past 1.0; a process boundary keeps that
-/// out of `cargo`/`bazel` and makes the dependency removable by editing config.
+/// out of this capability's Cargo dependencies and makes it removable by editing
+/// config.
 /// If it earns its place, linking it is the next step, not a rewrite.
 ///
 /// Arguments go as an array, never through a shell, so a filename cannot become

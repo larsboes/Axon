@@ -74,7 +74,7 @@
 //!
 //! ## Dependency rule
 //!
-//! This is a normal workspace crate with explicit Cargo and Bazel dependencies.
+//! This is a normal workspace crate with explicit Cargo dependencies.
 //! Its dependency surface stays intentionally narrow: `postgres`, `r2d2` and
 //! `r2d2_postgres` are the complete database stack shared by store-owning
 //! capabilities.

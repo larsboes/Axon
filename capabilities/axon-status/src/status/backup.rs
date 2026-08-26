@@ -26,8 +26,8 @@ pub(crate) struct Receipt {
 /// `backup.sh`, parsed here by hand.
 ///
 /// Hand-rolled rather than adding a date crate: the format is ours and fixed, and the
-/// alternative costs a dependency in Cargo.lock and the Bazel crate index for one
-/// `strptime`. `None` on anything that does not match, which reads downstream as "no
+/// alternative costs a dependency in Cargo.lock for one `strptime`. `None` on
+/// anything that does not match, which reads downstream as "no
 /// usable receipt" — the same answer as a missing file, and the right one, because a
 /// receipt this process cannot date cannot be used to claim a backup is fresh.
 pub(crate) fn parse_receipt_ts(s: &str) -> Option<u64> {

@@ -278,13 +278,12 @@ mod tests {
         writer.close().expect("footer writes");
     }
 
-    /// Bazel hands every test its own scratch dir; `cargo test` falls back to the
-    /// system one. Neither is inside the repo, and neither is the private data dir.
+    /// The system scratch dir, which is neither inside the repo nor inside the private
+    /// data dir — the property this helper exists for. It read `TEST_TMPDIR` first until
+    /// 2026-08-25 (PRD Q44), because Bazel handed every test its own; `cargo test` sets
+    /// no such variable, so that branch could only ever be dead here.
     fn fixture_path(name: &str) -> std::path::PathBuf {
-        std::env::var("TEST_TMPDIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::env::temp_dir())
-            .join(name)
+        std::env::temp_dir().join(name)
     }
 
     /// The reader's whole job, on a file: project five columns, fold the rows that say

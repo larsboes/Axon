@@ -7,8 +7,8 @@
 //! and this is it.
 //!
 //! **Why a hand-rolled zone instead of `chrono-tz`:** the promotion needs
-//! exactly one zone — the operator's — and pulling a full tz database (plus a
-//! Bazel crate repin) to answer one question is the machinery this repo keeps
+//! exactly one zone — the operator's — and pulling a full tz database to answer
+//! one question is the machinery this repo keeps
 //! declining. `capabilities/calendar/src/date.rs` already hand-rolls the same
 //! civil-date arithmetic. The cost of that choice is a closed set of
 //! supported zones, so an unsupported one is a hard error: the promotion
