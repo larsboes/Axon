@@ -151,8 +151,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 16,
-        "nodes": 534
+        "files": 15,
+        "nodes": 521
       }
     },
     {
@@ -1332,7 +1332,7 @@
     },
     {
       "name": "platforms",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "1.1.0"
     },
     {
@@ -1357,12 +1357,12 @@
     },
     {
       "name": "rules_rust",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "0.71.1"
     },
     {
       "name": "rules_shell",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "0.8.0"
     },
     {
@@ -1487,6 +1487,7 @@
     "external": 10,
     "stale": [
       "capabilities/comms/src/server/auth.rs",
+      "capabilities/finance/src/postgres_test.rs",
       "capabilities/learning/ISA.md",
       "capabilities/learning/README.md",
       "capabilities/lifeos/README.md",
