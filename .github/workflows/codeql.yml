@@ -20,7 +20,6 @@ name: CodeQL
 #           claim .svelte, so the <script> blocks in those components are unscanned — the
 #           single biggest thing this workflow does NOT cover, stated here rather than left to
 #           be inferred from a green check.
-#   Starlark 0.07 MB of Bazel files. Not a CodeQL language.
 #   Swift   0.01 MB: two eval scripts under capabilities/comms/eval/. CodeQL supports Swift,
 #           but only on a macOS runner and only with a real build. That is a whole matrix leg
 #           and a paid runner for 13 KB of throwaway evaluation code. Declined deliberately;
@@ -30,11 +29,11 @@ name: CodeQL
 # rather than from documentation, so it describes the version actually running:
 #   actions cpp csharp go java javascript python ruby rust swift
 #
-# On Rust and Bazel: #13 flagged that CodeQL's default setup relies on autobuild, which will not
-# drive `bazel build //...`. That concern does not apply once the build mode is stated: every
-# language here runs `build-mode: none`, which extracts from source instead of observing a build.
-# Bazel is never invoked, so it cannot fail to be invoked. The extractor discovers the root
-# Cargo workspace and its member manifests recursively.
+# On Rust: every language here runs `build-mode: none`, which extracts from source instead of
+# observing a build — no build system is invoked, so none can fail to be invoked. The extractor
+# discovers the root Cargo workspace and its member manifests recursively. (#13 originally
+# raised this against the Bazel build, retired 2026-08-25 by PRD Q44; the answer predated and
+# outlived it.)
 #
 # What the first run actually measured, because "the job is green" is not the same claim:
 #

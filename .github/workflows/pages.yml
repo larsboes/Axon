@@ -106,21 +106,23 @@ jobs:
       - name: self.json is current
         run: tools/self check
 
-      - name: Cache Bazel repository cache
+      - name: Cache cargo registry
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
-          path: ~/.cache/bazel-repo
-          key: bazel-repo-${{ runner.os }}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', 'Cargo.lock') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            bazel-repo-${{ runner.os }}-
+            cargo-registry-${{ runner.os }}-
 
-      - name: Cache Bazel disk cache
+      - name: Cache cargo target
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
-          path: ~/.cache/bazel-disk
-          key: bazel-disk-${{ runner.os }}-${{ github.sha }}
+          path: target
+          key: cargo-target-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            bazel-disk-${{ runner.os }}-
+            cargo-target-${{ runner.os }}-
 
       # The double-entry engine behind Finance. Taken from the exact ref upstreams.toml pins
       # rather than from apt, whose hledger trails the pinned 1.52.1 — a demo built against a
@@ -137,19 +139,12 @@ jobs:
           chmod +x /usr/local/bin/hledger
           hledger --version
 
-      # Built explicitly and together rather than left to service-runner's on-demand fallback:
-      # one bazel invocation shares the analysis cache across all five, and a compile error
+      # Built explicitly and together rather than left to service-runner's on-demand build:
+      # one cargo invocation shares the compilation across all five, and a compile error
       # fails here with a compiler's error message instead of inside a service start.
+      # --release because the manifests' command paths name target/release/ binaries.
       - name: Build the demo's capability servers
-        run: |
-          bazel build \
-            //capabilities/axon-status:axon-status \
-            //capabilities/calendar:calendar-server \
-            //capabilities/finance:finance-server \
-            //capabilities/tasks:tasks-server \
-            //capabilities/trips:trips-server \
-            --repository_cache="$HOME/.cache/bazel-repo" \
-            --disk_cache="$HOME/.cache/bazel-disk"
+        run: cargo build --locked --release -p axon-status -p calendar -p finance -p tasks -p trips
 
       - name: Install dashboard dependencies
         working-directory: dashboard
