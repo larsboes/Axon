@@ -3,8 +3,8 @@
 One home for **how much digest a thing is worth**.
 
 A shared library, not a capability: no domain of its own, no upstream verdict, no CLI
-(README.md#three-architectural-nouns). Cargo consumers declare an `axon-summarize` path
-dependency and Bazel consumers depend on `//libs/summarize:summarize`.
+(README.md#three-architectural-nouns). Consumers declare an `axon-summarize` path
+dependency in the workspace.
 
 ## Why it exists
 

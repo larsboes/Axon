@@ -22,6 +22,5 @@ capability's dependency resolution, and it needs no crate universe of its own.
 ## Consumers
 
 Every Rust capability uses this directly or through the server helper. Consumers
-declare the workspace path dependency in Cargo and
-`//libs/axon-config:axon-config` in Bazel. The library is compiled once per
-build graph, so its API is an ordinary crate boundary rather than copied source.
+declare the workspace path dependency in Cargo. The library is compiled once per
+build, so its API is an ordinary crate boundary rather than copied source.

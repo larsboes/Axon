@@ -180,7 +180,6 @@ the authoritative writing surface for human notes.
 ## Build
 
 ```bash
-cargo test --manifest-path capabilities/trips/Cargo.toml
-bazel test //capabilities/trips:trips_test
-bazel build //capabilities/trips:trips-server
+cargo test -p trips
+cargo build --locked --release --bin trips-server
 ```

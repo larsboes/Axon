@@ -85,17 +85,15 @@ listener compiles fine, and so does one that skips the gate by never calling thi
 The check that makes both policies real is doctor's **Server bind policy** section, which
 fails when any `capabilities/*/src/*.rs` that builds a `Router`
 also constructs its own `axum::serve` or `TcpListener::bind`. It lives in doctor rather
-than Bazel because every Rust capability is its own Bazel package, so a root-level glob
-cannot reach these sources and a hand-maintained label list is the thing that rots
-(README.md#documentation-stays-owned-and-current, same reasoning as the decision path-rot sweep).
+than a repo gate because half the servers it has to cover are in the overlay, outside this
+repo, and a gate that globs Axon alone would report a clean policy while an overlay server
+binds the LAN (README.md#documentation-stays-owned-and-current, same reasoning as the decision path-rot sweep).
 
 ## Build boundary
 
-This is a normal workspace crate in both build graphs. Cargo consumers declare an
-`axon-server` path dependency and Bazel consumers depend on
-`//libs/axon-server:axon-server`. The shared crate universe keeps the `axum::Router`
-type identical across the library and its consumers, while dependency queries expose
-the actual architectural edge.
+This is a normal workspace crate. Consumers declare an `axon-server` path dependency,
+and the one root `Cargo.lock` keeps the `axum::Router` type identical across the library
+and every consumer. `cargo tree` is what exposes the architectural edge.
 
 ## Consumers
 

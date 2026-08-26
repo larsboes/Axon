@@ -264,7 +264,7 @@ repo has to carry.
 **Both DuckDB shapes cost more than they buy here.**
 
 `duckdb-rs` bundles a C++ embedded database. That is a large non-Rust dependency in the
-Bazel graph, with its own build, to run one `GROUP BY`. The DuckDB CLI avoids the build
+crate graph, with its own build, to run one `GROUP BY`. The DuckDB CLI avoids the build
 but moves the aggregation into a SQL file outside the type system, where the histogram
 rule that a cancellation is not a punctual train — the one decision in this capability
 most likely to be got wrong — would live as an untested `WHERE` clause.
@@ -301,7 +301,7 @@ backup set, safe to delete, rebuilt by re-running ingest.
      lost. The bold is the index into the list, not ornament. -->
 
 - **DuckDB via `duckdb-rs`** ([duckdb/duckdb-rs](https://github.com/duckdb/duckdb-rs),
-  MIT) — bundled C++ in the Bazel graph for one aggregation. Declined on cost, not
+  MIT) — bundled C++ in the crate graph for one aggregation. Declined on cost, not
   quality.
 - **DuckDB CLI driven from a shell script** — puts the statistical rules that decide the
   answer in untested SQL, and adds a binary dependency only this capability needs.

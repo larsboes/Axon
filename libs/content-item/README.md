@@ -33,8 +33,7 @@ calendar entry before this contract existed.
 
 `comms` (feed, mail), `calendar` (entries), and `tasks` (inherited data class).
 
-Consumers declare the workspace path dependency in Cargo and
-`//libs/content-item:content-item` in Bazel. They share one Rust type, while
+Consumers declare the workspace path dependency in Cargo. They share one Rust type, while
 capability-to-capability communication remains the serialized JSON contract;
 the shared crate is not permission to call into another capability's store.
 

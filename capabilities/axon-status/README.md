@@ -73,8 +73,8 @@ process control" cannot both be true.
 
 ## Running
 
-Needs `AXON_ROOT` set, because it shells out to the repo's own tools, and under Bazel the
-binary's own path points into an output tree, not the checkout. `tools/lib/paths.sh`
+Needs `AXON_ROOT` set, because it shells out to the repo's own tools and its own path is
+`target/release/`, which locates a build output rather than the checkout. `tools/lib/paths.sh`
 exports it, so the normal path needs nothing:
 
 ```bash

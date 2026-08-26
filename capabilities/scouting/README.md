@@ -106,18 +106,12 @@ main.rs                  ── CLI binary ("scout"), one lib crate "scouting"
   store.rs                 ── Postgres persistence (own `scouting` schema, see Verdict)
 ```
 
-Bazel now builds this: `bazel build //capabilities/scouting:scout` /
-`bazel test //capabilities/scouting/...`. Adopted now, not deferred to the next Rust port —
-more Rust capabilities are coming (`transit` landed next) and share
-this dependency graph, so the build spine goes in before the second crate shows up, not
-after. Root `MODULE.bazel` wires `rules_rust` (pinned `0.71.1`, see
-`upstreams.toml`) and generates one `crate_index` from the root Cargo workspace
-and lockfile. Each package manifest still owns its direct dependencies; Bazel
-does not repeat their versions through manual `crate.spec()` calls. Both build
-paths are intentionally kept working side by side: plain
-`cargo build`/`cargo test` stays the fast local dev loop (and what rust-analyzer resolves
-against), while Bazel remains the canonical CI-grade path. New Rust packages
-join the root workspace and use the existing crate universe.
+`cargo` builds and tests this, as it does every Rust capability: `cargo build -p scouting` /
+`cargo test -p scouting`. It is a member of the root workspace and resolves through the one
+root `Cargo.lock`, while this package's manifest owns its own direct dependencies. That is
+the same shape a second Rust capability joins with — `transit` landed next and needed no
+build wiring of its own. Between 2026-07 and 2026-08-25 a Bazel graph ran alongside cargo as
+the CI-grade path; PRD Q44 retired it, and CI runs the cargo commands above directly.
 
 **`scout-server` HTTP binary** (`src/server.rs`, Axum + Tokio):
 
@@ -147,8 +141,8 @@ than needed" anti-pattern `capabilities/vaultwarden/README.md` flags for the old
 Vault setup. Reopened once `dashboard` landed as a real, named consumer — see
 `dashboard/README.md` for the full reasoning and why
 that reopening is recorded rather than silent. Port resolution is `AXON_PORT` (exported by
-`tools/service-runner.sh` from `service.toml`) → `config.rs`'s `port` field → `8084`. Bazel
-target: `//capabilities/scouting:scout-server`.
+`tools/service-runner.sh` from `service.toml`) → `config.rs`'s `port` field → `8084`. Built
+as the `scout-server` binary declared in `Cargo.toml`.
 
 The default is 8084 rather than 8080 because `capabilities/vaultwarden` publishes 8080 on the
 host: two capabilities shipping the same default port is a collision that stays invisible
@@ -433,7 +427,7 @@ Two things it refuses rather than guesses, matching calendar's own no-guessing r
   instant, is **reported as skipped** and left alone;
 - an unsupported `home_timezone` aborts the run. Luma reports UTC and calendar stores naive
   local wall time; `localtime.rs` covers UTC, fixed `±HH:MM` offsets and a closed set of EU
-  zones, hand-rolled rather than pulling `chrono-tz` (and a Bazel repin) for one zone's
+  zones, hand-rolled rather than pulling `chrono-tz` in for one zone's
   DST rule — `capabilities/calendar/src/date.rs` already hand-rolls the same civil arithmetic.
 
 `payload` carries an inert evidence snapshot: the originating opportunity id, its URL, score,
@@ -550,7 +544,7 @@ is the test that proves this; it's the test that matters most in this file.
 
 ## Commands
 
-`cargo test`/`bazel test` need `capabilities/postgres` running (`tools/service-runner.sh start
+`cargo test` needs `capabilities/postgres` running (`tools/service-runner.sh start
 postgres`) — `store`'s 8 tests connect for real, see Gotchas.
 
 ```bash
@@ -573,11 +567,11 @@ scout --luma-calendar cal-TOpA5LAFfuDeFpu                       # one Luma calen
 scout --promote-calendar --timezone Europe/Berlin --dry-run     # what would land in calendar
 scout --promote-calendar --timezone Europe/Berlin               # saved luma events -> calendar
 
-bazel build //capabilities/scouting:scout                       # canonical/CI-grade build
-bazel test //capabilities/scouting/... --test_env=SCOUTING_TEST_DATABASE_URL
+cargo build --locked --release --bin scout                      # what service-runner builds
+SCOUTING_TEST_DATABASE_URL=... cargo test -p scouting -- postgres_tests::
 
 cargo run --bin scout-server                                    # HTTP API: health, sources, scan, backlog, status
-bazel build //capabilities/scouting:scout-server                # canonical/CI-grade build
+cargo build --locked --release --bin scout-server               # what service-runner builds
 ```
 
 `--adapter` accepts any source id from `scouting.json`'s `sources[]` array, plus the built-in
@@ -640,7 +634,7 @@ stops, so none of the three falls through now.
   and regex-extracts a `__NEXT_DATA__`/Apollo-state JSON blob. That's a genuine ToS-evasion
   pattern, named here rather than hidden: if Meetup changes its frontend framework or adds
   bot detection, this adapter breaks silently (parse error), not loudly.
-- **`cargo test`/`bazel test` need `capabilities/postgres` running** (`tools/service-runner.sh
+- **`cargo test` needs `capabilities/postgres` running** (`tools/service-runner.sh
   start postgres`) — `store`'s 8 tests connect to the real shared local instance. Each test
   gets its own schema (named from a static per-test string + this process's pid, dropped at
   the end of the test), not its own database — the isolation unit changed, but there's still

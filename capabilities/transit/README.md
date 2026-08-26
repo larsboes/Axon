@@ -52,16 +52,15 @@ session-summary JSON) rather than splitting them into a new module — same "one
 shape the CLI kept through the whole rebuild.
 
 No CV generator (see Redactions). Cargo resolves this package through Axon's
-root workspace and lockfile; Bazel consumes that same resolution through the
-single `@crate_index` repository. This guarantees that the `Journey` types
-shared with scouting cross the `serde` boundary using the same compiled
-dependency instances.
+root workspace and its single lockfile, which is what guarantees that the
+`Journey` types shared with scouting cross the `serde` boundary using the same
+compiled dependency instances.
 
 ## Commands
 
 ```bash
-cargo build && cargo test                                      # needs capabilities/postgres running
-bazel build //capabilities/transit:transit && bazel test //capabilities/transit/... --test_env=TRANSIT_TEST_DATABASE_URL
+cargo build -p transit && cargo test -p transit                 # needs capabilities/postgres running
+TRANSIT_TEST_DATABASE_URL=... cargo test -p transit -- postgres_tests::
 
 transit suggest --query "Bonn"                                  # station name -> EVA candidates
 transit search  --from 8000044 --to 8000207 --time 2026-08-15T09:00:00
@@ -120,7 +119,6 @@ for runs outside the runner, then the shipped default `3000`. Binds loopback onl
 
 ```bash
 cargo run --bin transit-server
-bazel run //capabilities/transit:transit-server
 ```
 
 
@@ -546,8 +544,8 @@ score null.
 - Session journeys live in `transit.trips` tagged `trigger_reason = "session"` and do **not**
   currently also surface in `scouting.opportunities` — that would need a scouting-side adapter
   pulling from transit sessions, which would reverse the established dependency direction
-  (`scouting → transit`, never the reverse — see
-  `MODULE.bazel's crate_index block`). Deferred until the correlation
+  (`scouting → transit`, never the reverse — the path dependency and the comment above it
+  in `capabilities/scouting/Cargo.toml`). Deferred until the correlation
   layer's shape is real (see `capabilities/postgres/README.md`'s still-open correlation-layer question), where
   the join direction is a design decision, not a side effect of "show trip results in the backlog
   too." Session results are queryable through `transit plan --show` and directly against

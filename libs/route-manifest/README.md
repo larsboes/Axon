@@ -52,6 +52,5 @@ A *served* path nobody documented is the failure worth failing on.
 
 Every Rust capability with an HTTP server.
 
-Consumers declare the workspace path dependency in Cargo and
-`//libs/route-manifest:route-manifest` in Bazel. The served JSON remains the
+Consumers declare the workspace path dependency in Cargo. The served JSON remains the
 external contract; the crate gives every server one implementation of it.
