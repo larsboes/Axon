@@ -45,7 +45,7 @@ Use this mode to understand, review, plan, or change the repository.
 | Architecture or ownership boundary | `references/shared-architecture.md` |
 | Data, secrets, provenance, or trust | `references/shared-data-boundaries.md` |
 | Decide where code or configuration belongs | `references/on-placement.md` |
-| Dependencies, language, shell, or Bazel | `references/on-dependencies-and-build.md` |
+| Dependencies, language, shell, or the build | `references/on-dependencies-and-build.md` |
 | README, generated docs, manifests, Packs, or skills | `references/on-documentation.md` |
 | Tests, gates, review, or completion claims | `references/on-verification.md` |
 | Branch, commit, or PR | `references/on-changes.md` |

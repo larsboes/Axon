@@ -66,9 +66,12 @@ itself on every build rather than on the day someone remembers to check.
   punctuality over HTTP and never links the crate.
 - **C2** — the real parquet files are private and 100+ MB. Nothing under
   `<overlay>/data/punctuality/raw/` may be committed or cited as a test input.
-- **C3** — `bazel test //...` is the gate. `//:architecture_up_to_date_test` is the only
+- **C3** — `cargo test --workspace --locked -- --skip postgres_tests::` and the
+  `tools/check-*.sh` gates are the gate. `tools/check-architecture-fresh.sh` is the only
   check that catches a stale generated `ARCHITECTURE.md`, and running everything else
-  and reporting green is how main sat red across three commits on 2026-08-19.
+  and reporting green is how main sat red across three commits on 2026-08-19. The commands
+  were `bazel test //...` until PRD Q44 retired Bazel (2026-08-25); the failure mode was
+  never the tool's.
 - **C4** — `Packs/travel/design/` is untracked on purpose via `.git/info/exclude`, and
   the brainstorm carries an absolute `/Users/...` path the publication-hygiene gate
   rejects. This ISA is tracked; those three documents are not.
@@ -171,10 +174,10 @@ In scope, too dim to state as a claim yet.
 | ISC-3 | file | read the table's evidence column | every entry cites an observed pair | Read | Principles |
 | ISC-4 | command | same query both backends | both non-null, within tolerance | curl + jq | Goal |
 | ISC-5 | command | `rg dbnav_split_unsupported` | zero hits | rg | "improve" |
-| ISC-6 | command | `bazel test //capabilities/punctuality:punctuality_test` | fixture test green | bazel | Goal |
-| ISC-7 | red-then-green | drop a column from the fixture | `MissingColumn`, then green on revert | bazel | Goal |
-| ISC-8 | command | fold the fixture, assert bucket counts | canceled/skipped exact | bazel | Goal |
-| ISC-9 | command | fold the fixture, assert cell key | hour + weekend exact | bazel | Goal |
+| ISC-6 | command | `cargo test -p punctuality` | fixture test green | cargo | Goal |
+| ISC-7 | red-then-green | drop a column from the fixture | `MissingColumn`, then green on revert | cargo | Goal |
+| ISC-8 | command | fold the fixture, assert bucket counts | canceled/skipped exact | cargo | Goal |
+| ISC-9 | command | fold the fixture, assert cell key | hour + weekend exact | cargo | Goal |
 
 ## Anti-claims
 

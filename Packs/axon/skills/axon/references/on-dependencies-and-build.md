@@ -16,9 +16,16 @@ pin, license, and reason before consumption. Never use an unpinned floating rele
 - Import shared schemas and declare cross-capability service requirements; do not import another
   capability's implementation.
 
-## Bazel decision
+## Build decision
 
-Argue Bazel per case. Use it when the dependency graph, hermeticity, generated-artifact freshness,
-or production build consumption is material. Keep a script outside Bazel when wrapping it adds a
-toolchain or runfiles burden without a dependency benefit. Record the reason beside the target or
-tool that enforces the decision.
+`cargo` builds and tests the Rust workspace: one root workspace, one `Cargo.lock`, each member
+manifest owning its direct dependencies. `bun` owns TypeScript and the UI bundles. A capability
+declares its own build in `service.toml` (`build = ["cargo", "build", ...]`) and
+`tools/service-runner.sh` runs that before starting the binary named by `command`.
+Generated-architecture freshness is `tools/check-architecture-fresh.sh`, and
+`tools/generate-architecture.sh` fixes a stale one.
+
+Any build layer above those two is argued per case: name what it buys and what toolchain cost it
+adds. An interpreted tool stays interpreted when wrapping it adds machinery without improving
+correctness. Record the reason beside the tool that enforces the decision. See
+README.md#cargo-and-bun-are-the-build-path.

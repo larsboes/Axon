@@ -42,8 +42,10 @@ tracker holds nothing, and no automation creates entries in it.
 
 ## Constraints
 
-- **C1** — `bazel test //...` before claiming the gates pass. `//:architecture_up_to_date_test`
-  is the only check that catches a stale generated `ARCHITECTURE.md`.
+- **C1** — `cargo test --workspace --locked -- --skip postgres_tests::` and the
+  `tools/check-*.sh` gates before claiming the gates pass.
+  `tools/check-architecture-fresh.sh` is the only check that catches a stale generated
+  `ARCHITECTURE.md`. Was `bazel test //...` until PRD Q44 retired Bazel (2026-08-25).
 - **C2** — `tools/self check` fails locally and that is pre-existing: it compares per-unit
   code counts only when a code graph is present, and this machine's graph is behind main.
   Verify in a `git worktree` of origin/main, not in place.
@@ -143,7 +145,7 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
 | ISC-2 | file | read each closing comment and its named ISA | content present | Read | "carry through ISAs" |
 | ISC-3 | command | `rg -i "backlog is Issues"` over the four files | zero hits | rg | "no new issues" |
 | ISC-4 | command | `rg "gh issue create" .github/workflows` | zero hits | rg | "no new issues" |
-| ISC-5 | command | `bazel test //...` | all pass | bazel | C1 |
+| ISC-5 | command | `cargo test --workspace --locked -- --skip postgres_tests::` | all pass | cargo | C1 |
 | ISC-6 | command | demo build, inspect recorded responses | three capabilities present | bash | F1 |
 | ISC-7 | code inspect | read transit's URL consts | env-overridable | rg | F1 |
 | ISC-8 | command | `tools/upstream-checker` | every warn bumped or held with a reason | bash | F2 |

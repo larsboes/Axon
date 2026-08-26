@@ -151,7 +151,7 @@ data, and every coordinate on it is traceable to a registry row with a source.
 
 | isc | type | check | threshold | tool | anchors_to |
 | --- | --- | --- | --- | --- | --- |
-| PLC-1 | command | `curl :8093/routes` + bazel test route coverage | pass | bazel | F0 |
+| PLC-1 | command | `curl :8093/routes` + `cargo test -p places` route coverage | pass | cargo | F0 |
 | PLC-2 | command | geocode twice, count provider requests | 1 | psql | F0 |
 | PLC-3 | command | join geocode_cache queries against registry tokens | 0 rows | psql | D3 |
 | PLC-4 | command | count venue links vs raw Amex address rows | equal | psql | D1 |
@@ -161,7 +161,7 @@ data, and every coordinate on it is traceable to a registry row with a source.
 | PLC-8 | command | `SELECT count(*)` in axon_demo | 0 | psql | D4 |
 | PLC-9 | command | fallback-source links with precision='venue' | 0 rows | psql | D1 |
 | PLC-10 | command | assign to a city-kind place, read response precision | city | curl | D1 |
-| PLC-11 | command | bazel finance postgres tests; column presence | pass | bazel | F1 |
+| PLC-11 | command | `cargo test -p finance -- postgres_tests::`; column presence | pass | cargo | F1 |
 | PLC-12 | command | run `backfill travelers` twice; grep output for names | 0 names, idempotent | rg | D4 |
 
 ## Anti-claims
