@@ -82,7 +82,8 @@ function packageDirs(root: string): string[] {
     for (const entry of entries) {
       // isDirectory() is false for a symlink, and the walk deliberately does not follow
       // one: a symlink back into the tree would rediscover every package through a second
-      // path. Bazel's bazel-* root symlinks were the case that proved it.
+      // path. Bazel's bazel-* root symlinks were the case that proved it, before PRD Q44
+      // retired Bazel on 2026-08-25; a checkout that ever ran it still has them.
       if (entry.isDirectory() && !SKIP_DIRS.has(entry.name)) walk(join(dir, entry.name));
     }
   };

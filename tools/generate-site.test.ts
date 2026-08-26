@@ -22,7 +22,7 @@ const MODEL = {
     { name: "writing", kind: "pack" as const },
     { name: "tools", kind: "spine" as const },
   ],
-  coupling: [{ from: "axon-status", to: "axon-config", kinds: ["bazel-label"], evidence: ["capabilities/axon-status/BUILD.bazel"] }],
+  coupling: [{ from: "axon-status", to: "axon-config", kinds: ["cargo-dep"], evidence: ["capabilities/axon-status/Cargo.toml"] }],
   upstreams: [
     { name: "bun", verdict: "adopt", pin: "1.3.14" },
     { name: "stop-slop", verdict: "reject", pin: "8da1f03" },

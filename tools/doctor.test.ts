@@ -341,8 +341,8 @@ describe("findDanglingDecisionRefs", () => {
 
   test("a citation of a dissolved entry is reported", () => {
     expect(findDanglingDecisionRefs(
-      [{ path: "README.md", text: "See `decisions/bazel-build-spine/README.md`." }], alive,
-    )).toEqual([{ file: "README.md", slug: "bazel-build-spine" }]);
+      [{ path: "README.md", text: "See `decisions/dissolved-entry/README.md`." }], alive,
+    )).toEqual([{ file: "README.md", slug: "dissolved-entry" }]);
   });
 
   test("a live entry is not reported", () => {

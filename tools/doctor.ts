@@ -3,8 +3,8 @@
 // systems.toml coverage + undeclared-connection sweep, Pack deployment state. Real
 // TOML parsing via Bun's built-in Bun.TOML — machine.toml uses array-of-tables
 // ([[state_mount]]) that tools/lib/toml.sh's grep/sed single-line contract
-// can't parse, which is why this is TS, not bash. Not wrapped in a Bazel target either: see
-// MODULE.bazel's bun toolchain block for why rules_js/rules_ts is the wrong reach here.
+// can't parse, which is why this is TS, not bash. It stays an interpreted command with no
+// build step of its own (README.md#cargo-and-bun-are-the-build-path).
 //
 // Delegates the supply-chain / cooldown audit to tools/upstream-checker
 // rather than reimplementing it — same gate, one source of truth. Same
@@ -301,11 +301,11 @@ export function findPlaintextSecretsInEnvTemplate(text: string): string[] {
 // not-a-full-parser contract as tools/lib/toml.sh) must stay absent. The second direction
 // matters as much — something building the thing a decision forbids is rot too.
 //
-// It lives in doctor rather than Bazel deliberately. Hermeticity is the wrong tool here: the
-// sandbox sees tracked files only, and decisions legitimately name gitignored paths
-// (`graphify-out/`, local scratch) plus files in sibling Bazel packages.
-// A Bazel version of this check produced 16 findings against the real tree's 0 — all sandbox
-// blindness. Same reasoning as the topology sweep folded into
+// It lives in doctor rather than a repo gate deliberately. Decisions legitimately name
+// gitignored paths (`graphify-out/`, local scratch), and anything that sees tracked files only
+// cannot tell an absent path from a rotten one. Measured when this ran as a Bazel test, before
+// PRD Q44 retired Bazel on 2026-08-25: 16 findings against the real tree's 0, every one of
+// them that blindness. Same reasoning as the topology sweep folded into
 // README.md#documentation-stays-owned-and-current: extend doctor, don't add a tool.
 //
 // Blind to semantic rot (reasoning that stopped applying while the paths stayed valid). Path
@@ -651,8 +651,8 @@ type Check = { name: string; run(ctx: CheckContext): void | Promise<void> };
 
 const CHECKS: Check[] = [
   // overlay location. axon.local.toml (gitignored, per-machine) wins; the tracked
-  // axon.toml carries only a shipped default, which is what keeps the Bazel gates
-  // working — the sandbox materializes the tracked file and never sees the local one.
+  // axon.toml carries only a shipped default, which is what keeps the repo gates
+  // working — a fresh CI clone has the tracked file and no local one.
   // Mirrors tools/lib/paths.sh's resolution order; see
   // schemas/machine.toml.example.
   {
@@ -855,9 +855,9 @@ const CHECKS: Check[] = [
     },
   },
 
-  // Enabled capability set. These two checks used to live in the Bazel gate
+  // Enabled capability set. These two checks used to live in the repo gate
   // tools/check-manifest-integrity.sh, which could read the enabled set while it sat in
-  // the tracked axon.toml. It now sits in the overlay, outside the hermetic sandbox, so
+  // the tracked axon.toml. It now sits in the overlay, outside this repo, so
   // the machine-level checks belong to the machine-level tool. The gate keeps the
   // invariants that are intrinsic to the repo (every service.toml `requires =` resolves).
   {
@@ -920,8 +920,8 @@ const CHECKS: Check[] = [
 
   // Capabilities this machine CONSUMES from another overlay's deployment (retired-tracker#169).
   // The block above answers "what does this machine run"; this is the other half, and it lives
-  // here rather than in a Bazel gate for the same reason the enabled set does — the declaration
-  // is in the overlay, outside the hermetic sandbox.
+  // here rather than in a repo gate for the same reason the enabled set does — the declaration
+  // is in the overlay, outside this repo.
   //
   // No URL is ever printed, matching the rule systems.toml already states for `doctor --online`:
   // a private endpoint resolved from the overlay has to survive being pasted into a report. The
@@ -1378,11 +1378,10 @@ const CHECKS: Check[] = [
   // startup. A README claiming a guarantee nothing enforces is worse than no
   // claim, so the guarantee gets a check.
   //
-  // Lives in doctor rather than Bazel for the same reason the decision path-rot
-  // sweep does (README.md#documentation-stays-owned-and-current): every Rust capability is its own Bazel package, so a
-  // root-level glob cannot reach these sources, and declaring each one by
-  // cross-package label is exactly the hand-maintained list that rots. doctor
-  // reads the real tree.
+  // Lives in doctor rather than a repo gate for the same reason the decision path-rot
+  // sweep does (README.md#documentation-stays-owned-and-current): half the servers it has to
+  // cover are in the overlay, outside this repo, and a gate that only globs Axon would report
+  // a clean bind policy while an overlay server binds the LAN. doctor reads both real trees.
   {
     name: "Server bind policy (axon-server)",
     run(ctx) {
@@ -1538,7 +1537,7 @@ const CHECKS: Check[] = [
   },
 
   // Decision freshness — do the entries still describe this tree? See
-  // findDecisionPathRot above for why this is here and not a Bazel gate.
+  // findDecisionPathRot above for why this is here and not a repo gate.
   {
     name: "Doctrine freshness (README why-blocks)",
     run(ctx) {
