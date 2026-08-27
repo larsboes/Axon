@@ -68,6 +68,13 @@ _is_autostart() {  # <name> -> exit 0 when the manifest declares autostart = "tr
   [ "$(toml_get autostart "$mf")" = "true" ]
 }
 
+_is_data() {  # <name> -> exit 0 when the manifest declares state rather than a process
+  local mf
+  mf="$(axon_manifest_for "$1" 2>/dev/null)" || return 1
+  [ -n "$mf" ] || return 1
+  [ "$(toml_get kind "$mf")" = "data" ]
+}
+
 _has_schedule() {  # <name> -> exit 0 when the manifest declares a periodic schedule
   local mf
   mf="$(axon_manifest_for "$1" 2>/dev/null)" || return 1
@@ -251,6 +258,13 @@ cmd_enable() {  # <name>
       # tick, which is not what enabling it was for. The unit IS the way it runs.
       if _has_schedule "$n"; then
         echo "  tools/service-runner.sh install-persistence $n   # declares a schedule — the timer IS how it runs"
+        continue
+      fi
+      # kind=data has nothing to start at all: it declares a file and how it is backed up
+      # (capabilities/store). Suggesting `start` here would print a command the runner
+      # refuses by name, which teaches a reader that the suggestion is noise.
+      if _is_data "$n"; then
+        echo "  tools/backup.sh $n   # declares data, not a process — nothing to start"
         continue
       fi
       echo "  tools/service-runner.sh start $n"
