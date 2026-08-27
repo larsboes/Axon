@@ -1479,10 +1479,10 @@ mod db_tests {
         assert!(store.trip_plan_for(&entry.id).unwrap().is_none());
 
         store
-            .record_trip_materialization(&[entry.id.clone()], "plan-1")
+            .record_trip_materialization(std::slice::from_ref(&entry.id), "plan-1")
             .unwrap();
         store
-            .record_trip_materialization(&[entry.id.clone()], "plan-2")
+            .record_trip_materialization(std::slice::from_ref(&entry.id), "plan-2")
             .unwrap();
         assert_eq!(
             store.trip_plan_for(&entry.id).unwrap().as_deref(),

@@ -251,7 +251,7 @@ impl Store {
         &self,
         digest: &StoredDigest,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         conn.execute(
             &format!(
                 // The backoff is computed here, from `{now}` and the attempt
@@ -318,7 +318,7 @@ impl Store {
         error: Option<&str>,
         producer: &str,
     ) -> Result<u64, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let updated = conn.execute(
             &format!(
                 "UPDATE {}_content_digests
@@ -344,7 +344,7 @@ impl Store {
         error: Option<&str>,
         producer: &str,
     ) -> Result<u64, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let updated = conn.execute(
             &format!(
                 "UPDATE {}_content_digests

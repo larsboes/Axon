@@ -12,7 +12,7 @@ impl Store {
     /// use COALESCE so a re-ingest that lacks them never wipes a previously
     /// stored value. Returns `is_new`.
     pub fn upsert_feed(&self, item: &FeedItem) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let summary_provenance = item.summary.as_ref().map(|_| {
             item.summary_provenance
                 .clone()
@@ -191,11 +191,10 @@ impl Store {
                          revision = excluded.revision,
                          extracted_at = {now}
                      WHERE CASE excluded.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
-                           CASE {raw_table}.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END",
+                           CASE {prefix}_feed_raw_content.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END",
                     prefix = self.prefix,
-                now = axon_store::NOW,
-                raw_table = format!("{}_feed_raw_content", self.prefix)
-            ),
+                    now = axon_store::NOW,
+                ),
                 params![&item.id, raw, &provenance::EXTRACTION_REVISION],
             )?;
         }
@@ -306,7 +305,7 @@ impl Store {
         transcript: Option<&str>,
         content_status: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}_feed_items SET transcript = ?1, content_status = ?2,
@@ -340,7 +339,7 @@ impl Store {
             )
             .into());
         }
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}_feed_items SET status = ?1 WHERE id = ?2",
@@ -371,7 +370,7 @@ impl Store {
         summary: &str,
         producer_revision: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}_feed_items SET summary = ?1, summary_tier = 'model',
@@ -517,7 +516,7 @@ impl Store {
         error_class: &str,
         producer_revision: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = conn.execute(
             &format!(
                 "UPDATE {}_feed_items SET

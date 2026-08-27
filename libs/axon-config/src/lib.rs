@@ -180,9 +180,6 @@ mod tests {
         }
     }
 
-    /// The variable a capability is moved onto another database with, and the reason it
-
-    /// exists: comms, scouting and transit ignored it until 2026-08-20 and fell through to a
     #[test]
     fn expand_tilde_uses_home() {
         let _env = env_lock();

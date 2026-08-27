@@ -37,6 +37,9 @@ impl Store {
              (CASE excluded.data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END) < \
              (CASE {table}.data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)"
         );
+        // `?5` is Unix seconds; the column holds the canonical stamp, so the
+        // conversion is SQL rather than Rust.
+        let internal_date = format!("strftime('{}', ?5, 'unixepoch')", axon_store::STAMP_FORMAT);
         let conn = self.conn()?;
         let is_new = conn
             .query_row(
@@ -89,10 +92,7 @@ impl Store {
                 prefix = self.prefix,
                 table = table,
                 preserve_class = preserve_class,
-                internal_date = format!(
-                    "strftime('{}', ?5, 'unixepoch')",
-                    axon_store::STAMP_FORMAT
-                ),
+                internal_date = internal_date,
                 now = axon_store::NOW
             ),
             params![&item.id,
@@ -325,7 +325,7 @@ impl Store {
         if !matches!(action, "archive" | "trash" | "restore") {
             return Err("Gmail action must be archive, trash, or restore".into());
         }
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = match action {
             "archive" => conn.execute(
                 &format!(
@@ -784,7 +784,7 @@ impl Store {
     /// longer apply it. A Trash retention deadline, if present, remains active.
     pub fn observe_gmail_missing(&self, id: &str) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let mut transaction = conn.transaction()?;
+        let transaction = conn.transaction()?;
         transaction.execute(
             &format!(
                 "UPDATE {}_gmail_action_jobs SET

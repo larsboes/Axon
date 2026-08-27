@@ -7,7 +7,7 @@ name: Pages
 #   /demo/   the real dashboard bundle, running on data this job generated minutes earlier
 #
 # THE DEMO IS RECORDED, NOT WRITTEN. This job starts the actual capability servers against a
-# throwaway Postgres, seeds them through their own HTTP write APIs, and captures what they
+# throwaway SQLite file, seeds them through their own HTTP write APIs, and captures what they
 # answer. Nobody hand-maintains a fixture, so a fixture cannot drift from the API: if a
 # response shape changes, the recording changes with it in the same commit, and if an endpoint
 # disappears the recording step fails rather than publishing a page describing it.
