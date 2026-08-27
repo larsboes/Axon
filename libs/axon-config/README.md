@@ -1,9 +1,21 @@
 # axon-config
 
 Shared overlay/config resolution for Axon's Rust capabilities: tilde expansion, overlay
-paths (`AXON_PERSONAL_ROOT`), the shared-Postgres connection string, the runner's port
-contract (`AXON_PORT` first, capability escape hatch second, config file third, shipped
-default last), and DSN redaction.
+paths (`AXON_PERSONAL_ROOT`), the store's location, the runner's port contract (`AXON_PORT`
+first, capability escape hatch second, config file third, shipped default last), and DSN
+redaction.
+
+## Where the store lives
+
+`database_path()` — `AXON_DB_PATH`, else `<overlay>/data/axon/axon.db`, else a scratch file
+under the temp directory. One file for every capability after PRD Q45 (2026-08-27), so it
+takes no capability argument: cross-capability joins are why the shared instance existed,
+and a file per capability would have dropped them. The last resort is deliberately obvious
+scratch, because the Postgres fallback it replaces named the real database and the demo
+overlay resolved straight to it.
+
+`postgres_conn_from_shared_env()` and `redact_dsn()` stay while comms, finance, scouting,
+places, punctuality and calendar are still on Postgres. They go with the last consumer.
 
 ## Why this exists
 
