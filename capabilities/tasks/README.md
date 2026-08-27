@@ -66,7 +66,9 @@ untrustworthy.
 value, `null` clears it. Collapsing the two makes "remove the due date"
 unexpressible and forces a sentinel value on the caller.
 
-Runs on `8089`, loopback only, Postgres schema `tasks`.
+Runs on `8089`, loopback only. Rows live in the shared SQLite file
+(`AXON_DB_PATH`, else `<overlay>/data/axon/axon.db`) under the table prefix
+`tasks`, so the one table is `tasks_tasks` — see libs/axon-store/README.md.
 
 ## Boundaries
 

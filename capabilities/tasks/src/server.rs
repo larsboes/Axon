@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -61,28 +62,28 @@ async fn routes() -> Json<Value> {
 
 #[derive(Clone)]
 struct AppState {
-    database_url: Arc<String>,
+    database_path: Arc<PathBuf>,
 }
 
 type ApiResponse = (StatusCode, Json<Value>);
 
 /// Open the store and do one piece of work with it, off the async runtime.
 ///
-/// `postgres` is the sync client, and it drives its own `block_on` internally —
-/// calling it straight from a handler panics the worker with "cannot start a
-/// runtime from within a runtime", which reaches the caller as an empty reply
-/// rather than an error. Every store touch goes through here so that cannot be
-/// forgotten one handler at a time.
+/// `rusqlite` is a blocking API over a file. A query on an async worker holds
+/// that thread for the whole read and, under a busy writer, for `busy_timeout`
+/// as well — five seconds of a runtime worker that other handlers need. Every
+/// store touch goes through here so that cannot be forgotten one handler at a
+/// time.
 async fn with_store<T, F>(state: &AppState, work: F) -> Result<T, ApiResponse>
 where
     T: Send + 'static,
     F: FnOnce(Store) -> Result<T, Box<dyn std::error::Error>> + Send + 'static,
 {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     // The error becomes a String inside the closure: `Box<dyn Error>` is not
     // `Send`, so it cannot cross back out of the blocking pool.
     let joined = tokio::task::spawn_blocking(move || {
-        Store::open(&database_url)
+        Store::open(&database_path)
             .and_then(work)
             .map_err(|error| error.to_string())
     })
@@ -206,7 +207,7 @@ async fn counts(State(state): State<AppState>) -> ApiResponse {
 async fn main() {
     let config = Config::load();
     let state = AppState {
-        database_url: Arc::new(config.database_url),
+        database_path: Arc::new(config.database_path),
     };
     let app = Router::new()
         .route("/routes", get(routes))
@@ -229,11 +230,13 @@ mod readiness_tests {
     /// surface axon-status polled was `health`, which is a literal and answers 200 here.
     #[tokio::test]
     async fn readiness_fails_when_the_database_is_unreachable() {
-        // Port 1 is reserved and nothing listens there — the stopped-container case.
+        // A file where a directory has to be: the store cannot be opened there,
+        // which is what a missing or unwritable database file reads as now.
+        let blocker =
+            std::env::temp_dir().join(format!("tasks-ready-blocker-{}", std::process::id()));
+        std::fs::write(&blocker, b"not a directory").unwrap();
         let state = AppState {
-            database_url: Arc::new(
-                "host=127.0.0.1 port=1 user=axon password=axon dbname=axon".to_string(),
-            ),
+            database_path: Arc::new(blocker.join("axon.db")),
         };
 
         let (status, Json(body)) = ready(State(state)).await;

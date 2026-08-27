@@ -1,28 +1,23 @@
 //! Public, zero-personal-data config for the Tasks store.
 //!
-//! Resolution:
-//!   1. `$AXON_TASKS_DATABASE_URL`
-//!   2. values from `$AXON_PERSONAL_ROOT/config/postgres.env`
-//!   3. a localhost development fallback
+//! Resolution: `axon_config::database_path` — `AXON_DB_PATH`, else
+//! `<overlay>/data/axon/axon.db`. One file for every capability (PRD Q45), so
+//! there is no per-capability database to resolve any more.
 
-use axon_config::{postgres_conn_from_shared_env, resolve_port};
+use std::path::PathBuf;
+
+use axon_config::{database_path, resolve_port};
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub database_url: String,
+    pub database_path: PathBuf,
     pub port: u16,
 }
 
 impl Config {
     pub fn load() -> Self {
-        let database_url = std::env::var("AXON_TASKS_DATABASE_URL")
-            .ok()
-            .or_else(postgres_conn_from_shared_env)
-            .unwrap_or_else(|| {
-                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
-            });
         Self {
-            database_url,
+            database_path: database_path(),
             port: resolve_port(None, None, 8089),
         }
     }
