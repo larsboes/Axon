@@ -121,6 +121,7 @@ mod backup_tests {
             idle_timeout: String::new(),
             backup_target: String::new(),
             backup_sqlite: String::new(),
+            backup_sqlite_online: String::new(),
             backup_advise_days: String::new(),
             backup_stale_days: String::new(),
             endpoint: String::new(),
@@ -265,10 +266,12 @@ mod backup_tests {
     fn only_a_sqlite_contract_holds_the_service_down() {
         // The claim the confirmation dialog makes, and it is read from the contract rather
         // than matched against a service name. backup.sh stops a capability for the cold
-        // SQLite copy and for nothing else — a pg_dumpall runs inside the live container.
-        let mut pg = cap("postgres");
-        pg.backup_target = "backup-target".into();
-        assert!(!pg.backup_contract().unwrap().holds_service);
+        // SQLite copy and for nothing else — the shared store's file is copied open, with
+        // every capability still reading it, so a run there holds nothing down.
+        let mut store = cap("store");
+        store.backup_target = "backup-target".into();
+        store.backup_sqlite_online = "data/axon/axon.db".into();
+        assert!(!store.backup_contract().unwrap().holds_service);
 
         let mut vw = cap("vaultwarden");
         vw.backup_target = "backup-target".into();

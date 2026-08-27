@@ -1,11 +1,15 @@
 #!/bin/bash
 # The shared "service manifest" interpreter (schemas/service.toml.example).
 # Capabilities declare WHAT they need; this is the ONLY place that knows HOW to
-# satisfy it on this machine. Two kinds, one interpreter: `kind = "container"`
+# satisfy it on this machine. Three kinds, one interpreter: `kind = "container"`
 # (the default) hands it to the container runtime, `kind = "process"` execs a host
 # process directly -- a compiled server, or a dev server whose whole point is that
 # it reloads while it runs. A new capability of either kind is a new service.toml,
 # not a new script.
+#
+# `kind = "data"` is the third and runs nothing at all: a file this machine owns, whose
+# manifest exists so tools/backup.sh has one owner to read a contract from. Every
+# lifecycle verb refuses it by name, and the whole-machine fan-out skips it.
 set -euo pipefail
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,6 +80,11 @@ fan_out() {  # <start|stop|status> [--all] [flag passed to each invocation]
   local op="$1" all="${2:-}" extra="${3:-}" names="" name kind scope autostart
   while read -r name kind scope autostart _; do
     [ -n "$name" ] || continue
+    # kind=data is a file this machine owns, not a process (capabilities/store). Skipped
+    # here rather than refused per verb: `down` and `status` walk every row regardless of
+    # autostart, and a whole-machine verb reporting a failure for a row that can never
+    # have one would make its exit status stop meaning anything.
+    if [ "$kind" = data ]; then continue; fi
     if [ "$op" = start ] && [ "$all" != "--all" ] && [ "$autostart" != "true" ]; then
       continue
     fi
@@ -1328,6 +1337,27 @@ remove_persistence() {
   [ "$AXON_OS" = linux ] && { systemctl --user daemon-reload 2>/dev/null || true; }
   return 0
 }
+
+# kind = "data": a file this machine owns, with no process behind it (capabilities/store —
+# the shared SQLite database nine capabilities open directly). Refused by name here rather
+# than left to fall through to the container path, which would look for an image the
+# manifest deliberately does not declare and report its absence as a broken capability.
+#
+# `persistence-status` answers instead of refusing, because it is a REPORTING verb: doctor
+# reads its first field for every row, and a data unit legitimately owes no supervisor unit.
+if [ "$KIND" = data ]; then
+  case "$CMD" in
+    persistence-status)
+      printf '%s\tn/a\tkind=data — a file, not a process: nothing to supervise\n' "$CAP"
+      exit 0
+      ;;
+    *)
+      echo "service-runner.sh: '$CAP' is kind=data — it declares a file and how it is backed up, not something to $CMD." >&2
+      echo "  The capabilities that read it are the processes; this manifest exists for tools/backup.sh." >&2
+      exit 1
+      ;;
+  esac
+fi
 
 if [ "$KIND" = process ]; then process_init; fi
 

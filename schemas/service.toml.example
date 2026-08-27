@@ -3,13 +3,17 @@
 # see tools/lib/toml.sh) — copy it into a capability dir, fill it in, and
 # that capability is fully OS/runtime-portable with zero new shell code.
 #
-# TWO KINDS, one manifest shape. `kind` selects which half of this file applies:
+# THREE KINDS, one manifest shape. `kind` selects which part of this file applies:
 #
 #   kind = "container"  (the default when the field is absent) — everything from
 #                       `image` down to `backup_*`. The runtime runs it.
 #   kind = "process"    — a host process this machine runs directly: a compiled
 #                       binary, a dev server. See the "Process kind" section at the
 #                       bottom. Nothing containerised, no image, no tag.
+#   kind = "data"       — state with no process: a file this machine owns, declared
+#                       so that exactly one manifest says how it is backed up. Only
+#                       `name` and the `backup_*` fields apply; every lifecycle verb
+#                       refuses it by name. See the "Data kind" section at the bottom.
 #
 # A spine component (today only dashboard/, README.md#three-architectural-nouns) may carry a service.toml
 # at the repo root instead of under capabilities/ — same schema, always in the
@@ -101,6 +105,14 @@ backup_paths  = ["data/example/data"]
 backup_sqlite = "data/example/data/db.sqlite3"  # a SQLite DB owned by the container: backup.sh holds the capability down and copies it COLD.
                                           # Never opened from the host while the container runs — SQLite's WAL needs every
                                           # connection on one host, and a virtiofs bind mount is not that (2026-07-25 outage).
+# backup_sqlite_online = "data/axon/axon.db"
+                                          # the same file copied OPEN, with `sqlite3 .backup`, and no service hold. Use this
+                                          # one only when the readers are host processes on this machine — then every
+                                          # connection IS on one host and the rule above is satisfied. capabilities/store
+                                          # declares it because nine capabilities read that file at once: stopping all of
+                                          # them to take a cold copy is an outage, not a backup. Mutually exclusive with
+                                          # backup_sqlite; a UI reads which one is declared to say whether a run stops
+                                          # anything.
 backup_target = "backup-target"           # a generic systems.toml role; host/ssh_user/backup_root live in overlay systems.local.toml
 backup_retain = "14"                      # keep the last N tarballs on the target (default 14)
 # backup_container_paths = ["/config"]    # paths read from INSIDE the container, for data the invoking
@@ -111,10 +123,10 @@ backup_retain = "14"                      # keep the last N tarballs on the targ
                                           # restoring a root-owned auth store as the invoking user is the
                                           # kind of damage that only shows up during a restore. Container
                                           # paths, not overlay-relative ones. NB: bare array line.
-# backup_pg_dumpall = "true"              # Postgres: run pg_dumpall INSIDE the container, stage as pg_dumpall.sql.
-                                          # Use instead of backup_paths for a live cluster (raw-copy risks a torn
-                                          # backup, and a managed_volume has no host path anyway). A capability may
-                                          # declare paths, a pg dump, or both — but at least one, or backup.sh errors.
+                                          # (There was a `backup_pg_dumpall` here until PRD Q45 retired Postgres on
+                                          # 2026-08-27. It ran pg_dumpall inside the container because a live cluster
+                                          # cannot be raw-copied and its data dir was a managed volume with no host
+                                          # path. Both reasons died with the capability that had them.)
 backup_advise_days = "1"                  # how often this capability's data SHOULD be backed up.
 backup_stale_days  = "7"                  # past this age the last backup counts as overdue, not merely due.
                                           # Two numbers because "you could" and "you have a problem" are
@@ -241,6 +253,29 @@ backup_stale_days  = "7"                  # past this age the last backup counts
 #                                           # a capability the machine is meant to keep running is not
 #                                           # idle by definition. NB: a window sitting behind another
 #                                           # window reports hidden, so it counts as unread.
+
+# ── Data kind ──────────────────────────────────────────────────────────────
+# Everything below applies ONLY to kind = "data". The manifest declares state and
+# nothing else: `name`, the `backup_*` contract, and no field a lifecycle verb would
+# read. The schema gate rejects `image`, `tag`, `volumes`, `env_file`, `command`,
+# `port`, `autostart` and `schedule` here, because nothing starts a file.
+#
+# It exists so that a file with several readers still has exactly ONE owner for the
+# one question a file's owner has to answer: how is it backed up. capabilities/store
+# is the case that created the kind — the shared SQLite database that replaced the
+# Postgres container (PRD Q45, 2026-08-27) is read by nine capabilities, so no single
+# capability could carry its contract without claiming the other eight's data.
+#
+# kind  = "data"
+# name  = "store"
+# backup_sqlite_online = "data/axon/axon.db"
+# backup_target        = "backup-target"
+# backup_advise_days   = "1"
+# backup_stale_days    = "7"
+#
+# In the registry it appears like any other row, so a backup surface finds it without
+# a second source. `tools/service-runner.sh` refuses start/stop/restart/status by name,
+# answers `persistence-status` with `n/a`, and the whole-machine fan-out skips it.
 
 # tools/service-runner.sh:
 #   start <name>               -> container: dispatches by machine.toml's container_runtime

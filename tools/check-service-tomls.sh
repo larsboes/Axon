@@ -5,10 +5,11 @@
 # makes a deploy non-reproducible; see README.md#pins-and-cooldown). Pure file-based check:
 # it reads the tracked manifests and nothing else — no git, no network, no live service.
 #
-# Two kinds, two field sets (schemas/service.toml.example):
+# Three kinds, three field sets (schemas/service.toml.example):
 #   container (the default when `kind` is absent) -> name, image, tag; tag pinned
 #   process                                       -> name, command, port; no image/tag
-# A manifest carrying fields from both kinds is rejected rather than resolved by
+#   data                                          -> name + a backup contract; nothing runnable
+# A manifest carrying fields from more than one kind is rejected rather than resolved by
 # precedence: "which half is real" must never be a guess at start time. The same principle
 # covers `autostart` + `schedule`, which is the kind-independent version of the same
 # contradiction — a service and a periodic job are opposite claims about one process.
@@ -86,8 +87,39 @@ for svc in "$AXON_ROOT"/capabilities/*/service.toml "$AXON_ROOT"/*/service.toml;
         fi
       done
       ;;
+    data)
+      # State with no process: a file this machine owns and backs up, and nothing to run.
+      # The one that exists is capabilities/store (the shared SQLite database, PRD Q45).
+      #
+      # A backup contract is REQUIRED, not optional. A container or a process is worth
+      # declaring for its own sake; a manifest that neither runs anything nor says how its
+      # data is kept declares nothing at all, and would sit in the registry as a name with
+      # no consequence. Both fields, because either alone is inert: backup.sh refuses a run
+      # with no `backup_target`, and a target with no source has nothing to ship.
+      if [ -z "$(toml_get name "$svc")" ]; then
+        echo "FAIL [$cap]: missing or empty required field 'name' — $svc" >&2
+        fail=1
+      fi
+      if [ -z "$(toml_get backup_sqlite_online "$svc")" ] && [ -z "$(toml_get backup_sqlite "$svc")" ] \
+         && [ -z "$(toml_array backup_paths "$svc")" ]; then
+        echo "FAIL [$cap]: kind=data needs a backup source (backup_paths, backup_sqlite or backup_sqlite_online) — a manifest that runs nothing and keeps nothing declares nothing — $svc" >&2
+        fail=1
+      fi
+      if [ -z "$(toml_get backup_target "$svc")" ]; then
+        echo "FAIL [$cap]: kind=data needs a backup_target — $svc" >&2
+        fail=1
+      fi
+      # Everything a lifecycle verb would read. The runner refuses kind=data by name, so a
+      # manifest carrying these would describe a service nothing will ever start.
+      for key in image tag volumes env_file command port autostart schedule; do
+        if [ -n "$(toml_get "$key" "$svc")" ] || [ -n "$(toml_array "$key" "$svc")" ]; then
+          echo "FAIL [$cap]: kind=data must not declare runnable field '$key' — nothing starts it — $svc" >&2
+          fail=1
+        fi
+      done
+      ;;
     *)
-      echo "FAIL [$cap]: unknown kind '$kind' (expected container or process) — $svc" >&2
+      echo "FAIL [$cap]: unknown kind '$kind' (expected container, process or data) — $svc" >&2
       fail=1
       ;;
   esac
@@ -146,4 +178,4 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-echo "service.toml schema check passed ($(basename "$AXON_ROOT"): containers pinned with name/image/tag, services with name/command/port, scheduled jobs with no port, no container fields, host ports unique)."
+echo "service.toml schema check passed ($(basename "$AXON_ROOT"): containers pinned with name/image/tag, services with name/command/port, data units with a backup contract and nothing runnable, scheduled jobs with no port, no container fields, host ports unique)."

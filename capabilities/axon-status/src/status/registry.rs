@@ -30,13 +30,21 @@ pub(crate) struct Service {
     /// coordinates in the overlay's systems.local.toml, and no backup UI needs it.
     #[serde(default)]
     pub(crate) backup_target: String,
-    /// Declared when the capability's data is a SQLite file. This is the field that
-    /// decides whether a backup run stops the service: `backup.sh` holds a capability
-    /// down for exactly this case, to take the cold copy. Read as a contract rather
-    /// than matching a service name, so a capability that later declares one inherits
-    /// the warning without anything here changing.
+    /// Declared when the capability's data is a SQLite file the container owns. This is
+    /// the field that decides whether a backup run stops the service: `backup.sh` holds a
+    /// capability down for exactly this case, to take the cold copy. Read as a contract
+    /// rather than matching a service name, so a capability that later declares one
+    /// inherits the warning without anything here changing.
     #[serde(default)]
     pub(crate) backup_sqlite: String,
+    /// The same data, copied while it is open — `sqlite3 .backup`, no service hold. It is
+    /// the field above's counter-example and is why `holds_service` keys on that one
+    /// alone: capabilities/store's file is read by every capability at once, so there is
+    /// no single service whose stopping would make the copy cold. Projected outward with
+    /// the rest of the row, because a surface that offers a run should be able to say
+    /// which of the two it is about to take.
+    #[serde(default)]
+    pub(crate) backup_sqlite_online: String,
     /// What timely MEANS for this data — how often it should be backed up, and the
     /// age past which the last backup is a problem rather than merely due. Two numbers
     /// because "you could" and "you have a problem" are different answers.

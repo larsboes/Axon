@@ -321,6 +321,52 @@ if grep -q '^system start' "$CALL_LOG"; then
   fail "the gate restarted an apiserver that was already running"
 fi
 
+# --- kind = "data": a file, not a process (PRD Q45) -----------------------------------------
+# capabilities/store declares the shared SQLite database so ONE manifest owns its backup
+# contract. Nothing starts it, and the two ways that could go wrong are opposite: a lifecycle
+# verb falling through to the container path and reporting a missing image as a broken
+# capability, or the whole-machine fan-out calling `stop` on it and turning `down`'s exit
+# status into noise. Both are asserted here, on a root where the data unit is the only thing
+# enabled — so a fan-out that did not skip it could not hide behind another capability.
+DATA_ROOT="$SCRATCH/data-axon"
+DATA_OVERLAY="$SCRATCH/data-overlay"
+mkdir -p "$DATA_ROOT/tools/lib" "$DATA_OVERLAY/config" "$DATA_ROOT/capabilities/filehog"
+cp "$SRC_TOOLS/service-runner.sh" "$SRC_TOOLS/capability.sh" "$DATA_ROOT/tools/"
+cp "$SRC_TOOLS"/lib/*.sh "$DATA_ROOT/tools/lib/"
+printf 'overlay = "%s"\n' "$DATA_OVERLAY" > "$DATA_ROOT/axon.toml"
+printf 'os = "linux"\ncontainer_runtime = "docker"\ncapabilities = ["filehog"]\n' > "$DATA_OVERLAY/config/machine.toml"
+cat > "$DATA_ROOT/capabilities/filehog/service.toml" <<'TOML'
+kind = "data"
+name = "filehog"
+backup_sqlite_online = "data/filehog/filehog.db"
+backup_target = "backup-target"
+TOML
+
+out="$("$DATA_ROOT/tools/service-runner.sh" start filehog 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] || fail "start on a kind=data manifest exited 0"
+case "$out" in
+  *"kind=data"*) ;;
+  *) fail "the refusal did not name the kind; said: $out" ;;
+esac
+
+# The reporting verb answers instead of refusing: doctor reads a row per enabled capability,
+# and a data unit legitimately owes no supervisor unit.
+out="$("$DATA_ROOT/tools/service-runner.sh" persistence-status filehog 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] || fail "persistence-status on a kind=data manifest failed; said: $out"
+case "$out" in
+  "filehog	n/a	"*) ;;
+  *) fail "persistence-status did not report n/a; said: $out" ;;
+esac
+
+# The fan-out. With the data unit the only enabled capability, a runner that walked it would
+# print its refusal and exit non-zero.
+out="$("$DATA_ROOT/tools/service-runner.sh" down 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] || fail "down exited $rc with only a kind=data unit enabled; said: $out"
+case "$out" in
+  *"nothing to do"*) ;;
+  *) fail "down did not skip the data unit; said: $out" ;;
+esac
+
 if [ "$fails" -gt 0 ]; then
   echo "service-runner: $fails check(s) failed"
   exit 1

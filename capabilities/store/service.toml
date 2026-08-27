@@ -1,0 +1,44 @@
+# store — the one SQLite file every capability's tables live in (PRD Q45, 2026-08-27).
+# See schemas/service.toml.example for the field reference.
+#
+# `kind = "data"`: no image, no command, nothing to start. Nine capabilities open this
+# file themselves through `axon_config::database_path()`, so there is no process here to
+# supervise — `tools/service-runner.sh` refuses every lifecycle verb by name rather than
+# looking for an image this manifest deliberately does not have.
+#
+# It exists because a file still needs one owner for the one thing a file needs an owner
+# for: backup. That owner was capabilities/postgres/ until the ruling retired it, and the
+# fields below are its contract, carried over unchanged where the reason still holds.
+kind = "data"
+name = "store"
+
+# Overlay-relative, and the default `axon_config::database_path()` resolves. A deployment
+# that moves the file with `AXON_DB_PATH` leaves this contract describing a path that is
+# not the database any more; `tools/backup.sh` refuses to run on a missing source rather
+# than shipping an archive of nothing, which is the failure that must stay loud.
+#
+# `backup_sqlite_online`, not `backup_sqlite`: the copy is taken with `sqlite3 .backup`
+# while readers hold the file open, because there is no single service to hold down —
+# nine of them have it open, and stopping all nine to copy one file is an outage, not a
+# backup. Safe here for exactly the reason it was NOT safe for vaultwarden (the
+# 2026-07-25 outage recorded in tools/backup.sh): SQLite's WAL coordinates readers and
+# writers through shared memory and needs every connection on one host, and this file
+# sits on the host's own filesystem with no virtiofs mount between it and its readers.
+#
+# The `axon-local-*.lock` files beside it are not declared and are not backed up. They
+# are cross-process locks (capabilities/comms/src/local_gate.rs), not state: restoring
+# one would restore a held lock.
+backup_sqlite_online = "data/axon/axon.db"
+
+# The backup ROLE, not a host. Same systems.toml id every other backed-up capability
+# names; the private coordinates live in the overlay's systems.local.toml.
+backup_target = "backup-target"
+backup_retain = "14"
+
+# Every capability's data is in this one file, so this cadence is the whole deployment's
+# cadence rather than one capability's. Daily is what the human-decision tables deserve —
+# a saved or dismissed verdict is not re-fetchable — and a week is when it starts being a
+# real gap. Both numbers are capabilities/postgres/service.toml's, unchanged: the ruling
+# moved the data, not what timely means for it.
+backup_advise_days = "1"
+backup_stale_days  = "7"
