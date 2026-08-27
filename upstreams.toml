@@ -228,7 +228,25 @@ license = "MIT"
 pin = "0.18.2"          # published 2024-12-23; well past cooldown
 pin_kind = "commit"
 tracked_by = "crates.io releases for r2d2_postgres; it is a thin adapter whose version moves when the postgres client's major does, so the signal to watch is a postgres 0.20, not this crate"
-why = "the r2d2 manager for the postgres client, requiring postgres ^0.19 -- exactly the version all seven schema-owning capabilities already pin, so adoption changed no existing resolution. It is the adapter and nothing more: connect, is-valid, has-broken. Preferred over hand-rolling a pool behind libs/axon-store, which was the alternative considered and rejected under README.md's adopt > build preference: a pool is checkout, return, health-check, sizing and timeout, and the failure modes of a wrong one are exactly the intermittent kind this whole issue exists to remove"
+why = "the r2d2 manager for the postgres client, requiring postgres ^0.19 -- exactly the version all seven schema-owning capabilities already pin, so adoption changed no existing resolution. It is the adapter and nothing more: connect, is-valid, has-broken. Preferred over hand-rolling a pool behind libs/axon-store, which was the alternative considered and rejected under README.md's adopt > build preference: a pool is checkout, return, health-check, sizing and timeout, and the failure modes of a wrong one are exactly the intermittent kind this whole issue exists to remove. RETIRING under PRD Q45 (2026-08-27): tasks, transit and trips no longer consume it; the row stays while comms, finance, scouting, places, punctuality and calendar still do"
+
+[rusqlite]
+url = "https://github.com/rusqlite/rusqlite"
+verdict = "adopt"
+license = "MIT"
+pin = "0.40.2"          # carries libsqlite3-sys 0.38.2, which bundles SQLite 3.53.2
+pin_kind = "commit"
+tracked_by = "crates.io releases for rusqlite; the version to watch is libsqlite3-sys's bundled SQLite, because a CVE lands there rather than in the Rust wrapper"
+why = "the database, after PRD Q45 (2026-08-27) retired Postgres. Adopted on measurement rather than preference: of 464 columns in the live instance 462 are SQLite-native (the two exceptions are a jsonb and an integer[], both TEXT here), no extension, enum, FTS index or LISTEN/NOTIFY is in use, all 9 partial indexes are btree and supported, and every ON CONFLICT (44), RETURNING (18) and window function in the tree is supported by the bundled SQLite. The write rate is 0.30 commits/s, so single-writer WAL with a busy_timeout is ample. Taken with the `bundled` feature so the deployment does not depend on whichever SQLite macOS or an Alpine image happens to ship -- the failure that avoids is a build that works on the developer's machine and loses a function on the host. The blocking API is the one this repo's data layer is written against (see [r2d2]), so the 134 sync call sites needed no async conversion"
+
+[r2d2_sqlite]
+url = "https://github.com/ivanceras/r2d2-sqlite"
+verdict = "adopt"
+license = "MIT"
+pin = "0.35.0"
+pin_kind = "commit"
+tracked_by = "crates.io releases for r2d2_sqlite; a thin adapter whose version moves when rusqlite's minor does, so the signal to watch is a rusqlite release, not this crate"
+why = "the r2d2 manager for rusqlite, replacing [r2d2_postgres] under PRD Q45. Kept the pool rather than opening per call because of what the manager's `with_init` buys: journal_mode, busy_timeout and foreign_keys are applied to every connection in one place instead of at 134 call sites, and foreign_keys is the one that fails silently -- SQLite parses REFERENCES either way and simply does not enforce it. Keeping the pool also kept `Store::open` a checkout, which is the shape the call sites are already written against"
 
 [bun]
 url = "https://github.com/oven-sh/bun"

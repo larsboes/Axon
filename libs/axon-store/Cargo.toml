@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "One home for when a capability's schema migration runs: once per process per (database, schema), behind a cross-process advisory lock."
+description = "One home for how a capability opens the shared SQLite file: pool per path, PRAGMAs on every connection, migration once per (file, table prefix)."
 publish = false
 
 [lib]
@@ -12,9 +12,12 @@ name = "axon_store"
 path = "src/lib.rs"
 
 [dependencies]
-postgres = "0.19"
-# The sync pool, matching the sync client. See upstreams.toml [r2d2] for why this
-# rather than deadpool/bb8 -- those are async pools for tokio-postgres, and this
-# repo's data layer is deliberately the blocking client driven from spawn_blocking.
+# `bundled` compiles SQLite into the binary. See upstreams.toml [rusqlite] for
+# why that rather than the system library: the deployment must not depend on
+# whichever SQLite macOS or an Alpine image happens to ship.
+rusqlite = { version = "0.40", features = ["bundled"] }
+# The generic pool. See upstreams.toml [r2d2] -- kept across the Postgres
+# retirement (PRD Q45) because the pool shape and the calling convention are
+# what 134 call sites were written against; only the manager changed.
 r2d2 = "0.8"
-r2d2_postgres = "0.18"
+r2d2_sqlite = "0.35"

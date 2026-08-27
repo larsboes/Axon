@@ -69,6 +69,35 @@ pub fn postgres_conn_from_shared_env() -> Option<String> {
     ))
 }
 
+/// Where the one shared SQLite file lives (PRD Q45, 2026-08-27).
+///
+/// `AXON_DB_PATH` > `<overlay>/data/axon/axon.db` > a scratch file. Resolved the
+/// same way the Postgres DSN was — env first, then the overlay — so moving a
+/// deployment is still one variable.
+///
+/// There is one file for every capability, not one per capability. Cross-schema
+/// joins were the reason the shared Postgres instance existed
+/// (`capabilities/postgres/README.md`), and a file per capability would have
+/// dropped them. So this takes no capability argument: there is nothing to vary.
+///
+/// The last resort is deliberately a scratch path rather than a plausible one.
+/// The Postgres fallback named the real database and the demo overlay resolved
+/// to it, which is the accident recorded under [`database_url_override`] — a
+/// fallback that looks like production is worse than one that obviously is not.
+/// Nothing is created here; `axon_store::pool_for` makes the directory when a
+/// caller actually opens the file.
+pub fn database_path() -> PathBuf {
+    if let Some(explicit) = std::env::var("AXON_DB_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return expand_tilde(&explicit);
+    }
+    overlay_data_dir("axon")
+        .unwrap_or_else(|| std::env::temp_dir().join("axon-no-overlay"))
+        .join("axon.db")
+}
+
 /// `$AXON_<CAPABILITY>_DATABASE_URL`, the per-capability override.
 ///
 /// This is the variable `tools/demo-up` exports to move a whole stack onto a throwaway
@@ -281,6 +310,31 @@ mod tests {
         assert_eq!(
             overlay_data_dir("scouting").unwrap(),
             PathBuf::from("/tmp/fake-overlay/data/scouting")
+        );
+    }
+
+    /// One file for every capability, resolved env-first. The last case is the
+    /// one that matters: with no overlay the path must be obviously scratch, so
+    /// nobody mistakes it for the deployment's database.
+    #[test]
+    fn the_database_path_is_env_then_overlay_then_scratch() {
+        let _env = env_lock();
+        let _explicit = EnvGuard::set("AXON_DB_PATH", "/tmp/somewhere/else.db");
+        assert_eq!(database_path(), PathBuf::from("/tmp/somewhere/else.db"));
+
+        let _blank = EnvGuard::set("AXON_DB_PATH", "  ");
+        let _o = EnvGuard::set("AXON_PERSONAL_ROOT", "/tmp/fake-overlay");
+        assert_eq!(
+            database_path(),
+            PathBuf::from("/tmp/fake-overlay/data/axon/axon.db")
+        );
+
+        let _none = EnvGuard::take("AXON_PERSONAL_ROOT");
+        let scratch = database_path();
+        assert!(
+            scratch.starts_with(std::env::temp_dir()),
+            "no overlay must not resolve to a plausible location, got {}",
+            scratch.display()
         );
     }
 

@@ -1,91 +1,180 @@
 # libs/axon-store
 
-One home for **when a capability's schema migration runs**.
+One home for **how a capability opens the shared database, and when its migration runs**.
 
-A shared library, not a capability: no domain of its own, no upstream verdict, no CLI
-(README.md#three-architectural-nouns). Consumers declare an `axon-store` path
-dependency in the workspace.
+A shared library, not a capability: no domain of its own, no CLI
+(README.md#three-architectural-nouns). Consumers declare an `axon-store` path dependency in the
+workspace.
 
-## Why it exists
+## One file, table prefixes
 
-Seven capabilities own a Postgres schema, and all seven wrote the same `Store::open`: connect,
-then run the entire migration. `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ... ADD COLUMN IF
-NOT EXISTS` are cheap when they are no-ops — about 0.02 ms each, measured — so this looked free
-and stayed for a year.
+PRD Q45 (2026-08-27) retired Postgres. Every capability that owned a schema now owns a **table
+prefix** in a single SQLite file:
 
-It is not free, because of what the no-op still takes:
+| Postgres | SQLite |
+|---|---|
+| schema `comms`, table `feed_items` | table `comms_feed_items` |
+| schema `tasks`, table `tasks` | table `tasks_tasks` |
+
+Cross-capability joins survive because it is still one database. That property is why the shared
+instance existed at all, and it is the one that could not be traded away.
+
+Where the file lives is not this crate's decision — `axon_config::database_path` owns that
+(`AXON_DB_PATH`, else `<overlay>/data/axon/axon.db`), because it is overlay knowledge.
+
+## The canonical timestamp
 
 ```
-NOTICE:  column "next_attempt" of relation "content_digests" already exists, skipping
-        mode         |          tbl
- AccessExclusiveLock | comms.content_digests
+2026-08-27 21:23:35.871+00:00
 ```
 
-One `batch_execute` is one transaction, so a single opener holds the strongest lock Postgres has
-on roughly fifteen tables at once, to commit. Two openers each hold what the other needs.
-Postgres calls that a deadlock and kills a session.
+UTC, millisecond resolution, ISO-8601 with a space separator. `axon_store::NOW` is the SQL
+expression that renders it; interpolate it where Postgres had `now()`:
 
-`comms` opens a store in 43 HTTP handlers and five timers. The collision was structural, not
-unlucky: it showed up as `digest drain: db error: ERROR: deadlock detected` the day a third
-fifteen-minute timer joined two that were already colliding rarely enough to look like weather.
+```rust
+format!("UPDATE {p}_tasks SET updated_at = {now}", p = self.prefix, now = axon_store::NOW)
+```
 
-## What changed
+Two properties decided the shape, and both are load-bearing.
 
-The DDL did not move. What moved is how often it runs.
+**It sorts.** Fixed width to the millisecond means a plain `ORDER BY` on the text column is
+chronological, which is what every existing index already assumed under Postgres.
 
-`migrate_once` runs a capability's migration the first time a process sees a given (database,
-schema) and never again for that pair. The second and every later `Store::open` do no DDL at
-all, which is why this removes the deadlock rather than scheduling it: there is no longer a
-second session taking those locks to collide with.
+**SQLite can read it back.** Postgres rendered the offset as `+00`, and
+`datetime('2026-08-27 21:23:35.871000+00')` returns NULL — SQLite wants `[+-]HH:MM`. Writing
+`+00:00` keeps `datetime()`, `julianday()` and `strftime()` usable on a stored column. Adopting
+Postgres's exact rendering would have cost that, silently: the date functions do not fail, they
+return NULL.
 
-The cross-process advisory lock stays. Once-per-*process* says nothing about two processes of
-the same capability starting together — a CLI run while the server boots, a restart overlapping
-the process it replaces — and that window is real, if short.
+A SQL expression rather than a `now()` function registered on the connection, on purpose. An
+operator with the `sqlite3` CLI open must be able to write the same value this code writes; a
+custom function would exist only inside this process.
 
-## What it deliberately did not change
+## Every connection, on open
+
+```
+journal_mode = WAL     readers do not block the writer
+busy_timeout = 5000    a writer waits rather than failing at once
+foreign_keys = ON      SQLite enforces REFERENCES only when asked
+```
+
+`foreign_keys` is per-connection and OFF by default, so a capability that declares
+`ON DELETE CASCADE` gets nothing without it. `busy_timeout` defaults to 0 — the second writer
+fails immediately. At the measured write rate (0.30 commits/s, PRD Q45) five seconds is past any
+real contention and short enough to still read as a failure.
+
+The pool applies all three through `with_init`, so they cannot be forgotten at a call site.
+
+## Migrate once per (file, prefix)
+
+Kept from the Postgres shape, for a reason that survived the move.
+
+Every capability's `Store::open` runs its whole migration: a hundred-odd
+`CREATE TABLE IF NOT EXISTS` statements in one transaction. `comms` alone opens a store in 43 HTTP
+handlers and five timers. Under Postgres, two openers each held what the other needed and the
+server killed one session:
+
+```
+digest drain: db error: ERROR: deadlock detected
+```
+
+SQLite cannot deadlock that way — it admits one writer — but the failure it substitutes is worse
+for a server: every opener that runs DDL takes the write lock, so a migration on each `open`
+serialises 43 handlers behind each other for no work at all. `migrate_once` runs the migration the
+first time a process sees a given (file, prefix) and never again for that pair, so the second and
+every later `open` take no write lock.
+
+**The cross-process gate is now the database itself.** Postgres needed `pg_advisory_lock` because
+two sessions could interleave DDL. SQLite admits one writer, and `migrate_once` takes that writer
+lock up front with `BEGIN IMMEDIATE` rather than upgrading into it mid-migration — a deferred
+transaction that reads and then writes answers a failed upgrade with `SQLITE_BUSY` at once, and
+`busy_timeout` deliberately does not retry that case. A second process starting at the same moment
+waits out the timeout and then finds the tables already there, because every statement is
+`IF NOT EXISTS`.
+
+## What this deliberately did not change
 
 The old shape was self-healing by accident. Any code path could open a store against an empty
-database and it worked, and every test helper leans on exactly that: build a per-pid schema,
-call `open`, get a migrated schema back. Taking migration out of `open` entirely would have made
-every one of those helpers, across seven capabilities, inherit an assumption that someone else
-migrated first.
+database and it worked, and every test helper leans on exactly that. So the first `open` still
+migrates. A failed migration is not recorded as done, so the next `open` retries instead of
+handing out a half-built schema.
 
-So the first `open` still migrates. A failed migration is not recorded as done, so the next
-`open` retries instead of handing out a half-built schema.
+## Writing a capability's DDL
 
-## The other half: one connection per open
+The file starts empty, so a capability's migration states the **current** shape of its tables
+rather than replaying the history that produced it. Postgres migrations that widened a `CHECK` or
+added a column with `ALTER TABLE … ADD COLUMN IF NOT EXISTS` are folded into the `CREATE TABLE`.
+SQLite has no `ADD COLUMN IF NOT EXISTS` and cannot alter a constraint at all, so replaying that
+history was never an option; folding is the translation, and it is only correct because no
+deployed SQLite file predates it.
 
-The migration was never the expensive part. Every `Store::open` also opened a fresh Postgres
-session, and that is where the time went. Measured against the live database, not estimated:
+The translation table, settled while porting tasks, transit and trips:
 
+| Postgres | SQLite |
+|---|---|
+| `CREATE SCHEMA x; x.t` | `x_t` |
+| `$1`, `$2` | `?1`, `?2` |
+| `now()` | `{now}` from `axon_store::NOW` |
+| `to_char(now(), 'YYYY-MM-DD')` | `date('now')` |
+| `now() - interval '7 days'` | `datetime('now','-7 days')` |
+| `TIMESTAMPTZ` | `TEXT` |
+| `DOUBLE PRECISION` | `REAL` |
+| `BIGINT`, `BOOLEAN` | `INTEGER` |
+| `col::TEXT` on a TEXT column | drop the cast |
+| `$1::text IS NULL OR c = $1` | `?1 IS NULL OR c = ?1` |
+| `LIMIT $2` with a NULL bound | `LIMIT COALESCE(?2, -1)` |
+
+That last row is not cosmetic. Postgres reads `LIMIT NULL` as `LIMIT ALL`; SQLite raises
+`datatype mismatch` and the read fails outright. A negative limit is SQLite's "no upper bound".
+
+Comparing a stored timestamp against `datetime('now', …)` is a text comparison between a
+29-character stamp and a 19-character one. It is still correct to the second, because the shorter
+string is a prefix of the longer: `'…12:00:00'` sorts before `'…12:00:00.000+00:00'`.
+
+## Reading rows
+
+The vocabulary is rusqlite's, with one addition. `query_row` is the one-row read;
+`query_row(…).optional()` (via `rusqlite::OptionalExtension`) is the might-not-exist read. Only
+the many-row read has no one-call form in rusqlite — prepare, `query_map`, collect — so
+`axon_store::QueryAll::query_all` is that one method, and there are no others. Inventing a second
+name for something rusqlite already has would be the expensive mistake.
+
+```rust
+use axon_store::QueryAll;
+use rusqlite::OptionalExtension;
+
+let task  = conn.query_row(&sql, [&id], row_to_task).optional()?;   // 0 or 1
+let tasks = conn.query_all(&sql, [&status], row_to_task)?;          // n
+conn.execute(&sql, params![&id, &title])?;                          // write
+conn.execute_batch(&ddl)?;                                          // migration
 ```
-Client::connect      32-39 ms   (five consecutive runs)
-pooled Store::open   0.20-0.30 ms
-```
 
-`pool_for` gives a process one pool per database URL, so opening a store is a checkout. No call
-site changed: `open` still takes a URL and returns a `Store`, because a pool keyed by URL is the
-shape 43 handlers were already asking for.
+## The pool
+
+`pool_for` gives a process one pool per database file, keyed by the canonicalized path so two
+spellings of one file are one pool and one migration target.
+
+A SQLite connection costs microseconds, where a Postgres `Client::connect` cost 32-39 ms measured,
+so the pool is no longer buying latency. It buys the PRAGMA discipline above — applied once per
+connection, never forgettable at a call site — and it keeps `Store::open` the checkout that the
+call sites are written against.
 
 Two settings are deliberate rather than inherited. `min_idle(0)`, because r2d2 otherwise keeps
-`max_size` connections warm — right for a server, wrong for the CLI half of these crates, where
-`comms sweep` would open ten sessions to run one query. And a five-second checkout timeout
-instead of r2d2's thirty, because with Postgres down, thirty seconds reads as a hang rather than
-a failure and lets requests pile up behind it.
+`max_size` connections warm: right for a server, wrong for the CLI half of these crates, where
+`comms sweep` would open ten connections to run one query. And a five-second checkout timeout
+instead of r2d2's thirty, because thirty seconds reads as a hang rather than a failure and lets
+requests pile up behind it.
 
-## The estimate that was wrong
+## Testing a store
 
-The originating issue read `/feed` at ~76 ms against `/health` at ~2 ms and concluded that
-roughly 50 ms per request was connection setup. The connect is ~32 ms, and the remaining gap is
-not a fixed cost — it scales with the response:
+A store test needs a temp file and nothing else — no server, no per-pid schema, no cleanup a panic
+can skip. The module that holds those tests is named `db_tests` (it was `postgres_tests`, and the
+module name is the suite selector CI splits on).
 
-| Endpoint | Payload | After pooling |
-|---|---|---|
-| `/feed?days=1` | 57 KB | ~29-56 ms |
-| `/feed?days=7` | 107 KB | ~57 ms (median of 15; ~78 ms before) |
-| `/feed?days=30` | 194 KB | ~97 ms |
-
-So that endpoint improved by about 21 ms and is still dominated by per-item work and
-serialization. The pool was the right fix for the connect and was never going to be the fix for
-the other two thirds. Whatever is worth doing about those is a different piece of work, against
-a measurement rather than an inference.
+```rust
+fn open_test_store(tag: &str) -> Store {
+    let dir = std::env::temp_dir().join(format!("tasks-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    Store::open(&dir.join(format!("{tag}.db"))).unwrap()
+}
+```
