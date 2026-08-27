@@ -6,9 +6,8 @@ build       = ["cargo", "build", "--locked", "--release", "--bin", "punctuality-
 port        = "8085"
 health_path = "/health"
 
-# The aggregate lives in the shared instance (capabilities/postgres) — the contract, not
-# the code (README.md#schemas-and-dependency-direction). Declared so `up` starts the database first.
-requires = ["postgres"]
+# No `requires`: the aggregate lives in the shared SQLite file this process opens
+# itself, so there is no database service to start first (PRD Q45).
 
 # Always-on, and it is the one capability here that genuinely is. The old comment claimed
 # "the shell starts it when something asks", which was never true: nothing asks. Its only

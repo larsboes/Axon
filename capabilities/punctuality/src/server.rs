@@ -132,9 +132,14 @@ impl StopStats {
     fn with_threshold(mut self, row: &StatRow, minutes: Option<i32>) -> Self {
         let Some(minutes) = minutes else { return self };
         self.at_least_minutes = Some(minutes);
-        self.share_delay_at_least = Some(row.counts.as_ref().and_then(|counts| {
-            punctuality::stats::Cell::share_at_least_from_counts(counts, minutes)
-        }));
+        // Still an inner option, and still the same three wire states. Whether a
+        // histogram can answer an arbitrary threshold is
+        // `share_at_least_from_counts`'s verdict -- it refuses an array of the wrong
+        // length -- rather than a nullable column's.
+        self.share_delay_at_least = Some(punctuality::stats::Cell::share_at_least_from_counts(
+            &row.counts,
+            minutes,
+        ));
         self
     }
 }
@@ -252,15 +257,15 @@ async fn handle_station(State(state): State<AppState>, Query(p): Query<StationQu
 #[tokio::main]
 async fn main() {
     let cfg = Config::load();
-    // The sync `postgres` client drives its connection with its own internal runtime,
-    // so constructing it on an async runtime thread panics with "cannot start a runtime
-    // from within a runtime". spawn_blocking moves it off. transit-server does the same
-    // dance for reqwest::blocking -- same cause, different library.
+    // rusqlite is a blocking API over a file: an open on an async worker holds that
+    // thread for the migration and, under a busy writer, for busy_timeout as well.
+    // spawn_blocking moves it off. transit-server does the same dance for
+    // reqwest::blocking -- same reason, different library.
     // The error is stringified inside the closure because Box<dyn Error> is not Send
     // and so cannot cross the spawn_blocking boundary.
-    let url = cfg.database_url.clone();
+    let path = cfg.database_path.clone();
     let store =
-        match tokio::task::spawn_blocking(move || Store::open(&url).map_err(|e| e.to_string()))
+        match tokio::task::spawn_blocking(move || Store::open(&path).map_err(|e| e.to_string()))
             .await
         {
             Ok(Ok(s)) => s,

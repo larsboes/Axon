@@ -1,6 +1,6 @@
 //! punctuality — ingest published DB stop history, read the resulting statistics.
 
-use punctuality::config::{redact, Config};
+use punctuality::config::Config;
 use punctuality::dataset::{self, FIRST_FULL_COVERAGE_MONTH};
 use punctuality::ingest::{self, CellKey};
 use punctuality::stats::Cell;
@@ -79,8 +79,8 @@ fn ingest_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    eprintln!("punctuality: writing to {}", redact(&cfg.database_url));
-    let store = Store::open(&cfg.database_url)?;
+    eprintln!("punctuality: writing to {}", cfg.database_path.display());
+    let store = Store::open(&cfg.database_path)?;
     store.replace_stats(&cells, &stations)?;
     store.record_run(
         &months[0].id,
@@ -108,7 +108,7 @@ fn stats_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let min_n: i64 = flag(args, "--min-n").as_deref().unwrap_or("30").parse()?;
 
     let cfg = Config::load();
-    let store = Store::open(&cfg.database_url)?;
+    let store = Store::open(&cfg.database_path)?;
 
     // A name is resolved through the stations table; digits are taken as an eva.
     let eva = if target.chars().all(|c| c.is_ascii_digit()) {
@@ -165,7 +165,7 @@ fn stats_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 fn stations_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let needle = args.get(1).ok_or("stations needs a search string")?;
     let cfg = Config::load();
-    let store = Store::open(&cfg.database_url)?;
+    let store = Store::open(&cfg.database_path)?;
     for (eva, name) in store.find_stations(needle)? {
         println!("{eva}  {name}");
     }

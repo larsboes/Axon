@@ -1,16 +1,18 @@
-//! Postgres persistence. Own schema (`punctuality`) inside the one shared instance,
-//! same arrangement scouting and transit already use.
+//! Where the aggregate is kept. Table prefix `punctuality` in the one shared
+//! SQLite file (PRD Q45), same arrangement scouting and transit already use.
 //!
 //! Only the aggregate lands here — roughly 400k summary rows, not the ~120M stop
 //! records they were computed from. That is a backup decision as much as a storage one:
-//! `capabilities/postgres` is covered by `pg_dumpall`, so anything in this database is
-//! in every backup forever, while the raw parquet is a cache that upstream can hand back
-//! at any time.
+//! the shared file is in the backup set, so anything in this database is in every
+//! backup forever, while the raw parquet is a cache that upstream can hand back at any
+//! time.
 
 use crate::ingest::CellKey;
 use crate::stats::Cell;
-use postgres::Client;
+use axon_store::QueryAll;
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::collections::HashMap;
+use std::path::Path;
 
 pub struct Store {
     /// Pooled like its six siblings, though this capability is the one that gains
@@ -20,7 +22,9 @@ pub struct Store {
     /// carrying the dependency while hand-rolling a second connection strategy
     /// beside it would be the worse of the two outcomes.
     pool: axon_store::Pool,
-    schema: String,
+    /// Prefixes this capability's tables in the one shared file (PRD Q45):
+    /// `punctuality` here means `punctuality_stop_stats` and its two siblings.
+    prefix: String,
 }
 
 pub type Coverage = (String, String, i32);
@@ -58,35 +62,39 @@ pub struct StatRow {
     pub p90: i16,
     pub share_late_6: f32,
     pub cancel_rate: f32,
-    /// The stored histogram, when the row was written by a binary that persists
-    /// it. `None` for a row from before that, which is why every reader has to
-    /// treat an arbitrary-threshold question as unanswerable rather than zero.
-    pub counts: Option<Vec<i32>>,
+    /// The stored histogram, one count per delay bucket.
+    ///
+    /// Whether it can answer an arbitrary threshold is
+    /// [`Cell::share_at_least_from_counts`]'s call, not this field's: it returns
+    /// `None` for an array of the wrong length. Under Postgres this was
+    /// `Option<Vec<i32>>` because the column was retrofitted onto rows that
+    /// predated it; no SQLite row does, so the column is NOT NULL and the outer
+    /// option had one inhabitant.
+    pub counts: Vec<i32>,
 }
 
 impl Store {
-    pub fn open(database_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_with_schema(database_url, "punctuality")
+    pub fn open(database_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_with_prefix(database_path, "punctuality")
     }
 
-    /// `schema` is either the literal `"punctuality"` or a test-generated name built
-    /// from a static prefix plus this process's pid — never user input. Postgres has no
-    /// parametrized-identifier syntax for DDL, so schema-qualified names are built with
-    /// `format!` below; that is safe because of where the name comes from, not because
-    /// interpolating into SQL is safe in general.
-    pub fn open_with_schema(
-        database_url: &str,
-        schema: &str,
+    /// `prefix` is either the literal `"punctuality"` or a test-generated name — never
+    /// user input. SQLite has no parametrized-identifier syntax for DDL, so prefixed
+    /// names are built with `format!` below; that is safe because of where the name
+    /// comes from, not because interpolating into SQL is safe in general.
+    pub fn open_with_prefix(
+        database_path: &Path,
+        prefix: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // A pool checkout, not a connect, and the migration runs once per process
-        // per (database, schema) rather than once per open. Both halves of the
-        // Store::open problem -- libs/axon-store/README.md has the numbers.
-        let pool = axon_store::open_pool(database_url, schema, |client| {
-            Self::init_schema(client, schema)
+        validate_prefix(prefix)?;
+        // A pool checkout, and the migration runs once per process per (file,
+        // prefix) rather than once per open -- libs/axon-store/README.md has why.
+        let pool = axon_store::open_pool(database_path, prefix, |conn| {
+            Self::run_migration(conn, prefix)
         })?;
         Ok(Self {
             pool,
-            schema: schema.to_string(),
+            prefix: prefix.to_string(),
         })
     }
 
@@ -99,29 +107,36 @@ impl Store {
         Ok(self.pool.get()?)
     }
 
-    fn init_schema(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
-        client.batch_execute(&format!(
+    /// The current shape of the three tables, not the history that produced them.
+    ///
+    /// The `ALTER TABLE ... ADD COLUMN IF NOT EXISTS counts` that retrofitted the
+    /// histogram is folded into `CREATE TABLE`, and folded in as NOT NULL: SQLite has
+    /// neither that ALTER form nor an alterable constraint, and no deployed SQLite file
+    /// predates this migration, so there are no pre-retrofit rows for a nullable column
+    /// to describe.
+    fn run_migration(conn: &Connection, prefix: &str) -> Result<(), Box<dyn std::error::Error>> {
+        conn.execute_batch(&format!(
             "
-            CREATE SCHEMA IF NOT EXISTS {schema};
-
-            CREATE TABLE IF NOT EXISTS {schema}.stations (
+            CREATE TABLE IF NOT EXISTS {prefix}_stations (
                 eva          TEXT PRIMARY KEY,
                 station_name TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS {schema}.stop_stats (
-                eva           TEXT     NOT NULL,
-                train_type    TEXT     NOT NULL,
-                hour          SMALLINT NOT NULL,
-                weekend       BOOLEAN  NOT NULL,
-                n             BIGINT   NOT NULL,
-                canceled      BIGINT   NOT NULL,
-                mean_delay    REAL     NOT NULL,
-                p50           SMALLINT NOT NULL,
-                p90           SMALLINT NOT NULL,
-                share_late_6  REAL     NOT NULL,
-                cancel_rate   REAL     NOT NULL,
-                -- The histogram itself, one count per delay bucket.
+            CREATE TABLE IF NOT EXISTS {prefix}_stop_stats (
+                eva           TEXT    NOT NULL,
+                train_type    TEXT    NOT NULL,
+                hour          INTEGER NOT NULL,
+                weekend       INTEGER NOT NULL,
+                n             INTEGER NOT NULL,
+                canceled      INTEGER NOT NULL,
+                mean_delay    REAL    NOT NULL,
+                p50           INTEGER NOT NULL,
+                p90           INTEGER NOT NULL,
+                share_late_6  REAL    NOT NULL,
+                cancel_rate   REAL    NOT NULL,
+                -- The histogram itself, one count per delay bucket, as a JSON array:
+                -- SQLite has no array type, and this is one of the two measured
+                -- Postgres columns that had no native equivalent (PRD Q45).
                 --
                 -- Persisting seven scalars and dropping the array meant the only
                 -- exceedance anyone could ever ask about was the six minutes that
@@ -130,31 +145,30 @@ impl Store {
                 -- It always could; the array was thrown away on the way to disk.
                 -- ~512 bytes a cell, and a new question is now a query rather than
                 -- a re-ingest of every parquet file.
-                counts        INTEGER[],
+                counts        TEXT    NOT NULL,
                 PRIMARY KEY (eva, train_type, hour, weekend)
             );
 
             -- What window produced the current contents. Without it, a table of numbers
             -- says nothing about which months it covers, and a partial re-ingest would
             -- be indistinguishable from a complete one.
-            CREATE TABLE IF NOT EXISTS {schema}.ingest_runs (
-                id           BIGSERIAL PRIMARY KEY,
-                ran_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+            --
+            -- INTEGER PRIMARY KEY AUTOINCREMENT, not the bare rowid alias BIGSERIAL
+            -- would otherwise map to: `coverage` reads the newest run as MAX(id), and a
+            -- plain rowid is reused after the highest row is deleted.
+            CREATE TABLE IF NOT EXISTS {prefix}_ingest_runs (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ran_at       TEXT NOT NULL DEFAULT ({now}),
                 from_month   TEXT NOT NULL,
                 to_month     TEXT NOT NULL,
-                months       INT  NOT NULL,
-                rows_read    BIGINT NOT NULL,
-                rows_skipped BIGINT NOT NULL,
-                cells        INT  NOT NULL
+                months       INTEGER NOT NULL,
+                rows_read    INTEGER NOT NULL,
+                rows_skipped INTEGER NOT NULL,
+                cells        INTEGER NOT NULL
             );
-
-            -- Additive, and NULL on every row written before it. A pre-existing
-            -- aggregate keeps working and simply cannot answer an arbitrary
-            -- threshold until the next ingest, which is the honest state to be in:
-            -- `ingest` replaces the aggregate wholesale, so filling this in is a
-            -- deliberate re-ingest and not something a migration should trigger.
-            ALTER TABLE {schema}.stop_stats ADD COLUMN IF NOT EXISTS counts INTEGER[];
-            "
+            ",
+            prefix = prefix,
+            now = axon_store::NOW
         ))?;
         Ok(())
     }
@@ -169,43 +183,42 @@ impl Store {
         cells: &HashMap<CellKey, Cell>,
         stations: &HashMap<String, String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let schema = self.schema.clone();
+        let prefix = self.prefix.clone();
         let mut conn = self.conn()?;
-        let mut tx = conn.transaction()?;
-        tx.execute(&format!("DELETE FROM {schema}.stop_stats"), &[])?;
+        let tx = conn.transaction()?;
+        tx.execute(&format!("DELETE FROM {prefix}_stop_stats"), [])?;
 
-        let insert = tx.prepare(&format!(
-            "INSERT INTO {schema}.stop_stats
-               (eva, train_type, hour, weekend, n, canceled, mean_delay, p50, p90, share_late_6,
-                cancel_rate, counts)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"
-        ))?;
-        for (key, cell) in cells {
-            tx.execute(
-                &insert,
-                &[
+        {
+            let mut insert = tx.prepare(&format!(
+                "INSERT INTO {prefix}_stop_stats
+                   (eva, train_type, hour, weekend, n, canceled, mean_delay, p50, p90,
+                    share_late_6, cancel_rate, counts)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
+            ))?;
+            for (key, cell) in cells {
+                insert.execute(params![
                     &key.eva,
                     &key.train_type,
-                    &(key.hour as i16),
-                    &key.weekend,
-                    &(cell.n as i64),
-                    &(cell.canceled as i64),
-                    &(cell.mean() as f32),
-                    &(cell.quantile(0.5) as i16),
-                    &(cell.quantile(0.9) as i16),
-                    &(cell.share_at_least(6) as f32),
-                    &(cell.cancel_rate() as f32),
-                    &cell.counts_i32(),
-                ],
-            )?;
-        }
+                    key.hour as i16,
+                    key.weekend,
+                    cell.n as i64,
+                    cell.canceled as i64,
+                    cell.mean() as f32,
+                    cell.quantile(0.5) as i16,
+                    cell.quantile(0.9) as i16,
+                    cell.share_at_least(6) as f32,
+                    cell.cancel_rate() as f32,
+                    serde_json::to_string(&cell.counts_i32())?,
+                ])?;
+            }
 
-        let station_insert = tx.prepare(&format!(
-            "INSERT INTO {schema}.stations (eva, station_name) VALUES ($1,$2)
-             ON CONFLICT (eva) DO UPDATE SET station_name = EXCLUDED.station_name"
-        ))?;
-        for (eva, name) in stations {
-            tx.execute(&station_insert, &[eva, name])?;
+            let mut station_insert = tx.prepare(&format!(
+                "INSERT INTO {prefix}_stations (eva, station_name) VALUES (?1,?2)
+                 ON CONFLICT (eva) DO UPDATE SET station_name = excluded.station_name"
+            ))?;
+            for (eva, name) in stations {
+                station_insert.execute(params![eva, name])?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -220,13 +233,13 @@ impl Store {
         skipped: i64,
         cells: i32,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let schema = &self.schema;
+        let prefix = &self.prefix;
         self.conn()?.execute(
             &format!(
-                "INSERT INTO {schema}.ingest_runs (from_month, to_month, months, rows_read, rows_skipped, cells)
-                 VALUES ($1,$2,$3,$4,$5,$6)"
+                "INSERT INTO {prefix}_ingest_runs (from_month, to_month, months, rows_read, rows_skipped, cells)
+                 VALUES (?1,?2,?3,?4,?5,?6)"
             ),
-            &[&from, &to, &months, &rows, &skipped, &cells],
+            params![&from, &to, months, rows, skipped, cells],
         )?;
         Ok(())
     }
@@ -240,20 +253,21 @@ impl Store {
         train_type: Option<&str>,
         min_n: i64,
     ) -> Result<Vec<StatRow>, Box<dyn std::error::Error>> {
-        let schema = &self.schema;
+        let prefix = &self.prefix;
         let eva = normalize_eva(eva);
         // Projects `s.counts` for the same reason `stop_stats` does: `row_to_stat` reads
-        // thirteen columns, so a projection that stops at twelve panics on the last `get`
+        // thirteen columns, so a projection that stops at twelve fails on the last `get`
         // instead of returning a row whose histogram is absent.
         let sql = format!(
             "SELECT {STAT_COLUMNS}
-             FROM {schema}.stop_stats s
-             LEFT JOIN {schema}.stations st ON st.eva = s.eva
-             WHERE s.eva = $1 AND ($2::text IS NULL OR s.train_type = $2) AND s.n >= $3
+             FROM {prefix}_stop_stats s
+             LEFT JOIN {prefix}_stations st ON st.eva = s.eva
+             WHERE s.eva = ?1 AND (?2 IS NULL OR s.train_type = ?2) AND s.n >= ?3
              ORDER BY s.train_type, s.weekend, s.hour"
         );
-        let rows = self.conn()?.query(&sql, &[&eva, &train_type, &min_n])?;
-        Ok(rows.iter().map(row_to_stat).collect())
+        Ok(self
+            .conn()?
+            .query_all(&sql, params![&eva, &train_type, min_n], row_to_stat)?)
     }
 
     /// One cell, or `None` when it does not exist or is thinner than `min_n`.
@@ -269,68 +283,102 @@ impl Store {
         weekend: bool,
         min_n: i64,
     ) -> Result<Option<StatRow>, Box<dyn std::error::Error>> {
-        let schema = &self.schema;
+        let prefix = &self.prefix;
         let eva = normalize_eva(eva);
-        let rows = self.conn()?.query(
-            &format!(
-                "SELECT {STAT_COLUMNS}
-                 FROM {schema}.stop_stats s
-                 LEFT JOIN {schema}.stations st ON st.eva = s.eva
-                 WHERE s.eva = $1 AND s.train_type = $2 AND s.hour = $3 AND s.weekend = $4
-                   AND s.n >= $5"
-            ),
-            &[&eva, &train_type, &hour, &weekend, &min_n],
-        )?;
-        Ok(rows.first().map(row_to_stat))
+        Ok(self
+            .conn()?
+            .query_row(
+                &format!(
+                    "SELECT {STAT_COLUMNS}
+                     FROM {prefix}_stop_stats s
+                     LEFT JOIN {prefix}_stations st ON st.eva = s.eva
+                     WHERE s.eva = ?1 AND s.train_type = ?2 AND s.hour = ?3 AND s.weekend = ?4
+                       AND s.n >= ?5"
+                ),
+                params![&eva, &train_type, hour, weekend, min_n],
+                row_to_stat,
+            )
+            .optional()?)
     }
 
     /// The window the current aggregate covers, from the most recent ingest run.
     /// `None` means nothing has been ingested — which a caller must be able to tell
     /// apart from "this train is never late".
     pub fn coverage(&self) -> Result<Option<Coverage>, Box<dyn std::error::Error>> {
-        let schema = &self.schema;
-        let rows = self.conn()?.query(
-            &format!(
-                "SELECT from_month, to_month, cells FROM {schema}.ingest_runs
-                 ORDER BY id DESC LIMIT 1"
-            ),
-            &[],
-        )?;
-        Ok(rows.first().map(|r| (r.get(0), r.get(1), r.get(2))))
+        let prefix = &self.prefix;
+        Ok(self
+            .conn()?
+            .query_row(
+                &format!(
+                    "SELECT from_month, to_month, cells FROM {prefix}_ingest_runs
+                     ORDER BY id DESC LIMIT 1"
+                ),
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
     }
 
     /// EVA numbers whose station name contains `needle`, case-insensitively.
+    ///
+    /// `LIKE` where Postgres had `ILIKE`. SQLite's LIKE already ignores case, but only
+    /// for ASCII: `MÜNCHEN` does not match `München`, where `münchen` does. Adding ICU
+    /// to buy that one letter is not worth a build-time dependency; the caller that hits
+    /// it retypes the umlaut in lower case.
     pub fn find_stations(
         &self,
         needle: &str,
     ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
-        let schema = &self.schema;
-        let rows = self.conn()?.query(
+        let prefix = &self.prefix;
+        Ok(self.conn()?.query_all(
             &format!(
-                "SELECT eva, station_name FROM {schema}.stations
-                 WHERE station_name ILIKE '%' || $1 || '%' ORDER BY station_name LIMIT 25"
+                "SELECT eva, station_name FROM {prefix}_stations
+                 WHERE station_name LIKE '%' || ?1 || '%' ORDER BY station_name LIMIT 25"
             ),
-            &[&needle],
-        )?;
-        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+            params![&needle],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?)
+    }
+
+    /// The cheapest statement that proves this store can actually reach its database.
+    pub fn ping(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+        Ok(())
     }
 }
 
-fn row_to_stat(r: &postgres::Row) -> StatRow {
-    StatRow {
-        eva: r.get(0),
-        station_name: r.get(1),
-        train_type: r.get(2),
-        hour: r.get(3),
-        weekend: r.get(4),
-        n: r.get(5),
-        canceled: r.get(6),
-        mean_delay: r.get(7),
-        p50: r.get(8),
-        p90: r.get(9),
-        share_late_6: r.get(10),
-        cancel_rate: r.get(11),
-        counts: r.get(12),
+fn row_to_stat(r: &Row) -> rusqlite::Result<StatRow> {
+    Ok(StatRow {
+        eva: r.get(0)?,
+        station_name: r.get(1)?,
+        train_type: r.get(2)?,
+        hour: r.get(3)?,
+        weekend: r.get(4)?,
+        n: r.get(5)?,
+        canceled: r.get(6)?,
+        mean_delay: r.get(7)?,
+        p50: r.get(8)?,
+        p90: r.get(9)?,
+        share_late_6: r.get(10)?,
+        cancel_rate: r.get(11)?,
+        counts: axon_store::json_column(r, 12)?,
+    })
+}
+
+/// The prefix is interpolated into DDL and every statement, so it is checked
+/// rather than trusted. Production passes the literal `punctuality`; only a test
+/// passes anything else.
+fn validate_prefix(prefix: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let ok = !prefix.is_empty()
+        && prefix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && prefix.chars().next().is_some_and(|c| !c.is_ascii_digit());
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("unsafe table prefix '{prefix}'").into())
     }
 }
 
@@ -339,7 +387,7 @@ mod tests {
     use super::*;
 
     /// `row_to_stat` reads indices 0..=12. A projection of any other width is not a
-    /// compile error; it panics on the first request that reaches the missing index.
+    /// compile error; it fails on the first request that reaches the missing index.
     #[test]
     fn the_projection_is_as_wide_as_row_to_stat_reads() {
         assert_eq!(STAT_COLUMNS.split(',').count(), 13);
@@ -362,5 +410,180 @@ mod tests {
     fn an_all_zero_id_does_not_become_empty() {
         // trim_start_matches would eat the whole string; the pad has to put it back.
         assert_eq!(normalize_eva("0"), "00000000");
+    }
+}
+
+/// Database-backed; the module name is the selector CI splits the suite on. It was
+/// `postgres_tests` until PRD Q45 — the suite needs a temp file now, not a server.
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use crate::ingest::CellKey;
+
+    /// A file per test, in a directory this process owns.
+    fn open_test_store(suffix: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!("punctuality-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a writable temp directory");
+        let path = dir.join(format!("{suffix}.db"));
+        // The directory is named by pid, and a pid is recycled eventually. A previous
+        // run's rows arriving in this one is the failure the old TRUNCATE prevented.
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
+        }
+        Store::open(&path)
+            .unwrap_or_else(|e| panic!("could not open test store at {}: {e}", path.display()))
+    }
+
+    fn one_cell(eva: &str, train_type: &str, hour: u8, delays: &[i32]) -> (CellKey, Cell) {
+        let mut cell = Cell::default();
+        for d in delays {
+            cell.record(*d, false);
+        }
+        (
+            CellKey {
+                eva: eva.to_string(),
+                train_type: train_type.to_string(),
+                hour,
+                weekend: false,
+            },
+            cell,
+        )
+    }
+
+    #[test]
+    fn ping_reaches_the_database() {
+        open_test_store("ping")
+            .ping()
+            .expect("a live store answers");
+    }
+
+    #[test]
+    fn a_store_cannot_be_opened_against_an_unusable_path() {
+        // A file where a directory has to be, which is what the readiness handler
+        // turns into a 503 the way it did for a stopped container.
+        let blocker =
+            std::env::temp_dir().join(format!("punctuality-blocker-{}", std::process::id()));
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        assert!(
+            Store::open(&blocker.join("axon.db")).is_err(),
+            "an unusable path opened anyway"
+        );
+    }
+
+    /// The histogram is the reason the array column exists, and JSON text is the only
+    /// shape SQLite has for it. A round trip that loses it puts the capability back to
+    /// answering exactly one threshold.
+    #[test]
+    fn the_histogram_survives_the_round_trip() {
+        let store = open_test_store("histogram");
+        let (key, cell) = one_cell("08000044", "ICE", 8, &[0, 1, 6, 6, 20, -2]);
+        let live = cell.share_at_least(6);
+
+        let mut cells = HashMap::new();
+        cells.insert(key, cell);
+        let mut stations = HashMap::new();
+        stations.insert("08000044".to_string(), "Frankfurt(Main)Hbf".to_string());
+        store.replace_stats(&cells, &stations).unwrap();
+
+        let row = store
+            .stop_stats("8000044", "ICE", 8, false, 1)
+            .unwrap()
+            .expect("the cell was just written");
+        assert_eq!(row.station_name.as_deref(), Some("Frankfurt(Main)Hbf"));
+        assert_eq!(
+            Cell::share_at_least_from_counts(&row.counts, 6),
+            Some(live),
+            "the stored array must answer what the live cell answers"
+        );
+    }
+
+    /// Replace, not merge. Rows from a window no longer covered would be invisible
+    /// in a table of numbers that says nothing about its own coverage.
+    #[test]
+    fn a_second_ingest_replaces_the_aggregate_rather_than_merging_into_it() {
+        let store = open_test_store("replace");
+        let mut stations = HashMap::new();
+        stations.insert("08000105".to_string(), "Frankfurt(Main)Hbf".to_string());
+
+        let mut first = HashMap::new();
+        let (key, cell) = one_cell("08000105", "ICE", 7, &[0; 40]);
+        first.insert(key, cell);
+        store.replace_stats(&first, &stations).unwrap();
+
+        let mut second = HashMap::new();
+        let (key, cell) = one_cell("08000105", "IC", 7, &[0; 40]);
+        second.insert(key, cell);
+        store.replace_stats(&second, &stations).unwrap();
+
+        let rows = store.station_stats("08000105", None, 1).unwrap();
+        assert_eq!(rows.len(), 1, "the ICE row belonged to the old window");
+        assert_eq!(rows[0].train_type, "IC");
+        // The station upsert is the half that does merge -- it is a lookup table,
+        // not a function of the window.
+        assert_eq!(rows[0].station_name.as_deref(), Some("Frankfurt(Main)Hbf"));
+    }
+
+    /// `?2 IS NULL OR train_type = ?2` is the translation of Postgres's
+    /// `$2::text IS NULL OR ...`, and it is the whole of the "no filter" path.
+    #[test]
+    fn a_null_train_type_means_every_train_type() {
+        let store = open_test_store("null_filter");
+        let mut cells = HashMap::new();
+        for train_type in ["ICE", "IC", "RE"] {
+            let (key, cell) = one_cell("08000152", train_type, 9, &[0; 40]);
+            cells.insert(key, cell);
+        }
+        store.replace_stats(&cells, &HashMap::new()).unwrap();
+
+        assert_eq!(store.station_stats("8000152", None, 1).unwrap().len(), 3);
+        assert_eq!(
+            store
+                .station_stats("8000152", Some("ICE"), 1)
+                .unwrap()
+                .len(),
+            1
+        );
+        // min_n is the thinness cut, and it applies to the same rows.
+        assert!(store.station_stats("8000152", None, 41).unwrap().is_empty());
+    }
+
+    /// Nothing ingested must read as "no data", never as "never late". The newest
+    /// run wins, which is what the AUTOINCREMENT id is for.
+    #[test]
+    fn coverage_is_absent_until_a_run_is_recorded_then_reports_the_newest() {
+        let store = open_test_store("coverage");
+        assert!(store.coverage().unwrap().is_none());
+
+        store
+            .record_run("2025-12", "2026-02", 3, 1_000, 10, 42)
+            .unwrap();
+        store
+            .record_run("2026-01", "2026-06", 6, 2_000, 20, 84)
+            .unwrap();
+
+        let (from, to, cells) = store.coverage().unwrap().unwrap();
+        assert_eq!(
+            (from.as_str(), to.as_str(), cells),
+            ("2026-01", "2026-06", 84)
+        );
+    }
+
+    /// The padded/unpadded EVA split is the bug that presented as "no data for that
+    /// station", so it is pinned on a real query rather than on the helper alone.
+    #[test]
+    fn a_station_is_found_by_either_spelling_of_its_eva() {
+        let store = open_test_store("eva_forms");
+        let mut cells = HashMap::new();
+        let (key, cell) = one_cell("08000044", "ICE", 12, &[0; 40]);
+        cells.insert(key, cell);
+        let mut stations = HashMap::new();
+        stations.insert("08000044".to_string(), "Aachen Hbf".to_string());
+        store.replace_stats(&cells, &stations).unwrap();
+
+        assert_eq!(store.station_stats("8000044", None, 1).unwrap().len(), 1);
+        assert_eq!(store.station_stats("08000044", None, 1).unwrap().len(), 1);
+        // LIKE stands in for ILIKE: case-insensitive over ASCII.
+        assert_eq!(store.find_stations("aachen").unwrap().len(), 1);
+        assert_eq!(store.find_stations("AACHEN").unwrap().len(), 1);
     }
 }

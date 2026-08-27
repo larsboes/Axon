@@ -25,7 +25,12 @@ punctuality stats 8000044 --min-n 100       # unpadded eva from HAFAS works too
 `ingest` replaces the whole aggregate rather than merging into it. The rows are a
 function of the ingested window, so merging a narrower run into a wider one would leave
 rows from months no longer covered with nothing in the table to show it. Every run
-records its window in `punctuality.ingest_runs`.
+records its window in `punctuality_ingest_runs`.
+
+The three tables live in the shared SQLite file — `AXON_DB_PATH`, else
+`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `punctuality`, so they are
+`punctuality_stop_stats`, `punctuality_stations` and `punctuality_ingest_runs`
+(libs/axon-store/README.md). PRD Q45 (2026-08-27) moved them there from a Postgres schema.
 
 ## Where the numbers come from
 
@@ -60,17 +65,21 @@ considered threshold: it was the one that got its own column. `transit`'s own
 `punctuality.rs` states that transfer risk cannot be produced from this data. It always
 could; the array was thrown away on the way to disk.
 
-The array is stored now (`counts INTEGER[]`, ~512 bytes a cell), and a stop in
-`POST /lookup` may carry `at_least_minutes`. A four-minute transfer buffer and a
-twelve-minute one are different questions, and asking a new one is a query rather than a
-re-ingest of every parquet file.
+The array is stored now (`counts`, ~512 bytes a cell), and a stop in `POST /lookup` may
+carry `at_least_minutes`. A four-minute transfer buffer and a twelve-minute one are
+different questions, and asking a new one is a query rather than a re-ingest of every
+parquet file.
 
-`share_delay_at_least` has three states and they are different answers. Absent means nobody
-asked. Explicit `null` means the question was asked and this row predates the stored
-histogram, so it cannot be answered. A number means it was answered. A row written before
-this change keeps working and simply cannot answer an arbitrary threshold, because `ingest`
-replaces the aggregate wholesale: filling the column in is a deliberate re-ingest, not
-something a schema migration should trigger.
+SQLite has no array type, so the column is TEXT holding a JSON array — one of the two
+columns in the whole repo that had no native equivalent (PRD Q45). It is NOT NULL: the
+nullability existed to describe rows written before the histogram was persisted, and no
+SQLite row predates it.
+
+`share_delay_at_least` still has three states and they are still different answers. Absent
+means nobody asked. Explicit `null` means the question was asked and the stored histogram
+cannot answer it. A number means it was answered. Which of the last two applies is
+`Cell::share_at_least_from_counts`'s verdict — it refuses an array of the wrong length —
+rather than a nullable column's.
 
 ## One train, one day
 
@@ -251,8 +260,12 @@ thing, so it lives with that thing (README.md#decisions-live-with-their-owner).
 
 `capabilities/punctuality` aggregates ~120M published stop records with the `parquet`
 crate (`upstreams.toml` [arrow-rs]) in a plain Rust binary, and writes the ~400k-row
-result into the shared `capabilities/postgres`. No embedded analytics engine is added to
-Axon, at any layer.
+result into the shared store. No embedded analytics engine is added to Axon, at any layer.
+
+Dated 2026-07-28, when the shared store was `capabilities/postgres`; PRD Q45 (2026-08-27)
+made it one SQLite file. The reasoning below is unchanged by that — it is about not adding
+a *second* engine beside whichever one the repo already runs, and every "Postgres" in it
+now reads as "the shared store".
 
 DuckDB was the obvious candidate and was evaluated seriously, against the live dataset,
 before this was written. It stays a fine tool to reach for interactively — it is how the
@@ -277,8 +290,8 @@ assumed: 99.906% of 2026-06's delays fall in [-5, 120] minutes, which is what ma
 window honest rather than convenient.
 
 **It keeps one storage story.** scouting, transit and comms already keep their tables in
-the shared Postgres. Adding an engine would mean another place data lives, another
-backup question, another thing to explain.
+the shared store. Adding an engine would mean another place data lives, another backup
+question, another thing to explain.
 
 ## What this forecloses
 
@@ -288,8 +301,8 @@ what the cache is for) or new Rust. Accepted: the aggregate answers the question
 `capabilities/transit` actually asks, and those files stay on disk precisely so
 exploration never has to go through this crate.
 
-The raw records are also deliberately NOT loaded into Postgres. `capabilities/postgres`
-is backed up with `pg_dumpall`, so anything in that database is in every backup forever;
+The raw records are also deliberately NOT loaded into the shared store. It is in the
+backup set, so anything in that database is in every backup forever;
 120M rows of re-downloadable public data would bloat every backup to store what
 upstream will hand back on request. The parquet cache is therefore a cache — outside the
 backup set, safe to delete, rebuilt by re-running ingest.
@@ -307,7 +320,8 @@ backup set, safe to delete, rebuilt by re-running ingest.
   answer in untested SQL, and adds a binary dependency only this capability needs.
 - **`pg_parquet` in the Postgres container** — requires a custom image, which trades the
   pinned official `postgres` image for one Axon has to build and audit itself.
-- **Loading raw stops into Postgres** — see above; the backup consequence decides it.
+- **Loading raw stops into the shared store** — see above; the backup consequence decides
+  it.
 
 ## Considered and declined
 
@@ -320,5 +334,5 @@ backup set, safe to delete, rebuilt by re-running ingest.
 - **Grouping by line number as well as train type** — `line_number` is null for every
   long-distance train (ICE/IC/EC), so it would add cells that are empty exactly where
   the interesting delays are.
-- **Keeping raw stop records in Postgres** — see the decision entry; it would put 120M
-  rows of re-downloadable public data into every `pg_dumpall`.
+- **Keeping raw stop records in the shared store** — see the decision entry; it would put
+  120M rows of re-downloadable public data into every backup.

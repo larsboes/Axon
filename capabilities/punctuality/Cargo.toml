@@ -37,13 +37,11 @@ route-manifest = { path = "../../libs/route-manifest" }
 parquet = "=59.2.0"
 arrow = "=59.2.0"
 
-# Sync client, matching scouting/transit: this crate has no async runtime and does not
-# need one -- ingest is a batch job and the CLI is a batch job.
-postgres = "0.19"
-# The sync pool for that client; see upstreams.toml [r2d2]. axon-store exposes
-# both the migration gate and the pool through one explicit crate dependency.
-r2d2 = "0.8"
-r2d2_postgres = "0.18"
+# The database, after PRD Q45 retired Postgres. Bundled so the deployment does not
+# depend on whichever SQLite the host ships; upstreams.toml [rusqlite] has the
+# measurement that settled it. Blocking, which matches this crate: ingest is a batch
+# job and the CLI is a batch job.
+rusqlite = { version = "0.40", features = ["bundled"] }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

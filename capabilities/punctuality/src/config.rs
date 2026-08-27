@@ -1,15 +1,17 @@
 //! Where the database is and where the raw cache lives. Same resolution order as
 //! `scouting::config` and `transit::config`, deliberately: a fourth capability inventing
-//! a fourth way to find the shared Postgres would be a fourth thing to fix when it moves.
+//! a fourth way to find the shared store would be a fourth thing to fix when it moves.
 
-use axon_config::{expand_tilde, overlay_data_dir, postgres_conn_from_shared_env};
+use axon_config::{database_path, expand_tilde, overlay_data_dir};
 use std::path::PathBuf;
 
 pub struct Config {
-    /// Postgres connection string for the shared instance (`capabilities/postgres`).
-    /// Resolution: `AXON_PUNCTUALITY_DATABASE_URL` > built from
-    /// `<overlay>/config/postgres.env` > a localhost dev-default guess.
-    pub database_url: String,
+    /// The one shared SQLite file, under the table prefix `punctuality` (PRD Q45).
+    /// Resolved by `axon_config::database_path`: `AXON_DB_PATH`, else
+    /// `<overlay>/data/axon/axon.db`. Not a per-capability setting any more — a file
+    /// per capability would drop the cross-capability joins the shared instance
+    /// existed for, so `AXON_PUNCTUALITY_DATABASE_URL` is now ignored.
+    pub database_path: PathBuf,
     /// Where downloaded monthly parquet lands. A cache, not state: everything in it is
     /// re-downloadable, so it is deliberately outside the backup set.
     pub raw_dir: PathBuf,
@@ -17,13 +19,6 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Self {
-        let database_url = std::env::var("AXON_PUNCTUALITY_DATABASE_URL")
-            .ok()
-            .or_else(postgres_conn_from_shared_env)
-            .unwrap_or_else(|| {
-                "host=127.0.0.1 port=5432 user=postgres dbname=postgres".to_string()
-            });
-
         let raw_dir = std::env::var("AXON_PUNCTUALITY_RAW_DIR")
             .ok()
             .map(|p| expand_tilde(&p))
@@ -31,47 +26,20 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("data/punctuality/raw"));
 
         Self {
-            database_url,
+            database_path: database_path(),
             raw_dir,
         }
     }
-}
-
-/// Masks the password for any display purpose. Nothing in this crate prints a
-/// connection string without going through here — a DSN reaches a terminal, a log, or
-/// an error message eventually, and the one that reached a transcript on 2026-07-28
-/// did it through a library's own exception text. The implementation (including the
-/// rfind-'@' case its tests pin) moved to `axon_config::redact_dsn`; the wrapper keeps
-/// this crate's callers and its documented invariant intact.
-pub fn redact(url: &str) -> String {
-    axon_config::redact_dsn(url)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The store path is a deployment fact, not a capability one. A capability that
+    /// resolved its own would be the one that quietly stopped sharing the file.
     #[test]
-    fn a_password_never_survives_redaction() {
-        let masked = redact("postgresql://axon:KwOyQ+/zynCo@127.0.0.1:5432/axon");
-        assert_eq!(masked, "postgresql://axon:***@127.0.0.1:5432/axon");
-        assert!(!masked.contains("KwOyQ"));
-    }
-
-    #[test]
-    fn a_url_without_credentials_is_left_alone() {
-        assert_eq!(
-            redact("postgresql://127.0.0.1:5432/axon"),
-            "postgresql://127.0.0.1:5432/axon"
-        );
-        assert_eq!(redact("not a url"), "not a url");
-    }
-
-    #[test]
-    fn a_password_containing_an_at_sign_still_masks() {
-        // find('@') takes the first one, which is inside the password here. The result
-        // must still not leak the tail of it.
-        let masked = redact("postgresql://axon:p@ss@127.0.0.1:5432/axon");
-        assert!(!masked.contains("ss@127"), "got {masked}");
+    fn the_store_path_comes_from_the_deployment() {
+        assert_eq!(Config::load().database_path, database_path());
     }
 }
