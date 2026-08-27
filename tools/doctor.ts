@@ -1080,6 +1080,58 @@ const CHECKS: Check[] = [
   },
 
   {
+    // The shared SQLite database (PRD Q45, 2026-08-27). Every capability's tables are in one
+    // file, so "is it there and does it open" is a machine-level question with one answer,
+    // which is what makes it a doctor check rather than nine readiness handlers.
+    //
+    // Resolved exactly as `axon_config::database_path()` resolves it — AXON_DB_PATH first,
+    // then the overlay — because a doctor that checked a different file than the capabilities
+    // open would report on nothing. Absent is a WARNING, not a failure: a machine that has
+    // never run a capability legitimately has no database yet, and `axon_store::pool_for`
+    // creates it on first open.
+    name: "Shared store (SQLite)",
+    run(ctx) {
+      const envPath = (process.env.AXON_DB_PATH ?? "").trim();
+      const dbPath = envPath ? expandHome(envPath) : join(ctx.overlayPath, "data", "axon", "axon.db");
+      const from = envPath ? "AXON_DB_PATH" : "overlay default";
+      if (!ctx.overlayPath && !envPath) return ctx.warn("skipped — no overlay to resolve the database path from");
+      if (!existsSync(dbPath)) {
+        ctx.warn(`no database at ${dbPath} (${from}) — created on the first write by any capability`);
+        return;
+      }
+
+      // `integrity_check` on the LIVE file, and this one is a read: sqlite3 opens it
+      // read-only through the URI, so a check cannot journal or write to the database every
+      // capability is using. Bounded to the first line — a corrupt database answers with a
+      // list, and the first entry is the one worth reporting.
+      const proc = Bun.spawnSync({
+        cmd: ["sqlite3", `file:${dbPath}?mode=ro`, "pragma integrity_check;"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (proc.exitCode === null || proc.exitCode !== 0) {
+        const why = proc.stderr.toString().trim() || "sqlite3 is not on PATH";
+        ctx.bad(`${dbPath} could not be read: ${why}`);
+      } else {
+        const first = proc.stdout.toString().trim().split("\n")[0] ?? "";
+        if (first === "ok") ctx.ok(`${dbPath} (${from}) — integrity_check ok`);
+        else ctx.bad(`${dbPath} failed integrity_check: ${first}`);
+      }
+
+      // The file has a backup contract, and the contract only reaches a backup surface
+      // through the registry. A machine holding the database without `store` enabled has a
+      // database nothing will ever back up — which is exactly the state a cutover from the
+      // retired postgres capability leaves behind if only half of it is done.
+      const enabled: string[] = Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : [];
+      if (!enabled.includes("store")) {
+        ctx.warn(
+          "'store' is not in this machine's enabled set — the database exists and no backup contract covers it (tools/capability.sh enable store)",
+        );
+      }
+    },
+  },
+
+  {
     name: "State mounts",
     run(ctx) {
       ctx.mounts = ctx.machineToml?.state_mount ?? [];
