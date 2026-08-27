@@ -45,7 +45,7 @@ pub(super) fn row_to_feed_list(r: &Row) -> rusqlite::Result<FeedItem> {
         url: r.get(4)?,
         author: r.get(5)?,
         summary: r.get(6)?,
-        transcript: r.get(7)?, // selected as NULL::text
+        transcript: r.get(7)?, // the list query selects a bare NULL here
         day: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
         created_at: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
         status: r.get(10)?,
