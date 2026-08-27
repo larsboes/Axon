@@ -24,11 +24,10 @@ markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-postgres = "0.19"
-# The sync pool for that client. `Store::open` cost a fresh connection and its auth
-# every call; upstreams.toml [r2d2] carries the verdict and why not deadpool/bb8.
-r2d2 = "0.8"
-r2d2_postgres = "0.18"
+# The database, after PRD Q45 retired Postgres. Bundled so the deployment does not
+# depend on whichever SQLite the host ships; upstreams.toml [rusqlite] has the
+# measurement that settled it.
+rusqlite = { version = "0.40", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }

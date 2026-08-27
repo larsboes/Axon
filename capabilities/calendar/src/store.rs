@@ -1,13 +1,14 @@
-//! Postgres persistence, own `calendar` schema on the shared instance
-//! (`capabilities/postgres`), same pattern as trips/scouting/transit.
-//! Instants stay TEXT (naive local, lexicographically ordered — see README's
-//! time model), structured fields stay JSON text, so the store needs no
-//! postgres type features beyond what trips already uses.
+//! Persistence under the table prefix `calendar` in the one shared SQLite file
+//! (PRD Q45), same pattern as trips/scouting/transit. Instants stay TEXT (naive
+//! local, lexicographically ordered — see README's time model) and structured
+//! fields stay JSON text, so nothing here needed a column type SQLite lacks.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use postgres::{Client, Row};
+use axon_store::QueryAll;
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use serde_json::Value;
 
 use crate::correlate;
@@ -40,39 +41,46 @@ fn now_text() -> String {
         .to_string()
 }
 
-fn validate_schema(schema: &str) -> StoreResult<()> {
-    if !schema
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || character == '_')
-    {
-        return Err("schema must contain only ASCII letters, digits, or underscore".into());
+/// The prefix is interpolated into DDL and every statement, so it is checked
+/// rather than trusted. Production passes the literal `calendar`; only a test
+/// passes anything else.
+fn validate_prefix(prefix: &str) -> StoreResult<()> {
+    let ok = !prefix.is_empty()
+        && prefix
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        && prefix.chars().next().is_some_and(|c| !c.is_ascii_digit());
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("unsafe table prefix '{prefix}'").into())
     }
-    Ok(())
 }
 
 pub struct CalendarStore {
-    /// Shared with every other store in this process on the same database, so
-    /// opening one is a checkout rather than a connect.
+    /// Shared with every other store in this process on the same file, so
+    /// opening one is a checkout rather than an open.
     pool: axon_store::Pool,
-    schema: String,
+    /// Prefixes this capability's tables in the one shared file (PRD Q45):
+    /// `calendar` here means `calendar_entries` and its four siblings.
+    prefix: String,
 }
 
 impl CalendarStore {
-    pub fn open(database_url: &str) -> StoreResult<Self> {
-        Self::open_in_schema(database_url, "calendar")
+    pub fn open(database_path: &Path) -> StoreResult<Self> {
+        Self::open_with_prefix(database_path, "calendar")
     }
 
-    pub fn open_in_schema(database_url: &str, schema: &str) -> StoreResult<Self> {
-        validate_schema(schema)?;
-        // A pool checkout, not a connect, and the migration runs once per process
-        // per (database, schema) rather than once per open. Both halves of the
-        // Store::open problem -- libs/axon-store/README.md has the numbers.
-        let pool = axon_store::open_pool(database_url, schema, |conn| {
-            Self::run_migration(conn, schema)
+    pub fn open_with_prefix(database_path: &Path, prefix: &str) -> StoreResult<Self> {
+        validate_prefix(prefix)?;
+        // A pool checkout, and the migration runs once per process per (file,
+        // prefix) rather than once per open -- libs/axon-store/README.md has why.
+        let pool = axon_store::open_pool(database_path, prefix, |conn| {
+            Self::run_migration(conn, prefix)
         })?;
         Ok(Self {
             pool,
-            schema: schema.to_string(),
+            prefix: prefix.to_string(),
         })
     }
 
@@ -80,7 +88,7 @@ impl CalendarStore {
     ///
     /// A `Result` where this used to be `self.conn.lock().unwrap()`: that unwrap
     /// could only fail on a poisoned mutex, whereas a checkout can genuinely fail
-    /// when the database is down or every connection is busy.
+    /// when the file is unreachable or every connection is busy.
     fn conn(&self) -> StoreResult<axon_store::PooledClient> {
         Ok(self.pool.get()?)
     }
@@ -90,16 +98,24 @@ impl CalendarStore {
     /// A checkout from the pool is not enough on its own — the point is to fail exactly when a
     /// real query would, which is what the readiness surface promises its caller (#126).
     pub fn ping(&self) -> StoreResult<()> {
-        let mut conn = self.conn()?;
-        conn.query_one("SELECT 1", &[])?;
+        let conn = self.conn()?;
+        conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
         Ok(())
     }
 
-    fn run_migration(conn: &mut Client, schema: &str) -> StoreResult<()> {
-        conn.batch_execute(&format!(
+    /// The current shape of the five tables, not the history that produced them.
+    ///
+    /// The `ALTER TABLE ... ADD COLUMN commitment` and the DROP/ADD CONSTRAINT pair
+    /// that widened its CHECK are gone: SQLite has neither form, and both are already
+    /// stated in `CREATE TABLE`. That is only correct because no deployed SQLite file
+    /// predates this migration.
+    ///
+    /// `rhythms` is declared before `entries` because `entries` references it, and a
+    /// batch executes in order.
+    fn run_migration(conn: &Connection, prefix: &str) -> StoreResult<()> {
+        conn.execute_batch(&format!(
             "
-            CREATE SCHEMA IF NOT EXISTS {schema};
-            CREATE TABLE IF NOT EXISTS {schema}.rhythms (
+            CREATE TABLE IF NOT EXISTS {prefix}_rhythms (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
                 title TEXT NOT NULL,
@@ -113,9 +129,13 @@ impl CalendarStore {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS {schema}.entries (
+            CREATE TABLE IF NOT EXISTS {prefix}_entries (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
+                -- 'possible' is the deliberate default: an entry that arrived via
+                -- scouting promotion was never an operator decision, and a bug in
+                -- this direction hands out a free day rather than silently walling
+                -- one off.
                 commitment TEXT NOT NULL DEFAULT 'possible'
                     CHECK (commitment IN ('possible','planned','committed')),
                 title TEXT NOT NULL,
@@ -126,32 +146,22 @@ impl CalendarStore {
                 notes TEXT,
                 source TEXT NOT NULL DEFAULT 'manual',
                 external_id TEXT,
-                rhythm_id TEXT REFERENCES {schema}.rhythms(id) ON DELETE SET NULL,
+                rhythm_id TEXT REFERENCES {prefix}_rhythms(id) ON DELETE SET NULL,
                 payload TEXT NOT NULL DEFAULT '{{}}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
-            -- Migration for tables created before the commitment axis existed.
-            -- 'possible' is the deliberate default: everything already in
-            -- there arrived via scouting promotion, which was never an operator decision,
-            -- and a bug in this direction hands out a free day
-            -- rather than silently walling one off.
-            ALTER TABLE {schema}.entries
-                ADD COLUMN IF NOT EXISTS commitment TEXT NOT NULL DEFAULT 'possible';
-            ALTER TABLE {schema}.entries
-                DROP CONSTRAINT IF EXISTS entries_commitment_check;
-            ALTER TABLE {schema}.entries
-                ADD CONSTRAINT entries_commitment_check
-                CHECK (commitment IN ('possible','planned','committed'));
-            CREATE INDEX IF NOT EXISTS idx_calendar_entries_starts
-                ON {schema}.entries(starts_at);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_entries_external
-                ON {schema}.entries(source, external_id)
+            -- Index names carry the prefix too: one file is one namespace, so two
+            -- prefixes sharing an index name would collide where two schemas did not.
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_entries_starts
+                ON {prefix}_entries(starts_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_{prefix}_entries_external
+                ON {prefix}_entries(source, external_id)
                 WHERE external_id IS NOT NULL;
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_entries_rhythm_slot
-                ON {schema}.entries(rhythm_id, starts_at)
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_{prefix}_entries_rhythm_slot
+                ON {prefix}_entries(rhythm_id, starts_at)
                 WHERE rhythm_id IS NOT NULL;
-            CREATE TABLE IF NOT EXISTS {schema}.contexts (
+            CREATE TABLE IF NOT EXISTS {prefix}_contexts (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
                 title TEXT NOT NULL,
@@ -162,29 +172,29 @@ impl CalendarStore {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_calendar_contexts_window
-                ON {schema}.contexts(valid_from, valid_until);
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_contexts_window
+                ON {prefix}_contexts(valid_from, valid_until);
             -- Which entries already became a trip, so materialising twice
             -- returns the plan that exists instead of making a second one.
             -- Same ledger shape as google_exports, and for the same reason:
             -- the fact belongs to calendar, the plan belongs to trips, and
             -- neither store reaches into the other.
-            CREATE TABLE IF NOT EXISTS {schema}.trip_materializations (
+            CREATE TABLE IF NOT EXISTS {prefix}_trip_materializations (
                 entry_id TEXT PRIMARY KEY
-                    REFERENCES {schema}.entries(id) ON DELETE CASCADE,
+                    REFERENCES {prefix}_entries(id) ON DELETE CASCADE,
                 plan_id TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS {schema}.google_exports (
+            CREATE TABLE IF NOT EXISTS {prefix}_google_exports (
                 entry_id TEXT PRIMARY KEY
-                    REFERENCES {schema}.entries(id) ON DELETE CASCADE,
+                    REFERENCES {prefix}_entries(id) ON DELETE CASCADE,
                 google_calendar_id TEXT NOT NULL,
                 google_event_id TEXT,
                 pushed_at TEXT,
                 created_at TEXT NOT NULL
             );
             ",
-            schema = schema
+            prefix = prefix
         ))?;
         Ok(())
     }
@@ -196,30 +206,34 @@ impl CalendarStore {
     /// layer asks in ("is 14 Aug feasible?"); finer slicing is presentation.
     pub fn list_entries(&self, from: &str, to: &str, kinds: &[String]) -> StoreResult<Vec<Entry>> {
         let (from_boundary, to_boundary) = day_window_bounds(from, to)?;
-        let mut conn = self.conn()?;
-        let rows = if kinds.is_empty() {
-            conn.query(
+        let conn = self.conn()?;
+        if kinds.is_empty() {
+            return Ok(conn.query_all(
                 &format!(
-                    "SELECT * FROM {schema}.entries \
-                     WHERE starts_at < $1 AND ends_at > $2 \
+                    "SELECT * FROM {prefix}_entries \
+                     WHERE starts_at < ?1 AND ends_at > ?2 \
                      ORDER BY starts_at",
-                    schema = self.schema
+                    prefix = self.prefix
                 ),
-                &[&to_boundary, &from_boundary],
-            )?
-        } else {
-            conn.query(
-                &format!(
-                    "SELECT * FROM {schema}.entries \
-                     WHERE starts_at < $1 AND ends_at > $2 \
-                       AND kind = ANY($3) \
-                     ORDER BY starts_at",
-                    schema = self.schema
-                ),
-                &[&to_boundary, &from_boundary, &kinds],
-            )?
-        };
-        rows.iter().map(entry_from_row).collect()
+                params![&to_boundary, &from_boundary],
+                entry_from_row,
+            )?);
+        }
+        // `kind = ANY($3)` had no direct translation: SQLite binds one value per
+        // placeholder and has no array type. `json_each` over a JSON array keeps the
+        // statement a constant with a fixed parameter count, where an `IN (?3,?4,...)`
+        // built per call makes the placeholder count depend on the input.
+        Ok(conn.query_all(
+            &format!(
+                "SELECT * FROM {prefix}_entries \
+                 WHERE starts_at < ?1 AND ends_at > ?2 \
+                   AND kind IN (SELECT value FROM json_each(?3)) \
+                 ORDER BY starts_at",
+                prefix = self.prefix
+            ),
+            params![&to_boundary, &from_boundary, &serde_json::to_string(kinds)?],
+            entry_from_row,
+        )?)
     }
 
     /// Provider drafts are not a `kind`: the source tells us where they came
@@ -228,18 +242,18 @@ impl CalendarStore {
     /// its own idea of what "waiting for review" means.
     pub fn list_google_drafts(&self, from: &str, to: &str) -> StoreResult<Vec<Entry>> {
         let (from_boundary, to_boundary) = day_window_bounds(from, to)?;
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        Ok(conn.query_all(
             &format!(
-                "SELECT * FROM {schema}.entries \
-                 WHERE starts_at < $1 AND ends_at > $2 \
-                   AND source = $3 AND commitment = $4 \
+                "SELECT * FROM {prefix}_entries \
+                 WHERE starts_at < ?1 AND ends_at > ?2 \
+                   AND source = ?3 AND commitment = ?4 \
                  ORDER BY starts_at",
-                schema = self.schema
+                prefix = self.prefix
             ),
-            &[&to_boundary, &from_boundary, &google::SOURCE, &"possible"],
-        )?;
-        rows.iter().map(entry_from_row).collect()
+            params![&to_boundary, &from_boundary, google::SOURCE, "possible"],
+            entry_from_row,
+        )?)
     }
 
     /// External contributions that still need an Axon decision, except Google
@@ -248,21 +262,18 @@ impl CalendarStore {
     /// flow. A user-created `possible` block is intentionally not a proposal.
     pub fn list_external_proposals(&self, from: &str, to: &str) -> StoreResult<Vec<Entry>> {
         let (from_boundary, to_boundary) = day_window_bounds(from, to)?;
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        let proposals: Vec<Entry> = conn.query_all(
             &format!(
-                "SELECT * FROM {schema}.entries \
-                 WHERE starts_at < $1 AND ends_at > $2 \
-                   AND commitment = $3 AND external_id IS NOT NULL AND source <> $4 \
+                "SELECT * FROM {prefix}_entries \
+                 WHERE starts_at < ?1 AND ends_at > ?2 \
+                   AND commitment = ?3 AND external_id IS NOT NULL AND source <> ?4 \
                  ORDER BY starts_at",
-                schema = self.schema
+                prefix = self.prefix
             ),
-            &[&to_boundary, &from_boundary, &"possible", &google::SOURCE],
+            params![&to_boundary, &from_boundary, "possible", google::SOURCE],
+            entry_from_row,
         )?;
-        let proposals: Vec<Entry> = rows
-            .iter()
-            .map(entry_from_row)
-            .collect::<StoreResult<_>>()?;
         if proposals.is_empty() {
             return Ok(proposals);
         }
@@ -273,18 +284,15 @@ impl CalendarStore {
         // in the calendar. The window is the caller's: a twin that overlaps a
         // proposal *outside* the requested range is not read, which costs a
         // suppression only for a proposal the window already cuts in half.
-        let adopted = conn.query(
+        let adopted: Vec<Entry> = conn.query_all(
             &format!(
-                "SELECT * FROM {schema}.entries \
-                 WHERE starts_at < $1 AND ends_at > $2 AND commitment <> $3",
-                schema = self.schema
+                "SELECT * FROM {prefix}_entries \
+                 WHERE starts_at < ?1 AND ends_at > ?2 AND commitment <> ?3",
+                prefix = self.prefix
             ),
-            &[&to_boundary, &from_boundary, &"possible"],
+            params![&to_boundary, &from_boundary, "possible"],
+            entry_from_row,
         )?;
-        let adopted: Vec<Entry> = adopted
-            .iter()
-            .map(entry_from_row)
-            .collect::<StoreResult<_>>()?;
         Ok(correlate::without_already_adopted(proposals, &adopted)?)
     }
 
@@ -298,49 +306,53 @@ impl CalendarStore {
         source: &str,
         external_id: &str,
     ) -> StoreResult<Option<Entry>> {
-        let mut conn = self.conn()?;
-        let row = conn.query_opt(
-            &format!(
-                "SELECT * FROM {schema}.entries WHERE source = $1 AND external_id = $2",
-                schema = self.schema
-            ),
-            &[&source, &external_id],
-        )?;
-        row.map(|r| entry_from_row(&r)).transpose()
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT * FROM {prefix}_entries WHERE source = ?1 AND external_id = ?2",
+                    prefix = self.prefix
+                ),
+                params![&source, &external_id],
+                entry_from_row,
+            )
+            .optional()?)
     }
 
     pub fn get_entry(&self, id: &str) -> StoreResult<Option<Entry>> {
-        let mut conn = self.conn()?;
-        let row = conn.query_opt(
-            &format!(
-                "SELECT * FROM {schema}.entries WHERE id = $1",
-                schema = self.schema
-            ),
-            &[&id],
-        )?;
-        row.map(|r| entry_from_row(&r)).transpose()
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT * FROM {prefix}_entries WHERE id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&id],
+                entry_from_row,
+            )
+            .optional()?)
     }
 
     pub fn create_entry(&self, input: &NewEntry) -> StoreResult<Entry> {
         input.validate()?;
         let entry = entry_from_input(input);
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         conn.execute(
             &format!(
-                "INSERT INTO {schema}.entries \
+                "INSERT INTO {prefix}_entries \
                  (id, kind, title, starts_at, ends_at, all_day, location, notes, \
                   source, external_id, rhythm_id, payload, created_at, updated_at, \
                   commitment) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
-                schema = self.schema
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &entry.id,
                 &entry.kind,
                 &entry.title,
                 &entry.starts_at,
                 &entry.ends_at,
-                &(entry.all_day as i32),
+                entry.all_day as i32,
                 &entry.location,
                 &entry.notes,
                 &entry.source,
@@ -349,7 +361,7 @@ impl CalendarStore {
                 &serde_json::to_string(&entry.payload)?,
                 &entry.created_at,
                 &entry.updated_at,
-                &entry.commitment.as_str(),
+                entry.commitment.as_str(),
             ],
         )?;
         Ok(entry)
@@ -370,35 +382,35 @@ impl CalendarStore {
         let mut entry = entry_from_input(input);
         entry.external_id = Some(external_id.to_string());
 
-        let mut conn = self.conn()?;
-        let row = conn.query_one(
+        let conn = self.conn()?;
+        Ok(conn.query_row(
             &format!(
-                "INSERT INTO {schema}.entries \
+                "INSERT INTO {prefix}_entries \
                  (id, kind, title, starts_at, ends_at, all_day, location, notes, \
                   source, external_id, rhythm_id, payload, created_at, updated_at, \
                   commitment) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15) \
                  ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL \
-                 DO UPDATE SET kind=EXCLUDED.kind, title=EXCLUDED.title, \
-                   starts_at=EXCLUDED.starts_at, ends_at=EXCLUDED.ends_at, \
-                   all_day=EXCLUDED.all_day, location=EXCLUDED.location, \
-                   notes=EXCLUDED.notes, rhythm_id=EXCLUDED.rhythm_id, \
-                   payload=EXCLUDED.payload, updated_at=EXCLUDED.updated_at \
+                 DO UPDATE SET kind=excluded.kind, title=excluded.title, \
+                   starts_at=excluded.starts_at, ends_at=excluded.ends_at, \
+                   all_day=excluded.all_day, location=excluded.location, \
+                   notes=excluded.notes, rhythm_id=excluded.rhythm_id, \
+                   payload=excluded.payload, updated_at=excluded.updated_at \
                  RETURNING *",
                 // `commitment` is absent from that DO UPDATE list on purpose.
                 // A provider re-running its import re-states what an event is,
                 // never how committed the operator is to it: once they raise a promoted
                 // event to planned or committed, the next `scout
                 // --promote-calendar` must not quietly hand it back down.
-                schema = self.schema
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &entry.id,
                 &entry.kind,
                 &entry.title,
                 &entry.starts_at,
                 &entry.ends_at,
-                &(entry.all_day as i32),
+                entry.all_day as i32,
                 &entry.location,
                 &entry.notes,
                 &entry.source,
@@ -407,10 +419,10 @@ impl CalendarStore {
                 &serde_json::to_string(&entry.payload)?,
                 &entry.created_at,
                 &entry.updated_at,
-                &entry.commitment.as_str(),
+                entry.commitment.as_str(),
             ],
-        )?;
-        entry_from_row(&row)
+            entry_from_row,
+        )?)
     }
 
     /// Applies a patch. Any patch to a rhythm-linked entry detaches it from
@@ -450,39 +462,39 @@ impl CalendarStore {
         }
         entry_as_new(&entry).validate()?;
         entry.updated_at = now_text();
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         conn.execute(
             &format!(
-                "UPDATE {schema}.entries SET kind=$2, title=$3, starts_at=$4, ends_at=$5, \
-                 all_day=$6, location=$7, notes=$8, rhythm_id=$9, updated_at=$10, \
-                 commitment=$11 WHERE id=$1",
-                schema = self.schema
+                "UPDATE {prefix}_entries SET kind=?2, title=?3, starts_at=?4, ends_at=?5, \
+                 all_day=?6, location=?7, notes=?8, rhythm_id=?9, updated_at=?10, \
+                 commitment=?11 WHERE id=?1",
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &entry.id,
                 &entry.kind,
                 &entry.title,
                 &entry.starts_at,
                 &entry.ends_at,
-                &(entry.all_day as i32),
+                entry.all_day as i32,
                 &entry.location,
                 &entry.notes,
                 &entry.rhythm_id,
                 &entry.updated_at,
-                &entry.commitment.as_str(),
+                entry.commitment.as_str(),
             ],
         )?;
         Ok(Some(entry))
     }
 
     pub fn delete_entry(&self, id: &str) -> StoreResult<bool> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let count = conn.execute(
             &format!(
-                "DELETE FROM {schema}.entries WHERE id = $1",
-                schema = self.schema
+                "DELETE FROM {prefix}_entries WHERE id = ?1",
+                prefix = self.prefix
             ),
-            &[&id],
+            params![&id],
         )?;
         Ok(count > 0)
     }
@@ -498,43 +510,45 @@ impl CalendarStore {
         if to_day < from_day {
             return Err("to must be on or after from".into());
         }
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        Ok(conn.query_all(
             &format!(
-                "SELECT * FROM {schema}.contexts \
-                 WHERE valid_from < $1 AND valid_until >= $2 \
+                "SELECT * FROM {prefix}_contexts \
+                 WHERE valid_from < ?1 AND valid_until >= ?2 \
                  ORDER BY valid_from, title",
-                schema = self.schema
+                prefix = self.prefix
             ),
-            &[&to, &from],
-        )?;
-        rows.iter().map(context_from_row).collect()
+            params![&to, &from],
+            context_from_row,
+        )?)
     }
 
     pub fn get_context(&self, id: &str) -> StoreResult<Option<Context>> {
-        let mut conn = self.conn()?;
-        let row = conn.query_opt(
-            &format!(
-                "SELECT * FROM {schema}.contexts WHERE id = $1",
-                schema = self.schema
-            ),
-            &[&id],
-        )?;
-        row.map(|row| context_from_row(&row)).transpose()
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT * FROM {prefix}_contexts WHERE id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&id],
+                context_from_row,
+            )
+            .optional()?)
     }
 
     pub fn create_context(&self, input: &NewContext) -> StoreResult<Context> {
         input.validate()?;
         let context = context_from_input(input);
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         conn.execute(
             &format!(
-                "INSERT INTO {schema}.contexts \
+                "INSERT INTO {prefix}_contexts \
                  (id, kind, title, details, valid_from, valid_until, source, created_at, updated_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-                schema = self.schema
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &context.id,
                 &context.kind,
                 &context.title,
@@ -571,14 +585,14 @@ impl CalendarStore {
         }
         context_as_new(&context).validate()?;
         context.updated_at = now_text();
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         conn.execute(
             &format!(
-                "UPDATE {schema}.contexts SET kind=$2, title=$3, details=$4, \
-                 valid_from=$5, valid_until=$6, updated_at=$7 WHERE id=$1",
-                schema = self.schema
+                "UPDATE {prefix}_contexts SET kind=?2, title=?3, details=?4, \
+                 valid_from=?5, valid_until=?6, updated_at=?7 WHERE id=?1",
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &context.id,
                 &context.kind,
                 &context.title,
@@ -592,13 +606,13 @@ impl CalendarStore {
     }
 
     pub fn delete_context(&self, id: &str) -> StoreResult<bool> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let count = conn.execute(
             &format!(
-                "DELETE FROM {schema}.contexts WHERE id = $1",
-                schema = self.schema
+                "DELETE FROM {prefix}_contexts WHERE id = ?1",
+                prefix = self.prefix
             ),
-            &[&id],
+            params![&id],
         )?;
         Ok(count > 0)
     }
@@ -627,45 +641,47 @@ impl CalendarStore {
         if calendar_id.trim().is_empty() {
             return Err("google_calendar_id is required".into());
         }
-        let mut conn = self.conn()?;
-        let row = conn.query_one(
+        let conn = self.conn()?;
+        Ok(conn.query_row(
             &format!(
-                "INSERT INTO {schema}.google_exports \
+                "INSERT INTO {prefix}_google_exports \
                  (entry_id, google_calendar_id, google_event_id, pushed_at, created_at) \
-                 VALUES ($1,$2,NULL,NULL,$3) \
+                 VALUES (?1,?2,NULL,NULL,?3) \
                  ON CONFLICT (entry_id) DO UPDATE SET \
-                   google_calendar_id = EXCLUDED.google_calendar_id \
+                   google_calendar_id = excluded.google_calendar_id \
                  RETURNING *",
-                schema = self.schema
+                prefix = self.prefix
             ),
-            &[&entry.id, &calendar_id.trim(), &now_text()],
-        )?;
-        export_from_row(&row)
+            params![&entry.id, calendar_id.trim(), &now_text()],
+            export_from_row,
+        )?)
     }
 
     pub fn opt_out_export(&self, entry_id: &str) -> StoreResult<bool> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let count = conn.execute(
             &format!(
-                "DELETE FROM {schema}.google_exports WHERE entry_id = $1",
-                schema = self.schema
+                "DELETE FROM {prefix}_google_exports WHERE entry_id = ?1",
+                prefix = self.prefix
             ),
-            &[&entry_id],
+            params![&entry_id],
         )?;
         Ok(count > 0)
     }
 
     /// The plan an entry already belongs to, if any.
     pub fn trip_plan_for(&self, entry_id: &str) -> StoreResult<Option<String>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
-            &format!(
-                "SELECT plan_id FROM {schema}.trip_materializations WHERE entry_id = $1",
-                schema = self.schema
-            ),
-            &[&entry_id],
-        )?;
-        Ok(rows.first().map(|row| row.get(0)))
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT plan_id FROM {prefix}_trip_materializations WHERE entry_id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&entry_id],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// Records that these entries became one plan. Written only after trips
@@ -676,15 +692,15 @@ impl CalendarStore {
         plan_id: &str,
     ) -> StoreResult<()> {
         let now = now_text();
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         for entry_id in entry_ids {
             conn.execute(
                 &format!(
-                    "INSERT INTO {schema}.trip_materializations (entry_id, plan_id, created_at) \
-                     VALUES ($1,$2,$3) ON CONFLICT (entry_id) DO NOTHING",
-                    schema = self.schema
+                    "INSERT INTO {prefix}_trip_materializations (entry_id, plan_id, created_at) \
+                     VALUES (?1,?2,?3) ON CONFLICT (entry_id) DO NOTHING",
+                    prefix = self.prefix
                 ),
-                &[entry_id, &plan_id, &now],
+                params![entry_id, &plan_id, &now],
             )?;
         }
         Ok(())
@@ -693,26 +709,26 @@ impl CalendarStore {
     /// Drops ledger rows whose plan trips no longer has. Called only after
     /// trips has *said* the plan is gone, never on a failure to reach it.
     pub fn forget_trip_materialization(&self, plan_id: &str) -> StoreResult<u64> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         Ok(conn.execute(
             &format!(
-                "DELETE FROM {schema}.trip_materializations WHERE plan_id = $1",
-                schema = self.schema
+                "DELETE FROM {prefix}_trip_materializations WHERE plan_id = ?1",
+                prefix = self.prefix
             ),
-            &[&plan_id],
-        )?)
+            params![&plan_id],
+        )? as u64)
     }
 
     pub fn list_export_optins(&self) -> StoreResult<Vec<ExportOptIn>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        Ok(conn.query_all(
             &format!(
-                "SELECT * FROM {schema}.google_exports ORDER BY created_at",
-                schema = self.schema
+                "SELECT * FROM {prefix}_google_exports ORDER BY created_at",
+                prefix = self.prefix
             ),
-            &[],
-        )?;
-        rows.iter().map(export_from_row).collect()
+            [],
+            export_from_row,
+        )?)
     }
 
     /// Every opted-in entry with the entry itself, for the export run. The
@@ -723,8 +739,8 @@ impl CalendarStore {
     /// `row.get("created_at")` on an unaliased join takes whichever came
     /// first, which would silently stamp the entry with the opt-in's date.
     pub fn export_queue(&self) -> StoreResult<Vec<(ExportOptIn, Entry)>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        Ok(conn.query_all(
             &format!(
                 "SELECT e.*, \
                         x.entry_id AS x_entry_id, \
@@ -732,25 +748,23 @@ impl CalendarStore {
                         x.google_event_id AS x_google_event_id, \
                         x.pushed_at AS x_pushed_at, \
                         x.created_at AS x_created_at \
-                 FROM {schema}.google_exports x \
-                 JOIN {schema}.entries e ON e.id = x.entry_id \
+                 FROM {prefix}_google_exports x \
+                 JOIN {prefix}_entries e ON e.id = x.entry_id \
                  ORDER BY e.starts_at",
-                schema = self.schema
+                prefix = self.prefix
             ),
-            &[],
-        )?;
-        rows.iter()
-            .map(|row| {
+            [],
+            |row| {
                 let optin = ExportOptIn {
-                    entry_id: row.get("x_entry_id"),
-                    google_calendar_id: row.get("x_google_calendar_id"),
-                    google_event_id: row.get("x_google_event_id"),
-                    pushed_at: row.get("x_pushed_at"),
-                    created_at: row.get("x_created_at"),
+                    entry_id: row.get("x_entry_id")?,
+                    google_calendar_id: row.get("x_google_calendar_id")?,
+                    google_event_id: row.get("x_google_event_id")?,
+                    pushed_at: row.get("x_pushed_at")?,
+                    created_at: row.get("x_created_at")?,
                 };
                 Ok((optin, entry_from_row(row)?))
-            })
-            .collect()
+            },
+        )?)
     }
 
     /// Records what a push produced. `google_event_id` is what turns the next
@@ -760,42 +774,46 @@ impl CalendarStore {
         entry_id: &str,
         google_event_id: &str,
     ) -> StoreResult<Option<ExportOptIn>> {
-        let mut conn = self.conn()?;
-        let row = conn.query_opt(
-            &format!(
-                "UPDATE {schema}.google_exports \
-                 SET google_event_id = $2, pushed_at = $3 WHERE entry_id = $1 RETURNING *",
-                schema = self.schema
-            ),
-            &[&entry_id, &google_event_id, &now_text()],
-        )?;
-        row.map(|r| export_from_row(&r)).transpose()
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "UPDATE {prefix}_google_exports \
+                     SET google_event_id = ?2, pushed_at = ?3 WHERE entry_id = ?1 RETURNING *",
+                    prefix = self.prefix
+                ),
+                params![&entry_id, &google_event_id, &now_text()],
+                export_from_row,
+            )
+            .optional()?)
     }
 
     // ---- rhythms ----------------------------------------------------------
 
     pub fn list_rhythms(&self) -> StoreResult<Vec<Rhythm>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        Ok(conn.query_all(
             &format!(
-                "SELECT * FROM {schema}.rhythms ORDER BY valid_from",
-                schema = self.schema
+                "SELECT * FROM {prefix}_rhythms ORDER BY valid_from",
+                prefix = self.prefix
             ),
-            &[],
-        )?;
-        rows.iter().map(rhythm_from_row).collect()
+            [],
+            rhythm_from_row,
+        )?)
     }
 
     pub fn get_rhythm(&self, id: &str) -> StoreResult<Option<Rhythm>> {
-        let mut conn = self.conn()?;
-        let row = conn.query_opt(
-            &format!(
-                "SELECT * FROM {schema}.rhythms WHERE id = $1",
-                schema = self.schema
-            ),
-            &[&id],
-        )?;
-        row.map(|r| rhythm_from_row(&r)).transpose()
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT * FROM {prefix}_rhythms WHERE id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&id],
+                rhythm_from_row,
+            )
+            .optional()?)
     }
 
     /// Creates the rhythm and materializes its future instances atomically.
@@ -817,16 +835,16 @@ impl CalendarStore {
             updated_at: now_text(),
         };
         let mut conn = self.conn()?;
-        let mut tx = conn.transaction()?;
+        let tx = conn.transaction()?;
         tx.execute(
             &format!(
-                "INSERT INTO {schema}.rhythms \
+                "INSERT INTO {prefix}_rhythms \
                  (id, kind, title, location, byweekday, start_time, end_time, \
                   valid_from, valid_until, active, created_at, updated_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
-                schema = self.schema
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &rhythm.id,
                 &rhythm.kind,
                 &rhythm.title,
@@ -836,12 +854,12 @@ impl CalendarStore {
                 &rhythm.end_time,
                 &rhythm.valid_from,
                 &rhythm.valid_until,
-                &(rhythm.active as i32),
+                rhythm.active as i32,
                 &rhythm.created_at,
                 &rhythm.updated_at,
             ],
         )?;
-        let created = insert_instances(&mut tx, &self.schema, &rhythm)?;
+        let created = insert_instances(&tx, &self.prefix, &rhythm)?;
         tx.commit()?;
         Ok((rhythm, created))
     }
@@ -897,15 +915,15 @@ impl CalendarStore {
         )?;
         rhythm.updated_at = now_text();
         let mut conn = self.conn()?;
-        let mut tx = conn.transaction()?;
+        let tx = conn.transaction()?;
         tx.execute(
             &format!(
-                "UPDATE {schema}.rhythms SET kind=$2, title=$3, location=$4, byweekday=$5, \
-                 start_time=$6, end_time=$7, valid_from=$8, valid_until=$9, active=$10, \
-                 updated_at=$11 WHERE id=$1",
-                schema = self.schema
+                "UPDATE {prefix}_rhythms SET kind=?2, title=?3, location=?4, byweekday=?5, \
+                 start_time=?6, end_time=?7, valid_from=?8, valid_until=?9, active=?10, \
+                 updated_at=?11 WHERE id=?1",
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &rhythm.id,
                 &rhythm.kind,
                 &rhythm.title,
@@ -915,16 +933,16 @@ impl CalendarStore {
                 &rhythm.end_time,
                 &rhythm.valid_from,
                 &rhythm.valid_until,
-                &(rhythm.active as i32),
+                rhythm.active as i32,
                 &rhythm.updated_at,
             ],
         )?;
         let created = if rhythm.active {
-            delete_future_instances(&mut tx, &self.schema, &rhythm.id)?;
-            insert_instances(&mut tx, &self.schema, &rhythm)?
+            delete_future_instances(&tx, &self.prefix, &rhythm.id)?;
+            insert_instances(&tx, &self.prefix, &rhythm)?
         } else {
             // Pausing a rhythm clears its future, keeps its history.
-            delete_future_instances(&mut tx, &self.schema, &rhythm.id)?
+            delete_future_instances(&tx, &self.prefix, &rhythm.id)?
         };
         tx.commit()?;
         Ok(Some((rhythm, created)))
@@ -935,16 +953,16 @@ impl CalendarStore {
     /// ordinary manual-looking entries.
     pub fn delete_rhythm(&self, id: &str, delete_instances: bool) -> StoreResult<bool> {
         let mut conn = self.conn()?;
-        let mut tx = conn.transaction()?;
+        let tx = conn.transaction()?;
         if delete_instances {
-            delete_future_instances(&mut tx, &self.schema, id)?;
+            delete_future_instances(&tx, &self.prefix, id)?;
         }
         let count = tx.execute(
             &format!(
-                "DELETE FROM {schema}.rhythms WHERE id = $1",
-                schema = self.schema
+                "DELETE FROM {prefix}_rhythms WHERE id = ?1",
+                prefix = self.prefix
             ),
-            &[&id],
+            params![&id],
         )?;
         tx.commit()?;
         Ok(count > 0)
@@ -960,54 +978,45 @@ impl CalendarStore {
             None => return Ok(None),
         };
         let mut conn = self.conn()?;
-        let mut tx = conn.transaction()?;
-        let created = insert_instances(&mut tx, &self.schema, &rhythm)?;
+        let tx = conn.transaction()?;
+        let created = insert_instances(&tx, &self.prefix, &rhythm)?;
         tx.commit()?;
         Ok(Some(created))
     }
 }
 
-fn delete_future_instances(
-    tx: &mut postgres::Transaction,
-    schema: &str,
-    rhythm_id: &str,
-) -> StoreResult<usize> {
+fn delete_future_instances(tx: &Transaction, prefix: &str, rhythm_id: &str) -> StoreResult<usize> {
     let today = date::format_date(date::today_days());
-    let count = tx.execute(
+    Ok(tx.execute(
         &format!(
-            "DELETE FROM {schema}.entries \
-             WHERE rhythm_id = $1 AND substr(starts_at, 1, 10) >= $2",
-            schema = schema
+            "DELETE FROM {prefix}_entries \
+             WHERE rhythm_id = ?1 AND substr(starts_at, 1, 10) >= ?2",
+            prefix = prefix
         ),
-        &[&rhythm_id, &today],
-    )?;
-    Ok(count as usize)
+        params![&rhythm_id, &today],
+    )?)
 }
 
-fn insert_instances(
-    tx: &mut postgres::Transaction,
-    schema: &str,
-    rhythm: &Rhythm,
-) -> StoreResult<usize> {
+fn insert_instances(tx: &Transaction, prefix: &str, rhythm: &Rhythm) -> StoreResult<usize> {
     let now = now_text();
     let mut created = 0;
     for instance in rhythm::instance_entries(rhythm, date::today_days())? {
-        let affected = tx.execute(
+        created += tx.execute(
             &format!(
-                "INSERT INTO {schema}.entries \
+                "INSERT INTO {prefix}_entries \
                  (id, kind, title, starts_at, ends_at, all_day, location, notes, \
                   source, external_id, rhythm_id, payload, created_at, updated_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) \
                  ON CONFLICT (rhythm_id, starts_at) WHERE rhythm_id IS NOT NULL DO NOTHING",
-                schema = schema
+                prefix = prefix
             ),
-            &[
+            params![
                 &generated_id("cal:entry"),
                 &instance.kind,
                 &instance.title,
                 &instance.starts_at,
                 &instance.ends_at,
-                &(instance.all_day as i32),
+                instance.all_day as i32,
                 &instance.location,
                 &instance.notes,
                 &instance.source,
@@ -1018,7 +1027,6 @@ fn insert_instances(
                 &now,
             ],
         )?;
-        created += affected as usize;
     }
     Ok(created)
 }
@@ -1096,70 +1104,76 @@ fn context_from_input(input: &NewContext) -> Context {
     }
 }
 
-fn entry_from_row(row: &Row) -> StoreResult<Entry> {
-    let payload: String = row.get("payload");
+/// Columns are read by name, not by index: every caller here is a `SELECT *` or a
+/// `RETURNING *`, so the order is the table's and a column added in the middle of
+/// `CREATE TABLE` would silently re-number a positional read.
+fn entry_from_row(row: &Row) -> rusqlite::Result<Entry> {
+    let payload: String = row.get("payload")?;
     Ok(Entry {
-        id: row.get("id"),
-        kind: row.get("kind"),
-        commitment: Commitment::from_db(row.get("commitment")),
-        title: row.get("title"),
-        starts_at: row.get("starts_at"),
-        ends_at: row.get("ends_at"),
-        all_day: row.get::<_, i32>("all_day") != 0,
-        location: row.get("location"),
-        notes: row.get("notes"),
-        source: row.get("source"),
-        external_id: row.get("external_id"),
-        rhythm_id: row.get("rhythm_id"),
+        id: row.get("id")?,
+        kind: row.get("kind")?,
+        commitment: Commitment::from_db(&row.get::<_, String>("commitment")?),
+        title: row.get("title")?,
+        starts_at: row.get("starts_at")?,
+        ends_at: row.get("ends_at")?,
+        all_day: row.get::<_, i32>("all_day")? != 0,
+        location: row.get("location")?,
+        notes: row.get("notes")?,
+        source: row.get("source")?,
+        external_id: row.get("external_id")?,
+        rhythm_id: row.get("rhythm_id")?,
+        // Unparseable payload reads as Null rather than failing the row, which is
+        // deliberate and predates the port: the payload is provider decoration, and
+        // one bad blob must not take the entry it hangs off out of the calendar.
         payload: serde_json::from_str(&payload).unwrap_or(Value::Null),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
     })
 }
 
-fn context_from_row(row: &Row) -> StoreResult<Context> {
+fn context_from_row(row: &Row) -> rusqlite::Result<Context> {
     Ok(Context {
-        id: row.get("id"),
-        kind: row.get("kind"),
-        title: row.get("title"),
-        details: row.get("details"),
-        valid_from: row.get("valid_from"),
-        valid_until: row.get("valid_until"),
-        source: row.get("source"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
+        id: row.get("id")?,
+        kind: row.get("kind")?,
+        title: row.get("title")?,
+        details: row.get("details")?,
+        valid_from: row.get("valid_from")?,
+        valid_until: row.get("valid_until")?,
+        source: row.get("source")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
     })
 }
 
-fn export_from_row(row: &Row) -> StoreResult<ExportOptIn> {
+fn export_from_row(row: &Row) -> rusqlite::Result<ExportOptIn> {
     Ok(ExportOptIn {
-        entry_id: row.get("entry_id"),
-        google_calendar_id: row.get("google_calendar_id"),
-        google_event_id: row.get("google_event_id"),
-        pushed_at: row.get("pushed_at"),
-        created_at: row.get("created_at"),
+        entry_id: row.get("entry_id")?,
+        google_calendar_id: row.get("google_calendar_id")?,
+        google_event_id: row.get("google_event_id")?,
+        pushed_at: row.get("pushed_at")?,
+        created_at: row.get("created_at")?,
     })
 }
 
-fn rhythm_from_row(row: &Row) -> StoreResult<Rhythm> {
-    let byweekday: String = row.get("byweekday");
+fn rhythm_from_row(row: &Row) -> rusqlite::Result<Rhythm> {
+    let byweekday: String = row.get("byweekday")?;
     Ok(Rhythm {
-        id: row.get("id"),
-        kind: row.get("kind"),
-        title: row.get("title"),
-        location: row.get("location"),
+        id: row.get("id")?,
+        kind: row.get("kind")?,
+        title: row.get("title")?,
+        location: row.get("location")?,
         byweekday: byweekday
             .split(',')
             .map(|token| token.trim().to_string())
             .filter(|token| !token.is_empty())
             .collect(),
-        start_time: row.get("start_time"),
-        end_time: row.get("end_time"),
-        valid_from: row.get("valid_from"),
-        valid_until: row.get("valid_until"),
-        active: row.get::<_, i32>("active") != 0,
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
+        start_time: row.get("start_time")?,
+        end_time: row.get("end_time")?,
+        valid_from: row.get("valid_from")?,
+        valid_until: row.get("valid_until")?,
+        active: row.get::<_, i32>("active")? != 0,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
     })
 }
 
@@ -1176,21 +1190,10 @@ mod tests {
     }
 
     #[test]
-    fn schema_names_are_restricted() {
-        assert!(validate_schema("calendar_test").is_ok());
-        assert!(validate_schema("calendar; DROP SCHEMA public").is_err());
-    }
-
-    /// The readiness handler turns exactly this failure into a 503, instead of the 200 the
-    /// stateless liveness handler answers through a Postgres outage (#126).
-    #[test]
-    fn a_store_cannot_be_opened_against_an_unreachable_database() {
-        // Port 1 is reserved and nothing listens there — the stopped-container case.
-        assert!(
-            CalendarStore::open("host=127.0.0.1 port=1 user=axon password=axon dbname=axon")
-                .is_err(),
-            "an unreachable database opened anyway"
-        );
+    fn table_prefixes_are_restricted() {
+        assert!(validate_prefix("calendar_test").is_ok());
+        assert!(validate_prefix("calendar; DROP TABLE calendar_entries").is_err());
+        assert!(validate_prefix("").is_err());
     }
 
     #[test]
@@ -1201,5 +1204,323 @@ mod tests {
 
         let same_day_end = "2026-07-30T12:00:00";
         assert!(same_day_end > from.as_str());
+    }
+}
+
+/// Database-backed; the module name is the selector CI splits the suite on. New here:
+/// every statement in this file used to need a running Postgres, so the SQL was only
+/// ever exercised through the dashboard. A temp file costs nothing.
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+
+    fn open_test_store(suffix: &str) -> CalendarStore {
+        let dir = std::env::temp_dir().join(format!("calendar-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a writable temp directory");
+        let path = dir.join(format!("{suffix}.db"));
+        // The directory is named by pid, and a pid is recycled eventually. A previous
+        // run's rows arriving in this one is the failure the old TRUNCATE prevented.
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
+        }
+        CalendarStore::open(&path)
+            .unwrap_or_else(|e| panic!("could not open test store at {}: {e}", path.display()))
+    }
+
+    fn an_entry(title: &str, day: &str, kind: &str) -> NewEntry {
+        NewEntry {
+            kind: kind.to_string(),
+            commitment: Commitment::Possible,
+            title: title.to_string(),
+            starts_at: format!("{day}T09:00:00"),
+            ends_at: format!("{day}T10:00:00"),
+            all_day: false,
+            location: None,
+            notes: None,
+            source: "manual".to_string(),
+            external_id: None,
+            rhythm_id: None,
+            payload: Value::Null,
+        }
+    }
+
+    #[test]
+    fn ping_reaches_the_database() {
+        open_test_store("ping")
+            .ping()
+            .expect("a live store answers");
+    }
+
+    /// The readiness handler turns exactly this into a 503, instead of the 200 the
+    /// stateless liveness handler answers while every query behind it fails (#126).
+    /// It replaces "port 1 is unreachable": there is no port any more, so an
+    /// unusable path is the failure a deployment can actually have.
+    #[test]
+    fn a_store_cannot_be_opened_against_an_unusable_path() {
+        let blocker = std::env::temp_dir().join(format!("calendar-blocker-{}", std::process::id()));
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        assert!(
+            CalendarStore::open(&blocker.join("axon.db")).is_err(),
+            "an unusable path opened anyway"
+        );
+    }
+
+    /// The window is half-open on days but compared against instants, so an entry
+    /// that ends exactly at the boundary is outside it and one that straddles it is in.
+    #[test]
+    fn the_day_window_is_half_open_and_catches_overlaps() {
+        let store = open_test_store("window");
+        store
+            .create_entry(&an_entry("inside", "2026-08-15", "event"))
+            .unwrap();
+        store
+            .create_entry(&an_entry("after", "2026-08-16", "event"))
+            .unwrap();
+
+        let titles: Vec<String> = store
+            .list_entries("2026-08-15", "2026-08-16", &[])
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.title)
+            .collect();
+        assert_eq!(titles, vec!["inside"]);
+        assert!(store.list_entries("2026-08-16", "2026-08-15", &[]).is_err());
+    }
+
+    /// `kind = ANY($3)` became `IN (SELECT value FROM json_each(?3))`, and an empty
+    /// filter still means "every kind" rather than "no rows".
+    #[test]
+    fn the_kind_filter_matches_any_of_the_named_kinds() {
+        let store = open_test_store("kinds");
+        for (title, kind) in [("a", "event"), ("b", "busy"), ("c", "travel")] {
+            store
+                .create_entry(&an_entry(title, "2026-08-15", kind))
+                .unwrap();
+        }
+        let window = ("2026-08-15", "2026-08-16");
+
+        assert_eq!(
+            store.list_entries(window.0, window.1, &[]).unwrap().len(),
+            3
+        );
+        let filter = ["event".to_string(), "travel".to_string()];
+        let mut kinds: Vec<String> = store
+            .list_entries(window.0, window.1, &filter)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.kind)
+            .collect();
+        kinds.sort();
+        assert_eq!(kinds, vec!["event", "travel"]);
+        // A kind nobody used is not an error and not everything.
+        let none = ["nonexistent".to_string()];
+        assert!(store
+            .list_entries(window.0, window.1, &none)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// The contribution boundary. A re-import under the same `(source, external_id)`
+    /// updates in place, and it must not undo an operator's commitment decision --
+    /// which is why `commitment` is absent from the DO UPDATE list.
+    #[test]
+    fn an_external_upsert_updates_in_place_and_leaves_commitment_alone() {
+        let store = open_test_store("upsert");
+        let mut input = an_entry("Meetup", "2026-09-01", "event");
+        input.source = "scouting".into();
+        input.external_id = Some("evt-1".into());
+
+        let first = store.upsert_external_entry(&input).unwrap();
+        store
+            .update_entry(
+                &first.id,
+                &UpdateEntry {
+                    commitment: Some(Commitment::Committed),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        input.title = "Meetup (renamed upstream)".into();
+        let second = store.upsert_external_entry(&input).unwrap();
+        assert_eq!(second.id, first.id, "the Axon id survives a re-import");
+        assert_eq!(second.title, "Meetup (renamed upstream)");
+        assert_eq!(
+            second.commitment,
+            Commitment::Committed,
+            "a provider re-import must not hand a committed event back down"
+        );
+        assert_eq!(
+            store
+                .list_entries("2026-09-01", "2026-09-02", &[])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// The one test that proves `PRAGMA foreign_keys` is applied: SQLite parses
+    /// `ON DELETE CASCADE` either way and silently does not enforce it.
+    #[test]
+    fn deleting_an_entry_takes_its_export_optin_with_it() {
+        let store = open_test_store("cascade");
+        let entry = store
+            .create_entry(&an_entry("Standup", "2026-09-02", "event"))
+            .unwrap();
+        store.opt_in_export(&entry.id, "primary").unwrap();
+        assert_eq!(store.list_export_optins().unwrap().len(), 1);
+
+        assert!(store.delete_entry(&entry.id).unwrap());
+        assert!(
+            store.list_export_optins().unwrap().is_empty(),
+            "the opt-in outlived its entry, so foreign_keys is off"
+        );
+    }
+
+    /// Both tables carry `created_at`. Without the aliases, the unaliased join would
+    /// stamp the entry with the opt-in's date and nothing would say so.
+    #[test]
+    fn the_export_queue_keeps_each_side_of_the_join_distinct() {
+        let store = open_test_store("queue");
+        let entry = store
+            .create_entry(&an_entry("Talk", "2026-09-03", "event"))
+            .unwrap();
+        store
+            .opt_in_export(&entry.id, "work@group.calendar.google.com")
+            .unwrap();
+
+        let queue = store.export_queue().unwrap();
+        assert_eq!(queue.len(), 1);
+        let (optin, joined) = &queue[0];
+        assert_eq!(joined.id, entry.id);
+        assert_eq!(joined.created_at, entry.created_at);
+        assert_eq!(optin.entry_id, entry.id);
+        assert_eq!(optin.google_calendar_id, "work@group.calendar.google.com");
+        assert!(
+            optin.google_event_id.is_none(),
+            "nothing has been pushed yet"
+        );
+
+        let pushed = store
+            .record_export_push(&entry.id, "goog-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(pushed.google_event_id.as_deref(), Some("goog-1"));
+    }
+
+    /// Materialising is idempotent through the (rhythm_id, starts_at) partial unique
+    /// index, and re-running it must add nothing rather than duplicate the week.
+    #[test]
+    fn materializing_a_rhythm_twice_creates_each_slot_once() {
+        let store = open_test_store("rhythm");
+        let far_future = date::format_date(date::today_days() + 28);
+        let (rhythm, created) = store
+            .create_rhythm(&NewRhythm {
+                kind: "busy".into(),
+                title: "Gym".into(),
+                location: None,
+                byweekday: vec!["mo".into(), "we".into()],
+                start_time: Some("07:00".into()),
+                end_time: Some("08:00".into()),
+                valid_from: date::format_date(date::today_days()),
+                valid_until: far_future,
+                active: true,
+            })
+            .unwrap();
+        assert!(created > 0, "a live rhythm materializes its own future");
+
+        let again = store.materialize_rhythm(&rhythm.id).unwrap().unwrap();
+        assert_eq!(again, 0, "the slot index turns a repeat into a no-op");
+    }
+
+    /// Deleting the rhythm without its instances leaves them as ordinary entries:
+    /// that is `ON DELETE SET NULL`, and it is the other half of the FK enforcement.
+    #[test]
+    fn deleting_a_rhythm_can_leave_its_instances_behind_detached() {
+        let store = open_test_store("detach");
+        let (rhythm, created) = store
+            .create_rhythm(&NewRhythm {
+                kind: "busy".into(),
+                title: "Choir".into(),
+                location: None,
+                byweekday: vec!["tu".into()],
+                start_time: Some("19:00".into()),
+                end_time: Some("21:00".into()),
+                valid_from: date::format_date(date::today_days()),
+                valid_until: date::format_date(date::today_days() + 21),
+                active: true,
+            })
+            .unwrap();
+        assert!(created > 0);
+
+        assert!(store.delete_rhythm(&rhythm.id, false).unwrap());
+        let survivors = store
+            .list_entries(
+                &date::format_date(date::today_days()),
+                &date::format_date(date::today_days() + 22),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(survivors.len(), created);
+        assert!(
+            survivors.iter().all(|entry| entry.rhythm_id.is_none()),
+            "SET NULL did not fire, so the rows still point at a rhythm that is gone"
+        );
+    }
+
+    /// The trip ledger is a fact calendar owns about a plan trips owns. Recording it
+    /// twice must not claim a second plan for the same entry.
+    #[test]
+    fn a_trip_materialization_is_recorded_once_per_entry() {
+        let store = open_test_store("trips");
+        let entry = store
+            .create_entry(&an_entry("Berlin", "2026-09-04", "travel"))
+            .unwrap();
+        assert!(store.trip_plan_for(&entry.id).unwrap().is_none());
+
+        store
+            .record_trip_materialization(&[entry.id.clone()], "plan-1")
+            .unwrap();
+        store
+            .record_trip_materialization(&[entry.id.clone()], "plan-2")
+            .unwrap();
+        assert_eq!(
+            store.trip_plan_for(&entry.id).unwrap().as_deref(),
+            Some("plan-1")
+        );
+
+        assert_eq!(store.forget_trip_materialization("plan-1").unwrap(), 1);
+        assert!(store.trip_plan_for(&entry.id).unwrap().is_none());
+    }
+
+    /// Contexts end inclusively -- they describe a human horizon, not a schedulable
+    /// instant -- which is the one place the window comparison differs from entries.
+    #[test]
+    fn contexts_overlap_the_window_with_an_inclusive_end() {
+        let store = open_test_store("contexts");
+        let created = store
+            .create_context(&NewContext {
+                kind: "focus".into(),
+                title: "Thesis".into(),
+                details: String::new(),
+                valid_from: "2026-09-01".into(),
+                valid_until: "2026-09-30".into(),
+                source: "manual".into(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            store
+                .list_contexts("2026-09-30", "2026-10-01")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store
+            .list_contexts("2026-10-01", "2026-10-31")
+            .unwrap()
+            .is_empty());
+        assert!(store.delete_context(&created.id).unwrap());
+        assert!(store.get_context(&created.id).unwrap().is_none());
     }
 }

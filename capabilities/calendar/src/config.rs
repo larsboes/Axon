@@ -3,10 +3,11 @@
 //! where the credential file lives — comes from the private overlay at
 //! runtime, never from this repo.
 //!
-//! Resolution for the connection and port:
-//!   1. `$AXON_CALENDAR_DATABASE_URL`
-//!   2. values from `$AXON_PERSONAL_ROOT/config/postgres.env`
-//!   3. a localhost development fallback
+//! Resolution for the store path:
+//!   `axon_config::database_path` -- `$AXON_DB_PATH`, else
+//!   `$AXON_PERSONAL_ROOT/data/axon/axon.db`. It is a deployment fact, not a
+//!   capability one, so `calendar.json` cannot move this capability off the
+//!   shared file on its own.
 //!
 //! Resolution for everything else (a JSON file, mirroring comms/scouting):
 //!   1. `$AXON_CALENDAR_CONFIG` (explicit override, full path)
@@ -21,7 +22,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use axon_config::{expand_tilde, overlay_config, postgres_conn_from_shared_env, resolve_port};
+use axon_config::{database_path, expand_tilde, overlay_config, resolve_port};
 
 /// Where the Google credential and the calendar to sync are named.
 #[derive(Debug, Clone, Deserialize)]
@@ -77,7 +78,6 @@ impl GoogleConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct FileConfig {
-    database_url: Option<String>,
     port: Option<u16>,
     home_timezone: Option<String>,
     home_city: Option<String>,
@@ -89,7 +89,10 @@ struct FileConfig {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub database_url: String,
+    /// The one shared SQLite file, under the table prefix `calendar` (PRD Q45).
+    /// A file per capability would drop the cross-capability joins the shared
+    /// instance existed for, so a `database_url` left in `calendar.json` is ignored.
+    pub database_path: PathBuf,
     pub port: u16,
     /// The operator's home timezone. Everything stored is naive wall time in
     /// this zone (README § Time model), so Phase E cannot convert a Google
@@ -156,15 +159,8 @@ fn load_file_config() -> FileConfig {
 impl Config {
     pub fn load() -> Self {
         let file = load_file_config();
-        let database_url = std::env::var("AXON_CALENDAR_DATABASE_URL")
-            .ok()
-            .or(file.database_url)
-            .or_else(postgres_conn_from_shared_env)
-            .unwrap_or_else(|| {
-                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
-            });
         Self {
-            database_url,
+            database_path: database_path(),
             port: resolve_port(Some("AXON_CALENDAR_PORT"), file.port, 8087),
             // Deployment declaration first, capability override second — one
             // implementation in axon_config so calendar and scouting cannot drift.

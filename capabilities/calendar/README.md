@@ -11,7 +11,7 @@ no meaning, and absence is not a block.
 **Phase B complete (core schema + usable month dashboard); Phase F's week and
 day views built; Phase C's Feed verdict surface is live; Phase E's Google
 account connection, reviewed draft import, and explicit export review are live.**
-The Postgres tables, HTTP CRUD, rhythm materialization, and the dashboard
+The store tables, HTTP CRUD, rhythm materialization, and the dashboard
 month/week/day workspace are built and tested. Feasibility verdicts and feasible
 travel windows are computed and served over HTTP, with unit coverage in
 `src/correlate.rs`. Feed's Discover view batches dated opportunities through
@@ -36,7 +36,7 @@ without a check are not started.
 
 ### Built
 
-- [x] Postgres schema + store (entries, rhythms, bounded planning contexts, indexes, dedupe)
+- [x] Store tables (entries, rhythms, bounded planning contexts, indexes, dedupe)
 - [x] HTTP CRUD for entries, rhythms, and bounded planning contexts
 - [x] Rhythm materialization (forward‑only, idempotent)
 - [x] Dashboard month‑grid view — inspect/edit entries, paint timeframes, create rhythms
@@ -793,7 +793,7 @@ metadata). Declare more as `luma-calendar` entries in `scouting.json`'s
 public slug lookup.
 
 ### B — Core capability + dashboard month-grid
-- [x] Postgres schema + store (entries, rhythms, indexes, dedupe)
+- [x] Store tables (entries, rhythms, indexes, dedupe)
 - [x] HTTP CRUD for entries and rhythms
 - [x] Rhythm materialization (forward‑only, idempotent)
 - [x] Dashboard month‑grid view — paint timeframes, create rhythms (see Dashboard surface above)
@@ -907,8 +907,16 @@ on its own. In order:
 
 ## Config
 
-`AXON_CALENDAR_DATABASE_URL` (env) → `axon-overlay/config/postgres.env` →
-`host=127.0.0.1 port=5432 user=axon password=axon dbname=axon` (fallback)
+The five tables live in the shared SQLite file — `AXON_DB_PATH`, else
+`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `calendar`, so they are
+`calendar_entries`, `calendar_rhythms`, `calendar_contexts`,
+`calendar_trip_materializations` and `calendar_google_exports`
+(libs/axon-store/README.md). PRD Q45 (2026-08-27) moved them there from a Postgres
+schema.
+
+Where the file lives is a deployment fact, not a capability one, so a `database_url` left
+in `calendar.json` is ignored and `AXON_CALENDAR_DATABASE_URL` is gone: a file per
+capability would drop the cross-capability joins the shared instance existed for.
 
 `AXON_CALENDAR_PORT` or `AXON_PORT` → 8087 (default)
 

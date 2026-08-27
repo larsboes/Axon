@@ -10,4 +10,5 @@ ready_path  = "/ready"   # availability is judged on this, not on liveness (#126
 # to this process (with `/calendar` stripped).
 proxy_api_only = "true"
 
-requires = ["postgres"]
+# No `requires`: entries, rhythms and contexts live in the shared SQLite file this
+# process opens itself, so there is no database service to start first (PRD Q45).

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -23,7 +24,7 @@ use calendar::store::CalendarStore;
 
 #[derive(Clone)]
 struct AppState {
-    database_url: Arc<String>,
+    database_path: Arc<PathBuf>,
     config: Arc<Config>,
 }
 
@@ -204,13 +205,13 @@ async fn health() -> Json<Value> {
 
 /// Readiness: whether this capability can actually serve, which liveness does not answer.
 ///
-/// `health` is a literal and cannot observe the database, so during a Postgres outage this
+/// `health` is a literal and cannot observe the database, so with the store unreachable this
 /// capability reported itself up while every query behind it failed (#126). Availability is
 /// judged here instead.
 async fn ready(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.ping())
             .map_err(|error| error.to_string())
     })
@@ -269,9 +270,9 @@ async fn list_entries(
         .collect();
     let from = query.from;
     let to = query.to;
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.list_entries(&from, &to, &kinds))
             .map_err(|error| error.to_string())
     })
@@ -290,9 +291,9 @@ async fn list_google_drafts(
     State(state): State<AppState>,
     Query(query): Query<GoogleDraftsQuery>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.list_google_drafts(&query.from, &query.to))
             .map_err(|error| error.to_string())
     })
@@ -311,9 +312,9 @@ async fn list_external_proposals(
     State(state): State<AppState>,
     Query(query): Query<ProposalsQuery>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.list_external_proposals(&query.from, &query.to))
             .map_err(|error| error.to_string())
     })
@@ -329,9 +330,9 @@ async fn list_external_proposals(
 }
 
 async fn create_entry(State(state): State<AppState>, Json(input): Json<NewEntry>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.create_entry(&input))
             .map_err(|error| error.to_string())
     })
@@ -350,9 +351,9 @@ async fn upsert_external_entry(
     State(state): State<AppState>,
     Json(input): Json<NewEntry>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.upsert_external_entry(&input))
             .map_err(|error| error.to_string())
     })
@@ -387,9 +388,9 @@ async fn get_content_item(
             json!({ "error": format!("calendar serves the 'calendar' content source, not '{source}'") }),
         );
     }
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.get_entry(&id))
             .map_err(|error| error.to_string())
     })
@@ -406,9 +407,9 @@ async fn get_content_item(
 }
 
 async fn get_entry(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.get_entry(&id))
             .map_err(|error| error.to_string())
     })
@@ -429,9 +430,9 @@ async fn update_entry(
     Path(id): Path<String>,
     Json(input): Json<UpdateEntry>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.update_entry(&id, &input))
             .map_err(|error| error.to_string())
     })
@@ -448,9 +449,9 @@ async fn update_entry(
 }
 
 async fn delete_entry(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.delete_entry(&id))
             .map_err(|error| error.to_string())
     })
@@ -476,9 +477,9 @@ async fn list_contexts(
     State(state): State<AppState>,
     Query(query): Query<ContextsQuery>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.list_contexts(&query.from, &query.to))
             .map_err(|error| error.to_string())
     })
@@ -497,9 +498,9 @@ async fn create_context(
     State(state): State<AppState>,
     Json(input): Json<NewContext>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.create_context(&input))
             .map_err(|error| error.to_string())
     })
@@ -519,9 +520,9 @@ async fn update_context(
     Path(id): Path<String>,
     Json(input): Json<UpdateContext>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.update_context(&id, &input))
             .map_err(|error| error.to_string())
     })
@@ -541,9 +542,9 @@ async fn update_context(
 }
 
 async fn delete_context(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.delete_context(&id))
             .map_err(|error| error.to_string())
     })
@@ -563,9 +564,9 @@ async fn delete_context(State(state): State<AppState>, Path(id): Path<String>) -
 }
 
 async fn list_rhythms(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.list_rhythms())
             .map_err(|error| error.to_string())
     })
@@ -581,9 +582,9 @@ async fn list_rhythms(State(state): State<AppState>) -> ApiResponse {
 }
 
 async fn create_rhythm(State(state): State<AppState>, Json(input): Json<NewRhythm>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.create_rhythm(&input))
             .map_err(|error| error.to_string())
     })
@@ -602,9 +603,9 @@ async fn create_rhythm(State(state): State<AppState>, Json(input): Json<NewRhyth
 }
 
 async fn get_rhythm(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.get_rhythm(&id))
             .map_err(|error| error.to_string())
     })
@@ -628,9 +629,9 @@ async fn update_rhythm(
     Path(id): Path<String>,
     Json(input): Json<UpdateRhythm>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.update_rhythm(&id, &input))
             .map_err(|error| error.to_string())
     })
@@ -663,9 +664,9 @@ async fn delete_rhythm(
     Query(query): Query<DeleteRhythmQuery>,
 ) -> ApiResponse {
     let delete_instances = query.delete_instances.unwrap_or(false);
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.delete_rhythm(&id, delete_instances))
             .map_err(|error| error.to_string())
     })
@@ -685,9 +686,9 @@ async fn delete_rhythm(
 }
 
 async fn materialize_rhythm(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.materialize_rhythm(&id))
             .map_err(|error| error.to_string())
     })
@@ -720,12 +721,12 @@ async fn candidate_verdicts(
     State(state): State<AppState>,
     Json(input): Json<VerdictsRequest>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let candidates = input.candidates;
         let window = correlate::query_window(&candidates)?;
         let entries = match window {
-            Some((from, to)) => CalendarStore::open(&database_url)
+            Some((from, to)) => CalendarStore::open(&database_path)
                 .and_then(|store| store.list_entries(&from, &to, &[]))
                 .map_err(|error| error.to_string())?,
             // No candidates, no query — an empty ask is not an error.
@@ -775,10 +776,10 @@ struct MaterializeBody {
 /// place. Nothing is deleted -- a stage that stops being booked leaves its entry
 /// behind, and removing it is the operator's call, not a sync's.
 async fn sync_trip_plan(State(state): State<AppState>, Path(plan_id): Path<String>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let config = state.config.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = CalendarStore::open(&database_url).map_err(|e| e.to_string())?;
+        let store = CalendarStore::open(&database_path).map_err(|e| e.to_string())?;
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()
@@ -933,13 +934,13 @@ async fn materialize_trip(
     State(state): State<AppState>,
     Json(body): Json<MaterializeBody>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let config = state.config.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         if body.entry_ids.is_empty() {
             return Err("entry_ids is required".into());
         }
-        let store = CalendarStore::open(&database_url).map_err(|e| e.to_string())?;
+        let store = CalendarStore::open(&database_path).map_err(|e| e.to_string())?;
 
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
@@ -1085,7 +1086,7 @@ async fn trip_drafts(
     State(state): State<AppState>,
     Query(query): Query<TripDraftsQuery>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let config_home = state.config.home_city.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let max_gap_days = query.max_gap_days.unwrap_or(5);
@@ -1093,7 +1094,7 @@ async fn trip_drafts(
             return Err("max_gap_days cannot be negative".into());
         }
         let home = query.home.clone().or(config_home);
-        let entries = CalendarStore::open(&database_url)
+        let entries = CalendarStore::open(&database_path)
             .and_then(|store| store.list_entries(&query.from, &query.to, &[]))
             .map_err(|error| error.to_string())?;
         let drafts = correlate::cluster_trips(&entries, max_gap_days, home.as_deref())?;
@@ -1130,7 +1131,7 @@ struct WindowsQuery {
 /// these days to `transit plan --dates` is the caller's move, so neither
 /// capability learns the other's domain (see the README's why-block).
 async fn windows(State(state): State<AppState>, Query(query): Query<WindowsQuery>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let from_day = date::parse_date(&query.from).ok_or("from must be YYYY-MM-DD")?;
         let to_day = date::parse_date(&query.to).ok_or("to must be YYYY-MM-DD")?;
@@ -1138,7 +1139,7 @@ async fn windows(State(state): State<AppState>, Query(query): Query<WindowsQuery
             return Err("to must be after from (the window end is exclusive)".into());
         }
         let min_days = query.min_days.unwrap_or(1);
-        let entries = CalendarStore::open(&database_url)
+        let entries = CalendarStore::open(&database_path)
             .and_then(|store| store.list_entries(&query.from, &query.to, &[]))
             .map_err(|error| error.to_string())?;
         let windows = correlate::feasible_windows(from_day, to_day, &entries, min_days)?;
@@ -1206,9 +1207,9 @@ async fn google_import(
         Ok(settings) => settings,
         Err(error) => return error,
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = CalendarStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = CalendarStore::open(&database_path).map_err(|error| error.to_string())?;
         let env_path = settings.google.env_path();
         let api = HttpCalendarApi::new(&env_path);
         let report = google_sync::import(&store, &api, &settings, input.dry_run)?;
@@ -1236,9 +1237,9 @@ async fn google_import_preview(
         Ok(settings) => settings,
         Err(error) => return error,
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = CalendarStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = CalendarStore::open(&database_path).map_err(|error| error.to_string())?;
         let env_path = settings.google.env_path();
         let api = HttpCalendarApi::new(&env_path);
         let preview = google_sync::preview(&store, &api, &settings, &input.from, &input.to)?;
@@ -1265,9 +1266,9 @@ async fn google_import_selected(
         Ok(settings) => settings,
         Err(error) => return error,
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = CalendarStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = CalendarStore::open(&database_path).map_err(|error| error.to_string())?;
         let env_path = settings.google.env_path();
         let api = HttpCalendarApi::new(&env_path);
         let report = google_sync::import_selected(
@@ -1304,9 +1305,9 @@ async fn google_export(
         Ok(settings) => settings,
         Err(error) => return error,
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = CalendarStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = CalendarStore::open(&database_path).map_err(|error| error.to_string())?;
         let env_path = settings.google.env_path();
         let api = HttpCalendarApi::new(&env_path);
         let report = google_sync::export(&store, &api, &settings, input.dry_run)?;
@@ -1324,9 +1325,9 @@ async fn google_export(
 }
 
 async fn list_export_optins(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.list_export_optins())
             .map_err(|error| error.to_string())
     })
@@ -1373,9 +1374,9 @@ async fn opt_in_export(
             )
         }
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.opt_in_export(&id, &calendar_id))
             .map_err(|error| error.to_string())
     })
@@ -1394,9 +1395,9 @@ async fn opt_in_export(
 /// left alone: deleting someone's calendar entry as a side effect of a toggle
 /// is not a decision this capability makes.
 async fn opt_out_export(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        CalendarStore::open(&database_url)
+        CalendarStore::open(&database_path)
             .and_then(|store| store.opt_out_export(&id))
             .map_err(|error| error.to_string())
     })
@@ -1500,11 +1501,11 @@ async fn markdown_import_selected(
             json!({ "error": "external_ids is required: an import names what it writes" }),
         );
     }
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let preview = markdown_import::scan(&source)?;
         let selected = markdown_import::plan(&preview, &input.external_ids)?;
-        let store = CalendarStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = CalendarStore::open(&database_path).map_err(|error| error.to_string())?;
         let mut imported = Vec::new();
         for candidate in selected {
             let entry = store
@@ -1534,7 +1535,7 @@ async fn main() {
     let config = Config::load();
     let port = config.port;
     let state = AppState {
-        database_url: Arc::new(config.database_url.clone()),
+        database_path: Arc::new(config.database_path.clone()),
         config: Arc::new(config),
     };
     let app = Router::new()

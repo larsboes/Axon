@@ -1,8 +1,5 @@
 {
-  "_note": "Public template. Copy to axon-overlay/config/calendar.json and fill real values there — never here. calendar resolves config from $AXON_CALENDAR_CONFIG > $AXON_PERSONAL_ROOT/config/calendar.json > capabilities/calendar/calendar.config.json at runtime (see src/config.rs Config::load). Phases A–D need no file at all; only the Google sync (Phase E) reads one.",
-
-  "_comment_database": "Postgres connection string. Leave unset to auto-build one from axon-overlay/config/postgres.env (capabilities/postgres, the shared local instance). $AXON_CALENDAR_DATABASE_URL still wins over this.",
-  "database_url": "",
+  "_note": "Public template. Copy to axon-overlay/config/calendar.json and fill real values there — never here. calendar resolves config from $AXON_CALENDAR_CONFIG > $AXON_PERSONAL_ROOT/config/calendar.json > capabilities/calendar/calendar.config.json at runtime (see src/config.rs Config::load). Phases A–D need no file at all; only the Google sync (Phase E) reads one. There is no database key: PRD Q45 made the store path a deployment fact ($AXON_DB_PATH, else $AXON_PERSONAL_ROOT/data/axon/axon.db), because a file per capability would drop the cross-capability joins the shared instance existed for.",
 
   "_comment_port": "HTTP port for calendar-server (default 8087). AXON_PORT from the service runner wins, then AXON_CALENDAR_PORT, then this.",
   "port": 8087,

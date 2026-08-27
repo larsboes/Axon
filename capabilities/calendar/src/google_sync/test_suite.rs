@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn settings_refuse_to_run_without_a_home_timezone() {
         let config = Config {
-            database_url: "host=127.0.0.1".into(),
+            database_path: std::path::PathBuf::from("/tmp/unused.db"),
             port: 8087,
             home_timezone: None,
             home_city: None,
@@ -650,7 +650,7 @@ mod tests {
     #[test]
     fn settings_refuse_to_guess_which_calendar() {
         let config = Config {
-            database_url: "host=127.0.0.1".into(),
+            database_path: std::path::PathBuf::from("/tmp/unused.db"),
             port: 8087,
             home_timezone: Some("Europe/Berlin".into()),
             home_city: None,
@@ -666,7 +666,7 @@ mod tests {
     #[test]
     fn settings_resolve_when_both_are_present() {
         let config = Config {
-            database_url: "host=127.0.0.1".into(),
+            database_path: std::path::PathBuf::from("/tmp/unused.db"),
             port: 8087,
             home_timezone: Some("Europe/Berlin".into()),
             home_city: None,
