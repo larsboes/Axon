@@ -66,7 +66,7 @@ pub(super) fn cloud_provider_options(
 pub(super) async fn cloud_providers_handler() -> Json<Value> {
     let providers = tokio::task::spawn_blocking(|| {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).ok();
+        let store = Store::open(&cfg.database_path).ok();
         let utc_date = store.as_ref().and_then(|store| store.utc_date().ok());
         cloud_provider_options(&cfg, store.as_ref(), utc_date.as_deref())
     })
@@ -81,7 +81,7 @@ pub(super) async fn cloud_preview_handler(
     let result =
         tokio::task::spawn_blocking(move || -> Result<Option<CloudDerivativePreview>, String> {
             let cfg = Config::load();
-            let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+            let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
             let Some(item) = load_content_item(&store, &source, &id)? else {
                 return Ok(None);
             };
@@ -119,7 +119,7 @@ pub(super) async fn cloud_approval_handler(
     let result =
         tokio::task::spawn_blocking(move || -> Result<Option<CloudDerivativeState>, String> {
             let cfg = Config::load();
-            let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+            let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
             let Some(item) = load_content_item(&store, &source, &id)? else {
                 return Ok(None);
             };
@@ -196,7 +196,7 @@ pub(super) async fn cloud_queue_handler(
                 return Err("provider credential is not materialized".into());
             }
 
-            let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+            let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
             let Some(item) = load_content_item(&store, &source, &id)? else {
                 return Ok(None);
             };
@@ -279,7 +279,7 @@ pub(super) async fn cloud_queue_handler(
 pub(super) async fn cloud_run_handler(Path(job_id): Path<String>) -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<CloudDerivativeState, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         cloud_run::run_job(&store, &cfg, &job_id)
     })
     .await;

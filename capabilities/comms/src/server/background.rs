@@ -93,7 +93,7 @@ fn spawn_enrichment_drain(every_minutes: u64) -> Option<tokio::task::JoinHandle<
             // which is the same silence this issue exists to remove.
             let joined = tokio::task::spawn_blocking(|| {
                 let cfg = Config::load();
-                let store = match Store::open(&cfg.database_url) {
+                let store = match Store::open(&cfg.database_path) {
                     Ok(store) => store,
                     Err(error) => {
                         eprintln!("enrichment drain: store unavailable: {error}");
@@ -175,7 +175,7 @@ fn spawn_digest_drain(every_minutes: u64) -> Option<tokio::task::JoinHandle<()>>
             // silently, rebuilding the exact silence this exists to end.
             let joined = tokio::task::spawn_blocking(|| {
                 let cfg = Config::load();
-                let store = match Store::open(&cfg.database_url) {
+                let store = match Store::open(&cfg.database_path) {
                     Ok(store) => store,
                     Err(error) => {
                         eprintln!("digest drain: store unavailable: {error}");
@@ -225,7 +225,7 @@ fn spawn_trash_cleanup() -> tokio::task::JoinHandle<()> {
             ticker.tick().await;
             let joined = tokio::task::spawn_blocking(|| {
                 let cfg = Config::load();
-                let store = Store::open(&cfg.database_url)
+                let store = Store::open(&cfg.database_path)
                     .map_err(|error| format!("store unavailable: {error}"))?;
                 store
                     .purge_expired_trashed()
@@ -281,7 +281,7 @@ fn spawn_inbox_sweep(
                 if !cfg.google_env_path.is_file() {
                     return Ok(None);
                 }
-                let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+                let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
 
                 if let Some((start, end)) = quiet {
                     if store

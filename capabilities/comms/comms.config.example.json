@@ -1,8 +1,5 @@
 {
-  "_note": "Public template. Copy to axon-overlay/config/comms.json and fill real values there — never here. comms resolves config from $AXON_COMMS_CONFIG > $AXON_PERSONAL_ROOT/config/comms.json > capabilities/comms/comms.config.json at runtime (see src/config.rs Config::load). Every field is optional; the tool runs zero-config against the shared local Postgres with only the built-in classification heuristics.",
-
-  "_comment_database": "Postgres connection string. Leave unset to auto-build one from axon-overlay/config/postgres.env (capabilities/postgres, the shared local instance). Set only to point at a different instance.",
-  "database_url": "",
+  "_note": "Public template. Copy to axon-overlay/config/comms.json and fill real values there — never here. comms resolves config from $AXON_COMMS_CONFIG > $AXON_PERSONAL_ROOT/config/comms.json > capabilities/comms/comms.config.json at runtime (see src/config.rs Config::load). Every field is optional; the tool runs zero-config against the shared local store with only the built-in classification heuristics. There is no database key: PRD Q45 made the store path a deployment fact ($AXON_DB_PATH, else $AXON_PERSONAL_ROOT/data/axon/axon.db).",
 
   "_comment_google_env": "Path to the KEY=value env file holding GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN (mint the refresh token once via auth/get-refresh-token.ts). Defaults to $AXON_PERSONAL_ROOT/config/comms.env. Sweeps are read-only; authenticated, confirmed dashboard actions may archive a stored thread or move it to Gmail Trash.",
   "google_env_path": "",

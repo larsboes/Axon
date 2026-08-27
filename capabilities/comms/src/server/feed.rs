@@ -11,7 +11,7 @@ pub(super) async fn feed_status_handler(
 ) -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .set_feed_status(&id, &body.status)
             .map_err(|error| error.to_string())
@@ -60,7 +60,7 @@ pub(super) async fn feed_data_class_handler(
     }
     let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .set_feed_data_class(&id, &body.data_class, body.rationale.as_deref())
             .map_err(|error| error.to_string())
@@ -96,7 +96,7 @@ pub(super) struct IngestBody {
 pub(super) fn enrich_many_in_background(ids: Vec<String>) {
     tokio::task::spawn_blocking(move || {
         let cfg = Config::load();
-        let store = match Store::open(&cfg.database_url) {
+        let store = match Store::open(&cfg.database_path) {
             Ok(store) => store,
             Err(error) => {
                 eprintln!("ingest: enrichment skipped, store unavailable: {error}");
@@ -184,7 +184,7 @@ pub(super) async fn ingest_handler(Json(body): Json<IngestBody>) -> HttpResponse
             client.as_deref(),
         )
         .map_err(|error| error.to_string())?;
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .upsert_feed(&item)
             .map_err(|error| error.to_string())?;
@@ -226,7 +226,7 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
     }
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let requested = body.ids.map(|ids| ids.into_iter().collect::<HashSet<_>>());
         let mut items = store
             .feed_for_relevance(days, 200)
@@ -314,7 +314,7 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
 pub(super) async fn evaluation_status_handler() -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let profiles = relevance::load_profiles(&cfg.relevance);
         let embedding_role = cfg.embedding_role();
         let embedding_producer = embedding_role.as_ref().map(|role| role.cache_key());

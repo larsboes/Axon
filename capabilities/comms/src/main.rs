@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use comms::config::{redact_database_url, Config};
+use comms::config::Config;
 use comms::store::Store;
 use comms::{google, intake, media, normalize};
 
@@ -25,10 +25,10 @@ fn arg_after<'a>(args: &'a [String], flag: &str) -> Option<&'a String> {
 }
 
 fn open_store(cfg: &Config) -> Store {
-    Store::open(&cfg.database_url).unwrap_or_else(|e| {
+    Store::open(&cfg.database_path).unwrap_or_else(|e| {
         eprintln!(
             "error: could not open store at {}: {e}",
-            redact_database_url(&cfg.database_url)
+            cfg.database_path.display()
         );
         std::process::exit(1);
     })

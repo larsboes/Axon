@@ -14,7 +14,7 @@ pub(super) struct FeedSourceOut {
 pub(super) async fn sources_handler() -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<Vec<FeedSourceOut>, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         cfg.feed_sources
             .into_iter()
             .map(|source| {
@@ -72,7 +72,7 @@ pub(super) async fn source_scan_handler(Json(body): Json<SourceScanBody>) -> Htt
         if selected.is_empty() {
             return Err("no matching enabled Feed source".into());
         }
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let mut results = Vec::new();
         let mut ids = HashSet::new();
         let mut source_errors = 0usize;

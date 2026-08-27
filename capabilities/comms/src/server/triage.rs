@@ -8,7 +8,7 @@ pub(super) struct TriageParams {
 pub(super) async fn triage_handler(Query(params): Query<TriageParams>) -> Json<Value> {
     let result = tokio::task::spawn_blocking(move || -> Option<Vec<TriageOut>> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).ok()?;
+        let store = Store::open(&cfg.database_path).ok()?;
         let items = store.list_triage(params.status.as_deref()).ok()?;
         Some(
             items
@@ -57,7 +57,7 @@ pub(super) fn run_inbox_sweep(
     limit: usize,
     cursor: Option<&str>,
 ) -> Result<SweepOutcome, String> {
-    let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+    let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
     let token = google::access_token(&cfg.google_env_path).map_err(|error| error.to_string())?;
     let page = google::list_inbox_threads_page(&token, limit, cursor)
         .map_err(|error| error.to_string())?;
@@ -114,7 +114,7 @@ pub(super) async fn triage_sweep_handler(Json(body): Json<TriageSweepBody>) -> H
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
         let outcome = run_inbox_sweep(&cfg, limit, cursor.as_deref())?;
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let total_stored = store
             .list_triage(None)
             .map_err(|error| error.to_string())?
@@ -162,7 +162,7 @@ pub(super) async fn triage_relevance_handler(
     let limit = body.limit.unwrap_or(200).clamp(1, 500);
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let profiles = relevance::load_profiles(&cfg.relevance);
         let triage = store
             .list_triage(None)
@@ -342,7 +342,7 @@ pub(super) fn run_gmail_maintenance(
     cfg: &Config,
     reconcile_limit: i64,
 ) -> Result<GmailMaintenanceCounts, String> {
-    let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+    let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
     let token = google::access_token(&cfg.google_env_path)
         .map_err(|_| "Google authorization unavailable".to_string())?;
     let jobs = store
@@ -448,7 +448,7 @@ pub(super) async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> Htt
 
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let gmail_action = ThreadAction::parse(&action);
         let waiting_action = matches!(action.as_str(), "waiting" | "clear-waiting");
         let token = (gmail_action.is_some() || waiting_action)
@@ -571,7 +571,7 @@ pub(super) async fn triage_status_handler(
     }
     let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .set_triage_status(&id, &body.status)
             .map_err(|error| error.to_string())
@@ -600,7 +600,7 @@ pub(super) async fn triage_stream_handler(
 ) -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .set_triage_stream(&id, &body.stream)
             .map_err(|error| error.to_string())
@@ -633,7 +633,7 @@ pub(super) async fn triage_data_class_handler(
 ) -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .set_triage_data_class(&id, &body.data_class, body.rationale.as_deref())
             .map_err(|error| error.to_string())
@@ -657,7 +657,7 @@ pub(super) async fn triage_data_class_handler(
 pub(super) async fn triage_sweep_status_handler() -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let state = store
             .get_source_state(INBOX_SWEEP_SOURCE)
             .map_err(|error| error.to_string())?;
@@ -710,7 +710,7 @@ pub(super) async fn triage_redact_handler(Json(body): Json<TriageRedactBody>) ->
     let dry_run = body.dry_run.unwrap_or(false);
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let items = store
             .list_triage(None)
             .map_err(|error| error.to_string())?
@@ -791,7 +791,7 @@ pub(super) async fn triage_data_class_refresh_handler(
     let limit = body.limit.unwrap_or(500).clamp(1, 2_000);
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let items = store
             .list_triage(None)
             .map_err(|error| error.to_string())?
@@ -867,7 +867,7 @@ pub(super) async fn triage_gmail_handler(
     let result = tokio::task::spawn_blocking(
         move || -> Result<GmailActionOutcome, (StatusCode, String)> {
             let cfg = Config::load();
-            let store = Store::open(&cfg.database_url)
+            let store = Store::open(&cfg.database_path)
                 .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
             let job = store
                 .queue_gmail_action(&id, &action_name)
@@ -934,7 +934,7 @@ pub(super) async fn triage_gmail_job_handler(
     let decision = body.decision;
     let result = tokio::task::spawn_blocking(move || {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url)
+        let store = Store::open(&cfg.database_path)
             .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
         if decision == "cancel" {
             return store

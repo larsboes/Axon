@@ -22,7 +22,7 @@ pub(super) async fn health_handler() -> Json<Value> {
 pub(super) async fn ready_handler() -> (StatusCode, Json<Value>) {
     let probe = tokio::task::spawn_blocking(|| {
         let cfg = Config::load();
-        Store::open(&cfg.database_url)
+        Store::open(&cfg.database_path)
             .and_then(|store| store.ping())
             .map_err(|error| error.to_string())
     })
@@ -50,7 +50,7 @@ pub(super) async fn ready_handler() -> (StatusCode, Json<Value>) {
 pub(super) async fn feed_handler(Query(params): Query<FeedParams>) -> Json<Value> {
     let result = tokio::task::spawn_blocking(move || -> Result<Vec<FeedListItem>, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let items = store
             .list_feed(
                 params.stream.as_deref(),
@@ -85,7 +85,7 @@ pub(super) async fn feed_handler(Query(params): Query<FeedParams>) -> Json<Value
 pub(super) async fn feed_origins_handler() -> Json<Value> {
     let result = tokio::task::spawn_blocking(move || -> Result<Vec<OriginSummary>, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .list_origin_summaries()
             .map_err(|error| error.to_string())
@@ -104,7 +104,7 @@ pub(super) async fn feed_origins_handler() -> Json<Value> {
 pub(super) async fn feed_runs_handler(Query(params): Query<FeedParams>) -> Json<Value> {
     let result = tokio::task::spawn_blocking(move || -> Result<Vec<FeedRun>, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .list_feed_runs(params.days.unwrap_or(7))
             .map_err(|error| error.to_string())
@@ -121,7 +121,7 @@ pub(super) async fn quality_queue_handler(Query(params): Query<QualityParams>) -
     let limit = params.limit.unwrap_or(500).clamp(1, 2_000);
     let result = tokio::task::spawn_blocking(move || {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .feed_quality_review_queue(limit)
             .map_err(|error| error.to_string())
@@ -152,7 +152,7 @@ pub(super) async fn quality_refresh_handler(Json(body): Json<QualityRefreshBody>
 
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let items = store
             .feed_for_relevance(days, 500)
             .map_err(|error| error.to_string())?;
@@ -232,7 +232,7 @@ pub(super) fn full_item(store: &Store, item: FeedItem) -> Result<FeedFullItem, S
 pub(super) async fn feed_item_handler(Path(id): Path<String>) -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<Option<FeedFullItem>, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .get_feed(&id)
             .map_err(|error| error.to_string())?
@@ -340,7 +340,7 @@ pub(super) async fn digest_handler(
     };
     let result = tokio::task::spawn_blocking(move || {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         digest::generate(&store, &cfg, &source, &id, &directive)
             .map(|row| row.as_ref().map(digest::to_contract))
             .map_err(|error| error.to_string())
@@ -353,7 +353,7 @@ pub(super) async fn digest_handler(
 pub(super) async fn diagram_handler(Path((source, id)): Path<(String, String)>) -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         digest::generate_diagram(&store, &cfg, &source, &id)
             .map(|row| row.as_ref().map(digest::to_contract))
             .map_err(|error| error.to_string())
@@ -370,7 +370,7 @@ pub(super) async fn diagram_handler(Path((source, id)): Path<(String, String)>) 
 pub(super) async fn chart_handler(Path((source, id)): Path<(String, String)>) -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         digest::generate_chart(&store, &cfg, &source, &id)
             .map(|row| row.as_ref().map(digest::to_contract))
             .map_err(|error| error.to_string())
@@ -411,7 +411,7 @@ pub(super) async fn digest_refresh_handler(Json(body): Json<DigestRefreshBody>) 
     let result =
         tokio::task::spawn_blocking(move || -> Result<(String, digest::DrainReport), String> {
             let cfg = Config::load();
-            let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+            let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
             let report =
                 digest::refresh_pending(&store, &cfg, &body.source, body.limit.unwrap_or(25))
                     .map_err(|error| error.to_string())?;
@@ -449,7 +449,7 @@ pub(super) async fn content_item_handler(
 ) -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<Option<ContentItemOut>, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         load_content_item(&store, &source, &id)
     })
     .await;

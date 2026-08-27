@@ -13,7 +13,7 @@ pub(super) struct VaultCandidateOut {
 pub(super) async fn vault_scan_handler() -> HttpResponse {
     let result = tokio::task::spawn_blocking(move || -> Result<Vec<VaultCandidateOut>, String> {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         vault_links::scan(&cfg.vault_link_sources)
             .into_iter()
             .map(|candidate| {
@@ -60,7 +60,7 @@ pub(super) async fn vault_import_handler(Json(body): Json<VaultImportBody>) -> H
         if item.title.is_none() {
             item.title = candidate.label.clone();
         }
-        let store = Store::open(&cfg.database_url).map_err(|error| error.to_string())?;
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
             .upsert_feed(&item)
             .map_err(|error| error.to_string())?;

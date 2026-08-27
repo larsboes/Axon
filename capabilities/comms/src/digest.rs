@@ -137,7 +137,7 @@ fn to_target(cfg: &Config, role: &axon_inference::ResolvedRole) -> Target {
         // two-second AFM digest waited out a twenty-second oMLX prefill and
         // then reported the machine busy.
         gate: loopback.then(|| {
-            crate::local_gate::AdvisoryGate::shared(&cfg.database_url, &role.backend_name)
+            crate::local_gate::AdvisoryGate::shared(&cfg.database_path, &role.backend_name)
         }),
     }
 }

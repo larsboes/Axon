@@ -1221,7 +1221,7 @@ pub fn summarize(text: &str, cfg: &Config, data_class: &str) -> SummarizeOutcome
     // Loopback only, for the reason `summarize::complete` gives: a hosted
     // provider queues for itself and shares no GPU with anything here.
     let _admission = if role.is_loopback() {
-        let gate = crate::local_gate::AdvisoryGate::new(&cfg.database_url, &role.backend_name);
+        let gate = crate::local_gate::AdvisoryGate::new(&cfg.database_path, &role.backend_name);
         match crate::summarize::LocalGate::acquire(&gate) {
             Ok(admission) => Some(admission),
             // Not a failure of the request: the same text succeeds later, and

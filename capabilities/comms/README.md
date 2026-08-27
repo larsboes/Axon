@@ -26,7 +26,7 @@ The capability currently has two ingestion paths:
    queries belong in the private overlay.
 
 Mirrors `capabilities/scouting`'s shape: a `comms` library plus two binaries
-(`comms` CLI, `comms-server` HTTP API), sync Postgres client, config resolved
+(`comms` CLI, `comms-server` HTTP API), a blocking SQLite client, config resolved
 from the private overlay at runtime.
 
 ### Mail classification today
@@ -649,7 +649,7 @@ Routes:
   a Trash cleanup deadline remains active. The server runs the same bounded maintenance on its
   configured interval.
 - `GET /health` → liveness. Answers from the process alone, so a start completes without a
-  database and a Postgres outage does not read as a crash.
+  database and an unreachable store does not read as a crash.
 - `GET /ready` → readiness: liveness plus a reachable database, `503` when it is not. This is
   what `axon-status` judges availability on, and what the dashboard reports.
 
@@ -667,9 +667,17 @@ Resolved in order (mirrors scouting):
 3. `capabilities/comms/comms.config.json` (gitignored dev fallback)
 
 Every field is optional; the tool runs zero-config against the shared local
-Postgres with only the built-in classification heuristics. Fields:
-`database_url` (unset → built from `axon-overlay/config/postgres.env`),
-`google_env_path` (default `$AXON_PERSONAL_ROOT/config/comms.env`), `port`,
+store with only the built-in classification heuristics.
+
+The nineteen tables live in the shared SQLite file — `AXON_DB_PATH`, else
+`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `comms`, so
+`comms.feed_items` is `comms_feed_items` (`libs/axon-store/README.md`). PRD Q45
+(2026-08-27) moved them there from a Postgres schema. The path is a deployment
+fact rather than a capability one, so there is no `database_url` field any more:
+`capabilities/places` joins mail against this data, and a file per capability
+would drop that join.
+
+Fields: `google_env_path` (default `$AXON_PERSONAL_ROOT/config/comms.env`), `port`,
 `gmail_maintenance_minutes` (default `15`; `0` disables the automatic pass),
 `relevance {profile_paths}`. Model roles come from the overlay's shared
 `inference.json`; see `libs/inference/inference.config.example.json`. The active producer revision
@@ -802,13 +810,12 @@ the built-in one on the same pages.
 ## Tests
 
 `cargo test -- --list` counts them; the hand-written number here was wrong twice, so it is
-gone (README.md#documentation-stays-owned-and-current). The store tests need the shared local Postgres
-(`capabilities/postgres`) reachable; they isolate into a per-pid schema and take
-the connection from `COMMS_TEST_DATABASE_URL`, falling back to the same
-`Config::load()` the binaries use, so a rotated password can't leave them behind.
+gone (README.md#documentation-stays-owned-and-current). The store tests need no server since
+PRD Q45: each takes a temp file of its own, which is the isolation the per-pid
+schema used to buy, without a schema anyone can leak into a backup.
 
-They resolve it exactly once, and the config test that clears
-`AXON_PERSONAL_ROOT` restores it on drop. Both are load-bearing: Rust runs a
-crate's tests as threads of one process, and an unrestored `remove_var` left
-eight store tests failing against a healthy Postgres, reading as a credential
-problem that did not exist. The same fix applies in `scouting` and `transit`.
+The config test that clears `AXON_PERSONAL_ROOT` still restores it on drop, and
+that is still load-bearing: Rust runs a crate's tests as threads of one process,
+and an unrestored `remove_var` leaves every later store test resolving a
+different file from the one it just wrote to. The same fix applies in `scouting`
+and `transit`.

@@ -209,7 +209,6 @@ fn default_feed_sources() -> Vec<FeedSourceConfig> {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct FileConfig {
-    database_url: Option<String>,
     google_env_path: Option<String>,
     port: Option<u16>,
     api_secret_file: Option<String>,
@@ -235,10 +234,13 @@ struct FileConfig {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Postgres connection string. Resolution: explicit `database_url` >
-    /// built from `axon-overlay/config/postgres.env` (the shared instance,
-    /// `capabilities/postgres`) > a localhost dev-default guess.
-    pub database_url: String,
+    /// The one shared SQLite file, under the table prefix `comms` (PRD Q45).
+    /// Resolved by `axon_config::database_path`: `AXON_DB_PATH`, else
+    /// `<overlay>/data/axon/axon.db`. A deployment fact, not a capability one:
+    /// a file per capability would drop the cross-capability joins the shared
+    /// instance existed for, so `AXON_COMMS_DATABASE_URL` and a `database_url`
+    /// in `comms.json` are both gone.
+    pub database_path: PathBuf,
     /// Path to the `KEY=value` env file holding GOOGLE_CLIENT_ID /
     /// GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN. Default
     /// `$AXON_PERSONAL_ROOT/config/comms.env`.
@@ -347,18 +349,6 @@ fn config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("comms.config.json")
 }
 
-/// Masks the password in a connection string for safe display. Never print
-/// `Config::database_url` directly -- it's a live credential.
-///
-/// Kept as a named wrapper so this crate's call sites stay stable; the
-/// implementation is `axon_config::redact_dsn`. The copy that used to live here
-/// took the FIRST `@` when redacting the URL form, which printed the tail of any
-/// password containing an `@`. The shared one uses `rfind` and has a test
-/// pinning that case.
-pub fn redact_database_url(url: &str) -> String {
-    axon_config::redact_dsn(url)
-}
-
 fn default_google_env_path() -> PathBuf {
     axon_config::overlay_config("comms.env").unwrap_or_else(|| PathBuf::from("comms.env"))
 }
@@ -380,19 +370,6 @@ fn load_file_config() -> FileConfig {
 impl Config {
     pub fn load() -> Self {
         let file = load_file_config();
-
-        // Fallback is keyword/value form, not the `postgresql://` URL this used to
-        // build: the URL userinfo form mangles a base64 password containing `/`, and
-        // the sibling capabilities all fall back the same way.
-        // `$AXON_COMMS_DATABASE_URL` first: it is how a deployment is moved onto another
-        // database without editing config, and the fallback below names the REAL one.
-        let database_url = axon_config::database_url_override("comms")
-            .or(file.database_url)
-            .unwrap_or_else(|| {
-                axon_config::postgres_conn_from_shared_env().unwrap_or_else(|| {
-                    "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
-                })
-            });
 
         let google_env_path = file
             .google_env_path
@@ -459,7 +436,7 @@ impl Config {
         let quality_flags = file.quality_flags.unwrap_or_default();
 
         Self {
-            database_url,
+            database_path: axon_config::database_path(),
             google_env_path,
             port,
             api_secret,
@@ -585,27 +562,12 @@ mod tests {
         }
     }
 
+    /// The store path is a deployment fact, not a capability one: a
+    /// `database_url` left in `comms.json` must not move comms off the shared
+    /// file, because places joins mail against it.
     #[test]
-    fn redact_database_url_hides_password_only() {
-        assert_eq!(
-            redact_database_url("postgresql://axon:s3cr3t@127.0.0.1:5432/axon"),
-            "postgresql://axon:***@127.0.0.1:5432/axon"
-        );
-        assert_eq!(redact_database_url("not-a-url"), "not-a-url");
-    }
-
-    #[test]
-    fn redact_database_url_hides_keyword_value_password() {
-        // The env-derived form. Password with base64 special chars must not leak.
-        assert_eq!(
-            redact_database_url("host=127.0.0.1 port=5432 user=axon password=Kw+/z= dbname=axon"),
-            "host=127.0.0.1 port=5432 user=axon password=*** dbname=axon"
-        );
-        // password= as the trailing token (no space after) is also redacted.
-        assert_eq!(
-            redact_database_url("host=h user=u password=secret"),
-            "host=h user=u password=***"
-        );
+    fn the_store_path_comes_from_the_deployment_not_from_comms_json() {
+        assert_eq!(Config::load().database_path, axon_config::database_path());
     }
 
     #[test]
