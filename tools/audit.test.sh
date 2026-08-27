@@ -58,7 +58,28 @@ expect_bare_scan() {
   fi
 }
 
-expect_policy postgres postgres:17.10-alpine
+# Every tracked policy, discovered rather than named. postgres was the one this line
+# asserted until PRD Q45 retired the capability on 2026-08-27, taking its 15 gosu findings
+# with it; a hand-written name would have made that deletion look like a broken test
+# instead of a policy that no longer has an image. The loop reads the same two manifest
+# fields tools/audit does, so a policy added tomorrow is routed-checked without an edit —
+# and a repository with no policy at all says so rather than passing over nothing.
+policies=0
+for policy in "$ROOT"/trivy-ignore/*.txt; do
+  [ -f "$policy" ] || continue
+  cap="$(basename "$policy" .txt)"
+  manifest="$ROOT/capabilities/$cap/service.toml"
+  if [ ! -f "$manifest" ]; then
+    echo "FAIL: trivy-ignore/$cap.txt has no capabilities/$cap/service.toml to apply to" >&2
+    exit 1
+  fi
+  image="$(sed -n 's/^image *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+  tag="$(sed -n 's/^tag *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+  expect_policy "$cap" "$image:$tag"
+  policies=$((policies + 1))
+done
+[ "$policies" -gt 0 ] || echo "  ⊘ no trivy-ignore/*.txt tracked — policy routing is unexercised this run"
+
 expect_bare_scan home-assistant ghcr.io/home-assistant/home-assistant:2026.7.4
 expect_bare_scan pihole pihole/pihole:2026.07.2
 expect_bare_scan vaultwarden vaultwarden/server:1.37.0-alpine

@@ -24,7 +24,7 @@ That names the concrete consumer the no-speculative-surfaces ruling requires
 (`dashboard/README.md`, "capabilities expose HTTP").
 
 Cross-capability reads are how the layers assemble: one shared database was chosen
-*explicitly* to enable correlation joins (`capabilities/postgres/README.md`), and
+*explicitly* to enable correlation joins (`capabilities/store/README.md`), and
 PRD Q45 (2026-08-27) kept that property while replacing the schema per capability
 with a table prefix per capability in one SQLite file
 (`libs/axon-store/README.md`). places reads `finance_*`, `trips_*` and `transit_*`

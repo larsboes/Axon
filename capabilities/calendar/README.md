@@ -481,7 +481,7 @@ returns the moment the rule is corrected — never data. The rule lives in
 
 ## Correlation contract
 
-The correlation layer (effectively the first half of Phase 4 as `capabilities/postgres/README.md` defines it, which
+The correlation layer (effectively the first half of Phase 4 as `capabilities/store/README.md` defines it, which
 originally described people/friends windows) is Phase C. Built in
 `src/correlate.rs`: a stable facade over pure functions, so the verdict rules
 are unit‑testable without a database and the store stays the only thing that

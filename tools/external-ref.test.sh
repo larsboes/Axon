@@ -30,12 +30,12 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 cat > "$AXON_MACHINE_TOML" <<'EOF'
 os = "macos"
 container_runtime = "apple-container"
-capabilities = ["postgres"]
+capabilities = ["comms"]
 
 [capability.vaultwarden]
 provided_by = "family-vault"
 
-[capability.postgres]
+[capability.comms]
 port = "5432"
 EOF
 cat > "$OVERLAY/config/systems.local.toml" <<'EOF'
@@ -99,9 +99,9 @@ grep -q "systems.local.toml" "$TEST_ROOT/err" || fail "the error must name the f
 cat > "$AXON_MACHINE_TOML" <<'EOF'
 os = "macos"
 container_runtime = "apple-container"
-capabilities = ["postgres"]
+capabilities = ["comms"]
 
-[capability.postgres]
+[capability.comms]
 port = "5432"
 
 [capability.vaultwarden]
@@ -115,7 +115,7 @@ got="$(external_capabilities | sort | tr '\n' ' ')"
 
 # A per-capability override that is not a reference must not be mistaken for one — [capability.X]
 # has meant "where this machine binds it" since long before this feature existed.
-external_capabilities | grep -q '^postgres$' && fail "a plain override was read as an external reference"
+external_capabilities | grep -q '^comms$' && fail "a plain override was read as an external reference"
 
 # --- 7. no second implementation ------------------------------------------------------------
 # The class this feature exists to close: two tools each resolving a vault address by hand, which

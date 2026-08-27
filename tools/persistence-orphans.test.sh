@@ -37,13 +37,13 @@ mkdir -p "$UNIT_DIR" "$OVERLAY/config"
 cat > "$OVERLAY/config/machine.toml" <<'EOF'
 os = "macos"
 container_runtime = "docker"
-capabilities = ["postgres", "macmon"]
+capabilities = ["comms", "macmon"]
 EOF
 
 plant_unit() { printf '<plist/>\n' > "$UNIT_DIR/com.axon.$1.plist"; }
 
 # The three cases the issue names, planted together so one run covers all of them.
-plant_unit postgres    # enabled          -> never an orphan
+plant_unit comms       # enabled          -> never an orphan
 plant_unit dashboard   # spine component  -> exempt via its own root manifest
 plant_unit macmon      # enabled capability -> never an orphan (was a dashboard sidecar)
 plant_unit trips       # a disabled capability's leftover unit -> ORPHAN
@@ -57,7 +57,7 @@ PERSIST="$(printf '%s\n' "$OUT" | grep 'persistence is installed for' || true)"
 flagged() { printf '%s\n' "$PERSIST" | grep -q "persistence is installed for '$1'"; }
 
 # --- must NOT be flagged ------------------------------------------------------------------
-for name in postgres dashboard macmon; do
+for name in comms dashboard macmon; do
   if flagged "$name"; then
     fail "'$name' was reported as an orphan. Persistence notes were:
 $PERSIST"

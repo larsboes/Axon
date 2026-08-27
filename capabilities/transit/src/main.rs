@@ -355,7 +355,7 @@ fn main() {
 }
 
 /// `transit plan` -- the fuzzy/triggered trip-search session
-/// (`capabilities/postgres/README.md` driving query #2: "in September I feel
+/// (`capabilities/store/README.md` driving query #2: "in September I feel
 /// like a trip"). See `print_usage`
 /// for the flags. Three modes share this entry:
 ///   - `--show <session-id>`: re-list an existing session's ranked trips

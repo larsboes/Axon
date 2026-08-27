@@ -1237,7 +1237,7 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
                 unscored_legs: Vec::new(),
                 // The real bahn.de response field is "tripId", not "id" --
                 // found via live verification while wiring this adapter into
-                // scouting (capabilities/postgres/README.md, Phase 2): every journey in a
+                // scouting (capabilities/store/README.md, Phase 2): every journey in a
                 // real response was silently getting id="" and collapsing
                 // into one upserted row downstream. The fixture this parser
                 // was tested against used "id" too (same wrong assumption in

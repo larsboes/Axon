@@ -5,7 +5,7 @@ fuzzy/triggered trip-search sessions. Ported from a private LifeOS-mono service;
 bundled transit + a Gemini CV generator into one 764-line `main.rs` — only the transit concern is
 here, rebuilt clean (see Redactions + Verdict). `transit` and `capabilities/scouting` share one
 database and a `crate_index` (see Architecture); the cross-capability correlation story that
-motivates that sharing lives in `capabilities/postgres/README.md`, and PRD Q45 (2026-08-27) moved
+motivates that sharing lives in `capabilities/store/README.md`, and PRD Q45 (2026-08-27) moved
 it from a Postgres schema per capability to a table prefix per capability in one SQLite file
 (libs/axon-store/README.md).
 
@@ -353,7 +353,7 @@ places, all tagged via `trigger_reason`:
   candidate destination set + date window; every journey its fan-out finds is recorded here with
   `trigger_reason = "session"` and `session_id` pointing back at the owning session row.
   Different code path from the `auto` background scan (the "triggered" query vs the "constant
-  background scan" — see `capabilities/postgres/README.md`'s driving queries), same underlying
+  background scan" — see `capabilities/store/README.md`'s driving queries), same underlying
   `trips`/`trip_legs` store — the two never collide because `transit_fare` only ever fetches the
   one configured default route, a session fetches many.
 
@@ -534,9 +534,11 @@ score null.
   bahn.de, not just fixtures — the `tripId` and `connamespace` bugs above were caught exactly
   because of this) — unlike `scouting`'s `euro_hackathons` adapter, which has a cached-fixture
   test pattern. `hafas.rs`'s automated tests stay fixture-based against captured response shapes.
-- **No backup coverage for `transit.trips`/`trip_legs`/`trip_sessions` yet**, same gap
-  `capabilities/postgres` already flags for `scouting.opportunities` — raw-copy can't reach a
-  live Postgres data directory safely; needs a `pg_dump`-based mechanism.
+- ~~No backup coverage for `transit.trips`/`trip_legs`/`trip_sessions`~~ — closed 2026-08-27 by
+  PRD Q45. The gap was that raw-copy could not safely reach a live Postgres data directory, so
+  the tables needed a `pg_dump`-based mechanism nobody had written. These tables are now
+  `transit_trips`, `transit_trip_legs` and `transit_trip_sessions` in the one SQLite file, and
+  `capabilities/store` declares the contract that covers every capability's tables at once.
 - `trips.status` exists in the schema but nothing reads or sets it back yet — no CLI command
   consumes it (see "Trip persistence" above).
 - Split-ticket segment fares are still each found by a *separate* connection search, so
@@ -549,7 +551,7 @@ score null.
   pulling from transit sessions, which would reverse the established dependency direction
   (`scouting → transit`, never the reverse — the path dependency and the comment above it
   in `capabilities/scouting/Cargo.toml`). Deferred until the correlation
-  layer's shape is real (see `capabilities/postgres/README.md`'s still-open correlation-layer question), where
+  layer's shape is real (see `capabilities/store/README.md`'s still-open correlation-layer question), where
   the join direction is a design decision, not a side effect of "show trip results in the backlog
   too." Session results are queryable through `transit plan --show` and directly against
   `transit.trip_sessions`/`transit.trips`.

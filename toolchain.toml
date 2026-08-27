@@ -105,8 +105,8 @@ install_linux = "apt-get install -y restic"
 
 [sqlite3]
 required = "optional"
-needed_by = ["capability-field:backup_sqlite", "workflow:restore"]
-why = "cold SQLite backup and isolated restore integrity checks; required only for capabilities declaring backup_sqlite"
+needed_by = ["capability-field:backup_sqlite", "capability-field:backup_sqlite_online", "workflow:restore"]
+why = "cold SQLite backup, the shared store's live `.backup` copy, and isolated restore integrity checks; required only for capabilities declaring one of those two fields"
 install_macos = "preinstalled — or: brew install sqlite"
 install_linux = "apt-get install -y sqlite3"
 

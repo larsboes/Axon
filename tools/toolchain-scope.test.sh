@@ -153,8 +153,9 @@ run
 out_of_scope "capability disabled again" fixturedb
 
 # The exact false positive found while building this: a manifest MENTIONING the field in a
-# comment must not pull the tool in. `rg -l backup_sqlite` matches postgres/service.toml, whose
-# only occurrence is a comment explaining why it does NOT use one.
+# comment must not pull the tool in. The case was capabilities/postgres/service.toml, whose only
+# occurrence of `backup_sqlite` was a comment explaining why it did NOT use one — retired with
+# the capability on 2026-08-27, so the fixture below is the whole record of it now.
 mkcap commented '# backup_sqlite would not help here -- see the README'
 machine '["commented"]'
 run

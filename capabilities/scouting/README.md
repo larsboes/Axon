@@ -33,26 +33,24 @@ pipeline is genuinely reusable and reasonably well-tested (unit tests across
 store/score/merge/sources/adapters/config/vault_linker; `pipeline`, `embed`, `source`,
 `sources/mod` and `server` carry none — `cargo test -- --list` is the count, per
 README.md#documentation-stays-owned-and-current's no-live-counts-in-prose clause) — proven out again by
-`adapters/transit_fare.rs` (`capabilities/postgres/README.md`'s correlation section, Phase 2), which plugs a fare-search source
+`adapters/transit_fare.rs` (`capabilities/store/README.md`'s correlation section, Phase 2), which plugs a fare-search source
 from an entirely different capability's crate into this same pipeline with zero changes to
 `score`/`pipeline`/`store`.
 
-**The backend has now gone Postgres → SQLite → Postgres — both moves were the right call at
-the time, for different reasons.** The original port (this section used to read "Postgres →
-SQLite") reasoned that Postgres in a docker container for a single-user local tool was exactly
-the "way more machinery than a single-user setup needs" anti-pattern
-`capabilities/vaultwarden/README.md` calls out for the old HashiCorp Vault experiment — true,
-at the time, when this was a standalone tool with no other consumer. Phase 2 changed the actual
-shape of the problem: **persistent cross-domain correlation between scouting and `transit`** is
-the whole point of that phase (see `capabilities/postgres/README.md`'s correlation section), and that
-requires one queryable store both capabilities can join across — a SQLite file per capability
-can't do that. Once `capabilities/postgres` exists and is already running for that reason, the
-"avoid unnecessary machinery" argument no longer applies to scouting specifically — the
-machinery isn't unnecessary anymore, and running scouting's tables on the same already-running
-instance (own `scouting` schema, `tools/setup-secret.sh`-provisioned via Vaultwarden — see
-`README.md#secrets`) costs nothing beyond what Phase 2 already pays for. See
-`capabilities/postgres/README.md` for the full reasoning; this file only carries the
-scouting-specific half of it.
+**The backend has gone Postgres → SQLite → Postgres → SQLite, and every move was right at the
+time.** The original port reasoned that Postgres in a docker container for a single-user local
+tool was exactly the "way more machinery than a single-user setup needs" anti-pattern
+`capabilities/vaultwarden/README.md` calls out for the old HashiCorp Vault experiment — true, at
+the time, when this was a standalone tool with no other consumer. Phase 2 changed the shape of
+the problem: **persistent cross-domain correlation between scouting and `transit`** is the whole
+point of that phase (see `capabilities/store/README.md`'s correlation section), and that requires
+one queryable store both capabilities can join across, which a SQLite file *per capability*
+cannot be. The third move followed from a measurement rather than a preference (PRD Q45,
+2026-08-27): one *shared* SQLite file keeps the joins — that is what `capabilities/store` is —
+so the container, the password and the watchdog were paying for nothing this capability used.
+Scouting's tables kept their names with the schema folded into the prefix: `scouting.opportunities`
+is `scouting_opportunities`. `capabilities/store/README.md` carries the full reasoning; this file
+only carries the scouting-specific half of it.
 
 **2 of 4 generic-opportunity adapters are now live-verified: `euro_hackathons` and, since
 2026-07-30, `luma`.** `cfp_conferences` and `meetup` are still ported as-is — they
@@ -103,7 +101,8 @@ main.rs                  ── CLI binary ("scout"), one lib crate "scouting"
   calendar_promote.rs      ── saved luma events -> capabilities/calendar entries over HTTP
   pipeline.rs              ── glues adapter -> score -> vault_linker -> store together
   vault_linker.rs          ── annotate-only matching against an events_dir of markdown notes
-  store.rs                 ── Postgres persistence (own `scouting` schema, see Verdict)
+  store.rs                 ── persistence in the shared SQLite file (`scouting_` table prefix,
+                               see Verdict)
 ```
 
 `cargo` builds and tests this, as it does every Rust capability: `cargo build -p scouting` /
@@ -199,7 +198,7 @@ into an adapter yet:
   regional youth rail pass as a concrete opportunity type worth scoring (cheap short trips from
   Bonn into RLP/Grand Est). This one sits closer to `transit` than to the generic adapters
   above — likely the second cross-capability source after `transit_fare`
-  (`capabilities/postgres/README.md`'s correlation section, Phase 2), not a standalone adapter.
+  (`capabilities/store/README.md`'s correlation section, Phase 2), not a standalone adapter.
 
 ## Alternatives considered (adopt-before-build check)
 
@@ -550,8 +549,9 @@ is the test that proves this; it's the test that matters most in this file.
 
 ## Commands
 
-`cargo test` needs `capabilities/postgres` running (`tools/service-runner.sh start
-postgres`) — `store`'s 8 tests connect for real, see Gotchas.
+`cargo test` needs nothing running. `store`'s tests are real database tests — they were the
+reason this line used to name a server — and since PRD Q45 (2026-08-27) each one opens its own
+temp SQLite file. `cargo test -p scouting db_tests::` runs that half alone.
 
 ```bash
 cargo build                                                    # single "scout" binary
