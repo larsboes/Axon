@@ -1,10 +1,11 @@
-//! Postgres-backed persistence for `transit.trips`/`transit.trip_legs` --
-//! the "own trips/trip_legs tables" half of Phase 2 (defined in
+//! Persistence for `transit_trips`/`transit_trip_legs` -- the "own
+//! trips/trip_legs tables" half of Phase 2 (defined in
 //! `capabilities/postgres/README.md`) --
-//! plus `transit.trip_sessions` (Phase 3: fuzzy/triggered trip-search
-//! sessions). Same shared local instance as `capabilities/scouting::store`
-//! (own schema, same sync `postgres` client, same schema-per-capability
-//! convention -- see `capabilities/postgres/README.md`). A recorded journey
+//! plus `transit_trip_sessions` (Phase 3: fuzzy/triggered trip-search
+//! sessions). Same shared file as every other store-owning capability, under
+//! this one's table prefix: PRD Q45 (2026-08-27) retired Postgres, and the
+//! schema-per-capability convention became a prefix-per-capability one so the
+//! cross-capability joins it existed for survive. A recorded journey
 //! lands in two places on an "auto" (adapter-driven) run: here, as the
 //! detailed structured record; and in `scouting.opportunities` (via
 //! `scouting::adapters::transit_fare`), as the scored/dismissable view. A
@@ -27,40 +28,45 @@
 //! back yet -- same honest "scaffolding only" gap
 //! `scouting::store`'s `source_state.cursor` already carries.
 
+use std::path::Path;
+
 use crate::travel::Journey;
-use postgres::Client;
+use axon_store::QueryAll;
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
 pub type TripWithLegs = (TripRow, Vec<TripLegRow>);
 
 pub struct TransitStore {
-    /// Shared with every other store in this process on the same database, so
-    /// opening one is a checkout rather than a connect.
+    /// Shared with every other store in this process on the same file, so
+    /// opening one is a checkout rather than an open.
     pool: axon_store::Pool,
-    schema: String,
+    /// Prefixes this capability's tables in the one shared file (PRD Q45):
+    /// `transit` here means `transit_trips`, `transit_trip_legs` and
+    /// `transit_trip_sessions`.
+    prefix: String,
 }
 
 impl TransitStore {
-    pub fn open(database_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_with_schema(database_url, "transit")
+    pub fn open(database_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_with_prefix(database_path, "transit")
     }
 
-    /// `schema` is always either the literal `"transit"` (production, via
-    /// `open()`) or a test-generated name (see `postgres_tests`) -- never user input.
+    /// `prefix` is always either the literal `"transit"` (production, via
+    /// `open()`) or a test-generated name (see `db_tests`) -- never user input.
     /// See `scouting::store`'s identical note for why `format!`-built DDL is
     /// safe specifically in that narrow case.
-    fn open_with_schema(
-        database_url: &str,
-        schema: &str,
+    fn open_with_prefix(
+        database_path: &Path,
+        prefix: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // A pool checkout, not a connect, and the migration runs once per process
-        // per (database, schema) rather than once per open. Both halves of the
-        // Store::open problem -- libs/axon-store/README.md has the numbers.
-        let pool = axon_store::open_pool(database_url, schema, |client| {
-            Self::init_schema(client, schema)
+        // A pool checkout, and the migration runs once per process per (file,
+        // prefix) rather than once per open -- libs/axon-store/README.md has why.
+        let pool = axon_store::open_pool(database_path, prefix, |conn| {
+            Self::init_schema(conn, prefix)
         })?;
         Ok(Self {
             pool,
-            schema: schema.to_string(),
+            prefix: prefix.to_string(),
         })
     }
 
@@ -68,35 +74,73 @@ impl TransitStore {
     ///
     /// A `Result` where this used to be `self.conn.lock().unwrap()`: that unwrap
     /// could only fail on a poisoned mutex, whereas a checkout can genuinely fail
-    /// when the database is down or every connection is busy.
+    /// when the file is unreachable or every connection is busy.
     fn conn(&self) -> Result<axon_store::PooledClient, Box<dyn std::error::Error>> {
         Ok(self.pool.get()?)
     }
 
-    fn init_schema(client: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Phase 2's `CREATE TABLE` baked the `trigger_reason` CHECK inline
-        // (`CHECK (trigger_reason IN ('manual','auto'))`), auto-named
-        // `trips_trigger_reason_check` by Postgres. Phase 3 adds `'session'`
-        // to that set. `CREATE TABLE IF NOT EXISTS` won't touch an existing
-        // table's constraints, so we migrate with a targeted DROP + re-ADD
-        // of that named constraint (see the inline comment below).
-        client.batch_execute(&format!(
+    /// The tables as they are, not the history that produced them.
+    ///
+    /// Phase 3 widened the `trigger_reason` CHECK to allow `'session'` with a
+    /// DROP + re-ADD of the named constraint, and retrofitted `priced_at`,
+    /// `session_id` and eight coordinate columns with `ADD COLUMN IF NOT
+    /// EXISTS`. SQLite has neither form, and the file starts empty, so those
+    /// columns are declared here and the widened CHECK is the one the
+    /// `CREATE TABLE` carries -- see libs/axon-store/README.md, "Writing a
+    /// capability's DDL", for why folding is the translation.
+    fn init_schema(conn: &Connection, prefix: &str) -> Result<(), Box<dyn std::error::Error>> {
+        conn.execute_batch(&format!(
             "
-            CREATE SCHEMA IF NOT EXISTS {schema};
+            -- Phase 3: the fuzzy-trip-search session itself. Declared first so the
+            -- session_id reference below resolves against a table that exists.
+            CREATE TABLE IF NOT EXISTS {prefix}_trip_sessions (
+                id TEXT PRIMARY KEY,
+                origin_eva TEXT NOT NULL,
+                intent TEXT NOT NULL,
+                candidates TEXT NOT NULL,
+                date_start TEXT NOT NULL,
+                date_end TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','dismissed','saved')),
+                created_at TEXT NOT NULL
+            );
 
-            CREATE TABLE IF NOT EXISTS {schema}.trips (
+            CREATE TABLE IF NOT EXISTS {prefix}_trips (
                 id TEXT PRIMARY KEY,
                 status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','dismissed','saved')),
                 origin_eva TEXT NOT NULL,
                 destination_eva TEXT NOT NULL,
-                trigger_reason TEXT NOT NULL CHECK (trigger_reason IN ('manual','auto')),
+                trigger_reason TEXT NOT NULL
+                    CHECK (trigger_reason IN ('manual','auto','session')),
                 total_duration_minutes INTEGER,
-                total_price DOUBLE PRECISION,
-                created_at TEXT NOT NULL
+                total_price REAL,
+                created_at TEXT NOT NULL,
+
+                -- When the stored fare was last seen.
+                --
+                -- The upsert refreshes total_price and deliberately leaves
+                -- created_at alone, and there was no other timestamp, so `plan
+                -- --show` printed a ten-week-old fare and a fresh one
+                -- identically. A stored price with no observation time cannot be
+                -- told apart from a current one.
+                priced_at TEXT,
+
+                -- Phase 3: session-scoped journey ownership. Nullable so a
+                -- manual/auto trip keeps the Phase 2 shape.
+                session_id TEXT REFERENCES {prefix}_trip_sessions(id) ON DELETE SET NULL,
+
+                -- Endpoint coordinates. hafas.rs has parsed latitude/longitude
+                -- into `Station` since the dbnav port (see `dbnav_station`), and
+                -- this table dropped them on the way in (survey 2026-08-25).
+                -- Nullable: the dbweb parse path carries none, and backfill by
+                -- EVA is the places capability's job, not a migration here.
+                origin_latitude REAL,
+                origin_longitude REAL,
+                destination_latitude REAL,
+                destination_longitude REAL
             );
 
-            CREATE TABLE IF NOT EXISTS {schema}.trip_legs (
-                trip_id TEXT NOT NULL REFERENCES {schema}.trips(id) ON DELETE CASCADE,
+            CREATE TABLE IF NOT EXISTS {prefix}_trip_legs (
+                trip_id TEXT NOT NULL REFERENCES {prefix}_trips(id) ON DELETE CASCADE,
                 leg_index INTEGER NOT NULL,
                 origin_eva TEXT NOT NULL,
                 origin_name TEXT NOT NULL,
@@ -108,72 +152,18 @@ impl TransitStore {
                 train_number TEXT NOT NULL,
                 train_category TEXT NOT NULL,
                 platform TEXT,
-                is_regional BOOLEAN NOT NULL,
+                -- SQLite has no boolean type; rusqlite writes 0/1 here and reads
+                -- a `bool` back out of it.
+                is_regional INTEGER NOT NULL,
+                origin_latitude REAL,
+                origin_longitude REAL,
+                destination_latitude REAL,
+                destination_longitude REAL,
                 PRIMARY KEY (trip_id, leg_index)
             );
 
-            -- Phase 3: the fuzzy-trip-search session itself. Created before
-            -- the trips.session_id FK column so the reference resolves.
-            CREATE TABLE IF NOT EXISTS {schema}.trip_sessions (
-                id TEXT PRIMARY KEY,
-                origin_eva TEXT NOT NULL,
-                intent TEXT NOT NULL,
-                candidates TEXT NOT NULL,
-                date_start TEXT NOT NULL,
-                date_end TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','dismissed','saved')),
-                created_at TEXT NOT NULL
-            );
-
-            -- When the stored fare was last seen.
-            --
-            -- The upsert refreshes total_price and deliberately leaves created_at
-            -- alone, and there was no other timestamp, so `plan --show` printed a
-            -- ten-week-old fare and a fresh one identically. A stored price with
-            -- no observation time cannot be told apart from a current one, and a
-            -- reader has no way to know which it is looking at.
-            --
-            -- NULL on every row written before this, which reads as an unknown
-            -- observation time rather than as a recent one.
-            ALTER TABLE {schema}.trips ADD COLUMN IF NOT EXISTS priced_at TEXT;
-
-            -- Phase 3: session-scoped journey ownership. Nullable so
-            -- existing manual/auto trips keep their shape unchanged.
-            ALTER TABLE {schema}.trips
-                ADD COLUMN IF NOT EXISTS session_id TEXT REFERENCES {schema}.trip_sessions(id) ON DELETE SET NULL;
-
-            -- Phase 3: migrate the trigger_reason CHECK to allow 'session'. Phase 2's
-            -- inline `CHECK (trigger_reason IN ('manual','auto'))` was auto-
-            -- named `trips_trigger_reason_check` by Postgres (the deterministic
-            -- `<table>_<column>_check` convention), so a targeted DROP +
-            -- re-ADD is sufficient -- no catalog-walking DO block needed.
-            -- Idempotent: on a fresh install there's nothing to drop, the IF
-            -- EXISTS no-ops, and the named constraint is added once. No
-            -- existing row violates: Phase 2 only ever wrote manual/auto.
-            ALTER TABLE {schema}.trips DROP CONSTRAINT IF EXISTS trips_trigger_reason_check;
-            ALTER TABLE {schema}.trips
-                ADD CONSTRAINT trips_trigger_reason_check
-                CHECK (trigger_reason IN ('manual','auto','session'));
-
-            -- Station coordinates. hafas.rs has parsed latitude/longitude into
-            -- `Station` since the dbnav port (see `dbnav_station`), and this
-            -- table dropped them on the way in (survey 2026-08-25). Same
-            -- `ADD COLUMN IF NOT EXISTS` retrofit as `scouting::store`'s
-            -- opportunities latitude/longitude. Nullable: the dbweb parse path
-            -- carries no coordinates, and rows written before these columns
-            -- existed stay NULL -- backfill by EVA is the places capability's
-            -- job, not a migration here.
-            ALTER TABLE {schema}.trip_legs ADD COLUMN IF NOT EXISTS origin_latitude DOUBLE PRECISION;
-            ALTER TABLE {schema}.trip_legs ADD COLUMN IF NOT EXISTS origin_longitude DOUBLE PRECISION;
-            ALTER TABLE {schema}.trip_legs ADD COLUMN IF NOT EXISTS destination_latitude DOUBLE PRECISION;
-            ALTER TABLE {schema}.trip_legs ADD COLUMN IF NOT EXISTS destination_longitude DOUBLE PRECISION;
-            ALTER TABLE {schema}.trips ADD COLUMN IF NOT EXISTS origin_latitude DOUBLE PRECISION;
-            ALTER TABLE {schema}.trips ADD COLUMN IF NOT EXISTS origin_longitude DOUBLE PRECISION;
-            ALTER TABLE {schema}.trips ADD COLUMN IF NOT EXISTS destination_latitude DOUBLE PRECISION;
-            ALTER TABLE {schema}.trips ADD COLUMN IF NOT EXISTS destination_longitude DOUBLE PRECISION;
-
-            CREATE INDEX IF NOT EXISTS idx_trips_status ON {schema}.trips(status);
-            CREATE INDEX IF NOT EXISTS idx_trips_session ON {schema}.trips(session_id);
+            CREATE INDEX IF NOT EXISTS {prefix}_idx_trips_status ON {prefix}_trips(status);
+            CREATE INDEX IF NOT EXISTS {prefix}_idx_trips_session ON {prefix}_trips(session_id);
             "
         ))?;
         Ok(())
@@ -206,12 +196,18 @@ impl TransitStore {
             .into());
         }
         let mut conn = self.conn()?;
-        let mut tx = conn.transaction()?;
+        let tx = conn.transaction()?;
 
-        let existing = tx.query_opt(
-            &format!("SELECT id FROM {}.trips WHERE id = $1", self.schema),
-            &[&journey.id],
-        )?;
+        let existing: Option<String> = tx
+            .query_row(
+                &format!(
+                    "SELECT id FROM {prefix}_trips WHERE id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&journey.id],
+                |row| row.get(0),
+            )
+            .optional()?;
         let is_new = existing.is_none();
 
         // `session_id` is only carried in the INSERT's value list -- the
@@ -223,12 +219,12 @@ impl TransitStore {
         // `scouting::store`'s status-preserving `ON CONFLICT`.
         tx.execute(
             &format!(
-                "INSERT INTO {schema}.trips (id, origin_eva, destination_eva, trigger_reason,
+                "INSERT INTO {prefix}_trips (id, origin_eva, destination_eva, trigger_reason,
                     total_duration_minutes, total_price, created_at, session_id, priced_at,
                     origin_latitude, origin_longitude, destination_latitude, destination_longitude)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
-                    CASE WHEN $6::DOUBLE PRECISION IS NULL THEN NULL ELSE $7 END,
-                    $9,$10,$11,$12)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,
+                    CASE WHEN ?6 IS NULL THEN NULL ELSE ?7 END,
+                    ?9,?10,?11,?12)
                 ON CONFLICT (id) DO UPDATE SET
                     origin_eva = excluded.origin_eva,
                     destination_eva = excluded.destination_eva,
@@ -248,12 +244,12 @@ impl TransitStore {
                     -- came back without a fare must not restamp the old one as
                     -- freshly observed.
                     priced_at = CASE
-                        WHEN excluded.total_price IS NULL THEN {schema}.trips.priced_at
+                        WHEN excluded.total_price IS NULL THEN {prefix}_trips.priced_at
                         ELSE excluded.priced_at
                     END",
-                schema = self.schema
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &journey.id,
                 &origin_eva,
                 &destination_eva,
@@ -272,7 +268,7 @@ impl TransitStore {
             ],
         )?;
 
-        insert_legs(&mut tx, &self.schema, &journey.id, &journey.legs)?;
+        insert_legs(&tx, &self.prefix, &journey.id, &journey.legs)?;
 
         tx.commit()?;
         Ok(is_new)
@@ -281,67 +277,38 @@ impl TransitStore {
     /// Reads a trip back with its legs, in leg order -- verification/test
     /// helper; no CLI command consumes this yet (see module doc).
     pub fn get_trip(&self, id: &str) -> Result<Option<TripWithLegs>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let trip_row = conn.query_opt(
-            &format!(
-                "SELECT id, status, origin_eva, destination_eva, trigger_reason,
-                    total_duration_minutes, total_price, created_at, session_id, priced_at,
-                    origin_latitude, origin_longitude, destination_latitude, destination_longitude
-                 FROM {}.trips WHERE id = $1",
-                self.schema
-            ),
-            &[&id],
-        )?;
-        let Some(t) = trip_row else { return Ok(None) };
-        let trip = TripRow {
-            id: t.try_get(0)?,
-            status: t.try_get(1)?,
-            origin_eva: t.try_get(2)?,
-            destination_eva: t.try_get(3)?,
-            trigger_reason: t.try_get(4)?,
-            total_duration_minutes: t.try_get::<_, Option<i32>>(5)?.map(|n| n as u32),
-            total_price: t.try_get(6)?,
-            created_at: t.try_get(7)?,
-            session_id: t.try_get::<_, Option<String>>(8)?,
-            priced_at: t.try_get(9)?,
-            origin_latitude: t.try_get(10)?,
-            origin_longitude: t.try_get(11)?,
-            destination_latitude: t.try_get(12)?,
-            destination_longitude: t.try_get(13)?,
-        };
-
-        let leg_rows = conn.query(
-            &format!(
-                "SELECT origin_eva, origin_name, destination_eva, destination_name,
-                    departure_time, arrival_time, train_name, train_number, train_category,
-                    platform, is_regional,
-                    origin_latitude, origin_longitude, destination_latitude, destination_longitude
-                 FROM {}.trip_legs WHERE trip_id = $1 ORDER BY leg_index",
-                self.schema
-            ),
-            &[&id],
-        )?;
-        let mut legs = Vec::new();
-        for r in leg_rows {
-            legs.push(TripLegRow {
-                origin_eva: r.try_get(0)?,
-                origin_name: r.try_get(1)?,
-                destination_eva: r.try_get(2)?,
-                destination_name: r.try_get(3)?,
-                departure_time: r.try_get(4)?,
-                arrival_time: r.try_get(5)?,
-                train_name: r.try_get(6)?,
-                train_number: r.try_get(7)?,
-                train_category: r.try_get(8)?,
-                platform: r.try_get(9)?,
-                is_regional: r.try_get(10)?,
-                origin_latitude: r.try_get(11)?,
-                origin_longitude: r.try_get(12)?,
-                destination_latitude: r.try_get(13)?,
-                destination_longitude: r.try_get(14)?,
-            });
-        }
+        let conn = self.conn()?;
+        let trip = conn
+            .query_row(
+                &format!(
+                    "SELECT {TRIP_COLUMNS} FROM {prefix}_trips WHERE id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&id],
+                row_to_trip,
+            )
+            .optional()?;
+        let Some(trip) = trip else { return Ok(None) };
+        let legs = self.legs_of(&conn, id)?;
         Ok(Some((trip, legs)))
+    }
+
+    /// One trip's legs, in leg order. Split out because `get_trip` and
+    /// `list_trips` read them identically and the column order is positional.
+    fn legs_of(
+        &self,
+        conn: &axon_store::PooledClient,
+        trip_id: &str,
+    ) -> Result<Vec<TripLegRow>, Box<dyn std::error::Error>> {
+        Ok(conn.query_all(
+            &format!(
+                "SELECT {LEG_COLUMNS}
+                 FROM {prefix}_trip_legs WHERE trip_id = ?1 ORDER BY leg_index",
+                prefix = self.prefix
+            ),
+            params![&trip_id],
+            row_to_leg,
+        )?)
     }
 
     pub fn count(&self) -> Result<i64, Box<dyn std::error::Error>> {
@@ -352,15 +319,15 @@ impl TransitStore {
     /// read can say how much it left behind instead of implying it returned
     /// everything.
     pub fn count_trips(&self, session_id: Option<&str>) -> Result<i64, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let row = conn.query_one(
+        let conn = self.conn()?;
+        Ok(conn.query_row(
             &format!(
-                "SELECT COUNT(*) FROM {}.trips WHERE ($1::text IS NULL OR session_id = $1)",
-                self.schema
+                "SELECT COUNT(*) FROM {prefix}_trips WHERE (?1 IS NULL OR session_id = ?1)",
+                prefix = self.prefix
             ),
-            &[&session_id],
-        )?;
-        Ok(row.try_get(0)?)
+            params![&session_id],
+            |row| row.get(0),
+        )?)
     }
 
     // ── Phase 3: fuzzy/triggered trip-search sessions ───────────────────
@@ -390,25 +357,31 @@ impl TransitStore {
         date_end: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let cands_json = serde_json::to_string(candidates)?;
-        let mut conn = self.conn()?;
-        let existing = conn.query_opt(
-            &format!("SELECT id FROM {}.trip_sessions WHERE id = $1", self.schema),
-            &[&id],
-        )?;
+        let conn = self.conn()?;
+        let existing: Option<String> = conn
+            .query_row(
+                &format!(
+                    "SELECT id FROM {prefix}_trip_sessions WHERE id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&id],
+                |row| row.get(0),
+            )
+            .optional()?;
         let is_new = existing.is_none();
         conn.execute(
             &format!(
-                "INSERT INTO {schema}.trip_sessions
+                "INSERT INTO {prefix}_trip_sessions
                     (id, origin_eva, intent, candidates, date_start, date_end, created_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)
                  ON CONFLICT (id) DO UPDATE SET
                     intent = excluded.intent,
                     candidates = excluded.candidates,
                     date_start = excluded.date_start,
                     date_end = excluded.date_end",
-                schema = self.schema
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &id,
                 &origin_eva,
                 &intent,
@@ -424,28 +397,33 @@ impl TransitStore {
     /// Reads a session back. `candidates` is JSON-deserialized from the
     /// stored TEXT column. Returns `Ok(None)` if the id isn't a session.
     pub fn get_session(&self, id: &str) -> Result<Option<SessionRow>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let row = conn.query_opt(
-            &format!(
-                "SELECT id, origin_eva, intent, candidates, date_start, date_end, status, created_at
-                 FROM {}.trip_sessions WHERE id = $1",
-                self.schema
-            ),
-            &[&id],
-        )?;
-        let Some(r) = row else { return Ok(None) };
-        let cands_json: String = r.try_get(3)?;
-        let candidates: Vec<CandidateDest> = serde_json::from_str(&cands_json).unwrap_or_default();
-        Ok(Some(SessionRow {
-            id: r.try_get(0)?,
-            origin_eva: r.try_get(1)?,
-            intent: r.try_get(2)?,
-            candidates,
-            date_start: r.try_get(4)?,
-            date_end: r.try_get(5)?,
-            status: r.try_get(6)?,
-            created_at: r.try_get(7)?,
-        }))
+        let conn = self.conn()?;
+        let session = conn
+            .query_row(
+                &format!(
+                    "SELECT id, origin_eva, intent, candidates, date_start, date_end, status, created_at
+                     FROM {prefix}_trip_sessions WHERE id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&id],
+                |row| {
+                    Ok(SessionRow {
+                        id: row.get(0)?,
+                        origin_eva: row.get(1)?,
+                        intent: row.get(2)?,
+                        // Deliberately not `json_column`: a session written by a
+                        // buggy or partial run must not brick `get_session`.
+                        candidates: serde_json::from_str(&row.get::<_, String>(3)?)
+                            .unwrap_or_default(),
+                        date_start: row.get(4)?,
+                        date_end: row.get(5)?,
+                        status: row.get(6)?,
+                        created_at: row.get(7)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(session)
     }
 
     /// Lists every trip owned by a session, ranked cheapest-first (NULL
@@ -463,9 +441,11 @@ impl TransitStore {
     /// wants "every trip" is not forced to already know a session id.
     ///
     /// `session_id = None` returns manual, `transit_fare`-adapter and session
-    /// trips together; `limit = None` returns all of them, because Postgres
-    /// reads `LIMIT NULL` as `LIMIT ALL` and that keeps the unbounded read a
-    /// parameter value rather than a second SQL string to keep in sync.
+    /// trips together; `limit = None` returns all of them, which keeps the
+    /// unbounded read a parameter value rather than a second SQL string to keep
+    /// in sync. `COALESCE(?2, -1)` is what carries that across the move off
+    /// Postgres: Postgres read `LIMIT NULL` as `LIMIT ALL`, SQLite raises
+    /// `datatype mismatch` on it, and a negative limit is SQLite's no-bound.
     ///
     /// This exists because `GET /api/trips` served `{"count": n, "trips": []}`
     /// with HTTP 200 while the rows sat right here: to a human reading the
@@ -476,74 +456,75 @@ impl TransitStore {
         session_id: Option<&str>,
         limit: Option<i64>,
     ) -> Result<Vec<TripWithLegs>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let trips = conn.query(
+        let conn = self.conn()?;
+        let trips = conn.query_all(
             &format!(
-                "SELECT id, status, origin_eva, destination_eva, trigger_reason,
-                    total_duration_minutes, total_price, created_at, session_id, priced_at,
-                    origin_latitude, origin_longitude, destination_latitude, destination_longitude
-                 FROM {}.trips
-                 WHERE ($1::text IS NULL OR session_id = $1)
+                "SELECT {TRIP_COLUMNS}
+                 FROM {prefix}_trips
+                 WHERE (?1 IS NULL OR session_id = ?1)
                  ORDER BY total_price ASC NULLS LAST, total_duration_minutes ASC NULLS LAST
-                 LIMIT $2",
-                self.schema
+                 LIMIT COALESCE(?2, -1)",
+                prefix = self.prefix
             ),
-            &[&session_id, &limit],
+            params![&session_id, &limit],
+            row_to_trip,
         )?;
         let mut out = Vec::with_capacity(trips.len());
-        for t in trips {
-            let id: String = t.try_get(0)?;
-            let trip = TripRow {
-                id: id.clone(),
-                status: t.try_get(1)?,
-                origin_eva: t.try_get(2)?,
-                destination_eva: t.try_get(3)?,
-                trigger_reason: t.try_get(4)?,
-                total_duration_minutes: t.try_get::<_, Option<i32>>(5)?.map(|n| n as u32),
-                total_price: t.try_get(6)?,
-                created_at: t.try_get(7)?,
-                session_id: t.try_get::<_, Option<String>>(8)?,
-                priced_at: t.try_get(9)?,
-                origin_latitude: t.try_get(10)?,
-                origin_longitude: t.try_get(11)?,
-                destination_latitude: t.try_get(12)?,
-                destination_longitude: t.try_get(13)?,
-            };
-            let leg_rows = conn.query(
-                &format!(
-                    "SELECT origin_eva, origin_name, destination_eva, destination_name,
-                        departure_time, arrival_time, train_name, train_number, train_category,
-                        platform, is_regional,
-                        origin_latitude, origin_longitude, destination_latitude, destination_longitude
-                     FROM {}.trip_legs WHERE trip_id = $1 ORDER BY leg_index",
-                    self.schema
-                ),
-                &[&id],
-            )?;
-            let mut legs = Vec::with_capacity(leg_rows.len());
-            for r in leg_rows {
-                legs.push(TripLegRow {
-                    origin_eva: r.try_get(0)?,
-                    origin_name: r.try_get(1)?,
-                    destination_eva: r.try_get(2)?,
-                    destination_name: r.try_get(3)?,
-                    departure_time: r.try_get(4)?,
-                    arrival_time: r.try_get(5)?,
-                    train_name: r.try_get(6)?,
-                    train_number: r.try_get(7)?,
-                    train_category: r.try_get(8)?,
-                    platform: r.try_get(9)?,
-                    is_regional: r.try_get(10)?,
-                    origin_latitude: r.try_get(11)?,
-                    origin_longitude: r.try_get(12)?,
-                    destination_latitude: r.try_get(13)?,
-                    destination_longitude: r.try_get(14)?,
-                });
-            }
+        for trip in trips {
+            let legs = self.legs_of(&conn, &trip.id)?;
             out.push((trip, legs));
         }
         Ok(out)
     }
+}
+
+/// Read back positionally by `row_to_trip`, so the order is the contract.
+const TRIP_COLUMNS: &str = "id, status, origin_eva, destination_eva, trigger_reason,
+     total_duration_minutes, total_price, created_at, session_id, priced_at,
+     origin_latitude, origin_longitude, destination_latitude, destination_longitude";
+
+const LEG_COLUMNS: &str = "origin_eva, origin_name, destination_eva, destination_name,
+     departure_time, arrival_time, train_name, train_number, train_category,
+     platform, is_regional,
+     origin_latitude, origin_longitude, destination_latitude, destination_longitude";
+
+fn row_to_trip(row: &Row) -> rusqlite::Result<TripRow> {
+    Ok(TripRow {
+        id: row.get(0)?,
+        status: row.get(1)?,
+        origin_eva: row.get(2)?,
+        destination_eva: row.get(3)?,
+        trigger_reason: row.get(4)?,
+        total_duration_minutes: row.get::<_, Option<i64>>(5)?.map(|n| n as u32),
+        total_price: row.get(6)?,
+        created_at: row.get(7)?,
+        session_id: row.get(8)?,
+        priced_at: row.get(9)?,
+        origin_latitude: row.get(10)?,
+        origin_longitude: row.get(11)?,
+        destination_latitude: row.get(12)?,
+        destination_longitude: row.get(13)?,
+    })
+}
+
+fn row_to_leg(row: &Row) -> rusqlite::Result<TripLegRow> {
+    Ok(TripLegRow {
+        origin_eva: row.get(0)?,
+        origin_name: row.get(1)?,
+        destination_eva: row.get(2)?,
+        destination_name: row.get(3)?,
+        departure_time: row.get(4)?,
+        arrival_time: row.get(5)?,
+        train_name: row.get(6)?,
+        train_number: row.get(7)?,
+        train_category: row.get(8)?,
+        platform: row.get(9)?,
+        is_regional: row.get(10)?,
+        origin_latitude: row.get(11)?,
+        origin_longitude: row.get(12)?,
+        destination_latitude: row.get(13)?,
+        destination_longitude: row.get(14)?,
+    })
 }
 
 /// Shared `trip_legs` insertion -- used by every `record_journey*` path so
@@ -551,28 +532,28 @@ impl TransitStore {
 /// whether the recording came from a manual CLI call, the `transit_fare`
 /// adapter, or a session run. Caller holds the live transaction.
 fn insert_legs(
-    tx: &mut postgres::Transaction,
-    schema: &str,
+    tx: &rusqlite::Transaction,
+    prefix: &str,
     journey_id: &str,
     legs: &[crate::travel::Leg],
 ) -> Result<(), Box<dyn std::error::Error>> {
     tx.execute(
-        &format!("DELETE FROM {}.trip_legs WHERE trip_id = $1", schema),
-        &[&journey_id],
+        &format!("DELETE FROM {prefix}_trip_legs WHERE trip_id = ?1"),
+        params![&journey_id],
     )?;
     for (i, leg) in legs.iter().enumerate() {
         tx.execute(
             &format!(
-                "INSERT INTO {schema}.trip_legs (trip_id, leg_index, origin_eva, origin_name,
+                "INSERT INTO {prefix}_trip_legs (trip_id, leg_index, origin_eva, origin_name,
                     destination_eva, destination_name, departure_time, arrival_time,
                     train_name, train_number, train_category, platform, is_regional,
                     origin_latitude, origin_longitude, destination_latitude, destination_longitude)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
-                schema = schema
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                prefix = prefix
             ),
-            &[
+            params![
                 &journey_id,
-                &(i as i32),
+                &(i as i64),
                 &leg.origin.id,
                 &leg.origin.name,
                 &leg.destination.id,
@@ -592,6 +573,22 @@ fn insert_legs(
         )?;
     }
     Ok(())
+}
+
+/// A trip's stored timestamps are unix seconds as text, not `axon_store::NOW`.
+///
+/// Deliberately left alone by the SQLite move: `created_at` and `priced_at` are
+/// written from Rust rather than by the statement, and changing what they hold
+/// would have made every row written before today unreadable next to one written
+/// after it. See PRD Q45 for the canonical format the columns that DO use
+/// `now()` carry.
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
 }
 
 /// A resolved candidate destination for a session -- the EVA id plus the
@@ -701,15 +698,6 @@ pub struct TripLegRow {
     pub destination_longitude: Option<f64>,
 }
 
-fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("{secs}")
-}
-
 #[cfg(test)]
 mod unit_tests {
     use super::{stable_session_id, CandidateDest};
@@ -806,66 +794,27 @@ mod unit_tests {
     }
 }
 
-/// Postgres-backed; named for the selector CI splits on — see
-/// `capabilities/scouting/src/store.rs` for why the name is the contract.
+/// Database-backed; named for the selector CI splits on — see
+/// `capabilities/scouting/src/store.rs` for why the name is the contract. It
+/// was `postgres_tests` until PRD Q45.
 #[cfg(test)]
-mod postgres_tests {
+mod db_tests {
     use super::*;
     use crate::travel::{Leg, Station};
-    use postgres::NoTls;
 
-    // Same schema-per-test isolation pattern as scouting::store::postgres_tests --
-    // see that module's doc comment for the full rationale.
-    /// The same connection the binaries use, so a rotated Postgres password
-    /// can't leave the tests behind. Resolved once: the config tests mutate
-    /// process-global env while these run alongside them, and every store test
-    /// must agree on one database.
-    fn test_database_url() -> String {
-        static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        URL.get_or_init(|| {
-            std::env::var("TRANSIT_TEST_DATABASE_URL")
-                .unwrap_or_else(|_| crate::config::Config::load().database_url)
-        })
-        .clone()
-    }
-
-    fn open_test_store(name: &str) -> (TransitStore, TestSchema) {
-        let schema = format!("transit_test_{name}_{}", std::process::id());
-        let store =
-            TransitStore::open_with_schema(&test_database_url(), &schema).unwrap_or_else(|e| {
-                panic!(
-                    "could not open test store (is capabilities/postgres running? see README): {e}"
-                )
-            });
-        (store, TestSchema(schema))
-    }
-
-    /// Drops the schema when it goes out of scope, including on unwind.
+    /// A file per test, in a directory this process owns.
     ///
-    /// The tests used to call drop_test_schema() as their last statement, which cleans up
-    /// exactly when nothing goes wrong. A failing assertion panics first, the drop never
-    /// runs, and the schema stays behind -- four of them were sitting in the shared
-    /// database on 2026-07-28, from two long-finished processes, and every one would have
-    /// gone into the next pg_dumpall. A guard runs on the way out either way.
-    struct TestSchema(String);
-
-    impl Drop for TestSchema {
-        fn drop(&mut self) {
-            drop_test_schema(&self.0);
-        }
-    }
-
-    /// So a test that needs the schema name for raw SQL can still say `{schema}`.
-    impl std::fmt::Display for TestSchema {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    fn drop_test_schema(schema: &str) {
-        if let Ok(mut client) = Client::connect(&test_database_url(), NoTls) {
-            let _ = client.batch_execute(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"));
-        }
+    /// This replaces a schema-per-test guard that dropped a Postgres schema on
+    /// unwind, and the leak it existed for cannot happen here: four abandoned
+    /// schemas were sitting in the shared database on 2026-07-28, from two
+    /// long-finished processes, and every one would have gone into the next
+    /// pg_dumpall. A temp file is not in the backup set and is not shared.
+    fn open_test_store(name: &str) -> TransitStore {
+        let dir = std::env::temp_dir().join(format!("transit-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a writable temp directory");
+        let path = dir.join(format!("{name}.db"));
+        TransitStore::open(&path)
+            .unwrap_or_else(|e| panic!("could not open test store at {}: {e}", path.display()))
     }
 
     fn mk_journey(id: &str) -> Journey {
@@ -919,7 +868,7 @@ mod postgres_tests {
 
     #[test]
     fn record_journey_is_idempotent_and_round_trips() {
-        let (store, _schema) = open_test_store("idempotent");
+        let store = open_test_store("idempotent");
 
         let journey = mk_journey("journey:test:1");
         let is_new1 = store
@@ -969,7 +918,7 @@ mod postgres_tests {
 
     #[test]
     fn record_journey_replaces_legs_on_update() {
-        let (store, _schema) = open_test_store("replace_legs");
+        let store = open_test_store("replace_legs");
 
         let mut journey = mk_journey("journey:test:2");
         store
@@ -1012,7 +961,7 @@ mod postgres_tests {
 
     #[test]
     fn record_journey_rejects_invalid_trigger_reason() {
-        let (store, _schema) = open_test_store("invalid_trigger");
+        let store = open_test_store("invalid_trigger");
         let journey = mk_journey("journey:test:3");
         let result = store.record_journey(&journey, "8000044", "8098160", "scheduled", None);
         assert!(
@@ -1076,7 +1025,7 @@ mod postgres_tests {
 
     #[test]
     fn upsert_session_is_idempotent_and_round_trips() {
-        let (store, _schema) = open_test_store("session_upsert");
+        let store = open_test_store("session_upsert");
         let cands = vec![
             CandidateDest {
                 eva: "8600206".into(),
@@ -1143,7 +1092,7 @@ mod postgres_tests {
 
     #[test]
     fn session_journeys_are_tagged_owned_and_ranked_by_price() {
-        let (store, _schema) = open_test_store("session_rank");
+        let store = open_test_store("session_rank");
         let cands = vec![CandidateDest {
             eva: "8600206".into(),
             name: "Valencia".into(),
@@ -1226,7 +1175,7 @@ mod postgres_tests {
     /// must not, or an old price would read as freshly observed.
     #[test]
     fn a_priceless_refresh_does_not_restamp_an_observed_fare() {
-        let (store, _schema) = open_test_store("priced_at");
+        let store = open_test_store("priced_at");
         let priced = mk_journey("j:priced");
         store
             .record_journey(&priced, "8000044", "8098160", "auto", None)
@@ -1256,7 +1205,7 @@ mod postgres_tests {
     /// still reports the full total, so `truncated` can be computed honestly.
     #[test]
     fn list_trips_sees_manual_and_session_trips_and_bounds_the_read() {
-        let (store, _schema) = open_test_store("list_trips_all");
+        let store = open_test_store("list_trips_all");
         let cands = vec![CandidateDest {
             eva: "8600206".into(),
             name: "Valencia".into(),
@@ -1316,7 +1265,7 @@ mod postgres_tests {
         // A re-found journey (same id, fresh price) under the SAME session:
         // the price/duration refresh, but a hand-set 'saved' status survives
         // -- same invariant scouting::store::upsert_preserves_status guards.
-        let (store, schema) = open_test_store("session_refresh");
+        let store = open_test_store("session_refresh");
         let cands = vec![CandidateDest {
             eva: "8600206".into(),
             name: "Valencia".into(),
@@ -1338,19 +1287,16 @@ mod postgres_tests {
             .unwrap();
 
         // Hand-mark saved out-of-band (there's no CLI for it yet -- direct SQL
-        // is the test seam; same pattern scouting::store::postgres_tests uses to test
+        // is the test seam; same pattern scouting::store::db_tests uses to test
         // the status-preservation path before a CLI exists).
-        {
-            let mut conn = Client::connect(&test_database_url(), NoTls).unwrap();
-            conn.execute(
-                &format!(
-                    "UPDATE {}.trips SET status='saved' WHERE id='j:refresh'",
-                    schema
-                ),
-                &[],
+        store
+            .conn()
+            .unwrap()
+            .execute(
+                "UPDATE transit_trips SET status='saved' WHERE id='j:refresh'",
+                [],
             )
             .unwrap();
-        }
         let (trip, _) = store.get_trip("j:refresh").unwrap().unwrap();
         assert_eq!(trip.status, "saved");
 
@@ -1375,7 +1321,7 @@ mod postgres_tests {
         // session's list even if it shares origin/destination with session
         // trips -- the session_id filter is what keeps query #2's results
         // separate from #1's background-scan results.
-        let (store, _schema) = open_test_store("session_isolation");
+        let store = open_test_store("session_isolation");
         let cands = vec![CandidateDest {
             eva: "8600206".into(),
             name: "Valencia".into(),

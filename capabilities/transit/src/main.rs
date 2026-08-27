@@ -654,7 +654,7 @@ fn run_plan(args: &[String], cfg: &Config) {
 }
 
 fn open_store(cfg: &Config) -> Result<transit::store::TransitStore, String> {
-    transit::store::TransitStore::open(&cfg.database_url).map_err(|e| e.to_string())
+    transit::store::TransitStore::open(&cfg.database_path).map_err(|e| e.to_string())
 }
 
 /// Builds the JSON summary printed by `plan` and `plan --show`: the session

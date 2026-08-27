@@ -192,14 +192,12 @@ async fn handle_split(
 }
 
 async fn handle_health() -> Json<Value> {
-    // Same class of bug as the other handlers: TransitStore::open() drives
-    // the sync `postgres` crate's own internal blocking runtime bootstrap --
-    // calling it directly inside an async axum handler panics ("cannot
-    // start a runtime from within a runtime"). spawn_blocking, same as
-    // handle_list_trips.
-    let pg_status = tokio::task::spawn_blocking(|| {
+    // rusqlite is a blocking API over a file: a probe on an async worker holds
+    // that thread for the open and, under a busy writer, for busy_timeout as
+    // well. spawn_blocking, same as handle_list_trips.
+    let store_status = tokio::task::spawn_blocking(|| {
         let cfg = Config::load();
-        if TransitStore::open(&cfg.database_url).is_ok() {
+        if TransitStore::open(&cfg.database_path).is_ok() {
             "ok".to_string()
         } else {
             "offline".to_string()
@@ -212,7 +210,7 @@ async fn handle_health() -> Json<Value> {
         "status": "ok",
         "service": "transit",
         "version": env!("CARGO_PKG_VERSION"),
-        "postgres": pg_status,
+        "store": store_status,
     }))
 }
 
@@ -312,7 +310,7 @@ async fn handle_list_trips(
     State(state): State<AppState>,
     Query(params): Query<TripsQuery>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    let db_url = state.config.database_url.clone();
+    let database_path = state.config.database_path.clone();
     // Clamped rather than rejected: a caller asking for more than the ceiling wants
     // as much as it can get, and `truncated` already tells it what it did not get.
     let limit = params
@@ -320,7 +318,7 @@ async fn handle_list_trips(
         .unwrap_or(TRIPS_DEFAULT_LIMIT)
         .clamp(1, TRIPS_MAX_LIMIT);
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = TransitStore::open(&db_url).map_err(|e| e.to_string())?;
+        let store = TransitStore::open(&database_path).map_err(|e| e.to_string())?;
         let session_id = params.session_id.as_deref();
         let count = store.count_trips(session_id).map_err(|e| e.to_string())?;
         let trips = store

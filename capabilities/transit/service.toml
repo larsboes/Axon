@@ -10,6 +10,5 @@ health_path = "/health"
 # it that way, so /api is proxied through unstripped alongside the uniform /transit.
 proxy_extra = ["/api"]
 
-# Trips/legs/sessions live in the shared Postgres (capabilities/postgres) — the
-# contract, not the code (README.md#schemas-and-dependency-direction). Declared so `up` starts the database first.
-requires = ["postgres"]
+# No `requires`: trips/legs/sessions live in the shared SQLite file this process
+# opens itself, so there is no database service to start first (PRD Q45).

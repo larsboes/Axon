@@ -1,11 +1,13 @@
 # transit
 
-HAFAS journey search, split-ticket solving, German rail ticket extraction, Postgres-backed trip
-persistence, and fuzzy/triggered trip-search sessions. Ported from a private LifeOS-mono service;
-the source bundled transit + a Gemini CV generator into one 764-line `main.rs` — only the transit
-concern is here, rebuilt clean (see Redactions + Verdict). `transit` and `capabilities/scouting`
-share one Postgres instance and a `crate_index` (see Architecture); the cross-capability
-correlation story that motivates that sharing lives in `capabilities/postgres/README.md`.
+HAFAS journey search, split-ticket solving, German rail ticket extraction, trip persistence, and
+fuzzy/triggered trip-search sessions. Ported from a private LifeOS-mono service; the source
+bundled transit + a Gemini CV generator into one 764-line `main.rs` — only the transit concern is
+here, rebuilt clean (see Redactions + Verdict). `transit` and `capabilities/scouting` share one
+database and a `crate_index` (see Architecture); the cross-capability correlation story that
+motivates that sharing lives in `capabilities/postgres/README.md`, and PRD Q45 (2026-08-27) moved
+it from a Postgres schema per capability to a table prefix per capability in one SQLite file
+(libs/axon-store/README.md).
 
 ## Verdict
 
@@ -39,9 +41,9 @@ main.rs        -- CLI: suggest / search / split / import / plan subcommands
                     same call as scouting's opportunity.rs, ~40 lines for one consumer
   extractor.rs  -- pure-Rust PDF/email/regex parsing of German rail ticket confirmations
                     (already well-tested in the source; ported close to as-is)
-  store.rs      -- Postgres persistence, own `transit` schema
-                    (transit.trips/trip_legs/trip_sessions) -- see Trip persistence + Fuzzy
-                    trip-search sessions below
+  store.rs      -- persistence under the table prefix `transit`
+                    (transit_trips/transit_trip_legs/transit_trip_sessions) -- see Trip
+                    persistence + Fuzzy trip-search sessions below
 server.rs      -- transit-server: second binary, Axum HTTP API fronting the same lib -- see
                     HTTP server (transit-server) below
 ```
@@ -59,8 +61,8 @@ compiled dependency instances.
 ## Commands
 
 ```bash
-cargo build -p transit && cargo test -p transit                 # needs capabilities/postgres running
-TRANSIT_TEST_DATABASE_URL=... cargo test -p transit -- postgres_tests::
+cargo build -p transit && cargo test -p transit                 # no server needed; a temp file per test
+cargo test -p transit db_tests::                                # the store suite alone
 
 transit suggest --query "Bonn"                                  # station name -> EVA candidates
 transit search  --from 8000044 --to 8000207 --time 2026-08-15T09:00:00
@@ -103,7 +105,7 @@ for runs outside the runner, then the shipped default `3000`. Binds loopback onl
 **Endpoints:**
 
 - `GET /health`, `GET /api/health` — liveness + aggregated status (`{status, service, version,
-  postgres}`, where `postgres` is `"ok"`/`"offline"` from a live `TransitStore::open` probe)
+  store}`, where `store` is `"ok"`/`"offline"` from a live `TransitStore::open` probe)
 - `GET /api/suggest?q=<query>` — station name -> EVA candidates (wraps `suggest_stations`)
 - `GET /api/search?from=<eva>&to=<eva>&time=<iso>` — journey search (wraps `search_connections`)
 - `GET /api/split?from=<eva>&to=<eva>&time=<iso>` — cheapest split-ticket chain (wraps
@@ -331,9 +333,9 @@ cancelled train was in that response to confirm the flag end to end.
 
 ## Trip persistence
 
-`store.rs`'s `TransitStore` owns `transit.trips`/`transit.trip_legs`/`transit.trip_sessions` on
-the shared local Postgres instance (`capabilities/postgres`, own schema — same convention
-`scouting::store` uses, see that capability's README). A recorded journey can come from three
+`store.rs`'s `TransitStore` owns `transit_trips`/`transit_trip_legs`/`transit_trip_sessions` in
+the shared SQLite file — same table-prefix convention every store-owning capability follows, see
+libs/axon-store/README.md. A recorded journey can come from three
 places, all tagged via `trigger_reason`:
 
 - **`manual`** — a direct `transit search`/`transit split` CLI call. One-shot, on-demand, no
@@ -432,10 +434,11 @@ a clear message rather than silently defaulting to someone else's stations. `sco
 transit_fare` reuses this same config for its route (see "Trip persistence" above) — it has no
 separate route config of its own.
 
-`database_url` resolves the same way as `scouting::config::Config::database_url`: explicit
-override in `transit.json`, else built from `axon-overlay/config/postgres.env` (the shared
-`capabilities/postgres` instance), else a localhost dev-default guess. **Never `println!`/log it
-directly** — `config::redact_database_url()` masks the password for any display purpose.
+`database_path` comes from `axon_config::database_path`: `AXON_DB_PATH`, else
+`<overlay>/data/axon/axon.db`. It is a deployment fact, not a capability one, so a `database_url`
+left in `transit.json` is ignored — a file per capability would drop the cross-capability joins
+the shared instance existed for. Nothing to redact any more: a path carries no password, which is
+why `config::redact_database_url()` is gone.
 
 ## What's not ported
 

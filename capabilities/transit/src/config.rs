@@ -23,7 +23,7 @@
 //! `--to` explicitly, erroring with a clear message rather than silently
 //! defaulting to someone else's stations.
 
-use axon_config::{expand_tilde, postgres_conn_from_shared_env};
+use axon_config::{database_path, expand_tilde};
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -32,7 +32,6 @@ struct FileConfig {
     default_from_eva: Option<String>,
     default_to_eva: Option<String>,
     default_time: Option<String>,
-    database_url: Option<String>,
     document_backend: Option<String>,
     xberg_bin: Option<String>,
     ocr_language: Option<String>,
@@ -43,12 +42,13 @@ pub struct Config {
     pub default_from_eva: Option<String>,
     pub default_to_eva: Option<String>,
     pub default_time: Option<String>,
-    /// Postgres connection string for `store::TransitStore` (own `transit`
-    /// schema on the shared local instance -- see `capabilities/postgres`),
-    /// libpq keyword/value form via `axon_config::postgres_conn_from_shared_env`.
-    /// Resolution: explicit override here, else built from
-    /// `axon-overlay/config/postgres.env`, else a localhost dev-default guess.
-    pub database_url: String,
+    /// The one shared SQLite file `store::TransitStore` opens, under the table
+    /// prefix `transit` (PRD Q45). Resolved by `axon_config::database_path`:
+    /// `AXON_DB_PATH`, else `<overlay>/data/axon/axon.db`. Not a per-capability
+    /// setting any more -- a file per capability would drop the cross-capability
+    /// joins the shared instance existed for, so a `database_url` in
+    /// `transit.json` is now ignored.
+    pub database_path: PathBuf,
     /// Which reader turns a ticket file into text. `builtin` is the original
     /// pdf_extract/mailparse path; `xberg` shells out to the xberg CLI, which
     /// reads layout and can emit a table as a Markdown table.
@@ -128,31 +128,14 @@ fn load_file_config() -> FileConfig {
     }
 }
 
-/// The duplicated-helper era ended with `libs/axon-config`: the "duplicated
-/// rather than forcing a shared crate for ~15 lines" call this file used to
-/// make was right at two copies and wrong at six -- see that crate's README.
-/// Redaction stays exported under its old name so callers don't churn.
-pub fn redact_database_url(url: &str) -> String {
-    axon_config::redact_dsn(url)
-}
-
 impl Config {
     pub fn load() -> Self {
         let file = load_file_config();
-        // `$AXON_TRANSIT_DATABASE_URL` first: it is how a deployment is moved onto
-        // another database without editing config, and the fallback below names the REAL one.
-        let database_url = axon_config::database_url_override("transit")
-            .or(file.database_url)
-            .unwrap_or_else(|| {
-                postgres_conn_from_shared_env().unwrap_or_else(|| {
-                    "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
-                })
-            });
         Self {
             default_from_eva: file.default_from_eva,
             default_to_eva: file.default_to_eva,
             default_time: file.default_time,
-            database_url,
+            database_path: database_path(),
             document_backend: DocumentBackend::parse(file.document_backend.as_deref()),
             xberg_bin: file.xberg_bin.unwrap_or_else(|| "xberg".into()),
             ocr_language: file.ocr_language.unwrap_or_else(|| "deu".into()),
@@ -166,9 +149,8 @@ mod tests {
 
     /// Restores an env var on drop. Rust runs a crate's tests as threads of ONE
     /// process, so `remove_var` here is not local to this test: unrestored, it
-    /// left every later store test resolving the fallback connection string
-    /// instead of the overlay's real one, and they failed against a perfectly
-    /// healthy Postgres.
+    /// left every later store test resolving a different database file from the
+    /// one they had just written to.
     struct EnvGuard(&'static str, Option<String>);
 
     impl EnvGuard {
@@ -216,11 +198,13 @@ mod tests {
         );
     }
 
+    /// The store path is a deployment fact now, not a capability one: a
+    /// `database_url` left in an overlay's transit.json must not move this
+    /// capability off the shared file on its own.
     #[test]
-    fn redact_database_url_hides_password_only() {
-        assert_eq!(
-            redact_database_url("postgresql://axon:s3cr3t@127.0.0.1:5432/axon"),
-            "postgresql://axon:***@127.0.0.1:5432/axon"
-        );
+    fn the_store_path_comes_from_the_deployment_not_from_transit_json() {
+        let _config = EnvGuard::take("AXON_TRANSIT_CONFIG");
+        let _overlay = EnvGuard::take("AXON_PERSONAL_ROOT");
+        assert_eq!(Config::load().database_path, axon_config::database_path());
     }
 }
