@@ -1,14 +1,16 @@
-//! Finance's Postgres-backed suite, kept out of CI's hermetic run by the name every
-//! test in it carries: `postgres_tests::`. That is the one selector the database-backed
+//! Finance's database-backed suite, kept out of CI's hermetic run by the name every
+//! test in it carries: `db_tests::`. That is the one selector the database-backed
 //! modules in comms, places, scouting, tasks and transit are also named by, so CI names
 //! a filter and never a list of capabilities — see `capabilities/scouting/src/store.rs`.
+//! It was `postgres_tests` until PRD Q45 retired the server; a temp file per test is
+//! the whole fixture now.
 //!
 //! An integration test rather than a `#[cfg(test)]` module because it links the library
 //! from outside, the way a caller does. It was a Bazel-only target under
 //! `src/postgres_test.rs` until 2026-08-25 — a path Cargo never compiled at all, so the
 //! suite ran nowhere but `bazel test //:postgres_integration_tests` (PRD Q44).
 
-mod postgres_tests {
+mod db_tests {
     use finance::accounting::{Amount, JournalTransaction, Posting};
     use finance::analytics::{project, TransactionRow};
     use finance::import::{
@@ -19,27 +21,20 @@ mod postgres_tests {
         Holding, HoldingsCoverage, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource,
     };
     use finance::FinanceStore;
-    use postgres::{Client, NoTls};
 
-    fn database_url() -> String {
-        std::env::var("FINANCE_TEST_DATABASE_URL")
-            .unwrap_or_else(|_| finance::Config::load().database_url)
-    }
-
-    struct TestSchema(String);
-
-    impl Drop for TestSchema {
-        fn drop(&mut self) {
-            if let Ok(mut client) = Client::connect(&database_url(), NoTls) {
-                let _ = client.batch_execute(&format!("DROP SCHEMA IF EXISTS {} CASCADE", self.0));
-            }
+    /// A file per test, in a directory this process owns. It replaces the per-pid
+    /// schema and the guard that dropped it: a temp file is neither shared with
+    /// another run nor carried into a backup.
+    fn store(suffix: &str) -> FinanceStore {
+        let dir = std::env::temp_dir().join(format!("finance-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a writable temp directory");
+        let path = dir.join(format!("{suffix}.db"));
+        // The pid is recycled eventually, so the file starts empty.
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
         }
-    }
-
-    fn store(suffix: &str) -> (FinanceStore, TestSchema) {
-        let schema = format!("finance_test_{suffix}_{}", std::process::id());
-        let store = FinanceStore::open_in_schema(&database_url(), &schema).unwrap();
-        (store, TestSchema(schema))
+        FinanceStore::open(&path)
+            .unwrap_or_else(|e| panic!("could not open test store at {}: {e}", path.display()))
     }
 
     fn synthetic_projection() -> Vec<TransactionRow> {
@@ -80,9 +75,9 @@ mod postgres_tests {
     }
 
     #[test]
-    fn an_empty_schema_rebuilds_to_the_same_projection_every_time() {
+    fn an_empty_store_rebuilds_to_the_same_projection_every_time() {
         let rows = synthetic_projection();
-        let (store, _schema) = store("rebuild");
+        let store = store("rebuild");
         assert!(store.transaction_projection().unwrap().is_empty());
         store.replace_transaction_projection(&rows).unwrap();
         let first = store.transaction_projection().unwrap();
@@ -124,7 +119,7 @@ mod postgres_tests {
             &mapping,
         )
         .unwrap();
-        let (store, _schema) = store("candidates");
+        let store = store("candidates");
         assert_eq!(
             store.stage_candidates(&first_export, "2026-08-08").unwrap(),
             (2, 0)
@@ -196,7 +191,7 @@ mod postgres_tests {
         // The quoted street cell keeps the Amex two-line shape: street, then city.
         let csv = b"Date;Amount;Description;Reference;Adresse;PLZ;Land\n2026-08-01;-10.00;Synthetic market;one;\"Beispielstr. 1\nMusterstadt\";12345;Deutschland\n";
         let with_location = parse_csv(csv, &mapping).unwrap();
-        let (store, _schema) = store("candidate_location");
+        let store = store("candidate_location");
         assert_eq!(
             store
                 .stage_candidates(&with_location, "2026-08-25")
@@ -252,7 +247,7 @@ mod postgres_tests {
         };
         let csv = b"Date;Amount;Description;Reference;Adresse;PLZ;Land\n2026-08-01;-10.00;Synthetic market;one;Beispielstr. 1;12345;Deutschland\n";
         let without_location = parse_csv(csv, &mapping).unwrap();
-        let (store, _schema) = store("candidate_location_backfill");
+        let store = store("candidate_location_backfill");
         assert_eq!(
             store
                 .stage_candidates(&without_location, "2026-08-25")
@@ -317,7 +312,7 @@ mod postgres_tests {
         assert_eq!(first_export[0].id, larger_export[0].id);
         assert_ne!(larger_export[0].id, larger_export[1].id);
 
-        let (store, _schema) = store("candidate_multiplicity");
+        let store = store("candidate_multiplicity");
         assert_eq!(
             store.stage_candidates(&first_export, "2026-08-09").unwrap(),
             (1, 0)
@@ -373,7 +368,7 @@ mod postgres_tests {
         card.amount_cents = 1234;
         card.source_account = "liabilities:card:review".into();
         card.proposed_account = "assets:bank:checking".into();
-        let (store, _schema) = store("transfer_pair");
+        let store = store("transfer_pair");
         store
             .stage_candidates(&[bank.clone(), card.clone()], "2026-08-09")
             .unwrap();
@@ -393,7 +388,7 @@ mod postgres_tests {
 
     #[test]
     fn reviewed_holdings_replace_atomically_and_preserve_an_empty_review() {
-        let (store, _schema) = store("holdings");
+        let store = store("holdings");
         assert_eq!(store.holding_projection().unwrap(), None);
         let snapshot = ReviewedHoldingsSnapshot {
             schema_version: 2,

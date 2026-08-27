@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -173,7 +174,7 @@ async fn routes() -> Json<Value> {
 
 #[derive(Clone)]
 struct AppState {
-    database_url: Arc<String>,
+    database_path: Arc<PathBuf>,
     obsidian: Option<ObsidianConfig>,
     journal: Option<std::path::PathBuf>,
     budgets: Arc<Vec<BudgetTarget>>,
@@ -287,10 +288,10 @@ async fn import_csv(
     }
     let preview = prepared.preview;
     let candidates = prepared.candidates;
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
-        FinanceStore::open(&database_url)
+        FinanceStore::open(&database_path)
             .and_then(|store| store.stage_candidates(&candidates, &now))
             .map_err(|error| error.to_string())
     })
@@ -320,9 +321,9 @@ struct CandidateReviewView {
 }
 
 async fn list_candidates(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        FinanceStore::open(&database_url)
+        FinanceStore::open(&database_path)
             .and_then(|store| store.list_candidates())
             .map_err(|error| error.to_string())
     })
@@ -384,7 +385,7 @@ async fn confirm_investments(
             json!({ "error": "no private holdings snapshot is configured" }),
         );
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let projection_write = state.projection_write.clone();
     let reviewed_at = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
@@ -408,7 +409,7 @@ async fn confirm_investments(
         let canonical = investment::read_reviewed_snapshot(&path)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "holdings snapshot disappeared after confirmation".to_string())?;
-        FinanceStore::open(&database_url)
+        FinanceStore::open(&database_path)
             .and_then(|store| store.replace_holding_projection(&canonical))
             .map_err(|error| error.to_string())?;
         Ok(json!({
@@ -473,14 +474,14 @@ async fn reconcile_transfer(
     let Some(journal) = state.journal.clone() else {
         return no_journal();
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
         let first = store
             .candidate(&id)
             .map_err(|error| error.to_string())?
@@ -548,7 +549,7 @@ async fn reconcile_transfer(
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
         rebuild_projection(
-            &database_url,
+            &database_path,
             &journal,
             &budgets,
             investment_snapshot.as_deref(),
@@ -579,13 +580,13 @@ async fn allocate_expense(
     let Some(journal) = state.journal.clone() else {
         return no_journal();
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
         let candidate = store
             .candidate(&id)
             .map_err(|error| error.to_string())?
@@ -605,7 +606,7 @@ async fn allocate_expense(
             replace_journal_atomically(&journal, &updated)?;
         }
         rebuild_projection(
-            &database_url,
+            &database_path,
             &journal,
             &budgets,
             investment_snapshot.as_deref(),
@@ -635,14 +636,14 @@ async fn link_reimbursement(
     let Some(journal) = state.journal.clone() else {
         return no_journal();
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
         let candidate = store
             .candidate(&id)
             .map_err(|error| error.to_string())?
@@ -696,7 +697,7 @@ async fn link_reimbursement(
             return Err("candidate changed before reimbursement linking".into());
         }
         rebuild_projection(
-            &database_url,
+            &database_path,
             &journal,
             &budgets,
             investment_snapshot.as_deref(),
@@ -732,14 +733,14 @@ async fn confirm_candidates_batch(
             json!({ "error": "batch must contain between 1 and 1000 candidates" }),
         );
     }
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
         let mut seen = std::collections::HashSet::new();
         let mut prepared = Vec::with_capacity(request.items.len());
         for item in request.items {
@@ -793,7 +794,7 @@ async fn confirm_candidates_batch(
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
         rebuild_projection(
-            &database_url,
+            &database_path,
             &journal,
             &budgets,
             investment_snapshot.as_deref(),
@@ -828,14 +829,14 @@ async fn reclassify_candidates_batch(
             json!({ "error": "reclassification batch must contain between 1 and 500 candidates" }),
         );
     }
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
         let mut seen = std::collections::HashSet::new();
         let mut prepared = Vec::with_capacity(request.items.len());
         for item in request.items {
@@ -892,7 +893,7 @@ async fn reclassify_candidates_batch(
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
         rebuild_projection(
-            &database_url,
+            &database_path,
             &journal,
             &budgets,
             investment_snapshot.as_deref(),
@@ -927,14 +928,14 @@ async fn review_candidate(
     let Some(journal) = state.journal.clone() else {
         return no_journal();
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
         let candidate = store
             .candidate(&id)
             .map_err(|error| error.to_string())?
@@ -1002,7 +1003,7 @@ async fn review_candidate(
                     .lock()
                     .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
                 rebuild_projection(
-                    &database_url,
+                    &database_path,
                     &journal,
                     &budgets,
                     investment_snapshot.as_deref(),
@@ -1108,7 +1109,7 @@ async fn rebuild_ledger(State(state): State<AppState>) -> ApiResponse {
     let Some(journal) = state.journal.clone() else {
         return no_journal();
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let projection_write = state.projection_write.clone();
@@ -1117,7 +1118,7 @@ async fn rebuild_ledger(State(state): State<AppState>) -> ApiResponse {
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
         rebuild_projection(
-            &database_url,
+            &database_path,
             &journal,
             &budgets,
             investment_snapshot.as_deref(),
@@ -1135,7 +1136,7 @@ async fn rebuild_ledger(State(state): State<AppState>) -> ApiResponse {
 }
 
 fn rebuild_projection(
-    database_url: &str,
+    database_path: &std::path::Path,
     journal: &std::path::Path,
     budgets: &[BudgetTarget],
     investment_snapshot: Option<&std::path::Path>,
@@ -1149,7 +1150,7 @@ fn rebuild_projection(
         .iter()
         .flat_map(|currency| analytics::project(&transactions, currency))
         .collect();
-    let store = FinanceStore::open(database_url).map_err(|error| error.to_string())?;
+    let store = FinanceStore::open(database_path).map_err(|error| error.to_string())?;
     store
         .replace_transaction_projection(&rows)
         .map_err(|error| error.to_string())?;
@@ -1175,7 +1176,7 @@ async fn dashboard_projection(
     State(state): State<AppState>,
     Query(filter): Query<AnalyticsFilter>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let budgets = state.budgets.clone();
     let balance_snapshot_path = state.balance_snapshot.clone();
     let commitments = state.commitments.clone();
@@ -1185,7 +1186,7 @@ async fn dashboard_projection(
         let _projection_guard = projection_write
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
-        let store = FinanceStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
         let rows = store
             .transaction_projection()
             .map_err(|error| error.to_string())?;
@@ -1494,9 +1495,9 @@ async fn health() -> Json<Value> {
 /// answer. `health` is a literal, so during a Postgres outage it would report up
 /// while every query behind it failed (#126).
 async fn ready(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        FinanceStore::open(&database_url)
+        FinanceStore::open(&database_path)
             .and_then(|store| store.ping())
             .map_err(|error| error.to_string())
     })
@@ -1520,9 +1521,9 @@ async fn ready(State(state): State<AppState>) -> ApiResponse {
 }
 
 async fn list_subscriptions(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        FinanceStore::open(&database_url)
+        FinanceStore::open(&database_path)
             .and_then(|store| store.list())
             .map_err(|e| e.to_string())
     })
@@ -1600,7 +1601,7 @@ fn validate_price(price: &PricePoint) -> Result<(), String> {
 /// There is no stored total to return, by design: a cached figure is a second
 /// source of truth that goes stale the moment a price point lands.
 async fn burn(State(state): State<AppState>, Query(query): Query<AtQuery>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let at = query.at.unwrap_or_else(today);
     if !valid_iso_date(&at) {
         return response(
@@ -1610,7 +1611,7 @@ async fn burn(State(state): State<AppState>, Query(query): Query<AtQuery>) -> Ap
     }
     let at_for_body = at.clone();
     match tokio::task::spawn_blocking(move || {
-        FinanceStore::open(&database_url)
+        FinanceStore::open(&database_path)
             .and_then(|store| store.list())
             .map_err(|e| e.to_string())
     })
@@ -1643,10 +1644,10 @@ async fn append_price(
     if let Err(error) = validate_price(&price) {
         return response(StatusCode::BAD_REQUEST, json!({ "error": error }));
     }
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
-        FinanceStore::open(&database_url)
+        FinanceStore::open(&database_path)
             .and_then(|store| {
                 store
                     .append_price(&id, &price, &now)
@@ -1680,10 +1681,10 @@ async fn append_state(
             json!({ "error": "effective must be a real date in YYYY-MM-DD form" }),
         );
     }
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
-        FinanceStore::open(&database_url)
+        FinanceStore::open(&database_path)
             .and_then(|store| {
                 store
                     .append_state(&id, &change, &now)
@@ -1730,11 +1731,11 @@ async fn import_vault(State(state): State<AppState>) -> ApiResponse {
     let Some(vault) = state.obsidian.clone() else {
         return no_vault();
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let notes = scan_notes(&vault)?;
-        let store = FinanceStore::open(&database_url).map_err(|e| e.to_string())?;
+        let store = FinanceStore::open(&database_path).map_err(|e| e.to_string())?;
         let (mut created, mut existing) = (0usize, 0usize);
         for note in &notes {
             let (_, is_new) = store.import_note(note, &now).map_err(|e| e.to_string())?;
@@ -1763,11 +1764,11 @@ async fn writeback(State(state): State<AppState>) -> ApiResponse {
     let Some(vault) = state.obsidian.clone() else {
         return no_vault();
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let notes = scan_notes(&vault)?;
-        let store = FinanceStore::open(&database_url).map_err(|e| e.to_string())?;
+        let store = FinanceStore::open(&database_path).map_err(|e| e.to_string())?;
         let subs = store.list().map_err(|e| e.to_string())?;
 
         let (mut written, mut unchanged) = (0usize, 0usize);
@@ -1855,7 +1856,7 @@ fn civil_from_days(days: i64) -> String {
 async fn main() {
     let config = Config::load();
     let state = AppState {
-        database_url: Arc::new(config.database_url),
+        database_path: Arc::new(config.database_path),
         obsidian: config.obsidian,
         journal: config.journal,
         budgets: Arc::new(config.budgets),
@@ -2144,7 +2145,7 @@ mod tests {
         assert!(body.get("description").is_none());
 
         let state = AppState {
-            database_url: Arc::new(String::new()),
+            database_path: Arc::new(PathBuf::new()),
             obsidian: None,
             journal: None,
             budgets: Arc::new(Vec::new()),
@@ -2178,7 +2179,7 @@ mod tests {
             mapping: synthetic_csv_mapping(),
         };
         let state = AppState {
-            database_url: Arc::new(String::new()),
+            database_path: Arc::new(PathBuf::new()),
             obsidian: None,
             journal: None,
             budgets: Arc::new(Vec::new()),
@@ -2220,7 +2221,7 @@ mod tests {
             },
         };
         let state = AppState {
-            database_url: Arc::new(String::new()),
+            database_path: Arc::new(PathBuf::new()),
             obsidian: None,
             journal: None,
             budgets: Arc::new(Vec::new()),
@@ -2242,7 +2243,7 @@ mod tests {
     #[tokio::test]
     async fn investment_confirmation_requires_a_private_snapshot_path() {
         let state = AppState {
-            database_url: Arc::new(String::new()),
+            database_path: Arc::new(PathBuf::new()),
             obsidian: None,
             journal: None,
             budgets: Arc::new(Vec::new()),

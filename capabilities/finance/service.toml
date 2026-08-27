@@ -16,4 +16,6 @@ proxy_api_only = "true"
 # toolchain scope: hosts that enable Finance must provide the pinned engine.
 ledger = "hledger"
 
-requires = ["postgres"]
+# No `requires`: subscriptions, candidates and the two projections live in the
+# shared SQLite file this process opens itself, so there is no database service to
+# start first (PRD Q45).

@@ -4,16 +4,17 @@
 //! supplies all of it, which is what keeps this capability publishable while the
 //! data it operates on is the most private in the system.
 //!
-//! Resolution, in order:
-//!   1. `$AXON_FINANCE_DATABASE_URL`
-//!   2. values from `$AXON_PERSONAL_ROOT/config/postgres.env`
-//!   3. a localhost development fallback
+//! The store path comes from `axon_config::database_path`: `$AXON_DB_PATH`, else
+//! `$AXON_PERSONAL_ROOT/data/axon/axon.db`. It is a deployment fact rather than a
+//! capability one (PRD Q45), so `$AXON_FINANCE_DATABASE_URL` is gone -- a file per
+//! capability would drop the cross-capability joins places builds its spend layer
+//! on.
 
 use crate::analytics::BudgetTarget;
 use crate::import::CsvMapping;
 use crate::investment::{HoldingsCoverage, InvestmentCsvMapping};
 use crate::planning::PlanningConfig;
-use axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
+use axon_config::{database_path, expand_tilde, resolve_port};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -70,7 +71,8 @@ impl RecurringCommitment {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub database_url: String,
+    /// The one shared SQLite file, under the table prefix `finance` (PRD Q45).
+    pub database_path: PathBuf,
     pub port: u16,
     pub obsidian: Option<ObsidianConfig>,
     pub journal: Option<PathBuf>,
@@ -121,12 +123,6 @@ fn file_config() -> Option<FinanceFileConfig> {
 
 impl Config {
     pub fn load() -> Self {
-        let database_url = std::env::var("AXON_FINANCE_DATABASE_URL")
-            .ok()
-            .or_else(postgres_conn_from_shared_env)
-            .unwrap_or_else(|| {
-                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
-            });
         let port = resolve_port(None, None, 8090);
         let personal = file_config();
         let obsidian = match std::env::var("AXON_FINANCE_OBSIDIAN_ROOT") {
@@ -193,7 +189,7 @@ impl Config {
                     .map(|path| expand_tilde(path))
             });
         Self {
-            database_url,
+            database_path: database_path(),
             port,
             obsidian,
             journal,

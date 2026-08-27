@@ -6,7 +6,7 @@ append-only price and state history.
 ## Why a capability
 
 hledger is the first accounting engine. The private plaintext journal is canonical,
-Postgres holds a disposable index, and this capability owns the review path and the
+The store holds a disposable index, and this capability owns the review path and the
 product above both.
 
 The split is not a compromise between build and adopt. A plaintext journal under
@@ -35,7 +35,7 @@ accounting-engine policy.
   holdings in a private snapshot. Instrument aliases remain private mapping data.
 - Candidates stay pending until the local UI confirms or rejects them. Confirmation
   validates the prospective journal, appends once, and atomically rebuilds the
-  Postgres transaction projection. A retry cannot duplicate the posting. Confirmed
+  transaction projection. A retry cannot duplicate the posting. Confirmed
   uncategorized expenses can later be grouped locally by description and explicitly
   batch-reclassified; the selected journal postings are validated and replaced once.
 - A confirmed expense can then receive a reviewed purpose and personal/shared split.
@@ -74,7 +74,7 @@ So a subscription carries two append-only series:
 - **State changes.** `considering → trial → active ⇄ paused → cancelled`, each with
   a date and a note, so "when did I pause this and why" survives the year.
 
-The schema makes that structural. There is no `price` column on `subscriptions` and
+The table shape makes that structural. There is no `price` column on `subscriptions` and
 no `status` column, because a column is a thing that can be updated. What the
 current price *is* comes from `price_at()` over the series. There is no cached
 total either: a stored figure is a second source of truth that goes stale silently.
@@ -88,14 +88,14 @@ collapsing the two into one field wrong.
 | Statement | Owner | Written by |
 |---|---|---|
 | Why I pay for this, value check, alternatives | the vault note's prose | the human |
-| Price history, state history, computed burn | Postgres | this capability |
+| Price history, state history, computed burn | the shared store | this capability |
 | Current price, monthly equivalent, drift | the vault note, marked region | this capability, regenerable |
 | Confirmed postings | private plaintext journal | this capability, after explicit review |
-| Import candidates and transaction projection | Postgres | this capability, rebuildable |
+| Import candidates and transaction projection | the shared store | this capability, rebuildable |
 | Budget targets | private `config/finance.json` | the human |
 | Spending behavior, forecast adjustments and personal card/loyalty values | private `config/finance.json` | the human |
 | Reviewed aggregate holdings | private configured snapshot | this capability, after explicit review |
-| Holdings dashboard projection | Postgres | this capability, rebuildable from the private snapshot |
+| Holdings dashboard projection | the shared store | this capability, rebuildable from the private snapshot |
 | Baseline, forecast, runway and decision results | API response only | this capability, rebuilt from reviewed private state |
 
 Writeback goes through `libs/markdown-root`'s region writer, which preserves every
@@ -135,8 +135,16 @@ stored as a second source of truth.
 
 ## Configuration
 
-Database from `$AXON_FINANCE_DATABASE_URL`, else the overlay's
-`config/postgres.env`, else a localhost development fallback. Vault location from
+The eight tables live in the shared SQLite file — `AXON_DB_PATH`, else
+`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `finance`, so they are
+`finance_subscriptions`, `finance_price_points`, `finance_state_changes`,
+`finance_transaction_candidates`, `finance_transaction_projection`,
+`finance_holding_projection`, `finance_holding_projection_state` and
+`finance_holding_projection_sources` (`libs/axon-store/README.md`). PRD Q45
+(2026-08-27) moved them there from a Postgres schema, and the path is a deployment
+fact rather than a capability one: `$AXON_FINANCE_DATABASE_URL` is gone, because a
+file per capability would drop the join `capabilities/places` builds its spend layer
+on. Vault location from
 the overlay's `config/finance.json`, or `AXON_FINANCE_OBSIDIAN_ROOT` for
 development. `journal` and `budgets` live in that same private file; the journal can
 also be set with `AXON_FINANCE_JOURNAL`. `schemas/finance.json.example` documents the
