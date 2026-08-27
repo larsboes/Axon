@@ -10,18 +10,19 @@ impl Store {
         source_ref: &str,
         label: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         conn.execute(
             &format!(
-                "INSERT INTO {schema}.feed_origins
+                "INSERT INTO {prefix}_feed_origins
                     (feed_id, source_id, source_ref, label, first_seen, last_seen)
-                 VALUES ($1,$2,$3,$4,now(),now())
+                 VALUES (?1,?2,?3,?4,{now},{now})
                  ON CONFLICT (feed_id, source_id, source_ref) DO UPDATE SET
-                    label = COALESCE(excluded.label, {schema}.feed_origins.label),
-                    last_seen = now()",
-                schema = self.schema
+                    label = COALESCE(excluded.label, {prefix}_feed_origins.label),
+                    last_seen = {now}",
+                prefix = self.prefix,
+                now = axon_store::NOW
             ),
-            &[&feed_id, &source_id, &source_ref, &label],
+            params![&feed_id, &source_id, &source_ref, &label],
         )?;
         Ok(())
     }
@@ -30,46 +31,46 @@ impl Store {
         &self,
         feed_id: &str,
     ) -> Result<Vec<FeedOrigin>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        Ok(conn.query_all(
             &format!(
                 "SELECT source_id, source_ref, label
-                 FROM {}.feed_origins WHERE feed_id = $1 ORDER BY first_seen",
-                self.schema
+                 FROM {}_feed_origins WHERE feed_id = ?1 ORDER BY first_seen",
+                self.prefix
             ),
-            &[&feed_id],
-        )?;
-        Ok(rows
-            .iter()
-            .map(|row| FeedOrigin {
-                source_id: row.get(0),
-                source_ref: row.get(1),
-                label: row.get(2),
-            })
-            .collect())
+            params![&feed_id],
+            |row| {
+                Ok(FeedOrigin {
+                    source_id: row.get(0)?,
+                    source_ref: row.get(1)?,
+                    label: row.get(2)?,
+                })
+            },
+        )?)
     }
 
     pub fn list_origin_summaries(&self) -> Result<Vec<OriginSummary>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        // The `::text` casts are gone with the timestamp type: these columns are
+        // TEXT, and the canonical stamp sorts as text (libs/axon-store/README.md).
+        Ok(conn.query_all(
             &format!(
-                "SELECT source_id, COUNT(DISTINCT feed_id), MIN(first_seen)::text, MAX(last_seen)::text
-                 FROM {}.feed_origins
+                "SELECT source_id, COUNT(DISTINCT feed_id), MIN(first_seen), MAX(last_seen)
+                 FROM {}_feed_origins
                  GROUP BY source_id
                  ORDER BY MAX(last_seen) DESC",
-                self.schema
+                self.prefix
             ),
-            &[],
-        )?;
-        Ok(rows
-            .iter()
-            .map(|r| OriginSummary {
-                source_id: r.get(0),
-                item_count: r.get(1),
-                first_seen: r.get(2),
-                last_seen: r.get(3),
-            })
-            .collect())
+            [],
+            |r| {
+                Ok(OriginSummary {
+                    source_id: r.get(0)?,
+                    item_count: r.get(1)?,
+                    first_seen: r.get(2)?,
+                    last_seen: r.get(3)?,
+                })
+            },
+        )?)
     }
 
     /// Which items arrived together, derived at read time from `feed_origins`
@@ -82,23 +83,33 @@ impl Store {
     /// read as one, which is the failure this trades for never having to
     /// migrate a grouping decision.
     pub fn list_feed_runs(&self, days: i32) -> Result<Vec<FeedRun>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        // Two translations here, and both depend on the canonical stamp being a
+        // format SQLite's own date functions can read (libs/axon-store/README.md):
+        //
+        //   CURRENT_DATE - $1::int         -> date('now', '-N days')
+        //   a - b > interval 'N minutes'   -> julianday(a) - julianday(b) > N/1440
+        //
+        // julianday returns days as a float, so the gap is expressed in days.
+        // Everything else -- LAG, SUM OVER ... ROWS UNBOUNDED PRECEDING, the CTEs --
+        // is supported verbatim.
+        Ok(conn.query_all(
             &format!(
                 "WITH ordered AS (
                      SELECT o.feed_id, o.source_id, o.label, o.first_seen,
                             LAG(o.first_seen) OVER (
                                 PARTITION BY o.source_id ORDER BY o.first_seen
                             ) AS prev_seen
-                     FROM {schema}.feed_origins o
-                     JOIN {schema}.feed_items f ON f.id = o.feed_id
-                     WHERE f.day >= CURRENT_DATE - $1::int
+                     FROM {prefix}_feed_origins o
+                     JOIN {prefix}_feed_items f ON f.id = o.feed_id
+                     WHERE f.day >= date('now', '-' || ?1 || ' days')
                  ),
                  marked AS (
                      SELECT *,
                             CASE
                                 WHEN prev_seen IS NULL
-                                  OR first_seen - prev_seen > interval '{gap} minutes'
+                                  OR julianday(first_seen) - julianday(prev_seen)
+                                     > {gap}.0 / 1440.0
                                 THEN 1 ELSE 0
                             END AS starts_run
                      FROM ordered
@@ -114,24 +125,23 @@ impl Store {
                  SELECT feed_id,
                         source_id,
                         label,
-                        source_id || '#' || run_seq::text AS run_key,
-                        MIN(first_seen) OVER (PARTITION BY source_id, run_seq)::text AS run_started
+                        source_id || '#' || CAST(run_seq AS TEXT) AS run_key,
+                        MIN(first_seen) OVER (PARTITION BY source_id, run_seq) AS run_started
                  FROM runs
                  ORDER BY run_started DESC, first_seen ASC",
-                schema = self.schema,
+                prefix = self.prefix,
                 gap = RUN_GAP_MINUTES
             ),
-            &[&days],
-        )?;
-        Ok(rows
-            .iter()
-            .map(|r| FeedRun {
-                feed_id: r.get(0),
-                source_id: r.get(1),
-                label: r.get(2),
-                run_key: r.get(3),
-                run_started: r.get(4),
-            })
-            .collect())
+            params![days],
+            |r| {
+                Ok(FeedRun {
+                    feed_id: r.get(0)?,
+                    source_id: r.get(1)?,
+                    label: r.get(2)?,
+                    run_key: r.get(3)?,
+                    run_started: r.get(4)?,
+                })
+            },
+        )?)
     }
 }

@@ -20,7 +20,7 @@ impl Store {
     /// the queue because the inbox observation is authoritative.
     pub fn upsert_triage(&self, item: &TriageItem) -> Result<bool, Box<dyn std::error::Error>> {
         // Gmail internalDate is epoch-ms; convert to fractional epoch-seconds so
-        // the bound param is plain double precision for to_timestamp().
+        // the bound param is a plain double for the `unixepoch` modifier below.
         let internal_secs: Option<f64> = item.internal_date_ms.map(|ms| ms as f64 / 1000.0);
         // One predicate, four columns: keep the stored classification when a
         // human set it, and also when the incoming one would be *less* strict.
@@ -28,60 +28,74 @@ impl Store {
         // made the classifier less suspicious would walk the whole inbox
         // quietly downgrading rows it had previously called Private -- a rule
         // lowering a class, which is the one thing the escalation rule forbids.
-        let preserve_class = "t.data_classification_method = 'human' OR \
+        // `t.` was an INSERT alias (`INSERT INTO x AS t`), which SQLite has no
+        // syntax for: inside DO UPDATE it refers to the existing row by the
+        // table's own name. So the predicate is built with the prefix.
+        let table = format!("{}_triage_items", self.prefix);
+        let preserve_class = format!(
+            "{table}.data_classification_method = 'human' OR \
              (CASE excluded.data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END) < \
-             (CASE t.data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)";
-        let mut conn = self.conn()?;
-        let existing = conn.query_opt(
-            &format!("SELECT id FROM {}.triage_items WHERE id = $1", self.schema),
-            &[&item.id],
-        )?;
-        let is_new = existing.is_none();
+             (CASE {table}.data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)"
+        );
+        let conn = self.conn()?;
+        let is_new = conn
+            .query_row(
+                &format!("SELECT id FROM {}_triage_items WHERE id = ?1", self.prefix),
+                params![&item.id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_none();
 
         conn.execute(
             &format!(
-                "INSERT INTO {schema}.triage_items AS t
+                "INSERT INTO {prefix}_triage_items
                     (id, from_addr, subject, snippet, internal_date, stream, rationale,
                      classification_method, classification_version, data_class,
                      data_class_rationale, data_classification_method,
                      data_classification_version, status, gmail_location,
                      gmail_observed_at, gmail_sync_status, first_seen, last_seen)
-                 VALUES ($1,$2,$3,$4, to_timestamp($5), $6, $7, $8, $9, $10, $11, $12, $13,
-                         'proposed', 'inbox', now(), 'synced', now(), now())
+                 VALUES (?1,?2,?3,?4, {internal_date}, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         'proposed', 'inbox', {now}, 'synced', {now}, {now})
                  ON CONFLICT (id) DO UPDATE SET
                      from_addr = excluded.from_addr,
                      subject = excluded.subject,
                      snippet = excluded.snippet,
                      internal_date = excluded.internal_date,
-                     stream = CASE WHEN t.classification_method = 'human'
-                        THEN t.stream ELSE excluded.stream END,
-                     rationale = CASE WHEN t.classification_method = 'human'
-                        THEN t.rationale ELSE excluded.rationale END,
-                     classification_method = CASE WHEN t.classification_method = 'human'
-                        THEN t.classification_method ELSE excluded.classification_method END,
-                     classification_version = CASE WHEN t.classification_method = 'human'
-                        THEN t.classification_version ELSE excluded.classification_version END,
+                     stream = CASE WHEN {table}.classification_method = 'human'
+                        THEN {table}.stream ELSE excluded.stream END,
+                     rationale = CASE WHEN {table}.classification_method = 'human'
+                        THEN {table}.rationale ELSE excluded.rationale END,
+                     classification_method = CASE WHEN {table}.classification_method = 'human'
+                        THEN {table}.classification_method ELSE excluded.classification_method END,
+                     classification_version = CASE WHEN {table}.classification_method = 'human'
+                        THEN {table}.classification_version ELSE excluded.classification_version END,
                      data_class = CASE WHEN {preserve_class}
-                        THEN t.data_class ELSE excluded.data_class END,
+                        THEN {table}.data_class ELSE excluded.data_class END,
                      data_class_rationale = CASE WHEN {preserve_class}
-                        THEN t.data_class_rationale ELSE excluded.data_class_rationale END,
+                        THEN {table}.data_class_rationale ELSE excluded.data_class_rationale END,
                      data_classification_method = CASE WHEN {preserve_class}
-                        THEN t.data_classification_method ELSE excluded.data_classification_method END,
+                        THEN {table}.data_classification_method ELSE excluded.data_classification_method END,
                      data_classification_version = CASE WHEN {preserve_class}
-                        THEN t.data_classification_version ELSE excluded.data_classification_version END,
-                     status = CASE WHEN t.status IN ('archived','trashed','missing','executed')
-                        THEN 'proposed' ELSE t.status END,
+                        THEN {table}.data_classification_version ELSE excluded.data_classification_version END,
+                     status = CASE WHEN {table}.status IN ('archived','trashed','missing','executed')
+                        THEN 'proposed' ELSE {table}.status END,
                      gmail_location = 'inbox',
-                     gmail_observed_at = now(),
+                     gmail_observed_at = {now},
                      gmail_sync_status = 'synced',
                      gmail_sync_error = NULL,
                      purge_after = NULL,
-                     last_seen = now()",
-                schema = self.schema,
-                preserve_class = preserve_class
+                     last_seen = {now}",
+                prefix = self.prefix,
+                table = table,
+                preserve_class = preserve_class,
+                internal_date = format!(
+                    "strftime('{}', ?5, 'unixepoch')",
+                    axon_store::STAMP_FORMAT
+                ),
+                now = axon_store::NOW
             ),
-            &[
-                &item.id,
+            params![&item.id,
                 &item.from_addr,
                 &item.subject,
                 &item.snippet,
@@ -114,18 +128,18 @@ impl Store {
             )
             .into());
         }
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = conn.execute(
             &format!(
-                "UPDATE {}.triage_items SET
-                    stream = $1,
+                "UPDATE {}_triage_items SET
+                    stream = ?1,
                     rationale = 'Category set manually in Axon.',
                     classification_method = 'human',
                     classification_version = 'manual-v1'
-                 WHERE id = $2",
-                self.schema
+                 WHERE id = ?2",
+                self.prefix
             ),
-            &[&stream, &id],
+            params![&stream, &id],
         )?;
         Ok(affected > 0)
     }
@@ -148,34 +162,33 @@ impl Store {
             )
             .into());
         }
-        let mut conn = self.conn()?;
-        let Some(row) = conn.query_opt(
-            &format!(
-                "SELECT data_class, data_classification_method FROM {}.triage_items WHERE id = $1",
-                self.schema
-            ),
-            &[&id],
-        )?
+        let conn = self.conn()?;
+        let Some((stored_class, stored_method)) = conn
+            .query_row(
+                &format!(
+                    "SELECT data_class, data_classification_method FROM {}_triage_items WHERE id = ?1",
+                    self.prefix
+                ),
+                params![&id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
         else {
             return Ok(false);
         };
-        let classification = human_reclassification(
-            row.get::<_, String>(0).as_str(),
-            row.get::<_, String>(1).as_str(),
-            data_class,
-            rationale,
-        )?;
+        let classification =
+            human_reclassification(&stored_class, &stored_method, data_class, rationale)?;
         let affected = conn.execute(
             &format!(
-                "UPDATE {}.triage_items SET
-                    data_class = $1,
-                    data_class_rationale = $2,
-                    data_classification_method = $3,
-                    data_classification_version = $4
-                 WHERE id = $5",
-                self.schema
+                "UPDATE {}_triage_items SET
+                    data_class = ?1,
+                    data_class_rationale = ?2,
+                    data_classification_method = ?3,
+                    data_classification_version = ?4
+                 WHERE id = ?5",
+                self.prefix
             ),
-            &[
+            params![
                 &classification.value,
                 &classification.rationale,
                 &classification.method,
@@ -200,20 +213,20 @@ impl Store {
         id: &str,
         classification: &crate::content_item::DataClass,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = conn.execute(
             &format!(
-                "UPDATE {}.triage_items SET
-                    data_class = $1,
-                    data_class_rationale = $2,
-                    data_classification_method = $3,
-                    data_classification_version = $4
-                 WHERE id = $5 AND data_classification_method <> 'human'
-                   AND (CASE $1::text WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)
+                "UPDATE {}_triage_items SET
+                    data_class = ?1,
+                    data_class_rationale = ?2,
+                    data_classification_method = ?3,
+                    data_classification_version = ?4
+                 WHERE id = ?5 AND data_classification_method <> 'human'
+                   AND (CASE ?1 WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)
                      >= (CASE data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)",
-                self.schema
+                self.prefix
             ),
-            &[
+            params![
                 &classification.value,
                 &classification.rationale,
                 &classification.method,
@@ -237,13 +250,13 @@ impl Store {
         subject: Option<&str>,
         snippet: Option<&str>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = conn.execute(
             &format!(
-                "UPDATE {}.triage_items SET subject = $1, snippet = $2 WHERE id = $3",
-                self.schema
+                "UPDATE {}_triage_items SET subject = ?1, snippet = ?2 WHERE id = ?3",
+                self.prefix
             ),
-            &[&subject, &snippet, &id],
+            params![&subject, &snippet, &id],
         )?;
         Ok(affected > 0)
     }
@@ -264,16 +277,17 @@ impl Store {
         id: &str,
         waiting: bool,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = conn.execute(
             &format!(
-                "UPDATE {}.triage_items
-                    SET waiting = $1,
-                        waiting_at = CASE WHEN $1 THEN now() ELSE NULL END
-                  WHERE id = $2",
-                self.schema
+                "UPDATE {}_triage_items
+                    SET waiting = ?1,
+                        waiting_at = CASE WHEN ?1 THEN {now} ELSE NULL END
+                  WHERE id = ?2",
+                self.prefix,
+                now = axon_store::NOW
             ),
-            &[&waiting, &id],
+            params![&waiting, &id],
         )?;
         Ok(affected > 0)
     }
@@ -290,13 +304,13 @@ impl Store {
             )
             .into());
         }
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = conn.execute(
             &format!(
-                "UPDATE {}.triage_items SET status = $1 WHERE id = $2",
-                self.schema
+                "UPDATE {}_triage_items SET status = ?1 WHERE id = ?2",
+                self.prefix
             ),
-            &[&status, &id],
+            params![&status, &id],
         )?;
         Ok(affected > 0)
     }
@@ -315,39 +329,43 @@ impl Store {
         let affected = match action {
             "archive" => conn.execute(
                 &format!(
-                    "UPDATE {}.triage_items SET
+                    "UPDATE {}_triage_items SET
                         status = 'archived', gmail_action = 'archive',
-                        gmail_action_at = now(), purge_after = NULL,
-                        gmail_location = 'archive', gmail_observed_at = now(),
+                        gmail_action_at = {now}, purge_after = NULL,
+                        gmail_location = 'archive', gmail_observed_at = {now},
                         gmail_sync_status = 'synced', gmail_sync_error = NULL
-                     WHERE id = $1",
-                    self.schema
+                     WHERE id = ?1",
+                    self.prefix,
+                    now = axon_store::NOW
                 ),
-                &[&id],
+                params![&id],
             )?,
             "trash" => conn.execute(
                 &format!(
-                    "UPDATE {}.triage_items SET
+                    "UPDATE {}_triage_items SET
                         status = 'trashed', gmail_action = 'trash',
-                        gmail_action_at = now(), purge_after = now() + interval '30 days',
-                        gmail_location = 'trash', gmail_observed_at = now(),
+                        gmail_action_at = {now}, purge_after = {purge},
+                        gmail_location = 'trash', gmail_observed_at = {now},
                         gmail_sync_status = 'synced', gmail_sync_error = NULL
-                     WHERE id = $1",
-                    self.schema
+                     WHERE id = ?1",
+                    self.prefix,
+                    now = axon_store::NOW,
+                    purge = axon_store::now_offset("'+30 days'")
                 ),
-                &[&id],
+                params![&id],
             )?,
             "restore" => conn.execute(
                 &format!(
-                    "UPDATE {}.triage_items SET
+                    "UPDATE {}_triage_items SET
                         status = 'proposed', gmail_action = 'restore',
-                        gmail_action_at = now(), purge_after = NULL,
-                        gmail_location = 'inbox', gmail_observed_at = now(),
+                        gmail_action_at = {now}, purge_after = NULL,
+                        gmail_location = 'inbox', gmail_observed_at = {now},
                         gmail_sync_status = 'synced', gmail_sync_error = NULL
-                     WHERE id = $1",
-                    self.schema
+                     WHERE id = ?1",
+                    self.prefix,
+                    now = axon_store::NOW
                 ),
-                &[&id],
+                params![&id],
             )?,
             _ => unreachable!(),
         };
@@ -365,18 +383,22 @@ impl Store {
             return Err("Gmail action must be archive, trash, or restore".into());
         }
         let mut conn = self.conn()?;
-        let mut transaction = conn.transaction()?;
-        let row = transaction.query_opt(
-            &format!(
-                "SELECT status FROM {}.triage_items WHERE id = $1 FOR UPDATE",
-                self.schema
-            ),
-            &[&id],
-        )?;
-        let Some(row) = row else {
+        // No `FOR UPDATE`: SQLite has no row locks and needs none here. The
+        // transaction is the lock, because there is exactly one writer.
+        let transaction = conn.transaction()?;
+        let Some(source_status) = transaction
+            .query_row(
+                &format!(
+                    "SELECT status FROM {}_triage_items WHERE id = ?1",
+                    self.prefix
+                ),
+                params![&id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        else {
             return Err("mail proposal not found".into());
         };
-        let source_status = row.get::<_, String>(0);
         let allowed = match action {
             "archive" | "trash" => matches!(source_status.as_str(), "proposed" | "approved"),
             "restore" => matches!(source_status.as_str(), "archived" | "trashed"),
@@ -386,65 +408,76 @@ impl Store {
             return Err(format!("cannot {action} mail in {source_status} state").into());
         }
         if transaction
-            .query_opt(
+            .query_row(
                 &format!(
-                    "SELECT job_id FROM {}.gmail_action_jobs
-                     WHERE triage_id = $1 AND state = 'queued'",
-                    self.schema
+                    "SELECT job_id FROM {}_gmail_action_jobs
+                     WHERE triage_id = ?1 AND state = 'queued'",
+                    self.prefix
                 ),
-                &[&id],
-            )?
+                params![&id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
             .is_some()
         {
             return Err("a Gmail action is already queued for this mail".into());
         }
-        let job = transaction.query_one(
+        let job = transaction.query_row(
             &format!(
-                "INSERT INTO {}.gmail_action_jobs (triage_id, action, source_status)
-                 VALUES ($1,$2,$3)
+                "INSERT INTO {}_gmail_action_jobs (triage_id, action, source_status)
+                 VALUES (?1,?2,?3)
                  RETURNING job_id, triage_id, action, source_status, attempts",
-                self.schema
+                self.prefix
             ),
-            &[&id, &action, &source_status],
+            params![&id, &action, &source_status],
+            |job| {
+                Ok(GmailActionJob {
+                    job_id: job.get(0)?,
+                    triage_id: job.get(1)?,
+                    action: job.get(2)?,
+                    source_status: job.get(3)?,
+                    attempts: job.get(4)?,
+                })
+            },
         )?;
         transaction.execute(
             &format!(
-                "UPDATE {}.triage_items SET
+                "UPDATE {}_triage_items SET
                     gmail_sync_status = 'queued', gmail_sync_error = NULL
-                 WHERE id = $1",
-                self.schema
+                 WHERE id = ?1",
+                self.prefix
             ),
-            &[&id],
+            params![&id],
         )?;
         transaction.commit()?;
-        Ok(GmailActionJob {
-            job_id: job.get(0),
-            triage_id: job.get(1),
-            action: job.get(2),
-            source_status: job.get(3),
-            attempts: job.get(4),
-        })
+        Ok(job)
     }
 
     /// Complete both halves of local state atomically after Gmail is known to
     /// be at the requested location. Replaying a completed job is harmless.
     pub fn complete_gmail_action(&self, job_id: i64) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let mut transaction = conn.transaction()?;
-        let row = transaction.query_opt(
-            &format!(
-                "SELECT triage_id, action, state FROM {}.gmail_action_jobs
-                 WHERE job_id = $1 FOR UPDATE",
-                self.schema
-            ),
-            &[&job_id],
-        )?;
-        let Some(row) = row else {
+        let transaction = conn.transaction()?;
+        let Some((id, action, state)) = transaction
+            .query_row(
+                &format!(
+                    "SELECT triage_id, action, state FROM {}_gmail_action_jobs
+                     WHERE job_id = ?1",
+                    self.prefix
+                ),
+                params![&job_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
             return Ok(false);
         };
-        let id = row.get::<_, String>(0);
-        let action = row.get::<_, String>(1);
-        let state = row.get::<_, String>(2);
         if state == "completed" {
             return Ok(true);
         }
@@ -454,34 +487,38 @@ impl Store {
         let affected = match action.as_str() {
             "archive" => transaction.execute(
                 &format!(
-                    "UPDATE {}.triage_items SET
-                        status = 'archived', gmail_action = 'archive', gmail_action_at = now(),
-                        purge_after = NULL, gmail_location = 'archive', gmail_observed_at = now(),
-                        gmail_sync_status = 'synced', gmail_sync_error = NULL WHERE id = $1",
-                    self.schema
+                    "UPDATE {}_triage_items SET
+                        status = 'archived', gmail_action = 'archive', gmail_action_at = {now},
+                        purge_after = NULL, gmail_location = 'archive', gmail_observed_at = {now},
+                        gmail_sync_status = 'synced', gmail_sync_error = NULL WHERE id = ?1",
+                    self.prefix,
+                    now = axon_store::NOW
                 ),
-                &[&id],
+                params![&id],
             )?,
             "trash" => transaction.execute(
                 &format!(
-                    "UPDATE {}.triage_items SET
-                        status = 'trashed', gmail_action = 'trash', gmail_action_at = now(),
-                        purge_after = COALESCE(purge_after, now() + interval '30 days'),
-                        gmail_location = 'trash', gmail_observed_at = now(),
-                        gmail_sync_status = 'synced', gmail_sync_error = NULL WHERE id = $1",
-                    self.schema
+                    "UPDATE {}_triage_items SET
+                        status = 'trashed', gmail_action = 'trash', gmail_action_at = {now},
+                        purge_after = COALESCE(purge_after, {purge}),
+                        gmail_location = 'trash', gmail_observed_at = {now},
+                        gmail_sync_status = 'synced', gmail_sync_error = NULL WHERE id = ?1",
+                    self.prefix,
+                    now = axon_store::NOW,
+                    purge = axon_store::now_offset("'+30 days'")
                 ),
-                &[&id],
+                params![&id],
             )?,
             "restore" => transaction.execute(
                 &format!(
-                    "UPDATE {}.triage_items SET
-                        status = 'proposed', gmail_action = 'restore', gmail_action_at = now(),
-                        purge_after = NULL, gmail_location = 'inbox', gmail_observed_at = now(),
-                        gmail_sync_status = 'synced', gmail_sync_error = NULL WHERE id = $1",
-                    self.schema
+                    "UPDATE {}_triage_items SET
+                        status = 'proposed', gmail_action = 'restore', gmail_action_at = {now},
+                        purge_after = NULL, gmail_location = 'inbox', gmail_observed_at = {now},
+                        gmail_sync_status = 'synced', gmail_sync_error = NULL WHERE id = ?1",
+                    self.prefix,
+                    now = axon_store::NOW
                 ),
-                &[&id],
+                params![&id],
             )?,
             _ => return Err("stored Gmail action is invalid".into()),
         };
@@ -490,12 +527,13 @@ impl Store {
         }
         transaction.execute(
             &format!(
-                "UPDATE {}.gmail_action_jobs SET
-                    state = 'completed', updated_at = now(), completed_at = now(), last_error = NULL
-                 WHERE job_id = $1",
-                self.schema
+                "UPDATE {}_gmail_action_jobs SET
+                    state = 'completed', updated_at = {now}, completed_at = {now}, last_error = NULL
+                 WHERE job_id = ?1",
+                self.prefix,
+                now = axon_store::NOW
             ),
-            &[&job_id],
+            params![&job_id],
         )?;
         transaction.commit()?;
         Ok(true)
@@ -508,25 +546,32 @@ impl Store {
     ) -> Result<String, Box<dyn std::error::Error>> {
         let bounded_error = error.chars().take(240).collect::<String>();
         let mut conn = self.conn()?;
-        let mut transaction = conn.transaction()?;
-        let row = transaction.query_opt(
-            &format!(
-                "UPDATE {}.gmail_action_jobs SET
-                    attempts = attempts + 1,
-                    state = CASE WHEN attempts + 1 >= 5 THEN 'abandoned' ELSE 'queued' END,
-                    last_error = $2, updated_at = now(),
-                    next_attempt = now() + interval '1 minute' * LEAST(attempts + 1, 5)
-                 WHERE job_id = $1 AND state = 'queued'
-                 RETURNING triage_id, state",
-                self.schema
-            ),
-            &[&job_id, &bounded_error],
-        )?;
-        let Some(row) = row else {
+        let transaction = conn.transaction()?;
+        // `LEAST(attempts + 1, 5)` becomes SQLite's two-argument `MIN`, and the
+        // whole `now() + interval '1 minute' * n` becomes one `now_offset` with a
+        // computed modifier -- so the deadline lands in the canonical format the
+        // column's other values are in.
+        let Some((triage_id, state)) = transaction
+            .query_row(
+                &format!(
+                    "UPDATE {}_gmail_action_jobs SET
+                        attempts = attempts + 1,
+                        state = CASE WHEN attempts + 1 >= 5 THEN 'abandoned' ELSE 'queued' END,
+                        last_error = ?2, updated_at = {now},
+                        next_attempt = {backoff}
+                     WHERE job_id = ?1 AND state = 'queued'
+                     RETURNING triage_id, state",
+                    self.prefix,
+                    now = axon_store::NOW,
+                    backoff = axon_store::now_offset("'+' || MIN(attempts + 1, 5) || ' minutes'")
+                ),
+                params![&job_id, &bounded_error],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        else {
             return Err("Gmail action job is not queued".into());
         };
-        let triage_id = row.get::<_, String>(0);
-        let state = row.get::<_, String>(1);
         let sync_status = if state == "abandoned" {
             "attention"
         } else {
@@ -534,11 +579,11 @@ impl Store {
         };
         transaction.execute(
             &format!(
-                "UPDATE {}.triage_items SET gmail_sync_status = $1, gmail_sync_error = $2
-                 WHERE id = $3",
-                self.schema
+                "UPDATE {}_triage_items SET gmail_sync_status = ?1, gmail_sync_error = ?2
+                 WHERE id = ?3",
+                self.prefix
             ),
-            &[&sync_status, &bounded_error, &triage_id],
+            params![&sync_status, &bounded_error, &triage_id],
         )?;
         transaction.commit()?;
         Ok(state)
@@ -552,47 +597,53 @@ impl Store {
         id: &str,
     ) -> Result<GmailActionJob, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let mut transaction = conn.transaction()?;
-        let row = transaction.query_opt(
-            &format!(
-                "SELECT job_id, triage_id, action, source_status
-                 FROM {}.gmail_action_jobs
-                 WHERE triage_id = $1 AND state = 'abandoned'
-                 ORDER BY job_id DESC LIMIT 1 FOR UPDATE",
-                self.schema
-            ),
-            &[&id],
-        )?;
-        let Some(row) = row else {
+        let transaction = conn.transaction()?;
+        let Some(job) = transaction
+            .query_row(
+                &format!(
+                    "SELECT job_id, triage_id, action, source_status
+                     FROM {}_gmail_action_jobs
+                     WHERE triage_id = ?1 AND state = 'abandoned'
+                     ORDER BY job_id DESC LIMIT 1",
+                    self.prefix
+                ),
+                params![&id],
+                |row| {
+                    Ok(GmailActionJob {
+                        job_id: row.get(0)?,
+                        triage_id: row.get(1)?,
+                        action: row.get(2)?,
+                        source_status: row.get(3)?,
+                        attempts: 0,
+                    })
+                },
+            )
+            .optional()?
+        else {
             return Err("no Gmail action needs operator attention".into());
         };
-        let job_id = row.get::<_, i64>(0);
+        let job_id = job.job_id;
         transaction.execute(
             &format!(
-                "UPDATE {}.gmail_action_jobs SET
+                "UPDATE {}_gmail_action_jobs SET
                     state = 'queued', attempts = 0, last_error = NULL,
-                    next_attempt = now(), updated_at = now(), completed_at = NULL
-                 WHERE job_id = $1",
-                self.schema
+                    next_attempt = {now}, updated_at = {now}, completed_at = NULL
+                 WHERE job_id = ?1",
+                self.prefix,
+                now = axon_store::NOW
             ),
-            &[&job_id],
+            params![&job_id],
         )?;
         transaction.execute(
             &format!(
-                "UPDATE {}.triage_items SET gmail_sync_status = 'queued', gmail_sync_error = NULL
-                 WHERE id = $1",
-                self.schema
+                "UPDATE {}_triage_items SET gmail_sync_status = 'queued', gmail_sync_error = NULL
+                 WHERE id = ?1",
+                self.prefix
             ),
-            &[&id],
+            params![&id],
         )?;
         transaction.commit()?;
-        Ok(GmailActionJob {
-            job_id,
-            triage_id: row.get(1),
-            action: row.get(2),
-            source_status: row.get(3),
-            attempts: 0,
-        })
+        Ok(job)
     }
 
     /// Cancel only an abandoned job. Queued jobs may already be in flight in
@@ -603,33 +654,38 @@ impl Store {
         id: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let mut transaction = conn.transaction()?;
-        let row = transaction.query_opt(
-            &format!(
-                "UPDATE {}.gmail_action_jobs SET
-                    state = 'canceled', updated_at = now(), completed_at = now()
-                 WHERE job_id = (
-                    SELECT job_id FROM {}.gmail_action_jobs
-                    WHERE triage_id = $1 AND state = 'abandoned'
-                    ORDER BY job_id DESC LIMIT 1
-                 )
-                 RETURNING triage_id",
-                self.schema, self.schema
-            ),
-            &[&id],
-        )?;
-        if row.is_none() {
+        let transaction = conn.transaction()?;
+        let canceled = transaction
+            .query_row(
+                &format!(
+                    "UPDATE {}_gmail_action_jobs SET
+                        state = 'canceled', updated_at = {now}, completed_at = {now}
+                     WHERE job_id = (
+                        SELECT job_id FROM {}_gmail_action_jobs
+                        WHERE triage_id = ?1 AND state = 'abandoned'
+                        ORDER BY job_id DESC LIMIT 1
+                     )
+                     RETURNING triage_id",
+                    self.prefix,
+                    self.prefix,
+                    now = axon_store::NOW
+                ),
+                params![&id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if canceled.is_none() {
             return Ok(false);
         }
         transaction.execute(
             &format!(
-                "UPDATE {}.triage_items SET
+                "UPDATE {}_triage_items SET
                     gmail_sync_status = CASE WHEN gmail_location IS NULL THEN NULL ELSE 'synced' END,
                     gmail_sync_error = NULL
-                 WHERE id = $1",
-                self.schema
+                 WHERE id = ?1",
+                self.prefix
             ),
-            &[&id],
+            params![&id],
         )?;
         transaction.commit()?;
         Ok(true)
@@ -639,55 +695,54 @@ impl Store {
         &self,
         limit: i64,
     ) -> Result<Vec<GmailActionJob>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        Ok(conn.query_all(
             &format!(
                 "SELECT job_id, triage_id, action, source_status, attempts
-                 FROM {}.gmail_action_jobs
-                 WHERE state = 'queued' AND next_attempt <= now()
-                 ORDER BY next_attempt, job_id LIMIT $1",
-                self.schema
+                 FROM {}_gmail_action_jobs
+                 WHERE state = 'queued' AND next_attempt <= {now}
+                 ORDER BY next_attempt, job_id LIMIT ?1",
+                self.prefix,
+                now = axon_store::NOW
             ),
-            &[&limit.clamp(1, 100)],
-        )?;
-        Ok(rows
-            .iter()
-            .map(|row| GmailActionJob {
-                job_id: row.get(0),
-                triage_id: row.get(1),
-                action: row.get(2),
-                source_status: row.get(3),
-                attempts: row.get(4),
-            })
-            .collect())
+            params![limit.clamp(1, 100)],
+            |row| {
+                Ok(GmailActionJob {
+                    job_id: row.get(0)?,
+                    triage_id: row.get(1)?,
+                    action: row.get(2)?,
+                    source_status: row.get(3)?,
+                    attempts: row.get(4)?,
+                })
+            },
+        )?)
     }
 
     pub fn gmail_reconcile_candidates(
         &self,
         limit: i64,
     ) -> Result<Vec<GmailReconcileCandidate>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        Ok(conn.query_all(
             &format!(
-                "SELECT id, status FROM {}.triage_items t
+                "SELECT id, status FROM {}_triage_items t
                  WHERE status <> 'dismissed'
                    AND NOT EXISTS (
-                     SELECT 1 FROM {}.gmail_action_jobs j
+                     SELECT 1 FROM {}_gmail_action_jobs j
                      WHERE j.triage_id = t.id AND j.state IN ('queued','abandoned')
                    )
                  ORDER BY gmail_observed_at ASC NULLS FIRST, last_seen DESC
-                 LIMIT $1",
-                self.schema, self.schema
+                 LIMIT ?1",
+                self.prefix, self.prefix
             ),
-            &[&limit.clamp(1, 500)],
-        )?;
-        Ok(rows
-            .iter()
-            .map(|row| GmailReconcileCandidate {
-                triage_id: row.get(0),
-                status: row.get(1),
-            })
-            .collect())
+            params![limit.clamp(1, 500)],
+            |row| {
+                Ok(GmailReconcileCandidate {
+                    triage_id: row.get(0)?,
+                    status: row.get(1)?,
+                })
+            },
+        )?)
     }
 
     pub fn observe_gmail_location(
@@ -698,26 +753,28 @@ impl Store {
         if !matches!(location, "inbox" | "archive" | "trash") {
             return Err("Gmail location must be inbox, archive, or trash".into());
         }
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let affected = conn.execute(
             &format!(
-                "UPDATE {}.triage_items SET
+                "UPDATE {}_triage_items SET
                     status = CASE
-                      WHEN $1 = 'trash' THEN 'trashed'
-                      WHEN $1 = 'archive' THEN 'archived'
+                      WHEN ?1 = 'trash' THEN 'trashed'
+                      WHEN ?1 = 'archive' THEN 'archived'
                       WHEN status IN ('archived','trashed','missing','executed') THEN 'proposed'
                       ELSE status
                     END,
                     purge_after = CASE
-                      WHEN $1 = 'trash' THEN COALESCE(purge_after, now() + interval '30 days')
+                      WHEN ?1 = 'trash' THEN COALESCE(purge_after, {purge})
                       ELSE NULL
                     END,
-                    gmail_location = $1, gmail_observed_at = now(),
+                    gmail_location = ?1, gmail_observed_at = {now},
                     gmail_sync_status = 'synced', gmail_sync_error = NULL
-                 WHERE id = $2",
-                self.schema
+                 WHERE id = ?2",
+                self.prefix,
+                now = axon_store::NOW,
+                purge = axon_store::now_offset("'+30 days'")
             ),
-            &[&location, &id],
+            params![&location, &id],
         )?;
         Ok(affected > 0)
     }
@@ -730,22 +787,24 @@ impl Store {
         let mut transaction = conn.transaction()?;
         transaction.execute(
             &format!(
-                "UPDATE {}.gmail_action_jobs SET
-                    state = 'canceled', updated_at = now(), completed_at = now()
-                 WHERE triage_id = $1 AND state IN ('queued','abandoned')",
-                self.schema
+                "UPDATE {}_gmail_action_jobs SET
+                    state = 'canceled', updated_at = {now}, completed_at = {now}
+                 WHERE triage_id = ?1 AND state IN ('queued','abandoned')",
+                self.prefix,
+                now = axon_store::NOW
             ),
-            &[&id],
+            params![&id],
         )?;
         let affected = transaction.execute(
             &format!(
-                "UPDATE {}.triage_items SET
-                    status = 'missing', gmail_location = 'missing', gmail_observed_at = now(),
+                "UPDATE {}_triage_items SET
+                    status = 'missing', gmail_location = 'missing', gmail_observed_at = {now},
                     gmail_sync_status = 'synced', gmail_sync_error = NULL
-                 WHERE id = $1",
-                self.schema
+                 WHERE id = ?1",
+                self.prefix,
+                now = axon_store::NOW
             ),
-            &[&id],
+            params![&id],
         )?;
         transaction.commit()?;
         Ok(affected > 0)
@@ -755,54 +814,59 @@ impl Store {
     /// own Trash retention; this cleanup is strictly Axon's local copy.
     pub fn purge_expired_trashed(&self) -> Result<u64, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let mut transaction = conn.transaction()?;
+        let transaction = conn.transaction()?;
         transaction.execute(
             &format!(
-                "DELETE FROM {schema}.content_cloud_jobs
+                "DELETE FROM {prefix}_content_cloud_jobs
                  WHERE source = 'mail' AND item_id IN (
-                    SELECT id FROM {schema}.triage_items
-                    WHERE status IN ('trashed','missing') AND purge_after <= now()
+                    SELECT id FROM {prefix}_triage_items
+                    WHERE status IN ('trashed','missing') AND purge_after <= {now}
                  )",
-                schema = self.schema
+                prefix = self.prefix,
+                now = axon_store::NOW
             ),
-            &[],
+            [],
         )?;
         transaction.execute(
             &format!(
-                "DELETE FROM {schema}.content_cloud_derivatives
+                "DELETE FROM {prefix}_content_cloud_derivatives
                  WHERE source = 'mail' AND item_id IN (
-                    SELECT id FROM {schema}.triage_items
-                    WHERE status IN ('trashed','missing') AND purge_after <= now()
+                    SELECT id FROM {prefix}_triage_items
+                    WHERE status IN ('trashed','missing') AND purge_after <= {now}
                  )",
-                schema = self.schema
+                prefix = self.prefix,
+                now = axon_store::NOW
             ),
-            &[],
+            [],
         )?;
         let purged = transaction.execute(
             &format!(
-                "DELETE FROM {}.triage_items
-                 WHERE status IN ('trashed','missing') AND purge_after <= now()",
-                self.schema
+                "DELETE FROM {}_triage_items
+                 WHERE status IN ('trashed','missing') AND purge_after <= {now}",
+                self.prefix,
+                now = axon_store::NOW
             ),
-            &[],
+            [],
         )?;
         transaction.commit()?;
-        Ok(purged)
+        Ok(purged as u64)
     }
 
     pub fn get_triage_status(
         &self,
         id: &str,
     ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let row = conn.query_opt(
-            &format!(
-                "SELECT status FROM {}.triage_items WHERE id = $1",
-                self.schema
-            ),
-            &[&id],
-        )?;
-        Ok(row.map(|r| r.get::<_, String>(0)))
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT status FROM {}_triage_items WHERE id = ?1",
+                    self.prefix
+                ),
+                params![&id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
     }
 
     /// List triage items, optionally filtered by status, newest first.
@@ -810,59 +874,63 @@ impl Store {
         &self,
         status: Option<&str>,
     ) -> Result<Vec<TriageItem>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
+        // The `::text` casts on every timestamp column are gone: they are TEXT now.
         let base = format!(
-            "SELECT id, from_addr, subject, snippet, internal_date::text, stream, rationale,
-                    status, first_seen::text, last_seen::text,
+            "SELECT id, from_addr, subject, snippet, internal_date, stream, rationale,
+                    status, first_seen, last_seen,
                     classification_method, classification_version, data_class,
                     data_class_rationale, data_classification_method,
                     data_classification_version, gmail_action,
-                    gmail_action_at::text, purge_after::text, gmail_location,
-                    gmail_observed_at::text, gmail_sync_status,
-                    (SELECT action FROM {schema}.gmail_action_jobs j
+                    gmail_action_at, purge_after, gmail_location,
+                    gmail_observed_at, gmail_sync_status,
+                    (SELECT action FROM {prefix}_gmail_action_jobs j
                      WHERE j.triage_id = t.id AND j.state IN ('queued','abandoned')
                      ORDER BY job_id DESC LIMIT 1),
-                    gmail_sync_error, waiting, waiting_at::text
-             FROM {schema}.triage_items t",
-            schema = self.schema
+                    gmail_sync_error, waiting, waiting_at
+             FROM {prefix}_triage_items t",
+            prefix = self.prefix
         );
-        let rows = match status {
-            Some(s) => conn.query(
-                &format!("{base} WHERE status = $1 ORDER BY internal_date DESC NULLS LAST"),
-                &[&s],
+        Ok(match status {
+            Some(s) => conn.query_all(
+                &format!("{base} WHERE status = ?1 ORDER BY internal_date DESC NULLS LAST"),
+                params![&s],
+                row_to_triage,
             )?,
-            None => conn.query(
+            None => conn.query_all(
                 &format!("{base} ORDER BY internal_date DESC NULLS LAST"),
-                &[],
+                [],
+                row_to_triage,
             )?,
-        };
-        Ok(rows.iter().map(row_to_triage).collect())
+        })
     }
 
     /// Read one mail proposal for the shared content reader. Gmail-specific
     /// category and action state stays on `triage_items`; the HTTP adapter
     /// projects it into the same content contract as a normal Feed item.
     pub fn get_triage(&self, id: &str) -> Result<Option<TriageItem>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let row = conn.query_opt(
-            &format!(
-                "SELECT id, from_addr, subject, snippet, internal_date::text, stream, rationale,
-                        status, first_seen::text, last_seen::text,
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT id, from_addr, subject, snippet, internal_date, stream, rationale,
+                        status, first_seen, last_seen,
                         classification_method, classification_version, data_class,
                         data_class_rationale, data_classification_method,
                         data_classification_version, gmail_action,
-                        gmail_action_at::text, purge_after::text, gmail_location,
-                        gmail_observed_at::text, gmail_sync_status,
-                        (SELECT action FROM {schema}.gmail_action_jobs j
+                        gmail_action_at, purge_after, gmail_location,
+                        gmail_observed_at, gmail_sync_status,
+                        (SELECT action FROM {prefix}_gmail_action_jobs j
                          WHERE j.triage_id = t.id AND j.state IN ('queued','abandoned')
                          ORDER BY job_id DESC LIMIT 1),
-                        gmail_sync_error, waiting, waiting_at::text
-                 FROM {schema}.triage_items t WHERE id = $1",
-                schema = self.schema
-            ),
-            &[&id],
-        )?;
-        Ok(row.as_ref().map(row_to_triage))
+                        gmail_sync_error, waiting, waiting_at
+                     FROM {prefix}_triage_items t WHERE id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&id],
+                row_to_triage,
+            )
+            .optional()?)
     }
 
     /// Replace the TELOS matches for one mail proposal. This is relevance
@@ -874,28 +942,29 @@ impl Store {
         matches: &[RelevanceMatch],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let mut transaction = conn.transaction()?;
+        let transaction = conn.transaction()?;
         transaction.execute(
             &format!(
-                "DELETE FROM {}.triage_relevance WHERE triage_id = $1",
-                self.schema
+                "DELETE FROM {}_triage_relevance WHERE triage_id = ?1",
+                self.prefix
             ),
-            &[&triage_id],
+            params![&triage_id],
         )?;
         for relevance in matches {
             transaction.execute(
                 &format!(
-                    "INSERT INTO {schema}.triage_relevance
+                    "INSERT INTO {prefix}_triage_relevance
                         (triage_id, profile_key, profile_label, score, rationale, mode,
                          profile_revision, scored_at)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,now())",
-                    schema = self.schema
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,{now})",
+                    prefix = self.prefix,
+                    now = axon_store::NOW
                 ),
-                &[
+                params![
                     &triage_id,
                     &relevance.profile_key,
                     &relevance.profile_label,
-                    &relevance.score,
+                    relevance.score,
                     &relevance.rationale,
                     &relevance.mode,
                     &relevance.profile_revision,
@@ -910,25 +979,24 @@ impl Store {
         &self,
         triage_id: &str,
     ) -> Result<Vec<RelevanceMatch>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        Ok(conn.query_all(
             &format!(
                 "SELECT profile_key, profile_label, score, rationale, mode, profile_revision
-                 FROM {}.triage_relevance WHERE triage_id = $1 ORDER BY score DESC",
-                self.schema
+                 FROM {}_triage_relevance WHERE triage_id = ?1 ORDER BY score DESC",
+                self.prefix
             ),
-            &[&triage_id],
-        )?;
-        Ok(rows
-            .iter()
-            .map(|row| RelevanceMatch {
-                profile_key: row.get(0),
-                profile_label: row.get(1),
-                score: row.get(2),
-                rationale: row.get(3),
-                mode: row.get(4),
-                profile_revision: row.get(5),
-            })
-            .collect())
+            params![&triage_id],
+            |row| {
+                Ok(RelevanceMatch {
+                    profile_key: row.get(0)?,
+                    profile_label: row.get(1)?,
+                    score: row.get(2)?,
+                    rationale: row.get(3)?,
+                    mode: row.get(4)?,
+                    profile_revision: row.get(5)?,
+                })
+            },
+        )?)
     }
 }
