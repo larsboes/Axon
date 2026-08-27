@@ -22,7 +22,7 @@
 #   tools/demo-up            start, seed, record
 #   tools/demo-up start      start only
 #   tools/demo-up down       stop the demo stack
-#   tools/demo-up reset      drop and recreate the demo database
+#   tools/demo-up reset      delete the demo database
 set -euo pipefail
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,9 +32,12 @@ AXON_ROOT="$(cd "$_here/.." && pwd)"
 export AXON_OVERLAY_ROOT="$AXON_ROOT/demo/overlay"
 source "$_here/lib/paths.sh"
 
-# A database this repository owns the name of. Overridable for CI, which hands its service
-# container's URL in rather than inventing a second convention.
-DEMO_DATABASE_URL="${AXON_DEMO_DATABASE_URL:-postgresql://axon:axon@127.0.0.1:5432/axon_demo}"
+# The demo's own database file, inside the tree this script already clears per run. Nothing
+# else needs configuring: since PRD Q45 (2026-08-27) a capability's store is a path, so the
+# demo needs a path rather than a server, a user, a password and a database name. Overridable
+# for a caller that wants the file somewhere else, which is what AXON_DB_PATH already means.
+DEMO_STATE="$AXON_ROOT/demo/state"
+DEMO_DB_PATH="${AXON_DB_PATH:-$DEMO_STATE/axon.db}"
 
 # Which capabilities the demo runs, read from the overlay rather than written twice.
 #
@@ -45,13 +48,13 @@ DEMO_DATABASE_URL="${AXON_DEMO_DATABASE_URL:-postgresql://axon:axon@127.0.0.1:54
 CAPABILITIES="$(toml_array capabilities "$AXON_MACHINE_TOML")"
 [ -n "$CAPABILITIES" ] || { echo "demo-up: no capabilities in $AXON_MACHINE_TOML" >&2; exit 1; }
 
-# Every capability reads $AXON_<NAME>_DATABASE_URL before its config file, so one exported
-# variable per capability is enough to move the whole stack onto a throwaway database without
-# any of them carrying a demo branch.
-for cap in $CAPABILITIES; do
-  var="AXON_$(printf '%s' "$cap" | tr '[:lower:]-' '[:upper:]_')_DATABASE_URL"
-  export "$var=$DEMO_DATABASE_URL"
-done
+# One variable for the whole stack, not one per capability. Every capability resolves its
+# store through axon_config::database_path(), which reads AXON_DB_PATH first — so this moves
+# all of them onto a throwaway database without any of them carrying a demo branch. It used
+# to be a loop exporting AXON_<NAME>_DATABASE_URL, which existed because each capability had
+# its own connection string; they share one file now, and cross-capability joins in the
+# recorded corpus depend on that being true here too.
+export AXON_DB_PATH="$DEMO_DB_PATH"
 # Finance keeps four things outside its database, each behind its own env var, and every one
 # of them has to land inside the demo tree rather than in an overlay. Discovered the expensive
 # way: a missing journal path is not a startup error, it is a 409 on the first write that
@@ -61,7 +64,6 @@ done
 #   investment_snapshot  the reviewed holdings document
 #   balance_snapshot     manual balances, which no bank export can know
 #   obsidian root/dir    the vault tools/demo-seed writes fictional subscription notes into
-DEMO_STATE="$AXON_ROOT/demo/state"
 export AXON_FINANCE_JOURNAL="$DEMO_STATE/demo.journal"
 export AXON_FINANCE_INVESTMENT_SNAPSHOT="$DEMO_STATE/holdings.json"
 export AXON_FINANCE_BALANCE_SNAPSHOT="$DEMO_STATE/balances.json"
@@ -211,12 +213,13 @@ refuse_if_running() {
   exit 1
 }
 
+# Deleting the file IS dropping the database. The sidecars go with it: a -wal left beside a
+# deleted database is the next run's first write replayed into a file that no longer explains
+# it. `start` clears the whole demo/state tree anyway, so this exists for the operator who
+# wants the database gone without a restart.
 reset_database() {
-  local admin="${DEMO_DATABASE_URL%/*}/postgres"
-  local name="${DEMO_DATABASE_URL##*/}"
-  psql "$admin" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$name\" WITH (FORCE)" >/dev/null
-  psql "$admin" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$name\"" >/dev/null
-  echo "demo-up: recreated database $name"
+  rm -f "$DEMO_DB_PATH" "$DEMO_DB_PATH-wal" "$DEMO_DB_PATH-shm"
+  echo "demo-up: deleted $DEMO_DB_PATH"
 }
 
 start_stack() {

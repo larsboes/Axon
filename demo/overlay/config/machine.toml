@@ -11,9 +11,9 @@
 # in somebody's real ledger.
 
 # The demo is recorded on a Linux CI runner. Nothing in the seeded set is platform-specific,
-# and container_runtime goes unused: tools/demo-up sets AXON_<CAP>_DATABASE_URL directly at
-# whatever Postgres the environment provides, rather than starting Axon's postgres capability.
-# A demonstration should not need a container runtime to build.
+# and container_runtime goes unused: tools/demo-up sets AXON_DB_PATH to a throwaway file under
+# demo/state, so the whole stack shares one database that outlives nothing. A demonstration
+# should not need a container runtime to build.
 os = "linux"
 container_runtime = "docker"
 
@@ -28,10 +28,10 @@ container_runtime = "docker"
 # source (tools/demo-up generates scouting.json from the manifest's origin), and Transit by
 # the endpoint overrides its HAFAS client already reads.
 #
-# postgres is deliberately NOT here even though all four declare `requires = ["postgres"]`.
-# The demo consumes a Postgres the environment already provides — GitHub Actions' service
-# container in CI, a scratch database locally — so there is no container for this overlay to
-# manage. Single line, per the tools/lib/toml.sh contract.
+# `store` is deliberately NOT here, though every capability below reads the shared database.
+# That manifest exists to own a backup contract (kind = "data"), and this deployment's
+# database is a scratch file deleted between runs — a backup surface for it would describe
+# something nobody could restore. Single line, per the tools/lib/toml.sh contract.
 capabilities = ["axon-status", "calendar", "comms", "finance", "scouting", "tasks", "transit", "trips"]
 
 # No [[state_mount]] blocks. A state mount records where a tool on a real machine actually

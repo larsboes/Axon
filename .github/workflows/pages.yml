@@ -53,28 +53,13 @@ jobs:
     name: build the page
     runs-on: ubuntu-latest
 
-    # The demo's store. Deliberately the service container rather than Axon's own postgres
-    # capability: the demo overlay enables no container runtime, and a demonstration should not
-    # need one to build. Same image and pin ci.yml's integration job uses.
-    services:
-      postgres:
-        image: postgres:17.10-alpine
-        env:
-          POSTGRES_USER: axon
-          POSTGRES_PASSWORD: axon
-          POSTGRES_DB: axon
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U axon"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
+    # No service container. The demo's store is a file tools/demo-up creates under demo/state,
+    # since PRD Q45 (2026-08-27) replaced the Postgres instance with one SQLite file — so the
+    # job that builds the demonstration needs neither a database service nor the variable that
+    # used to address one. The reason this was a service container rather than Axon's own
+    # postgres capability still holds for anything like it: the demo overlay enables no
+    # container runtime, and a demonstration should not need one to build.
     env:
-      # Read by tools/demo-up, which exports it to every seeded capability as
-      # AXON_<NAME>_DATABASE_URL. One variable, no per-capability config file.
-      AXON_DEMO_DATABASE_URL: postgresql://axon:axon@127.0.0.1:5432/axon
       # A GitHub Pages PROJECT site is served from /<repo>, and a static SPA has to be told:
       # its asset URLs and router links are baked in at build time.
       AXON_PAGES_BASE: /Axon

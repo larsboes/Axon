@@ -16,7 +16,7 @@ const REGISTRY: RegistryEntry[] = [
   { name: "tasks", kind: "process", scope: "capability", port: "8089", health_path: "/health", ready_path: "", proxy_api_only: "", proxy_extra: [] },
   { name: "transit", kind: "process", scope: "capability", port: "3000", health_path: "/health", ready_path: "", proxy_api_only: "", proxy_extra: ["/api"] },
   { name: "tools", kind: "process", scope: "spine", port: "", health_path: "", ready_path: "", proxy_api_only: "", proxy_extra: [] },
-  { name: "postgres", kind: "container", scope: "capability", port: "", health_path: "", ready_path: "", proxy_api_only: "", proxy_extra: [] },
+  { name: "store", kind: "data", scope: "capability", port: "", health_path: "", ready_path: "", proxy_api_only: "", proxy_extra: [] },
 ];
 
 const TABLE = routes(REGISTRY);
@@ -25,7 +25,7 @@ describe("routes", () => {
   test("skips the spine and anything with no HTTP surface", () => {
     const named = TABLE.map((r) => r.capability);
     expect(named).not.toContain("tools");
-    expect(named).not.toContain("postgres");
+    expect(named).not.toContain("store");
   });
 
   test("orders longest prefix first, so /finance/api cannot lose to /finance", () => {

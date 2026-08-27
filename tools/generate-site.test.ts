@@ -16,8 +16,8 @@ const MODEL = {
   schema: 1,
   generator: "tools/self.ts",
   units: [
-    { name: "axon-status", kind: "capability" as const, service: { kind: "process", requires: ["postgres"], port: "8082" } },
-    { name: "postgres", kind: "capability" as const, service: { kind: "container", requires: [], image: "postgres" } },
+    { name: "axon-status", kind: "capability" as const, service: { kind: "process", requires: ["tasks"], port: "8082" } },
+    { name: "vaultwarden", kind: "capability" as const, service: { kind: "container", requires: [], image: "vaultwarden/server" } },
     { name: "axon-config", kind: "lib" as const },
     { name: "writing", kind: "pack" as const },
     { name: "tools", kind: "spine" as const },
