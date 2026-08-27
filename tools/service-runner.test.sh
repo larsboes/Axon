@@ -258,8 +258,10 @@ printf 'overlay = "%s"\n' "$AC_OVERLAY" > "$AC_ROOT/axon.toml"
 printf 'os = "darwin"\ncontainer_runtime = "apple-container"\ncapabilities = ["volhog"]\n' \
   > "$AC_OVERLAY/config/machine.toml"
 
-# managed_volume is what makes container_init call the runtime at all — postgres is the only
-# capability that declares it today, and the only one that got stuck.
+# managed_volume is what makes container_init call the runtime at all. postgres was the only
+# capability that declared it, and the only one that got stuck; it was retired on 2026-08-27,
+# so this fixture is the whole of that coverage now — the image name below is the one the
+# behaviour was observed against, not a manifest that still exists.
 cat > "$AC_ROOT/capabilities/volhog/service.toml" <<'TOML'
 name = "volhog"
 image = "postgres"

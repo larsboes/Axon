@@ -303,15 +303,19 @@ if [ -n "$NETWORK_MODE" ]; then
 else
   for p in ${PORTS[@]+"${PORTS[@]}"}; do CONTAINER_ARGS+=(-p "$p"); done
 fi
-# One managed volume per capability, named "axon-$CAP-data" — matches today's only
-# consumer (postgres, one volume entry). Extend with a per-entry name if a second
+# One managed volume per capability, named "axon-$CAP-data" — the shape its only consumer
+# ever needed (postgres, one volume entry, retired 2026-08-27). NO manifest declares
+# managed_volume today; the branch is kept because the constraint that forced it has not
+# changed — apple-container's virtiofs bind mounts still refuse guest-side chown/chmod — and
+# the next image whose entrypoint chowns its data dir will need it on the first try.
+# tools/service-runner.test.sh keeps it exercised. Extend with a per-entry name if a
 # capability ever needs more than one managed volume.
 for v in ${VOLUMES[@]+"${VOLUMES[@]}"}; do
   host_path="${v%%:*}"
   container_path="${v#*:}"
   if [ "$MANAGED_VOLUME" = "true" ] && [ "$AXON_CONTAINER_RUNTIME" = "apple-container" ]; then
     # See schemas/service.toml.example — works around virtiofs bind mounts not
-    # supporting guest-side chown/chmod (confirmed on capabilities/postgres).
+    # supporting guest-side chown/chmod (confirmed on the postgres image, 2026-08).
     vol_name="axon-$CAP-data"
     container volume inspect "$vol_name" >/dev/null 2>&1 || container volume create "$vol_name" >/dev/null
     CONTAINER_ARGS+=(-v "$vol_name:$container_path")
