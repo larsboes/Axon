@@ -110,6 +110,37 @@ pub type Pool = r2d2::Pool<SqliteConnectionManager>;
 /// this code writes. A custom function would exist only inside this process.
 pub const NOW: &str = "strftime('%Y-%m-%d %H:%M:%f+00:00','now')";
 
+/// The canonical stamp's `strftime` format, written down once.
+///
+/// [`NOW`] spells it out rather than building from this, because a `const` cannot
+/// call `format!`; `the_two_now_forms_agree` pins the two together.
+///
+/// Public for the one case neither [`NOW`] nor [`now_offset`] covers: stamping a
+/// time that is not derived from the clock. comms writes Gmail's `internalDate`
+/// this way — `strftime('{STAMP_FORMAT}', ?5, 'unixepoch')` — where Postgres had
+/// `to_timestamp($5)`. Anything relative to now belongs in [`now_offset`].
+pub const STAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%f+00:00";
+
+/// [`NOW`] shifted by a SQLite date modifier, still in the canonical format.
+///
+/// For a deadline stored in a timestamp column — a retry time, a purge date —
+/// where Postgres wrote `now() + interval '30 days'`. `datetime('now','+30 days')`
+/// would be the obvious translation and is the wrong one: it renders 19 characters
+/// where the column holds 29, so one column would carry two widths and a plain
+/// `ORDER BY` on it would stop being time order.
+///
+/// ```text
+/// now_offset("'+30 days'")                              // a literal deadline
+/// now_offset("'+' || MIN(attempts + 1, 5) || ' minutes'") // a computed backoff
+/// ```
+///
+/// `modifier` is interpolated as a SQL expression, not bound, because a date
+/// modifier can be computed from the row being written. Every caller passes a
+/// literal built in this repo; it is not a place to put anything a user typed.
+pub fn now_offset(modifier: &str) -> String {
+    format!("strftime('{STAMP_FORMAT}','now',{modifier})")
+}
+
 /// Beyond this, a checkout gives up rather than hanging.
 ///
 /// r2d2's default is 30 seconds. That is a sane default for a batch job and the
@@ -340,7 +371,7 @@ impl QueryAll for Connection {
 
 #[cfg(test)]
 mod tests {
-    use super::{once_per_target, open_pool, QueryAll, NOW};
+    use super::{now_offset, once_per_target, open_pool, QueryAll, NOW, STAMP_FORMAT};
     use std::cell::Cell;
 
     /// Distinct per test: the guard is process-global by design, so two tests
@@ -521,6 +552,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ordered[2], "2026-08-27 10:00:00.000+00:00");
+    }
+
+    /// [`now_offset`] must render the same shape [`NOW`] does, or a column would
+    /// carry two widths and `ORDER BY` on it would stop being time order.
+    #[test]
+    fn the_two_now_forms_agree() {
+        let path = temp_database("now_offset");
+        let pool = open_pool(&path, "offset_probe", |_| Ok(())).unwrap();
+        let conn = pool.get().unwrap();
+
+        assert!(
+            NOW.contains(STAMP_FORMAT),
+            "NOW must spell out STAMP_FORMAT"
+        );
+
+        let (plain, shifted): (String, String) = conn
+            .query_row(
+                &format!("SELECT {NOW}, {}", now_offset("'+30 days'")),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(plain.len(), shifted.len(), "{plain} vs {shifted}");
+        assert!(shifted.ends_with("+00:00"));
+        assert!(shifted > plain, "+30 days must sort after now");
+
+        // A computed modifier is the other caller shape: comms builds a backoff
+        // from a column on the row it is writing.
+        let computed: String = conn
+            .query_row(
+                &format!(
+                    "SELECT {}",
+                    now_offset("'+' || MIN(3 + 1, 5) || ' minutes'")
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(computed.len(), 29, "got {computed}");
     }
 
     /// A path whose parent is a file, not a directory. `open` must say so

@@ -50,6 +50,22 @@ A SQL expression rather than a `now()` function registered on the connection, on
 operator with the `sqlite3` CLI open must be able to write the same value this code writes; a
 custom function would exist only inside this process.
 
+**A deadline uses `now_offset`, not `datetime`.** Postgres wrote `now() + interval '30 days'`
+for a purge date and `now() + interval '1 minute' * n` for a retry backoff.
+`datetime('now','+30 days')` is the obvious translation and the wrong one: it renders 19
+characters into a column holding 29, so one column would carry two widths and `ORDER BY` on it
+would stop being time order. `axon_store::now_offset` applies the same format to a shifted
+clock, and takes a SQL *expression* because a backoff is computed from the row being written:
+
+```rust
+now_offset("'+30 days'")                                  // a literal deadline
+now_offset("'+' || MIN(attempts + 1, 5) || ' minutes'")   // a computed one
+```
+
+`axon_store::STAMP_FORMAT` is the last of the three, for the one case neither covers: a stamp
+that is not derived from the clock. comms writes Gmail's `internalDate` with
+`strftime('{STAMP_FORMAT}', ?5, 'unixepoch')`, where Postgres had `to_timestamp($5)`.
+
 ## Every connection, on open
 
 ```
@@ -123,9 +139,49 @@ The translation table, settled while porting tasks, transit and trips:
 | `col::TEXT` on a TEXT column | drop the cast |
 | `$1::text IS NULL OR c = $1` | `?1 IS NULL OR c = ?1` |
 | `LIMIT $2` with a NULL bound | `LIMIT COALESCE(?2, -1)` |
+| `now() + interval '30 days'` | `axon_store::now_offset("'+30 days'")` |
+| `to_timestamp($5)` (epoch seconds) | `strftime('{STAMP_FORMAT}', ?5, 'unixepoch')` |
+| `col = ANY($3)` / `col <> ALL($3)` | `col IN (SELECT value FROM json_each(?3))`, list bound as JSON |
+| `LEAST(a, b)` / `GREATEST(a, b)` | `MIN(a, b)` / `MAX(a, b)` (two-argument scalar form) |
+| `power(2, n)` | `1 << n` |
+| `a IS DISTINCT FROM b` | `a IS NOT b` |
+| `left(x, 10)` | `substr(x, 1, 10)` |
+| `CURRENT_DATE - $1` | `date('now', '-' || ?1 || ' days')` |
+| `EXTRACT(HOUR FROM now())` | `CAST(strftime('%H','now') AS INTEGER)` |
+| `EXTRACT(EPOCH FROM (a - b))` | `(julianday(a) - julianday(b)) * 86400.0` |
+| `(ts AT TIME ZONE 'UTC')::date` | `substr(ts, 1, 10)` — the stamp is already UTC text |
+| `lpad($1, 8, '0')` | a second bound parameter, padded in Rust |
+| `information_schema.columns` | `pragma_table_info(?1)` |
+| `ILIKE` | `LIKE` (see the narrowing below) |
+| `SELECT ... FOR UPDATE` | nothing — SQLite has one writer, the transaction is the lock |
+| `pg_advisory_xact_lock(...)` | `BEGIN IMMEDIATE` on the connection doing the work |
+| `INSERT INTO t AS a … a.col` | `INSERT INTO t … t.col` — SQLite has no INSERT alias |
 
 That last row is not cosmetic. Postgres reads `LIMIT NULL` as `LIMIT ALL`; SQLite raises
 `datatype mismatch` and the read fails outright. A negative limit is SQLite's "no upper bound".
+
+### Four that are not translations
+
+**`ILIKE` narrows.** SQLite's `LIKE` already ignores case, but only over ASCII, so `MÜNCHEN`
+stops matching `München` where `münchen` still matches. ICU for one letter is not worth a
+build-time dependency; it is stated at each call site instead.
+
+**`RETURNING (xmax = 0)`.** Postgres answering "was that an insert or an update" for the row an
+upsert just touched. SQLite exposes no such system column and both one-statement substitutes are
+wrong: `changes()` reports 1 for either branch, and comparing a stored timestamp to `now()`
+calls the second of two writes inside one second new. It becomes insert-or-nothing followed by a
+conditional update, in one transaction (`capabilities/scouting/src/store.rs::propose_source`).
+
+**A data-modifying CTE.** `WITH x AS (INSERT … RETURNING …) SELECT …` has no SQLite form at all:
+INSERT is not allowed inside a WITH clause. It becomes the read and the write as two statements
+in one transaction, which is what the CTE was buying — `capabilities/comms/src/store/cloud.rs`
+queues a cloud job that way, still refusing a hash no review approved.
+
+**A constraint name in an error.** Postgres named a CHECK and quoted the name back; SQLite
+quotes the CHECK *expression*. A test asserting on the refusal has to match what the database
+says now (`content_cloud_derivatives_original_data_class_check` became
+`original_data_class IN ('public','personal')`), which is the same claim about the same
+constraint.
 
 Comparing a stored timestamp against `datetime('now', …)` is a text comparison between a
 29-character stamp and a 19-character one. It is still correct to the second, because the shorter
