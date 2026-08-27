@@ -335,7 +335,11 @@ verifies a new archive but does not list or delete older archives. A capability 
 `backup_sqlite` stays held while all declared host paths and the cold database copy are staged and
 the staged copy passes `integrity_check`; it resumes before compression or network access. Failure
 or interruption after the hold triggers a resume attempt and exits without shipping the staged
-snapshot.
+snapshot. A capability that declares `backup_sqlite_online` instead is never held: its database is
+copied open, through `sqlite3 .backup`, and the archive records how many tables and rows the copy
+held so a restore can check that they came back. That form is correct only where every reader is a
+host process on this machine, which is the condition SQLite's WAL states and a container behind a
+virtiofs mount does not meet.
 
 Retrieve that new archive into a private scratch location, compare its SHA-256 with the receipt,
 then run `tools/restore.sh <capability> <archive> --receipt <receipt.json>`. The explicit receipt
@@ -345,12 +349,11 @@ overlay as a destination. It separates the recovery stages explicitly:
 
 1. **Retrieve:** copy the named archive from the backup target without applying it.
 2. **Extract:** validate archive structure and capability identity, then extract into isolation.
-3. **Restore:** expand container-path archives with their recorded modes; restore `pg_dumpall.sql`
-   into a disposable container with no mounts or published ports.
-4. **Verify:** require declared roots, run SQLite integrity checking, and run deterministic
-   PostgreSQL database and role queries.
-5. **Clean up:** inspect and then remove the retained scratch tree manually. The tool removes its
-   disposable database automatically but never removes the extracted evidence.
+3. **Restore:** expand container-path archives with their recorded modes.
+4. **Verify:** require declared roots, run SQLite integrity checking on every declared database,
+   and compare an online copy's table and row counts against the numbers the archive recorded.
+5. **Clean up:** inspect and then remove the retained scratch tree manually. The tool never
+   removes the extracted evidence.
 
 The rehearsal ends in that isolated scratch tree. It never applies recovered files to the live
 overlay or starts a restored service against live paths. Any live replacement is a separate,

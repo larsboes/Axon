@@ -101,14 +101,32 @@ src="${2%/}"; dest="${3%/}"
 mkdir -p "$dest"
 /bin/cp -R "$src/." "$dest/"
 RSYNC
+# One mock, three verbs, dispatched on the SQL because backup.sh now calls sqlite3 to TAKE a
+# copy as well as to verify one. A mock that answered "ok" to everything would report the
+# live-copy path green while it took no copy at all.
 cat > "$MOCK_BIN/sqlite3" <<'SQLITE'
 #!/bin/bash
-printf 'sqlite:integrity\n' >> "$MOCK_LOG"
-if [ "${MOCK_FAIL_SQLITE:-0}" -eq 1 ]; then
-  echo corrupt
-  exit 1
-fi
-echo ok
+db="$1"; sql="${2:-}"
+case "$sql" in
+  .backup*)
+    printf 'sqlite:backup\n' >> "$MOCK_LOG"
+    [ "${MOCK_FAIL_BACKUP:-0}" -eq 0 ] || exit 1
+    dst="${sql#.backup \'}"; dst="${dst%\'}"
+    /bin/cp "$db" "$dst"
+    ;;
+  *integrity_check*)
+    printf 'sqlite:integrity\n' >> "$MOCK_LOG"
+    if [ "${MOCK_FAIL_SQLITE:-0}" -eq 1 ]; then
+      echo corrupt
+      exit 1
+    fi
+    echo ok
+    ;;
+  *group_concat*) printf 'sqlite:count-sql\n' >> "$MOCK_LOG"; echo "select 0 as c" ;;
+  *sqlite_master*) printf 'sqlite:tables\n' >> "$MOCK_LOG"; echo "${MOCK_TABLE_COUNT:-46}" ;;
+  *sum\(c\)*)     printf 'sqlite:rows\n' >> "$MOCK_LOG"; echo "${MOCK_ROW_COUNT:-469598}" ;;
+  *) echo 0 ;;
+esac
 SQLITE
 cat > "$MOCK_BIN/cp" <<'COPY'
 #!/bin/bash
@@ -177,7 +195,7 @@ reset_run() {
   : > "$MOCK_LOG"
   rm -f "$MOCK_RESUME_COUNT"
   unset MOCK_FAIL_RSYNC MOCK_FAIL_SQLITE MOCK_FAIL_STOP MOCK_FAIL_COLD_COPY \
-    MOCK_RESUME_FAILS MOCK_SIGNAL_PARENT
+    MOCK_FAIL_BACKUP MOCK_RESUME_FAILS MOCK_SIGNAL_PARENT
 }
 reset_remote() {
   rm -rf "$SCRATCH/remote/vaultwarden"
@@ -338,8 +356,72 @@ expect_fail_with "resume failure is explicit" "CRITICAL: failed to resume" "$BAC
 source_after="$(file_sha256 "$OVERLAY/data/vaultwarden/data/db.sqlite3")"
 [ "$source_before" = "$source_after" ] || fail "synthetic live database was modified"
 
+# --- backup_sqlite_online: the copy taken while every reader still has the file open -------
+# capabilities/store's contract (PRD Q45). The two properties that separate it from the cold
+# one above are asserted directly, because getting either wrong is silent: it must NOT stop
+# anything, and it must take the copy through sqlite3 rather than reading the file itself.
+mkdir -p "$FIXTURE/capabilities/store" "$OVERLAY/data/axon" "$SCRATCH/remote/store"
+cat > "$FIXTURE/capabilities/store/service.toml" <<'MANIFEST'
+kind = "data"
+name = "store"
+backup_sqlite_online = "data/axon/axon.db"
+backup_target = "synthetic-target"
+backup_retain = "2"
+MANIFEST
+printf 'os = "linux"\ncontainer_runtime = "docker"\ncapabilities = ["vaultwarden", "store"]\n' \
+  > "$OVERLAY/config/machine.toml"
+printf 'SHARED DATABASE\n' > "$OVERLAY/data/axon/axon.db"
+printf 'write-ahead log\n' > "$OVERLAY/data/axon/axon.db-wal"
+
+reset_run
+export MOCK_TIMESTAMP=20260106T030303Z
+expect_pass "live sqlite backup" "$BACKUP" store
+if grep -q '^service:' "$MOCK_LOG"; then
+  fail "the live copy held the service down; log said: $(tr '\n' '|' < "$MOCK_LOG")"
+fi
+assert_order 'sqlite:backup' 'sqlite:integrity'
+[ "$(grep -c '^sqlite:backup$' "$MOCK_LOG")" = 1 ] || fail "the copy was not taken through sqlite3 .backup"
+
+store_archive="$(find "$SCRATCH/remote/store" -name 'store-*.tar.gz' | head -1)"
+[ -n "$store_archive" ] || fail "no store archive was shipped"
+if [ -n "$store_archive" ]; then
+  meta="$(tar -xOzf "$store_archive" ./axon-backup.toml)"
+  printf '%s' "$meta" | grep -q 'sqlite_online = "data/axon/axon.db"' \
+    || fail "the archive contract does not name the live database"
+  # The counts a restore compares against. Without them a replayed-into-nothing archive
+  # would pass integrity_check and read as a successful restore.
+  printf '%s' "$meta" | grep -q 'sqlite_tables = "46"' || fail "table count not recorded"
+  printf '%s' "$meta" | grep -q 'sqlite_rows = "469598"' || fail "row count not recorded"
+  # The WAL sidecar is not staged: `.backup` checkpoints into the copy, so an archive
+  # carrying one would mean the copy was a file read after all.
+  tar -tzf "$store_archive" | grep -q 'axon.db-wal' && fail "a WAL sidecar reached the archive"
+fi
+grep -q '"contents": "sqlite_online"' "$OVERLAY/backup/receipts/store.json" \
+  || fail "the receipt does not describe a live database copy"
+
+# The falsifier for the branch above: a failed .backup must not ship an archive.
+reset_run
+rm -rf "$SCRATCH/remote/store"; mkdir -p "$SCRATCH/remote/store"
+export MOCK_TIMESTAMP=20260107T030303Z MOCK_FAIL_BACKUP=1
+expect_fail_with "a failed live copy is fatal" "sqlite3 .backup failed" "$BACKUP" store
+[ -z "$(find "$SCRATCH/remote/store" -mindepth 1 -print -quit)" ] \
+  || fail "a failed live copy shipped an archive"
+unset MOCK_FAIL_BACKUP
+
+# A manifest cannot claim both contracts: one says a run stops the capability, the other
+# says it must not.
+cat > "$FIXTURE/capabilities/store/service.toml" <<'MANIFEST'
+kind = "data"
+name = "store"
+backup_sqlite = "data/axon/axon.db"
+backup_sqlite_online = "data/axon/axon.db"
+backup_target = "synthetic-target"
+MANIFEST
+reset_run
+expect_fail_with "contradictory contracts are refused" "declare one" "$BACKUP" store
+
 if [ "$fails" -gt 0 ]; then
   echo "backup tests: $fails failure(s)"
   exit 1
 fi
-echo "backup tests: stream, coherent hold, no-prune, retention, and resume failures passed"
+echo "backup tests: stream, coherent hold, live copy, no-prune, retention, and resume failures passed"

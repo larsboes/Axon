@@ -9,45 +9,33 @@ trap 'rm -rf "$SCRATCH"' EXIT
 MOCK_BIN="$SCRATCH/bin"
 mkdir -p "$MOCK_BIN"
 
+# The counts are what a restore is checked against, so the mock answers them separately
+# from the integrity check — one that said "ok" to everything would report a database that
+# came back empty as a verified restore, which is the case these tests exist for.
+#
+# The first argument may be a `file:...?mode=ro` URI: restore.sh opens the copy read-only so
+# a verification run cannot write to what it is verifying. Strip it back to a path before
+# reading the planted content.
 cat > "$MOCK_BIN/sqlite3" <<'MOCK'
 #!/bin/sh
-if grep -q BROKEN "$1"; then
-  echo corrupt
-  exit 1
-fi
-echo ok
-MOCK
-
-cat > "$MOCK_BIN/docker" <<'MOCK'
-#!/bin/sh
-printf '%s\n' "$*" >> "$MOCK_RUNTIME_LOG"
-cmd="$1"; shift
-case "$cmd" in
-  run) echo restore-container ;;
-  exec)
-    [ "${1:-}" = "-i" ] && shift
-    shift # disposable container name
-    case "${1:-}" in
-      pg_isready) exit 0 ;;
-      psql)
-        # Order matters: the database-list query also mentions pg_database, so it
-        # has to be matched before the plain count.
-        case "$*" in
-          *datistemplate*) printf '%s\n' ${MOCK_PG_DATABASES-axon} ;;
-          *pg_database*) echo 3 ;;
-          *pg_roles*) echo 5 ;;
-          *pg_class*) echo "${MOCK_PG_COUNTS-25|469598}" ;;
-          *) cat >/dev/null; exit 0 ;;
-        esac
-        ;;
-    esac
+db="$1"; sql="${2:-}"
+path="${db#file:}"; path="${path%%\?*}"
+case "$sql" in
+  *integrity_check*)
+    if grep -q BROKEN "$path"; then
+      echo corrupt
+      exit 1
+    fi
+    echo ok
     ;;
-  rm) exit 0 ;;
+  *group_concat*) echo "select 0 as c" ;;
+  *sqlite_master*) echo "${MOCK_SQLITE_TABLES-46}" ;;
+  *"sum(c)"*)     echo "${MOCK_SQLITE_ROWS-469598}" ;;
+  *) echo ok ;;
 esac
 MOCK
-chmod +x "$MOCK_BIN/sqlite3" "$MOCK_BIN/docker"
+chmod +x "$MOCK_BIN/sqlite3"
 export PATH="$MOCK_BIN:$PATH"
-export MOCK_RUNTIME_LOG="$SCRATCH/runtime.log"
 
 fails=0
 expect_pass() {
@@ -83,7 +71,7 @@ created_at = "2026-01-02T030405Z"
 image = "vaultwarden/server"
 tag = "1.37.0-alpine"
 sqlite = "data/vaultwarden/data/db.sqlite3"
-pg_dumpall = "false"
+sqlite_online = ""
 backup_paths = ["data/vaultwarden/data", "data/vaultwarden/tls"]
 backup_container_paths = []
 META
@@ -123,8 +111,8 @@ tar czf "$SCRATCH/missing.tar.gz" -C "$missing_stage" .
 expect_fail_with "missing declared member" "required backup path is missing" \
   "$RESTORE" vaultwarden "$SCRATCH/missing.tar.gz" --destination "$SCRATCH/missing-out"
 
-expect_fail_with "wrong capability" "archive belongs to capability 'vaultwarden', not 'postgres'" \
-  "$RESTORE" postgres "$SCRATCH/vaultwarden.tar.gz" --destination "$SCRATCH/wrong-out"
+expect_fail_with "wrong capability" "archive belongs to capability 'vaultwarden', not 'store'" \
+  "$RESTORE" store "$SCRATCH/vaultwarden.tar.gz" --destination "$SCRATCH/wrong-out"
 
 broken_stage="$SCRATCH/broken-stage"
 mkdir -p "$broken_stage"
@@ -151,7 +139,7 @@ created_at = "2026-01-02T030405Z"
 image = "ghcr.io/home-assistant/home-assistant"
 tag = "2026.7.4"
 sqlite = ""
-pg_dumpall = "false"
+sqlite_online = ""
 backup_paths = []
 backup_container_paths = ["/config"]
 META
@@ -163,29 +151,31 @@ case "$(uname -s)" in
 esac
 [ "$restored_mode" = 750 ] || { echo "FAIL: container-path mode was $restored_mode, expected 750"; fails=$((fails + 1)); }
 
-postgres_stage="$SCRATCH/postgres-stage"
-mkdir -p "$postgres_stage"
-printf '%s\n' 'select 1;' > "$postgres_stage/pg_dumpall.sql"
-cat > "$postgres_stage/axon-backup.toml" <<'META'
+store_stage="$SCRATCH/store-stage"
+mkdir -p "$store_stage/data/axon"
+printf '%s\n' 'SHARED DATABASE' > "$store_stage/data/axon/axon.db"
+cat > "$store_stage/axon-backup.toml" <<'META'
 format = "1"
-capability = "postgres"
+capability = "store"
 created_at = "2026-01-02T030405Z"
-image = "postgres"
-tag = "17.10-alpine"
+image = ""
+tag = ""
 sqlite = ""
-pg_dumpall = "true"
+sqlite_online = "data/axon/axon.db"
+sqlite_tables = "46"
+sqlite_rows = "469598"
 backup_paths = []
 backup_container_paths = []
 META
-tar czf "$SCRATCH/postgres.tar.gz" -C "$postgres_stage" .
-expect_pass "disposable PostgreSQL restore" "$RESTORE" postgres "$SCRATCH/postgres.tar.gz" \
-  --destination "$SCRATCH/postgres-out" --runtime docker
-grep -qF -- '--network none' "$MOCK_RUNTIME_LOG" \
-  || { echo "FAIL: disposable Docker restore did not disable networking"; fails=$((fails + 1)); }
-if grep '^run ' "$MOCK_RUNTIME_LOG" | grep -Eq -- '(^| )(-v|--volume|-p|--publish)( |$)'; then
-  echo "FAIL: disposable PostgreSQL restore mounted or published host resources"
-  fails=$((fails + 1))
-fi
+tar czf "$SCRATCH/store.tar.gz" -C "$store_stage" .
+expect_pass "live-copy restore" "$RESTORE" store "$SCRATCH/store.tar.gz" \
+  --destination "$SCRATCH/store-out"
+
+# Read-only, and it matters: a verification that journalled the copy on open would modify
+# the artifact it exists to check, and the next run would verify a different file.
+output="$("$RESTORE" store "$SCRATCH/store.tar.gz" --destination "$SCRATCH/store-ro-out" 2>&1)"
+printf '%s' "$output" | grep -qF "46 table(s), 469598 row(s)" || {
+  echo "FAIL: restore should report what it counted"; echo "$output"; fails=$((fails + 1)); }
 
 legacy_stage="$SCRATCH/legacy-stage"
 mkdir -p "$legacy_stage/data/vaultwarden/data" "$legacy_stage/data/vaultwarden/tls"
@@ -197,66 +187,63 @@ expect_fail_with "legacy archive is explicit" "pass --allow-legacy" \
 expect_pass "known legacy archive" "$RESTORE" vaultwarden "$SCRATCH/vaultwarden-20260102T030405Z.tar.gz" \
   --destination "$SCRATCH/legacy-out" --allow-legacy
 
-# A restored cluster always has template0/template1/postgres and the default
-# roles, so the database and role counts alone report success for a dump that
-# replayed into nothing. These pin the contents check that closes that.
-make_pg_archive() { # <name> [extra-manifest-lines]
-  stage="$SCRATCH/pg-$1-stage"
-  mkdir -p "$stage"
-  printf '%s\n' 'select 1;' > "$stage/pg_dumpall.sql"
-  {
-    printf 'format = "1"\ncapability = "postgres"\ncreated_at = "2026-01-02T030405Z"\n'
-    printf 'image = "postgres"\ntag = "17.10-alpine"\nsqlite = ""\npg_dumpall = "true"\n'
-    [ $# -ge 2 ] && printf '%s\n' "$2"
-    printf 'backup_paths = []\nbackup_container_paths = []\n'
-  } > "$stage/axon-backup.toml"
-  tar czf "$SCRATCH/pg-$1.tar.gz" -C "$stage" .
-}
-
-make_pg_archive recorded 'pg_user_tables = "25"
-pg_total_rows = "469598"'
-MOCK_PG_COUNTS='25|469598' expect_pass "recorded contents restored exactly" \
-  "$RESTORE" postgres "$SCRATCH/pg-recorded.tar.gz" --destination "$SCRATCH/pg-recorded-out" --runtime docker
-MOCK_PG_COUNTS='25|469598' output="$("$RESTORE" postgres "$SCRATCH/pg-recorded.tar.gz" \
-  --destination "$SCRATCH/pg-recorded-out2" --runtime docker 2>&1)"
-printf '%s' "$output" | grep -qF "25 user table(s), 469598 row(s)" || {
-  echo "FAIL: restore should report what it counted"; echo "$output"; fails=$((fails + 1)); }
-
-MOCK_PG_COUNTS='25|469000' expect_fail_with "short row count is caught" \
+# A copy that opens and passes integrity_check proves the pages are consistent and nothing
+# about whether the rows came back — an EMPTY database is internally perfect. These pin the
+# contents check that closes that, which is the one thing a restore rehearsal is for.
+MOCK_SQLITE_ROWS=469000 expect_fail_with "short row count is caught" \
   "restored 469000 row(s), archive recorded 469598" \
-  "$RESTORE" postgres "$SCRATCH/pg-recorded.tar.gz" --destination "$SCRATCH/pg-short-out" --runtime docker
+  "$RESTORE" store "$SCRATCH/store.tar.gz" --destination "$SCRATCH/store-short-out"
 
-MOCK_PG_COUNTS='24|469598' expect_fail_with "missing table is caught" \
-  "restored 24 user table(s), archive recorded 25" \
-  "$RESTORE" postgres "$SCRATCH/pg-recorded.tar.gz" --destination "$SCRATCH/pg-missing-out" --runtime docker
+MOCK_SQLITE_TABLES=45 expect_fail_with "missing table is caught" \
+  "restored 45 table(s), archive recorded 46" \
+  "$RESTORE" store "$SCRATCH/store.tar.gz" --destination "$SCRATCH/store-missing-out"
 
-# The exact failure the old check could not see: everything replayed into an
-# empty cluster, and pg_database/pg_roles still answer non-zero.
-make_pg_archive legacy
-MOCK_PG_COUNTS='0|0' expect_fail_with "empty restore is caught without a recorded expectation" \
-  "the dump replayed into nothing" \
-  "$RESTORE" postgres "$SCRATCH/pg-legacy.tar.gz" --destination "$SCRATCH/pg-empty-out" --runtime docker
+# An archive from before the counts were recorded. It still has to contain something.
+no_counts_stage="$SCRATCH/store-nocounts-stage"
+mkdir -p "$no_counts_stage/data/axon"
+printf '%s\n' 'SHARED DATABASE' > "$no_counts_stage/data/axon/axon.db"
+{
+  printf 'format = "1"\ncapability = "store"\ncreated_at = "2026-01-02T030405Z"\n'
+  printf 'image = ""\ntag = ""\nsqlite = ""\nsqlite_online = "data/axon/axon.db"\n'
+  printf 'backup_paths = []\nbackup_container_paths = []\n'
+} > "$no_counts_stage/axon-backup.toml"
+tar czf "$SCRATCH/store-nocounts.tar.gz" -C "$no_counts_stage" .
+MOCK_SQLITE_TABLES=0 expect_fail_with "an empty database is caught without a recorded expectation" \
+  "the copy came back empty" \
+  "$RESTORE" store "$SCRATCH/store-nocounts.tar.gz" --destination "$SCRATCH/store-empty-out"
+expect_pass "archive without recorded contents still restores" \
+  "$RESTORE" store "$SCRATCH/store-nocounts.tar.gz" --destination "$SCRATCH/store-nocounts-out"
 
-MOCK_PG_COUNTS='25|469598' expect_pass "archive without recorded contents still restores" \
-  "$RESTORE" postgres "$SCRATCH/pg-legacy.tar.gz" --destination "$SCRATCH/pg-legacy-out" --runtime docker
+# A corrupt copy fails on the integrity check, before any count is compared.
+broken_store="$SCRATCH/store-broken-stage"
+mkdir -p "$broken_store/data/axon"
+printf '%s\n' 'BROKEN' > "$broken_store/data/axon/axon.db"
+cp "$store_stage/axon-backup.toml" "$broken_store/axon-backup.toml"
+tar czf "$SCRATCH/store-broken.tar.gz" -C "$broken_store" .
+expect_fail_with "a corrupt live copy is caught" "failed integrity_check" \
+  "$RESTORE" store "$SCRATCH/store-broken.tar.gz" --destination "$SCRATCH/store-broken-out"
 
-# --- container-runtime preflight (#163) ------------------------------------------------------
-# Verifying a PostgreSQL dump runs a disposable instance. The runtime check used to live inside
-# verify_postgres, reached only after a destination was created and the archive extracted into it,
-# so the one operation whose whole purpose is proving a backup is recoverable announced its
-# missing dependency at the very end. `podman` stands in for an uninstalled runtime: this suite
-# stubs `docker` on PATH and nothing stubs podman.
-if command -v podman >/dev/null 2>&1; then
-  echo "NOTE: reduced coverage on this host — podman is installed, so it cannot stand in for an absent runtime"
-else
-  PREFLIGHT_DEST="$SCRATCH/pg-preflight-out"
-  expect_fail_with "an absent container runtime is caught before anything is created" \
-    "which is not on PATH" \
-    "$RESTORE" postgres "$SCRATCH/pg-legacy.tar.gz" --destination "$PREFLIGHT_DEST" --runtime podman
-  # The half that makes it a preflight rather than merely an earlier error message.
-  [ ! -e "$PREFLIGHT_DEST" ] || {
-    echo "FAIL: the destination was created before the dependency check ran"; fails=$((fails + 1)); }
-fi
+# --- retired contract (PRD Q45) --------------------------------------------------------------
+# A pg_dumpall archive was verified by replaying it into a disposable PostgreSQL container.
+# The capability and its image pin are gone, so this checkout cannot rehearse one — and
+# rehearsing against some other Postgres would be a different check wearing this one's name.
+# Refused BEFORE a destination exists, which is the property the old runtime preflight had
+# (#163): the operation that proves a backup is recoverable must not announce that it cannot
+# after creating a directory and extracting into it.
+pg_stage="$SCRATCH/pg-stage"
+mkdir -p "$pg_stage"
+printf '%s\n' 'select 1;' > "$pg_stage/pg_dumpall.sql"
+{
+  printf 'format = "1"\ncapability = "store"\ncreated_at = "2026-01-02T030405Z"\n'
+  printf 'image = ""\ntag = ""\nsqlite = ""\nsqlite_online = "data/axon/axon.db"\n'
+  printf 'backup_paths = []\nbackup_container_paths = []\n'
+} > "$pg_stage/axon-backup.toml"
+tar czf "$SCRATCH/pg-retired.tar.gz" -C "$pg_stage" .
+PG_DEST="$SCRATCH/pg-retired-out"
+expect_fail_with "a PostgreSQL archive is refused by name" "was retired on 2026-08-27" \
+  "$RESTORE" store "$SCRATCH/pg-retired.tar.gz" --destination "$PG_DEST"
+[ ! -e "$PG_DEST" ] || {
+  echo "FAIL: the destination was created before the archive was refused"; fails=$((fails + 1)); }
 
 if [ "$fails" -gt 0 ]; then
   echo "restore tests: $fails failure(s)"

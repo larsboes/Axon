@@ -1,8 +1,9 @@
 #!/bin/bash
 # tools/backup.sh — capability data backup, driven by the capability's own
 # service.toml [backup] declaration (same "commands as data" split as
-# service-runner.sh). Takes a COLD SQLite copy with the capability held down (never
-# reaches into a live DB from the host — see the backup_sqlite block), tars the declared
+# service-runner.sh). Takes a COLD SQLite copy with the capability held down, or a LIVE
+# one through sqlite3's own backup API where every reader is a host process
+# (backup_sqlite vs backup_sqlite_online — see those two blocks), tars the declared
 # paths, and ships a timestamped tarball to a remote host with retention. The remote is
 # a systems.toml id; its private coordinates (host/ssh_user/backup_root) live in the
 # overlay's systems.local.toml.
@@ -24,7 +25,7 @@ esac
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$TOOLS_DIR/lib/paths.sh"                 # AXON_ROOT, AXON_PERSONAL_ROOT, toml_*
-source "$TOOLS_DIR/lib/platform.sh"              # AXON_CONTAINER_RUNTIME (pg_dumpall exec)
+source "$TOOLS_DIR/lib/platform.sh"              # AXON_CONTAINER_RUNTIME (container-path exec)
 source "$TOOLS_DIR/lib/external-ref.sh"          # capability_provider — whose data is this?
 # Best-effort: make the vault SSH agent available even if not launched from an
 # interactive shell (shared with init.zsh). No-op if the app isn't running.
@@ -57,11 +58,14 @@ fi
 
 TARGET_ID="$(toml_get backup_target "$MANIFEST")"
 SQLITE_REL="$(toml_get backup_sqlite "$MANIFEST")"
-PG_DUMPALL="$(toml_get backup_pg_dumpall "$MANIFEST")"
-PG_DUMPALL="${PG_DUMPALL:-false}"
-# The container name, read with the other manifest fields rather than inside the
-# pg_dumpall block: two staging paths now exec into the container, and a variable
-# defined in the branch that happens to run first is a trap for the second.
+# The same database, copied while it is open. Declared instead of backup_sqlite by a
+# capability whose readers are host processes rather than a container: then every
+# connection IS on one host, which is the condition SQLite's WAL requires and the exact
+# one a virtiofs bind mount fails (the cold-copy block below carries that story).
+SQLITE_ONLINE_REL="$(toml_get backup_sqlite_online "$MANIFEST")"
+# The container name, read with the other manifest fields rather than inside the branch
+# that uses it: a variable defined in the branch that happens to run first is a trap for
+# the second.
 NAME="$(toml_get name "$MANIFEST")"; NAME="${NAME:-$CAP}"
 RETAIN="$(toml_get backup_retain "$MANIFEST")"; RETAIN="${RETAIN:-14}"
 PATHS=()
@@ -80,17 +84,33 @@ for p in ${PATHS[@]+"${PATHS[@]}"}; do
 done
 if [ -n "$SQLITE_REL" ]; then
   safe_relative "$SQLITE_REL" || { echo "backup.sh: unsafe SQLite path declaration: $SQLITE_REL" >&2; exit 1; }
-  [ "${#CPATHS[@]}" -eq 0 ] && [ "$PG_DUMPALL" != "true" ] || {
-    echo "backup.sh: backup_sqlite cannot be combined with container paths or pg_dumpall in one coherent snapshot" >&2
+  [ "${#CPATHS[@]}" -eq 0 ] || {
+    echo "backup.sh: backup_sqlite cannot be combined with container paths in one coherent snapshot" >&2
     exit 1
   }
+fi
+if [ -n "$SQLITE_ONLINE_REL" ]; then
+  safe_relative "$SQLITE_ONLINE_REL" || { echo "backup.sh: unsafe SQLite path declaration: $SQLITE_ONLINE_REL" >&2; exit 1; }
+  # The two are opposite claims about the same file — one says a run must hold the
+  # capability down, the other says it must not — so a manifest declaring both is refused
+  # rather than resolved by whichever branch runs first.
+  [ -z "$SQLITE_REL" ] || {
+    echo "backup.sh: backup_sqlite and backup_sqlite_online are contradictory; declare one" >&2
+    exit 1
+  }
+  # `.backup '<path>'` is a dot-command argument, quoted inside the SQL string, so a single
+  # quote in the staging path would end that string early. Refused rather than escaped: the
+  # path comes from a tracked manifest and has no business containing one.
+  case "$SQLITE_ONLINE_REL" in
+    *"'"*) echo "backup.sh: SQLite path may not contain a single quote: $SQLITE_ONLINE_REL" >&2; exit 1 ;;
+  esac
 fi
 for cp in ${CPATHS[@]+"${CPATHS[@]}"}; do
   case "$cp" in /*) ;; *) echo "backup.sh: container backup path must be absolute: $cp" >&2; exit 1 ;; esac
   safe_relative "${cp#/}" || { echo "backup.sh: unsafe container backup path declaration: $cp" >&2; exit 1; }
 done
 
-# The container runtime, resolved once — pg_dumpall and backup_container_paths both need it.
+# The container runtime, resolved once — backup_container_paths needs it.
 runtime_exec() {
   case "$AXON_CONTAINER_RUNTIME" in
     apple-container) echo "container exec $NAME" ;;
@@ -110,11 +130,11 @@ fi
 if [ "$STREAM" -eq 0 ]; then
   [ -n "$TARGET_ID" ] || { echo "backup.sh: $CAP has no backup_target in service.toml" >&2; exit 1; }
 fi
-# A capability declares its data as host paths, paths read from inside the container, an
-# in-container pg dump, or a mix. Postgres has no host path at all under apple-container
-# (managed volume), so requiring backup_paths would make it permanently un-backupable.
-[ "${#PATHS[@]}" -gt 0 ] || [ "${#CPATHS[@]}" -gt 0 ] || [ "$PG_DUMPALL" = "true" ] || {
-  echo "backup.sh: $CAP declares no backup_paths, backup_container_paths or backup_pg_dumpall in service.toml" >&2; exit 1; }
+# A capability declares its data as host paths, paths read from inside the container, a
+# live database copy, or a mix. capabilities/store declares only the third: its file has no
+# containing directory worth tarring and no container to read it from.
+[ "${#PATHS[@]}" -gt 0 ] || [ "${#CPATHS[@]}" -gt 0 ] || [ -n "$SQLITE_ONLINE_REL" ] || {
+  echo "backup.sh: $CAP declares no backup_paths, backup_container_paths or backup_sqlite_online in service.toml" >&2; exit 1; }
 
 # Resolve every local precondition before a SQLite capability is held. A missing source
 # or verifier discovered after stop would create avoidable downtime, and shipping an
@@ -132,6 +152,15 @@ if [ -n "$SQLITE_REL" ]; then
     echo "backup.sh: declared SQLite database is missing: $SQLITE_REL" >&2; exit 1; }
   command -v sqlite3 >/dev/null 2>&1 || {
     echo "backup.sh: sqlite3 is required to verify a cold SQLite backup" >&2; exit 1; }
+fi
+# The same preconditions, and one more: here sqlite3 TAKES the copy as well as verifying
+# it. A deployment that moved its database with AXON_DB_PATH and left the manifest behind
+# fails on the missing source rather than shipping an archive of nothing.
+if [ -n "$SQLITE_ONLINE_REL" ]; then
+  [ -f "$AXON_PERSONAL_ROOT/$SQLITE_ONLINE_REL" ] || {
+    echo "backup.sh: declared SQLite database is missing: $SQLITE_ONLINE_REL" >&2; exit 1; }
+  command -v sqlite3 >/dev/null 2>&1 || {
+    echo "backup.sh: sqlite3 is required to take and verify a live SQLite backup" >&2; exit 1; }
 fi
 
 # Remote coordinates are required only by push mode. Stream mode deliberately has no
@@ -170,13 +199,12 @@ if [ -n "$SQLITE_REL" ]; then
     exit 1
   }
 fi
-if [ "${#CPATHS[@]}" -gt 0 ] || [ "$PG_DUMPALL" = "true" ]; then
+if [ "${#CPATHS[@]}" -gt 0 ]; then
   read -r -a PREFLIGHT_EXEC <<< "$(runtime_exec)"
   require_command "${PREFLIGHT_EXEC[0]}"
 fi
-if [ "$PG_DUMPALL" = "true" ]; then
+if [ -n "$SQLITE_ONLINE_REL" ]; then
   require_command head
-  require_command sed
 fi
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -225,7 +253,7 @@ rm -rf "$STAGE"; mkdir -p "$STAGE"
 
 stage_host_paths() {
   # Guard the expansion: under `set -u`, bash 3.2 treats "${EMPTY[@]}" as unbound.
-  # A pg_dumpall-only capability legitimately declares zero paths.
+  # A database-only capability legitimately declares zero paths.
   for p in "${PATHS[@]}"; do
     src="$AXON_PERSONAL_ROOT/$p"
     dest="$STAGE/$p"; mkdir -p "$(dirname "$dest")"
@@ -256,8 +284,8 @@ fi
 # denied on exactly those files: rsync exits 23 and the run aborts, which is the correct
 # outcome and also means the capability simply cannot be backed up from the host at all.
 #
-# Same reasoning as backup_pg_dumpall directly below: when the host cannot read the data
-# correctly, read it where it lives instead. Staged as a tar rather than extracted, so
+# Same reasoning the retired backup_pg_dumpall contract had: when the host cannot read the
+# data correctly, read it where it lives instead. Staged as a tar rather than extracted, so
 # ownership and modes survive the round trip — restoring a root-owned auth store as the
 # invoking user is the kind of quiet degradation that only surfaces during a restore.
 if [ "${#CPATHS[@]}" -gt 0 ]; then
@@ -287,9 +315,11 @@ fi
 # So: hold the capability down, copy the file cold, resume. A clean shutdown
 # checkpoints the WAL into the main DB, which is what makes a plain `cp` correct here --
 # the -wal/-shm are copied too only if the runtime left them behind. The alternatives
-# were weighed and rejected: no sqlite3 in the vaultwarden image (rules out the
-# pg_dumpall-style in-container dump), and vaultwarden's admin backup endpoint would
-# mean provisioning an ADMIN_TOKEN and exposing the admin panel just to take a copy.
+# were weighed and rejected: no sqlite3 in the vaultwarden image (rules out an
+# in-container dump), and vaultwarden's admin backup endpoint would mean provisioning an
+# ADMIN_TOKEN and exposing the admin panel just to take a copy. A LIVE `.backup` from the
+# host is the fourth, and it is the one that caused the outage — see backup_sqlite_online,
+# which is safe for the one reason this case is not: no container in between.
 # Cost of this approach: seconds of downtime per backup. Correctness beats uptime for
 # the thing that holds every other credential.
 if [ -n "$SQLITE_REL" ]; then
@@ -308,8 +338,12 @@ if [ -n "$SQLITE_REL" ]; then
 
   # A cold copy is only worth shipping if it opens. Verified on the COPY, never the
   # live file -- reading the original from here is the whole bug this replaced.
-  ic="$(sqlite3 "$db_dst" 'pragma integrity_check;' 2>&1 | head -1)"
-  [ "$ic" = "ok" ] || { echo "backup.sh: staged SQLite copy failed integrity_check: $ic" >&2; exit 1; }
+  #
+  # `|| true`: sqlite3 exits non-zero when the file is not a database at all, and under
+  # `set -e` a failing command substitution ended the run right here, with the reason
+  # captured in this variable and never printed. The run still fails; it says why now.
+  ic="$(sqlite3 "$db_dst" 'pragma integrity_check;' 2>&1 | head -1 || true)"
+  [ "$ic" = "ok" ] || { echo "backup.sh: staged SQLite copy failed integrity_check: ${ic:-unreadable}" >&2; exit 1; }
   echo "  integrity_check: ok"
 
   # Explicit resume before compression/shipment minimizes downtime. The EXIT trap keeps
@@ -317,43 +351,49 @@ if [ -n "$SQLITE_REL" ]; then
   resume_capability || exit 1
 fi
 
-# Postgres: a logical dump taken INSIDE the container is the only consistent
-# option — the data dir is a managed volume with no host path (apple-container),
-# and raw-copying a live cluster risks a torn backup either way. pg_dumpall (not
-# pg_dump) so roles and every database land in one restorable file.
-if [ "$PG_DUMPALL" = "true" ]; then
-  ENV_FILE_REL="$(toml_get env_file "$MANIFEST")"
-  PGUSER="postgres"
-  if [ -n "$ENV_FILE_REL" ] && [ -f "$AXON_PERSONAL_ROOT/$ENV_FILE_REL" ]; then
-    v="$(sed -n 's/^POSTGRES_USER=//p' "$AXON_PERSONAL_ROOT/$ENV_FILE_REL" | head -1)"
-    [ -n "$v" ] && PGUSER="$v"
-  fi
+# The shared store: one live copy through sqlite3's own backup API, with every capability
+# still reading the file. Not a raw `cp` (an open WAL makes that a torn snapshot) and not
+# the cold copy above (holding this file down means stopping nine capabilities to read one
+# file, which is an outage rather than a backup).
+#
+# The 2026-07-25 vaultwarden outage is the reason this is a separate field and not the
+# default: opening a database from the host while a CONTAINER has it open invalidates the
+# shared-memory index SQLite's WAL coordinates through, and every subsequent write comes
+# back as `disk I/O error`. The condition SQLite states is that every connection sits on
+# one host. A container behind virtiofs is not that; the capabilities reading this file
+# are, which is what makes the same command safe here and dangerous there.
+if [ -n "$SQLITE_ONLINE_REL" ]; then
+  echo "→ live sqlite copy: $SQLITE_ONLINE_REL"
+  db_src="$AXON_PERSONAL_ROOT/$SQLITE_ONLINE_REL"
+  db_dst="$STAGE/$SQLITE_ONLINE_REL"; mkdir -p "$(dirname "$db_dst")"
+  rm -f "$db_dst" "$db_dst-wal" "$db_dst-shm"
 
-  read -r -a EXEC <<< "$(runtime_exec)"
+  # `.backup` checkpoints the WAL into the copy, so no sidecar is staged and the archive
+  # holds one self-contained file. It retries internally while a writer holds the lock.
+  sqlite3 "$db_src" ".backup '$db_dst'" || {
+    echo "backup.sh: sqlite3 .backup failed on $SQLITE_ONLINE_REL — refusing to ship an incomplete copy" >&2; exit 1; }
+  [ -s "$db_dst" ] || {
+    echo "backup.sh: the live copy is empty — refusing to ship it as a backup" >&2; exit 1; }
 
-  echo "→ pg_dumpall from container '$NAME' (user: $PGUSER)"
-  # Fail loud on an unreachable/stopped container instead of shipping a 0-byte
-  # dump that looks like a successful backup.
-  "${EXEC[@]}" pg_isready -U "$PGUSER" >/dev/null 2>&1 || {
-    echo "backup.sh: postgres container '$NAME' not ready — refusing to ship an empty dump" >&2; exit 1; }
-  "${EXEC[@]}" pg_dumpall -U "$PGUSER" > "$STAGE/pg_dumpall.sql"
-  [ -s "$STAGE/pg_dumpall.sql" ] || {
-    echo "backup.sh: pg_dumpall produced an empty file — aborting" >&2; exit 1; }
-  echo "  dump: $(wc -c < "$STAGE/pg_dumpall.sql" | tr -d ' ') bytes"
+  # Verified on the COPY, never on the live file. Reading the original from here is the
+  # whole bug the block above describes.
+  # `|| true`: sqlite3 exits non-zero when the file is not a database at all, and under
+  # `set -e` a failing command substitution ends the run with the reason captured here and
+  # never printed.
+  ic="$(sqlite3 "$db_dst" 'pragma integrity_check;' 2>&1 | head -1 || true)"
+  [ "$ic" = "ok" ] || { echo "backup.sh: staged SQLite copy failed integrity_check: ${ic:-unreadable}" >&2; exit 1; }
+  echo "  integrity_check: ok"
 
-  # What the dump is supposed to contain, recorded now so restore can check that
-  # it actually came back. A non-empty .sql file only proves pg_dumpall wrote
-  # something; it says nothing about whether the rows survive a replay.
-  PG_COUNT_SQL="SELECT count(*)::text || '|' || coalesce(sum((xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', n.nspname, c.relname), false, true, '')))[1]::text::bigint), 0)::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema');"
-  PG_TABLES=0
-  PG_ROWS=0
-  for db in $("${EXEC[@]}" psql -U "$PGUSER" -d postgres -Atqc \
-                "select datname from pg_database where datallowconn and not datistemplate order by 1;"); do
-    pair="$("${EXEC[@]}" psql -U "$PGUSER" -d "$db" -Atqc "$PG_COUNT_SQL")"
-    PG_TABLES=$((PG_TABLES + ${pair%%|*}))
-    PG_ROWS=$((PG_ROWS + ${pair##*|}))
-  done
-  echo "  contents: $PG_TABLES user table(s), $PG_ROWS row(s)"
+  # What the copy is supposed to contain, recorded now so restore can check that it came
+  # back. A file that opens and passes integrity_check proves the pages are consistent; it
+  # says nothing about whether the rows are there. Same claim the retired pg_dumpall
+  # contract recorded, and the same reason: an empty database is internally perfect.
+  SQLITE_TABLES="$(sqlite3 "$db_dst" "select count(*) from sqlite_master where type = 'table' and name not like 'sqlite_%';")"
+  # One generated UNION ALL rather than a loop: bash 3.2 has no arithmetic over a stream,
+  # and a per-table sqlite3 invocation would open the file once per table.
+  count_sql="$(sqlite3 "$db_dst" "select coalesce(group_concat('select count(*) as c from \"' || name || '\"', ' union all '), 'select 0 as c') from sqlite_master where type = 'table' and name not like 'sqlite_%';")"
+  SQLITE_ROWS="$(sqlite3 "$db_dst" "select coalesce(sum(c), 0) from ($count_sql);")"
+  echo "  contents: $SQLITE_TABLES table(s), $SQLITE_ROWS row(s)"
 fi
 
 # The archive describes the historical backup contract it was made from. Restore checks
@@ -386,12 +426,14 @@ TAG="$(toml_get tag "$MANIFEST")"
   printf 'image = "%s"\n' "$IMAGE"
   printf 'tag = "%s"\n' "$TAG"
   printf 'sqlite = "%s"\n' "$SQLITE_REL"
-  printf 'pg_dumpall = "%s"\n' "$PG_DUMPALL"
-  # Optional and additive: absent on archives taken before 2026-08-02, which
-  # restore.sh handles rather than rejecting. No format bump for that reason.
-  if [ "$PG_DUMPALL" = "true" ]; then
-    printf 'pg_user_tables = "%s"\n' "$PG_TABLES"
-    printf 'pg_total_rows = "%s"\n' "$PG_ROWS"
+  printf 'sqlite_online = "%s"\n' "$SQLITE_ONLINE_REL"
+  # Optional and additive, which is why the format stays "1": an archive taken before the
+  # field existed simply does not carry it, and restore.sh checks non-emptiness instead of
+  # an exact match for those. The retired pg_dumpall contract recorded the same two numbers
+  # under pg_user_tables/pg_total_rows.
+  if [ -n "$SQLITE_ONLINE_REL" ]; then
+    printf 'sqlite_tables = "%s"\n' "$SQLITE_TABLES"
+    printf 'sqlite_rows = "%s"\n' "$SQLITE_ROWS"
   fi
   write_toml_array backup_paths ${PATHS[@]+"${PATHS[@]}"}
   write_toml_array backup_container_paths ${CPATHS[@]+"${CPATHS[@]}"}
@@ -511,7 +553,7 @@ mkdir -p "$RECEIPT_DIR"
 contents=""
 [ "${#PATHS[@]}" -gt 0 ] && contents="paths"
 [ "${#CPATHS[@]}" -gt 0 ] && contents="${contents:+$contents+}container_paths"
-[ "$PG_DUMPALL" = "true" ] && contents="${contents:+$contents+}pg_dumpall"
+[ -n "$SQLITE_ONLINE_REL" ] && contents="${contents:+$contents+}sqlite_online"
 cat > "$RECEIPT_DIR/$CAP.json" <<RECEIPT
 {
   "capability": "$CAP",

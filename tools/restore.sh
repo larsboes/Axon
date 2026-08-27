@@ -1,16 +1,14 @@
 #!/bin/bash
 # Restore and verify one tools/backup.sh archive without writing into live Axon state.
-# The extracted tree remains for inspection; PostgreSQL is rehearsed in a disposable
-# container with no host mounts or published ports. Bash 3.2-safe.
+# The extracted tree remains for inspection; a database in it is opened read-only and
+# checked against the contents the archive recorded. Bash 3.2-safe.
 set -euo pipefail
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$TOOLS_DIR/lib/paths.sh"
-# `does this stream contain X` without the answer depending on where the match sits (#42).
-source "$TOOLS_DIR/lib/pipe.sh"
 
 usage() {
-  echo "usage: restore.sh <capability> <archive.tar.gz> [--receipt <receipt.json>] [--destination <empty-dir>] [--runtime <apple-container|docker|podman>] [--allow-legacy]" >&2
+  echo "usage: restore.sh <capability> <archive.tar.gz> [--receipt <receipt.json>] [--destination <empty-dir>] [--allow-legacy]" >&2
   exit 1
 }
 
@@ -21,7 +19,6 @@ shift 2
 
 DEST_ARG=""
 RECEIPT=""
-RUNTIME=""
 ALLOW_LEGACY=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -32,10 +29,6 @@ while [ $# -gt 0 ]; do
     --destination)
       [ $# -ge 2 ] || usage
       DEST_ARG="$2"; shift 2
-      ;;
-    --runtime)
-      [ $# -ge 2 ] || usage
-      RUNTIME="$2"; shift 2
       ;;
     --allow-legacy)
       ALLOW_LEGACY=1; shift
@@ -54,23 +47,10 @@ MANIFEST="$AXON_ROOT/capabilities/$CAP/service.toml"
 ARCHIVE="$(cd "$(dirname "$ARCHIVE")" && pwd -P)/$(basename "$ARCHIVE")"
 
 WORK="$(mktemp -d "/tmp/axon-restore-check.XXXXXX")"
-RESTORE_CONTAINER=""
-RUNTIME_BIN=""
 DEST=""
 DEST_AUTO=0
 RESTORE_COMPLETE=0
 cleanup() {
-  if [ -n "$RESTORE_CONTAINER" ] && [ -n "$RUNTIME_BIN" ]; then
-    case "$RUNTIME" in
-      apple-container)
-        "$RUNTIME_BIN" stop "$RESTORE_CONTAINER" >/dev/null 2>&1 || true
-        "$RUNTIME_BIN" delete "$RESTORE_CONTAINER" >/dev/null 2>&1 || true
-        ;;
-      docker|podman)
-        "$RUNTIME_BIN" rm -f "$RESTORE_CONTAINER" >/dev/null 2>&1 || true
-        ;;
-    esac
-  fi
   rm -rf "$WORK"
   if [ "$DEST_AUTO" -eq 1 ] && [ "$RESTORE_COMPLETE" -ne 1 ] && [ -n "$DEST" ]; then
     rm -rf "$DEST"
@@ -167,29 +147,16 @@ OVERLAY_REAL="$(cd "$AXON_PERSONAL_ROOT" 2>/dev/null && pwd -P || true)"
 path_within "$DEST" "$AXON_REAL" && fail "destination may not be inside the Axon checkout"
 [ -n "$OVERLAY_REAL" ] && path_within "$DEST" "$OVERLAY_REAL" \
   && fail "destination may not be inside the active private overlay"
-# Container-runtime preflight, BEFORE the destination exists (#163). Verifying a PostgreSQL dump
-# means running a disposable instance to restore into, and until now the check for that runtime
-# lived inside verify_postgres — reached after a destination was created and the archive extracted
-# into it. So the one operation whose entire purpose is proving a backup is recoverable would
-# announce its missing dependency at the end, having already done the work.
+# Refused BEFORE the destination exists, for the reason the container preflight this replaces
+# existed (#163): the one operation whose purpose is proving a backup is recoverable must not
+# announce that it cannot, having already created a directory and extracted into it.
 #
-# `tar -tzf` only lists. Nothing is written, and nothing is trusted from it beyond "does this
-# archive claim a pg dump"; validate_tar below is still what gates extraction. stream_matches
-# rather than `grep -q`, because -q exits at the first hit, tar dies of SIGPIPE, and `set -o
-# pipefail` turns a FOUND into a failed pipeline — the same trap documented in service-runner.sh.
-if tar -tzf "$ARCHIVE" 2>/dev/null | stream_matches -E '(^|/)pg_dumpall\.sql$'; then
-  _pre_rt="$RUNTIME"
-  if [ -z "$_pre_rt" ]; then
-    source "$TOOLS_DIR/lib/platform.sh"
-    _pre_rt="$AXON_CONTAINER_RUNTIME"
-  fi
-  case "$_pre_rt" in
-    apple-container) _pre_rt_bin="container" ;;
-    docker|podman)   _pre_rt_bin="$_pre_rt" ;;
-    *) fail "this archive carries a PostgreSQL dump, and '$_pre_rt' is not a container runtime it can be verified with" ;;
-  esac
-  command -v "$_pre_rt_bin" >/dev/null 2>&1 || fail \
-    "this archive carries a PostgreSQL dump; verifying it needs '$_pre_rt_bin', which is not on PATH (tools/toolchain-check --workflow restore)"
+# A pg_dumpall archive was verified by replaying it into a disposable PostgreSQL container.
+# That capability was retired on 2026-08-27 (PRD Q45) and its image pin left with it, so this
+# checkout can no longer rehearse one — and rehearsing it against SOME other Postgres would be
+# a different check wearing this one's name. `tar -tzf` only lists; nothing is written here.
+if tar -tzf "$ARCHIVE" 2>/dev/null | grep -Eq '(^|/)pg_dumpall\.sql$'; then
+  fail "this archive carries a PostgreSQL dump, and the capability that produced it was retired on 2026-08-27 (PRD Q45). Verify it with the Axon revision that still declares the image"
 fi
 
 case "$DEST_NEEDS_CREATE" in
@@ -211,10 +178,11 @@ if [ -n "$META_MEMBER" ]; then
   IMAGE="$(toml_get image "$WORK/axon-backup.toml")"
   TAG="$(toml_get tag "$WORK/axon-backup.toml")"
   SQLITE_REL="$(toml_get sqlite "$WORK/axon-backup.toml")"
-  PG_DUMPALL="$(toml_get pg_dumpall "$WORK/axon-backup.toml")"
-  # Optional: only archives taken from 2026-08-02 on carry what the dump held.
-  EXPECT_TABLES="$(toml_get pg_user_tables "$WORK/axon-backup.toml")"
-  EXPECT_ROWS="$(toml_get pg_total_rows "$WORK/axon-backup.toml")"
+  SQLITE_ONLINE_REL="$(toml_get sqlite_online "$WORK/axon-backup.toml")"
+  # Optional: an archive taken before the field existed does not carry it, and is checked
+  # for non-emptiness instead of an exact match.
+  EXPECT_TABLES="$(toml_get sqlite_tables "$WORK/axon-backup.toml")"
+  EXPECT_ROWS="$(toml_get sqlite_rows "$WORK/axon-backup.toml")"
   PATHS=()
   while IFS= read -r line; do [ -n "$line" ] && PATHS+=("$line"); done < <(toml_array backup_paths "$WORK/axon-backup.toml")
   CPATHS=()
@@ -223,10 +191,10 @@ if [ -n "$META_MEMBER" ]; then
   CURRENT_IMAGE="$(toml_get image "$MANIFEST")"
   CURRENT_TAG="$(toml_get tag "$MANIFEST")"
   CURRENT_SQLITE="$(toml_get backup_sqlite "$MANIFEST")"
-  CURRENT_PG="$(toml_get backup_pg_dumpall "$MANIFEST")"; CURRENT_PG="${CURRENT_PG:-false}"
+  CURRENT_SQLITE_ONLINE="$(toml_get backup_sqlite_online "$MANIFEST")"
   [ "$IMAGE:$TAG" = "$CURRENT_IMAGE:$CURRENT_TAG" ] \
     || fail "archive image identity differs from the current tracked manifest; use the matching Axon revision"
-  [ "$SQLITE_REL:$PG_DUMPALL" = "$CURRENT_SQLITE:$CURRENT_PG" ] \
+  [ "$SQLITE_REL:$SQLITE_ONLINE_REL" = "$CURRENT_SQLITE:$CURRENT_SQLITE_ONLINE" ] \
     || fail "archive database contract differs from the current tracked manifest; use the matching Axon revision"
   [ "$(toml_array backup_paths "$WORK/axon-backup.toml")" = "$(toml_array backup_paths "$MANIFEST")" ] \
     || fail "archive path contract differs from the current tracked manifest; use the matching Axon revision"
@@ -243,16 +211,16 @@ else
   IMAGE="$(toml_get image "$MANIFEST")"
   TAG="$(toml_get tag "$MANIFEST")"
   SQLITE_REL="$(toml_get backup_sqlite "$MANIFEST")"
-  PG_DUMPALL="$(toml_get backup_pg_dumpall "$MANIFEST")"
+  SQLITE_ONLINE_REL="$(toml_get backup_sqlite_online "$MANIFEST")"
+  EXPECT_TABLES=""
+  EXPECT_ROWS=""
   PATHS=()
   while IFS= read -r line; do [ -n "$line" ] && PATHS+=("$line"); done < <(toml_array backup_paths "$MANIFEST")
   CPATHS=()
   while IFS= read -r line; do [ -n "$line" ] && CPATHS+=("$line"); done < <(toml_array backup_container_paths "$MANIFEST")
   echo "restore.sh: warning: legacy archive identity comes from its filename and the current manifest" >&2
 fi
-PG_DUMPALL="${PG_DUMPALL:-false}"
-
-[ "${#PATHS[@]}" -gt 0 ] || [ "${#CPATHS[@]}" -gt 0 ] || [ "$PG_DUMPALL" = "true" ] \
+[ "${#PATHS[@]}" -gt 0 ] || [ "${#CPATHS[@]}" -gt 0 ] || [ -n "$SQLITE_ONLINE_REL" ] \
   || fail "archive declares no restorable content"
 
 echo "→ archive: $(basename "$ARCHIVE")"
@@ -295,114 +263,48 @@ if [ "${#CPATHS[@]}" -gt 0 ]; then
   done
 fi
 
-qualified_image() {
-  ref="$IMAGE:$TAG"; first="${IMAGE%%/*}"
-  case "$RUNTIME" in
-    apple-container)
-      case "$first" in *.*|*:*|localhost) echo "$ref" ;; *) echo "docker.io/$ref" ;; esac
-      ;;
-    *) echo "$ref" ;;
-  esac
-}
+# The shared store's archive holds one file taken with `sqlite3 .backup`, so verification is
+# the file itself: it must open, it must be internally consistent, and it must hold what the
+# producer recorded. That third check is the one that matters. An EMPTY database passes
+# integrity_check perfectly, which is exactly how a backup of nothing reads as a successful
+# restore — the same trap the retired pg_dumpall contract recorded its counts to avoid.
+#
+# Read-only, and inside $DEST rather than anywhere near the live file: `file:...?mode=ro`
+# means a verification run cannot write to what it is verifying, and a WAL-less copy would
+# otherwise be journalled on first open.
+verify_sqlite_online() {
+  local db ic tables rows count_sql
+  db="$DEST/$SQLITE_ONLINE_REL"
+  [ -f "$db" ] || fail "declared SQLite database is missing from the archive: $SQLITE_ONLINE_REL"
+  command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 is required to verify the restored database"
 
-verify_postgres() {
-  [ -s "$DEST/pg_dumpall.sql" ] || fail "pg_dumpall.sql is missing or empty"
-  [ -n "$IMAGE" ] && [ -n "$TAG" ] || fail "PostgreSQL archive has no image identity"
-  if [ -z "$RUNTIME" ]; then
-    source "$TOOLS_DIR/lib/platform.sh"
-    RUNTIME="$AXON_CONTAINER_RUNTIME"
-  fi
-  case "$RUNTIME" in
-    apple-container) RUNTIME_BIN="container" ;;
-    docker|podman) RUNTIME_BIN="$RUNTIME" ;;
-    *) fail "unsupported container runtime '$RUNTIME'" ;;
-  esac
-  command -v "$RUNTIME_BIN" >/dev/null 2>&1 || fail "container runtime command not found: $RUNTIME_BIN"
-  if [ "$RUNTIME" = "apple-container" ] \
-    && ! "$RUNTIME_BIN" system status 2>/dev/null | stream_matches -E '^status[[:space:]]+running'; then
-    "$RUNTIME_BIN" system start >/dev/null
-  fi
+  # `|| true` is load-bearing. sqlite3 exits non-zero when the file is not a database at
+  # all, and under `set -e` a failing command substitution takes the script out right there —
+  # with the reason captured in this variable and never printed.
+  ic="$(sqlite3 "file:$db?mode=ro" 'pragma integrity_check;' 2>&1 | head -1 || true)"
+  [ "$ic" = "ok" ] || fail "restored SQLite database failed integrity_check: ${ic:-unreadable}"
+  echo "  SQLite integrity_check: ok"
 
-  RESTORE_CONTAINER="axon-restore-$CAP-$$"
-  RESTORE_ADMIN="axon_restore_admin"
-  image_ref="$(qualified_image)"
-  echo "→ disposable PostgreSQL restore ($RUNTIME, no mounts or published ports)"
-  RUN_ARGS=(-d --rm --name "$RESTORE_CONTAINER")
-  case "$RUNTIME" in
-    apple-container) RUN_ARGS+=(--no-dns) ;;
-    docker|podman) RUN_ARGS+=(--network none) ;;
-  esac
-  "$RUNTIME_BIN" run "${RUN_ARGS[@]}" \
-    -e POSTGRES_HOST_AUTH_METHOD=trust \
-    -e "POSTGRES_USER=$RESTORE_ADMIN" \
-    -e "POSTGRES_DB=$RESTORE_ADMIN" \
-    "$image_ref" >/dev/null
+  tables="$(sqlite3 "file:$db?mode=ro" "select count(*) from sqlite_master where type = 'table' and name not like 'sqlite_%';" 2>/dev/null || true)"
+  count_sql="$(sqlite3 "file:$db?mode=ro" "select coalesce(group_concat('select count(*) as c from \"' || name || '\"', ' union all '), 'select 0 as c') from sqlite_master where type = 'table' and name not like 'sqlite_%';" 2>/dev/null || true)"
+  rows="$(sqlite3 "file:$db?mode=ro" "select coalesce(sum(c), 0) from ($count_sql);" 2>/dev/null || true)"
+  case "$tables$rows" in ''|*[!0-9]*) fail "restored SQLite database could not be counted" ;; esac
+  echo "  restored contents: $tables table(s), $rows row(s)"
 
-  ready=0; attempt=0
-  while [ "$attempt" -lt 60 ]; do
-    if "$RUNTIME_BIN" exec "$RESTORE_CONTAINER" \
-      pg_isready -U "$RESTORE_ADMIN" -d "$RESTORE_ADMIN" >/dev/null 2>&1; then
-      ready=1; break
-    fi
-    sleep 1
-    attempt=$((attempt + 1))
-  done
-  [ "$ready" -eq 1 ] || fail "disposable PostgreSQL instance did not become ready"
-
-  if ! "$RUNTIME_BIN" exec -i "$RESTORE_CONTAINER" \
-    psql -U "$RESTORE_ADMIN" -d "$RESTORE_ADMIN" -v ON_ERROR_STOP=1 \
-    < "$DEST/pg_dumpall.sql" > "$WORK/postgres-restore.log" 2>&1; then
-    fail "pg_dumpall failed to restore into the disposable instance"
-  fi
-  database_count="$("$RUNTIME_BIN" exec "$RESTORE_CONTAINER" \
-    psql -U "$RESTORE_ADMIN" -d "$RESTORE_ADMIN" -Atqc \
-    'select count(*) from pg_database where datallowconn;' 2>/dev/null || true)"
-  role_count="$("$RUNTIME_BIN" exec "$RESTORE_CONTAINER" \
-    psql -U "$RESTORE_ADMIN" -d "$RESTORE_ADMIN" -Atqc \
-    'select count(*) from pg_roles;' 2>/dev/null || true)"
-  case "$database_count" in ''|*[!0-9]*|0) fail "restored PostgreSQL database query failed" ;; esac
-  case "$role_count" in ''|*[!0-9]*|0) fail "restored PostgreSQL role query failed" ;; esac
-  echo "  database and role sanity queries: passed"
-
-  # Those two counts are true of a completely empty cluster -- template0,
-  # template1, postgres and the default roles always exist -- so on their own
-  # they would report success for a dump that replayed into nothing. Count what
-  # actually came back instead.
-  count_sql="SELECT count(*)::text || '|' || coalesce(sum((xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', n.nspname, c.relname), false, true, '')))[1]::text::bigint), 0)::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema');"
-  restored_tables=0
-  restored_rows=0
-  for db in $("$RUNTIME_BIN" exec "$RESTORE_CONTAINER" \
-                psql -U "$RESTORE_ADMIN" -d "$RESTORE_ADMIN" -Atqc \
-                'select datname from pg_database where datallowconn and not datistemplate order by 1;' 2>/dev/null); do
-    pair="$("$RUNTIME_BIN" exec "$RESTORE_CONTAINER" \
-              psql -U "$RESTORE_ADMIN" -d "$db" -Atqc "$count_sql" 2>/dev/null || true)"
-    case "$pair" in
-      *'|'*)
-        restored_tables=$((restored_tables + ${pair%%|*}))
-        restored_rows=$((restored_rows + ${pair##*|}))
-        ;;
-    esac
-  done
-  echo "  restored contents: $restored_tables user table(s), $restored_rows row(s)"
-
-  # Archives from before 2026-08-02 carry no expectation. Those still have to
-  # contain something, but the exact comparison is skipped and said out loud
-  # rather than silently downgraded.
+  # An archive taken before the counts were recorded carries no expectation. It still has to
+  # contain something, and the downgrade is said out loud rather than applied silently.
   if [ -n "$EXPECT_TABLES" ] || [ -n "$EXPECT_ROWS" ]; then
-    [ "$restored_tables" = "$EXPECT_TABLES" ] || \
-      fail "restored $restored_tables user table(s), archive recorded $EXPECT_TABLES"
-    [ "$restored_rows" = "$EXPECT_ROWS" ] || \
-      fail "restored $restored_rows row(s), archive recorded $EXPECT_ROWS"
+    [ "$tables" = "$EXPECT_TABLES" ] || fail "restored $tables table(s), archive recorded $EXPECT_TABLES"
+    [ "$rows" = "$EXPECT_ROWS" ] || fail "restored $rows row(s), archive recorded $EXPECT_ROWS"
     echo "  matches the archive's recorded contents exactly"
   else
-    [ "$restored_tables" -gt 0 ] || \
-      fail "restored cluster has no user tables — the dump replayed into nothing"
+    [ "$tables" -gt 0 ] || fail "restored database has no tables — the copy came back empty"
     echo "  archive predates recorded contents; checked non-empty only"
   fi
 }
 
-if [ "$PG_DUMPALL" = "true" ]; then
-  verify_postgres
+if [ -n "$SQLITE_ONLINE_REL" ]; then
+  verify_sqlite_online
 fi
 
 echo "✓ restore verified in isolation"
