@@ -166,16 +166,21 @@ fn canonical_key(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
 /// actively wrong for the CLI half of these crates: `comms sweep` would open ten
 /// connections to run one query and close nine of them on exit.
 pub fn pool_for(path: &Path) -> Result<Pool, Box<dyn Error>> {
-    let key = canonical_key(path)?;
+    pool_for_key(&canonical_key(path)?)
+}
+
+/// `key` comes from [`canonical_key`], so callers that already hold one do not
+/// canonicalize twice — and the pool map cannot end up with two spellings.
+fn pool_for_key(key: &Path) -> Result<Pool, Box<dyn Error>> {
     let mut pools = pools()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    if let Some(existing) = pools.get(&key) {
+    if let Some(existing) = pools.get(key) {
         return Ok(existing.clone());
     }
 
-    let manager = SqliteConnectionManager::file(&key)
+    let manager = SqliteConnectionManager::file(key)
         .with_init(|conn: &mut Connection| conn.execute_batch(CONNECTION_PRAGMAS));
     let pool = r2d2::Pool::builder()
         .max_size(MAX_CONNECTIONS)
@@ -183,7 +188,7 @@ pub fn pool_for(path: &Path) -> Result<Pool, Box<dyn Error>> {
         .connection_timeout(CHECKOUT_TIMEOUT)
         .build(manager)?;
 
-    pools.insert(key, pool.clone());
+    pools.insert(key.to_path_buf(), pool.clone());
     Ok(pool)
 }
 
@@ -200,7 +205,7 @@ pub fn open_pool(
     ddl: impl FnOnce(&Connection) -> Result<(), Box<dyn Error>>,
 ) -> Result<Pool, Box<dyn Error>> {
     let key = canonical_key(path)?;
-    let pool = pool_for(&key)?;
+    let pool = pool_for_key(&key)?;
     let mut conn = pool.get()?;
     migrate_once(&mut conn, &key, prefix, ddl)?;
     drop(conn);
