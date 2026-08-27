@@ -85,7 +85,7 @@ which is the whole reason the original defect survived a green fixture suite.
 main.rs                  ── CLI binary ("scout"), one lib crate "scouting"
   server.rs               ── HTTP binary ("scout-server"), Axum: health, discovery,
                               source registry and persistent opportunity triage
-  config.rs               ── resolves interest_profile_dir / events_dir / database_url / port
+  config.rs               ── resolves interest_profile_dir / events_dir / database_path / port
   source.rs                   (overlay config, see below)
   adapters/{euro_hackathons,cfp_conferences,luma,meetup,transit_fare}.rs  ── one SourceAdapter impl each
   opportunity.rs           ── the shared Opportunity type (folded in as a module, not a
@@ -325,16 +325,22 @@ Mirrors `capabilities/printing/printctl.py`'s `_cfg_path()`/`load_cfg()` exactly
 Copy `scouting.config.example.json` to `$AXON_PERSONAL_ROOT/config/scouting.json` and fill
 in real values there; nothing personal is stored in Axon. Every field is optional — the tool
 runs against empty/local directories with zero config (interest-profile dir gets created if
-missing, events-dir cross-referencing is silently skipped if unset, `database_url` auto-builds
-from `axon-overlay/config/postgres.env`'s real values when unset — see `config.rs`'s
-`postgres_url_from_shared_env`). CLI args (`--database-url`, `--limit`, `--opp-embeddings`,
-etc.) always override whatever the config file resolves.
+missing, events-dir cross-referencing is silently skipped if unset). CLI args
+(`--database-path`, `--limit`, `--opp-embeddings`, etc.) always override whatever the config
+file resolves.
+
+The four tables live in the shared SQLite file — `AXON_DB_PATH`, else
+`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `scouting`, so they are
+`scouting_opportunities`, `scouting_links`, `scouting_source_state` and
+`scouting_proposed_sources` (`libs/axon-store/README.md`). PRD Q45 (2026-08-27) moved them
+there from a Postgres schema. The path is a deployment fact rather than a capability one, so
+a `database_url` left in `scouting.json` is ignored: a file per capability would drop the
+cross-capability correlation with `transit` that Phase 2 exists for.
 
 | Field | Was (LifeOS-mono) | Now |
 |---|---|---|
 | `interest_profile_dir` | hardcoded `{vault_root}/TELOS/Focus` | directory of markdown files (`summary:`/`current_focus:`/`> [!quote] Charter` convention, parsed generically — doesn't have to be an Obsidian vault) |
 | `events_dir` | hardcoded `{vault_root}/Atlas/Events` | any directory of markdown event notes; unset = vault-linking silently skipped |
-| `database_url` | `DATABASE_URL` env var, Postgres | `postgresql://…` connection string — explicit override, or auto-built from `axon-overlay/config/postgres.env` (the shared `capabilities/postgres` instance) |
 | `opp_embeddings_path` | `--opp-embeddings` CLI flag / `LIFEOS_ROOT`-relative default | CLI-arg-only still (hash-fallback embedding works with zero config, not worth a config knob) |
 | `sources[]` | hardcoded match arms in `main.rs` + `server.rs` | Config array of declared opportunity sources (adapter type, path/URL, glob patterns). Each entry resolves into a `SourceManifest` at startup; enabled sources run by default. `obsidian-markdown` accepts `opportunities_glob` + `opportunity_type`; `events_glob` remains compatible. See § Extending it above. |
 | `port` | `SCOUTING_PORT` env var | `AXON_PORT` (from `service.toml`, set by the runner) → `port` field → `8084` |
@@ -482,9 +488,9 @@ cargo run --manifest-path capabilities/scouting/Cargo.toml --bin scout -- \
   --adapter scholarship-radar --no-store
 ```
 
-**`--database-url`/`Config::database_url` embed a live credential — never `println!`/log the
-value directly.** `config::redact_database_url()` masks the password for any display purpose
-(error messages, the `store : …` startup line); every print site in `main.rs` goes through it.
+The store path is printed plainly wherever it used to be redacted: `Config::database_path`
+names a file, not a credential, so `config::redact_database_url()` is gone with the DSN it
+existed for.
 
 Interest-profile vectors resolve in three steps (`score.rs::load_telos_profiles`,
 `src/embed.rs`): (1) if a `telos_vectors.json` cache exists inside `interest_profile_dir`
@@ -568,7 +574,7 @@ scout --promote-calendar --timezone Europe/Berlin --dry-run     # what would lan
 scout --promote-calendar --timezone Europe/Berlin               # saved luma events -> calendar
 
 cargo build --locked --release --bin scout                      # what service-runner builds
-SCOUTING_TEST_DATABASE_URL=... cargo test -p scouting -- postgres_tests::
+cargo test -p scouting db_tests::                                # the store suite alone
 
 cargo run --bin scout-server                                    # HTTP API: health, sources, scan, backlog, status
 cargo build --locked --release --bin scout-server               # what service-runner builds
@@ -634,18 +640,12 @@ stops, so none of the three falls through now.
   and regex-extracts a `__NEXT_DATA__`/Apollo-state JSON blob. That's a genuine ToS-evasion
   pattern, named here rather than hidden: if Meetup changes its frontend framework or adds
   bot detection, this adapter breaks silently (parse error), not loudly.
-- **`cargo test` needs `capabilities/postgres` running** (`tools/service-runner.sh
-  start postgres`) — `store`'s 8 tests connect to the real shared local instance. Each test
-  gets its own schema (named from a static per-test string + this process's pid, dropped at
-  the end of the test), not its own database — the isolation unit changed, but there's still
-  no shared `static Mutex` serializing tests against each other (different schemas never
-  collide, same as the interim SQLite version's separate temp-files did). Set
-  `SCOUTING_TEST_DATABASE_URL` to point tests at a non-default instance/credentials; otherwise
-  they take the same `Config::load()` connection the binaries use, resolved once, so a rotated
-  password can't leave them behind. The config test that clears `AXON_PERSONAL_ROOT` restores
-  it on drop: Rust runs a crate's tests as threads of one process, and an unrestored
-  `remove_var` made the store tests fail against a healthy Postgres, reading as a credential
-  problem that did not exist.
+- **`cargo test` needs no server at all since PRD Q45** — `store`'s tests each get their own temp file, which
+  is the same isolation the per-pid schema bought and the same the original SQLite version
+  had, with no shared `static Mutex` serializing tests against each other. The config test
+  that clears `AXON_PERSONAL_ROOT` restores it on drop: Rust runs a crate's tests as threads
+  of one process, and an unrestored `remove_var` leaves every later store test resolving a
+  different file from the one it just wrote to.
 - `normalize.rs` is dead scaffold code (ported for parity, `#[allow(dead_code)]`) — every
   shipped adapter does its own normalization inline; nothing calls the top-level function.
 

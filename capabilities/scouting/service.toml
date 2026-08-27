@@ -13,4 +13,6 @@ ready_path  = "/ready"   # availability is judged on this, not on liveness (#126
 # scout-server serves /discover at the root; the dashboard has always called it there.
 proxy_extra = ["/discover"]
 
-requires = ["postgres"]
+# No `requires`: opportunities, links and the proposal inbox live in the shared
+# SQLite file this process opens itself, so there is no database service to start
+# first (PRD Q45).

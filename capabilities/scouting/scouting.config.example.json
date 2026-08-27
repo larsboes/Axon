@@ -7,9 +7,6 @@
   "_comment_events": "Directory of existing markdown event notes to cross-reference newly discovered opportunities against (annotate-only — never written to). Leave unset to skip this entirely. Superseded by source entries with events_glob.",
   "events_dir": "",
 
-  "_comment_database": "Postgres connection string (postgresql://user:password@host:port/db). Leave unset to auto-build one from axon-overlay/config/postgres.env (capabilities/postgres, the shared local instance) — only set this to point at a different instance entirely.",
-  "database_url": "",
-
   "_comment_embeddings": "Optional pre-computed opportunity-embeddings JSON (see README). Left as a --opp-embeddings CLI flag in practice; set here only if you always want the same file.",
   "opp_embeddings_path": "",
 

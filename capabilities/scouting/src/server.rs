@@ -187,7 +187,7 @@ async fn discover_handler(Query(params): Query<DiscoverParams>) -> Json<Value> {
             })
             .map(|p| load_opp_embeddings(&p));
 
-        let mut store = Store::open(&cfg.database_url).ok();
+        let mut store = Store::open(&cfg.database_path).ok();
 
         let report = run(
             &*adapter,
@@ -271,7 +271,7 @@ async fn health_handler() -> Json<Value> {
 
 /// Readiness: whether this capability can actually serve, which liveness does not answer.
 ///
-/// `health_handler` is a literal and cannot observe the database, so during a Postgres outage
+/// `health_handler` is a literal and cannot observe the database, so with the store unreachable
 /// this capability reported itself up while every query behind it failed (#126). Availability
 /// is judged here instead.
 ///
@@ -280,7 +280,7 @@ async fn health_handler() -> Json<Value> {
 async fn ready_handler() -> (StatusCode, Json<Value>) {
     let probe = tokio::task::spawn_blocking(|| {
         let cfg = Config::load();
-        Store::open(&cfg.database_url)
+        Store::open(&cfg.database_path)
             .and_then(|store| store.ping())
             .map_err(|error| error.to_string())
     })
@@ -310,7 +310,7 @@ async fn ready_handler() -> (StatusCode, Json<Value>) {
 /// discover what's available.
 ///
 /// On the blocking pool like every other store-touching handler here. It did
-/// not need to be until it read the proposal inbox: `postgres` is the sync
+/// not need to be until it read the proposal inbox: `rusqlite` is a blocking
 /// client, and calling it straight from an async handler panics the worker
 /// with "cannot start a runtime from within a runtime". Config::load reads a
 /// file, so it belongs on the same side of that line.
@@ -371,7 +371,7 @@ fn sources_listing() -> Json<Value> {
     // only way it becomes one is a human editing the overlay. Putting it in the
     // same array under `enabled: false` would have made those two things look
     // like states of one thing.
-    let proposed: Vec<Value> = Store::open(&cfg.database_url)
+    let proposed: Vec<Value> = Store::open(&cfg.database_path)
         .and_then(|store| store.list_proposed_sources("proposed"))
         .map(|rows| {
             rows.iter()
@@ -417,7 +417,7 @@ async fn opportunities_handler(
     let include_dismissed = params.include_dismissed.unwrap_or(false);
     tokio::task::spawn_blocking(move || {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(internal_error)?;
+        let store = Store::open(&cfg.database_path).map_err(internal_error)?;
         let store_total = store.count().map_err(internal_error)?;
         let opportunities = store
             .list_top(limit, include_dismissed)
@@ -452,7 +452,7 @@ async fn set_status_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     tokio::task::spawn_blocking(move || {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(internal_error)?;
+        let store = Store::open(&cfg.database_path).map_err(internal_error)?;
         match store.set_status(&id, &body.status) {
             Ok(true) => Ok(Json(json!({ "id": id, "status": body.status }))),
             Ok(false) => Err((
@@ -494,7 +494,7 @@ async fn propose_source_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     tokio::task::spawn_blocking(move || {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(internal_error)?;
+        let store = Store::open(&cfg.database_path).map_err(internal_error)?;
         let found_by = body.found_by.as_deref().unwrap_or("manual");
         match store.propose_source(
             &body.adapter,
@@ -524,7 +524,7 @@ async fn dismiss_proposal_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     tokio::task::spawn_blocking(move || {
         let cfg = Config::load();
-        let store = Store::open(&cfg.database_url).map_err(internal_error)?;
+        let store = Store::open(&cfg.database_path).map_err(internal_error)?;
         match store.dismiss_proposed_source(&id) {
             Ok(true) => Ok(Json(json!({ "id": id, "status": "dismissed" }))),
             Ok(false) => Err((

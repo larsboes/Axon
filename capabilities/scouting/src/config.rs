@@ -15,7 +15,7 @@
 //! only supplies defaults; `main.rs`/`server_main.rs` override individual
 //! fields from `--flag` values where a flag exists for that field.
 
-use axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
+use axon_config::{database_path, expand_tilde, resolve_port};
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -25,7 +25,6 @@ use crate::sources::SourceEntry;
 struct FileConfig {
     interest_profile_dir: Option<String>,
     events_dir: Option<String>,
-    database_url: Option<String>,
     opp_embeddings_path: Option<String>,
     port: Option<u16>,
     calendar_base_url: Option<String>,
@@ -103,13 +102,13 @@ pub struct Config {
     /// when the `sources` array is non-empty. Kept for backwards compat
     /// and zero-config single-source runs.
     pub events_dir: Option<PathBuf>,
-    /// Postgres connection string in libpq keyword/value form (see
-    /// `axon_config::postgres_conn_from_shared_env` for why never the URL
-    /// form) -- see store.rs. Resolution order: explicit `database_url` in
-    /// `scouting.json` > built from `axon-overlay/config/postgres.env`
-    /// (the shared instance's real values -- `capabilities/postgres`) > a
-    /// localhost dev-default guess.
-    pub database_url: String,
+    /// The one shared SQLite file this capability's tables live in, under the
+    /// prefix `scouting` (PRD Q45). Resolved by `axon_config::database_path`:
+    /// `AXON_DB_PATH`, else `<overlay>/data/axon/axon.db`. It is a deployment
+    /// fact rather than a capability one, so a `database_url` left in
+    /// `scouting.json` is ignored -- a file per capability would drop the
+    /// cross-capability correlation with `transit` that Phase 2 exists for.
+    pub database_path: PathBuf,
     /// Optional pre-computed opportunity-embeddings JSON path. Left CLI-arg-only
     /// (`--opp-embeddings`) per the original design -- hash-fallback embedding
     /// already works with zero config, so this isn't worth a second config knob.
@@ -145,15 +144,6 @@ fn config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scouting.config.json")
 }
 
-/// Redacts the password portion of a connection string for safe display
-/// (error messages, `println!`). Never print `Config::database_url` (or a
-/// `--database-url` value) directly -- unlike the old SQLite file path this
-/// replaced, it's a live credential. Thin wrapper so existing callers keep
-/// their name; the one implementation lives in `axon_config`.
-pub fn redact_database_url(url: &str) -> String {
-    axon_config::redact_dsn(url)
-}
-
 fn load_file_config() -> FileConfig {
     let path = config_path();
     if !path.is_file() {
@@ -187,16 +177,6 @@ impl Config {
             .map(|p| expand_tilde(&p))
             .filter(|p| p.exists());
 
-        // `$AXON_SCOUTING_DATABASE_URL` first: it is how a deployment is moved onto
-        // another database without editing config, and the fallback below names the REAL one.
-        let database_url = axon_config::database_url_override("scouting")
-            .or(file.database_url)
-            .unwrap_or_else(|| {
-                postgres_conn_from_shared_env().unwrap_or_else(|| {
-                    "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
-                })
-            });
-
         let opp_embeddings_path = file.opp_embeddings_path.map(|p| expand_tilde(&p));
         // Port contract lives in axon_config::resolve_port. The default is 8084,
         // not 8080: vaultwarden's manifest publishes 8080 on the host, and two
@@ -211,7 +191,7 @@ impl Config {
         Self {
             interest_profile_dir,
             events_dir,
-            database_url,
+            database_path: database_path(),
             opp_embeddings_path,
             port,
             calendar_base_url: file
@@ -296,21 +276,10 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn redact_database_url_hides_password_only() {
-        assert_eq!(
-            redact_database_url("postgresql://axon:s3cr3t@127.0.0.1:5432/axon"),
-            "postgresql://axon:***@127.0.0.1:5432/axon"
-        );
-        // No '@'/no recognizable creds segment -- returned as-is rather than mangled.
-        assert_eq!(redact_database_url("not-a-url"), "not-a-url");
-    }
-
     /// Restores an env var on drop. Rust runs a crate's tests as threads of ONE
     /// process, so `remove_var` here is not local to this test: unrestored, it
-    /// left every later store test resolving the fallback connection string
-    /// instead of the overlay's real one, and they failed against a perfectly
-    /// healthy Postgres.
+    /// left every later store test resolving a different database file from the
+    /// one they had just written to.
     struct EnvGuard(&'static str, Option<String>);
 
     impl EnvGuard {
@@ -340,5 +309,15 @@ mod tests {
         let cfg = Config::load();
         assert_eq!(cfg.port, 8084);
         assert!(cfg.events_dir.is_none());
+    }
+
+    /// The store path is a deployment fact, not a capability one. A `database_url`
+    /// left in `scouting.json` must not move this capability off the shared file --
+    /// the cross-capability correlation with `transit` is why it is shared.
+    #[test]
+    fn the_store_path_comes_from_the_deployment_not_from_scouting_json() {
+        let _config = EnvGuard::take("AXON_SCOUTING_CONFIG");
+        let _overlay = EnvGuard::take("AXON_PERSONAL_ROOT");
+        assert_eq!(Config::load().database_path, axon_config::database_path());
     }
 }

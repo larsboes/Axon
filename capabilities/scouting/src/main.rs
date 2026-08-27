@@ -5,7 +5,7 @@ use scouting::adapters::euro_hackathons::EuroHackathonsAdapter;
 use scouting::adapters::luma::LumaAdapter;
 use scouting::adapters::meetup::MeetupAdapter;
 use scouting::adapters::transit_fare::TransitFareAdapter;
-use scouting::config::{redact_database_url, Config};
+use scouting::config::Config;
 use scouting::event_route::classify_ranked;
 use scouting::merge::{merge, MergedEntry};
 use scouting::opportunity::Opportunity;
@@ -21,13 +21,13 @@ use scouting::vault_linker;
 /// Handles `--dismiss <id>` / `--save <id>`: opens the real store, sets
 /// status, prints a one-line confirmation, and exits. Exits with code 1 (not
 /// a panic) for an unknown id or a store-open failure, so this is scriptable.
-fn set_status_and_exit(database_url: &str, id: &str, status: &str) -> ! {
-    let store = match Store::open(database_url) {
+fn set_status_and_exit(database_path: &std::path::Path, id: &str, status: &str) -> ! {
+    let store = match Store::open(database_path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
                 "error: could not open store at {}: {e}",
-                redact_database_url(database_url)
+                database_path.display()
             );
             std::process::exit(1);
         }
@@ -180,7 +180,7 @@ fn build_api_adapter(name: &str, no_store: bool) -> Option<Box<dyn SourceAdapter
             let transit_store = if no_store {
                 None
             } else {
-                transit::store::TransitStore::open(&tcfg.database_url).ok()
+                transit::store::TransitStore::open(&tcfg.database_path).ok()
             };
             Box::new(TransitFareAdapter::new(from_eva, to_eva, transit_store))
         }
@@ -198,7 +198,7 @@ fn build_api_adapter(name: &str, no_store: bool) -> Option<Box<dyn SourceAdapter
 #[derive(Clone, Copy)]
 struct RunOptions<'a> {
     opp_embeddings_path: Option<&'a str>,
-    database_url: &'a str,
+    database_path: &'a std::path::Path,
     no_store: bool,
     show_backlog: bool,
     include_dismissed: bool,
@@ -216,7 +216,7 @@ fn run_adapter(
     let opp_embeddings = options.opp_embeddings_path.map(load_opp_embeddings);
 
     let mut store: Option<Store> = if options.show_backlog || !options.no_store {
-        Store::open(options.database_url).ok()
+        Store::open(options.database_path).ok()
     } else {
         None
     };
@@ -263,7 +263,7 @@ fn run_adapter(
             }
             None => eprintln!(
                 "  could not open store at {}",
-                redact_database_url(options.database_url)
+                options.database_path.display()
             ),
         }
         // Return an empty report — we already printed everything.
@@ -307,7 +307,7 @@ fn run_merged_sources(
     query: &SearchQuery,
     cfg: &Config,
     opp_emb_path: &Option<String>,
-    database_url: &str,
+    database_path: &std::path::Path,
     no_store: bool,
     include_dismissed: bool,
     limit: usize,
@@ -338,7 +338,7 @@ fn run_merged_sources(
             cfg,
             RunOptions {
                 opp_embeddings_path: opp_emb_path.as_deref(),
-                database_url,
+                database_path,
                 no_store,
                 show_backlog: false,
                 include_dismissed,
@@ -357,7 +357,7 @@ fn run_merged_sources(
     println!();
 
     let merged = merge(per_source);
-    let store = Store::open(database_url).ok();
+    let store = Store::open(database_path).ok();
     print_merged(&merged, store.as_ref(), new_count, vault_links, store_total);
 }
 
@@ -369,7 +369,7 @@ fn print_run_header(
     adapter: &dyn SourceAdapter,
     cfg: &Config,
     opp_emb_path: &Option<String>,
-    database_url: &str,
+    database_path: &std::path::Path,
 ) {
     println!(
         "  adapter    : {} ({})",
@@ -408,9 +408,8 @@ fn print_run_header(
     } else {
         println!("  embeddings : none (hash-fallback -- no 'embedding' role for this machine)");
     }
-    // Form-agnostic on purpose: the DSN is libpq keyword/value now, and a check for one
-    // spelling is how this line silently disappeared once already.
-    println!("  store      : {}", redact_database_url(database_url));
+    // A path, so nothing to redact: it names a file, not a credential.
+    println!("  store      : {}", database_path.display());
     if let Some(ref events_dir) = cfg.events_dir {
         println!("  event link : {} (annotate-only)", events_dir.display());
     }
@@ -434,7 +433,7 @@ fn print_help() {
     println!("                           instead of the default merged cross-source ranking");
     println!("  --emit-json              print raw opportunities as JSON, no scoring");
     println!("  --opp-embeddings <path>  pre-computed opportunity embedding vectors");
-    println!("  --database-url <url>     postgres store (default from scouting.json)");
+    println!("  --database-path <path>   store file (default: the shared axon.db)");
     println!("  --no-store               don't persist results");
     println!("  --backlog                show stored backlog instead of fetching");
     println!("  --include-dismissed      include dismissed entries in --backlog");
@@ -618,11 +617,14 @@ fn main() {
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned())
         });
-    let database_url = args
+    // `--database-path` replaces `--database-url`: the store is a file now, and
+    // the flag names one so a developer can point a run at a scratch database.
+    let database_path = args
         .iter()
-        .position(|a| a == "--database-url")
+        .position(|a| a == "--database-path")
         .and_then(|i| args.get(i + 1).cloned())
-        .unwrap_or_else(|| cfg.database_url.clone());
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| cfg.database_path.clone());
     let no_store = args.iter().any(|a| a == "--no-store");
     let show_backlog = args.iter().any(|a| a == "--backlog");
     let list_sources = args.iter().any(|a| a == "--list-sources");
@@ -671,10 +673,10 @@ fn main() {
 
     // --dismiss/--save
     if let Some(id) = dismiss_id {
-        set_status_and_exit(&database_url, &id, "dismissed");
+        set_status_and_exit(&database_path, &id, "dismissed");
     }
     if let Some(id) = save_id {
-        set_status_and_exit(&database_url, &id, "saved");
+        set_status_and_exit(&database_path, &id, "saved");
     }
 
     // --promote-calendar: saved luma events → calendar entries, then exit.
@@ -686,10 +688,10 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let store = match Store::open(&database_url) {
+        let store = match Store::open(&database_path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("error: store {}: {e}", redact_database_url(&database_url));
+                eprintln!("error: store {}: {e}", database_path.display());
                 std::process::exit(1);
             }
         };
@@ -729,7 +731,7 @@ fn main() {
             "note: --from-file is deprecated. Add an obsidian-markdown source to scouting.json's \
              `sources` array instead (see scouting.config.example.json)."
         );
-        run_from_file(ff, &cfg, &limit, &opp_emb_path, &database_url, &no_store);
+        run_from_file(ff, &cfg, &limit, &opp_emb_path, &database_path, &no_store);
         return;
     }
 
@@ -776,7 +778,7 @@ fn main() {
         }
 
         println!("Axon Scouting — opportunity discovery\n");
-        print_run_header(&adapter, &cfg, &opp_emb_path, &database_url);
+        print_run_header(&adapter, &cfg, &opp_emb_path, &database_path);
 
         match run_adapter(
             &adapter,
@@ -784,7 +786,7 @@ fn main() {
             &cfg,
             RunOptions {
                 opp_embeddings_path: opp_emb_path.as_deref(),
-                database_url: &database_url,
+                database_path: &database_path,
                 no_store,
                 show_backlog,
                 include_dismissed,
@@ -792,7 +794,7 @@ fn main() {
             },
         ) {
             Ok(report) => {
-                let store = Store::open(&database_url).ok();
+                let store = Store::open(&database_path).ok();
                 print_results(&report, store.as_ref(), include_dismissed);
             }
             Err(e) => println!("  pipeline error: {e}"),
@@ -845,7 +847,7 @@ fn main() {
         }
 
         println!("Axon Scouting — opportunity discovery\n");
-        print_run_header(&*adapter, &cfg, &opp_emb_path, &database_url);
+        print_run_header(&*adapter, &cfg, &opp_emb_path, &database_path);
 
         match run_adapter(
             &*adapter,
@@ -853,7 +855,7 @@ fn main() {
             &cfg,
             RunOptions {
                 opp_embeddings_path: opp_emb_path.as_deref(),
-                database_url: &database_url,
+                database_path: &database_path,
                 no_store,
                 show_backlog,
                 include_dismissed,
@@ -861,7 +863,7 @@ fn main() {
             },
         ) {
             Ok(report) => {
-                let store = Store::open(&database_url).ok();
+                let store = Store::open(&database_path).ok();
                 print_results(&report, store.as_ref(), include_dismissed);
             }
             Err(e) => println!("  pipeline error: {e}"),
@@ -881,7 +883,7 @@ fn main() {
             &query,
             &cfg,
             &opp_emb_path,
-            &database_url,
+            &database_path,
             no_store,
             include_dismissed,
             limit,
@@ -918,7 +920,7 @@ fn main() {
         ran_any = true;
 
         println!("  ── source: {} ({}) ──", manifest.id, manifest.adapter);
-        print_run_header(&*adapter, &cfg, &opp_emb_path, &database_url);
+        print_run_header(&*adapter, &cfg, &opp_emb_path, &database_path);
 
         match run_adapter(
             &*adapter,
@@ -926,7 +928,7 @@ fn main() {
             &cfg,
             RunOptions {
                 opp_embeddings_path: opp_emb_path.as_deref(),
-                database_url: &database_url,
+                database_path: &database_path,
                 no_store,
                 show_backlog,
                 include_dismissed,
@@ -934,7 +936,7 @@ fn main() {
             },
         ) {
             Ok(report) => {
-                let store = Store::open(&database_url).ok();
+                let store = Store::open(&database_path).ok();
                 print_results(&report, store.as_ref(), include_dismissed);
             }
             Err(e) => println!("  pipeline error: {e}"),
@@ -963,7 +965,7 @@ fn main() {
         }
 
         println!("Axon Scouting — opportunity discovery\n");
-        print_run_header(&*adapter, &cfg, &opp_emb_path, &database_url);
+        print_run_header(&*adapter, &cfg, &opp_emb_path, &database_path);
 
         match run_adapter(
             &*adapter,
@@ -971,7 +973,7 @@ fn main() {
             &cfg,
             RunOptions {
                 opp_embeddings_path: opp_emb_path.as_deref(),
-                database_url: &database_url,
+                database_path: &database_path,
                 no_store,
                 show_backlog,
                 include_dismissed,
@@ -979,7 +981,7 @@ fn main() {
             },
         ) {
             Ok(report) => {
-                let store = Store::open(&database_url).ok();
+                let store = Store::open(&database_path).ok();
                 print_results(&report, store.as_ref(), include_dismissed);
             }
             Err(e) => println!("  pipeline error: {e}"),
@@ -998,7 +1000,7 @@ fn run_from_file(
     cfg: &Config,
     limit: &usize,
     opp_emb_path: &Option<String>,
-    database_url: &str,
+    database_path: &std::path::Path,
     no_store: &bool,
 ) {
     let telos: Vec<TelosProfile> =
@@ -1018,7 +1020,7 @@ fn run_from_file(
     let mut store: Option<Store> = if *no_store {
         None
     } else {
-        Store::open(database_url).ok()
+        Store::open(database_path).ok()
     };
 
     println!("Axon Scouting — past-event retro calibration (deprecated --from-file)\n");
@@ -1032,7 +1034,7 @@ fn run_from_file(
         println!("  embeddings : {} pre-computed e5 vectors", emb.len());
     }
     if store.is_some() {
-        println!("  store      : {}", redact_database_url(database_url));
+        println!("  store      : {}", database_path.display());
     }
     if let Some(events_dir) = events_dir {
         println!("  event link : {} (annotate-only)", events_dir.display());
