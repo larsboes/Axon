@@ -1275,8 +1275,14 @@ mod db_tests {
     fn open_test_store(suffix: &str) -> TripsStore {
         let dir = std::env::temp_dir().join(format!("trips-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a writable temp directory");
-        TripsStore::open(&dir.join(format!("{suffix}.db")))
-            .unwrap_or_else(|e| panic!("could not open test store at {}: {e}", dir.display()))
+        let path = dir.join(format!("{suffix}.db"));
+        // The directory is named by pid, and a pid is recycled eventually. A
+        // previous run's rows must not arrive in this one.
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
+        }
+        TripsStore::open(&path)
+            .unwrap_or_else(|e| panic!("could not open test store at {}: {e}", path.display()))
     }
 
     fn place(id: &str) -> PlaceRef {
