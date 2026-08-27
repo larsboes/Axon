@@ -43,32 +43,6 @@ pub fn overlay_data_dir(capability: &str) -> Option<PathBuf> {
     overlay_root().map(|r| r.join("data").join(capability))
 }
 
-/// Builds a connection string for the shared local instance
-/// (`capabilities/postgres`) from the same plain `KEY=value` file
-/// `tools/service-runner.sh` reads for the container itself
-/// (`<overlay>/config/postgres.env`, written by `tools/setup-secret.sh`).
-///
-/// libpq keyword/value form on purpose, never the URL form: the real
-/// `POSTGRES_PASSWORD` is base64 and can contain `/`, `+`, `=`, which the URL
-/// userinfo form silently mangles (`/` truncates the password → auth failure,
-/// verified against the local instance). keyword/value has no escaping trap
-/// for these characters and `postgres::Client::connect` accepts it identically.
-pub fn postgres_conn_from_shared_env() -> Option<String> {
-    let body = std::fs::read_to_string(overlay_config("postgres.env")?).ok()?;
-    let get = |key: &str| -> Option<String> {
-        body.lines().find_map(|l| {
-            l.strip_prefix(&format!("{key}="))
-                .map(|v| v.trim().to_string())
-        })
-    };
-    let user = get("POSTGRES_USER")?;
-    let password = get("POSTGRES_PASSWORD")?;
-    let db = get("POSTGRES_DB")?;
-    Some(format!(
-        "host=127.0.0.1 port=5432 user={user} password={password} dbname={db}"
-    ))
-}
-
 /// Where the one shared SQLite file lives (PRD Q45, 2026-08-27).
 ///
 /// `AXON_DB_PATH` > `<overlay>/data/axon/axon.db` > a scratch file. Resolved the
@@ -82,8 +56,9 @@ pub fn postgres_conn_from_shared_env() -> Option<String> {
 ///
 /// The last resort is deliberately a scratch path rather than a plausible one.
 /// The Postgres fallback named the real database and the demo overlay resolved
-/// to it, which is the accident recorded under [`database_url_override`] — a
-/// fallback that looks like production is worse than one that obviously is not.
+/// to it: the only thing standing between a demo seeding run and the live store
+/// was that the real password was not the word `axon`. A fallback that looks
+/// like production is worse than one that obviously is not.
 /// Nothing is created here; `axon_store::pool_for` makes the directory when a
 /// caller actually opens the file.
 pub fn database_path() -> PathBuf {
@@ -96,29 +71,6 @@ pub fn database_path() -> PathBuf {
     overlay_data_dir("axon")
         .unwrap_or_else(|| std::env::temp_dir().join("axon-no-overlay"))
         .join("axon.db")
-}
-
-/// `$AXON_<CAPABILITY>_DATABASE_URL`, the per-capability override.
-///
-/// This is the variable `tools/demo-up` exports to move a whole stack onto a throwaway
-/// database, and the one every capability was assumed to read. Three did not: comms,
-/// scouting and transit went straight from their config file to
-/// `postgres_conn_from_shared_env` and then to a fallback naming the REAL database,
-/// `dbname=axon password=axon`. The demo overlay has no `postgres.env`, so under it those
-/// three resolved to that fallback — the only thing standing between a demo seeding run and
-/// the live store was that the real password is not the word `axon`. An accident, not a guard.
-///
-/// The name is derived, never passed: `transit` → `AXON_TRANSIT_DATABASE_URL`, and a hyphen
-/// becomes an underscore the same way `tools/demo-up` builds it, so the two cannot disagree
-/// about what a capability's variable is called.
-pub fn database_url_override(capability: &str) -> Option<String> {
-    let var = format!(
-        "AXON_{}_DATABASE_URL",
-        capability.to_uppercase().replace('-', "_")
-    );
-    std::env::var(var)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
 }
 
 /// The deployment's home timezone, from `<overlay>/config/deployment.env`.
@@ -187,31 +139,6 @@ pub fn resolve_port(fallback_env: Option<&str>, file_port: Option<u16>, default:
         .unwrap_or(default)
 }
 
-/// Masks the password in a connection string for any display purpose — a DSN
-/// reaches a terminal, a log, or an error message eventually. Handles both
-/// forms this repo uses: libpq keyword/value (`password=…`) and URL userinfo.
-/// The URL branch uses `rfind('@')`: an unencoded password can itself contain
-/// `@`, and the LAST `@` is the host separator — taking the first would leak
-/// the tail of such a password.
-pub fn redact_dsn(url: &str) -> String {
-    if let Some(idx) = url.find("password=") {
-        let start = idx + "password=".len();
-        let end = url[start..]
-            .find(' ')
-            .map(|i| start + i)
-            .unwrap_or(url.len());
-        return format!("{}***{}", &url[..start], &url[end..]);
-    }
-    match (url.find("://"), url.rfind('@')) {
-        (Some(scheme), Some(at)) if at > scheme => {
-            let after = scheme + 3;
-            let user = url[after..at].split(':').next().unwrap_or("");
-            format!("{}{}:***{}", &url[..after], user, &url[at..])
-        }
-        _ => url.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,42 +181,8 @@ mod tests {
     }
 
     /// The variable a capability is moved onto another database with, and the reason it
+
     /// exists: comms, scouting and transit ignored it until 2026-08-20 and fell through to a
-    /// fallback naming the real database. Under the demo overlay, which has no postgres.env,
-    /// that fallback was what they resolved to.
-    #[test]
-    fn the_database_override_is_derived_from_the_capability_name() {
-        let _env = env_lock();
-        let _var = EnvGuard::set(
-            "AXON_TRANSIT_DATABASE_URL",
-            "host=127.0.0.1 dbname=axon_demo",
-        );
-        assert_eq!(
-            database_url_override("transit").as_deref(),
-            Some("host=127.0.0.1 dbname=axon_demo")
-        );
-
-        // A hyphen becomes an underscore, the same way tools/demo-up builds the name. The two
-        // deriving it differently would be a capability silently reading nothing.
-        let _hyphen = EnvGuard::set("AXON_AXON_STATUS_DATABASE_URL", "host=127.0.0.1 dbname=x");
-        assert_eq!(
-            database_url_override("axon-status").as_deref(),
-            Some("host=127.0.0.1 dbname=x")
-        );
-    }
-
-    #[test]
-    fn an_unset_or_blank_override_defers_rather_than_pointing_nowhere() {
-        let _env = env_lock();
-        let _unset = EnvGuard::take("AXON_TRIPS_DATABASE_URL");
-        assert_eq!(database_url_override("trips"), None);
-
-        // Exported-but-empty is a shell with nothing to put there, not an instruction to
-        // connect to "". Falling through to the config file is the only safe reading.
-        let _blank = EnvGuard::set("AXON_TRIPS_DATABASE_URL", "   ");
-        assert_eq!(database_url_override("trips"), None);
-    }
-
     #[test]
     fn expand_tilde_uses_home() {
         let _env = env_lock();
@@ -343,25 +236,6 @@ mod tests {
         let _env = env_lock();
         let _o = EnvGuard::take("AXON_PERSONAL_ROOT");
         assert!(overlay_root().is_none());
-        assert!(postgres_conn_from_shared_env().is_none());
-    }
-
-    #[test]
-    fn shared_env_builds_keyword_value_form() {
-        let _env = env_lock();
-        let dir = std::env::temp_dir().join(format!("axon-config-test-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("config")).unwrap();
-        std::fs::write(
-            dir.join("config/postgres.env"),
-            "POSTGRES_USER=axon\nPOSTGRES_PASSWORD=KwOyQ+/z=\nPOSTGRES_DB=axon\n",
-        )
-        .unwrap();
-        let _o = EnvGuard::set("AXON_PERSONAL_ROOT", dir.to_str().unwrap());
-        assert_eq!(
-            postgres_conn_from_shared_env().unwrap(),
-            "host=127.0.0.1 port=5432 user=axon password=KwOyQ+/z= dbname=axon"
-        );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -387,33 +261,6 @@ mod tests {
             resolve_port(Some("AXON_CONFIG_TEST_PORT"), Some(9000), 8000),
             9200
         );
-    }
-
-    #[test]
-    fn redact_handles_both_dsn_forms() {
-        assert_eq!(
-            redact_dsn("host=127.0.0.1 port=5432 user=axon password=s3cr3t dbname=axon"),
-            "host=127.0.0.1 port=5432 user=axon password=*** dbname=axon"
-        );
-        assert_eq!(
-            redact_dsn("postgresql://axon:s3cr3t@127.0.0.1:5432/axon"),
-            "postgresql://axon:***@127.0.0.1:5432/axon"
-        );
-    }
-
-    #[test]
-    fn a_password_containing_an_at_sign_still_masks() {
-        let masked = redact_dsn("postgresql://axon:p@ss@127.0.0.1:5432/axon");
-        assert!(!masked.contains("ss@127"), "got {masked}");
-    }
-
-    #[test]
-    fn a_dsn_without_credentials_is_left_alone() {
-        assert_eq!(
-            redact_dsn("postgresql://127.0.0.1:5432/axon"),
-            "postgresql://127.0.0.1:5432/axon"
-        );
-        assert_eq!(redact_dsn("not a url"), "not a url");
     }
 
     /// Writes a deployment.env into a throwaway overlay and points
