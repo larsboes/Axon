@@ -1,7 +1,7 @@
 # Local dev fallback config (see config.rs / README) -- never commit real values.
 scouting.config.json
-# Local dev fallback data when no overlay is configured (no local DB file anymore --
-# Postgres is always a network connection, see store.rs).
+# Local dev fallback data when no overlay is configured. The database is not here either:
+# it is the one shared file every capability opens, resolved by axon_config (see store.rs).
 data/interest-profile/*.md
 /target
 

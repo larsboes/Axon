@@ -23,7 +23,7 @@ axon pack deploy codex travel
 
 Axon owns the workflow. The active overlay owns every value that makes it personal: home and
 destination stations, the geo policy behind scouting's event routing, the calendar credential and
-home timezone, and the shared Postgres connection. Nothing in this Pack names a station, a city or
+home timezone, and the shared database file. Nothing in this Pack names a station, a city or
 a route.
 
 The capability READMEs stay the contracts. This Pack points at them rather than restating them,

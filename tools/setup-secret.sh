@@ -7,7 +7,7 @@
 # plaintext env, not the vault), and axon-overlay/secrets/*.md gets a
 # pointer, never the value. Generalizes the manual dance vaultwarden's own
 # ADMIN_TOKEN went through by hand once — the second capability needing the
-# same steps (postgres) is the signal to make it a real tool. Run this
+# same steps (postgres, retired 2026-08-27) was the signal to make it a real tool. Run this
 # yourself in your own terminal (it prompts for your vault master password);
 # it never prints the secret value or the vault session key anywhere.
 set -euo pipefail
@@ -19,7 +19,7 @@ source "$TOOLS_DIR/lib/external-ref.sh"
 
 usage() {
   echo "usage: setup-secret.sh <capability> <slug> <ENV_VAR_NAME>" >&2
-  echo "  e.g. setup-secret.sh postgres password POSTGRES_PASSWORD" >&2
+  echo "  e.g. setup-secret.sh vaultwarden admin-token ADMIN_TOKEN" >&2
   exit 1
 }
 [ $# -eq 3 ] || usage

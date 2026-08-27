@@ -277,8 +277,8 @@ cmd_enable() {  # <name>
 # duplicate now live in one manifest each.
 #
 # Order is dependency-first, straight out of the same _resolve the enable path uses —
-# so `up` starts postgres before the capabilities that require it, and `down` walks
-# the list backwards.
+# so `up` starts a capability after whatever it requires (host-watch after tasks), and
+# `down` walks the list backwards.
 
 _json_str() {  # <value> -> a JSON string. Refuses anything that would need escaping.
   case "$1" in

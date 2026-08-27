@@ -160,8 +160,8 @@ Summary and source text stay inert: an allow-listed renderer handles headings, p
 lists, links, code and simple tables without `{@html}`, while embedded HTML and images are
 discarded. A real summary is shown as the note; the UI does not substitute an empty placeholder
 when summarization is unavailable. Long media transcripts remain explicitly expandable beneath
-an existing summary. Feed/Postgres is the canonical inbox because every incoming item does not
-deserve a permanent knowledge note. A later
+an existing summary. The feed's own tables are the canonical inbox because every incoming item
+does not deserve a permanent knowledge note. A later
 **In Vault behalten** action may create a typed Atlas or Media Markdown note explicitly; until
 that contract exists, **Behalten** only persists feed status.
 

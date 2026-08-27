@@ -405,10 +405,13 @@
   }
 
   /// `source_state` stores its timestamps as epoch seconds in a TEXT column,
-  /// unlike every other time on this wire, which arrives as a Postgres
-  /// timestamptz string. Both shapes go through here so a caller never has to
-  /// know which one a given field is — passing an epoch to the mail-date
-  /// formatter yields an Invalid Date and renders as nothing at all.
+  /// unlike every other time on this wire, which arrives as the store's
+  /// canonical stamp — `2026-08-27 21:23:35.871+00:00`. Both shapes go through
+  /// here so a caller never has to know which one a given field is: passing an
+  /// epoch to the Date constructor yields an Invalid Date and renders as nothing
+  /// at all. The stamp itself is unchanged work for this function — measured
+  /// 2026-08-28, `new Date` reads it and Postgres's old `…871000+00` rendering
+  /// to the same instant.
   function runTimeLabel(value: string | null): string | null {
     if (!value) return null;
     const epoch = Number(value);

@@ -10,8 +10,8 @@
 # WHICH FAILURE THIS ACTUALLY PREVENTS. In CI it prevents almost nothing, and that is fine:
 # a runner has no overlay, no vault and no real database, so the fixtures are synthetic by
 # construction. The dangerous run is the LOCAL one — a machine where a real overlay is a
-# directory away, a real Postgres is listening on the same port the demo wants, and
-# `tools/demo-site` is one command. There, "synthetic by construction" rests on three guards
+# directory away, the real database is a file the demo's capabilities would open if
+# AXON_DB_PATH were not pointed elsewhere, and `tools/demo-site` is one command. There, "synthetic by construction" rests on three guards
 # holding, and this is what catches the case where one of them did not.
 #
 # Two families of marker, for two different reasons:
