@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -154,7 +155,7 @@ async fn routes() -> Json<Value> {
 
 #[derive(Clone)]
 struct AppState {
-    database_url: Arc<String>,
+    database_path: Arc<PathBuf>,
     obsidian: Option<ObsidianConfig>,
     travel: Arc<trips::config::TravelPrefs>,
 }
@@ -180,13 +181,13 @@ async fn health() -> Json<Value> {
 
 /// Readiness: whether this capability can actually serve, which liveness does not answer.
 ///
-/// `health` is a literal and cannot observe the database, so during a Postgres outage this
+/// `health` is a literal and cannot observe the database, so with the store unreachable this
 /// capability reported itself up while every query behind it failed (#126). Availability is
 /// judged here instead.
 async fn ready(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
+        TripsStore::open(&database_path)
             .and_then(|store| store.ping())
             .map_err(|error| error.to_string())
     })
@@ -207,9 +208,9 @@ async fn ready(State(state): State<AppState>) -> ApiResponse {
 }
 
 async fn list_plans(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
+        TripsStore::open(&database_path)
             .and_then(|store| store.list_plans())
             .map_err(|error| error.to_string())
     })
@@ -225,9 +226,9 @@ async fn list_plans(State(state): State<AppState>) -> ApiResponse {
 }
 
 async fn create_plan(State(state): State<AppState>, Json(input): Json<CreatePlan>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
+        TripsStore::open(&database_path)
             .and_then(|store| store.create_plan(&input))
             .map_err(|error| error.to_string())
     })
@@ -247,9 +248,9 @@ async fn update_plan(
     Path(id): Path<String>,
     Json(input): Json<UpdatePlan>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
+        TripsStore::open(&database_path)
             .and_then(|store| store.update_plan(&id, &input))
             .map_err(|error| error.to_string())
     })
@@ -293,9 +294,9 @@ async fn set_item_day(
     Path((plan_id, item_id)): Path<(String, String)>,
     Json(input): Json<SetDay>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
+        TripsStore::open(&database_path)
             .and_then(|store| store.set_item_day(&plan_id, &item_id, input.day.as_deref()))
             .map_err(|error| error.to_string())
     })
@@ -327,9 +328,9 @@ async fn record_outcome(
     Path(plan_id): Path<String>,
     Json(body): Json<OutcomeBody>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
+        TripsStore::open(&database_path)
             .and_then(|store| {
                 store.record_outcome(&plan_id, &body.stage_id, &Value::Object(body.outcome))
             })
@@ -347,9 +348,9 @@ async fn record_outcome(
 }
 
 async fn list_places(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
+        TripsStore::open(&database_path)
             .and_then(|store| store.list_places())
             .map_err(|error| error.to_string())
     })
@@ -365,9 +366,9 @@ async fn list_places(State(state): State<AppState>) -> ApiResponse {
 }
 
 async fn get_plan(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
+        TripsStore::open(&database_path)
             .and_then(|store| store.get_plan(&id))
             .map_err(|error| error.to_string())
     })
@@ -398,9 +399,9 @@ async fn delete_plan(
     Path(id): Path<String>,
     Query(params): Query<DeleteQuery>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        let store = TripsStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = TripsStore::open(&database_path).map_err(|error| error.to_string())?;
         if let Some(expected) = params.expected_updated_at.as_deref() {
             match store.get_plan(&id).map_err(|error| error.to_string())? {
                 None => return Ok(false),
@@ -436,9 +437,9 @@ async fn add_item(
     Path(id): Path<String>,
     Json(input): Json<CreatePlanItem>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
+        TripsStore::open(&database_path)
             .and_then(|store| store.add_item(&id, &input))
             .map_err(|error| error.to_string())
     })
@@ -457,9 +458,9 @@ async fn delete_item(
     State(state): State<AppState>,
     Path((plan_id, item_id)): Path<(String, String)>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        TripsStore::open(&database_url)
+        TripsStore::open(&database_path)
             .and_then(|store| store.delete_item(&plan_id, &item_id))
             .map_err(|error| error.to_string())
     })
@@ -485,9 +486,9 @@ async fn scan_obsidian(State(state): State<AppState>) -> ApiResponse {
             json!({ "error": "Obsidian import is not configured for this machine" }),
         );
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        let store = TripsStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = TripsStore::open(&database_path).map_err(|error| error.to_string())?;
         let mut candidates = scan_trip_notes(&obsidian.root, &obsidian.trips_dir)
             .map_err(|error| error.to_string())?;
         for candidate in &mut candidates {
@@ -623,9 +624,9 @@ async fn import_obsidian(
             json!({ "error": "Obsidian import is not configured for this machine" }),
         );
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        let store = TripsStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = TripsStore::open(&database_path).map_err(|error| error.to_string())?;
         let candidate =
             read_trip_note(&obsidian.root, &input.reference).map_err(|error| error.to_string())?;
         import_obsidian_candidate(&store, candidate, input.origin).map(ImportOutcome::plan)
@@ -651,9 +652,9 @@ async fn import_all_obsidian(
             json!({ "error": "Obsidian import is not configured for this machine" }),
         );
     };
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        let store = TripsStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = TripsStore::open(&database_path).map_err(|error| error.to_string())?;
         let candidates = scan_trip_notes(&obsidian.root, &obsidian.trips_dir)
             .map_err(|error| error.to_string())?;
         let mut result = ImportAllObsidianResult {
@@ -961,7 +962,7 @@ async fn flight_pivot(
 async fn main() {
     let config = Config::load();
     let state = AppState {
-        database_url: Arc::new(config.database_url),
+        database_path: Arc::new(config.database_path),
         obsidian: config.obsidian,
         travel: Arc::new(config.travel),
     };
@@ -1004,11 +1005,13 @@ mod readiness_tests {
     /// surface axon-status polled was `health`, which is a literal and answers 200 here.
     #[tokio::test]
     async fn readiness_fails_when_the_database_is_unreachable() {
-        // Port 1 is reserved and nothing listens there — the stopped-container case.
+        // A file where a directory has to be: the store cannot be opened there,
+        // which is what a missing or unwritable database file reads as now.
+        let blocker =
+            std::env::temp_dir().join(format!("trips-ready-blocker-{}", std::process::id()));
+        std::fs::write(&blocker, b"not a directory").unwrap();
         let state = AppState {
-            database_url: Arc::new(
-                "host=127.0.0.1 port=1 user=axon password=axon dbname=axon".to_string(),
-            ),
+            database_path: Arc::new(blocker.join("axon.db")),
             obsidian: None,
             travel: Arc::new(Default::default()),
         };

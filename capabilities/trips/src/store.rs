@@ -1,7 +1,9 @@
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use postgres::{Client, Row};
+use axon_store::QueryAll;
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -210,10 +212,12 @@ pub struct PlanDetails {
 }
 
 pub struct TripsStore {
-    /// Shared with every other store in this process on the same database, so
-    /// opening one is a checkout rather than a connect.
+    /// Shared with every other store in this process on the same file, so
+    /// opening one is a checkout rather than an open.
     pool: axon_store::Pool,
-    schema: String,
+    /// Prefixes this capability's tables in the one shared file (PRD Q45):
+    /// `trips` here means `trips_plans` and `trips_plan_items`.
+    prefix: String,
 }
 
 fn generated_id(prefix: &str) -> String {
@@ -275,35 +279,37 @@ fn validate_plan_fields(
     Ok(())
 }
 
-fn validate_schema(schema: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if !schema
+/// The prefix is interpolated into DDL and every statement, so it is checked
+/// rather than trusted. Production passes the literal `trips`; only a test
+/// passes anything else.
+fn validate_prefix(prefix: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if !prefix
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || character == '_')
     {
-        return Err("schema must contain only ASCII letters, digits, or underscore".into());
+        return Err("prefix must contain only ASCII letters, digits, or underscore".into());
     }
     Ok(())
 }
 
 impl TripsStore {
-    pub fn open(database_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_in_schema(database_url, "trips")
+    pub fn open(database_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_with_prefix(database_path, "trips")
     }
 
-    pub fn open_in_schema(
-        database_url: &str,
-        schema: &str,
+    pub fn open_with_prefix(
+        database_path: &Path,
+        prefix: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        validate_schema(schema)?;
-        // A pool checkout, not a connect, and the migration runs once per process
-        // per (database, schema) rather than once per open. Both halves of the
-        // Store::open problem -- libs/axon-store/README.md has the numbers.
-        let pool = axon_store::open_pool(database_url, schema, |conn| {
-            Self::run_migration(conn, schema)
+        validate_prefix(prefix)?;
+        // A pool checkout, and the migration runs once per process per (file,
+        // prefix) rather than once per open -- libs/axon-store/README.md has why.
+        let pool = axon_store::open_pool(database_path, prefix, |conn| {
+            Self::run_migration(conn, prefix)
         })?;
         Ok(Self {
             pool,
-            schema: schema.to_string(),
+            prefix: prefix.to_string(),
         })
     }
 
@@ -311,7 +317,7 @@ impl TripsStore {
     ///
     /// A `Result` where this used to be `self.conn.lock().unwrap()`: that unwrap
     /// could only fail on a poisoned mutex, whereas a checkout can genuinely fail
-    /// when the database is down or every connection is busy.
+    /// when the file is unreachable or every connection is busy.
     fn conn(&self) -> Result<axon_store::PooledClient, Box<dyn std::error::Error>> {
         Ok(self.pool.get()?)
     }
@@ -321,16 +327,23 @@ impl TripsStore {
     /// A checkout from the pool is not enough on its own — the point is to fail exactly when a
     /// real query would, which is what the readiness surface promises its caller (#126).
     pub fn ping(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        conn.query_one("SELECT 1", &[])?;
+        let conn = self.conn()?;
+        conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
         Ok(())
     }
 
-    fn run_migration(conn: &mut Client, schema: &str) -> Result<(), Box<dyn std::error::Error>> {
-        conn.batch_execute(&format!(
+    /// The tables as they are, not the history that produced them.
+    ///
+    /// Postgres reached this shape through `ADD COLUMN IF NOT EXISTS` and a
+    /// dropped-and-re-added `CHECK`; SQLite has neither, and the file starts
+    /// empty, so the columns those ALTERs added are declared here and the
+    /// widened `item_type` list is the one the `CREATE TABLE` carries. Folding
+    /// is only correct because no deployed SQLite file predates it — see
+    /// libs/axon-store/README.md, "Writing a capability's DDL".
+    fn run_migration(conn: &Connection, prefix: &str) -> Result<(), Box<dyn std::error::Error>> {
+        conn.execute_batch(&format!(
             "
-            CREATE SCHEMA IF NOT EXISTS {schema};
-            CREATE TABLE IF NOT EXISTS {schema}.plans (
+            CREATE TABLE IF NOT EXISTS {prefix}_plans (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 origin TEXT NOT NULL,
@@ -347,13 +360,15 @@ impl TripsStore {
                 source_kind TEXT,
                 source_ref TEXT,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                budget_cents INTEGER,
+                currency TEXT
             );
-            CREATE TABLE IF NOT EXISTS {schema}.plan_items (
+            CREATE TABLE IF NOT EXISTS {prefix}_plan_items (
                 id TEXT PRIMARY KEY,
-                plan_id TEXT NOT NULL REFERENCES {schema}.plans(id) ON DELETE CASCADE,
+                plan_id TEXT NOT NULL REFERENCES {prefix}_plans(id) ON DELETE CASCADE,
                 item_type TEXT NOT NULL
-                    CHECK (item_type IN ('journey','transport','event','activity','place','stay','image','note')),
+                    CHECK (item_type IN ('journey','transport','event','activity','place','stay','image','note','option_set','booking','outcome')),
                 day TEXT,
                 external_id TEXT NOT NULL,
                 title TEXT NOT NULL,
@@ -361,29 +376,15 @@ impl TripsStore {
                 created_at TEXT NOT NULL,
                 UNIQUE (plan_id, item_type, external_id)
             );
-            CREATE INDEX IF NOT EXISTS idx_trip_plan_updated
-                ON {schema}.plans(updated_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_trip_item_plan
-                ON {schema}.plan_items(plan_id, day, created_at);
-            ALTER TABLE {schema}.plans
-                ADD COLUMN IF NOT EXISTS travelers TEXT NOT NULL DEFAULT '[]',
-                ADD COLUMN IF NOT EXISTS transport_modes TEXT NOT NULL DEFAULT '[]',
-                ADD COLUMN IF NOT EXISTS stages TEXT NOT NULL DEFAULT '[]',
-                ADD COLUMN IF NOT EXISTS cover_image_url TEXT,
-                ADD COLUMN IF NOT EXISTS source_kind TEXT,
-                ADD COLUMN IF NOT EXISTS source_ref TEXT,
-                ADD COLUMN IF NOT EXISTS budget_cents BIGINT,
-                ADD COLUMN IF NOT EXISTS currency TEXT;
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_trip_plan_source
-                ON {schema}.plans(source_kind, source_ref)
+            CREATE INDEX IF NOT EXISTS {prefix}_idx_plan_updated
+                ON {prefix}_plans(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS {prefix}_idx_item_plan
+                ON {prefix}_plan_items(plan_id, day, created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS {prefix}_idx_plan_source
+                ON {prefix}_plans(source_kind, source_ref)
                 WHERE source_kind IS NOT NULL AND source_ref IS NOT NULL;
-            ALTER TABLE {schema}.plan_items
-                DROP CONSTRAINT IF EXISTS plan_items_item_type_check;
-            ALTER TABLE {schema}.plan_items
-                ADD CONSTRAINT plan_items_item_type_check
-                CHECK (item_type IN ('journey','transport','event','activity','place','stay','image','note','option_set','booking','outcome'));
             ",
-            schema = schema
+            prefix = prefix
         ))?;
         Ok(())
     }
@@ -412,19 +413,17 @@ impl TripsStore {
             .source
             .as_ref()
             .map(|source| source.reference.as_str());
-        let mut conn = self.conn()?;
-        let row = conn.query_one(
+        let conn = self.conn()?;
+        let plan = conn.query_row(
             &format!(
-                "INSERT INTO {schema}.plans
+                "INSERT INTO {prefix}_plans
                     (id,title,origin,destinations,date_start,date_end,interests,status,travelers,
                      transport_modes,stages,cover_image_url,source_kind,source_ref,created_at,updated_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,$10,$11,$12,$13,$14,$14)
-                 RETURNING id,title,origin,destinations,date_start,date_end,interests,status,
-                    travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
-                    created_at,updated_at,budget_cents,currency",
-                schema = self.schema
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'draft',?8,?9,?10,?11,?12,?13,?14,?14)
+                 RETURNING {PLAN_COLUMNS}",
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &id,
                 &input.title.trim(),
                 &origin,
@@ -440,55 +439,50 @@ impl TripsStore {
                 &source_ref,
                 &now,
             ],
+            row_to_plan,
         )?;
-        row_to_plan(&row)
+        Ok(plan)
     }
 
     pub fn list_plans(&self) -> Result<Vec<TripPlan>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let rows = conn.query(
+        let conn = self.conn()?;
+        Ok(conn.query_all(
             &format!(
-                "SELECT id,title,origin,destinations,date_start,date_end,interests,status,
-                        travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
-                        created_at,updated_at,budget_cents,currency
-                 FROM {}.plans WHERE status != 'archived'
+                "SELECT {PLAN_COLUMNS}
+                 FROM {prefix}_plans WHERE status != 'archived'
                  ORDER BY updated_at DESC",
-                self.schema
+                prefix = self.prefix
             ),
-            &[],
-        )?;
-        rows.iter().map(row_to_plan).collect()
+            [],
+            row_to_plan,
+        )?)
     }
 
     pub fn get_plan(&self, id: &str) -> Result<Option<PlanDetails>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let Some(row) = conn.query_opt(
-            &format!(
-                "SELECT id,title,origin,destinations,date_start,date_end,interests,status,
-                        travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
-                        created_at,updated_at,budget_cents,currency
-                 FROM {}.plans WHERE id = $1",
-                self.schema
-            ),
-            &[&id],
-        )?
+        let conn = self.conn()?;
+        let Some(plan) = conn
+            .query_row(
+                &format!(
+                    "SELECT {PLAN_COLUMNS} FROM {prefix}_plans WHERE id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&id],
+                row_to_plan,
+            )
+            .optional()?
         else {
             return Ok(None);
         };
-        let plan = row_to_plan(&row)?;
-        let item_rows = conn.query(
+        let items = conn.query_all(
             &format!(
-                "SELECT id,plan_id,item_type,day,external_id,title,payload,created_at
-                 FROM {}.plan_items WHERE plan_id = $1
+                "SELECT {ITEM_COLUMNS}
+                 FROM {prefix}_plan_items WHERE plan_id = ?1
                  ORDER BY day NULLS LAST, created_at",
-                self.schema
+                prefix = self.prefix
             ),
-            &[&id],
+            params![&id],
+            row_to_item,
         )?;
-        let items = item_rows
-            .iter()
-            .map(row_to_item)
-            .collect::<Result<Vec<_>, _>>()?;
         Ok(Some(PlanDetails { plan, items }))
     }
 
@@ -560,20 +554,18 @@ impl TripsStore {
         let travelers_json = serde_json::to_string(&travelers)?;
         let transport_modes_json = serde_json::to_string(&transport_modes)?;
         let stages_json = serde_json::to_string(&stages)?;
-        let mut conn = self.conn()?;
-        let row = conn.query_one(
+        let conn = self.conn()?;
+        let plan = conn.query_row(
             &format!(
-                "UPDATE {schema}.plans SET
-                    title=$1,origin=$2,destinations=$3,date_start=$4,date_end=$5,interests=$6,
-                    status=$7,travelers=$8,transport_modes=$9,stages=$10,cover_image_url=$11,
-                    updated_at=$12,budget_cents=$14,currency=$15
-                 WHERE id=$13
-                 RETURNING id,title,origin,destinations,date_start,date_end,interests,status,
-                    travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
-                    created_at,updated_at,budget_cents,currency",
-                schema = self.schema
+                "UPDATE {prefix}_plans SET
+                    title=?1,origin=?2,destinations=?3,date_start=?4,date_end=?5,interests=?6,
+                    status=?7,travelers=?8,transport_modes=?9,stages=?10,cover_image_url=?11,
+                    updated_at=?12,budget_cents=?14,currency=?15
+                 WHERE id=?13
+                 RETURNING {PLAN_COLUMNS}",
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &title.trim(),
                 &origin_json,
                 &destinations_json,
@@ -590,8 +582,9 @@ impl TripsStore {
                 &budget_cents,
                 &currency,
             ],
+            row_to_plan,
         )?;
-        Ok(Some(row_to_plan(&row)?))
+        Ok(Some(plan))
     }
 
     /// Moves one item to a day, or clears it.
@@ -622,17 +615,20 @@ impl TripsStore {
                 return Err("day must be YYYY-MM-DD, or null to unset it".into());
             }
         }
-        let mut conn = self.conn()?;
-        let row = conn.query_opt(
-            &format!(
-                "UPDATE {schema}.plan_items SET day = $3
-                 WHERE plan_id = $1 AND id = $2
-                 RETURNING id,plan_id,item_type,day,external_id,title,payload,created_at",
-                schema = self.schema
-            ),
-            &[&plan_id, &item_id, &day],
-        )?;
-        row.as_ref().map(row_to_item).transpose()
+        let conn = self.conn()?;
+        let item = conn
+            .query_row(
+                &format!(
+                    "UPDATE {prefix}_plan_items SET day = ?3
+                 WHERE plan_id = ?1 AND id = ?2
+                 RETURNING {ITEM_COLUMNS}",
+                    prefix = self.prefix
+                ),
+                params![&plan_id, &item_id, &day],
+                row_to_item,
+            )
+            .optional()?;
+        Ok(item)
     }
 
     /// Records how a stage actually went, against the intent it was chosen under.
@@ -784,18 +780,19 @@ impl TripsStore {
         kind: &str,
         reference: &str,
     ) -> Result<Option<TripPlan>, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
-        let row = conn.query_opt(
-            &format!(
-                "SELECT id,title,origin,destinations,date_start,date_end,interests,status,
-                        travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
-                        created_at,updated_at,budget_cents,currency
-                 FROM {}.plans WHERE source_kind = $1 AND source_ref = $2",
-                self.schema
-            ),
-            &[&kind, &reference],
-        )?;
-        row.as_ref().map(row_to_plan).transpose()
+        let conn = self.conn()?;
+        let plan = conn
+            .query_row(
+                &format!(
+                    "SELECT {PLAN_COLUMNS}
+                 FROM {prefix}_plans WHERE source_kind = ?1 AND source_ref = ?2",
+                    prefix = self.prefix
+                ),
+                params![&kind, &reference],
+                row_to_plan,
+            )
+            .optional()?;
+        Ok(plan)
     }
 
     pub fn add_item(
@@ -814,20 +811,20 @@ impl TripsStore {
         let id = generated_id("trip:item");
         let now = now_text();
         let payload = serde_json::to_string(&input.payload)?;
-        let mut conn = self.conn()?;
-        let row = conn.query_one(
+        let conn = self.conn()?;
+        let item = conn.query_row(
             &format!(
-                "INSERT INTO {schema}.plan_items
+                "INSERT INTO {prefix}_plan_items
                     (id,plan_id,item_type,day,external_id,title,payload,created_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
                  ON CONFLICT (plan_id,item_type,external_id) DO UPDATE SET
                     day = excluded.day,
                     title = excluded.title,
                     payload = excluded.payload
-                 RETURNING id,plan_id,item_type,day,external_id,title,payload,created_at",
-                schema = self.schema
+                 RETURNING {ITEM_COLUMNS}",
+                prefix = self.prefix
             ),
-            &[
+            params![
                 &id,
                 &plan_id,
                 &input.item_type,
@@ -837,15 +834,16 @@ impl TripsStore {
                 &payload,
                 &now,
             ],
+            row_to_item,
         )?;
         conn.execute(
             &format!(
-                "UPDATE {}.plans SET updated_at = $1, status = 'saved' WHERE id = $2",
-                self.schema
+                "UPDATE {prefix}_plans SET updated_at = ?1, status = 'saved' WHERE id = ?2",
+                prefix = self.prefix
             ),
-            &[&now, &plan_id],
+            params![&now, &plan_id],
         )?;
-        row_to_item(&row)
+        Ok(item)
     }
 
     pub fn delete_item(
@@ -853,26 +851,37 @@ impl TripsStore {
         plan_id: &str,
         item_id: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let count = conn.execute(
             &format!(
-                "DELETE FROM {}.plan_items WHERE plan_id = $1 AND id = $2",
-                self.schema
+                "DELETE FROM {prefix}_plan_items WHERE plan_id = ?1 AND id = ?2",
+                prefix = self.prefix
             ),
-            &[&plan_id, &item_id],
+            params![&plan_id, &item_id],
         )?;
         Ok(count > 0)
     }
 
     pub fn delete_plan(&self, plan_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut conn = self.conn()?;
+        let conn = self.conn()?;
         let count = conn.execute(
-            &format!("DELETE FROM {}.plans WHERE id = $1", self.schema),
-            &[&plan_id],
+            &format!(
+                "DELETE FROM {prefix}_plans WHERE id = ?1",
+                prefix = self.prefix
+            ),
+            params![&plan_id],
         )?;
         Ok(count > 0)
     }
 }
+
+/// Read back positionally by `row_to_plan`, so the order is the contract. One
+/// declaration because four statements select it and a fifth returns it.
+const PLAN_COLUMNS: &str = "id,title,origin,destinations,date_start,date_end,interests,status,
+     travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
+     created_at,updated_at,budget_cents,currency";
+
+const ITEM_COLUMNS: &str = "id,plan_id,item_type,day,external_id,title,payload,created_at";
 
 /// Every accepted `item_type`. One list, so the check and the error message it
 /// prints cannot drift apart.
@@ -988,48 +997,42 @@ fn propagate_default_transport_modes(
         .collect()
 }
 
-fn row_to_plan(row: &Row) -> Result<TripPlan, Box<dyn std::error::Error>> {
-    let origin: String = row.try_get(2)?;
-    let destinations: String = row.try_get(3)?;
-    let travelers: String = row.try_get(8)?;
-    let transport_modes: String = row.try_get(9)?;
-    let stages: String = row.try_get(10)?;
-    let source_kind: Option<String> = row.try_get(12)?;
-    let source_ref: Option<String> = row.try_get(13)?;
+fn row_to_plan(row: &Row) -> rusqlite::Result<TripPlan> {
+    let source_kind: Option<String> = row.get(12)?;
+    let source_ref: Option<String> = row.get(13)?;
     Ok(TripPlan {
-        id: row.try_get(0)?,
-        title: row.try_get(1)?,
-        origin: serde_json::from_str(&origin)?,
-        destinations: serde_json::from_str(&destinations)?,
-        date_start: row.try_get(4)?,
-        date_end: row.try_get(5)?,
-        interests: row.try_get(6)?,
-        status: row.try_get(7)?,
-        travelers: serde_json::from_str(&travelers)?,
-        transport_modes: serde_json::from_str(&transport_modes)?,
-        stages: serde_json::from_str(&stages)?,
-        cover_image_url: row.try_get(11)?,
+        id: row.get(0)?,
+        title: row.get(1)?,
+        origin: axon_store::json_column(row, 2)?,
+        destinations: axon_store::json_column(row, 3)?,
+        date_start: row.get(4)?,
+        date_end: row.get(5)?,
+        interests: row.get(6)?,
+        status: row.get(7)?,
+        travelers: axon_store::json_column(row, 8)?,
+        transport_modes: axon_store::json_column(row, 9)?,
+        stages: axon_store::json_column(row, 10)?,
+        cover_image_url: row.get(11)?,
         source: source_kind
             .zip(source_ref)
             .map(|(kind, reference)| PlanSource { kind, reference }),
-        created_at: row.try_get(14)?,
-        updated_at: row.try_get(15)?,
-        budget_cents: row.try_get(16)?,
-        currency: row.try_get(17)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+        budget_cents: row.get(16)?,
+        currency: row.get(17)?,
     })
 }
 
-fn row_to_item(row: &Row) -> Result<PlanItem, Box<dyn std::error::Error>> {
-    let payload: String = row.try_get(6)?;
+fn row_to_item(row: &Row) -> rusqlite::Result<PlanItem> {
     Ok(PlanItem {
-        id: row.try_get(0)?,
-        plan_id: row.try_get(1)?,
-        item_type: row.try_get(2)?,
-        day: row.try_get(3)?,
-        external_id: row.try_get(4)?,
-        title: row.try_get(5)?,
-        payload: serde_json::from_str(&payload)?,
-        created_at: row.try_get(7)?,
+        id: row.get(0)?,
+        plan_id: row.get(1)?,
+        item_type: row.get(2)?,
+        day: row.get(3)?,
+        external_id: row.get(4)?,
+        title: row.get(5)?,
+        payload: axon_store::json_column(row, 6)?,
+        created_at: row.get(7)?,
     })
 }
 
@@ -1090,9 +1093,9 @@ mod tests {
     }
 
     #[test]
-    fn schema_names_are_restricted() {
-        assert!(validate_schema("trips_test").is_ok());
-        assert!(validate_schema("trips; DROP SCHEMA public").is_err());
+    fn table_prefixes_are_restricted() {
+        assert!(validate_prefix("trips_test").is_ok());
+        assert!(validate_prefix("trips; DROP TABLE trips_plans").is_err());
     }
 
     /// The write paths the dashboard already uses, replayed field for field from
@@ -1254,5 +1257,211 @@ mod tests {
             vec![TransportMode::Train, TransportMode::Car]
         );
         assert_eq!(stages[1].transport_modes, vec![TransportMode::Flight]);
+    }
+}
+
+/// Database-backed; named for the selector CI splits on — see
+/// `capabilities/scouting/src/store.rs` for why the name is the contract.
+///
+/// New here. Under Postgres this capability had no store suite at all: every
+/// statement needed a running server, so the twenty of them were only ever
+/// exercised by the dashboard. A temp file costs nothing, so the port that
+/// moved them to SQLite is the moment they get covered.
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn open_test_store(suffix: &str) -> TripsStore {
+        let dir = std::env::temp_dir().join(format!("trips-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a writable temp directory");
+        TripsStore::open(&dir.join(format!("{suffix}.db")))
+            .unwrap_or_else(|e| panic!("could not open test store at {}: {e}", dir.display()))
+    }
+
+    fn place(id: &str) -> PlaceRef {
+        PlaceRef {
+            id: id.into(),
+            name: id.into(),
+            kind: PlaceKind::City,
+            address: None,
+            latitude: None,
+            longitude: None,
+        }
+    }
+
+    fn a_plan() -> CreatePlan {
+        CreatePlan {
+            title: "Autumn in Valencia".into(),
+            origin: place("bonn"),
+            destinations: vec![place("valencia")],
+            date_start: "2026-09-01".into(),
+            date_end: "2026-09-08".into(),
+            interests: "food".into(),
+            travelers: vec!["me".into()],
+            transport_modes: vec![TransportMode::Train],
+            stages: Vec::new(),
+            cover_image_url: None,
+            source: None,
+        }
+    }
+
+    #[test]
+    fn ping_reaches_the_database() {
+        open_test_store("ping")
+            .ping()
+            .expect("a live store answers its own ping");
+    }
+
+    /// Five columns hold JSON as TEXT, so a round trip is the only thing that
+    /// proves the plan that comes back is the plan that went in.
+    #[test]
+    fn a_plan_round_trips_through_its_json_columns() {
+        let store = open_test_store("round_trip");
+        let written = store.create_plan(&a_plan()).unwrap();
+        assert_eq!(written.status, "draft");
+        assert_eq!(written.travelers, vec!["me".to_string()]);
+        assert_eq!(written.transport_modes, vec![TransportMode::Train]);
+        // One destination and no supplied stages, so one stage is generated.
+        assert_eq!(written.stages.len(), 1);
+        assert_eq!(written.origin.id, "bonn");
+
+        let read_back = store.get_plan(&written.id).unwrap().expect("just written");
+        assert_eq!(read_back.plan, written);
+        assert!(read_back.items.is_empty());
+        assert_eq!(store.list_plans().unwrap().len(), 1);
+    }
+
+    /// The lost-update guard, end to end rather than against the helper alone.
+    #[test]
+    fn a_stale_revision_is_refused_and_a_current_one_is_applied() {
+        let store = open_test_store("revision");
+        let plan = store.create_plan(&a_plan()).unwrap();
+
+        let stale = store.update_plan(
+            &plan.id,
+            &UpdatePlan {
+                title: Some("Renamed".into()),
+                expected_updated_at: Some("not-the-revision".into()),
+                ..Default::default()
+            },
+        );
+        assert!(stale.is_err(), "a stale write must be refused");
+
+        let updated = store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    title: Some("Renamed".into()),
+                    budget_cents: Some(120_000),
+                    currency: Some("EUR".into()),
+                    expected_updated_at: Some(plan.updated_at.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .expect("the plan exists");
+        assert_eq!(updated.title, "Renamed");
+        assert_eq!(updated.budget_cents, Some(120_000));
+        assert_eq!(updated.currency.as_deref(), Some("EUR"));
+    }
+
+    /// `ON CONFLICT (plan_id,item_type,external_id)` — the same item saved
+    /// twice is one row with the second payload, not two rows.
+    #[test]
+    fn re_adding_an_item_updates_it_rather_than_duplicating_it() {
+        let store = open_test_store("item_upsert");
+        let plan = store.create_plan(&a_plan()).unwrap();
+        let item = CreatePlanItem {
+            item_type: "transport".into(),
+            day: Some("2026-09-01".into()),
+            external_id: "journey:1".into(),
+            title: "Bonn → Valencia".into(),
+            payload: json!({ "mode": "train", "journey": { "id": "j:1" } }),
+        };
+        store.add_item(&plan.id, &item).unwrap();
+
+        let again = CreatePlanItem {
+            title: "Bonn → Valencia (cheaper)".into(),
+            payload: json!({ "mode": "train", "journey": { "id": "j:2" } }),
+            ..item.clone()
+        };
+        let second = store.add_item(&plan.id, &again).unwrap();
+        assert_eq!(second.payload["journey"]["id"], "j:2");
+
+        let details = store.get_plan(&plan.id).unwrap().unwrap();
+        assert_eq!(details.items.len(), 1, "the upsert must not add a row");
+        assert_eq!(details.items[0].title, "Bonn → Valencia (cheaper)");
+        // Adding an item promotes a draft, which is what the dashboard reads.
+        assert_eq!(details.plan.status, "saved");
+
+        let moved = store
+            .set_item_day(&plan.id, &second.id, Some("2026-09-02"))
+            .unwrap()
+            .expect("the item exists");
+        assert_eq!(moved.day.as_deref(), Some("2026-09-02"));
+        assert!(store
+            .set_item_day(&plan.id, &second.id, Some("02.09.2026"))
+            .is_err());
+    }
+
+    /// `ON DELETE CASCADE` is enforced only when `PRAGMA foreign_keys` is on,
+    /// and SQLite parses the clause happily either way. Deleting a plan with an
+    /// item is the cheapest proof that the pool really sets it.
+    #[test]
+    fn deleting_a_plan_takes_its_items_with_it() {
+        let store = open_test_store("cascade");
+        let plan = store.create_plan(&a_plan()).unwrap();
+        store
+            .add_item(
+                &plan.id,
+                &CreatePlanItem {
+                    item_type: "note".into(),
+                    day: None,
+                    external_id: "note:1".into(),
+                    title: "Book the ferry".into(),
+                    payload: json!({ "text": "before September" }),
+                },
+            )
+            .unwrap();
+
+        assert!(store.delete_plan(&plan.id).unwrap());
+        assert!(store.get_plan(&plan.id).unwrap().is_none());
+        // The orphan check: a surviving item would still be readable by id.
+        let conn = store.conn().unwrap();
+        let orphans: i64 = conn
+            .query_row("SELECT COUNT(*) FROM trips_plan_items", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(orphans, 0, "PRAGMA foreign_keys is not being applied");
+    }
+
+    /// The partial unique index: a plan with a source is findable by it, and
+    /// the plans without one do not collide on their shared NULL.
+    #[test]
+    fn a_sourced_plan_is_findable_and_unsourced_ones_do_not_collide() {
+        let store = open_test_store("source");
+        let mut sourced = a_plan();
+        sourced.source = Some(PlanSource {
+            kind: "obsidian".into(),
+            reference: "Atlas/Events/valencia.md".into(),
+        });
+        let plan = store.create_plan(&sourced).unwrap();
+        assert_eq!(
+            store
+                .find_plan_by_source("obsidian", "Atlas/Events/valencia.md")
+                .unwrap()
+                .map(|found| found.id),
+            Some(plan.id)
+        );
+        assert!(store
+            .find_plan_by_source("obsidian", "missing")
+            .unwrap()
+            .is_none());
+
+        store.create_plan(&a_plan()).unwrap();
+        store.create_plan(&a_plan()).unwrap();
+        assert_eq!(store.list_plans().unwrap().len(), 3);
     }
 }

@@ -149,6 +149,12 @@ conn.execute(&sql, params![&id, &title])?;                          // write
 conn.execute_batch(&ddl)?;                                          // migration
 ```
 
+`axon_store::json_column(row, index)` is the second addition, and the last. SQLite has no JSON
+type, so everything Postgres held as `jsonb` (`places.geocode_cache.response`) or `integer[]`
+(`punctuality.stop_stats.counts`) is TEXT here, beside the TEXT columns capabilities were already
+serializing by hand. It fails as a column conversion naming the index, where a bare `from_str` at
+the call site produces a serde error with no idea which column it came from.
+
 ## The pool
 
 `pool_for` gives a process one pool per database file, keyed by the canonicalized path so two

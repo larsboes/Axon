@@ -1,11 +1,10 @@
 //! Public, zero-personal-data config for the Trips store.
 //!
-//! Resolution:
-//!   1. `$AXON_TRIPS_DATABASE_URL`
-//!   2. values from `$AXON_PERSONAL_ROOT/config/postgres.env`
-//!   3. a localhost development fallback
+//! The store path comes from `axon_config::database_path` — `AXON_DB_PATH`, else
+//! `<overlay>/data/axon/axon.db`. One file for every capability (PRD Q45), so
+//! there is no per-capability database to resolve any more.
 
-use axon_config::{expand_tilde, postgres_conn_from_shared_env, resolve_port};
+use axon_config::{database_path, expand_tilde, resolve_port};
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -44,7 +43,7 @@ pub struct TravelPrefs {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub database_url: String,
+    pub database_path: PathBuf,
     pub port: u16,
     pub obsidian: Option<ObsidianConfig>,
     pub travel: TravelPrefs,
@@ -85,12 +84,6 @@ fn obsidian_from_personal_config() -> Option<ObsidianConfig> {
 
 impl Config {
     pub fn load() -> Self {
-        let database_url = std::env::var("AXON_TRIPS_DATABASE_URL")
-            .ok()
-            .or_else(postgres_conn_from_shared_env)
-            .unwrap_or_else(|| {
-                "host=127.0.0.1 port=5432 user=axon password=axon dbname=axon".into()
-            });
         let port = resolve_port(None, None, 8086);
         let obsidian = match std::env::var("AXON_TRIPS_OBSIDIAN_ROOT") {
             Ok(root) => Some(ObsidianConfig {
@@ -104,7 +97,7 @@ impl Config {
         };
         let travel = file_config().and_then(|c| c.travel).unwrap_or_default();
         Self {
-            database_url,
+            database_path: database_path(),
             port,
             obsidian,
             travel,

@@ -85,9 +85,10 @@ HTTP surface on the manifest-declared port:
 - `POST /api/import/obsidian`
 - `POST /api/import/obsidian/all`
 
-The process resolves the shared Postgres connection from
-`$AXON_PERSONAL_ROOT/config/postgres.env`; `AXON_TRIPS_DATABASE_URL` is the explicit
-development override. No personal station, destination or credential is tracked here.
+Rows live in the shared SQLite file — `AXON_DB_PATH`, else
+`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `trips`, so the two tables
+are `trips_plans` and `trips_plan_items` (libs/axon-store/README.md). No personal station,
+destination or credential is tracked here.
 
 Obsidian scanning is enabled by `$AXON_PERSONAL_ROOT/config/trips.json`, shaped like
 [`schemas/trips.json.example`](../../schemas/trips.json.example). The scanner stays inside

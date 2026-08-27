@@ -21,3 +21,8 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # what 134 call sites were written against; only the manager changed.
 r2d2 = "0.8"
 r2d2_sqlite = "0.35"
+# For `json_column` only. SQLite has no JSON type, so the columns Postgres held
+# as jsonb or integer[] are TEXT here, and reading one back is a store concern
+# rather than a per-capability one.
+serde = "1.0"
+serde_json = "1.0"

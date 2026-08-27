@@ -14,4 +14,5 @@ ready_path  = "/ready"   # availability is judged on this, not on liveness (#126
 # (dashboard/src/lib/api.ts), and every server route already lives under `/api`.
 proxy_api_only = "true"
 
-requires = ["postgres"]
+# No `requires`: the store is a file this process opens, not a service to wait
+# for (PRD Q45).

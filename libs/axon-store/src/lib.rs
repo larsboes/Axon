@@ -281,6 +281,31 @@ pub fn migrate_once(
     })
 }
 
+/// A TEXT column holding JSON, read into its type.
+///
+/// The one shape SQLite has no type for. Postgres carried it three ways and all
+/// three land here: a `jsonb` column (`places.geocode_cache.response`), an
+/// `integer[]` (`punctuality.stop_stats.counts`), and the TEXT columns
+/// capabilities were already serializing by hand (`trips.plans.stages`).
+///
+/// The error path is why this exists rather than a `from_str` at each site: a
+/// row whose JSON does not parse must fail as a column conversion, naming the
+/// column index, instead of becoming a bare serde error with no idea where it
+/// came from.
+pub fn json_column<T: serde::de::DeserializeOwned>(
+    row: &Row<'_>,
+    index: usize,
+) -> rusqlite::Result<T> {
+    let raw: String = row.get(index)?;
+    serde_json::from_str(&raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
+
 /// Every row of a query, mapped.
 ///
 /// rusqlite already answers the one-row cases: `query_row` is `query_one`, and
