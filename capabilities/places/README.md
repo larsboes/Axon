@@ -7,13 +7,13 @@ transit and the companion register.
 
 A 2026-08-25 survey found four place shapes in the system, none shared:
 
-- `trips.plans` serializes `PlaceRef` JSON with optional coordinates
-  (`capabilities/trips/src/store.rs:29-39`).
-- `scouting.opportunities` carries retrofitted `latitude`/`longitude` columns,
+- `trips_plans` serializes `PlaceRef` JSON with optional coordinates
+  (`capabilities/trips/src/store.rs`).
+- `scouting_opportunities` carries retrofitted `latitude`/`longitude` columns,
   filled on only a small fraction of rows
-  (`capabilities/scouting/src/store.rs:88-89`).
-- `punctuality.stations` maps 5,429 EVA codes to names with no coordinates
-  (`capabilities/punctuality/src/store.rs:107-110`).
+  (`capabilities/scouting/src/store.rs`).
+- `punctuality_stations` maps 5,429 EVA codes to names with no coordinates
+  (`capabilities/punctuality/src/store.rs`).
 - Vault notes carry hand-written `coordinates:` frontmatter (a handful of place
   and person notes).
 
@@ -23,10 +23,16 @@ the spend layer (finance), the travel layer (trips, transit), the people layer
 That names the concrete consumer the no-speculative-surfaces ruling requires
 (`dashboard/README.md`, "capabilities expose HTTP").
 
-Cross-schema reads are how the layers assemble: the postgres capability's verdict
-chose one database with schema-per-capability *explicitly* to enable correlation
-joins (`capabilities/postgres/README.md`). places reads `finance.*`, `trips.*`
-and `transit.*` read-only and owns writes only in its own `places` schema.
+Cross-capability reads are how the layers assemble: one shared database was chosen
+*explicitly* to enable correlation joins (`capabilities/postgres/README.md`), and
+PRD Q45 (2026-08-27) kept that property while replacing the schema per capability
+with a table prefix per capability in one SQLite file
+(`libs/axon-store/README.md`). places reads `finance_*`, `trips_*` and `transit_*`
+read-only and owns writes only under its own `places` prefix.
+
+The four tables live in the shared file — `AXON_DB_PATH`, else
+`$AXON_PERSONAL_ROOT/data/axon/axon.db` — as `places_places`,
+`places_geocode_cache`, `places_transaction_places` and `places_person_places`.
 
 ## Decisions, 2026-08-25
 
@@ -61,23 +67,27 @@ principal's call from measured options.
   (2026-08-23) as `places.person_places`: person · place · date range ·
   confidence · source. Machine proposes, the human confirms every row, and
   derivation never writes a confirmed row directly. The register is C2 — the
-  most sensitive store in the system. The Postgres data directory lives in the
-  private overlay, the table is never seeded into `axon_demo`, and its rows
-  never reach a cloud model raw.
+  most sensitive store in the system. The database file lives in the private
+  overlay, the table is never seeded into `axon_demo`, and its rows never reach a
+  cloud model raw.
 
-## Schema (`places`, owned here)
+## Tables (prefix `places`, owned here)
 
-- `places` — `id, name, kind (venue|city|station|address|region), address, city,
+- `places_places` — `id, name, kind (venue|city|station|address|region), address, city,
   country_code, latitude, longitude, source, external_ref, created_at`.
   `external_ref` holds a stable foreign key such as an EVA code or an OSM id.
-- `geocode_cache` — `query_hash, provider, query, response (jsonb), place_id,
-  status (hit|miss|error), fetched_at`. The cache is permanent. A repeat query
-  is served from here and never leaves the host again.
-- `transaction_places` — `source_id, place_id, precision (venue|city),
+- `places_geocode_cache` — `query_hash, provider, query, response (TEXT holding
+  JSON), place_id, status (hit|miss|error), fetched_at`. The cache is permanent. A
+  repeat query is served from here and never leaves the host again. `response` was
+  `jsonb`; SQLite has no JSON type, and nothing ever queried inside the column —
+  every reader took `response::text` and parsed it in Rust — so the JSONB was
+  buying validation rather than indexing, and the writer's own serializer now does
+  that.
+- `places_transaction_places` — `source_id, place_id, precision (venue|city),
   confidence_bp, source, created_at`. `source_id` is the finance journal's
   SHA-256 candidate fingerprint (`capabilities/finance/src/import.rs`), the one
   identity that survives projection rebuilds.
-- `person_places` — the companion register. `id, person, place_id, date_start,
+- `places_person_places` — the companion register. `id, person, place_id, date_start,
   date_end (null = current), confidence_bp, source, state
   (proposed|confirmed|dismissed), created_at, reviewed_at`. `person` is the
   vault note name under `Atlas/People/`.

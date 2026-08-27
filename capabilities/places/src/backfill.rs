@@ -13,7 +13,10 @@
 
 use crate::geocode::{GeocodeQuery, Geocoder, StructuredQuery};
 use crate::layers::{normalize_eva, parse_station_ref};
-use crate::store::{stable_id, validate_schema, Fallible, Place, PlacesStore};
+use axon_store::QueryAll;
+use rusqlite::{params, OptionalExtension};
+
+use crate::store::{stable_id, validate_prefix, Fallible, Place, PlacesStore};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -373,17 +376,17 @@ fn link_address(
 /// embedded newline and all — street on the first line, city on the second).
 /// Returns `None` until finance's migration adds the columns; otherwise the
 /// counters plus the fingerprints this phase covered, which the raw-file phase
-/// skips. The schema is a parameter so the pg test can point the same SQL at a
+/// skips. The prefix is a parameter so a test can point the same SQL at a
 /// scratch copy of the table; production passes `finance`.
 pub fn amex_from_candidates(
     store: &PlacesStore,
     geocoder: &Geocoder,
-    finance_schema: &str,
+    finance_prefix: &str,
     source_account: &str,
     already_linked: &HashSet<String>,
     today: &str,
 ) -> Fallible<Option<(AmexStats, HashSet<String>)>> {
-    validate_schema(finance_schema)?;
+    validate_prefix(finance_prefix)?;
     type Located = (
         String,
         String,
@@ -392,33 +395,38 @@ pub fn amex_from_candidates(
         Option<String>,
     );
     let located: Option<Vec<Located>> = {
-        let mut conn = store.conn()?;
-        let columns_present: i64 = conn
-            .query_one(
-                "SELECT COUNT(*) FROM information_schema.columns
-                 WHERE table_schema = $1 AND table_name = 'transaction_candidates'
-                   AND column_name = 'location_street'",
-                &[&finance_schema],
-            )?
-            .get(0);
+        let conn = store.conn()?;
+        // `information_schema.columns` has no SQLite counterpart; `pragma_table_info`
+        // is the table-valued function that answers the same question, and it returns
+        // no rows at all for a table that does not exist -- which is the other half of
+        // what this probe has to tolerate.
+        let columns_present: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'location_street'",
+            params![&format!("{finance_prefix}_transaction_candidates")],
+            |row| row.get(0),
+        )?;
         if columns_present == 0 {
             None
         } else {
-            Some(
-                conn.query(
-                    &format!(
-                        "SELECT fingerprint, location_street, location_city,
-                                location_postal_code, location_country
-                         FROM {finance_schema}.transaction_candidates
-                         WHERE source_account = $1 AND location_street IS NOT NULL
-                         ORDER BY fingerprint"
-                    ),
-                    &[&source_account],
-                )?
-                .iter()
-                .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
-                .collect(),
-            )
+            Some(conn.query_all(
+                &format!(
+                    "SELECT fingerprint, location_street, location_city,
+                            location_postal_code, location_country
+                     FROM {finance_prefix}_transaction_candidates
+                     WHERE source_account = ?1 AND location_street IS NOT NULL
+                     ORDER BY fingerprint"
+                ),
+                params![&source_account],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?)
         }
     };
     let Some(located) = located else {
@@ -463,13 +471,13 @@ pub fn amex(store: &PlacesStore, today: &str) -> Fallible<()> {
     let geocoder = Geocoder::new(store);
 
     let candidate_fingerprints: HashSet<String> = {
-        let mut conn = store.conn()?;
-        conn.query(
-            "SELECT fingerprint FROM finance.transaction_candidates WHERE source_account = $1",
-            &[&profile.source_account],
+        let conn = store.conn()?;
+        conn.query_all(
+            "SELECT fingerprint FROM finance_transaction_candidates WHERE source_account = ?1",
+            params![&profile.source_account],
+            |row| row.get::<_, String>(0),
         )?
-        .iter()
-        .map(|row| row.get(0))
+        .into_iter()
         .collect()
     };
     let already_linked = store.linked_source_ids()?;
@@ -664,19 +672,20 @@ pub fn trailing_city<'a>(description: &str, cities: &'a HashSet<String>) -> Opti
 }
 
 fn known_cities(store: &PlacesStore) -> Fallible<HashSet<String>> {
-    let schema = store.schema();
-    let mut conn = store.conn()?;
+    let prefix = store.prefix();
+    let conn = store.conn()?;
     let mut cities: HashSet<String> = conn
-        .query(
+        .query_all(
             &format!(
-                "SELECT DISTINCT city FROM {schema}.places WHERE city IS NOT NULL
+                "SELECT DISTINCT city FROM {prefix}_places WHERE city IS NOT NULL
                  UNION
-                 SELECT name FROM {schema}.places WHERE kind = 'city'"
+                 SELECT name FROM {prefix}_places WHERE kind = 'city'"
             ),
-            &[],
+            [],
+            |row| row.get::<_, String>(0),
         )?
         .iter()
-        .map(|row| normalize_text(&row.get::<_, String>(0)).to_uppercase())
+        .map(|city| normalize_text(city).to_uppercase())
         .filter(|city| plausible_city(city))
         .collect();
 
@@ -723,27 +732,25 @@ fn known_cities(store: &PlacesStore) -> Fallible<HashSet<String>> {
 pub fn cities(store: &PlacesStore, today: &str) -> Fallible<()> {
     let cities = known_cities(store)?;
     let geocoder = Geocoder::new(store);
-    let schema = store.schema();
+    let prefix = store.prefix();
 
     let unlinked: Vec<(String, String)> = {
-        let mut conn = store.conn()?;
-        conn.query(
+        let conn = store.conn()?;
+        conn.query_all(
             &format!(
                 "SELECT p.source_id, p.description
-                 FROM finance.transaction_projection p
+                 FROM finance_transaction_projection p
                  WHERE p.kind = 'expense' AND p.currency = 'EUR'
                    AND p.source_id IS NOT NULL
                    AND NOT EXISTS (
-                       SELECT 1 FROM {schema}.transaction_places tp
+                       SELECT 1 FROM {prefix}_transaction_places tp
                        WHERE tp.source_id = p.source_id
                    )
                  ORDER BY p.booked_at, p.source_id"
             ),
-            &[],
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?
-        .iter()
-        .map(|row| (row.get(0), row.get(1)))
-        .collect()
     };
 
     let mut skipped = 0_usize;
@@ -796,17 +803,15 @@ pub fn stations(store: &PlacesStore, today: &str) -> Fallible<()> {
     // full HAFAS ids whose X=/Y= already embed the coordinate; trips carry
     // bare EVA codes.
     let refs: Vec<String> = {
-        let mut conn = store.conn()?;
-        conn.query(
-            "SELECT origin_eva FROM transit.trips
-             UNION SELECT destination_eva FROM transit.trips
-             UNION SELECT origin_eva FROM transit.trip_legs
-             UNION SELECT destination_eva FROM transit.trip_legs",
-            &[],
+        let conn = store.conn()?;
+        conn.query_all(
+            "SELECT origin_eva FROM transit_trips
+             UNION SELECT destination_eva FROM transit_trips
+             UNION SELECT origin_eva FROM transit_trip_legs
+             UNION SELECT destination_eva FROM transit_trip_legs",
+            [],
+            |row| row.get::<_, String>(0),
         )?
-        .iter()
-        .map(|row| row.get(0))
-        .collect()
     };
 
     // Group by EVA, preferring a reference that carries its own coordinates.
@@ -853,13 +858,18 @@ pub fn stations(store: &PlacesStore, today: &str) -> Fallible<()> {
                 // PLC-6; the specific codes are live data and stay in the
                 // overlay evidence note).
                 let known_name: Option<String> = {
-                    let mut conn = store.conn()?;
-                    conn.query_opt(
-                        "SELECT station_name FROM punctuality.stations
-                     WHERE eva = $1 OR eva = lpad($1, 8, '0')",
-                        &[&eva],
-                    )?
-                    .map(|row| row.get(0))
+                    let conn = store.conn()?;
+                    // `lpad($1, 8, '0')` has no SQLite counterpart. The padded
+                    // spelling is computed here instead, by the same helper the
+                    // rest of this module normalizes EVAs with, so the two forms
+                    // cannot drift apart in two places.
+                    conn.query_row(
+                        "SELECT station_name FROM punctuality_stations
+                         WHERE eva = ?1 OR eva = ?2",
+                        params![&eva, &normalize_eva(eva)],
+                        |row| row.get(0),
+                    )
+                    .optional()?
                 };
                 let query = known_name.clone().unwrap_or_else(|| eva.clone());
                 let resolved = client
@@ -991,28 +1001,34 @@ pub fn first_located_destination(destinations: &str) -> Option<(String, String, 
 /// proposal per traveler × plan, id stable on that pair, state hardcoded to
 /// `proposed` by `propose_person_place` — derivation never writes a confirmed
 /// row (ISA PLC-7). Archived plans are skipped, the same reading of `status`
-/// as `travel_layer`. The schema is a parameter so the pg test can point the
+/// as `travel_layer`. The prefix is a parameter so a test can point the
 /// same SQL at a scratch copy of the table; production passes `trips`.
 pub fn travelers_from(
     store: &PlacesStore,
-    trips_schema: &str,
+    trips_prefix: &str,
     today: &str,
 ) -> Fallible<TravelersReport> {
-    validate_schema(trips_schema)?;
+    validate_prefix(trips_prefix)?;
     let plans: Vec<(String, String, String, String, String)> = {
-        let mut conn = store.conn()?;
-        conn.query(
+        let conn = store.conn()?;
+        conn.query_all(
             &format!(
                 "SELECT id, travelers, destinations, date_start, date_end
-                 FROM {trips_schema}.plans
+                 FROM {trips_prefix}_plans
                  WHERE status != 'archived'
                  ORDER BY date_start, id"
             ),
-            &[],
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )?
-        .iter()
-        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
-        .collect()
     };
 
     let mut report = TravelersReport::default();
@@ -1545,59 +1561,61 @@ mod tests {
     }
 }
 
-/// Postgres-backed backfill tests. Synthetic fixtures only (the Musterstadt
-/// convention); source tables the backfills normally read cross-schema
-/// (`finance.transaction_candidates`, `trips.plans`) are scratch copies inside
-/// the test's own schema, which is what the schema parameters exist for.
+/// Database-backed backfill tests. Synthetic fixtures only (the Musterstadt
+/// convention); the neighbour tables the backfills read
+/// (`finance_transaction_candidates`, `trips_plans`) are scratch copies under a test
+/// prefix in the test's own file, which is what the prefix parameters exist for.
 #[cfg(test)]
-mod postgres_tests {
+mod db_tests {
     use super::*;
-    use crate::geocode::postgres_tests::{stub, stub_with};
-    use crate::store::postgres_tests::open_test_store;
+    use crate::geocode::db_tests::{stub, stub_with};
+    use crate::store::db_tests::open_test_store;
+    use rusqlite::Connection;
     use std::sync::atomic::Ordering;
+
+    /// The scratch prefix the neighbour fixtures live under. A prefix rather than the
+    /// real `finance`/`trips` here, because these tests state a *narrower* shape than
+    /// those capabilities actually migrate -- the columns each query projects, no more.
+    const SCRATCH: &str = "scratch";
 
     const SOURCE_ACCOUNT: &str = "liabilities:card:synthetic";
     const VENUE_ITEM: &str = r#"[{"osm_type":"node","osm_id":7001,"lat":"50.0002","lon":"7.0002","name":"Synthetic Market","display_name":"Synthetic Market, Musterstadt","addresstype":"shop","address":{"town":"Musterstadt","country_code":"de"}}]"#;
     const CITY_ITEM: &str = r#"[{"osm_type":"relation","osm_id":7002,"lat":"50.0","lon":"7.0","name":"Musterstadt","display_name":"Musterstadt, Germany","addresstype":"city","address":{"city":"Musterstadt","country_code":"de"}}]"#;
 
     fn transaction_places(store: &PlacesStore) -> Vec<(String, String, String)> {
-        let mut conn = store.conn().unwrap();
-        conn.query(
+        let conn = store.conn().unwrap();
+        conn.query_all(
             &format!(
-                "SELECT source_id, precision, source FROM {}.transaction_places
+                "SELECT source_id, precision, source FROM {}_transaction_places
                  ORDER BY source_id",
-                store.schema()
+                store.prefix()
             ),
-            &[],
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap()
-        .iter()
-        .map(|row| (row.get(0), row.get(1), row.get(2)))
-        .collect()
     }
 
     #[test]
     fn candidate_locations_wait_for_the_finance_migration() {
-        let (store, schema) = open_test_store("cands_absent");
-        {
-            let mut conn = store.conn().unwrap();
-            // The candidates table as it exists before finance's ALTER TABLE
-            // adds the location columns.
-            conn.batch_execute(&format!(
-                "CREATE TABLE {}.transaction_candidates (
+        let (store, path) = open_test_store("cands_absent");
+        // The candidates table as it existed before finance's ALTER TABLE added
+        // the location columns.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TABLE {SCRATCH}_transaction_candidates (
                      fingerprint TEXT PRIMARY KEY,
                      source_account TEXT NOT NULL
-                 )",
-                schema.0
+                 )"
             ))
             .unwrap();
-        }
         // Port 1 refuses connections: proving no geocode is even attempted.
         let geocoder = Geocoder::with_url(&store, "http://127.0.0.1:1/search".into());
         let phase = amex_from_candidates(
             &store,
             &geocoder,
-            &schema.0,
+            SCRATCH,
             SOURCE_ACCOUNT,
             &HashSet::new(),
             "2026-08-25",
@@ -1606,41 +1624,61 @@ mod postgres_tests {
         assert!(phase.is_none(), "absent columns mean no candidate phase");
     }
 
+    /// `pragma_table_info` returns no rows for a table that is not there, which is
+    /// the case the `information_schema` probe answered with a zero count. A missing
+    /// neighbour table must read as "no candidate phase", never as an error.
+    #[test]
+    fn an_absent_candidates_table_reads_as_no_candidate_phase() {
+        let (store, _path) = open_test_store("cands_missing");
+        let geocoder = Geocoder::with_url(&store, "http://127.0.0.1:1/search".into());
+        let phase = amex_from_candidates(
+            &store,
+            &geocoder,
+            SCRATCH,
+            SOURCE_ACCOUNT,
+            &HashSet::new(),
+            "2026-08-25",
+        )
+        .unwrap();
+        assert!(phase.is_none(), "a missing table is not an error here");
+    }
+
     #[test]
     fn stored_candidate_locations_link_venues_and_fall_back_to_the_city() {
-        let (store, schema) = open_test_store("cands");
+        let (store, path) = open_test_store("cands");
         {
-            let mut conn = store.conn().unwrap();
-            conn.batch_execute(&format!(
-                "CREATE TABLE {}.transaction_candidates (
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "CREATE TABLE {SCRATCH}_transaction_candidates (
                      fingerprint TEXT PRIMARY KEY,
                      source_account TEXT NOT NULL,
                      location_street TEXT,
                      location_postal_code TEXT,
                      location_city TEXT,
                      location_country TEXT
-                 )",
-                schema.0
+                 )"
             ))
             .unwrap();
             // The contract shape: Adresse verbatim with its embedded newline
             // (street on line 1, city on line 2), PLZ and Land beside it.
             // fp-cityonly is a whitespace-only Adresse with a filled Stadt: no
             // street exists, so the venue path must never see it (D1).
-            conn.execute(
-                &format!(
-                    "INSERT INTO {}.transaction_candidates VALUES
-                     ('fp-venue', $1, E'Beispielstr. 1\\nMusterstadt', '12345', NULL, 'Deutschland'),
-                     ('fp-cityfb', $1, E'Unresolvable Weg 9\\nMusterstadt', '12345', NULL, 'Deutschland'),
-                     ('fp-cityonly', $1, E'\\n', '12345', 'Musterstadt', 'Deutschland'),
-                     ('fp-linked', $1, E'Beispielstr. 1\\nMusterstadt', '12345', NULL, 'Deutschland'),
-                     ('fp-noloc', $1, NULL, NULL, NULL, NULL),
-                     ('fp-other', 'liabilities:card:other', E'Beispielstr. 1\\nMusterstadt', NULL, NULL, NULL)",
-                    schema.0
-                ),
-                &[&SOURCE_ACCOUNT],
-            )
-            .unwrap();
+            //
+            // SQLite has no `E'...'` escape literal; the newline is a bound
+            // parameter's own character instead.
+            let street = "Beispielstr. 1\nMusterstadt";
+            let unresolvable = "Unresolvable Weg 9\nMusterstadt";
+            let sql = format!(
+                "INSERT INTO {SCRATCH}_transaction_candidates VALUES
+                 ('fp-venue',    ?1, ?2, '12345', NULL, 'Deutschland'),
+                 ('fp-cityfb',   ?1, ?3, '12345', NULL, 'Deutschland'),
+                 ('fp-cityonly', ?1, ?4, '12345', 'Musterstadt', 'Deutschland'),
+                 ('fp-linked',   ?1, ?2, '12345', NULL, 'Deutschland'),
+                 ('fp-noloc',    ?1, NULL, NULL, NULL, NULL),
+                 ('fp-other', 'liabilities:card:other', ?2, NULL, NULL, NULL)"
+            );
+            conn.execute(&sql, params![SOURCE_ACCOUNT, street, unresolvable, "\n"])
+                .unwrap();
         }
         // fp-linked already carries a link (a previous run's), so this run
         // must leave it alone.
@@ -1684,7 +1722,7 @@ mod postgres_tests {
         let (stats, covered) = amex_from_candidates(
             &store,
             &geocoder,
-            &schema.0,
+            SCRATCH,
             SOURCE_ACCOUNT,
             &store.linked_source_ids().unwrap(),
             "2026-08-25",
@@ -1740,7 +1778,7 @@ mod postgres_tests {
         let (stats, _) = amex_from_candidates(
             &store,
             &geocoder,
-            &schema.0,
+            SCRATCH,
             SOURCE_ACCOUNT,
             &store.linked_source_ids().unwrap(),
             "2026-08-25",
@@ -1755,47 +1793,39 @@ mod postgres_tests {
 
     #[test]
     fn travelers_become_proposals_and_never_confirmed_rows() {
-        let (store, schema) = open_test_store("travelers");
+        let (store, path) = open_test_store("travelers");
         {
-            let mut conn = store.conn().unwrap();
-            conn.batch_execute(&format!(
-                "CREATE TABLE {}.plans (
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "CREATE TABLE {SCRATCH}_plans (
                      id TEXT PRIMARY KEY,
                      travelers TEXT NOT NULL,
                      destinations TEXT NOT NULL,
                      date_start TEXT NOT NULL,
                      date_end TEXT NOT NULL,
                      status TEXT NOT NULL
-                 )",
-                schema.0
+                 );
+                 INSERT INTO {SCRATCH}_plans VALUES
+                 ('plan-1', '[\"Synthetic Person\", \"Second Person\"]',
+                  '[{{\"id\": \"d1\", \"name\": \"Musterstadt\", \"kind\": \"city\",
+                      \"latitude\": 50.0, \"longitude\": 7.0}}]',
+                  '2026-09-01', '2026-09-05', 'saved'),
+                 ('plan-2', '[\"Synthetic Person\"]',
+                  '[{{\"id\": \"d2\", \"name\": \"Nowhere\", \"kind\": \"city\"}}]',
+                  '2026-10-01', '2026-10-03', 'saved'),
+                 ('plan-3', '[\"Synthetic Person\"]',
+                  '[{{\"id\": \"d3\", \"name\": \"Musterstadt\", \"kind\": \"city\",
+                      \"latitude\": 50.0, \"longitude\": 7.0}}]',
+                  '2026-11-01', '2026-11-03', 'archived'),
+                 ('plan-4', '[]',
+                  '[{{\"id\": \"d4\", \"name\": \"Musterstadt\", \"kind\": \"city\",
+                      \"latitude\": 50.0, \"longitude\": 7.0}}]',
+                  '2026-12-01', '2026-12-03', 'saved')"
             ))
-            .unwrap();
-            conn.execute(
-                &format!(
-                    "INSERT INTO {}.plans VALUES
-                     ('plan-1', '[\"Synthetic Person\", \"Second Person\"]',
-                      '[{{\"id\": \"d1\", \"name\": \"Musterstadt\", \"kind\": \"city\",
-                          \"latitude\": 50.0, \"longitude\": 7.0}}]',
-                      '2026-09-01', '2026-09-05', 'saved'),
-                     ('plan-2', '[\"Synthetic Person\"]',
-                      '[{{\"id\": \"d2\", \"name\": \"Nowhere\", \"kind\": \"city\"}}]',
-                      '2026-10-01', '2026-10-03', 'saved'),
-                     ('plan-3', '[\"Synthetic Person\"]',
-                      '[{{\"id\": \"d3\", \"name\": \"Musterstadt\", \"kind\": \"city\",
-                          \"latitude\": 50.0, \"longitude\": 7.0}}]',
-                      '2026-11-01', '2026-11-03', 'archived'),
-                     ('plan-4', '[]',
-                      '[{{\"id\": \"d4\", \"name\": \"Musterstadt\", \"kind\": \"city\",
-                          \"latitude\": 50.0, \"longitude\": 7.0}}]',
-                      '2026-12-01', '2026-12-03', 'saved')",
-                    schema.0
-                ),
-                &[],
-            )
             .unwrap();
         }
 
-        let report = travelers_from(&store, &schema.0, "2026-08-25").unwrap();
+        let report = travelers_from(&store, SCRATCH, "2026-08-25").unwrap();
         assert_eq!(report.plans, 3, "the archived plan is not read");
         assert_eq!(report.without_located_destination, 1);
         assert_eq!(report.pairs, 2);
@@ -1818,7 +1848,7 @@ mod postgres_tests {
             .is_empty());
 
         // Idempotent by (person, plan): a re-run writes nothing new.
-        let again = travelers_from(&store, &schema.0, "2026-08-25").unwrap();
+        let again = travelers_from(&store, SCRATCH, "2026-08-25").unwrap();
         assert_eq!(again.proposals_written, 0);
         assert_eq!(again.proposals_existing, 2);
         assert_eq!(again.places_created, 0);
@@ -1826,7 +1856,7 @@ mod postgres_tests {
 
     #[test]
     fn an_unnamed_coordinate_is_named_by_reverse_geocode_or_kept_bare() {
-        let (store, _schema) = open_test_store("revname");
+        let (store, _path) = open_test_store("revname");
         let (url, _hits) = stub(
             r#"{"osm_type":"relation","osm_id":7003,"lat":"50.10","lon":"7.10","name":"Musterstadt","display_name":"Musterstadt, Germany","addresstype":"city","address":{"city":"Musterstadt","country_code":"de"}}"#,
         );

@@ -20,7 +20,7 @@ fn main() {
         }
         Some("backfill") => {
             let config = places::config::Config::load();
-            let store = match places::store::PlacesStore::open(&config.database_url) {
+            let store = match places::store::PlacesStore::open(&config.database_path) {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!("places backfill: cannot open store: {error}");

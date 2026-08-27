@@ -7,4 +7,6 @@ port        = "8093"
 health_path = "/health"
 ready_path  = "/ready"
 
-requires = ["postgres"]
+# No `requires`: the registry, cache, links and register live in the shared SQLite
+# file this process opens itself, so there is no database service to start first
+# (PRD Q45).

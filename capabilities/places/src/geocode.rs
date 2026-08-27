@@ -315,7 +315,7 @@ impl<'a> Geocoder<'a> {
 
     /// Turn one provider item into a registry row and make sure it exists.
     /// Rebuilt from the stored response on cache hits too, so a place deleted
-    /// or a fresh schema self-heals without egress.
+    /// or a fresh database self-heals without egress.
     fn register_place(
         &self,
         item: &Value,
@@ -556,9 +556,9 @@ mod tests {
 /// env-overridable-URL pattern from transit, with the URL passed explicitly so
 /// parallel tests never race on process env.
 #[cfg(test)]
-pub(crate) mod postgres_tests {
+pub(crate) mod db_tests {
     use super::*;
-    use crate::store::postgres_tests::open_test_store;
+    use crate::store::db_tests::open_test_store;
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -598,7 +598,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn a_repeated_query_is_served_from_the_cache_without_egress() {
-        let (store, _schema) = open_test_store("geocache");
+        let (store, _path) = open_test_store("geocache");
         let (url, hits) = stub(
             r#"[{"osm_type":"node","osm_id":42,"lat":"50.0","lon":"7.0","name":"Synthetic Market","display_name":"Synthetic Market, Synthetic Town","addresstype":"shop","address":{"town":"Synthetic Town","country_code":"de"}}]"#,
         );
@@ -631,7 +631,7 @@ pub(crate) mod postgres_tests {
     /// logs too).
     #[test]
     fn a_transport_error_never_carries_the_query_address() {
-        let (store, _schema) = open_test_store("geoerr");
+        let (store, _path) = open_test_store("geoerr");
         // Port 1 on loopback: nothing listens, the connection is refused.
         let geocoder = Geocoder::with_url(&store, "http://127.0.0.1:1/search".into());
         let query = GeocodeQuery::Structured(StructuredQuery {
@@ -652,7 +652,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn a_reverse_lookup_is_cached_like_a_forward_one() {
-        let (store, _schema) = open_test_store("georev");
+        let (store, _path) = open_test_store("georev");
         // A reverse answer is one object, not an array.
         let (url, hits) = stub(
             r#"{"osm_type":"relation","osm_id":4242,"lat":"50.10","lon":"7.10","name":"Musterstadt","display_name":"Musterstadt, Germany","addresstype":"city","address":{"city":"Musterstadt","country_code":"de"}}"#,
@@ -676,7 +676,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn a_reverse_error_answer_is_a_cached_miss() {
-        let (store, _schema) = open_test_store("georevmiss");
+        let (store, _path) = open_test_store("georevmiss");
         let (url, hits) = stub(r#"{"error":"Unable to geocode"}"#);
         let geocoder = Geocoder::with_url(&store, url);
         let first = geocoder.reverse(0.1234, 0.1234, "2026-08-25").unwrap();
@@ -693,7 +693,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn an_empty_provider_answer_is_cached_as_a_miss() {
-        let (store, _schema) = open_test_store("geomiss");
+        let (store, _path) = open_test_store("geomiss");
         let (url, hits) = stub("[]");
         let geocoder = Geocoder::with_url(&store, url);
         let query = GeocodeQuery::Free("synthetic nowhere 4029357733".into());

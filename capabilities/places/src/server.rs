@@ -7,6 +7,7 @@
 //! They guard no C2 table; this one serves the companion register (README D4),
 //! so browser cross-origin access is refused instead — see `origin_allowed`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -99,7 +100,7 @@ async fn routes() -> Json<Value> {
 
 #[derive(Clone)]
 struct AppState {
-    database_url: Arc<String>,
+    database_path: Arc<PathBuf>,
 }
 
 type ApiResponse = (StatusCode, Json<Value>);
@@ -120,9 +121,9 @@ async fn health() -> Json<Value> {
 }
 
 async fn ready(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        PlacesStore::open(&database_url)
+        PlacesStore::open(&database_path)
             .and_then(|store| store.ping())
             .map_err(|error| error.to_string())
     })
@@ -153,9 +154,9 @@ async fn list_places(
     State(state): State<AppState>,
     Query(query): Query<PlacesQuery>,
 ) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        PlacesStore::open(&database_url)
+        PlacesStore::open(&database_path)
             .and_then(|store| store.search_places(query.q.as_deref(), query.kind.as_deref()))
             .map_err(|error| error.to_string())
     })
@@ -213,10 +214,10 @@ async fn geocode(
             json!({ "error": "geocode query must not be empty" }),
         );
     }
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
-        let store = PlacesStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = PlacesStore::open(&database_path).map_err(|error| error.to_string())?;
         let geocoder = Geocoder::new(&store);
         geocoder
             .geocode(&query, None, &now)
@@ -254,9 +255,9 @@ async fn geocode(
 }
 
 async fn spend_layer(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        PlacesStore::open(&database_url)
+        PlacesStore::open(&database_path)
             .and_then(|store| layers::spend_layer(&store))
             .map_err(|error| error.to_string())
     })
@@ -269,10 +270,10 @@ async fn spend_layer(State(state): State<AppState>) -> ApiResponse {
 }
 
 async fn travel_layer(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
-        PlacesStore::open(&database_url)
+        PlacesStore::open(&database_path)
             .and_then(|store| layers::travel_layer(&store, &now))
             .map_err(|error| error.to_string())
     })
@@ -285,10 +286,10 @@ async fn travel_layer(State(state): State<AppState>) -> ApiResponse {
 }
 
 async fn people_layer(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
-        PlacesStore::open(&database_url)
+        PlacesStore::open(&database_path)
             .and_then(|store| layers::people_layer(&store, &now))
             .map_err(|error| error.to_string())
     })
@@ -301,9 +302,9 @@ async fn people_layer(State(state): State<AppState>) -> ApiResponse {
 }
 
 async fn unplaced(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || {
-        PlacesStore::open(&database_url)
+        PlacesStore::open(&database_path)
             .and_then(|store| layers::unplaced_groups(&store))
             .map_err(|error| error.to_string())
     })
@@ -349,10 +350,10 @@ async fn assign_unplaced(
             json!({ "error": "precision must be venue or city" }),
         );
     }
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
-        let store = PlacesStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = PlacesStore::open(&database_path).map_err(|error| error.to_string())?;
         let geocoder = Geocoder::new(&store);
         layers::assign_unplaced(&store, &geocoder, "finance", &request, &now)
             .map_err(|error| error.to_string())
@@ -376,9 +377,9 @@ async fn assign_unplaced(
 }
 
 async fn list_proposals(State(state): State<AppState>) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = PlacesStore::open(&database_url).map_err(|error| error.to_string())?;
+        let store = PlacesStore::open(&database_path).map_err(|error| error.to_string())?;
         let rows = store
             .person_places_in_state("proposed")
             .map_err(|error| error.to_string())?;
@@ -422,10 +423,10 @@ async fn dismiss_proposal(State(state): State<AppState>, Path(id): Path<String>)
 }
 
 async fn review(state: AppState, id: String, decision: Review) -> ApiResponse {
-    let database_url = state.database_url.clone();
+    let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || {
-        PlacesStore::open(&database_url)
+        PlacesStore::open(&database_path)
             .and_then(|store| store.review_person_place(&id, decision, &now))
             .map_err(|error| error.to_string())
     })
@@ -520,7 +521,7 @@ async fn refuse_foreign_origins(request: Request, next: Next) -> Response {
 pub async fn serve() {
     let config = Config::load();
     let state = AppState {
-        database_url: Arc::new(config.database_url),
+        database_path: Arc::new(config.database_path),
     };
     let app = Router::new()
         .route("/routes", get(routes))

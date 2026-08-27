@@ -1,11 +1,15 @@
-//! The three map layers, assembled with read-only cross-schema SELECTs over
-//! `finance.*`, `trips.*` and `transit.*` (`capabilities/postgres/README.md`
-//! chose one database with schema-per-capability exactly for these joins).
+//! The three map layers, assembled with read-only SELECTs over `finance_*`,
+//! `trips_*` and `transit_*`. One database with a namespace per capability was
+//! chosen exactly for these joins; PRD Q45 (2026-08-27) made that namespace a
+//! table prefix instead of a schema, and the joins are the same joins.
 //! The wire shapes here are the dashboard map's contract; every collection is
 //! GeoJSON with `[longitude, latitude]` coordinate order.
 
+use axon_store::QueryAll;
+use rusqlite::params;
+
 use crate::geocode::{GeocodeQuery, Geocoder};
-use crate::store::{validate_schema, Fallible, PlacesStore};
+use crate::store::{validate_prefix, Fallible, PlacesStore};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -99,36 +103,36 @@ struct LinkedSpendRow {
     category: String,
 }
 
-fn linked_spend_rows(store: &PlacesStore) -> Fallible<Vec<LinkedSpendRow>> {
-    let schema = store.schema();
-    let mut conn = store.conn()?;
-    Ok(conn
-        .query(
-            &format!(
-                "SELECT tp.place_id, tp.precision, pl.name, pl.city, pl.country_code,
-                        pl.latitude, pl.longitude, p.amount_cents, p.booked_at, p.category
-                 FROM {schema}.transaction_places tp
-                 JOIN {schema}.places pl ON pl.id = tp.place_id
-                 JOIN finance.transaction_projection p ON p.source_id = tp.source_id
-                 WHERE p.kind = 'expense' AND p.currency = 'EUR'
-                 ORDER BY p.booked_at, tp.source_id"
-            ),
-            &[],
-        )?
-        .iter()
-        .map(|row| LinkedSpendRow {
-            place_id: row.get(0),
-            precision: row.get(1),
-            place_name: row.get(2),
-            place_city: row.get(3),
-            country_code: row.get(4),
-            latitude: row.get(5),
-            longitude: row.get(6),
-            amount_cents: row.get(7),
-            booked_at: row.get(8),
-            category: row.get(9),
-        })
-        .collect())
+fn linked_spend_rows(store: &PlacesStore, finance_prefix: &str) -> Fallible<Vec<LinkedSpendRow>> {
+    validate_prefix(finance_prefix)?;
+    let prefix = store.prefix();
+    let conn = store.conn()?;
+    Ok(conn.query_all(
+        &format!(
+            "SELECT tp.place_id, tp.precision, pl.name, pl.city, pl.country_code,
+                    pl.latitude, pl.longitude, p.amount_cents, p.booked_at, p.category
+             FROM {prefix}_transaction_places tp
+             JOIN {prefix}_places pl ON pl.id = tp.place_id
+             JOIN {finance_prefix}_transaction_projection p ON p.source_id = tp.source_id
+             WHERE p.kind = 'expense' AND p.currency = 'EUR'
+             ORDER BY p.booked_at, tp.source_id"
+        ),
+        [],
+        |row| {
+            Ok(LinkedSpendRow {
+                place_id: row.get(0)?,
+                precision: row.get(1)?,
+                place_name: row.get(2)?,
+                place_city: row.get(3)?,
+                country_code: row.get(4)?,
+                latitude: row.get(5)?,
+                longitude: row.get(6)?,
+                amount_cents: row.get(7)?,
+                booked_at: row.get(8)?,
+                category: row.get(9)?,
+            })
+        },
+    )?)
 }
 
 /// Coordinates for city names, from city-kind registry rows.
@@ -193,16 +197,24 @@ impl Aggregate {
 /// every EUR expense row in the projection; `summary.linked` counts the ones a
 /// link exists for.
 pub fn spend_layer(store: &PlacesStore) -> Fallible<Value> {
-    let rows = linked_spend_rows(store)?;
+    spend_layer_in(store, "finance")
+}
+
+/// The finance prefix is a parameter so a test can point the same SQL at a scratch
+/// projection table in its own file; production passes `finance`.
+pub fn spend_layer_in(store: &PlacesStore, finance_prefix: &str) -> Fallible<Value> {
+    validate_prefix(finance_prefix)?;
+    let rows = linked_spend_rows(store, finance_prefix)?;
     let city_coords = city_coordinates(store)?;
-    let mut conn = store.conn()?;
-    let projected_expenses: i64 = conn
-        .query_one(
-            "SELECT COUNT(*) FROM finance.transaction_projection
-             WHERE kind = 'expense' AND currency = 'EUR'",
-            &[],
-        )?
-        .get(0);
+    let conn = store.conn()?;
+    let projected_expenses: i64 = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM {finance_prefix}_transaction_projection
+             WHERE kind = 'expense' AND currency = 'EUR'"
+        ),
+        [],
+        |row| row.get(0),
+    )?;
 
     struct PlaceInfo {
         name: String,
@@ -342,10 +354,23 @@ fn phase(date: Option<&str>, today: &str) -> Value {
     }
 }
 
-/// `GET /api/layers/travel`: trip destinations from `trips.plans`, transit legs
+/// `GET /api/layers/travel`: trip destinations from `trips_plans`, transit legs
 /// as LineStrings between station coordinates, station points from the
 /// registry, and city-presence evidence derived from linked spend.
 pub fn travel_layer(store: &PlacesStore, today: &str) -> Fallible<Value> {
+    travel_layer_in(store, "trips", "transit", today)
+}
+
+/// The neighbour prefixes are parameters so a test can build scratch `plans` and
+/// `trip_legs` tables in its own file; production passes `trips` and `transit`.
+pub fn travel_layer_in(
+    store: &PlacesStore,
+    trips_prefix: &str,
+    transit_prefix: &str,
+    today: &str,
+) -> Fallible<Value> {
+    validate_prefix(trips_prefix)?;
+    validate_prefix(transit_prefix)?;
     let mut points: Vec<Value> = Vec::new();
     let mut routes: Vec<Value> = Vec::new();
 
@@ -353,17 +378,17 @@ pub fn travel_layer(store: &PlacesStore, today: &str) -> Fallible<Value> {
     // (capabilities/trips/src/store.rs); only refs that carry a coordinate can
     // be drawn.
     {
-        let mut conn = store.conn()?;
-        for row in conn.query(
-            "SELECT id, destinations, date_start, date_end
-             FROM trips.plans WHERE status != 'archived'
-             ORDER BY date_start, id",
-            &[],
-        )? {
-            let plan_id: String = row.get(0);
-            let destinations: String = row.get(1);
-            let date_start: String = row.get(2);
-            let date_end: String = row.get(3);
+        let conn = store.conn()?;
+        let plans: Vec<(String, String, String, String)> = conn.query_all(
+            &format!(
+                "SELECT id, destinations, date_start, date_end
+                 FROM {trips_prefix}_plans WHERE status != 'archived'
+                 ORDER BY date_start, id"
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        for (plan_id, destinations, date_start, date_end) in plans {
             let Ok(refs) = serde_json::from_str::<Value>(&destinations) else {
                 continue;
             };
@@ -417,24 +442,26 @@ pub fn travel_layer(store: &PlacesStore, today: &str) -> Fallible<Value> {
         train_name: String,
     }
     let legs: Vec<LegRow> = {
-        let mut conn = store.conn()?;
-        conn.query(
-            "SELECT origin_eva, origin_name, destination_eva, destination_name,
-                    departure_time, train_name
-             FROM transit.trip_legs
-             ORDER BY departure_time, trip_id, leg_index",
-            &[],
+        let conn = store.conn()?;
+        conn.query_all(
+            &format!(
+                "SELECT origin_eva, origin_name, destination_eva, destination_name,
+                        departure_time, train_name
+                 FROM {transit_prefix}_trip_legs
+                 ORDER BY departure_time, trip_id, leg_index"
+            ),
+            [],
+            |row| {
+                Ok(LegRow {
+                    origin: row.get(0)?,
+                    origin_name: row.get(1)?,
+                    destination: row.get(2)?,
+                    destination_name: row.get(3)?,
+                    departure_time: row.get(4)?,
+                    train_name: row.get(5)?,
+                })
+            },
         )?
-        .iter()
-        .map(|row| LegRow {
-            origin: row.get(0),
-            origin_name: row.get(1),
-            destination: row.get(2),
-            destination_name: row.get(3),
-            departure_time: row.get(4),
-            train_name: row.get(5),
-        })
-        .collect()
     };
 
     let mut visits: HashMap<String, i64> = HashMap::new();
@@ -495,7 +522,7 @@ pub fn travel_layer(store: &PlacesStore, today: &str) -> Fallible<Value> {
     }
 
     // Spend presence: cities where linked purchases prove the operator was.
-    let spend_rows = linked_spend_rows(store)?;
+    let spend_rows = linked_spend_rows(store, "finance")?;
     let city_coords = city_coordinates(store)?;
     let mut presence: BTreeMap<String, Aggregate> = BTreeMap::new();
     for row in &spend_rows {
@@ -541,41 +568,40 @@ pub fn unplaced_groups(store: &PlacesStore) -> Fallible<Value> {
     unplaced_groups_in(store, "finance")
 }
 
-/// The finance schema is a parameter so the pg test can point the same SQL at
-/// a scratch copy of the projection table; production passes `finance`.
-pub fn unplaced_groups_in(store: &PlacesStore, finance_schema: &str) -> Fallible<Value> {
-    validate_schema(finance_schema)?;
-    let schema = store.schema();
-    let mut conn = store.conn()?;
-    let groups: Vec<Value> = conn
-        .query(
-            &format!(
-                "SELECT p.description, COUNT(*)::bigint, SUM(p.amount_cents)::bigint,
-                        left(MIN(p.booked_at), 10), left(MAX(p.booked_at), 10)
-                 FROM {finance_schema}.transaction_projection p
-                 WHERE p.kind = 'expense' AND p.currency = 'EUR'
-                   AND p.source_id IS NOT NULL
-                   AND NOT EXISTS (
-                       SELECT 1 FROM {schema}.transaction_places tp
-                       WHERE tp.source_id = p.source_id
-                   )
-                 GROUP BY p.description
-                 ORDER BY SUM(p.amount_cents) DESC, p.description
-                 LIMIT 200"
-            ),
-            &[],
-        )?
-        .iter()
-        .map(|row| {
-            json!({
-                "description": row.get::<_, String>(0),
-                "transactions": row.get::<_, i64>(1),
-                "total_cents": row.get::<_, i64>(2),
-                "first": row.get::<_, String>(3),
-                "last": row.get::<_, String>(4),
-            })
-        })
-        .collect();
+/// The finance prefix is a parameter so a test can point the same SQL at a scratch
+/// copy of the projection table; production passes `finance`.
+pub fn unplaced_groups_in(store: &PlacesStore, finance_prefix: &str) -> Fallible<Value> {
+    validate_prefix(finance_prefix)?;
+    let prefix = store.prefix();
+    let conn = store.conn()?;
+    // `COUNT(*)::bigint` and `SUM(...)::bigint` lose their casts: SQLite integers
+    // are already 64-bit. `left(x, 10)` becomes `substr(x, 1, 10)`.
+    let groups: Vec<Value> = conn.query_all(
+        &format!(
+            "SELECT p.description, COUNT(*), SUM(p.amount_cents),
+                    substr(MIN(p.booked_at), 1, 10), substr(MAX(p.booked_at), 1, 10)
+             FROM {finance_prefix}_transaction_projection p
+             WHERE p.kind = 'expense' AND p.currency = 'EUR'
+               AND p.source_id IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM {prefix}_transaction_places tp
+                   WHERE tp.source_id = p.source_id
+               )
+             GROUP BY p.description
+             ORDER BY SUM(p.amount_cents) DESC, p.description
+             LIMIT 200"
+        ),
+        [],
+        |row| {
+            Ok(json!({
+                "description": row.get::<_, String>(0)?,
+                "transactions": row.get::<_, i64>(1)?,
+                "total_cents": row.get::<_, i64>(2)?,
+                "first": row.get::<_, String>(3)?,
+                "last": row.get::<_, String>(4)?,
+            }))
+        },
+    )?;
     Ok(json!({ "groups": groups }))
 }
 
@@ -601,11 +627,11 @@ pub struct AssignUnplaced {
 pub fn assign_unplaced(
     store: &PlacesStore,
     geocoder: &Geocoder,
-    finance_schema: &str,
+    finance_prefix: &str,
     request: &AssignUnplaced,
     today: &str,
 ) -> Fallible<Option<Value>> {
-    validate_schema(finance_schema)?;
+    validate_prefix(finance_prefix)?;
     if !matches!(request.precision.as_str(), "venue" | "city") {
         return Err("precision must be venue or city".into());
     }
@@ -635,27 +661,23 @@ pub fn assign_unplaced(
     } else {
         request.precision.as_str()
     };
-    let schema = store.schema();
-    let mut conn = store.conn()?;
+    let prefix = store.prefix();
+    let conn = store.conn()?;
     // 9500: operator-asserted, above any derived link (amex venue 9000,
-    // city fallback 6000).
+    // city fallback 6000). The `::text`/`::smallint` casts on the SELECT list are
+    // gone: they told Postgres what type a bare parameter was, and SQLite binds a
+    // value rather than inferring a type.
     let linked = conn.execute(
         &format!(
-            "INSERT INTO {schema}.transaction_places
+            "INSERT INTO {prefix}_transaction_places
                 (source_id, place_id, precision, confidence_bp, source, created_at)
-             SELECT DISTINCT p.source_id, $2::text, $3::text, $4::smallint, 'manual', $5::text
-             FROM {finance_schema}.transaction_projection p
+             SELECT DISTINCT p.source_id, ?2, ?3, ?4, 'manual', ?5
+             FROM {finance_prefix}_transaction_projection p
              WHERE p.kind = 'expense' AND p.currency = 'EUR'
-               AND p.source_id IS NOT NULL AND p.description = $1
+               AND p.source_id IS NOT NULL AND p.description = ?1
              ON CONFLICT (source_id) DO NOTHING"
         ),
-        &[
-            &request.description,
-            &place.id,
-            &precision,
-            &9500_i16,
-            &today,
-        ],
+        params![&request.description, &place.id, precision, 9500_i16, &today],
     )?;
     Ok(Some(json!({
         "ok": true,
@@ -676,37 +698,41 @@ pub fn assign_unplaced(
 /// `GET /api/layers/people`: confirmed, currently-valid register rows only —
 /// proposals and dismissals never reach the map (README D4).
 pub fn people_layer(store: &PlacesStore, today: &str) -> Fallible<Value> {
-    let schema = store.schema();
-    let mut conn = store.conn()?;
+    let prefix = store.prefix();
+    let conn = store.conn()?;
     let features = conn
-        .query(
+        .query_all(
             &format!(
                 "SELECT pp.id, pp.person, pp.date_start, pp.confidence_bp, pp.source,
                         pl.name, pl.latitude, pl.longitude
-                 FROM {schema}.person_places pp
-                 JOIN {schema}.places pl ON pl.id = pp.place_id
+                 FROM {prefix}_person_places pp
+                 JOIN {prefix}_places pl ON pl.id = pp.place_id
                  WHERE pp.state = 'confirmed'
-                   AND (pp.date_end IS NULL OR pp.date_end >= $1)
+                   AND (pp.date_end IS NULL OR pp.date_end >= ?1)
                  ORDER BY pp.person, pp.id"
             ),
-            &[&today],
+            params![&today],
+            |row| {
+                // A tuple, then the coordinate filter below: a row without one is
+                // not an error, it is a confirmed relation to a place nobody has
+                // geocoded yet, and it simply cannot be drawn.
+                Ok((
+                    json!({
+                        "id": row.get::<_, String>(0)?,
+                        "person": row.get::<_, String>(1)?,
+                        "place_name": row.get::<_, String>(5)?,
+                        "since": row.get::<_, Option<String>>(2)?,
+                        "confidence_bp": i64::from(row.get::<_, i16>(3)?),
+                        "source": row.get::<_, String>(4)?,
+                    }),
+                    row.get::<_, Option<f64>>(6)?,
+                    row.get::<_, Option<f64>>(7)?,
+                ))
+            },
         )?
-        .iter()
-        .filter_map(|row| {
-            let latitude: Option<f64> = row.get(6);
-            let longitude: Option<f64> = row.get(7);
-            Some(feature(
-                longitude?,
-                latitude?,
-                json!({
-                    "id": row.get::<_, String>(0),
-                    "person": row.get::<_, String>(1),
-                    "place_name": row.get::<_, String>(5),
-                    "since": row.get::<_, Option<String>>(2),
-                    "confidence_bp": i64::from(row.get::<_, i16>(3)),
-                    "source": row.get::<_, String>(4),
-                }),
-            ))
+        .into_iter()
+        .filter_map(|(properties, latitude, longitude)| {
+            Some(feature(longitude?, latitude?, properties))
         })
         .collect();
     Ok(collection(features))
@@ -748,32 +774,64 @@ mod tests {
     }
 }
 
-/// Cross-schema layer queries against the live local database (read-only over
-/// `finance.*`, `trips.*`, `transit.*`; writes only in a scratch places
-/// schema). Named `postgres_tests` like every other database-backed module, which
-/// is what keeps it out of CI's hermetic run — see `store.rs`'s note on the selector.
+/// Layer queries over the neighbour tables, in this test's own file. Named `db_tests`
+/// like every other database-backed module — see `store.rs`'s note on the selector.
 #[cfg(test)]
-mod postgres_tests {
+mod db_tests {
     use super::*;
-    use crate::store::postgres_tests::open_test_store;
+    use crate::store::db_tests::open_test_store;
+    use rusqlite::Connection;
 
-    /// The only test in the workspace that needs a *deployed* database rather than
-    /// an empty one: `spend_layer` and `travel_layer` name `finance.transaction_projection`
-    /// and `trips.plans` unqualified by any schema parameter, so they read whatever those
-    /// two capabilities have migrated. On a fresh CI database the relations do not exist
-    /// and the query fails at parse time — measured 2026-08-26, `relation
-    /// "finance.transaction_projection" does not exist`.
-    ///
-    /// `#[ignore]` rather than a second CI filter string: it keeps `postgres_tests` the one
-    /// selector, and it makes the exclusion visible as "1 ignored" in every run instead of
-    /// hiding in a workflow. Run it on a machine that has finance and trips deployed with
-    /// `cargo test -p places -- --ignored the_three_layers`. The lasting fix is the
-    /// `_in(store, schema)` shape `unplaced_groups_in` already has; until both layer
-    /// functions take their source schemas, this test cannot be hermetic.
+    /// The neighbour tables the layers read, created in the test's own file under the
+    /// prefixes production uses. It restates their shape rather than linking their
+    /// crates, because a capability depends on another's surface and never its code
+    /// (README.md#schemas-and-dependency-direction) — the columns named here ARE the
+    /// coupling the cross-capability join creates, so writing them down is the point.
+    /// Kept to the columns these queries project.
+    fn create_neighbour_tables(path: &std::path::Path) -> Connection {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS finance_transaction_projection (
+                 source_id TEXT,
+                 description TEXT NOT NULL,
+                 amount_cents INTEGER NOT NULL,
+                 booked_at TEXT NOT NULL,
+                 kind TEXT NOT NULL,
+                 category TEXT NOT NULL DEFAULT 'uncategorized',
+                 currency TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS trips_plans (
+                 id TEXT PRIMARY KEY,
+                 destinations TEXT NOT NULL,
+                 date_start TEXT NOT NULL,
+                 date_end TEXT NOT NULL,
+                 status TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS transit_trip_legs (
+                 trip_id TEXT NOT NULL,
+                 leg_index INTEGER NOT NULL,
+                 origin_eva TEXT NOT NULL,
+                 origin_name TEXT NOT NULL,
+                 destination_eva TEXT NOT NULL,
+                 destination_name TEXT NOT NULL,
+                 departure_time TEXT NOT NULL,
+                 train_name TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// Was `#[ignore]`d: `spend_layer` and `travel_layer` named
+    /// `finance.transaction_projection` and `trips.plans` in another *database schema*,
+    /// so an empty CI database failed at parse time (measured 2026-08-26, `relation
+    /// "finance.transaction_projection" does not exist`). One file with table prefixes
+    /// removes that: the neighbour tables are ordinary tables this test can create, so
+    /// the layer SQL runs hermetically and the ignore is gone.
     #[test]
-    #[ignore = "reads the deployed finance and trips schemas; empty CI database has neither"]
     fn the_three_layers_assemble_and_reconcile_against_an_empty_registry() {
-        let (store, _schema) = open_test_store("layers");
+        let (store, path) = open_test_store("layers");
+        create_neighbour_tables(&path);
 
         // No links yet: the spend layer must reconcile to zero (PLC-5's shape:
         // total is the sum over linked rows, and none are linked here).
@@ -782,7 +840,7 @@ mod postgres_tests {
         assert_eq!(spend["summary"]["linked"], 0);
         assert_eq!(spend["venues"]["type"], "FeatureCollection");
         assert_eq!(spend["cities"]["type"], "FeatureCollection");
-        assert!(spend["summary"]["transactions"].as_i64().is_some());
+        assert_eq!(spend["summary"]["transactions"], 0);
 
         let travel = travel_layer(&store, "2026-08-25").expect("travel layer SQL is valid");
         assert_eq!(travel["points"]["type"], "FeatureCollection");
@@ -793,45 +851,80 @@ mod postgres_tests {
         assert_eq!(people["features"].as_array().map(Vec::len), Some(0));
     }
 
+    /// The cross-capability joins are the reason one database was chosen, so they are
+    /// tested as joins and not only as valid SQL: a trip destination and a transit leg
+    /// have to reach the map through the same file the registry lives in.
+    #[test]
+    fn the_travel_layer_joins_trips_and_transit_out_of_the_same_file() {
+        let (store, path) = open_test_store("travel_join");
+        let conn = create_neighbour_tables(&path);
+        conn.execute(
+            "INSERT INTO trips_plans VALUES ('plan-1',
+                 '[{\"name\":\"Musterstadt\",\"latitude\":50.0,\"longitude\":7.0}]',
+                 '2026-09-01', '2026-09-05', 'saved')",
+            [],
+        )
+        .unwrap();
+        // Archived plans are excluded, which is a predicate and not a filter in code.
+        conn.execute(
+            "INSERT INTO trips_plans VALUES ('plan-2',
+                 '[{\"name\":\"Nowhere\",\"latitude\":1.0,\"longitude\":1.0}]',
+                 '2026-09-01', '2026-09-05', 'archived')",
+            [],
+        )
+        .unwrap();
+        // Full HAFAS refs, so the leg carries its own coordinates and can be drawn
+        // before the registry has either station.
+        conn.execute(
+            "INSERT INTO transit_trip_legs VALUES ('trip-1', 0,
+                 'A=1@O=Koeln Hbf@X=6958730@Y=50943029@L=8000207@',  'Koeln Hbf',
+                 'A=1@O=Bonn Hbf@X=7097000@Y=50732000@L=8000044@',   'Bonn Hbf',
+                 '2026-09-01T09:00:00', 'ICE 1')",
+            [],
+        )
+        .unwrap();
+
+        let travel = travel_layer(&store, "2026-08-25").unwrap();
+        let names: Vec<&str> = travel["points"]["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["properties"]["name"].as_str())
+            .collect();
+        assert!(names.contains(&"Musterstadt"), "got {names:?}");
+        assert!(
+            !names.contains(&"Nowhere"),
+            "an archived plan reached the map"
+        );
+        assert_eq!(
+            travel["routes"]["features"].as_array().map(Vec::len),
+            Some(1),
+            "the leg between two coordinate-carrying refs is one LineString"
+        );
+    }
+
     /// The B<->C review contract: groups over a scratch copy of the finance
-    /// projection (synthetic rows — the live table never gains test data),
-    /// then both assign paths.
+    /// projection (synthetic rows only), then both assign paths.
     #[test]
     fn unplaced_groups_rank_by_total_and_assign_links_by_exact_description() {
         use crate::store::{stable_id, Place};
 
-        let (store, schema) = open_test_store("unplaced");
-        {
-            let mut conn = store.conn().unwrap();
-            conn.batch_execute(&format!(
-                "CREATE TABLE {}.transaction_projection (
-                     source_id TEXT,
-                     description TEXT NOT NULL,
-                     amount_cents BIGINT NOT NULL,
-                     booked_at TEXT NOT NULL,
-                     kind TEXT NOT NULL,
-                     currency TEXT NOT NULL
-                 )",
-                schema.0
-            ))
-            .unwrap();
-            conn.execute(
-                &format!(
-                    "INSERT INTO {}.transaction_projection VALUES
-                     ('src-1', 'SYNTHETIC MARKET MUSTERSTADT', 300, '2026-08-01', 'expense', 'EUR'),
-                     ('src-2', 'SYNTHETIC MARKET MUSTERSTADT', 700, '2026-08-03', 'expense', 'EUR'),
-                     ('src-3', 'SYNTHETIC CAFE', 500, '2026-08-02', 'expense', 'EUR'),
-                     ('src-4', 'SYNTHETIC SALARY', 9999, '2026-08-01', 'income', 'EUR'),
-                     ('src-5', 'SYNTHETIC MARKET MUSTERSTADT', 400, '2026-08-04', 'expense', 'USD'),
-                     (NULL, 'SYNTHETIC MARKET MUSTERSTADT', 100, '2026-08-05', 'expense', 'EUR')",
-                    schema.0
-                ),
-                &[],
+        let (store, path) = open_test_store("unplaced");
+        let neighbours = create_neighbour_tables(&path);
+        neighbours
+            .execute_batch(
+                "INSERT INTO finance_transaction_projection
+                     (source_id, description, amount_cents, booked_at, kind, currency) VALUES
+                 ('src-1', 'SYNTHETIC MARKET MUSTERSTADT', 300, '2026-08-01', 'expense', 'EUR'),
+                 ('src-2', 'SYNTHETIC MARKET MUSTERSTADT', 700, '2026-08-03', 'expense', 'EUR'),
+                 ('src-3', 'SYNTHETIC CAFE', 500, '2026-08-02', 'expense', 'EUR'),
+                 ('src-4', 'SYNTHETIC SALARY', 9999, '2026-08-01', 'income', 'EUR'),
+                 ('src-5', 'SYNTHETIC MARKET MUSTERSTADT', 400, '2026-08-04', 'expense', 'USD'),
+                 (NULL, 'SYNTHETIC MARKET MUSTERSTADT', 100, '2026-08-05', 'expense', 'EUR')",
             )
             .unwrap();
-        }
 
-        let groups = unplaced_groups_in(&store, &schema.0).unwrap();
+        let groups = unplaced_groups(&store).unwrap();
         let groups = groups["groups"].as_array().unwrap().clone();
         assert_eq!(groups.len(), 2, "income, USD and NULL source_id stay out");
         assert_eq!(groups[0]["description"], "SYNTHETIC MARKET MUSTERSTADT");
@@ -845,7 +938,7 @@ mod postgres_tests {
         // resolves a city relation, so the guard must derive kind city and
         // write city-precision links — a city bubble never pretends to be a
         // venue (README D1).
-        let (url, _hits) = crate::geocode::postgres_tests::stub(
+        let (url, _hits) = crate::geocode::db_tests::stub(
             r#"[{"osm_type":"relation","osm_id":7002,"lat":"50.0","lon":"7.0","name":"Musterstadt","display_name":"Musterstadt, Germany","addresstype":"city","address":{"city":"Musterstadt","country_code":"de"}}]"#,
         );
         let geocoder = Geocoder::with_url(&store, url);
@@ -855,7 +948,7 @@ mod postgres_tests {
             geocode_query: Some("Musterstadt".into()),
             precision: "venue".into(),
         };
-        let body = assign_unplaced(&store, &geocoder, &schema.0, &request, "2026-08-25")
+        let body = assign_unplaced(&store, &geocoder, "finance", &request, "2026-08-25")
             .unwrap()
             .expect("the stub resolves the city");
         assert_eq!(body["ok"], true);
@@ -868,7 +961,7 @@ mod postgres_tests {
         );
 
         // Idempotent: the same assignment again links nothing new.
-        let again = assign_unplaced(&store, &geocoder, &schema.0, &request, "2026-08-25")
+        let again = assign_unplaced(&store, &geocoder, "finance", &request, "2026-08-25")
             .unwrap()
             .unwrap();
         assert_eq!(again["linked"], 0);
@@ -893,7 +986,7 @@ mod postgres_tests {
             geocode_query: None,
             precision: "venue".into(),
         };
-        let body = assign_unplaced(&store, &geocoder, &schema.0, &request, "2026-08-25")
+        let body = assign_unplaced(&store, &geocoder, "finance", &request, "2026-08-25")
             .unwrap()
             .unwrap();
         assert_eq!(body["linked"], 1);
@@ -901,33 +994,38 @@ mod postgres_tests {
         assert_eq!(body["precision"], "venue", "a venue-kind place keeps it");
 
         // Everything assigned: the review queue is empty.
-        let groups = unplaced_groups_in(&store, &schema.0).unwrap();
+        let groups = unplaced_groups(&store).unwrap();
         assert_eq!(groups["groups"].as_array().map(Vec::len), Some(0));
         {
-            let mut conn = store.conn().unwrap();
+            let conn = store.conn().unwrap();
             let manual: i64 = conn
-                .query_one(
+                .query_row(
                     &format!(
-                        "SELECT COUNT(*) FROM {}.transaction_places WHERE source = 'manual'",
-                        store.schema()
+                        "SELECT COUNT(*) FROM {}_transaction_places WHERE source = 'manual'",
+                        store.prefix()
                     ),
-                    &[],
+                    [],
+                    |row| row.get(0),
                 )
-                .unwrap()
-                .get(0);
+                .unwrap();
             assert_eq!(manual, 3);
             let city_precision: i64 = conn
-                .query_one(
+                .query_row(
                     &format!(
-                        "SELECT COUNT(*) FROM {}.transaction_places WHERE precision = 'city'",
-                        store.schema()
+                        "SELECT COUNT(*) FROM {}_transaction_places WHERE precision = 'city'",
+                        store.prefix()
                     ),
-                    &[],
+                    [],
+                    |row| row.get(0),
                 )
-                .unwrap()
-                .get(0);
+                .unwrap();
             assert_eq!(city_precision, 2, "the downgraded links are city rows");
         }
+
+        // The spend layer reconciles over the same links, out of the same file.
+        let spend = spend_layer(&store).unwrap();
+        assert_eq!(spend["summary"]["linked"], 3);
+        assert_eq!(spend["summary"]["total_cents"], 1500);
 
         // An unknown place id resolves nothing: the caller's 404, no write.
         let request = AssignUnplaced {
@@ -937,7 +1035,7 @@ mod postgres_tests {
             precision: "venue".into(),
         };
         assert!(
-            assign_unplaced(&store, &geocoder, &schema.0, &request, "2026-08-25")
+            assign_unplaced(&store, &geocoder, "finance", &request, "2026-08-25")
                 .unwrap()
                 .is_none()
         );
