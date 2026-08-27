@@ -115,8 +115,12 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
   through the audit gate or has a written reason it is held. Falsifier: a `warn` entry
   with neither. (2026-08-19: 76 entries · 50 ok · 17 n/a · 9 warn · 0 fail, every warn
   inside its cooldown hold, where waiting is the action.)
-- [ ] ISC-9 — the postgres 17.9 → 17.10 image decision is made on its own, not ridden
+- [x] ISC-9 — the postgres 17.9 → 17.10 image decision is made on its own, not ridden
   along with another change. Falsifier: the bump appears in a commit about something else.
+  Closed 2026-08-27 by PRD Q45, which retired the image rather than bumping it: the running
+  17.9 instance is read once by `tools/migrate-pg-to-sqlite` and then stopped, so a 17.10
+  decision has no subject. The constraint held either way — the retirement is its own
+  commit, and `upstreams.toml` `[postgres]` records the last pin that ran.
 
 ## Not yet specified
 
@@ -150,7 +154,7 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
 | ISC-6 | command | demo build, inspect recorded responses | three capabilities present | bash | F1 |
 | ISC-7 | code inspect | read transit's URL consts | env-overridable | rg | F1 |
 | ISC-8 | command | `tools/upstream-checker` | every warn bumped or held with a reason | bash | F2 |
-| ISC-9 | command | `git log` for the postgres bump | its own commit | git | F2 |
+| ISC-9 | command | `git log` for the postgres retirement | its own commit | git | F2 |
 
 ## Anti-claims
 

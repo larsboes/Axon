@@ -6,6 +6,8 @@ set -euo pipefail
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$TOOLS_DIR/lib/paths.sh"
+# `does this stream contain X` without the answer depending on where the match sits (#42).
+source "$TOOLS_DIR/lib/pipe.sh"
 
 usage() {
   echo "usage: restore.sh <capability> <archive.tar.gz> [--receipt <receipt.json>] [--destination <empty-dir>] [--allow-legacy]" >&2
@@ -155,7 +157,12 @@ path_within "$DEST" "$AXON_REAL" && fail "destination may not be inside the Axon
 # That capability was retired on 2026-08-27 (PRD Q45) and its image pin left with it, so this
 # checkout can no longer rehearse one — and rehearsing it against SOME other Postgres would be
 # a different check wearing this one's name. `tar -tzf` only lists; nothing is written here.
-if tar -tzf "$ARCHIVE" 2>/dev/null | grep -Eq '(^|/)pg_dumpall\.sql$'; then
+#
+# stream_matches rather than `grep -q`: -q exits at the first hit, tar dies of SIGPIPE, and
+# `set -o pipefail` turns a FOUND into a failed pipeline — so the refusal below would not fire
+# for the archive it is written for. tools/pipe.test.sh is the gate on that, and it caught this
+# line when the container preflight it replaced was removed.
+if tar -tzf "$ARCHIVE" 2>/dev/null | stream_matches -E '(^|/)pg_dumpall\.sql$'; then
   fail "this archive carries a PostgreSQL dump, and the capability that produced it was retired on 2026-08-27 (PRD Q45). Verify it with the Axon revision that still declares the image"
 fi
 
