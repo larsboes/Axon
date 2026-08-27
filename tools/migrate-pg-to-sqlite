@@ -1,0 +1,338 @@
+#!/bin/bash
+# tools/migrate-pg-to-sqlite — the ONE-SHOT cutover for PRD Q45 (2026-08-27): copy every
+# production row out of the retired Postgres instance into the one shared SQLite file.
+#
+#   tools/migrate-pg-to-sqlite --dry-run     # every check, a plan, and nothing written
+#   tools/migrate-pg-to-sqlite               # copy, verify, print a receipt
+#
+# It reads Postgres and writes SQLite. It never writes to Postgres: the session is set
+# read-only before the first query, and every statement it sends is a SELECT.
+#
+# TWO PHASES, and this tool is the second one. It does NOT create tables. Each capability's
+# migration is the one authority for its schema (see any capabilities/*/src/store.rs), and a
+# second CREATE TABLE written here would be accepted by the capability's own `CREATE TABLE IF
+# NOT EXISTS` on first open — silently keeping this file's version, without the partial unique
+# indexes, CHECK constraints and foreign keys the real one declares. So the schema is created
+# by starting the capabilities once against the new path, and this tool refuses to run until
+# every table it needs is there and empty. The exact sequence is in the refusal messages.
+#
+# Delete this tool once the cutover is done and the receipt is kept. It is dated, single-use,
+# and it holds the last copy of coordinates that no manifest declares any more: the container
+# name, the database name and the nine schema names all left the tree with
+# capabilities/postgres on 2026-08-27.
+set -euo pipefail
+
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$TOOLS_DIR/lib/paths.sh"      # AXON_ROOT, AXON_PERSONAL_ROOT
+source "$TOOLS_DIR/lib/platform.sh"   # AXON_CONTAINER_RUNTIME
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: migrate-pg-to-sqlite [--dry-run] [--target <axon.db>] [--container <name>]
+                            [--pg-user <user>] [--pg-db <database>]
+
+  --dry-run      run every check, print the plan, write nothing
+  --target       the SQLite file to load (default: <overlay>/data/axon/axon.db)
+  --container    the Postgres container (default: postgres)
+  --pg-user      the role to connect as (default: POSTGRES_USER from the overlay env file, or axon)
+  --pg-db        the database to read (default: POSTGRES_DB from that file, or axon)
+USAGE
+  exit 1
+}
+
+DRY_RUN=0
+TARGET=""
+CONTAINER="postgres"
+PG_USER=""
+PG_DB=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run)   DRY_RUN=1; shift ;;
+    --target)    [ $# -ge 2 ] || usage; TARGET="$2"; shift 2 ;;
+    --container) [ $# -ge 2 ] || usage; CONTAINER="$2"; shift 2 ;;
+    --pg-user)   [ $# -ge 2 ] || usage; PG_USER="$2"; shift 2 ;;
+    --pg-db)     [ $# -ge 2 ] || usage; PG_DB="$2"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+fail() { echo "migrate-pg-to-sqlite: $*" >&2; exit 1; }
+
+# The nine schemas that hold production data, measured against the live instance on
+# 2026-08-28: 46 tables, 464 columns. Written down rather than discovered, because the same
+# instance also carries a `tasks_test_completion_<pid>` schema per test run that ever crashed
+# before its drop guard — 20+ of them — and "every schema that is not a system schema" would
+# turn each into a table in the new file. A schema that is in neither list stops the run: this
+# is a one-shot copy of everything, so an unrecognised schema is either new data nobody told
+# this tool about, or a name that has to be dismissed deliberately.
+SCHEMAS="calendar comms finance places punctuality scouting tasks transit trips"
+TEST_SCHEMA_PATTERN='^tasks_test_completion_[0-9]+$'
+
+# Every column type in those 46 tables, measured the same day. `text` 356, `timestamp with
+# time zone` 35, `bigint` 20, `double precision` 19, `integer` 17, `smallint` 7, `boolean` 4,
+# `real` 3, `date` 1, plus the two the ruling names: one `jsonb` (places.geocode_cache.response)
+# and one `integer[]` (punctuality.stop_stats.counts). The rest are listed because a column
+# added between that measurement and the cutover must not be guessed at.
+KNOWN_TYPES="text|character varying|character|timestamp with time zone|timestamp without time zone|date|bigint|integer|smallint|double precision|real|numeric|boolean|jsonb|json|ARRAY|uuid"
+
+[ -n "$TARGET" ] || TARGET="$AXON_PERSONAL_ROOT/data/axon/axon.db"
+
+# The connection coordinates. POSTGRES_PASSWORD is deliberately not read: psql runs INSIDE the
+# container over the local socket, which the official image trusts, so this tool never handles
+# the secret at all.
+ENV_FILE="$AXON_PERSONAL_ROOT/config/postgres.env"
+if [ -f "$ENV_FILE" ]; then
+  [ -n "$PG_USER" ] || PG_USER="$(sed -n 's/^POSTGRES_USER=//p' "$ENV_FILE" | head -1)"
+  [ -n "$PG_DB" ] || PG_DB="$(sed -n 's/^POSTGRES_DB=//p' "$ENV_FILE" | head -1)"
+fi
+PG_USER="${PG_USER:-axon}"
+PG_DB="${PG_DB:-axon}"
+
+# How this machine reaches psql. AXON_MIGRATE_PSQL overrides the whole invocation for a host
+# that has psql on PATH, a differently named container, or a test standing one in — the
+# workstation this was written on has no psql at all, so the container is the only path here.
+PSQL=()
+if [ -n "${AXON_MIGRATE_PSQL:-}" ]; then
+  read -r -a PSQL <<< "$AXON_MIGRATE_PSQL"
+else
+  case "$AXON_CONTAINER_RUNTIME" in
+    apple-container) PSQL=(container exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB") ;;
+    docker|podman)   PSQL=("$AXON_CONTAINER_RUNTIME" exec "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB") ;;
+    *) fail "unsupported container_runtime '$AXON_CONTAINER_RUNTIME' — pass AXON_MIGRATE_PSQL instead" ;;
+  esac
+fi
+
+# One session per call, and the first statement in it makes the session read-only. Multiple
+# -c options share a connection, so the SET is still in force for the query that follows.
+pg() {  # <sql> -> tuples only, unaligned, one row per line
+  "${PSQL[@]}" -Atq -v ON_ERROR_STOP=1 \
+    -c "SET default_transaction_read_only = on;" -c "$1"
+}
+
+sq() {  # <sql> -> one answer from the target file
+  sqlite3 "$TARGET" "$1"
+}
+
+command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 is required to load the target database"
+# Through pg(), not a bare psql call: the probe should prove the exact path every later query
+# takes, read-only session included, rather than a simpler one that might work when it does not.
+pg 'select 1' >/dev/null 2>&1 \
+  || fail "cannot reach Postgres with: ${PSQL[*]} — is the container running?"
+
+# --- refusals ------------------------------------------------------------------------------
+# The target file, and why it must already exist. The schema belongs to the capabilities.
+if [ ! -f "$TARGET" ]; then
+  cat >&2 <<TARGETMISSING
+migrate-pg-to-sqlite: no database at $TARGET
+
+  This tool copies ROWS. The tables are created by each capability's own migration, which is
+  the only place their real shape (indexes, CHECKs, foreign keys) is written down. Create them
+  first, with nothing else running:
+
+    AXON_DB_PATH="$TARGET" tools/service-runner.sh up --all
+    AXON_DB_PATH="$TARGET" tools/service-runner.sh down
+
+  Then run this again. If a file is already there and holds nothing you want, move it aside
+  rather than deleting it — an axon.db that predates the cutover is the only copy of whatever
+  a development run put in it.
+TARGETMISSING
+  exit 1
+fi
+
+# --- the plan ------------------------------------------------------------------------------
+echo "→ source:  ${PSQL[*]}"
+echo "→ target:  $TARGET"
+echo
+
+# Every schema the instance holds, classified. Nothing is skipped silently.
+UNKNOWN=""
+while IFS= read -r schema; do
+  [ -n "$schema" ] || continue
+  case " $SCHEMAS " in *" $schema "*) continue ;; esac
+  if printf '%s' "$schema" | grep -Eq "$TEST_SCHEMA_PATTERN"; then
+    echo "  skipping test schema: $schema"
+    continue
+  fi
+  UNKNOWN="$UNKNOWN $schema"
+done <<EOF
+$(pg "select nspname from pg_namespace where nspname not in ('pg_catalog','information_schema','public','pg_toast') and nspname not like 'pg_temp%' and nspname not like 'pg_toast_temp%' order by 1;")
+EOF
+if [ -n "$UNKNOWN" ]; then
+  fail "the instance holds schemas this tool does not know about:$UNKNOWN
+  Add them to SCHEMAS if they carry data worth keeping, or dismiss them in writing. Copying
+  everything means everything, so an unrecognised name is not something to skip quietly."
+fi
+
+# Every column type, checked before a single row moves. A type this tool has no rule for would
+# otherwise be rendered by the `else` branch as text and land in the wrong shape.
+BAD_TYPES="$(pg "select distinct data_type from information_schema.columns where table_schema in ('$(echo "$SCHEMAS" | sed "s/ /','/g")') and data_type !~ '^($(echo "$KNOWN_TYPES" | sed 's/|/|/g'))\$';")"
+[ -z "$BAD_TYPES" ] || fail "column types with no conversion rule: $(echo "$BAD_TYPES" | tr '\n' ' ')"
+
+# --- table plan ----------------------------------------------------------------------------
+# schema<TAB>table<TAB>rowcount, straight from the catalog. The count is what the receipt is
+# checked against, so it is read once, here, from the same session that reads the rows.
+PLAN="$(pg "select n.nspname || '\t' || c.relname || '\t' || (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', n.nspname, c.relname), false, true, '')))[1]::text::bigint from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and n.nspname in ('$(echo "$SCHEMAS" | sed "s/ /','/g")') order by 1, 2;")"
+[ -n "$PLAN" ] || fail "the source instance holds no tables in: $SCHEMAS"
+
+# The target has to be ready for all of it BEFORE any of it moves: a missing table found
+# half-way through leaves the file holding some capabilities' rows and not others, which is
+# the one state a cutover must not end in.
+MISSING=""
+NONEMPTY=""
+TOTAL_SOURCE=0
+TABLES=0
+while IFS="$(printf '\t')" read -r schema table rows; do
+  [ -n "$schema" ] || continue
+  target_table="${schema}_${table}"
+  TABLES=$((TABLES + 1))
+  TOTAL_SOURCE=$((TOTAL_SOURCE + rows))
+  exists="$(sq "select count(*) from sqlite_master where type = 'table' and name = '$target_table';")"
+  if [ "$exists" != "1" ]; then
+    MISSING="$MISSING $target_table"
+    continue
+  fi
+  have="$(sq "select count(*) from \"$target_table\";")"
+  [ "$have" = "0" ] || NONEMPTY="$NONEMPTY $target_table($have)"
+done <<EOF
+$PLAN
+EOF
+
+if [ -n "$MISSING" ]; then
+  fail "the target is missing tables the source has:$MISSING
+  Its schema is older than the source, or a capability never opened it. Start the capabilities
+  against this path once (see the message above) and run this again."
+fi
+if [ -n "$NONEMPTY" ]; then
+  fail "the target already holds rows:$NONEMPTY
+  This tool only ever loads an empty schema. It will not merge, and it will not overwrite."
+fi
+
+echo "  $TABLES tables, $TOTAL_SOURCE rows to copy"
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo
+  printf '%s\n' "$PLAN" | while IFS="$(printf '\t')" read -r schema table rows; do
+    [ -n "$schema" ] || continue
+    printf '  %-40s → %-40s %8s rows\n' "$schema.$table" "${schema}_${table}" "$rows"
+  done
+  echo
+  echo "✓ dry run: every check passed, nothing was written"
+  exit 0
+fi
+
+# --- the copy ------------------------------------------------------------------------------
+# Column names are written into every INSERT, never left positional. The target's column ORDER
+# comes from the capability's own migration and has no reason to match Postgres's; a positional
+# insert that happened to line up today would scramble two columns of the same type tomorrow.
+#
+# Values are rendered by Postgres itself with quote_nullable, which yields NULL for a null and
+# a single-quoted literal otherwise, doubling embedded quotes. SQLite reads that dialect
+# unchanged, and column affinity turns '42' into the integer 42 on the way into an INTEGER
+# column — which is why numbers need no special case and booleans do (see ::int below).
+#
+# The timestamp rendering is the one that had to be checked rather than reasoned about, and it
+# was, against both engines on 2026-08-28:
+#
+#   psql   … to_char(ts AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS.MS') || '+00:00'
+#   sqlite … strftime('%Y-%m-%d %H:%M:%f+00:00','2026-08-27 21:23:35.871')
+#
+# both answer `2026-08-27 21:23:35.871+00:00` — 29 characters, the same string axon_store::NOW
+# writes, and one datetime() accepts. Postgres's own `::text` rendering would have been
+# `…871000+00`: a different width in the same column, which stops ORDER BY being time order
+# and makes every date function on that column return NULL.
+#
+# The 35 timestamptz columns are the only ones this touches. A TEXT column that already holds a
+# time keeps its bytes: measured the same day, those hold 10-character dates and epochs,
+# 19-character local datetimes and 25-character ISO-8601, and every one of them crossed the
+# Postgres boundary as text before the cutover too.
+value_expr_sql() {  # <schema> <table> -> the SELECT list that renders one row's values
+  cat <<SQL
+select string_agg(
+  case
+    when data_type = 'boolean'
+      then 'quote_nullable(' || quote_ident(column_name) || '::int)'
+    when data_type in ('timestamp with time zone', 'timestamp without time zone')
+      then 'quote_nullable(to_char(' || quote_ident(column_name) || ' AT TIME ZONE ''UTC'', ''YYYY-MM-DD HH24:MI:SS.MS'') || ''+00:00'')'
+    when data_type = 'ARRAY'
+      then 'quote_nullable(to_json(' || quote_ident(column_name) || ')::text)'
+    else 'quote_nullable(' || quote_ident(column_name) || '::text)'
+  end,
+  ' || '','' || ' order by ordinal_position)
+from information_schema.columns
+where table_schema = '$1' and table_name = '$2';
+SQL
+}
+
+echo
+FAILED=""
+RECEIPT="$AXON_PERSONAL_ROOT/backup/receipts/migrate-pg-to-sqlite.txt"
+mkdir -p "$(dirname "$RECEIPT")"
+{
+  printf 'axon: PRD Q45 cutover receipt\n'
+  printf 'at:     %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'source: %s\n' "${PSQL[*]}"
+  printf 'target: %s\n\n' "$TARGET"
+} > "$RECEIPT"
+
+while IFS="$(printf '\t')" read -r schema table rows; do
+  [ -n "$schema" ] || continue
+  target_table="${schema}_${table}"
+  cols="$(pg "select string_agg('\"' || column_name || '\"', ',' order by ordinal_position) from information_schema.columns where table_schema = '$schema' and table_name = '$table';")"
+  values="$(pg "$(value_expr_sql "$schema" "$table")")"
+  [ -n "$cols" ] && [ -n "$values" ] || fail "could not read the column list for $schema.$table"
+
+  # Streamed, never buffered: punctuality.stop_stats alone is 470k rows, and holding its
+  # INSERTs in a shell variable would be tens of megabytes in one string.
+  #
+  # foreign_keys off for the load: rows arrive one table at a time, so a child row would be
+  # rejected for a parent that has not been copied yet. `PRAGMA foreign_key_check` at the end
+  # is the same guarantee applied once everything is in, and it names every offending row
+  # rather than failing at the first.
+  if {
+       printf 'PRAGMA foreign_keys = off;\nBEGIN;\n'
+       pg "select 'INSERT INTO \"$target_table\" ($cols) VALUES (' || $values || ');' from \"$schema\".\"$table\";"
+       printf 'COMMIT;\n'
+     } | sqlite3 "$TARGET"; then :; else
+    FAILED="$FAILED $target_table"
+    printf '  %-44s FAILED\n' "$schema.$table"
+    printf '%-44s FAILED\n' "$schema.$table" >> "$RECEIPT"
+    continue
+  fi
+
+  got="$(sq "select count(*) from \"$target_table\";")"
+  if [ "$got" = "$rows" ]; then
+    printf '  %-44s %8s rows ✓\n' "$schema.$table → $target_table" "$got"
+    printf '%-44s %8s rows ok\n' "$schema.$table → $target_table" "$got" >> "$RECEIPT"
+  else
+    FAILED="$FAILED $target_table"
+    printf '  %-44s %8s rows, source had %s ✗\n' "$schema.$table → $target_table" "$got" "$rows"
+    printf '%-44s %8s rows, source had %s MISMATCH\n' "$schema.$table → $target_table" "$got" "$rows" >> "$RECEIPT"
+  fi
+done <<EOF
+$PLAN
+EOF
+
+echo
+[ -z "$FAILED" ] || fail "row counts do not match for:$FAILED
+  The target is left as it is for inspection. Move it aside and start over rather than
+  re-running: this tool loads an empty schema, and a partial load is not one."
+
+# What the file says about itself, once everything is in it.
+fk="$(sq 'pragma foreign_key_check;' | head -5)"
+[ -z "$fk" ] || fail "foreign keys do not resolve after the copy:
+$fk"
+ic="$(sq 'pragma integrity_check;' | head -1)"
+[ "$ic" = "ok" ] || fail "the target failed integrity_check: $ic"
+
+TOTAL_TARGET="$(sq "select coalesce(sum(c), 0) from ($(sq "select coalesce(group_concat('select count(*) as c from \"' || name || '\"', ' union all '), 'select 0 as c') from sqlite_master where type = 'table' and name not like 'sqlite_%';"));")"
+{
+  printf '\n%s tables, %s rows copied\n' "$TABLES" "$TOTAL_SOURCE"
+  printf 'target now holds %s rows in total\n' "$TOTAL_TARGET"
+  printf 'foreign_key_check: clean\nintegrity_check: ok\n'
+} >> "$RECEIPT"
+
+echo "✓ $TABLES tables, $TOTAL_SOURCE rows copied; foreign keys resolve and integrity_check is ok"
+echo "  target holds $TOTAL_TARGET rows in total"
+echo "  receipt → ${RECEIPT#"$AXON_PERSONAL_ROOT"/}"
+echo
+echo "  Postgres was not modified. Keep it until the capabilities have run against the new"
+echo "  file and a backup of it has been taken and restored (tools/backup.sh store)."
