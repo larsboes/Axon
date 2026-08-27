@@ -161,7 +161,7 @@ data, and every coordinate on it is traceable to a registry row with a source.
 | PLC-8 | command | `SELECT count(*)` in axon_demo | 0 | psql | D4 |
 | PLC-9 | command | fallback-source links with precision='venue' | 0 rows | psql | D1 |
 | PLC-10 | command | assign to a city-kind place, read response precision | city | curl | D1 |
-| PLC-11 | command | `cargo test -p finance -- postgres_tests::`; column presence | pass | cargo | F1 |
+| PLC-11 | command | `cargo test -p finance -- db_tests::`; column presence | pass | cargo | F1 |
 | PLC-12 | command | run `backfill travelers` twice; grep output for names | 0 names, idempotent | rg | D4 |
 
 ## Anti-claims

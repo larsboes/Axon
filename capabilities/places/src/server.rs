@@ -569,7 +569,7 @@ mod tests {
     /// so a hostile page can neither read the register nor drive the confirm
     /// route cross-site. Exercised through `origin_allowed_by` so the tests
     /// never touch process env (the explicit-parameter pattern geocode's
-    /// postgres_tests use for URLs).
+    /// db_tests use for URLs).
     #[test]
     fn foreign_browser_origins_are_refused() {
         // No Origin header: curl, the runner, same-origin GETs.

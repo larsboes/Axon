@@ -23,8 +23,7 @@ env:
 jobs:
   # rust-toolchain.toml pins both the compiler and these two components, so local
   # contributor commands and CI cannot silently lint with different releases.
-  # Clippy compiles tests and feature-gated paths without running the
-  # database-backed suites; those retain their explicit job below.
+  # Clippy compiles tests and feature-gated paths; running them is cargo-tests' job.
   rust-quality:
     name: cargo fmt + clippy
     runs-on: ubuntu-latest
@@ -68,70 +67,14 @@ jobs:
           restore-keys: |
             cargo-target-${{ runner.os }}-
 
-      # `postgres_tests` is the module name that IS the database-suite membership
-      # (one selector across the workspace — see the 2026-08-25 suite rename).
-      # Skipping it here proves the default checkout is testable without
-      # Postgres or an Axon overlay; the explicit integration job below runs it.
-      - name: cargo test, database suites excluded
-        run: cargo test --workspace --locked -- --skip postgres_tests::
-
-  cargo-postgres:
-    name: cargo test postgres_tests
-    needs: cargo-tests
-    runs-on: ubuntu-latest
-
-    # These suites resolve the same connection their binaries use. They fail
-    # rather than skip when the database is absent, so only this explicit
-    # integration job starts the pinned synthetic service.
-    services:
-      postgres:
-        image: postgres:17.10-alpine
-        env:
-          POSTGRES_USER: axon
-          POSTGRES_PASSWORD: axon
-          POSTGRES_DB: axon
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U axon -d axon"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
-    steps:
-      - name: Check out Axon
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-
-      # The hermetic job has already populated these exact per-commit keys.
-      # Restoring them keeps the explicit integration boundary from paying for
-      # a second compilation of the same Rust crates.
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-registry-${{ runner.os }}-
-
-      - name: Cache cargo target
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: target
-          key: cargo-target-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            cargo-target-${{ runner.os }}-
-
-      - name: cargo test postgres_tests
-        env:
-          SCOUTING_TEST_DATABASE_URL: postgresql://axon:axon@127.0.0.1:5432/axon
-          TRANSIT_TEST_DATABASE_URL: postgresql://axon:axon@127.0.0.1:5432/axon
-          COMMS_TEST_DATABASE_URL: postgresql://axon:axon@127.0.0.1:5432/axon
-          FINANCE_TEST_DATABASE_URL: postgresql://axon:axon@127.0.0.1:5432/axon
-          TASKS_TEST_DATABASE_URL: postgresql://axon:axon@127.0.0.1:5432/axon
-          PLACES_TEST_DATABASE_URL: postgresql://axon:axon@127.0.0.1:5432/axon
-        run: cargo test --workspace --locked -- postgres_tests::
+      # No skip, and no second job. The database suites are `db_tests::` since PRD
+      # Q45 (2026-08-27) moved every store onto one SQLite file: each test opens a
+      # temp file of its own, so the whole workspace is hermetic and this one run
+      # covers it. The split existed because those suites needed a server — they
+      # failed rather than skipped without one, which is what a `--skip` selector
+      # and a `services: postgres` job were both paying for.
+      - name: cargo test
+        run: cargo test --workspace --locked
 
   # One rootward `bun test`, not a list of directories. The list said ./tools/ and
   # Packs/axon/evals/, which is how dashboard/vite/comms-proxy-auth.test.ts and

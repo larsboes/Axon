@@ -66,12 +66,12 @@ itself on every build rather than on the day someone remembers to check.
   punctuality over HTTP and never links the crate.
 - **C2** — the real parquet files are private and 100+ MB. Nothing under
   `<overlay>/data/punctuality/raw/` may be committed or cited as a test input.
-- **C3** — `cargo test --workspace --locked -- --skip postgres_tests::` and the
-  `tools/check-*.sh` gates are the gate. `tools/check-architecture-fresh.sh` is the only
-  check that catches a stale generated `ARCHITECTURE.md`, and running everything else
-  and reporting green is how main sat red across three commits on 2026-08-19. The commands
-  were `bazel test //...` until PRD Q44 retired Bazel (2026-08-25); the failure mode was
-  never the tool's.
+- **C3** — `cargo test --workspace --locked` and the `tools/check-*.sh` gates are the
+  gate. `tools/check-architecture-fresh.sh` is the only check that catches a stale
+  generated `ARCHITECTURE.md`, and running everything else and reporting green is how
+  main sat red across three commits on 2026-08-19. The commands were `bazel test //...`
+  until PRD Q44 retired Bazel (2026-08-25), and carried `-- --skip postgres_tests::`
+  until PRD Q45 retired the server (2026-08-27); the failure mode was never the tool's.
 - **C4** — `Packs/travel/design/` is untracked on purpose via `.git/info/exclude`, and
   the brainstorm carries an absolute `/Users/...` path the publication-hygiene gate
   rejects. This ISA is tracked; those three documents are not.

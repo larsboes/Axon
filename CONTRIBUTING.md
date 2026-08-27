@@ -37,7 +37,7 @@ diff, `git diff --check`, and `git status --short` before committing. Common rep
 are:
 
 ~~~sh
-cargo test --workspace --locked -- --skip postgres_tests::
+cargo test --workspace --locked
 bun test
 tools/check-publication-hygiene.sh
 ~~~
@@ -52,7 +52,7 @@ cargo metadata --locked --no-deps --format-version 1
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo check --workspace --locked
-cargo test --workspace --locked -- --skip postgres_tests::
+cargo test --workspace --locked
 ~~~
 
 Run the format and Clippy commands from the repository root. They use the exact
@@ -60,20 +60,19 @@ toolchain and components pinned in `rust-toolchain.toml`; do not replace a findi
 with a workspace-wide allowance. A narrow allowance belongs beside the affected
 item and must explain the invariant that makes the lint inapplicable.
 
-`--skip postgres_tests::` is what makes that command hermetic: it drops the
-database suites, which are deliberately manual and fail rather than skip when
-their database is absent. The `postgres_tests::` module name is the selector for
-both halves. Run those suites against a synthetic database with:
+That command needs no database service and no environment variable. The
+database-backed suites are `db_tests::` — one module name across the workspace,
+which is what makes them selectable — and each test opens a temp SQLite file of
+its own. Run them alone with:
 
 ~~~sh
-SCOUTING_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-TRANSIT_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-COMMS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-FINANCE_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-TASKS_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-PLACES_TEST_DATABASE_URL=postgresql://axon:axon@127.0.0.1:5432/axon \
-  cargo test --workspace --locked -- postgres_tests::
+cargo test --workspace --locked -- db_tests::
 ~~~
+
+Until PRD Q45 (2026-08-27) these suites needed a running Postgres and six
+`*_TEST_DATABASE_URL` variables, so the hermetic command carried
+`--skip postgres_tests::` and CI ran a second job with a service container.
+Both are gone; a checkout with no overlay and no server runs everything.
 
 Run `bun run check` in `dashboard/` when dashboard code changes. Manifest or
 generated-architecture changes also require:
