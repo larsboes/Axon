@@ -11,4 +11,5 @@ ready_path  = "/ready"   # availability is judged on this, not on liveness (#126
 # contract stays dashboard-independent, and the uniform stripped /comms prefix is
 # what the dashboard client already calls.
 
-requires = ["postgres"]
+# No `requires`: the nineteen tables live in the shared SQLite file this process
+# opens itself, so there is no database service to start first (PRD Q45).

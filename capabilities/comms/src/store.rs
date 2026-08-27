@@ -1,7 +1,7 @@
-//! Postgres-backed persistence (sync `postgres` client -- matches reqwest's
-//! "blocking" feature; this crate carries no async runtime outside comms-server).
-//! Own schema (`comms`) inside the one shared local instance
-//! (`capabilities/postgres`), same discipline as scouting's store.rs.
+//! Persistence under the table prefix `comms` in the one shared SQLite file
+//! (PRD Q45), same discipline as scouting's store.rs. rusqlite is a blocking API
+//! over that file, which matches reqwest's "blocking" feature -- this crate carries
+//! no async runtime outside comms-server.
 //!
 //! The status-preserving upsert is the load-bearing correctness property on
 //! both tables: a human's triage/keeper decision must survive the same item
@@ -15,8 +15,11 @@
 //! state, and row mapping. Callers therefore keep one stable type without one
 //! file becoming the owner of every persistence concern.
 
-use postgres::types::ToSql;
-use postgres::Client;
+use std::path::Path;
+
+use axon_store::QueryAll;
+use rusqlite::types::ToSql;
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -30,7 +33,9 @@ pub struct Store {
     /// `Store` is now a cheap handle rather than a connection, which is what makes
     /// 43 handlers each opening one acceptable.
     pool: axon_store::Pool,
-    schema: String,
+    /// Prefixes this capability's tables in the one shared file (PRD Q45):
+    /// `comms` here means `comms_feed_items` and its eighteen siblings.
+    prefix: String,
 }
 
 /// A media/news feed item. On write, `day`/`created_at`/`status` are owned by
@@ -558,90 +563,85 @@ mod unit_tests {
     }
 }
 
-/// Postgres-backed; named for the selector CI splits on — see
+/// Database-backed; named for the selector CI splits on — see
 /// `capabilities/scouting/src/store.rs` for why the name is the contract.
 #[cfg(test)]
-pub(crate) mod postgres_tests {
+pub(crate) mod db_tests {
     use super::*;
-    // Only the test helpers still connect directly: `drop_test_schema` tears down a
-    // schema outside the pool, deliberately, so it works even when the pool is
-    // exhausted or the store under test is broken.
-    use postgres::NoTls;
 
-    /// The same connection the binaries use, so a rotated Postgres password
-    /// can't leave the tests behind. `Config::load()` reads the overlay's
-    /// `postgres.env` via `AXON_PERSONAL_ROOT`; `COMMS_TEST_DATABASE_URL`
-    /// overrides it for a throwaway database. A second hardcoded default here
-    /// is what made these tests fail against a live server for weeks.
-    pub(crate) fn test_database_url() -> String {
-        static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        // Resolved once: the config tests mutate process-global env while these
-        // run alongside them, and every store test must agree on one database.
-        URL.get_or_init(|| {
-            std::env::var("COMMS_TEST_DATABASE_URL")
-                .unwrap_or_else(|_| crate::config::Config::load().database_url)
-        })
-        .clone()
-    }
-
-    /// `pub(crate)` because `cloud_run`'s tests need a real schema too: the
+    /// A file per test, in a directory this process owns.
+    ///
+    /// It replaces the per-pid schema and the guard that dropped it. That guard
+    /// existed because four abandoned test schemas were sitting in the shared
+    /// database on 2026-07-28, from two long-finished processes, and every one
+    /// would have gone into the next `pg_dumpall`. A temp file is neither shared
+    /// nor backed up, so the failure it prevented cannot occur.
+    ///
+    /// `pub(crate)` because `cloud_run`'s tests need a real store too: the
     /// enqueue refusal they pin is only worth pinning against a store that
     /// would happily have written the row.
-    pub(crate) fn open_test_store(name: &str) -> (Store, TestSchema) {
-        let schema = format!("comms_test_{name}_{}", std::process::id());
-        let store = Store::open_with_schema(&test_database_url(), &schema).unwrap_or_else(|e| {
-            panic!(
-                "could not open test store: {e} — needs capabilities/postgres running and \
-                 AXON_PERSONAL_ROOT exported (or COMMS_TEST_DATABASE_URL set); see README"
-            )
-        });
-        (store, TestSchema(schema))
+    pub(crate) fn open_test_store(name: &str) -> Store {
+        let path = test_database(name);
+        Store::open(&path)
+            .unwrap_or_else(|e| panic!("could not open test store at {}: {e}", path.display()))
+    }
+
+    /// The path `open_test_store` opens, for a test that needs raw SQL beside
+    /// the store's own statements.
+    pub(crate) fn test_database(name: &str) -> std::path::PathBuf {
+        let directory = std::env::temp_dir().join(format!("comms-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a writable temp directory");
+        let path = directory.join(format!("{name}.db"));
+        // The pid is recycled eventually, so the file starts empty -- which is
+        // what the old DROP SCHEMA was buying.
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
+        }
+        path
     }
 
     /// The readiness probe has to reach the database, not merely hold a pool handle —
-    /// a check that passes without touching Postgres is the bug #126 is about.
+    /// a check that passes without touching the file is the bug #126 is about.
     #[test]
     fn ping_reaches_the_database() {
-        let (store, _schema) = open_test_store("ping");
-        store.ping().expect("a live store answers its own ping");
+        open_test_store("ping")
+            .ping()
+            .expect("a live store answers its own ping");
     }
 
+    /// The readiness handler turns exactly this into a 503. It replaces "port 1
+    /// is unreachable": there is no port any more, so an unusable path is the
+    /// failure a deployment can actually have.
     #[test]
-    fn a_store_cannot_be_opened_against_an_unreachable_database() {
-        // Port 1 is reserved and nothing listens there, so this fails the way a stopped
-        // Postgres container does. The readiness handler turns exactly this into a 503.
+    fn a_store_cannot_be_opened_against_an_unusable_path() {
+        let blocker = std::env::temp_dir().join(format!("comms-blocker-{}", std::process::id()));
+        std::fs::write(&blocker, b"not a directory").unwrap();
         assert!(
-            Store::open("host=127.0.0.1 port=1 user=axon password=axon dbname=axon").is_err(),
-            "an unreachable database opened anyway"
+            Store::open(&blocker.join("axon.db")).is_err(),
+            "an unusable path opened anyway"
         );
     }
 
-    /// Drops the schema when it goes out of scope, including on unwind.
-    ///
-    /// The tests used to call drop_test_schema() as their last statement, which cleans up
-    /// exactly when nothing goes wrong. A failing assertion panics first, the drop never
-    /// runs, and the schema stays behind -- four of them were sitting in the shared
-    /// database on 2026-07-28, from two long-finished processes, and every one would have
-    /// gone into the next pg_dumpall. A guard runs on the way out either way.
-    pub(crate) struct TestSchema(String);
-
-    impl Drop for TestSchema {
-        fn drop(&mut self) {
-            drop_test_schema(&self.0);
-        }
-    }
-
-    /// So a test that needs the schema name for raw SQL can still say `{schema}`.
-    impl std::fmt::Display for TestSchema {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    fn drop_test_schema(schema: &str) {
-        if let Ok(mut client) = Client::connect(&test_database_url(), NoTls) {
-            let _ = client.batch_execute(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"));
-        }
+    /// Gmail's `internalDate` is epoch-ms and reached the column through
+    /// `to_timestamp($5)`. Its replacement is `strftime(..., ?5, 'unixepoch')`,
+    /// which has to land in the same canonical format every other stamp is in --
+    /// otherwise `ORDER BY internal_date` in `list_triage` stops being time order.
+    #[test]
+    fn the_gmail_epoch_lands_in_the_canonical_format() {
+        let store = open_test_store("internal_date");
+        store
+            .upsert_triage(&mk_triage("thread-epoch", "werbung"))
+            .unwrap();
+        let stored = store
+            .get_triage("thread-epoch")
+            .unwrap()
+            .expect("just written")
+            .internal_date_text
+            .expect("internalDate was supplied");
+        assert_eq!(stored.len(), 29, "got {stored}");
+        assert!(stored.ends_with("+00:00"), "got {stored}");
+        // 1_700_000_000_000 ms is 2023-11-14T22:13:20Z.
+        assert!(stored.starts_with("2023-11-14 22:13:20"), "got {stored}");
     }
 
     fn mk_triage(id: &str, stream: &str) -> TriageItem {
@@ -685,7 +685,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn triage_upsert_is_idempotent_and_updates_fields() {
-        let (store, _schema) = open_test_store("triage_idem");
+        let store = open_test_store("triage_idem");
         let mut item = mk_triage("thread:1", "werbung");
         assert!(store.upsert_triage(&item).unwrap(), "first insert is new");
         item.rationale = "changed".into();
@@ -699,7 +699,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn triage_set_status_validates() {
-        let (store, _schema) = open_test_store("triage_status");
+        let store = open_test_store("triage_status");
         store
             .upsert_triage(&mk_triage("thread:s", "aktiv"))
             .unwrap();
@@ -728,26 +728,26 @@ pub(crate) mod postgres_tests {
     /// boolean, which is exactly the query someone writes first.
     #[test]
     fn waiting_is_recorded_and_fully_cleared() {
-        let (store, schema) = open_test_store("triage_waiting");
+        let store = open_test_store("triage_waiting");
         store
             .upsert_triage(&mk_triage("thread:w", "aktiv"))
             .unwrap();
 
         let waiting_at = || -> Option<String> {
-            let mut conn = store.conn().unwrap();
-            conn.query_one(
+            let conn = store.conn().unwrap();
+            conn.query_row(
                 &format!(
-                    "SELECT waiting, waiting_at::TEXT FROM {}.triage_items WHERE id = $1",
-                    schema.0
+                    "SELECT waiting, waiting_at FROM {}_triage_items WHERE id = ?1",
+                    store.prefix
                 ),
-                &[&"thread:w"],
+                params!["thread:w"],
+                |row| {
+                    let flag: bool = row.get(0)?;
+                    let at: Option<String> = row.get(1)?;
+                    assert_eq!(flag, at.is_some(), "the flag and the timestamp must agree");
+                    Ok(at)
+                },
             )
-            .map(|row| {
-                let flag: bool = row.get(0);
-                let at: Option<String> = row.get(1);
-                assert_eq!(flag, at.is_some(), "the flag and the timestamp must agree");
-                at
-            })
             .unwrap()
         };
 
@@ -770,7 +770,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn gmail_lifecycle_distinguishes_archive_trash_and_restore() {
-        let (store, _schema) = open_test_store("gmail_lifecycle");
+        let store = open_test_store("gmail_lifecycle");
         store
             .upsert_triage(&mk_triage("thread:archive", "aktiv"))
             .unwrap();
@@ -805,7 +805,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn gmail_action_intent_is_durable_idempotent_and_bounded() {
-        let (store, _schema) = open_test_store("gmail_action_jobs");
+        let store = open_test_store("gmail_action_jobs");
         store
             .upsert_triage(&mk_triage("thread:job", "aktiv"))
             .unwrap();
@@ -833,13 +833,14 @@ pub(crate) mod postgres_tests {
                 .unwrap();
             assert_eq!(state, if attempt == 5 { "abandoned" } else { "queued" });
             if attempt < 5 {
-                let mut conn = store.conn().unwrap();
+                let conn = store.conn().unwrap();
                 conn.execute(
                     &format!(
-                        "UPDATE {}.gmail_action_jobs SET next_attempt = now() WHERE job_id = $1",
-                        store.schema
+                        "UPDATE {}_gmail_action_jobs SET next_attempt = {now} WHERE job_id = ?1",
+                        store.prefix,
+                        now = axon_store::NOW
                     ),
-                    &[&restore.job_id],
+                    params![restore.job_id],
                 )
                 .unwrap();
             }
@@ -885,7 +886,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn observed_gmail_location_reconciles_direct_changes() {
-        let (store, _schema) = open_test_store("gmail_observed_location");
+        let store = open_test_store("gmail_observed_location");
         store
             .upsert_triage(&mk_triage("thread:observed", "aktiv"))
             .unwrap();
@@ -918,7 +919,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn missing_gmail_thread_is_retained_and_closes_pending_work() {
-        let (store, _schema) = open_test_store("gmail_missing");
+        let store = open_test_store("gmail_missing");
         store
             .upsert_triage(&mk_triage("thread:missing", "aktiv"))
             .unwrap();
@@ -949,7 +950,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn expired_trash_is_purged_but_archive_is_retained() {
-        let (store, _schema) = open_test_store("gmail_trash_purge");
+        let store = open_test_store("gmail_trash_purge");
         store
             .upsert_triage(&mk_triage("thread:expired", "aktiv"))
             .unwrap();
@@ -963,13 +964,14 @@ pub(crate) mod postgres_tests {
             .record_gmail_action("thread:archive", "archive")
             .unwrap();
         {
-            let mut conn = store.conn().unwrap();
+            let conn = store.conn().unwrap();
             conn.execute(
                 &format!(
-                    "UPDATE {}.triage_items SET purge_after = now() - interval '1 second' WHERE id = $1",
-                    store.schema
+                    "UPDATE {}_triage_items SET purge_after = {past} WHERE id = ?1",
+                    store.prefix,
+                    past = axon_store::now_offset("'-1 second'")
                 ),
-                &[&"thread:expired"],
+                params!["thread:expired"],
             )
             .unwrap();
         }
@@ -987,7 +989,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn human_triage_category_survives_a_resweep() {
-        let (store, _schema) = open_test_store("triage_human_category");
+        let store = open_test_store("triage_human_category");
         store
             .upsert_triage(&mk_triage("thread:manual", "aktiv"))
             .unwrap();
@@ -1011,7 +1013,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn human_data_class_survives_rule_refresh_and_resweep() {
-        let (store, _schema) = open_test_store("triage_human_data_class");
+        let store = open_test_store("triage_human_data_class");
         store
             .upsert_triage(&mk_triage("thread:private", "aktiv"))
             .unwrap();
@@ -1040,7 +1042,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn reviewed_cloud_derivative_is_staged_and_becomes_stale_with_its_source() {
-        let (store, _schema) = open_test_store("cloud_derivative");
+        let store = open_test_store("cloud_derivative");
         let approval = CloudDerivativeApproval {
             source: "mail".into(),
             item_id: "thread:cloud".into(),
@@ -1086,7 +1088,7 @@ pub(crate) mod postgres_tests {
     /// — or if an older binary is pointed at this database.
     #[test]
     fn a_vault_derivative_cannot_be_staged_at_all() {
-        let (store, _schema) = open_test_store("cloud_vault_refused");
+        let store = open_test_store("cloud_vault_refused");
         let error = store
             .stage_cloud_derivative(&CloudDerivativeApproval {
                 source: "mail".into(),
@@ -1100,19 +1102,20 @@ pub(crate) mod postgres_tests {
                 redaction_count: 1,
             })
             .expect_err("vault must not be stageable");
+        // Matched on the column and its allowed set rather than on a constraint
+        // *name*: Postgres named the constraint and quoted the name back; SQLite
+        // quotes the CHECK expression itself. The claim is the same one -- the
+        // refusal comes from the class constraint, not from Rust -- and this is
+        // how the database states it now.
         assert!(
-            error
-                .to_string()
-                .contains("content_cloud_derivatives_original_data_class_check")
-                || format!("{error:?}")
-                    .contains("content_cloud_derivatives_original_data_class_check"),
+            format!("{error:?}").contains("original_data_class IN ('public','personal')"),
             "the refusal must come from the class CHECK, got: {error:?}"
         );
     }
 
     #[test]
     fn approved_derivative_queues_once_for_an_explicit_cloud_role() {
-        let (store, _schema) = open_test_store("cloud_queue");
+        let store = open_test_store("cloud_queue");
         store
             .stage_cloud_derivative(&CloudDerivativeApproval {
                 source: "mail".into(),
@@ -1155,7 +1158,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn queued_cloud_job_claims_once_and_persists_a_bounded_result() {
-        let (store, _schema) = open_test_store("cloud_dispatch");
+        let store = open_test_store("cloud_dispatch");
         store
             .stage_cloud_derivative(&CloudDerivativeApproval {
                 source: "mail".into(),
@@ -1225,27 +1228,36 @@ pub(crate) mod postgres_tests {
         );
         assert!(store.cloud_job_for_dispatch(&job_id).unwrap().is_none());
 
-        let mut conn = store.conn().unwrap();
+        let conn = store.conn().unwrap();
         let attempt = conn
-            .query_one(
+            .query_row(
                 &format!(
                     "SELECT provider_role, model, preview_hash, status, result_json
-                     FROM {}.content_cloud_attempts WHERE attempt_id = $1",
-                    store.schema
+                     FROM {}_content_cloud_attempts WHERE attempt_id = ?1",
+                    store.prefix
                 ),
-                &[&attempt_id],
+                params![attempt_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
             )
             .unwrap();
-        assert_eq!(attempt.get::<_, String>(0), "cloud_summarization");
-        assert_eq!(attempt.get::<_, String>(1), "model-a");
-        assert_eq!(attempt.get::<_, String>(2), "preview-v1");
-        assert_eq!(attempt.get::<_, String>(3), "succeeded");
-        assert!(attempt.get::<_, Option<String>>(4).is_some());
+        assert_eq!(attempt.0, "cloud_summarization");
+        assert_eq!(attempt.1, "model-a");
+        assert_eq!(attempt.2, "preview-v1");
+        assert_eq!(attempt.3, "succeeded");
+        assert!(attempt.4.is_some());
     }
 
     #[test]
     fn cloud_daily_ceiling_blocks_before_a_second_provider_attempt() {
-        let (store, _schema) = open_test_store("cloud_daily_budget");
+        let store = open_test_store("cloud_daily_budget");
         store
             .stage_cloud_derivative(&CloudDerivativeApproval {
                 source: "mail".into(),
@@ -1304,7 +1316,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn triage_relevance_replaces_stale_profiles_without_changing_the_proposal() {
-        let (store, _schema) = open_test_store("triage_relevance");
+        let store = open_test_store("triage_relevance");
         store
             .upsert_triage(&mk_triage("thread:relevant", "feed"))
             .unwrap();
@@ -1345,7 +1357,7 @@ pub(crate) mod postgres_tests {
     /// thread. upsert_triage's ON CONFLICT must not touch `status`.
     #[test]
     fn upsert_preserves_status_across_refetch_triage() {
-        let (store, _schema) = open_test_store("triage_preserve");
+        let store = open_test_store("triage_preserve");
         let item = mk_triage("thread:keep", "werbung");
         store.upsert_triage(&item).unwrap();
         store.set_triage_status("thread:keep", "dismissed").unwrap();
@@ -1370,7 +1382,7 @@ pub(crate) mod postgres_tests {
     /// they were logged into, and it must not come back cloud-eligible.
     #[test]
     fn an_ingested_item_nobody_declared_is_stored_personal_and_legacy() {
-        let (store, _schema) = open_test_store("feed_class_default");
+        let store = open_test_store("feed_class_default");
         let item = mk_feed("https://example.com/undeclared", "article", "news");
         store.upsert_feed(&item).unwrap();
 
@@ -1387,7 +1399,7 @@ pub(crate) mod postgres_tests {
     /// lands with the INSERT, and every later pass may only raise it.
     #[test]
     fn a_collector_declares_its_class_when_it_first_stores_the_item() {
-        let (store, _schema) = open_test_store("feed_class_declared");
+        let store = open_test_store("feed_class_declared");
         let mut item = mk_feed("https://example.com/declared", "arxiv", "news");
         item.declare_class(&content_item::DataClass::declared_by_source(
             "public",
@@ -1413,7 +1425,7 @@ pub(crate) mod postgres_tests {
     /// backfilled rows can only be lifted by a human who says why.
     #[test]
     fn a_re_ingest_can_raise_a_feed_class_but_never_lower_one() {
-        let (store, _schema) = open_test_store("feed_class_escalation");
+        let store = open_test_store("feed_class_escalation");
         let mut item = mk_feed("https://example.com/escalate", "article", "news");
         store.upsert_feed(&item).unwrap();
 
@@ -1460,7 +1472,7 @@ pub(crate) mod postgres_tests {
     /// decided, and that record was the one thing worth keeping.
     #[test]
     fn a_re_ingest_at_equal_class_keeps_a_humans_feed_record() {
-        let (store, _schema) = open_test_store("feed_class_human_record");
+        let store = open_test_store("feed_class_human_record");
         let mut item = mk_feed("https://arxiv.org/abs/1706.03762", "article", "news");
         store.upsert_feed(&item).unwrap();
         assert!(store
@@ -1505,7 +1517,7 @@ pub(crate) mod postgres_tests {
     /// server answer 400 rather than 404.
     #[test]
     fn lowering_a_feed_class_needs_a_written_reason_and_says_so() {
-        let (store, _schema) = open_test_store("feed_class_deescalation");
+        let store = open_test_store("feed_class_deescalation");
         let mut item = mk_feed("https://example.com/lower", "article", "news");
         item.declare_class(&content_item::DataClass::declared_by_source(
             "vault",
@@ -1557,7 +1569,7 @@ pub(crate) mod postgres_tests {
     /// it had already called Private.
     #[test]
     fn a_resweep_cannot_downgrade_a_mail_the_rules_once_called_private() {
-        let (store, _schema) = open_test_store("triage_class_escalation");
+        let store = open_test_store("triage_class_escalation");
         let mut item = mk_triage("thread:class", "aktiv");
         item.data_class = "vault".into();
         item.data_class_rationale = "Authentication metadata is Private.".into();
@@ -1578,7 +1590,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn feed_upsert_is_idempotent_and_coalesces_summary() {
-        let (store, _schema) = open_test_store("feed_idem");
+        let store = open_test_store("feed_idem");
         let url = "https://youtu.be/xyz";
         let mut item = mk_feed(url, "youtube", "media");
         assert!(store.upsert_feed(&item).unwrap(), "first insert is new");
@@ -1631,7 +1643,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn relevance_replace_removes_stale_profiles_without_touching_status() {
-        let (store, _schema) = open_test_store("feed_relevance_replace");
+        let store = open_test_store("feed_relevance_replace");
         let item = mk_feed("https://example.com/relevant", "article", "news");
         store.upsert_feed(&item).unwrap();
         store.set_feed_status(&item.id, "keeper").unwrap();
@@ -1667,7 +1679,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn quality_flags_round_trip_replaces_stale_reasons_and_keeps_item_status() {
-        let (store, _schema) = open_test_store("feed_quality_flags");
+        let store = open_test_store("feed_quality_flags");
         let item = mk_feed("https://example.com/quality", "article", "news");
         store.upsert_feed(&item).unwrap();
         store.set_feed_status(&item.id, "keeper").unwrap();
@@ -1713,7 +1725,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn evaluation_replace_round_trips_factors_and_revision() {
-        let (store, _schema) = open_test_store("feed_evaluation_replace");
+        let store = open_test_store("feed_evaluation_replace");
         let item = mk_feed("https://example.com/evaluated", "article", "news");
         store.upsert_feed(&item).unwrap();
         let mut evaluation = FeedEvaluation {
@@ -1786,7 +1798,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn travel_context_snapshot_round_trips() {
-        let (store, _schema) = open_test_store("travel_context_snapshot");
+        let store = open_test_store("travel_context_snapshot");
         store
             .replace_travel_context_snapshot("revision-one", "[{\"id\":\"trip:one\"}]")
             .unwrap();
@@ -1798,7 +1810,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn enrichment_ledger_and_attempts_cap() {
-        let (store, _schema) = open_test_store("enrichment_ledger");
+        let store = open_test_store("enrichment_ledger");
         let mut item = mk_feed("https://example.com/failed-item", "article", "news");
         item.transcript = Some("Short transcript for test".into());
         item.content_status = "thin".into();
@@ -1856,7 +1868,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn feed_list_filters_stream_and_dismissed() {
-        let (store, _schema) = open_test_store("feed_list");
+        let store = open_test_store("feed_list");
         store
             .upsert_feed(&mk_feed("https://youtu.be/a", "youtube", "media"))
             .unwrap();
@@ -1884,7 +1896,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn feed_origins_queries_and_grouping() {
-        let (store, _schema) = open_test_store("feed_origins");
+        let store = open_test_store("feed_origins");
         let item1 = mk_feed("https://example.com/item1", "article", "news");
         let item2 = mk_feed("https://example.com/item2", "article", "news");
         store.upsert_feed(&item1).unwrap();
@@ -1939,7 +1951,7 @@ pub(crate) mod postgres_tests {
     /// URL. upsert_feed's ON CONFLICT must not touch `status`.
     #[test]
     fn upsert_preserves_status_across_refetch_feed() {
-        let (store, _schema) = open_test_store("feed_preserve");
+        let store = open_test_store("feed_preserve");
         let item = mk_feed("https://youtu.be/keepme", "youtube", "media");
         store.upsert_feed(&item).unwrap();
         store.set_feed_status(&item.id, "keeper").unwrap();
@@ -1957,7 +1969,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn runs_are_derived_from_arrival_gaps_and_leave_ungrouped_items_alone() {
-        let (store, schema) = open_test_store("feed_runs");
+        let store = open_test_store("feed_runs");
 
         let together_a = mk_feed("https://github.com/o/a", "github", "news");
         let together_b = mk_feed("https://github.com/o/b", "github", "news");
@@ -1984,9 +1996,11 @@ pub(crate) mod postgres_tests {
             .unwrap()
             .execute(
                 &format!(
-                    "UPDATE {schema}.feed_origins SET first_seen = first_seen - interval '2 hours' WHERE feed_id = $1"
+                    "UPDATE {prefix}_feed_origins SET first_seen = {past} WHERE feed_id = ?1",
+                    prefix = store.prefix,
+                    past = axon_store::now_offset("'-2 hours'")
                 ),
-                &[&later.id],
+                params![&later.id],
             )
             .unwrap();
 
@@ -2019,7 +2033,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn capture_provenance_follows_the_body_it_describes() {
-        let (store, _schema) = open_test_store("captured_via");
+        let store = open_test_store("captured_via");
 
         let mut captured = mk_feed("https://example.com/members", "article", "news");
         captured.captured_via = Some("axon-clip".into());
@@ -2063,7 +2077,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn transcript_source_round_trips_and_is_not_relabelled_by_an_empty_refetch() {
-        let (store, _schema) = open_test_store("transcript_source");
+        let store = open_test_store("transcript_source");
 
         // A paper stored as its abstract, which is what every arXiv item is
         // until a PDF extractor is registered (#78).
@@ -2116,7 +2130,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn raw_content_is_retained_beside_the_normalized_transcript() {
-        let (store, _schema) = open_test_store("raw_content");
+        let store = open_test_store("raw_content");
         let mut item = mk_feed("https://example.com/raw", "article", "news");
         item.raw_content = Some("Menu\n\nThe body.".into());
         item.transcript = Some("The body.".into());
@@ -2181,7 +2195,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn content_digest_round_trips_and_replaces_in_place() {
-        let (store, _schema) = open_test_store("digest_round_trip");
+        let store = open_test_store("digest_round_trip");
         let item = mk_feed("https://example.com/digested", "article", "news");
         store.upsert_feed(&item).unwrap();
         assert!(store.content_digest("feed", &item.id).unwrap().is_none());
@@ -2238,7 +2252,7 @@ pub(crate) mod postgres_tests {
     /// refinement in the store.
     #[test]
     fn the_automatic_pass_leaves_an_operators_refinement_alone() {
-        let (store, _schema) = open_test_store("digest_queue");
+        let store = open_test_store("digest_queue");
         let missing = mk_feed("https://example.com/no-digest", "article", "news");
         let stale = mk_feed("https://example.com/stale-digest", "article", "news");
         let refined = mk_feed("https://example.com/refined-digest", "article", "news");
@@ -2348,17 +2362,18 @@ pub(crate) mod postgres_tests {
     /// would give that guarantee away. Tests live inside this module, so they
     /// can reach the connection without one.
     fn expire_digest_backoff(store: &Store, source: &str, item_id: &str) {
-        let schema = store.schema.clone();
         store
             .conn()
             .unwrap()
             .execute(
                 &format!(
-                    "UPDATE {schema}.content_digests
-                        SET next_attempt = now() - interval '1 hour'
-                      WHERE source = $1 AND item_id = $2"
+                    "UPDATE {prefix}_content_digests
+                        SET next_attempt = {past}
+                      WHERE source = ?1 AND item_id = ?2",
+                    prefix = store.prefix,
+                    past = axon_store::now_offset("'-1 hour'")
                 ),
-                &[&source, &item_id],
+                params![&source, &item_id],
             )
             .unwrap();
     }
@@ -2371,35 +2386,30 @@ pub(crate) mod postgres_tests {
     /// the same instant" was the normal case rather than the rare one, and it
     /// produced `deadlock detected` in the drain log roughly every other pass.
     ///
-    /// Migration now runs once per process per (database, schema), so seven of
+    /// Migration now runs once per process per (file, prefix), so seven of
     /// these eight threads do no DDL at all. Kept at eight anyway: this is the
     /// shape that failed reliably before, and it is the only place the
     /// in-process guard is exercised under real contention rather than in
     /// isolation (libs/axon-store has the isolated cases).
     #[test]
     fn concurrent_openers_do_not_deadlock() {
-        let schema = format!("comms_test_open_race_{}", std::process::id());
-        let url = test_database_url();
+        let path = test_database("open_race");
         let threads: Vec<_> = (0..8)
             .map(|_| {
-                let url = url.clone();
-                let schema = schema.clone();
+                let path = path.clone();
                 // Flattened to a String inside the thread: `Box<dyn Error>` is
-                // not Send, and the detail lives on the source chain anyway —
-                // `postgres::Error` Displays as the bare words "db error", so
+                // not Send, and the detail lives on the source chain anyway, so
                 // joining the causes is the only way this failure names itself.
                 std::thread::spawn(move || {
-                    Store::open_with_schema(&url, &schema)
-                        .map(|_| ())
-                        .map_err(|error| {
-                            let mut text = error.to_string();
-                            let mut cause = error.source();
-                            while let Some(next) = cause {
-                                text.push_str(&format!(": {next}"));
-                                cause = next.source();
-                            }
-                            text
-                        })
+                    Store::open(&path).map(|_| ()).map_err(|error| {
+                        let mut text = error.to_string();
+                        let mut cause = error.source();
+                        while let Some(next) = cause {
+                            text.push_str(&format!(": {next}"));
+                            cause = next.source();
+                        }
+                        text
+                    })
                 })
             })
             .collect();
@@ -2408,7 +2418,6 @@ pub(crate) mod postgres_tests {
             .into_iter()
             .filter_map(|t| t.join().expect("opener panicked").err())
             .collect();
-        drop_test_schema(&schema);
         assert!(
             failures.is_empty(),
             "every concurrent open must succeed, got: {failures:?}"
@@ -2423,18 +2432,16 @@ pub(crate) mod postgres_tests {
     /// actually changed.
     ///
     /// The bound is the pool ceiling rather than an exact number, because the test
-    /// binary runs cases in parallel against one process-wide pool per URL and the
-    /// others contribute connections too. It is still the claim that matters:
+    /// binary runs cases in parallel against one process-wide pool per file and
+    /// the others contribute connections too. It is still the claim that matters:
     /// before this, twenty opens meant twenty connect-and-authenticate round trips,
     /// and there was no ceiling at all.
     #[test]
     fn many_opens_share_one_pool() {
-        let (store, schema) = open_test_store("pool_shared");
-        let url = test_database_url();
+        let path = test_database("pool_shared");
+        let store = Store::open(&path).expect("open");
 
-        let opened: Vec<Store> = (0..20)
-            .map(|_| Store::open_with_schema(&url, &schema.0).expect("open"))
-            .collect();
+        let opened: Vec<Store> = (0..20).map(|_| Store::open(&path).expect("open")).collect();
         assert_eq!(opened.len(), 20);
 
         let connections = store.pool.state().connections;
@@ -2444,33 +2451,36 @@ pub(crate) mod postgres_tests {
         );
     }
 
-    /// The second open of a schema this process already migrated does no DDL.
+    /// The second open of a (file, prefix) this process already migrated does no DDL.
     ///
-    /// Asserted by removing the schema behind the process's back: an `open` that
-    /// still migrated would put the tables straight back, and the read below
-    /// would succeed. It failing is the proof that the DDL ran exactly once.
+    /// Asserted by dropping the tables behind the process's back: an `open` that
+    /// still migrated would put them straight back, and the read below would
+    /// succeed. It failing is the proof that the DDL ran exactly once.
     ///
     /// That is also the honest cost of the design, which is why it is pinned
-    /// rather than left implicit. Rebuilding a schema dropped underneath a live
-    /// process would mean DDL on every open again, and DDL on every open is the
-    /// deadlock this replaced.
+    /// rather than left implicit. Rebuilding tables dropped underneath a live
+    /// process would mean DDL on every open again, and DDL on every open takes
+    /// the write lock 43 handlers are behind.
     #[test]
     fn a_second_open_does_no_ddl() {
-        let schema = format!("comms_test_migrate_once_{}", std::process::id());
-        let url = test_database_url();
+        let path = test_database("migrate_once");
 
-        let first = Store::open_with_schema(&url, &schema).expect("first open migrates");
+        let first = Store::open(&path).expect("first open migrates");
         first
             .list_feed(None, None, 1, false)
-            .expect("the first open must leave a usable schema behind");
+            .expect("the first open must leave usable tables behind");
         drop(first);
 
-        drop_test_schema(&schema);
+        let drop_feed_items = || {
+            rusqlite::Connection::open(&path)
+                .unwrap()
+                .execute_batch("DROP TABLE IF EXISTS comms_feed_items")
+                .unwrap();
+        };
+        drop_feed_items();
 
-        let second =
-            Store::open_with_schema(&url, &schema).expect("the second open still connects");
+        let second = Store::open(&path).expect("the second open still connects");
         let read = second.list_feed(None, None, 1, false);
-        drop_test_schema(&schema);
 
         assert!(
             read.is_err(),
@@ -2484,7 +2494,7 @@ pub(crate) mod postgres_tests {
     /// row permanently dead — the exact failure the drain exists to end.
     #[test]
     fn a_retryable_failure_waits_out_a_growing_backoff() {
-        let (store, _schema) = open_test_store("digest_backoff");
+        let store = open_test_store("digest_backoff");
         let item = mk_feed("https://example.com/backoff-digest", "article", "news");
         store.upsert_feed(&item).unwrap();
 
@@ -2522,25 +2532,29 @@ pub(crate) mod postgres_tests {
 
     /// Seconds from now until the row's retry deadline, or None when it has none.
     fn backoff_seconds(store: &Store, source: &str, item_id: &str) -> Option<f64> {
-        let schema = store.schema.clone();
-        let row = store
+        // `EXTRACT(EPOCH FROM (a - b))` becomes a difference of julian days,
+        // scaled to seconds. It reads the deadline the way the drain does --
+        // through SQLite's own date functions on the stored text -- which is the
+        // property `NOW`'s `+00:00` offset exists to keep.
+        store
             .conn()
             .unwrap()
-            .query_one(
+            .query_row(
                 &format!(
-                    "SELECT EXTRACT(EPOCH FROM (next_attempt - now()))::float8
-                       FROM {schema}.content_digests
-                      WHERE source = $1 AND item_id = $2"
+                    "SELECT (julianday(next_attempt) - julianday('now')) * 86400.0
+                       FROM {prefix}_content_digests
+                      WHERE source = ?1 AND item_id = ?2",
+                    prefix = store.prefix
                 ),
-                &[&source, &item_id],
+                params![&source, &item_id],
+                |row| row.get::<_, Option<f64>>(0),
             )
-            .unwrap();
-        row.get::<_, Option<f64>>(0)
+            .unwrap()
     }
 
     #[test]
     fn feed_pending_summaries_includes_stale_model_output() {
-        let (store, _schema) = open_test_store("feed_pending");
+        let store = open_test_store("feed_pending");
         let with_t = mk_feed("https://youtu.be/hastranscript", "youtube", "media");
         store.upsert_feed(&with_t).unwrap();
         let mut no_t = FeedItem::new("https://example.com/no-transcript", "news", "article");
@@ -2564,10 +2578,10 @@ pub(crate) mod postgres_tests {
             .unwrap()
             .execute(
                 &format!(
-                    "UPDATE {}.feed_items SET summary_revision = 'legacy-unknown' WHERE id = $1",
-                    store.schema
+                    "UPDATE {}_feed_items SET summary_revision = 'legacy-unknown' WHERE id = ?1",
+                    store.prefix
                 ),
-                &[&legacy.id],
+                params![&legacy.id],
             )
             .unwrap();
 
@@ -2598,7 +2612,7 @@ pub(crate) mod postgres_tests {
 
     #[test]
     fn source_state_round_trip() {
-        let (store, _schema) = open_test_store("source_state");
+        let store = open_test_store("source_state");
         assert!(store.get_source_state("gmail").unwrap().is_none());
         store.record_run("gmail", Some("cur-1")).unwrap();
         let st = store.get_source_state("gmail").unwrap().unwrap();
@@ -2617,7 +2631,7 @@ pub(crate) mod postgres_tests {
     /// schedule is an outage or a five-minute blip.
     #[test]
     fn a_failure_streak_preserves_the_last_success_and_recovery_clears_it() {
-        let (store, _schema) = open_test_store("sweep_outcome");
+        let store = open_test_store("sweep_outcome");
 
         store.record_sweep_success("gmail-inbox", 25, 3).unwrap();
         let ok = store.get_source_state("gmail-inbox").unwrap().unwrap();
@@ -2665,7 +2679,7 @@ pub(crate) mod postgres_tests {
     /// the same idea is the duplicate home this whole design refuses.
     #[test]
     fn three_consecutive_capacity_aborts_alert_and_one_success_silences_it() {
-        let (store, _schema) = open_test_store("capacity_streak");
+        let store = open_test_store("capacity_streak");
         let threshold = 3;
 
         assert_eq!(crate::capacity::record_failure(&store, threshold), None);
@@ -2714,7 +2728,7 @@ pub(crate) mod postgres_tests {
     /// is on the two windows that must always disagree.
     #[test]
     fn quiet_hours_wrap_midnight() {
-        let (store, _schema) = open_test_store("quiet_hours");
+        let store = open_test_store("quiet_hours");
         let all_day = store.within_quiet_hours(0, 23).unwrap();
         let inverse = store.within_quiet_hours(23, 0).unwrap();
         assert_ne!(

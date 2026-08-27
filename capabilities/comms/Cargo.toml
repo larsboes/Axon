@@ -39,15 +39,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.12", features = ["json", "gzip", "blocking"] }
 thiserror = "1.0"
-# Sync client (not tokio-postgres) -- matches reqwest's "blocking" feature;
-# the `comms` CLI path carries no async runtime, only comms-server does.
-postgres = "0.19"
-# The sync pool for that client, so it stays the same decision. `Store::open` cost
-# a fresh connection every call, measured at 32-39 ms against 0.2-0.3 ms pooled,
-# with 43 handlers here calling it. upstreams.toml [r2d2] carries the verdict, why
-# not deadpool or bb8, and what the endpoint's remaining time actually is.
-r2d2 = "0.8"
-r2d2_postgres = "0.18"
+# The database, after PRD Q45 retired Postgres. Bundled so the deployment does not
+# depend on whichever SQLite the host ships; upstreams.toml [rusqlite] has the
+# measurement that settled it. Blocking, matching reqwest's "blocking" feature --
+# the `comms` CLI path carries no async runtime, only comms-server does. The pool
+# stays (axon-store owns it): 43 handlers here call `Store::open`.
+rusqlite = { version = "0.40", features = ["bundled"] }
 # feed_items PK is the sha256 of the canonical URL (store::feed_id). sha2 is
 # already in the root workspace's resolved Cargo.lock (transitive today), so this
 # reuses a pinned dep rather than hand-rolling SHA-256.
