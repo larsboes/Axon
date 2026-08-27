@@ -76,9 +76,7 @@
       "kind": "capability",
       "service": {
         "kind": "process",
-        "requires": [
-          "postgres"
-        ],
+        "requires": [],
         "port": "8087"
       },
       "code": {
@@ -99,9 +97,7 @@
       "kind": "capability",
       "service": {
         "kind": "process",
-        "requires": [
-          "postgres"
-        ],
+        "requires": [],
         "port": "8083"
       },
       "code": {
@@ -145,9 +141,7 @@
       "kind": "capability",
       "service": {
         "kind": "process",
-        "requires": [
-          "postgres"
-        ],
+        "requires": [],
         "port": "8090"
       },
       "code": {
@@ -295,27 +289,12 @@
       "kind": "capability",
       "service": {
         "kind": "process",
-        "requires": [
-          "postgres"
-        ],
+        "requires": [],
         "port": "8093"
       },
       "code": {
         "files": 11,
         "nodes": 202
-      }
-    },
-    {
-      "name": "postgres",
-      "kind": "capability",
-      "service": {
-        "kind": "container",
-        "requires": [],
-        "image": "postgres"
-      },
-      "code": {
-        "files": 1,
-        "nodes": 11
       }
     },
     {
@@ -331,9 +310,7 @@
       "kind": "capability",
       "service": {
         "kind": "process",
-        "requires": [
-          "postgres"
-        ],
+        "requires": [],
         "port": "8085"
       },
       "code": {
@@ -362,9 +339,7 @@
       "kind": "capability",
       "service": {
         "kind": "process",
-        "requires": [
-          "postgres"
-        ],
+        "requires": [],
         "port": "8084"
       },
       "code": {
@@ -421,6 +396,14 @@
       }
     },
     {
+      "name": "store",
+      "kind": "capability",
+      "service": {
+        "kind": "data",
+        "requires": []
+      }
+    },
+    {
       "name": "summarize",
       "kind": "lib",
       "code": {
@@ -433,9 +416,7 @@
       "kind": "capability",
       "service": {
         "kind": "process",
-        "requires": [
-          "postgres"
-        ],
+        "requires": [],
         "port": "8089"
       },
       "code": {
@@ -456,9 +437,7 @@
       "kind": "capability",
       "service": {
         "kind": "process",
-        "requires": [
-          "postgres"
-        ],
+        "requires": [],
         "port": "3000"
       },
       "code": {
@@ -479,9 +458,7 @@
       "kind": "capability",
       "service": {
         "kind": "process",
-        "requires": [
-          "postgres"
-        ],
+        "requires": [],
         "port": "8086"
       },
       "code": {
@@ -1337,7 +1314,7 @@
     },
     {
       "name": "postgres",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "17.10-alpine"
     },
     {
@@ -1347,8 +1324,13 @@
     },
     {
       "name": "r2d2_postgres",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "0.18.2"
+    },
+    {
+      "name": "r2d2_sqlite",
+      "verdict": "adopt",
+      "pin": "0.35.0"
     },
     {
       "name": "research-paper-writing-skills",
@@ -1364,6 +1346,11 @@
       "name": "rules_shell",
       "verdict": "reject",
       "pin": "0.8.0"
+    },
+    {
+      "name": "rusqlite",
+      "verdict": "adopt",
+      "pin": "0.40.2"
     },
     {
       "name": "scout",
@@ -1493,6 +1480,7 @@
       "capabilities/lifeos/README.md",
       "capabilities/lifeos/overlay/RETIRED.md",
       "capabilities/lifeos/overlay/hooks/ProseGate.hook.ts",
+      "capabilities/postgres/README.md",
       "tools/check-bazel-package-labels.sh",
       "tools/check-rust-crate-roots",
       "tools/check-rust-crate-roots.test.ts",
