@@ -94,6 +94,23 @@ pub(crate) fn backup_runs() -> &'static Mutex<HashMap<String, BackupRun>> {
 /// from a number Axon made up is worse than no badge. `never` outranks everything —
 /// a capability with a backup contract and no receipt has the problem, whatever its
 /// thresholds say.
+///
+/// What the two words mean, because the thresholds are a manifest's to choose and this
+/// is the one place that reads them:
+///
+/// - **due** — the data is older than the owner said it should be. A reminder. It is
+///   the *expected* state for any manual contract between two runs.
+/// - **overdue** — the schedule that should have refreshed it did not. A fault.
+///
+/// So `stale_days` is not "a bit more than advise_days"; it is the age that can only be
+/// reached by runs that are failing. A daily contract reaches it in two days. A manual
+/// contract — vaultwarden, which needs an unlocked vault and a held-down container —
+/// legitimately keeps a week, because nothing there is scheduled to fail.
+///
+/// Getting that wrong is silent by construction, and it was: the store's daily backup
+/// failed on every run from 2026-08-24, and this function answered "due" for three days
+/// because that contract had inherited `stale_days = 7` (PRD Q47, measured 2026-08-26).
+/// Nothing here was broken. The number it was reading was.
 pub(crate) fn backup_state(age_secs: Option<u64>, c: &BackupContract) -> &'static str {
     let Some(age) = age_secs else { return "never" };
     let days = age / 86_400;
