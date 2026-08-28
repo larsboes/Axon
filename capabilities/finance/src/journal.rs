@@ -504,9 +504,7 @@ fn render(amount: &Amount) -> String {
 // ---------------------------------------------------------------------------
 
 fn split_keyword(line: &str) -> (&str, &str) {
-    line.split_once(char::is_whitespace)
-        .map(|(keyword, rest)| (keyword, rest))
-        .unwrap_or((line, ""))
+    line.split_once(char::is_whitespace).unwrap_or((line, ""))
 }
 
 /// Split a line at its comment marker. Descriptions Axon writes never contain a
@@ -656,10 +654,7 @@ fn parse_number(line: usize, text: &str, decimal_mark: char) -> Result<(i128, u3
 /// The decimal mark declared by a `commodity` sample such as `1,000.00 EUR`:
 /// the last of the two marks to appear is the decimal one.
 fn decimal_mark_of_sample(sample: &str) -> Option<char> {
-    sample
-        .chars()
-        .filter(|c| *c == '.' || *c == ',')
-        .next_back()
+    sample.chars().rfind(|c| *c == '.' || *c == ',')
 }
 
 /// `YYYY-MM-DD`, or the `/` and `.` separators hledger also accepts, normalized
