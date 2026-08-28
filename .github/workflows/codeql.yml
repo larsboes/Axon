@@ -104,7 +104,8 @@ jobs:
           # The trade is a higher false-positive rate for a repository that is pushed in bursts
           # rather than daily, which makes runtime the cheap side of the ledger. The expensive
           # side would be findings nobody triages: a permanently-noisy gate is the failure #38
-          # removed from upstream-checker, and if this becomes that, the honest move is to revert
+          # removed from the since-retired upstream-checker (deleted 2026-08-28, PRD Q41 — read
+          # it at that commit), and if this becomes that, the honest move is to revert
           # these two lines rather than to start ignoring the tab.
           queries: security-extended
 

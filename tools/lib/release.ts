@@ -8,8 +8,10 @@
 // The pattern itself lives in axon.toml `[release] tag_glob`, not in this file. tools/update.sh
 // and tools/lib/delta.sh ask the same question from bash, and tools/doctor and tools/self exec
 // bun directly without sourcing a shell library — so a tracked manifest key is the only home both
-// sides can actually read. Same shape as `[upstream] cooldown_min_days`, which upstream-checker
-// reads rather than hardcoding. See README.md#the-release-line.
+// sides can actually read. Same shape as `[upstream] cooldown_min_days`, which
+// capabilities/agentbox reads rather than hardcoding — and which renovate.json5 restates as
+// minimumReleaseAge, the one place a second copy was unavoidable because Renovate cannot read
+// axon.toml. See README.md#the-release-line.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
