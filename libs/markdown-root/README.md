@@ -77,6 +77,34 @@ write, and the decision about what a conflict should do to the run. Two changed
 revisions produce `RegionOutcome::Conflict` carrying both. Picking one silently is
 the exact failure this was built to prevent.
 
+## Writing back: the whole-file projection
+
+`projection.rs` is the case the region leaves open — **there is no human note to write
+a region into**. PRD Q31 (2026-08-23) named it pattern B, ruled it second-choice, and
+gave it one home: `Resources/Axon/`. Q49 (2026-08-27) then ruled that the mechanism is
+shared rather than per-capability, which is why it is here and not in `trips`.
+
+The file carries a header instead of markers:
+
+```text
+<!-- axon:projection owner=trips v=1 -->
+<!-- Axon generates this file and overwrites it whole. … -->
+```
+
+Placed **after** the frontmatter, because Obsidian reads frontmatter only when the
+opening `---` is the file's first line.
+
+There is no hash and no conflict outcome. The region's hash protects a human's prose
+in a file they own; a projection is not that file, and pretending a safety copy can be
+merged would be the wrong promise. What is guarded is the **path**: a file that carries
+no projection header is somebody else's, and `ProjectionOutcome::NotOurs` refuses it
+rather than overwriting it. That is also Q31's promotion path — a human writes a real
+note about the subject, their note takes the path, and the capability moves to a marked
+region inside it.
+
+Bytes that already match are not written, so a scheduled export does not produce a
+commit per run in the vault's git history.
+
 ## Why the writer lives here rather than in its own lib
 
 This crate already owns more than root resolution: `frontmatter()` has been here

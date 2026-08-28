@@ -38,8 +38,10 @@
 //! Not tilde expansion: `axon_config::expand_tilde` owns that, and the caller
 //! applies it before declaring a root.
 
+pub mod projection;
 pub mod region;
 
+pub use projection::ProjectionOutcome;
 pub use region::{apply, find, FoundRegion, RegionError, RegionOutcome, RegionSpec};
 
 use std::collections::HashMap;
@@ -67,6 +69,14 @@ pub enum RootError {
     Escapes { path: PathBuf, root: PathBuf },
     /// A directory named by a valid pattern could not be listed.
     Unreadable { path: PathBuf, detail: String },
+    /// A projection path that does not name a markdown file. This root is the
+    /// only way into a knowledge store, and a knowledge store holds notes; a
+    /// writer that can put arbitrary file types in one has stopped being that.
+    NotMarkdown(String),
+    /// A projection could not be written or deleted. Read errors keep using
+    /// `Unreadable`; this one exists so a full disk and a missing file do not
+    /// arrive at the caller as the same sentence.
+    Unwritable { path: PathBuf, detail: String },
 }
 
 impl fmt::Display for RootError {
@@ -98,6 +108,12 @@ impl fmt::Display for RootError {
             ),
             RootError::Unreadable { path, detail } => {
                 write!(f, "cannot read {}: {detail}", path.display())
+            }
+            RootError::NotMarkdown(path) => {
+                write!(f, "projection path '{path}' does not end in .md")
+            }
+            RootError::Unwritable { path, detail } => {
+                write!(f, "cannot write {}: {detail}", path.display())
             }
         }
     }
