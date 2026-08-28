@@ -435,7 +435,7 @@ pub fn export_projections(
         if wanted.contains(&id) {
             continue;
         }
-        if root.remove_projection(&id)? {
+        if root.remove_projection(&id, &spec)? {
             report.removed.push(id);
         }
     }

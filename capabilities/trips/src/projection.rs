@@ -117,7 +117,7 @@ pub fn export_all(root: &MarkdownRoot, plans: &[PlanDetails]) -> Result<Report, 
         if wanted.contains(id.as_str()) {
             continue;
         }
-        if root.remove_projection(&id)? {
+        if root.remove_projection(&id, &spec)? {
             report.removed.push(id);
         }
     }

@@ -1,4 +1,4 @@
-//! A whole file the machine owns, in a folder a human never edits.
+//! A whole file the machine owns, in a folder the machine may not be alone in.
 //!
 //! `region.rs` is the other half of the same bridge and the preferred one: when a
 //! human note about the subject already exists, the machine writes a marked region
@@ -22,15 +22,24 @@
 //! It is lost — and the file says so before it can happen. There is no hash and no
 //! conflict outcome here, deliberately: the marker in `region.rs` exists to protect
 //! a human's prose in a file they own, and a projection is not that file. What is
-//! guarded instead is the *path*. A file at the projection's path that does not
-//! carry this module's header is somebody else's file, and [`ProjectionOutcome::NotOurs`]
-//! refuses it rather than overwriting it. That covers the one real accident — a human
-//! creating a note where a projection goes — without pretending a safety copy can be
-//! merged.
+//! guarded instead is the *path*. A file at the projection's path whose header does
+//! not name *this* caller as its owner is somebody else's file, and
+//! [`ProjectionOutcome::NotOurs`] refuses it rather than overwriting it. That covers
+//! the one real accident — a human creating a note where a projection goes — without
+//! pretending a safety copy can be merged.
 //!
 //! Q31's promotion path runs through that refusal: when a human starts writing about
 //! the subject, their note takes the path, the projection refuses, and the capability
 //! moves to a marked region in the human's note.
+//!
+//! ## Why the owner, and not just "is there a header"
+//!
+//! Q49's Sources bridge (2026-08-27) sends the first projection into `Resources/Sources/`,
+//! a folder humans write in and a second capability may later write to as well. Both
+//! guards therefore compare the header's `owner=` against the caller's, not merely the
+//! presence of a header: otherwise comms' sweep deletes finance's projection because it
+//! recognised a header, and the two capabilities overwrite each other in the folder they
+//! share. A per-capability folder hid that; a shared one does not.
 //!
 //! ## What it deliberately is not
 //!
@@ -59,10 +68,33 @@ pub enum ProjectionOutcome {
     /// opened for writing, so a scheduled export does not produce a vault commit per
     /// run.
     Unchanged,
-    /// A file is at the path and it carries no projection header. Nothing was
-    /// written. This is Q31's promotion signal, not an error: a human wrote about the
-    /// subject, so the projection stops and a marked region in their note takes over.
+    /// A file is at the path and this caller does not own it. Nothing was written.
+    ///
+    /// Two cases, and one answer for both: the file carries no projection header at
+    /// all — Q31's promotion signal, a human wrote about the subject — or it carries
+    /// another capability's header. Neither is an error, and in neither is
+    /// overwriting allowed.
     NotOurs,
+}
+
+/// The `owner=` the header at this path declares, or `None` when there is no file
+/// there and when the file is not a projection at all.
+///
+/// Ownership used to be one bit — "does the file contain the header" — and that was
+/// enough while every projection had a folder to itself (`Resources/Axon/Trips/`,
+/// `Resources/Axon/Subscriptions/`). PRD Q49's Sources bridge is the first projection
+/// into a folder that two owners can share with each other and with a human, and there
+/// one bit is wrong in a specific direction: a sweep would delete another capability's
+/// projection because it recognised *a* header. The owner is already written into the
+/// header, so it is read back out rather than tracked somewhere new.
+fn declared_owner(document: &str) -> Option<&str> {
+    let after = document.split_once(HEADER)?.1;
+    let after = after.trim_start();
+    let value = after.strip_prefix("owner=")?;
+    let end = value
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(value.len());
+    Some(&value[..end])
 }
 
 /// The line that tells the one reader who can break the contract what the file is.
@@ -112,7 +144,9 @@ impl MarkdownRoot {
         let document = document(spec, rendered);
 
         match std::fs::read_to_string(&target) {
-            Ok(existing) if !existing.contains(HEADER) => Ok(ProjectionOutcome::NotOurs),
+            Ok(existing) if declared_owner(&existing) != Some(spec.owner.as_str()) => {
+                Ok(ProjectionOutcome::NotOurs)
+            }
             Ok(existing) if existing == document => Ok(ProjectionOutcome::Unchanged),
             Ok(_) => {
                 write_file(&target, &document)?;
@@ -135,15 +169,18 @@ impl MarkdownRoot {
         }
     }
 
-    /// Delete one projection. `false` when there was nothing to delete.
+    /// Delete one projection this `spec` owns. `false` when there was nothing to
+    /// delete.
     ///
     /// A file that is not ours is left alone and reported as `false`, for the reason
     /// [`ProjectionOutcome::NotOurs`] gives: the source row going away is not authority
-    /// to delete a note a human wrote at that path.
-    pub fn remove_projection(&self, relative: &str) -> Result<bool, RootError> {
+    /// to delete a note a human wrote at that path. `spec` rather than a bare path
+    /// because a sweep runs over a whole folder, and in a shared folder the file it is
+    /// about to delete may belong to another capability that is perfectly up to date.
+    pub fn remove_projection(&self, relative: &str, spec: &RegionSpec) -> Result<bool, RootError> {
         let target = self.projection_path(relative)?;
         match std::fs::read_to_string(&target) {
-            Ok(existing) if !existing.contains(HEADER) => Ok(false),
+            Ok(existing) if declared_owner(&existing) != Some(spec.owner.as_str()) => Ok(false),
             Ok(_) => {
                 std::fs::remove_file(&target).map_err(|e| RootError::Unwritable {
                     path: target.clone(),
@@ -325,7 +362,7 @@ mod tests {
             "# My trip, in my words\n"
         );
         assert!(!root
-            .remove_projection("Resources/Axon/Trips/One.md")
+            .remove_projection("Resources/Axon/Trips/One.md", &spec())
             .unwrap());
         assert!(human.exists(), "a refused path is never deleted either");
         std::fs::remove_dir_all(dir).unwrap();
@@ -335,17 +372,60 @@ mod tests {
     fn removing_a_projection_reports_whether_there_was_one() {
         let (dir, root) = temp_root();
         assert!(!root
-            .remove_projection("Resources/Axon/Trips/Gone.md")
+            .remove_projection("Resources/Axon/Trips/Gone.md", &spec())
             .unwrap());
         root.write_projection("Resources/Axon/Trips/Gone.md", &spec(), "# x\n")
             .unwrap();
         assert!(root
-            .remove_projection("Resources/Axon/Trips/Gone.md")
+            .remove_projection("Resources/Axon/Trips/Gone.md", &spec())
             .unwrap());
         assert!(!root
-            .remove_projection("Resources/Axon/Trips/Gone.md")
+            .remove_projection("Resources/Axon/Trips/Gone.md", &spec())
             .unwrap());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Q49 puts two capabilities in `Resources/Sources/`. Before the owner check, the
+    /// second one to run overwrote the first's file and its sweep then deleted it,
+    /// because both recognised the header as "ours".
+    #[test]
+    fn another_capabilitys_projection_is_neither_overwritten_nor_swept() {
+        let (dir, root) = temp_root();
+        let finance = RegionSpec::new("finance", 1);
+        root.write_projection("Resources/Sources/Shared.md", &finance, "# theirs\n")
+            .unwrap();
+
+        assert_eq!(
+            root.write_projection("Resources/Sources/Shared.md", &spec(), "# ours\n")
+                .unwrap(),
+            ProjectionOutcome::NotOurs,
+            "a header is not a licence; the owner in it is"
+        );
+        assert!(
+            !root
+                .remove_projection("Resources/Sources/Shared.md", &spec())
+                .unwrap(),
+            "a sweep must not delete a file another owner keeps up to date"
+        );
+        assert!(dir.join("Resources/Sources/Shared.md").exists());
+        assert!(root
+            .remove_projection("Resources/Sources/Shared.md", &finance)
+            .unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_owner_is_read_back_out_of_the_header_that_records_it() {
+        assert_eq!(
+            declared_owner(&document(&spec(), "---\nid: p1\n---\n\n# One\n")),
+            Some("trips")
+        );
+        assert_eq!(declared_owner("# a human note\n"), None);
+        assert_eq!(
+            declared_owner("<!-- axon:projection v=1 -->\n"),
+            None,
+            "a header that names no owner claims nothing"
+        );
     }
 
     #[test]
