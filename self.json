@@ -39,15 +39,15 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 36
+        "nodes": 30
       }
     },
     {
       "name": "axon-server",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 11
+        "files": 4,
+        "nodes": 51
       }
     },
     {
@@ -59,8 +59,8 @@
         "port": "8082"
       },
       "code": {
-        "files": 10,
-        "nodes": 88
+        "files": 11,
+        "nodes": 95
       }
     },
     {
@@ -68,7 +68,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 21
+        "nodes": 39
       }
     },
     {
@@ -81,7 +81,7 @@
       },
       "code": {
         "files": 25,
-        "nodes": 556
+        "nodes": 568
       }
     },
     {
@@ -102,7 +102,7 @@
       },
       "code": {
         "files": 70,
-        "nodes": 1113
+        "nodes": 1112
       }
     },
     {
@@ -132,8 +132,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 104,
-        "nodes": 612
+        "files": 103,
+        "nodes": 602
       }
     },
     {
@@ -145,8 +145,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 15,
-        "nodes": 521
+        "files": 16,
+        "nodes": 541
       }
     },
     {
@@ -159,7 +159,7 @@
       },
       "code": {
         "files": 3,
-        "nodes": 30
+        "nodes": 31
       }
     },
     {
@@ -216,7 +216,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 80
+        "nodes": 87
       }
     },
     {
@@ -257,8 +257,8 @@
       "name": "markdown-root",
       "kind": "lib",
       "code": {
-        "files": 4,
-        "nodes": 84
+        "files": 5,
+        "nodes": 104
       }
     },
     {
@@ -292,7 +292,7 @@
       },
       "code": {
         "files": 11,
-        "nodes": 202
+        "nodes": 209
       }
     },
     {
@@ -313,7 +313,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 144
+        "nodes": 152
       }
     },
     {
@@ -342,7 +342,7 @@
       },
       "code": {
         "files": 30,
-        "nodes": 532
+        "nodes": 525
       }
     },
     {
@@ -399,6 +399,10 @@
       "service": {
         "kind": "data",
         "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 8
       }
     },
     {
@@ -413,8 +417,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 135,
-        "nodes": 1134
+        "files": 133,
+        "nodes": 1113
       }
     },
     {
@@ -427,7 +431,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 302
+        "nodes": 299
       }
     },
     {
@@ -447,8 +451,8 @@
         "port": "8086"
       },
       "code": {
-        "files": 12,
-        "nodes": 200
+        "files": 13,
+        "nodes": 241
       }
     },
     {
@@ -468,8 +472,8 @@
         "port": "8094"
       },
       "code": {
-        "files": 7,
-        "nodes": 48
+        "files": 10,
+        "nodes": 90
       }
     },
     {
@@ -648,6 +652,16 @@
     {
       "from": "comms",
       "to": "inference",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/comms/Cargo.toml"
+      ]
+    },
+    {
+      "from": "comms",
+      "to": "markdown-root",
       "kinds": [
         "cargo-dep"
       ],
@@ -978,6 +992,16 @@
     {
       "from": "trips",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/trips/Cargo.toml"
+      ]
+    },
+    {
+      "from": "trips",
+      "to": "markdown-root",
       "kinds": [
         "cargo-dep"
       ],
@@ -1450,36 +1474,15 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 10346,
+    "nodes": 10424,
     "external": 10,
     "stale": [
-      "capabilities/comms/src/server/auth.rs",
-      "capabilities/finance/src/postgres_test.rs",
-      "capabilities/learning/ISA.md",
-      "capabilities/learning/README.md",
-      "capabilities/lifeos/README.md",
-      "capabilities/lifeos/overlay/RETIRED.md",
-      "capabilities/lifeos/overlay/hooks/ProseGate.hook.ts",
-      "capabilities/postgres/README.md",
-      "capabilities/tasks/Cargo.toml",
-      "capabilities/tasks/README.md",
-      "capabilities/tasks/src/config.rs",
-      "capabilities/tasks/src/lib.rs",
-      "capabilities/tasks/src/server.rs",
-      "capabilities/tasks/src/store.rs",
-      "tools/check-bazel-package-labels.sh",
-      "tools/check-rust-crate-roots",
-      "tools/check-rust-crate-roots.test.ts",
-      "tools/check-rust-crate-roots.ts",
-      "tools/feed-sweep.ts",
-      "tools/lifeos-sync",
-      "tools/lifeos-sync.test.ts",
-      "tools/lifeos-sync.ts",
-      "tools/lifeos-user-sync.sh",
-      "tools/mirror-lifeos-commit.sh",
-      "tools/mirror-lifeos-memory.sh",
-      "tools/mirror-lifeos-user.sh",
-      "tools/pre-commit-lifeos-mirror.test.sh"
+      "dashboard/src/routes/upstreams/+page.svelte",
+      "tools/advisories.test.sh",
+      "tools/installed-probe.test.sh",
+      "tools/lib/advisories.sh",
+      "tools/upstream-checker",
+      "tools/upstream-checker.test.sh"
     ],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
