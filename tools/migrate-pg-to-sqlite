@@ -249,17 +249,24 @@ fi
 # time keeps its bytes: measured the same day, those hold 10-character dates and epochs,
 # 19-character local datetimes and 25-character ISO-8601, and every one of them crossed the
 # Postgres boundary as text before the cutover too.
+# quote_nullable was the first draft here and it is a trap: for any value containing a
+# backslash Postgres renders an escape-string literal (E'...'), which SQLite does not parse —
+# 127 of 256 feed_items failed on exactly that, live, 2026-08-28. SQLite string literals have
+# no escapes at all: doubling the single quote is the whole grammar. So the rendering is
+# spelled out — wrap in quotes, double embedded quotes, leave every other byte alone — and
+# NULL becomes the bare keyword via coalesce.
 value_expr_sql() {  # <schema> <table> -> the SELECT list that renders one row's values
   cat <<SQL
 select string_agg(
   case
     when data_type = 'boolean'
-      then 'quote_nullable(' || quote_ident(column_name) || '::int)'
+      then format(\$q\$coalesce((%s::int)::text, 'NULL')\$q\$, quote_ident(column_name))
     when data_type in ('timestamp with time zone', 'timestamp without time zone')
-      then 'quote_nullable(to_char(' || quote_ident(column_name) || ' AT TIME ZONE ''UTC'', ''YYYY-MM-DD HH24:MI:SS.MS'') || ''+00:00'')'
+      then format(\$q\$coalesce('''' || to_char(%s AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.MS') || '+00:00''', 'NULL')\$q\$, quote_ident(column_name))
     when data_type = 'ARRAY'
-      then 'quote_nullable(to_json(' || quote_ident(column_name) || ')::text)'
-    else 'quote_nullable(' || quote_ident(column_name) || '::text)'
+      then format(\$q\$coalesce('''' || replace(to_json(%s)::text, '''', '''''') || '''', 'NULL')\$q\$, quote_ident(column_name))
+    else
+      format(\$q\$coalesce('''' || replace(%s::text, '''', '''''') || '''', 'NULL')\$q\$, quote_ident(column_name))
   end,
   ' || '','' || ' order by ordinal_position)
 from information_schema.columns

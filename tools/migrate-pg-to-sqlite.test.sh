@@ -77,8 +77,8 @@ case "$sql" in
       *) echo '"eva","counts"' ;;
     esac
     ;;
-  *"case"*"quote_nullable"*)
-    echo "quote_nullable(a::text)"
+  *"case"*"coalesce"*)
+    echo "coalesce('''' || replace(a::text, '''', '''''') || '''', 'NULL')"
     ;;
   *"INSERT INTO"*)
     case "$sql" in
