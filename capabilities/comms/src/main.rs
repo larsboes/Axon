@@ -6,6 +6,7 @@
 //!   comms feed [--stream S] [--days N=7] [--include-dismissed]
 //!   comms keep <id> | dismiss <id>            set feed item status
 //!   comms summarize --pending                 retry missing summaries
+//!   comms export-sources [--dry-run]          reconcile the feed library with the vault
 //!   comms --help
 //!
 //! `sweep` is strictly read-only against Gmail either way -- `--dry-run` only
@@ -52,6 +53,8 @@ fn print_help() {
     println!("  summarize --pending             summarize feed items that still lack a summary");
     println!("  normalize --explain             print the normalization rules and what each drops");
     println!("  normalize --all                 re-run normalization over stored raw content");
+    println!("  export-sources [--dry-run]      reconcile every saved feed item with");
+    println!("                                  Resources/Sources/ in the configured vault");
     println!("  --help, -h                      show this help");
     println!("\nThis CLI's Gmail sweep is READ-ONLY. Archive, Trash and the Waiting label require an explicit authenticated dashboard action.");
 }
@@ -74,6 +77,7 @@ fn main() {
         "dismiss" => cmd_set_status(&args, &cfg, "dismissed"),
         "summarize" => cmd_summarize(&args, &cfg),
         "normalize" => cmd_normalize(&args, &cfg),
+        "export-sources" => cmd_export_sources(&args, &cfg),
         other => {
             eprintln!("error: unknown command '{other}'\n");
             print_help();
@@ -535,5 +539,73 @@ fn cmd_normalize(args: &[String], cfg: &Config) {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+// -- export-sources ------------------------------------------------------
+
+/// Reconcile every saved feed item with `Resources/Sources/` in the configured vault.
+///
+/// The repair half of the bridge, and the reason the server's layer is allowed to fail
+/// quietly: a vault that was unplugged, an iCloud folder that was not down yet, or a
+/// summary that arrived from the background drain after the last mutation all leave the
+/// folder stale, and all of them are fixed by one run of this — with the server down,
+/// which is when a vault problem is usually being worked on.
+///
+/// It is also the only path that projects the library as it stands *today* on a host
+/// that has never run the bridge. `--dry-run` prints the files it would write and
+/// touches nothing, because the first thing anybody wants to know about a command that
+/// writes into their notes is what it is about to write.
+fn cmd_export_sources(args: &[String], cfg: &Config) {
+    let dry_run = args.iter().any(|a| a == "--dry-run");
+    let Some(root_path) = cfg.obsidian_root.clone() else {
+        eprintln!("error: no vault configured: set obsidian.root in <overlay>/config/comms.json");
+        std::process::exit(1);
+    };
+
+    let store = open_store(cfg);
+    let saved = match store.feed_library() {
+        Ok(saved) => saved,
+        Err(e) => {
+            eprintln!("error: could not read the feed library: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if dry_run {
+        for projection in comms::projection::render_all(&saved) {
+            println!("{}  ({} bytes)", projection.path, projection.body.len());
+        }
+        println!("{} saved item(s) — nothing written", saved.len());
+        return;
+    }
+
+    let root = match markdown_root::MarkdownRoot::declare(root_path) {
+        Ok(root) => root,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+    let report = match comms::projection::export_all(&root, &saved) {
+        Ok(report) => report,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+    println!(
+        "{} saved item(s) → {}: {} created, {} updated, {} unchanged",
+        saved.len(),
+        comms::projection::DIR,
+        report.created,
+        report.updated,
+        report.unchanged
+    );
+    for path in &report.removed {
+        println!("  removed (no longer saved, or retitled): {path}");
+    }
+    for path in &report.refused {
+        println!("  refused, this file is not comms' to write: {path}");
     }
 }

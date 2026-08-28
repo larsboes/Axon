@@ -328,9 +328,74 @@ fn build_router(dashboard_origin: &str) -> Router {
 
     Router::new()
         .merge(read_routes)
-        .merge(write_routes)
+        // The projection layer sits on the write set and nowhere else. Trips tests
+        // the method instead (`libs`-side rule: non-GET plus 2xx), and the reason
+        // this file can do better is that the mutating routes are already declared
+        // as one router above — a route added to that block is covered by the same
+        // sentence, and a GET never pays for an export it cannot have caused.
+        .merge(write_routes.layer(axum::middleware::from_fn(project_library_after_write)))
         .layer(cors)
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024)) // 2 MiB
+}
+
+/// Serialises exports. `std::fs::write` is not atomic, and a half-written note is
+/// the one state the mechanism exists to prevent; two mutations landing together
+/// must not interleave inside one file.
+static EXPORT_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+/// Re-project the feed library into the vault after any successful write.
+///
+/// A layer rather than a line inside `feed_status_handler`, for the reason
+/// `trips::server` gives: one call site puts the rule "a library change reaches the
+/// vault" in one place, and the next handler that moves an item silently stops
+/// projecting otherwise — a data-loss bug that looks like nothing at all.
+///
+/// After the response, never before it: the export reads the store, so running it
+/// first would project the state the write is about to replace. And in a spawned
+/// task, so a vault on iCloud cannot make a save feel slow.
+///
+/// A failure is logged and the request still succeeds. Refusing a save because the
+/// vault is unreachable would trade a durable row for a missing file, which is the
+/// wrong way round. `comms export-sources` is the repair, and it runs with this
+/// process down.
+///
+/// What this does *not* catch is enrichment: a summary that arrives later comes from
+/// the background drain, not from a request, so the note carries it only after the
+/// next mutation or the next repair run.
+async fn project_library_after_write(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let response = next.run(request).await;
+    if !response.status().is_success() {
+        return response;
+    }
+    let Some(root) = Config::load().obsidian_root else {
+        return response;
+    };
+    tokio::spawn(async move {
+        let _held = EXPORT_LOCK.get_or_init(Default::default).lock().await;
+        let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let root = markdown_root::MarkdownRoot::declare(root).map_err(|e| e.to_string())?;
+            let cfg = Config::load();
+            let store = Store::open(&cfg.database_path).map_err(|e| e.to_string())?;
+            let saved = store.feed_library().map_err(|e| e.to_string())?;
+            comms::projection::export_all(&root, &saved).map_err(|e| e.to_string())
+        })
+        .await;
+        match outcome {
+            Ok(Ok(report)) => {
+                for path in &report.refused {
+                    eprintln!("comms: vault projection refused, somebody else owns {path}");
+                }
+            }
+            Ok(Err(error)) => eprintln!(
+                "comms: vault projection failed ({error}); the rows are safe, the folder is stale — run `comms export-sources`"
+            ),
+            Err(error) => eprintln!("comms: vault projection task failed ({error})"),
+        }
+    });
+    response
 }
 
 /// This capability's inbound gate.
