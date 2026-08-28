@@ -25,7 +25,7 @@ use finance::obsidian::{self, WriteBack};
 use finance::planning::{self, PlanningConfig, PlanningReport, SourceExpectation};
 use finance::store::FinanceStore;
 use finance::subscription::{burn_by_currency, PricePoint, StateChange};
-use finance::HledgerEngine;
+use finance::JournalEngine;
 
 /// What this capability answers, served as data beside `/health`. Query parameters
 /// are named in the summary: a path alone cannot tell a caller what to send, and
@@ -1044,7 +1044,7 @@ fn validate_journal_append(journal: &std::path::Path, entry: &str) -> Result<(),
     let result = (|| {
         std::fs::write(&temporary, format!("{existing}{entry}"))
             .map_err(|error| format!("journal validation file could not be written: {error}"))?;
-        HledgerEngine::new(&temporary)
+        JournalEngine::new(&temporary)
             .check()
             .map_err(|error| error.to_string())
     })();
@@ -1079,7 +1079,7 @@ fn replace_journal_atomically(journal: &std::path::Path, updated: &str) -> Resul
         file.write_all(updated.as_bytes())
             .and_then(|_| file.sync_all())
             .map_err(|error| format!("journal replacement could not be written: {error}"))?;
-        HledgerEngine::new(&temporary)
+        JournalEngine::new(&temporary)
             .check()
             .map_err(|error| error.to_string())?;
         std::fs::rename(&temporary, journal)
@@ -1095,7 +1095,7 @@ async fn check_ledger(State(state): State<AppState>) -> ApiResponse {
     let Some(journal) = state.journal.clone() else {
         return no_journal();
     };
-    match tokio::task::spawn_blocking(move || HledgerEngine::new(journal).check()).await {
+    match tokio::task::spawn_blocking(move || JournalEngine::new(journal).check()).await {
         Ok(Ok(())) => response(StatusCode::OK, json!({ "ok": true })),
         Ok(Err(error)) => response(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1141,7 +1141,7 @@ fn rebuild_projection(
     budgets: &[BudgetTarget],
     investment_snapshot: Option<&std::path::Path>,
 ) -> Result<usize, String> {
-    let engine = HledgerEngine::new(journal);
+    let engine = JournalEngine::new(journal);
     engine.check().map_err(|error| error.to_string())?;
     let transactions = engine.transactions().map_err(|error| error.to_string())?;
     let mut currencies = std::collections::BTreeSet::from(["EUR".to_string()]);

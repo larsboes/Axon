@@ -1399,16 +1399,11 @@ mod tests {
         assert!(!append_confirmed(&path, &candidate, "expenses:food").unwrap());
         let journal = std::fs::read_to_string(&path).unwrap();
         assert_eq!(journal.matches("source-id:").count(), 1);
-        if std::process::Command::new("hledger")
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            use crate::accounting::AccountingEngine;
-            crate::accounting::HledgerEngine::new(&path)
-                .check()
-                .unwrap();
-        }
+        // The appended journal has to be readable, not merely written. This was
+        // conditional on hledger being installed until 2026-08-28, so on a
+        // machine without it -- this one -- the assertion never ran at all.
+        use crate::accounting::AccountingEngine;
+        crate::accounting::JournalEngine::new(&path).check().unwrap();
         std::fs::remove_file(path).unwrap();
     }
 

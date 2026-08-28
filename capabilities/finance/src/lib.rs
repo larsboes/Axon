@@ -20,7 +20,7 @@ pub mod planning;
 pub mod store;
 pub mod subscription;
 
-pub use accounting::{AccountingEngine, HledgerEngine};
+pub use accounting::{AccountingEngine, JournalEngine};
 pub use config::Config;
 pub use obsidian::{scan, seed_from_note, ScanError, ScannedNote, WriteBack};
 pub use store::FinanceStore;
