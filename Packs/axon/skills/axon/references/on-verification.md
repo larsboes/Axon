@@ -8,7 +8,7 @@ Select checks from the changed ownership boundary. Never claim broader validatio
 4. Re-run `scripts/axon-context on <target>` or the relevant API read to verify observable state.
 5. Inspect `git diff --check`, the focused diff, and `git status --short` before committing.
 
-Common gates include `tools/self check`, `tools/upstream-checker`, `tools/audit`, and the
+Common gates include `tools/self check`, `tools/audit`, and the
 architecture freshness gate `tools/check-architecture-fresh.sh`, but only run a gate when its
 concern is in scope. Read the nearest `Cargo.toml`, `package.json`, `service.toml` or README to
 discover the exact target rather than relying on a static validation list.

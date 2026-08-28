@@ -280,30 +280,65 @@ special cases.
 
 ### Dependency verdicts and provenance
 
-Every consumed external dependency gets a verdict in `upstreams.toml` first. Run
-`tools/upstream-checker` for manifest completeness and cooldown policy, then `tools/audit` for the
-actual content. Extend those gates instead of re-deriving scanner commands. The consuming README
-also records the canonical URL and what Axon adopted: runtime, idea, architecture, algorithm, code
-or asset. A local clone or archive path is never durable provenance.
+Every consumed external dependency gets a verdict in `upstreams.toml` first. **No entry, no
+entry.** The manifest records, per upstream, the verdict, the pin, the licence and the `why` that
+argues for it — and that rule is unchanged. The consuming README also records the canonical URL
+and what Axon adopted: runtime, idea, architecture, algorithm, code or asset. A local clone or
+archive path is never durable provenance.
+
+What changed on 2026-08-28 (PRD Q41) is who checks what, not what is required:
+
+| Question | Answered by |
+|---|---|
+| Is there a verdict, a pin, a licence and a reason? | `upstreams.toml` itself, read by a human at review time |
+| Is a newer release out? | Renovate — `renovate.json5`, reporting to its dependency dashboard |
+| Is there a known vulnerability in a locked dependency? | GitHub's own alerts, plus `osv-scanner` inside `tools/audit` |
+| Is there a secret, a SAST finding or a CVE in an image? | `tools/audit` — gitleaks, semgrep, osv-scanner, trivy |
+
+`upstreams.toml` is documentation now, and only documentation. Until this date a bash script
+(`tools/upstream-checker`, 404 lines, with a hand-rolled bash-3.2 semver comparator and a GHSA
+fetcher behind it) enforced the manifest and reported drift. It is deleted. Axon was maintaining a
+private Dependabot, and the doctrine it protected does not need custom code to survive — it needs
+a human to read a verdict before adopting a dependency, which was always true.
+
+**Renovate is a GitHub App and the operator must install it.** Committing `renovate.json5` enables
+nothing on its own. Until the App is installed on the repository there is no automated freshness
+check at all; that is a real gap and it is stated here rather than left to be discovered. When
+installed, it covers 24 of the manifest's 80 entries — the rest have empty pins, declare a
+`pin_kind` that a release tag cannot describe, are not GitHub URLs, or describe what a host has
+installed rather than what a registry lists. `renovate.json5` names each exclusion and why.
+
+One thing genuinely lost: nothing now compares a pin against what *this machine* has installed.
+The retired checker executed `installed_probe` commands for that and caught brew moving `typst`
+and `bitwarden-cli` past their pins on 2026-08-03. Renovate compares pin against registry, both
+remote, and cannot see it. Those six `installed_probe` declarations stay in the manifest as a
+record of how to ask; asking is manual.
 
 ### Pins and cooldown
 
 Never consume `:latest`. Pin code to a reviewed ref, then hold seven to fourteen days before
 adopting a release. The hold is what catches a compromised publish: the ecosystem finds those in
-days, and reading the dependency tree yourself cannot. It is a recommendation and not a gate.
-`tools/upstream-checker` reports the window and never fails on it, because the operator carries
-the risk and may have reason to take it early. Audit the delta rather than the world. A dependency
-that is mutable data rather than executable code must say why its pin policy differs.
+days, and reading the dependency tree yourself cannot. The window lives once, in `axon.toml`
+`[upstream] cooldown_min_days`. Audit the delta rather than the world. A dependency that is
+mutable data rather than executable code must say why its pin policy differs.
+
+The hold used to be a recommendation a script reported and never failed on. Renovate applies it as
+`minimumReleaseAge`, which is stricter: it will not raise an update at all until the release is
+seven days old. The active-vulnerability carve-out — the one reason to bump inside the hold — is
+therefore a manual bump now, which is correct, because that carve-out always required a human to
+have read the advisory. `capabilities/agentbox` reads the same `axon.toml` key for its
+host-install gate, where the hold is still a confirmation and fails closed without a terminal.
 
 Not every correct pin is a release. A commit sha is the right pin for a repository that cuts no
 releases, and an image tag, a hosted API surface or a data path are right for what they name — but
-`releases/latest` cannot describe any of them, so the drift check must be told rather than left to
-fail. Such an entry declares `pin_kind` and `tracked_by` in `upstreams.toml`, and the checker then
-reports it in its own group instead of warning about it forever. An entry that does *not* declare
-still warns when the lookup fails, because a rate limit must not be able to look like a decision.
+`releases/latest` cannot describe any of them, so the freshness check must be told rather than left
+to fail. Such an entry declares `pin_kind` and `tracked_by` in `upstreams.toml`, and
+`renovate.json5`'s regex manager skips it by construction: the pattern matches only an entry whose
+`pin` is followed directly by `why`, which is exactly the shape of an entry claiming a release tag.
 `tracked_by` is what keeps the opt-out honest: it names what governs the entry's freshness once
 release drift no longer does, so declaring a check inapplicable never becomes permission to stop
-thinking about staleness.
+thinking about staleness. Nineteen entries are in this state today, and nothing automated reads
+their `tracked_by` — it is written for the human doing the review.
 
 ### Secrets
 
@@ -628,7 +663,7 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 | `dashboard/` | the spine's shell — discovers installed capabilities via their manifests and mounts their panels (installer, doctor UI, service dashboards); owns no domain, no data |
 | `libs/<name>/` | spine-owned shared code with no domain of its own — statically linked into capability binaries at compile time, own crate in the Cargo workspace from day one |
 | `schemas/` | shared contracts; import, never redefine |
-| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit, upstream-checker, generate-architecture, graphify, agent-integrations (harness integrations from upstream pins), mini-tools |
+| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks/semgrep/osv-scanner/trivy behind one verb), generate-architecture, graphify, agent-integrations (harness integrations from upstream pins), mini-tools |
 
 `ARCHITECTURE.md`'s tables and its Mermaid dependency graph (Packs → capabilities they drive →
 the upstream image each is pinned to) are derived straight from
@@ -663,7 +698,7 @@ flowchart TB
         C["control surface (web):<br/>install · maintain · dashboards"]
         M["axon.toml + upstreams.toml"]
         S["schemas/"]
-        T["tools/ (install, doctor, audit, upstream-checker)"]
+        T["tools/ (install, doctor, audit, generate-architecture)"]
         CAP["capabilities/ (domain owners, optional ui/)"]
         D["dashboard/ (spine shell)"]
         L["libs/ (spine-owned shared code)"]

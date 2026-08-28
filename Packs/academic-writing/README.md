@@ -45,7 +45,8 @@ placeholders from this pack's initial 2026-07-11 build were resolved 2026-07-14.
   `e75d70d`) — `check-citations.js` was generalized off a hardcoded path and given Quarto `@citekey`
   support beyond the original's LaTeX-only `\cite{}` handling. See `upstreams.toml
   [academic-researcher]` (verdict `overlay` — real code adapted, not just ideas; retroactive entry,
-  still needs a `tools/upstream-checker`/`tools/audit` pass against these three files).
+  still needs a `tools/audit` pass against these three files, and an `upstreams.toml`
+  verdict written by hand — no script checks the manifest since 2026-08-28).
 - The condensed house style (`references/house-style.md`, sections A/B/D/F) is a rewrite of
   [andrehuang/academic-writing-agents](https://github.com/andrehuang/academic-writing-agents) (MIT,
   a Claude Code plugin) — the five critique lenses in `references/critic-briefs.md` and the matching

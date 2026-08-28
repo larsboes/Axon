@@ -28,9 +28,15 @@ name = "axon"
 overlay = "~/.axon-overlay"
 
 [upstream]
-# Cooldown hold before adopting/bumping an upstream release, enforced by
-# tools/upstream-checker. Single source for these numbers — the checker reads
-# them here, nothing hardcodes 7/14. (Quoted per toml.sh's scalar contract.)
+# Cooldown hold before adopting/bumping an upstream release. Single source for these
+# numbers — capabilities/agentbox reads them here for its host-install gate and nothing
+# hardcodes 7/14. (Quoted per toml.sh's scalar contract.)
+#
+# One unavoidable second copy: renovate.json5 restates cooldown_min_days as
+# minimumReleaseAge, because Renovate runs as a GitHub App and cannot read this file.
+# The two must move together; that config says so at the setting. Renovate applies it as a
+# hard hold rather than the recommendation tools/upstream-checker used to report before
+# PRD Q41 deleted it on 2026-08-28.
 cooldown_min_days = "7"
 cooldown_max_days = "14"
 
@@ -48,7 +54,8 @@ cooldown_max_days = "14"
 # policies at once, including one 27 days out: two of them are written with a 14-day life,
 # so a 30-day window fires on the day the policy is authored and carries no information.
 # This repo already knows where that ends up — a gate that warns permanently about entries
-# where nothing is wrong "is one people learn to skim" (tools/upstream-checker).
+# where nothing is wrong "is one people learn to skim" (tools/upstream-checker, retired
+# 2026-08-28 — the lesson outlived the script).
 # (Quoted per toml.sh's scalar contract.)
 expiry_warn_days = "14"
 

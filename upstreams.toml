@@ -4,18 +4,24 @@
 # pin = exact ref/commit consumed (empty until first consumption)
 # pin_kind = "commit" | "image" | "monorepo" | "hosted" | "dataset"
 #   Only for a pin that a GitHub release cannot describe, naming which shape it is instead. Absent
-#   means a release tag, which tools/upstream-checker compares against releases/latest. Declaring a
-#   kind turns that comparison off for the entry -- so every pin_kind requires tracked_by, because
-#   opting out of one check is not opting out of thinking about staleness.
+#   means a release tag, which renovate.json5's regex manager watches against GitHub releases.
+#   Declaring a kind turns that watch off for the entry -- so every pin_kind requires tracked_by,
+#   because opting out of one check is not opting out of thinking about staleness.
 # tracked_by = one line: what keeps this entry current, given that releases/latest cannot.
 # installed_probe = the command that asks THIS HOST which version it actually has, for a pin
-#   that means "what is installed here" rather than "what the registry lists". Drift alone
+#   that means "what is installed here" rather than "what the registry lists". Freshness alone
 #   compares pin against releases/latest -- both sides remote -- so a package manager can move
 #   the machine past the pin and nothing notices (it did: brew took typst and bitwarden-cli,
-#   found 2026-08-03). Executed as argv, never through a shell, and restricted to letters,
-#   digits and - _ . / = : so a manifest value cannot become an injection vector.
+#   found 2026-08-03).
+#   NOTHING EXECUTES THESE ANY MORE. tools/upstream-checker ran them as argv, never through a
+#   shell, and PRD Q41 deleted it on 2026-08-28. Renovate cannot replace them: it compares a
+#   pin against a registry, which is the exact comparison that misses this. The field stays
+#   because it records how to ask -- run it by hand when you bump the entry. Its old argv
+#   safety rule still applies to whatever runs it: letters, digits and - _ . / = : only.
 # cooldown: new upstream releases wait out a hold window (axon.toml [upstream]) before adoption unless fixing an exposed vuln.
-# No adopt/overlay/fork verdict lands without an audit (checked by tools/upstream-checker, M2).
+#   Renovate applies it as minimumReleaseAge (renovate.json5); capabilities/agentbox reads the same key.
+# No adopt/overlay/fork verdict lands without an audit. That is a rule for the human editing this
+#   file -- since 2026-08-28 (PRD Q41) no script enforces it, and README.md#dependency-verdicts-and-provenance says so plainly.
 
 [lifeos]
 url = "https://github.com/danielmiessler/LifeOS"
@@ -102,7 +108,7 @@ license = "open methodology"
 pin = ""
 why = "AIVSS methodology, CWE check library, semgrep rulesets for the manual/agentic audit pass"
 
-# ---- security audit toolchain (the content-scanning layer upstream-checker can't do) ----
+# ---- security audit toolchain (the content-scanning layer a freshness watcher can't do) ----
 
 [semgrep]
 url = "https://github.com/semgrep/semgrep"
@@ -426,7 +432,7 @@ license = "MIT"
 pin = "e75d70d"         # 2026-02-16, retroactive entry -- see why
 pin_kind = "commit"
 tracked_by = "diffing upstream's default branch against this sha whenever the three adapted scripts in Packs/academic-writing are revisited; the repo cuts no releases"
-why = "Packs/academic-writing/skills/academic-writing/scripts/{resolve-papers,validate-bib,check-citations}.js adapted+generalized from this skill's citation-workflow scripts (check-citations.js given Quarto @citekey support beyond the original's LaTeX-only \\cite{} handling, hardcoded path removed). Retroactive entry -- the pack shipped 2026-07-11 with this source recorded only as 'unknown license' in its README; resolved 2026-07-14. Real code adapted (not just ideas), so verdict is overlay not quarry -- tools/upstream-checker and tools/audit should still be run against these three files to close the M2/content-scan gate properly. See Packs/academic-writing/README.md Attribution."
+why = "Packs/academic-writing/skills/academic-writing/scripts/{resolve-papers,validate-bib,check-citations}.js adapted+generalized from this skill's citation-workflow scripts (check-citations.js given Quarto @citekey support beyond the original's LaTeX-only \\cite{} handling, hardcoded path removed). Retroactive entry -- the pack shipped 2026-07-11 with this source recorded only as 'unknown license' in its README; resolved 2026-07-14. Real code adapted (not just ideas), so verdict is overlay not quarry -- tools/audit should still be run against these three files to close the content-scan gate properly, and the manifest half of that gate is now a human reading this entry (PRD Q41, 2026-08-28). See Packs/academic-writing/README.md Attribution."
 
 [academic-writing-agents]
 url = "https://github.com/andrehuang/academic-writing-agents"
@@ -454,7 +460,7 @@ why = "Prof. Peng Sida's (彭思达) publicly shared research/paper-writing note
 # so nothing watched them and nothing recorded what was running — while scripts/update.sh
 # called `docker compose pull` on every deploy. Every pin below is the version read out of the
 # LIVE container on 2026-07-26, not a registry guess, and digest-confirmed where the registry
-# allowed it. They enter as entries first so upstream-checker watches them; the capability
+# allowed it. They enter as entries first so Renovate watches them; the capability
 # migration that takes the containers over is separate work.
 #
 # One caveat that applies to all of them: an official-image version tag is not a byte pin.
