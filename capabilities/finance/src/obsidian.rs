@@ -31,7 +31,11 @@ pub const REGION_OWNER: &str = "finance";
 
 /// Bumped when the rendered block's shape changes, so a later generator can tell
 /// its own old output from a shape it no longer produces.
-pub const REGION_VERSION: u32 = 1;
+///
+/// 2 (2026-08-28): the price and state series joined the current-state callout, per
+/// PRD Q47. The bump does not force a rewrite by itself — the region's hash does that,
+/// because every v1 body differs from its v2 replacement.
+pub const REGION_VERSION: u32 = 2;
 
 /// A note found by the scanner, before anything is persisted.
 #[derive(Debug, Clone, PartialEq)]
@@ -187,6 +191,18 @@ pub fn seed_from_note(note: &ScannedNote, today: &str) -> Subscription {
 /// Every line here is computed. Nothing a human typed is reproduced, because a copy
 /// of somebody's prose inside a machine-owned region is a second writable home for
 /// it, which is the doubling the whole boundary exists to prevent.
+///
+/// Two parts, and they answer different questions. The callout is the **current
+/// state**: what it costs now, what happens next, whether it has drifted. The two
+/// tables below it are the **series** — every price point and every state change, as
+/// rows. Version 1 rendered only the callout.
+///
+/// The series are here because PRD Q47 (2026-08-27) counted `finance_price_points` and
+/// `finance_state_changes` among the 512 irreplaceable rows in the store and made
+/// projecting them a rule: a price is observed once, on the day it changed, and a
+/// series cannot be recomputed from anything. A current-state summary is not a copy of
+/// them. This region is the one existing machine→vault writer, so the safety copy goes
+/// where the writer already is rather than into a second file.
 pub fn render_block(sub: &Subscription, today: &str) -> String {
     let mut out = String::new();
     out.push_str("> [!info] Derived by Axon — do not edit inside this block\n");
@@ -254,11 +270,60 @@ pub fn render_block(sub: &Subscription, today: &str) -> String {
         ));
     }
 
-    if sub.prices.len() > 1 {
-        out.push_str(&format!("> **Price changes:** {}\n", sub.prices.len()));
+    // The count line that used to sit here is gone. The table below holds every price
+    // point, so a count beside it is the same fact written twice, and the second copy
+    // is the one that goes wrong.
+
+    out.push_str("\n#### Price series\n\n");
+    if sub.prices.is_empty() {
+        out.push_str("None recorded.\n");
+    } else {
+        out.push_str("| From | Amount | Cycle | Plan | Reason |\n|---|---|---|---|---|\n");
+        for price in &sub.prices {
+            out.push_str(&format!(
+                "| {} | {} {} | {} | {} | {} |\n",
+                price.valid_from,
+                cents_to_decimal(price.amount_cents),
+                price.currency,
+                cycle_word(price.cycle),
+                cell(price.plan.as_deref().unwrap_or("")),
+                cell(&price.reason),
+            ));
+        }
+    }
+
+    out.push_str("\n#### State series\n\n");
+    if sub.states.is_empty() {
+        out.push_str("None recorded.\n");
+    } else {
+        out.push_str("| From | State | Note |\n|---|---|---|\n");
+        for change in &sub.states {
+            out.push_str(&format!(
+                "| {} | {} | {} |\n",
+                change.effective,
+                change.state.as_str(),
+                cell(&change.note),
+            ));
+        }
     }
 
     out
+}
+
+/// One table cell.
+///
+/// A `|` in a reason ends the row early and shifts every column after it, which turns
+/// a safety copy into a wrong one silently. A newline does the same to the whole table.
+/// Both are escaped rather than stripped: the text is the record.
+fn cell(text: &str) -> String {
+    let flattened = text.replace(['\n', '\r'], " ");
+    let escaped = flattened.replace('|', "\\|");
+    let trimmed = escaped.trim();
+    if trimmed.is_empty() {
+        "—".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn cycle_word(cycle: BillingCycle) -> &'static str {
@@ -437,7 +502,86 @@ mod tests {
         assert!(block.contains("**Monthly equivalent:** 25.00 EUR"));
         assert!(block.contains("**State:** active"));
         assert!(block.contains("**Price drift since 2026-02-01:** up 5.00 EUR"));
-        assert!(block.contains("**Price changes:** 2"));
+        // The count line this used to assert is gone: the series table below carries
+        // every price point, and a count beside it is one fact written twice.
+        assert!(block.contains("| 2026-02-01 | 20.00 EUR | month | — | — |"));
+        assert!(block.contains("| 2026-07-01 | 25.00 EUR | month | — | provider raised it |"));
+        assert!(block.contains("| 2026-02-01 | active | — |"));
+    }
+
+    /// The reason the series is in the region at all (PRD Q47): these rows exist
+    /// nowhere else, so every one of them has to survive the render. A current-state
+    /// summary is not a copy of a series.
+    #[test]
+    fn every_price_point_and_state_change_reaches_the_block() {
+        let sub = Subscription {
+            id: "s1".into(),
+            name: "Example".into(),
+            source_path: "x.md".into(),
+            category: None,
+            value_rating: None,
+            prices: (0..5)
+                .map(|i| PricePoint {
+                    valid_from: format!("2026-0{}-01", i + 1),
+                    amount_cents: 1000 + i * 100,
+                    currency: "EUR".into(),
+                    cycle: BillingCycle::Monthly,
+                    plan: Some(format!("tier-{i}")),
+                    reason: format!("step {i}"),
+                })
+                .collect(),
+            states: (0..3)
+                .map(|i| StateChange {
+                    effective: format!("2026-0{}-01", i + 1),
+                    state: State::Active,
+                    note: format!("note {i}"),
+                })
+                .collect(),
+        };
+        let block = render_block(&sub, "2026-08-08");
+        for i in 0..5 {
+            assert!(block.contains(&format!("step {i}")), "price point {i} lost");
+            assert!(block.contains(&format!("tier-{i}")), "plan {i} lost");
+        }
+        for i in 0..3 {
+            assert!(
+                block.contains(&format!("note {i}")),
+                "state change {i} lost"
+            );
+        }
+    }
+
+    /// A pipe in a reason ends the row early and shifts every column after it, which
+    /// is how a safety copy becomes a wrong one without anything failing.
+    #[test]
+    fn a_pipe_in_a_reason_is_escaped_rather_than_breaking_the_row() {
+        let sub = Subscription {
+            id: "s1".into(),
+            name: "Example".into(),
+            source_path: "x.md".into(),
+            category: None,
+            value_rating: None,
+            prices: vec![PricePoint {
+                valid_from: "2026-02-01".into(),
+                amount_cents: 2000,
+                currency: "EUR".into(),
+                cycle: BillingCycle::Monthly,
+                plan: None,
+                reason: "moved Pro | Max\nafter the mail".into(),
+            }],
+            states: vec![],
+        };
+        let block = render_block(&sub, "2026-08-08");
+        assert!(block.contains("moved Pro \\| Max after the mail"));
+        let row = block
+            .lines()
+            .find(|l| l.contains("2026-02-01") && l.starts_with('|'))
+            .expect("a price row");
+        assert_eq!(
+            row.matches("| ").count() - row.matches("\\| ").count(),
+            5,
+            "five cells, however many pipes the text held: {row}"
+        );
     }
 
     #[test]
