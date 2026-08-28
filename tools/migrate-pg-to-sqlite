@@ -176,7 +176,7 @@ BAD_TYPES="$(pg "select distinct data_type from information_schema.columns where
 # --- table plan ----------------------------------------------------------------------------
 # schema<TAB>table<TAB>rowcount, straight from the catalog. The count is what the receipt is
 # checked against, so it is read once, here, from the same session that reads the rows.
-PLAN="$(pg "select n.nspname || '\t' || c.relname || '\t' || (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', n.nspname, c.relname), false, true, '')))[1]::text::bigint from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and n.nspname in ('$(echo "$SCHEMAS" | sed "s/ /','/g")') order by 1, 2;")"
+PLAN="$(pg "select n.nspname || '\t' || c.relname || '\t' || (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', n.nspname, c.relname), false, true, '')))[1]::text::bigint from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and n.nspname in ('$(echo "$SCHEMAS" | sed "s/ /','/g")') order by n.nspname, c.relname;")"
 [ -n "$PLAN" ] || fail "the source instance holds no tables in: $SCHEMAS"
 
 # The target has to be ready for all of it BEFORE any of it moves: a missing table found
