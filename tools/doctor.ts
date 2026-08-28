@@ -6,15 +6,18 @@
 // can't parse, which is why this is TS, not bash. It stays an interpreted command with no
 // build step of its own (README.md#cargo-and-bun-are-the-build-path).
 //
-// Delegates the supply-chain / cooldown audit to tools/upstream-checker
-// rather than reimplementing it — same gate, one source of truth. Same
+// Delegates each rule to the script that owns it rather than reimplementing it: the
+// accepted-finding clock to tools/audit --expiry, the host toolchain to
+// tools/toolchain-check. Upstream freshness used to be delegated here too, to
+// tools/upstream-checker; PRD Q41 retired that script on 2026-08-28 and Renovate answers
+// the question now, on GitHub rather than to a local health command. Same
 // reasoning applies to systems.toml/connection checks below: this extends the
 // existing state-mount reality-check idiom (systems.toml stays the one
 // hand-authored registry, README.md#one-manifest-per-concern) rather than adding a second manifest or a
 // separate tool — see README.md#documentation-stays-owned-and-current.
 //
 //   tools/doctor            # full report, offline (no GitHub calls)
-//   tools/doctor --online   # also run upstream-checker's live cooldown check
+//   tools/doctor --online   # also probe declared systems and fetch origin/main
 //   tools/doctor --version  # installed vs origin/main version identity only (read-only, exits 0)
 //   tools/doctor -h         # this help
 //
@@ -35,7 +38,7 @@ import { releaseTagGlob } from "./lib/release.ts";
 const HELP = `tools/doctor — health checks for an already-set-up Axon machine.
 
   tools/doctor            full report, offline (no GitHub calls)
-  tools/doctor --online   also run upstream-checker's live cooldown check
+  tools/doctor --online   also probe declared systems and fetch origin/main
   tools/doctor --version  installed vs origin/main version identity only
                           (read-only, exits 0; add --online for a live fetch first)
   tools/doctor -h         this help
@@ -729,7 +732,7 @@ const CHECKS: Check[] = [
   },
 
   // Host toolchain — delegate to tools/toolchain-check, don't reimplement (same shape as
-  // the upstream-checker delegation below: the script owns the rule, doctor reports). Reads
+  // the tools/audit --expiry delegation below: the script owns the rule, doctor reports). Reads
   // --json so a required miss maps to bad and an optional absence to warn, rather than
   // collapsing everything into one exit code. os/runtime come from machine.toml when we
   // have it; the checker self-resolves from uname otherwise.
@@ -973,7 +976,7 @@ const CHECKS: Check[] = [
   // Boot persistence for the autostart set. A capability could declare autostart = true, be
   // enabled, run fine all day, and simply be gone after the next reboot — because nothing ever
   // called install-persistence and nothing ever checked (#9). Delegated to service-runner.sh,
-  // which owns the rule; doctor reports. Same shape as the upstream-checker delegation.
+  // which owns the rule; doctor reports. Same shape as the tools/audit --expiry delegation.
   //
   // The second half is the inverse and is not cosmetic: watchdog.sh calls
   // `service-runner.sh start <cap>` every 30s and consults nothing about the enabled set, so a
@@ -1668,7 +1671,7 @@ const CHECKS: Check[] = [
 
   // Architecture-generator inputs — delegate to tools/check-generator-inputs-tracked.sh.
   // Needs `git ls-files` and the real checkout, which is what doctor already has. Same
-  // delegation shape as upstream-checker below: doctor reports, the script owns the rule.
+  // delegation shape as tools/audit --expiry below: doctor reports, the script owns the rule.
   {
     name: "Architecture-generator input visibility (Axon#30)",
     run(ctx) {
@@ -1730,35 +1733,24 @@ const CHECKS: Check[] = [
     },
   },
 
-  // Upstream audit — delegate to tools/upstream-checker, don't reimplement
-  {
-    name: "Upstream audit (tools/upstream-checker)",
-    run(ctx) {
-      const checkerPath = join(ctx.root, "tools", "upstream-checker");
-      if (!existsSync(checkerPath)) {
-        ctx.warn(`missing ${checkerPath}`);
-      } else {
-        const proc = Bun.spawnSync({
-          cmd: [checkerPath, ...(ctx.online ? [] : ["--offline"])],
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        const out = proc.stdout.toString().trim();
-        if (out) console.log(out.split("\n").map((l) => `  ${l}`).join("\n"));
-        if (proc.exitCode !== 0) {
-          ctx.bad("upstream-checker reported failure(s) — see above");
-        } else if (!ctx.online) {
-          // Offline skips the drift block entirely, so this heading was promising a
-          // supply-chain audit and delivering a manifest-format check. Say which one ran.
-          ctx.warn("offline: manifest format only — drift and cooldown unchecked (tools/doctor --online)");
-        }
-      }
-    },
-  },
+  // There was an "Upstream audit" check here until 2026-08-28. It delegated to
+  // tools/upstream-checker, which PRD Q41 retired along with the rest of the homegrown
+  // freshness stack; Renovate reports drift on GitHub now (renovate.json5).
+  //
+  // Nothing replaces it in this file, and that is the honest outcome rather than a gap
+  // worth papering over. doctor answers "is this machine healthy", offline, in a second.
+  // "Is a dependency behind" needs the network and a registry per ecosystem — it was
+  // always the check here that could not answer offline, and it spent most of its life
+  // printing a manifest-format result under a supply-chain heading. What it did answer
+  // without the network — that every entry has a verdict and a pin — is doctrine about a
+  // documentation file, and README.md#dependency-verdicts-and-provenance now says plainly
+  // that a human owns it.
 
   // Accepted-finding policies — delegate to tools/audit --expiry, don't reimplement.
   //
-  // Every finding Axon accepts is accepted UNTIL a date (trivy-ignore/*.txt, osv-scanner.toml).
+  // Every finding Axon accepts is accepted UNTIL a date — osv-scanner.toml's ignoreUntil.
+  // trivy-ignore/*.txt carried the same until 52aa8c5 (2026-08-28) retired the postgres
+  // capability and deleted the last policy in that directory.
   // trivy and osv-scanner each enforce their own dates silently at scan time, so without this
   // the first notice that a decision lapsed is a red build — and the only thing that ever
   // "tracked" the re-decision was one GitHub issue per image whose entire content was "re-scan
@@ -1789,9 +1781,10 @@ const CHECKS: Check[] = [
   },
 
   // Repo freshness — is this checkout, on any deployment host, behind origin/main. `--online`
-  // fetches first for a live answer (same online/offline split as the
-  // upstream-checker delegation above); offline reads whatever origin/main ref
-  // was last fetched, best-effort. Being behind isn't broken — `warn`, not
+  // fetches first for a live answer; offline reads whatever origin/main ref
+  // was last fetched, best-effort. This is the only check left that the flag makes
+  // network-dependent apart from the systems probe above — the upstream audit was the
+  // third until 2026-08-28. Being behind isn't broken — `warn`, not
   // `bad` — but it's the one thing nothing previously surfaced at all: a
   // multi-host Axon deployments otherwise have no way to
   // tell a stale checkout from a current one short of eyeballing `git log`.
