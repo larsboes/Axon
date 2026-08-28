@@ -2096,6 +2096,17 @@ export interface WritebackResult {
   unchanged: number;
   conflicts: string[];
   not_imported: string[];
+  /** Subscriptions with no note in the vault, written as whole generated files
+   *  under Resources/Axon/ instead (PRD Q31). Since the 2026-08-23 vault
+   *  reorganisation moved every finance note to the overlay, this is where the
+   *  price and state series actually land. */
+  projected: {
+    created: number;
+    updated: number;
+    unchanged: number;
+    refused: string[];
+    removed: string[];
+  };
 }
 
 export type FinanceTransactionKind = 'income' | 'expense' | 'transfer';

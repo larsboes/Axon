@@ -310,14 +310,27 @@
   }
 
   /** A writeback that hit a conflict is not a failure to report as an error, and
-   *  not a success to report as done. It names the notes and waits for a human. */
+   *  not a success to report as done. It names the notes and waits for a human.
+   *
+   *  Regions and projections are counted apart because they are different places:
+   *  a region goes inside a note you wrote, a projection is a whole generated file
+   *  for a subscription that has no note. Summing them would report "7 written"
+   *  over a vault where nothing you own was touched. */
   function describe(label: string, result: unknown): string {
     if (label === "writeback") {
       const w = result as WritebackResult;
+      const p = w.projected;
+      const projected =
+        p && p.created + p.updated > 0
+          ? ` ${p.created + p.updated} subscription(s) with no note projected to Resources/Axon/.`
+          : "";
       if (w.conflicts.length > 0) {
-        return `${w.written} written, ${w.unchanged} unchanged. Left alone because you edited inside the block: ${w.conflicts.join(", ")}`;
+        return `${w.written} written, ${w.unchanged} unchanged.${projected} Left alone because you edited inside the block: ${w.conflicts.join(", ")}`;
       }
-      return `${w.written} written, ${w.unchanged} already correct.`;
+      if (p && p.refused.length > 0) {
+        return `${w.written} written, ${w.unchanged} already correct.${projected} Not written, a note of yours holds the path: ${p.refused.join(", ")}`;
+      }
+      return `${w.written} written, ${w.unchanged} already correct.${projected}`;
     }
     if (label === 'price' || label === 'state') {
       const write = result as { created: boolean };
