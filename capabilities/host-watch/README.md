@@ -36,7 +36,7 @@ tells a working implementation from a plausible one.
 adds no thresholds of its own. Deliberately fires on the volume state alone and **not**
 on a class being large: `class_flag_gb` legitimately fires today, on a 28 GB cargo target
 dir, on a machine with 130 GB free and nothing wrong with it. Alerting on that would mean
-the watcher's first ever run produced a task nobody needed, which is how a watcher gets
+the watcher's first ever run produced a finding nobody needed, which is how a watcher gets
 muted. The class breakdown stays what it already was — what `sysmon storage` tells you
 once you are already looking.
 
@@ -46,23 +46,49 @@ that has never fired manufactures alerts rather than information.
 
 ## How it reports
 
-It writes a `tasks` record and nothing else. No new notification machinery: core Axon has
-never had a notifier and does not grow one here — the precedent is stated in
-`tools/sparpreis-watch.ts`'s own header, and `capabilities/tasks` states the other half
-("other capabilities notice things and hand them here"). `requires = ["tasks"]` because
-that hand-off *is* the alert surface.
+It writes a row into `host_watch_findings` — its own table in the shared store
+(`capabilities/store`) — and nothing else. No new notification machinery: core Axon has
+never had a notifier and does not grow one here; the precedent is stated in
+`tools/sparpreis-watch.ts`'s own header.
 
-**One task per run of a condition.** tasks' partial unique index on `(source_capability,
-source_id)` collapses repeats, so a breach that persists for a week is one record whose
-note is refreshed, not seven records. The `source_id` additionally carries a generation
-(`cpu:Foo#1`), and a new one is minted only once every prior task for that condition is
-closed — otherwise an operator marking a task done would silence that condition forever,
-which is the failure mode a watcher notices last.
+It filed a `tasks` record until PRD **Q48** (2026-08-27). That capability retired and the
+Action kind went back to the vault, which is the right ruling and the wrong home for
+this: a runaway process is machine state, not an action a human wrote. So the findings
+stayed machine data and moved into a table this capability owns.
+
+**Who serves them.** `axon-status`, at `GET /api/axon-status/host-watch`, and the
+dashboard's decision ladder ranks them at band 900. This capability is a scheduled job —
+it runs and exits, and the manifest schema refuses a port on a job because nothing would
+be listening on it — so something always-on has to publish the rows. `axon-status` is
+that process and already answers "what is wrong with this machine"; the shape is the one
+`/backups` already has, publishing receipts written by `tools/backup.sh`. Ownership does
+not move with the surface: the content, the lifecycle and the table are this
+capability's, and axon-status only reads.
+
+**One row per run of a condition.** A partial unique index keeps at most one *open*
+finding per condition, so a breach that persists for a week is one row whose note is
+refreshed, not seven rows. The row also carries a generation, and a new one is minted
+only once every prior row for that condition is closed — otherwise a condition that
+cleared in June and returned in August would upsert onto the closed row and say nothing.
+
+**A run closes what it no longer sees.** The half that could not exist before. Under
+`tasks` a finding closed only when the operator pressed Done; that button went with the
+capability, so without this a row would stay open forever and the ladder would keep
+ranking a process that exited months ago. The watcher owns the whole lifecycle now, which
+is also the more honest one — a condition is over when it is over, not when somebody
+gets around to saying so.
+
+**One finding per command, the worst instance.** A browser runs several helper processes
+under one command name. The key names the command, so those are one condition; the
+highest sustained ratio is the row, and its note says how many others crossed the line.
+Found by the first end-to-end run against the new table, which failed on the unique
+index — `tasks` had been swallowing the duplicates silently and this tool counted a task
+it never wrote.
 
 ## Commands
 
 ```
-tools/host-watch              check, write findings to tasks
+tools/host-watch              check, record findings
 tools/host-watch --dry-run    check and print; write nothing
 tools/host-watch --json       machine-readable findings
 ```
@@ -96,5 +122,9 @@ stops working. Raising `min_cpu_ratio` is nearly always the better answer.
   "stuck" versus "working hard" is exactly the judgement a threshold cannot make.
 - **Running `storage --apply` on a schedule.** Reclaiming stays a deliberate human
   command. Deleting a build cache mid-compile is a cure worse than a full disk.
-- **A dashboard panel.** tasks already has a surface and a count endpoint. A second place
-  to look is the failure this exists to prevent.
+- **A dashboard panel.** The decision ladder on home already ranks these findings, beside
+  everything else waiting on a call. A second place to look is the failure this exists to
+  prevent.
+- **A server of its own.** It would need `autostart`, which the manifest schema refuses
+  alongside `schedule`, and rightly: a watcher that holds a process up all hour to answer
+  a question once is a worse joke than the resource hog it watches for.

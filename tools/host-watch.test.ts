@@ -11,16 +11,17 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  type Finding,
+  type FindingRow,
   type Proc,
-  type TaskRow,
   type WatchPolicy,
   classifyProcesses,
   decideEmission,
+  decideResolutions,
   parseCpuTime,
   parseElapsed,
   parsePsOutput,
   storageFinding,
-  taskUrl,
 } from "./host-watch.ts";
 
 // The real `ps -Aceo pid,time,etime,comm` block from 2026-08-15 17:52, trimmed to the
@@ -133,6 +134,23 @@ describe("classifyProcesses — the runaway rule", () => {
     const b = classifyProcesses(shifted, policy())[0];
     expect(a.key).toBe(b.key);
   });
+
+  // Regression, found by the first end-to-end run against host-watch's own table
+  // (2026-08-28): a browser has several helper processes under one command name, so one
+  // run produced several findings on one key and the store's unique index refused the
+  // second. `tasks` had been swallowing that silently and this tool counted a task it
+  // never wrote. The key is the condition, so one run yields one finding per key.
+  test("several processes sharing a command are one finding, the worst of them", () => {
+    const helpers: Proc[] = [
+      { pid: 1, comm: "Google Chrome Helper", cpuSeconds: 7200, elapsedSeconds: 14_400 },
+      { pid: 2, comm: "Google Chrome Helper", cpuSeconds: 7200, elapsedSeconds: 7_200 },
+      { pid: 3, comm: "Google Chrome Helper", cpuSeconds: 7200, elapsedSeconds: 36_000 },
+    ];
+    const found = classifyProcesses(helpers, policy({ allow_process: [] }));
+    expect(found).toHaveLength(1);
+    expect(found[0].pid).toBe(2); // ratio 1.00, against 0.50 and 0.20
+    expect(found[0].note).toContain("2 other process(es) named Google Chrome Helper");
+  });
 });
 
 describe("storageFinding — fires on the volume state, never on a class being large", () => {
@@ -157,97 +175,97 @@ describe("storageFinding — fires on the volume state, never on a class being l
     expect(storageFinding(withFlagged)).toBeNull();
   });
 
-  test("the key is stable, so a week-long breach is one task", () => {
+  test("the key is stable, so a week-long breach is one finding", () => {
     expect(storageFinding(warn)!.key).toBe(storageFinding({ ...warn, disk: { ...warn.disk, free: 69_000_000_000 } })!.key);
   });
 });
 
-describe("decideEmission — one task per run of a condition", () => {
-  const row = (over: Partial<TaskRow>): TaskRow => ({
-    id: "t1",
+describe("decideEmission — one row per run of a condition", () => {
+  const row = (over: Partial<FindingRow>): FindingRow => ({
+    id: "cpu:ApplicationsStorageExtension~1",
+    key: "cpu:ApplicationsStorageExtension",
+    generation: 1,
     status: "open",
-    source_capability: "host-watch",
-    source_id: "cpu:ApplicationsStorageExtension~1",
     ...over,
   });
 
   test("no history — create generation 1", () => {
     expect(decideEmission("cpu:ApplicationsStorageExtension", [])).toEqual({
       action: "create",
-      sourceId: "cpu:ApplicationsStorageExtension~1",
+      id: "cpu:ApplicationsStorageExtension~1",
+      generation: 1,
     });
   });
 
-  test("an open task for this condition — refresh it, do not create a second", () => {
+  test("an open row for this condition — refresh it, do not create a second", () => {
     expect(decideEmission("cpu:ApplicationsStorageExtension", [row({})])).toEqual({
-      action: "patch",
-      id: "t1",
+      action: "refresh",
+      id: "cpu:ApplicationsStorageExtension~1",
     });
   });
 
-  test("the operator closed it and the condition returned — create a new generation", () => {
-    expect(
-      decideEmission("cpu:ApplicationsStorageExtension", [row({ status: "done" })]),
-    ).toEqual({ action: "create", sourceId: "cpu:ApplicationsStorageExtension~2" });
+  test("it cleared and the condition returned — create a new generation", () => {
+    expect(decideEmission("cpu:ApplicationsStorageExtension", [row({ status: "resolved" })])).toEqual({
+      action: "create",
+      id: "cpu:ApplicationsStorageExtension~2",
+      generation: 2,
+    });
   });
 
   test("generations count from the highest seen, not the row count", () => {
     const history = [
-      row({ id: "a", status: "done", source_id: "cpu:ApplicationsStorageExtension~1" }),
-      row({ id: "b", status: "dropped", source_id: "cpu:ApplicationsStorageExtension~7" }),
+      row({ id: "a", status: "resolved", generation: 1 }),
+      row({ id: "b", status: "resolved", generation: 7 }),
     ];
     expect(decideEmission("cpu:ApplicationsStorageExtension", history)).toEqual({
       action: "create",
-      sourceId: "cpu:ApplicationsStorageExtension~8",
+      id: "cpu:ApplicationsStorageExtension~8",
+      generation: 8,
     });
   });
 
   test("another condition's history is not this condition's history", () => {
-    const other = [row({ source_id: "storage:free-below-threshold~3" })];
+    const other = [row({ key: "storage:free-below-threshold", generation: 3 })];
     expect(decideEmission("cpu:ApplicationsStorageExtension", other)).toEqual({
       action: "create",
-      sourceId: "cpu:ApplicationsStorageExtension~1",
+      id: "cpu:ApplicationsStorageExtension~1",
+      generation: 1,
     });
   });
 
+  // The Axon#177 bug that a packed `{key}~{n}` id made possible: `cpu:Storage` is a
+  // prefix of `cpu:StorageManagementService`, so a startsWith comparison gave one
+  // condition the other's history. `key` is a column now, so this is exact — the test
+  // stays because the guarantee is what matters, not how it is obtained.
   test("a key that prefixes another key is not confused with it", () => {
-    const history = [row({ source_id: "cpu:Storage~4", status: "open" })];
+    const history = [row({ id: "cpu:Storage~4", key: "cpu:Storage", generation: 4 })];
     expect(decideEmission("cpu:StorageManagementService", history)).toEqual({
       action: "create",
-      sourceId: "cpu:StorageManagementService~1",
+      id: "cpu:StorageManagementService~1",
+      generation: 1,
     });
   });
-
-  test("a task from another capability is ignored even on an identical source_id", () => {
-    const foreign = [row({ source_capability: "comms" })];
-    expect(decideEmission("cpu:ApplicationsStorageExtension", foreign)).toEqual({
-      action: "create",
-      sourceId: "cpu:ApplicationsStorageExtension~1",
-    });
-  });
-
 });
 
-// Regression, Axon#177. tasks derives a task id from `{capability}:{source_id}`, so every
-// id carries a process name, and process names contain spaces. Interpolating one raw into
-// the refresh URL 404'd on the first real run against the live capability — the condition
-// was then re-detected forever and never refreshed. Every unit test was green at the time;
-// only the end-to-end run caught it, which is the whole argument for doing one.
-describe("taskUrl — the refresh address", () => {
-  const id = "host-watch:cpu:Google Chrome Helper~1";
+// The half that could not exist while `tasks` owned the lifecycle: nothing closes a
+// finding now except the watcher itself, so a run that no longer sees a condition has to
+// say so. Without this every row written since 2026-08 would stay open forever.
+describe("decideResolutions — a run closes what it no longer sees", () => {
+  const finding = (key: string): Finding => ({ key, title: key, note: "" });
+  const open = (id: string, key: string): FindingRow => ({ id, key, generation: 1, status: "open" });
 
-  test("the id is one encoded path segment, so it survives the round trip", () => {
-    const url = new URL(taskUrl("http://127.0.0.1:8089", id));
-    expect(decodeURIComponent(url.pathname)).toBe(`/api/tasks/${id}`);
+  test("a condition the run did not see is closed", () => {
+    const existing = [open("cpu:Foo~1", "cpu:Foo"), open("cpu:Bar~1", "cpu:Bar")];
+    expect(decideResolutions([finding("cpu:Foo")], existing)).toEqual(["cpu:Bar~1"]);
   });
 
-  test("no raw space reaches the path — that was the 404", () => {
-    expect(taskUrl("http://h", id)).not.toContain(" ");
+  test("a healthy run closes everything that was open", () => {
+    const existing = [open("cpu:Foo~1", "cpu:Foo"), open("cpu:Bar~1", "cpu:Bar")];
+    expect(decideResolutions([], existing)).toEqual(["cpu:Foo~1", "cpu:Bar~1"]);
   });
 
-  test("a fragment marker in an id cannot truncate the request", () => {
-    const url = new URL(taskUrl("http://h", "host-watch:cpu:Foo#1"));
-    expect(url.hash).toBe("");
-    expect(decodeURIComponent(url.pathname)).toBe("/api/tasks/host-watch:cpu:Foo#1");
+  test("an already-resolved row is not resolved twice", () => {
+    const existing = [{ ...open("cpu:Foo~1", "cpu:Foo"), status: "resolved" }];
+    expect(decideResolutions([], existing)).toEqual([]);
   });
 });

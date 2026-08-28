@@ -673,6 +673,24 @@ export interface BackupStatus {
   run: BackupRun | null;
 }
 
+/** One thing wrong with this machine, as the hourly host watch found it.
+ *
+ *  It filed a task until PRD Q48 (2026-08-27). A runaway process is machine state, not
+ *  an action a human wrote, so the findings became host-watch's own rows and the ladder
+ *  ranks them directly. There is nothing to mark done: the next run closes a finding
+ *  when the condition clears, which is the only honest close for a condition. */
+export interface HostWatchFinding {
+  id: string;
+  /** The condition, e.g. `cpu:ApplicationsStorageExtension`. Names the command, never
+   *  the pid, so a reboot does not look like a new problem. */
+  key: string;
+  title: string;
+  /** What to run to look at it, and what to run if it is stuck. Multi-line. */
+  note: string;
+  first_seen: string;
+  last_seen: string;
+}
+
 export const axonStatus = {
   health: () => request<AxonStatusHealth>('/axon-status/api/axon-status/health'),
   capabilities: () => request<CapabilityView[]>('/axon-status/api/axon-status/capabilities'),
@@ -687,6 +705,15 @@ export const axonStatus = {
   self: () => request<SelfModelResponse>('/axon-status/api/axon-status/self'),
   repos: () => request<{ repos: RepoStatus[] }>('/axon-status/api/axon-status/repos'),
   links: () => request<{ links: PinnedLink[] }>('/axon-status/api/axon-status/links'),
+  /** Open findings from the hourly host watch. Served here rather than by host-watch
+   *  itself because that capability is a scheduled job with no port: it runs, writes to
+   *  its own table, and exits. Same shape as `backups()`, which publishes a job's
+   *  receipts for the same reason. */
+  hostWatch: (signal?: AbortSignal) =>
+    request<{ findings: HostWatchFinding[] }>(
+      '/axon-status/api/axon-status/host-watch',
+      signal ? { signal } : undefined,
+    ).then((response) => response.findings),
   upstreams: () => request<UpstreamAudit>('/axon-status/api/axon-status/upstreams'),
   start: (name: string, signal?: AbortSignal) =>
     request<{ name: string; up: boolean; detail: string }>(

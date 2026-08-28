@@ -7,14 +7,25 @@
 // nothing ran it, so it may as well not have existed. A tool nobody runs and a tool
 // nobody built are the same tool.
 //
-// So: notice, then hand off. This writes a `tasks` record per finding and NOTHING when
-// the machine is healthy, because a watcher that cries wolf gets muted and a muted
-// watcher is worse than none. No new notification machinery — core Axon has never had a
-// notifier and does not grow one here (the precedent tools/sparpreis-watch.ts states in
-// its own header, and capabilities/tasks' "other capabilities notice things and hand
-// them here").
+// So: notice, then hand off. This writes a row per finding into its OWN table and
+// NOTHING when the machine is healthy, because a watcher that cries wolf gets muted and
+// a muted watcher is worse than none. No new notification machinery — core Axon has
+// never had a notifier and does not grow one here (the precedent tools/sparpreis-watch.ts
+// states in its own header).
 //
-//   tools/host-watch              check, write findings to tasks
+// It filed a `tasks` record until PRD Q48 (2026-08-27) retired that capability: the
+// Action kind went back to the vault, and a runaway process is not an action a human
+// wrote — it is machine state. So the findings became host-watch's own rows in the
+// shared store (capabilities/store), read by axon-status and ranked on the dashboard's
+// decision ladder at band 900.
+//
+// Owning the table changed one thing beyond the transport, and it had to. Under `tasks`
+// the only way a finding ever closed was the operator pressing Done, which is why the
+// id carried a generation counter. That button is gone, so nothing would ever close a
+// row again — a watcher whose findings only accumulate is a watcher that stops meaning
+// anything. A run now RESOLVES every open finding whose condition it no longer sees.
+//
+//   tools/host-watch              check, record findings
 //   tools/host-watch --dry-run    check and print; write nothing
 //   tools/host-watch --json       machine-readable findings
 //   tools/host-watch -h           this help
@@ -26,15 +37,16 @@
 // tools/storage.ts already uses (README.md#generic-in-axon-specific-in-the-overlay).
 // The pure functions below are exported for tools/host-watch.test.ts.
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { Database } from "bun:sqlite";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import { fmt } from "./storage.ts";
 import { axonRoot, overlayRoot } from "./lib/overlay.ts";
 
 const HELP = `tools/host-watch — notice a runaway process or a filling disk, once per run.
 
-  tools/host-watch              check, write findings to tasks
+  tools/host-watch              check, record findings
   tools/host-watch --dry-run    check and print; write nothing
   tools/host-watch --json       machine-readable findings
   tools/host-watch -h           this help
@@ -42,7 +54,11 @@ const HELP = `tools/host-watch — notice a runaway process or a filling disk, o
 Policy: <overlay>/config/host-watch-policy.toml
 `;
 
-const CAPABILITY = "host-watch";
+/// Prefixes this capability's tables in the one shared SQLite file (PRD Q45):
+/// `host_watch` here means the table `host_watch_findings`. Underscored, not hyphenated
+/// — the capability's directory name is `host-watch` and a hyphen is not a legal bare
+/// identifier in SQL.
+const PREFIX = "host_watch";
 
 export type Proc = { pid: number; cpuSeconds: number; elapsedSeconds: number; comm: string };
 export type ProcessBudget = { min_cpu_seconds?: number; min_cpu_ratio?: number };
@@ -52,13 +68,11 @@ export type WatchPolicy = { process?: ProcessBudget; allow_process?: AllowedProc
 export type Finding = { key: string; title: string; note: string };
 export type ProcFinding = Finding & { pid: number; comm: string; ratio: number; cpuSeconds: number };
 
-export type TaskRow = {
-  id: string;
-  status: string;
-  source_capability?: string | null;
-  source_id?: string | null;
-};
-export type Emission = { action: "patch"; id: string } | { action: "create"; sourceId: string };
+/** One row of `host_watch_findings`, as the decision below needs to see it. */
+export type FindingRow = { id: string; key: string; generation: number; status: string };
+export type Emission =
+  | { action: "refresh"; id: string }
+  | { action: "create"; id: string; generation: number };
 
 /**
  * ps prints three shapes and only three: `DD-HH:MM:SS`, `HH:MM:SS`, and `MM:SS[.ff]`,
@@ -117,35 +131,59 @@ export function parsePsOutput(text: string): Proc[] {
  *
  * The ratio is deliberately NOT capped at 1. A process pinning four cores for an hour
  * reads as 4.0, which is exactly how alarming it should look.
+ *
+ * ## One finding per command, the worst instance
+ *
+ * The key is the command, so a browser with four helper processes over the line is ONE
+ * condition, not four. Collapsing them here rather than downstream was found by the first
+ * end-to-end run against the new store, which failed on the unique index: `tasks` had
+ * been absorbing the duplicates silently, returning the row it already owned and letting
+ * this tool count a second "new task" that was never written. The worst instance wins
+ * because it is the one worth looking at, and the note names how many others crossed the
+ * line so the count is not lost with them.
  */
 export function classifyProcesses(procs: Proc[], policy: WatchPolicy): ProcFinding[] {
   const floor = policy.process?.min_cpu_seconds ?? Infinity;
   const minRatio = policy.process?.min_cpu_ratio ?? Infinity;
   const allowed = new Set((policy.allow_process ?? []).map((a) => a.comm));
 
-  const found: ProcFinding[] = [];
+  const over: Array<Proc & { ratio: number }> = [];
   for (const p of procs) {
     if (allowed.has(p.comm)) continue;
     if (p.cpuSeconds < floor) continue;
     const ratio = p.elapsedSeconds > 0 ? p.cpuSeconds / p.elapsedSeconds : 0;
     if (ratio < minRatio) continue;
+    over.push({ ...p, ratio });
+  }
+  over.sort((a, b) => b.ratio - a.ratio);
+
+  const found: ProcFinding[] = [];
+  const seen = new Set<string>();
+  for (const p of over) {
+    // Keyed on the command, never the pid: a pid is a different number every boot and
+    // would make every restart look like a new problem.
+    const key = `cpu:${p.comm}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const others = over.filter((q) => q.comm === p.comm).length - 1;
     found.push({
-      // Keyed on the command, never the pid: a pid is a different number every boot and
-      // would make every restart look like a new problem.
-      key: `cpu:${p.comm}`,
+      key,
       pid: p.pid,
       comm: p.comm,
-      ratio,
+      ratio: p.ratio,
       cpuSeconds: p.cpuSeconds,
-      title: `${p.comm} has used ${hours(p.cpuSeconds)} of CPU (${ratio.toFixed(2)} cores sustained)`,
+      title: `${p.comm} has used ${hours(p.cpuSeconds)} of CPU (${p.ratio.toFixed(2)} cores sustained)`,
       note:
         `pid ${p.pid} · ${hours(p.cpuSeconds)} CPU over ${hours(p.elapsedSeconds)} wall ` +
-        `= ${ratio.toFixed(2)} cores held continuously.\n` +
+        `= ${p.ratio.toFixed(2)} cores held continuously.\n` +
+        (others > 0
+          ? `${others} other process(es) named ${p.comm} are also over the line; this is the worst.\n`
+          : "") +
         `Inspect: ps -p ${p.pid} -o pid,lstart,time,pcpu,command\n` +
         `If it is stuck rather than working: kill ${p.pid}`,
     });
   }
-  return found.sort((a, b) => b.ratio - a.ratio);
+  return found;
 }
 
 const hours = (s: number) => (s >= 3600 ? `${(s / 3600).toFixed(1)}h` : `${Math.round(s / 60)}m`);
@@ -182,74 +220,48 @@ export function storageFinding(report: StorageReport): Finding | null {
 }
 
 /**
- * One task per RUN of a condition, not one per check and not one forever.
+ * One row per RUN of a condition, not one per check and not one forever.
  *
- * tasks' partial unique index on (source_capability, source_id) already collapses
- * repeats, which is most of the job. What it cannot express on its own is the case that
- * makes the difference between a watcher that works next year and one that silently
- * stops: the operator marks the task done, and six weeks later the same condition comes
- * back. A fixed source_id would upsert onto the closed row and say nothing, forever. So
- * the id carries a generation, and a new one is minted only once every prior task for
- * this condition is closed.
+ * The unique index on an open `key` collapses repeats, which is most of the job. What it
+ * cannot express on its own is the case that makes the difference between a watcher that
+ * works next year and one that silently stops: the condition clears, and six weeks later
+ * it comes back. Re-using the same row would upsert onto the closed one and say nothing,
+ * forever. So a row carries a generation, and a new one is minted only once every prior
+ * row for this condition is closed.
+ *
+ * The generation used to be packed into the id as `{key}~{n}` because `tasks` gave this
+ * watcher one string field to key on, and parsing that string back out is where the two
+ * bugs of Axon#177 lived — a `#` separator truncated the PATCH path, and without any
+ * separator `cpu:Storage` claimed `cpu:StorageManagementService`'s history. Owning the
+ * table makes both unrepresentable: `key` and `generation` are columns, and the
+ * comparison below is exact by construction rather than by choosing a lucky character.
  */
-export function decideEmission(key: string, existing: TaskRow[]): Emission {
-  const mine = existing.filter(
-    (t) => t.source_capability === CAPABILITY && generationOf(key, t.source_id) !== null,
-  );
-  const open = mine.find((t) => t.status === "open");
-  if (open) return { action: "patch", id: open.id };
-  const highest = mine.reduce((max, t) => Math.max(max, generationOf(key, t.source_id) ?? 0), 0);
-  return { action: "create", sourceId: `${key}${GEN}${highest + 1}` };
+export function decideEmission(key: string, existing: FindingRow[]): Emission {
+  const mine = existing.filter((row) => row.key === key);
+  const open = mine.find((row) => row.status === "open");
+  if (open) return { action: "refresh", id: open.id };
+  const generation = mine.reduce((max, row) => Math.max(max, row.generation), 0) + 1;
+  return { action: "create", id: `${key}~${generation}`, generation };
 }
 
 /**
- * The generation separator, and why it is not `#`.
+ * Which open findings this run did NOT see, and must therefore close.
  *
- * tasks derives a task's id from `{capability}:{source_id}` (store.rs), and that id goes
- * straight into a URL path on every PATCH. `#` was the first choice and it 404'd on the
- * first real run: a fragment marker truncates the request path at the client, so the
- * server saw `/api/tasks/host-watch:cpu:Google Chrome` and had never heard of it. `~` is
- * unreserved in RFC 3986, survives a path segment untouched, and is no likelier to occur
- * in a process name than `#` was.
- *
- * The separator is load-bearing regardless of which character it is: without one,
- * `cpu:Storage` would claim `cpu:StorageManagementService`'s history and two unrelated
- * conditions would share a task.
+ * The half that could not exist before. Under `tasks` a finding closed only when the
+ * operator pressed Done; that button is gone with the capability, so without this a row
+ * written once would stay open forever and the ladder would keep ranking a process that
+ * exited months ago. A watcher whose findings only accumulate stops meaning anything.
  */
-const GEN = "~";
-
-function generationOf(key: string, sourceId: string | null | undefined): number | null {
-  const prefix = `${key}${GEN}`;
-  if (!sourceId?.startsWith(prefix)) return null;
-  const n = Number(sourceId.slice(prefix.length));
-  return Number.isInteger(n) && n > 0 ? n : null;
+export function decideResolutions(present: Finding[], existing: FindingRow[]): string[] {
+  const seen = new Set(present.map((finding) => finding.key));
+  return existing.filter((row) => row.status === "open" && !seen.has(row.key)).map((row) => row.id);
 }
-
-/**
- * The address of one task. Exported because getting it wrong is silent: tasks derives a
- * task id from `{capability}:{source_id}`, so every id here carries a process name, and
- * process names contain spaces ("Google Chrome Helper"). The id is ONE path segment and
- * has to be encoded as one — interpolating it raw 404'd on the first real run.
- */
-export const taskUrl = (base: string, id: string) => `${base}/api/tasks/${encodeURIComponent(id)}`;
 
 // ── I/O ────────────────────────────────────────────────────────────────────────
 
 function fail(message: string, code = 1): never {
   console.error(`host-watch: ${message}`);
   process.exit(code);
-}
-
-/** A capability's port, from the one file that declares it. */
-function portOf(capability: string): string {
-  const manifest = join(axonRoot(), "capabilities", capability, "service.toml");
-  if (!existsSync(manifest)) fail(`no ${manifest}`);
-  const line = readFileSync(manifest, "utf8")
-    .split("\n")
-    .find((l) => /^port\s*=/.test(l));
-  const port = line?.match(/"([^"]*)"/)?.[1] ?? "";
-  if (!port) fail(`no port in ${manifest}`);
-  return port;
 }
 
 async function runPs(): Promise<Proc[]> {
@@ -282,42 +294,108 @@ async function runStorage(): Promise<StorageReport | null> {
   }
 }
 
-async function emit(findings: Finding[], base: string): Promise<number> {
-  const listed = await fetch(`${base}/api/tasks`);
-  if (!listed.ok) fail(`tasks GET /api/tasks returned HTTP ${listed.status}`);
-  const existing = ((await listed.json()) as { tasks?: TaskRow[] }).tasks ?? [];
+/**
+ * Where the shared SQLite file is, resolved exactly the way `axon_config::database_path()`
+ * resolves it — `AXON_DB_PATH` first, then the overlay. A tool that opened a different
+ * file than the capabilities do would write findings nothing reads.
+ */
+function databasePath(): string {
+  const fromEnv = (process.env.AXON_DB_PATH ?? "").trim();
+  if (fromEnv) return fromEnv.startsWith("~/") ? join(process.env.HOME ?? "", fromEnv.slice(2)) : fromEnv;
+  const overlay = overlayRoot();
+  if (!overlay) fail("no overlay to resolve the database path from; set AXON_DB_PATH");
+  return join(overlay, "data", "axon", "axon.db");
+}
 
-  let created = 0;
-  for (const f of findings) {
-    const decision = decideEmission(f.key, existing);
-    if (decision.action === "patch") {
-      const res = await fetch(taskUrl(base, decision.id), {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ note: f.note, title: f.title }),
-      });
-      if (!res.ok) console.error(`host-watch: refresh of ${f.key} returned HTTP ${res.status}`);
-      else console.log(`host-watch: still open — ${f.title}`);
-      continue;
-    }
-    const res = await fetch(`${base}/api/tasks`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: f.title,
-        note: f.note,
-        source_capability: CAPABILITY,
-        source_id: decision.sourceId,
-      }),
-    });
-    if (!res.ok) {
-      console.error(`host-watch: task write for ${f.key} returned HTTP ${res.status}`);
-      continue;
-    }
-    created += 1;
-    console.log(`host-watch: NEW — ${f.title}`);
+/** The canonical stamp, spelled the way `axon_store::NOW` spells it. */
+const NOW = "strftime('%Y-%m-%d %H:%M:%f+00:00','now')";
+
+/**
+ * Open the shared store and make sure this capability's one table is there.
+ *
+ * `CREATE TABLE IF NOT EXISTS` on every run, which is what every Rust capability's
+ * migration does too (libs/axon-store) — a job that runs hourly and might be the first
+ * thing to touch a fresh database cannot assume someone else went first.
+ *
+ * The partial unique index is the contract: at most one OPEN finding per condition. A
+ * plain unique index on `key` would refuse the second generation, which is precisely the
+ * history this watcher needs to keep.
+ */
+function openStore(): Database {
+  const path = databasePath();
+  mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path, { create: true });
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${PREFIX}_findings (
+        id TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+        title TEXT NOT NULL,
+        note TEXT NOT NULL,
+        first_seen TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        resolved_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ${PREFIX}_findings_one_open_per_key
+        ON ${PREFIX}_findings (key) WHERE status = 'open';
+  `);
+  return db;
+}
+
+/** What this run changed, for the one line it prints. */
+type Emitted = { created: number; refreshed: number; resolved: number };
+
+/**
+ * Write this run's verdict: open what is new, refresh what persists, close what cleared.
+ *
+ * One transaction, because a half-applied run is a lie about the machine — a finding
+ * resolved with its replacement not yet written reads as "nothing wrong" for exactly as
+ * long as it takes the next hour to arrive.
+ */
+function emit(findings: Finding[]): Emitted {
+  const db = openStore();
+  try {
+    const existing = db
+      .query(`SELECT id, key, generation, status FROM ${PREFIX}_findings`)
+      .all() as FindingRow[];
+
+    const refresh = db.prepare(
+      `UPDATE ${PREFIX}_findings SET title = ?2, note = ?3, last_seen = ${NOW} WHERE id = ?1`,
+    );
+    const create = db.prepare(
+      `INSERT INTO ${PREFIX}_findings (id, key, generation, status, title, note, first_seen, last_seen)
+       VALUES (?1, ?2, ?3, 'open', ?4, ?5, ${NOW}, ${NOW})`,
+    );
+    const resolve = db.prepare(
+      `UPDATE ${PREFIX}_findings SET status = 'resolved', resolved_at = ${NOW} WHERE id = ?1`,
+    );
+
+    const counts: Emitted = { created: 0, refreshed: 0, resolved: 0 };
+    db.transaction(() => {
+      for (const finding of findings) {
+        const decision = decideEmission(finding.key, existing);
+        if (decision.action === "refresh") {
+          refresh.run(decision.id, finding.title, finding.note);
+          counts.refreshed += 1;
+          console.log(`host-watch: still open — ${finding.title}`);
+          continue;
+        }
+        create.run(decision.id, finding.key, decision.generation, finding.title, finding.note);
+        counts.created += 1;
+        console.log(`host-watch: NEW — ${finding.title}`);
+      }
+      for (const id of decideResolutions(findings, existing)) {
+        resolve.run(id);
+        counts.resolved += 1;
+        console.log(`host-watch: cleared — ${id}`);
+      }
+    })();
+    return counts;
+  } finally {
+    db.close();
   }
-  return created;
 }
 
 export async function main() {
@@ -346,19 +424,26 @@ export async function main() {
     return;
   }
 
-  if (findings.length === 0) {
-    console.log(`host-watch: ${procs.length} processes, disk ${storage?.state ?? "unknown"} — nothing to report`);
-    return;
-  }
-
   if (dryRun) {
     console.log(`host-watch: ${findings.length} finding(s), writing nothing (--dry-run)`);
     for (const f of findings) console.log(`  ${f.title}`);
     return;
   }
 
-  const created = await emit(findings, `http://127.0.0.1:${portOf("tasks")}`);
-  console.log(`host-watch: ${findings.length} finding(s), ${created} new task(s)`);
+  // A healthy run still writes, and that is the point of the closing half: it is the
+  // run with NO findings that clears the rows the last one left open. Returning early
+  // here — which this did while `tasks` owned the lifecycle — would mean a condition
+  // that cleared stayed on the ladder until the operator noticed it themselves.
+  const { created, refreshed, resolved } = emit(findings);
+  if (findings.length === 0 && resolved === 0) {
+    console.log(
+      `host-watch: ${procs.length} processes, disk ${storage?.state ?? "unknown"} — nothing to report`,
+    );
+    return;
+  }
+  console.log(
+    `host-watch: ${findings.length} finding(s) — ${created} new, ${refreshed} still open, ${resolved} cleared`,
+  );
 }
 
 // Guarded so the test file can import the pure functions without running a scan.

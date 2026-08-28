@@ -555,7 +555,9 @@ dependencies = [
 name = "axon-status"
 version = "0.1.0"
 dependencies = [
+ "axon-config",
  "axon-server",
+ "axon-store",
  "axum",
  "reqwest",
  "route-manifest",

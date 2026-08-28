@@ -1,8 +1,8 @@
 # See schemas/service.toml.example for the field reference.
 #
 # The host watch (Axon#177): one pass over the machine's own vital signs, then exit. It
-# writes a `tasks` record per finding and nothing at all when the machine is healthy —
-# `requires = ["tasks"]` because that hand-off IS the alert surface, not a convenience.
+# writes a row per finding into its own table in the shared store and nothing at all when
+# the machine is healthy.
 #
 # Hourly, and the number is measured rather than assumed. The expensive half is the
 # storage scan it shells out to, which is 6.6s wall and almost entirely I/O wait on this
@@ -20,4 +20,10 @@ schedule = "1h"
 
 # No `port`: it runs, observes, and exits. `schedule` and `autostart` are mutually
 # exclusive and the runner refuses a manifest carrying both — this is a job, not a service.
-requires = ["tasks"]
+# That exclusion is also why the findings are READ somewhere else: nothing is listening
+# here, so axon-status publishes them (see README.md, "How it reports").
+#
+# No `requires` since PRD Q48 (2026-08-27). It required `tasks` because filing a task WAS
+# the alert surface; the capability retired, and the findings became rows in this
+# capability's own table in the shared store. A file this process opens is not a service
+# to wait for, so there is nothing left to declare.

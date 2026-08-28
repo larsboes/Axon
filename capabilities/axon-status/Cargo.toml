@@ -12,6 +12,12 @@ name = "axon-status"
 path = "src/main.rs"
 
 [dependencies]
+# The shared SQLite file, for one read: host-watch's findings. That capability is a
+# scheduled job with no port of its own (the manifest schema refuses one), so the
+# machine's always-on status surface publishes them — the same shape /backups already
+# has with tools/backup.sh's receipts. Read-only: host-watch owns the table.
+axon-config = { path = "../../libs/axon-config" }
+axon-store = { path = "../../libs/axon-store" }
 axon-server = { path = "../../libs/axon-server" }
 route-manifest = { path = "../../libs/route-manifest" }
 axum = "0.7"

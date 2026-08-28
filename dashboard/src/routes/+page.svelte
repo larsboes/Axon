@@ -17,6 +17,7 @@
     type CapabilityView,
     type FeedEntry,
     type FeedStatus,
+    type HostWatchFinding,
     type OpportunityStatus,
     type ScoutingOpportunity,
     type ScoutingSource,
@@ -35,6 +36,7 @@
 
   type Decision =
     | { key: string; kind: "system"; priority: number }
+    | { key: string; kind: "host"; priority: number; finding: HostWatchFinding }
     | { key: string; kind: "feed"; priority: number; entry: FeedEntry }
     | { key: string; kind: "calendar"; priority: number; entry: CalendarEntry }
     | { key: string; kind: "opportunity"; priority: number; opportunity: ScoutingOpportunity }
@@ -65,6 +67,7 @@
   let health = $state<AxonStatusHealth | null>(null);
   let macmonSample = $state<MacmonSample | null>(null);
   let macmonErr = $state(false);
+  let hostFindings = $state<HostWatchFinding[]>([]);
   let feedEntries = $state<FeedEntry[]>([]);
   let mailProposals = $state<TriageItem[]>([]);
   let openTasks = $state<Task[]>([]);
@@ -104,6 +107,21 @@
 
     if (health && !health.ok) {
       items.push({ key: "system", kind: "system", priority: 10_000 });
+    }
+
+    /// Band 900: something is wrong with the machine itself. Above a trip and
+    /// below the capability-health card, because a runaway process is worse
+    /// than a plan that can wait and less urgent than "Axon is not running".
+    /// The longer a condition has persisted the higher it sits — a process
+    /// that has been pinning a core since Tuesday is the one to look at.
+    for (const finding of hostFindings) {
+      const days = Math.max(0, -daysUntil(finding.first_seen));
+      items.push({
+        key: `host:${finding.id}`,
+        kind: "host",
+        finding,
+        priority: 900 + Math.min(90, days * 10),
+      });
     }
 
     for (const plan of plans) {
@@ -230,6 +248,7 @@
         : `Nothing is waiting on a decision. ${countLabel(reading.length, "unread item")} below.`;
     }
     if (next.kind === "system") return "A service that should be running is not responding.";
+    if (next.kind === "host") return next.finding.title;
     if (next.kind === "trip") {
       const where = next.plan.destinations.map((place) => place.name).join(" → ")
         || next.plan.title;
@@ -291,8 +310,12 @@
     loading = true;
     await capabilities.refresh();
 
-    const [healthResult, feedResult, taskResult, scoutingResult, tripResult, calendarResult] = await Promise.allSettled([
+    const [healthResult, hostResult, feedResult, taskResult, scoutingResult, tripResult, calendarResult] = await Promise.allSettled([
       axonStatus.health(),
+      // No `readCapability` gate: axon-status is the always-on process, so if
+      // health above resolved this will too. It is a separate settled slot
+      // because a health card and a runaway process are different facts.
+      axonStatus.hostWatch(),
       // Both come from comms, so they share one capability gate and one
       // failure path — a reachable comms that returns no mail is a different
       // fact from an unreachable comms, and merging them would hide it.
@@ -324,6 +347,11 @@
     const missing: string[] = [];
     if (healthResult.status === "fulfilled") health = healthResult.value;
     else missing.push("System status");
+
+    // A failure here is silent on purpose: the machine may simply never have run
+    // the watch. A "Host watch unavailable" banner on a healthy machine is the
+    // false alarm the watcher's own README refuses to produce.
+    hostFindings = hostResult.status === "fulfilled" ? hostResult.value : [];
 
     if (feedResult.status === "fulfilled") {
       feedEntries = feedResult.value.entries.filter((entry) => entry.status === "new");
@@ -480,7 +508,10 @@
   }
 
   function openDecision(decision: Decision): void {
-    if (decision.kind === "feed") {
+    if (decision.kind === "host") {
+      // The findings page is /systems, which already renders this machine.
+      location.href = link("/systems");
+    } else if (decision.kind === "feed") {
       location.href = `/feed/${encodeURIComponent(decision.entry.id)}`;
     } else if (decision.kind === "task") {
       // The note IS the task, so Enter opens it in Obsidian — the one place it
@@ -774,6 +805,24 @@
                   <a class="btn action-primary" href={link("/capabilities")}>
                     Check <Icon name="arrow-right" size={13} />
                   </a>
+                </div>
+              {:else if decision.kind === "host"}
+                <div class="decision-mark warning"><Icon name="alert" size={16} /></div>
+                <div class="decision-copy">
+                  <span class="kind">
+                    Host · first seen {relativeDate(decision.finding.first_seen)}
+                  </span>
+                  <span class="decision-title">{decision.finding.title}</span>
+                  <!-- The note is what to run to look at it, and what to run if
+                       it is stuck. It is the whole surface: there is no button
+                       here, because host-watch closes a finding itself when the
+                       next hourly run stops seeing the condition. A Dismiss
+                       control would mean an operator could silence a machine
+                       fault that is still true. -->
+                  <p class="host-note">{decision.finding.note}</p>
+                </div>
+                <div class="decision-actions">
+                  <a class="btn" href={link("/systems")}>Systems</a>
                 </div>
               {:else if decision.kind === "feed"}
                 <div class="decision-mark"><Icon name="feed" size={16} /></div>
@@ -1464,6 +1513,17 @@
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
+  }
+
+  /* A host-watch note is a short block of commands to copy, so it keeps its
+     newlines and gets a fourth line — the two-line clamp above would cut the
+     `kill <pid>` line, which is the one worth reading. */
+  .decision-copy p.host-note {
+    white-space: pre-wrap;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.7rem;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
   }
 
   .decision-actions {
