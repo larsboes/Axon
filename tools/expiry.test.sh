@@ -86,20 +86,9 @@ note 1 "no entry carries a date"                       policy 1 14 "2026-13-45"
 note 1 "1 undated and therefore permanent"             policy 2 14 "$(day_offset +90)" "2026-13-45"
 
 # --- the readers, over planted files ---------------------------------------------------
-cat > "$SCRATCH/trivy.txt" <<TI
-# a comment, and a blank line below
-
-CVE-0000-0001 exp:2026-08-15
-CVE-0000-0002 exp:2026-09-01
-CVE-0000-0003
-TI
-got="$(expiry_dates_trivy "$SCRATCH/trivy.txt" | tr '\n' ' ')"
-[ "$got" = "2026-08-15 2026-09-01 " ] || {
-  echo "FAIL: expiry_dates_trivy returned '$got'"; fails=$((fails + 1)); }
-# Only the dated entries come back — the caller derives 'undated' from the difference, which
-# is the contract the note() cases above depend on.
-got="$(grep -Ev '^[[:space:]]*(#|$)' "$SCRATCH/trivy.txt" | wc -l | tr -d ' ')"
-[ "$got" = "3" ] || { echo "FAIL: entry count returned '$got'"; fails=$((fails + 1)); }
+# expiry_dates_trivy was tested here too, over a planted trivy-ignore file. Both the
+# function and the format it read are gone (52aa8c5 emptied trivy-ignore/ on 2026-08-28),
+# so only the osv reader remains.
 
 cat > "$SCRATCH/osv.toml" <<OSV
 # header comment

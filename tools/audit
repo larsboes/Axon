@@ -14,10 +14,10 @@
 # gitleaks output is redacted by default (routine/gate usage, not triage) --
 # for full secret detail on a real finding, run gitleaks directly yourself.
 #
-# Every accepted-finding policy here is dated (trivy-ignore/*.txt, osv-scanner.toml). This
+# Every accepted-finding policy here is dated (osv-scanner.toml `ignoreUntil`). This
 # reports each policy's nearest expiry with the days left, warns once that date falls
-# inside axon.toml [audit] expiry_warn_days, and FAILS once it has passed. The scanners
-# enforce their own dates silently at scan time, so without this nothing ever says a date
+# inside axon.toml [audit] expiry_warn_days, and FAILS once it has passed. The scanner
+# enforces its own dates silently at scan time, so without this nothing ever says a date
 # is coming -- the first notice is the red build afterwards.
 #
 # Exit 0 = clean, 1 = finding(s), 2 = usage/setup error. bash 3.2-safe.
@@ -77,28 +77,20 @@ EXPIRY_LAPSED=""
 #
 # Reading a date out of a file needs neither a container runtime, a pulled image nor a
 # network, so asking "when do the accepted findings lapse" should not cost a full sweep.
-# This is what tools/doctor delegates to, the same way it delegates the supply-chain
-# question to tools/upstream-checker rather than reimplementing it.
+# This is what tools/doctor delegates to, rather than reimplementing it: the script owns
+# the rule, doctor reports. It is the last of those delegations to survive PRD Q41, which
+# retired tools/upstream-checker on 2026-08-28.
 #
 # It exists because the answer used to live in three GitHub issues whose entire content was
 # "re-scan when the upstream digest changes" -- a tracked ticket standing in for a date the
 # files already carried. The files are the record; this reads them out loud.
 sweep_expiry() {
-  local policy cap count note rc found=0
-  for policy in "$AXON_ROOT"/trivy-ignore/*.txt; do
-    [ -f "$policy" ] || continue
-    found=1
-    cap="$(basename "$policy" .txt)"
-    count="$(grep -Ev '^[[:space:]]*(#|$)' "$policy" | wc -l | tr -d ' ')"
-    # shellcheck disable=SC2046
-    note="$(expiry_note "trivy-ignore/$cap.txt" "$count" "$(expiry_warn_days)" $(expiry_dates_trivy "$policy"))"
-    rc=$?
-    echo "  $note"
-    case "$rc" in
-      1) EXPIRY_WARNED="$EXPIRY_WARNED trivy-ignore/$cap.txt" ;;
-      2) EXPIRY_LAPSED="$EXPIRY_LAPSED trivy-ignore/$cap.txt"; fail=1 ;;
-    esac
-  done
+  local policy count note rc found=0
+
+  # trivy-ignore/*.txt was the other dated policy format until 52aa8c5 (2026-08-28) retired
+  # the postgres capability and deleted the last file in that directory. The reading code
+  # went with it rather than waiting for a policy that may never be written again: an
+  # untested branch over a format nothing produces is not coverage, it is a claim.
 
   policy="$AXON_ROOT/osv-scanner.toml"
   if [ -f "$policy" ]; then
@@ -270,44 +262,21 @@ else
     any=1
     cap="$(basename "$(dirname "$svc")")"
     ref="$image:${tag:-latest}"
-    ignore="$AXON_ROOT/trivy-ignore/$cap.txt"
     echo "  · $cap — $ref"
-    if [ -f "$ignore" ]; then
-      ignore_count="$(grep -Ev '^[[:space:]]*(#|$)' "$ignore" | wc -l | tr -d ' ')"
-      # Unquoted on purpose: the dates are word-split into expiry_note's argv. They are
-      # ISO dates matched by a character-class grep, so there is nothing here to split on
-      # but the whitespace that is doing the work.
-      # shellcheck disable=SC2046
-      exp_note="$(expiry_note "policy: trivy-ignore/$cap.txt" "$ignore_count" "$(expiry_warn_days)" $(expiry_dates_trivy "$ignore"))"
-      exp_rc=$?
-      echo "    $exp_note"
-      case "$exp_rc" in
-        1) EXPIRY_WARNED="$EXPIRY_WARNED trivy-ignore/$cap.txt" ;;
-        2) EXPIRY_LAPSED="$EXPIRY_LAPSED trivy-ignore/$cap.txt"; fail=1 ;;
-      esac
-    fi
     out="$(sarif_path "trivy-$cap")"
+    # No --ignorefile: trivy-ignore/ emptied on 2026-08-28 (52aa8c5) and the per-capability
+    # policy plumbing went with it. trivy runs against its own defaults now, which is what
+    # "the scanners' native configs" means here — if an accepted finding is needed again,
+    # it is written in the format trivy already reads, and this reads the date back.
+    if trivy image --scanners vuln --list-all-pkgs=false --table-mode detailed --exit-code 1 --severity CRITICAL,HIGH "$ref"; then
+      rc=0
+    else
+      rc=1
+    fi
     # same single-value --format limitation as osv-scanner above: a second
     # pass for the SARIF file, so the console table isn't silently dropped.
-    if [ -f "$ignore" ]; then
-      if trivy image --scanners vuln --list-all-pkgs=false --table-mode detailed --exit-code 1 --severity CRITICAL,HIGH --ignorefile "$ignore" "$ref"; then
-        rc=0
-      else
-        rc=1
-      fi
-    else
-      if trivy image --scanners vuln --list-all-pkgs=false --table-mode detailed --exit-code 1 --severity CRITICAL,HIGH "$ref"; then
-        rc=0
-      else
-        rc=1
-      fi
-    fi
     if [ -n "$out" ]; then
-      if [ -f "$ignore" ]; then
-        trivy image --scanners vuln --list-all-pkgs=false --exit-code 1 --severity CRITICAL,HIGH --ignorefile "$ignore" --format sarif --output "$out" "$ref" >/dev/null 2>&1
-      else
-        trivy image --scanners vuln --list-all-pkgs=false --exit-code 1 --severity CRITICAL,HIGH --format sarif --output "$out" "$ref" >/dev/null 2>&1
-      fi
+      trivy image --scanners vuln --list-all-pkgs=false --exit-code 1 --severity CRITICAL,HIGH --format sarif --output "$out" "$ref" >/dev/null 2>&1
     fi
     if [ "$rc" -eq 0 ]; then
       echo "    ✓ clean (CRITICAL/HIGH)"

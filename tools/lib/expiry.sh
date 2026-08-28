@@ -1,20 +1,21 @@
 # tools/lib/expiry.sh — reading the dates on Axon's accepted-finding policies.
 #
-# Every accepted finding in this repo is accepted UNTIL a date: trivy-ignore/*.txt carry
-# `exp:YYYY-MM-DD` per entry, osv-scanner.toml carries `ignoreUntil`. Both scanners honour
-# their own dates and neither announces one. So a policy lapses mid-week, findings that
-# were a reviewed decision yesterday are a build failure today, and nothing connects the
-# two. On 2026-08-05 two of the three image policies were ten days from exactly that, with
-# no upstream fix available to reach for.
+# Every accepted finding in this repo is accepted UNTIL a date. Today that means
+# osv-scanner.toml's `ignoreUntil`; trivy-ignore/*.txt carried `exp:YYYY-MM-DD` per entry
+# until that directory emptied on 2026-08-28 (52aa8c5). The scanner honours its own dates
+# and never announces one. So a policy lapses mid-week, findings that were a reviewed
+# decision yesterday are a build failure today, and nothing connects the two. On 2026-08-05
+# two of the three image policies were ten days from exactly that, with no upstream fix
+# available to reach for.
 #
-# Axon does not re-implement either format's matching rules. The scanners stay the
-# authority on what an expired entry MEANS, and if the two readings ever disagree theirs is
+# Axon does not re-implement the format's matching rules. The scanner stays the
+# authority on what an expired entry MEANS, and if the two readings ever disagree its is
 # the one that decides the scan. This reads only the dates already written in the policy
-# files, so a date can arrive as notice beforehand instead of a red build after.
+# file, so a date can arrive as notice beforehand instead of a red build after.
 #
-# Extracted from tools/audit for the same two reasons lib/version.sh was extracted from
-# tools/upstream-checker. First, the classification can then be tested directly, without
-# standing up a fixture root and mocking a scanner onto PATH for every edge case. Second,
+# Extracted from tools/audit for two reasons. First, the classification can then be tested
+# directly, without standing up a fixture root and mocking a scanner onto PATH for every
+# edge case. Second,
 # the inline version declared nothing `local` and clobbered `d`, `label` and `total` --
 # names tools/audit uses elsewhere. Nothing broke, purely because of the order the calls
 # happened to run in, which is precisely the trap this repo already warns about leaving for
@@ -23,7 +24,8 @@
 # Portable shell, bash 3.2 compatible (README.md#portable-shell).
 
 # day_epoch <YYYY-MM-DD> — that date at midnight UTC, in epoch seconds. GNU date first,
-# BSD/macOS fallback, same shape as tools/upstream-checker's epoch_of. Both forms are
+# BSD/macOS fallback, the shape tools/upstream-checker's epoch_of also used before that
+# script was retired on 2026-08-28. Both forms are
 # handed an explicit 00:00:00 because BSD `date -j -f %Y-%m-%d` fills the missing time from
 # the current clock, which moves the answer by a day depending on when the audit ran.
 day_epoch() {
@@ -48,19 +50,16 @@ days_until() {
   echo $(( (target - today) / 86400 ))
 }
 
-# expiry_dates_trivy <file> — the exp: date of every entry that carries one.
+# expiry_dates_osv <file> / osv_ignored_count <file> — the two facts about the
+# [[IgnoredVulns]] blocks in osv-scanner.toml, where ignoreUntil is a bare unquoted date.
+#
+# expiry_dates_trivy read the `exp:` dates out of trivy-ignore/*.txt beside these until
+# 2026-08-28. That directory emptied in 52aa8c5, so the function had no file to read and
+# no caller; it is deleted rather than kept warm for a format nothing writes.
 #
 # Undated entries are deliberately NOT emitted. The caller knows the total and derives the
 # undated count from the difference, which is how "how many of these never expire at all"
 # stays answerable instead of quietly reading as zero.
-expiry_dates_trivy() {
-  grep -Ev '^[[:space:]]*(#|$)' "$1" \
-    | grep -oE 'exp:[0-9]{4}-[0-9]{2}-[0-9]{2}' \
-    | sed 's/^exp://'
-}
-
-# expiry_dates_osv <file> / osv_ignored_count <file> — the same two facts for the
-# [[IgnoredVulns]] blocks in osv-scanner.toml, where ignoreUntil is a bare unquoted date.
 expiry_dates_osv() {
   grep -E '^[[:space:]]*ignoreUntil[[:space:]]*=' "$1" \
     | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}'
