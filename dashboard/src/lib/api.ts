@@ -603,32 +603,14 @@ export interface RepoStatus {
   error: string | null;
 }
 
-/**
- * The upstream-dependency audit, as `tools/upstream-checker --json` renders it.
- *
- * `status` mirrors the checker's own per-entry verdict: `ok` clean, `na` release-drift
- * checking declared inapplicable, `warn` a pin/cooldown caution, `fail` a
- * completeness/verdict violation. `na` is its own group rather than a kind of `ok`: it marks
- * an entry nothing checks, which stays worth seeing (`pin_kind` names the shape, and the
- * entry's `tracked_by` note says what governs it instead). `notes` are the checker's own
- * lines, emoji and all — the one source, shared with the human report. `offline` is true when
- * drift/cooldown were skipped (the dashboard poll always is; see the endpoint's README).
- */
-export interface UpstreamEntry {
-  name: string;
-  verdict: string;
-  pin: string;
-  pin_kind: string;
-  url: string;
-  status: 'ok' | 'na' | 'warn' | 'fail';
-  notes: string[];
-}
-export interface UpstreamAudit {
-  manifest: string;
-  offline: boolean;
-  totals: { count: number; ok: number; na: number; warn: number; fail: number };
-  entries: UpstreamEntry[];
-}
+// `UpstreamEntry` / `UpstreamAudit` were here until 2026-08-28, typing the payload of
+// `GET /axon-status/upstreams` for the `/upstreams` page. Both are gone with that endpoint
+// and that route: their `status` field ('ok' | 'na' | 'warn' | 'fail') was
+// `tools/upstream-checker`'s verdict, and PRD Q41 retired the checker.
+//
+// The verdict/pin half is not lost and never came from here: `SelfModel.upstreams` below
+// carries `{name, verdict, pin}` for all 80 manifest entries, read from `upstreams.toml`
+// by `tools/self generate`, and `/self` renders it.
 
 /** How a capability's last backup stands against its own declared thresholds. */
 export type BackupState =
@@ -714,7 +696,6 @@ export const axonStatus = {
       '/axon-status/api/axon-status/host-watch',
       signal ? { signal } : undefined,
     ).then((response) => response.findings),
-  upstreams: () => request<UpstreamAudit>('/axon-status/api/axon-status/upstreams'),
   start: (name: string, signal?: AbortSignal) =>
     request<{ name: string; up: boolean; detail: string }>(
       `/axon-status/api/axon-status/capabilities/${encodeURIComponent(name)}/start`,

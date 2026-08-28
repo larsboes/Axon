@@ -42,45 +42,16 @@ pub(crate) async fn repos_handler() -> Result<Json<Value>, (StatusCode, Json<Val
         .map_err(|e| bad_gateway(format!("tools/repos did not emit JSON: {e}")))
 }
 
-/// The upstream-dependency audit, served for the dashboard's `/upstreams` feed.
-///
-/// Shelled out to `tools/upstream-checker --json`, the same pattern as the registry and
-/// `tools/repos`: `upstreams.toml` and the verdict/pin/cooldown gate over it both already
-/// have exactly one home (README.md#dependency-verdicts-and-provenance), and this process reading the manifest itself
-/// would be a second one. `--offline` because this is a page poll, not the M2 gate — the
-/// online mode makes one GitHub call per entry and would rate-limit an unauthenticated
-/// box; the response carries `offline: true` so the page can say drift was not checked.
-/// `--json` never exits non-zero (a manifest fail is `totals.fail` in the payload), so a
-/// non-success status here is a real tool failure, handled the same way as the siblings.
-pub(crate) async fn upstreams_handler() -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if let Ok(cache) = UPSTREAMS_CACHE.get_or_init(|| Mutex::new(None)).lock() {
-        if let Some((checked_at, response)) = cache.as_ref() {
-            if checked_at.elapsed() < UPSTREAMS_CACHE_TTL {
-                return Ok(Json(response.clone()));
-            }
-        }
-    }
-
-    let root = axon_root().map_err(bad_gateway)?;
-    let out = tokio::process::Command::new(root.join("tools/upstream-checker"))
-        .arg("--json")
-        .arg("--offline")
-        .output()
-        .await
-        .map_err(|e| bad_gateway(format!("could not run tools/upstream-checker: {e}")))?;
-    if !out.status.success() {
-        return Err(bad_gateway(format!(
-            "tools/upstream-checker failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    let response: Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| bad_gateway(format!("tools/upstream-checker did not emit JSON: {e}")))?;
-    if let Ok(mut cache) = UPSTREAMS_CACHE.get_or_init(|| Mutex::new(None)).lock() {
-        *cache = Some((Instant::now(), response.clone()));
-    }
-    Ok(Json(response))
-}
+// `GET /upstreams` lived here until 2026-08-28. It shelled out to
+// `tools/upstream-checker --json --offline` and fed the dashboard's `/upstreams` page a
+// per-entry `ok`/`na`/`warn`/`fail` status. PRD Q41 retired that script, and the status
+// field was the script's verdict — recomputing it here would rebuild in Rust exactly the
+// plumbing the item exists to delete.
+//
+// The doctrine half of that page did not need this endpoint and still does not: `self.json`
+// carries `{name, verdict, pin}` for every entry in `upstreams.toml`, read straight from the
+// manifest by `tools/self generate`, and `/self` below already serves it. What is gone is
+// the enforcement verdict, which Renovate's dependency dashboard now reports on GitHub.
 
 /// The committed self-model, fused with live state at read time.
 ///

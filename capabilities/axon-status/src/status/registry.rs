@@ -252,14 +252,6 @@ pub(crate) fn manifest_key(root: &std::path::Path) -> Option<Vec<(PathBuf, Syste
 pub(crate) type RegistrySnapshot = (Vec<(PathBuf, SystemTime)>, Vec<Service>);
 pub(crate) static REGISTRY_CACHE: OnceLock<Mutex<Option<RegistrySnapshot>>> = OnceLock::new();
 
-// The offline upstream check still starts a shell/Bun process and walks the complete manifest.
-// That is useful work when a maintainer asks for a fresh audit, but wasteful for every visit to
-// a read-only dashboard page. Keep the live API responsive without pretending the cached result
-// is a new audit: the page continues to label this as an offline check, and a restart or five
-// minutes is enough to pick up ordinary manifest maintenance.
-pub(crate) const UPSTREAMS_CACHE_TTL: Duration = Duration::from_secs(300);
-pub(crate) static UPSTREAMS_CACHE: OnceLock<Mutex<Option<(Instant, Value)>>> = OnceLock::new();
-
 /// The enabled set, from the manifests, memoized against their mtimes.
 ///
 /// The shell call underneath costs ~440ms on this machine — `tools/lib/toml.sh` forks a

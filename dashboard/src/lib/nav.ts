@@ -63,7 +63,6 @@ export const UTILITY_NAV: NavItem[] = [
   { href: "/projects", label: "Projects", icon: "graduation" },
   { href: "/systems", label: "Systems", icon: "server", capability: "axon-status" },
   { href: "/capabilities", label: "Capabilities", icon: "boxes", capability: "axon-status" },
-  { href: "/upstreams", label: "Upstreams", icon: "git-branch", capability: "axon-status" },
   { href: "/self", label: "Self-model", icon: "compass", capability: "axon-status" },
 ];
 

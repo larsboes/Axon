@@ -50,14 +50,12 @@ capability that refused this process would otherwise be reported as not running.
 - `GET /api/axon-status/capabilities` — the registry plus live state: kind, scope,
   port, `requires`, `up` (`null` when nothing is declared to poll, meaning unknown
   rather than down) and `panel_url` for a capability that serves its own UI.
-- `GET /api/axon-status/upstreams` — the dependency audit for the dashboard's
-  `/upstreams` feed: `{manifest, offline, totals: {count, ok, warn, fail}, entries:
-  [{name, verdict, pin, url, status, notes}]}`. Shells out to `tools/upstream-checker
-  --json --offline` (same pattern as the registry and `tools/repos` — the manifest and
-  its gate keep their one home, README.md#dependency-verdicts-and-provenance). `offline` is always true here: this
-  is a page poll, not the M2 gate, so it skips the per-entry GitHub call that would
-  rate-limit an unauthenticated box, and `notes` therefore carries the completeness/pin
-  findings but not live drift/cooldown.
+There was a `GET /api/axon-status/upstreams` here until 2026-08-28. It shelled out to
+`tools/upstream-checker --json --offline` and served a per-entry `ok`/`na`/`warn`/`fail`
+status. PRD Q41 retired that script; the status field *was* its verdict, so recomputing it
+in this process would rebuild the plumbing the item deleted. Renovate reports drift on
+GitHub now, and the verdict/pin half of that feed was never the checker's anyway —
+`/self` already carries it, straight from `upstreams.toml` via `tools/self generate`.
 - `POST /api/axon-status/capabilities/:name/start` — bring one up (via
   `service-runner.sh resume`, which also lifts a maintenance hold)
 - `POST /api/axon-status/capabilities/:name/stop` — take one down and hold it
