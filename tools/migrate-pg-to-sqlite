@@ -66,7 +66,12 @@ fail() { echo "migrate-pg-to-sqlite: $*" >&2; exit 1; }
 # is a one-shot copy of everything, so an unrecognised schema is either new data nobody told
 # this tool about, or a name that has to be dismissed deliberately.
 SCHEMAS="calendar comms finance places punctuality scouting tasks transit trips"
-TEST_SCHEMA_PATTERN='^tasks_test_completion_[0-9]+$'
+# Dismissed in writing, 2026-08-28, against the live instance: eight families of leaked
+# per-pid schemas from the old tasks Postgres test suite (completion, data_class, manual,
+# one_per_source, ordering, patch_due, ping, repromote — the 270 test tables the 2026-08-26
+# census counted). Each is a fixture the suite failed to drop; none holds production data.
+# The anchor on tasks_test_ keeps a real capability schema from ever matching.
+TEST_SCHEMA_PATTERN='^tasks_test_[a-z_]+_[0-9]+$'
 
 # Every column type in those 46 tables, measured the same day. `text` 356, `timestamp with
 # time zone` 35, `bigint` 20, `double precision` 19, `integer` 17, `smallint` 7, `boolean` 4,
