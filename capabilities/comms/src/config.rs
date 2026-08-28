@@ -418,7 +418,15 @@ impl Config {
             .and_then(parse_quiet_hours);
         let inference = InferenceConfig::load(axon_config::overlay_config);
         let keeper_export_dir = file.keeper_export_dir.map(|p| expand_tilde(&p));
-        let obsidian_root = file.obsidian.map(|o| expand_tilde(&o.root));
+        // An empty root reads as "not configured", not as the current directory.
+        // `comms.config.example.json` ships every optional string blank, so a copied
+        // template must leave the bridge off rather than log a failed export after
+        // every mutation.
+        let obsidian_root = file
+            .obsidian
+            .map(|o| o.root)
+            .filter(|root| !root.trim().is_empty())
+            .map(|root| expand_tilde(&root));
         let mut relevance = file.relevance.unwrap_or_default();
         relevance.profile_paths = relevance
             .profile_paths
