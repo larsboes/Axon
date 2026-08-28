@@ -217,21 +217,6 @@ export const VOCABULARY = {
     { symbol: "KPST", canonical: "KEYSTONE-SHORT-BOND", unitCents: 10_240 },
   ],
 
-  /** Task titles. Written to read like somebody's actual list — a demo whose tasks are
-   *  "Task 1, Task 2" shows the layout and hides the product. */
-  tasks: [
-    "Return the bike light before the warranty lapses",
-    "Book the dentist follow-up",
-    "Renew the residence registration",
-    "Compare electricity tariffs before the fixed term ends",
-    "Send Mara the trip photos",
-    "Cancel the unused storage plan",
-    "Reply to the housing association about the bike shed",
-    "Order replacement filters for the kettle",
-    "Read the two saved papers on retrieval evaluation",
-    "Fix the wobbling shelf in the hallway",
-  ],
-
   /** Calendar entries as {title, kind, hours}. `kind` matches the calendar capability's
    *  own vocabulary, so the demo exercises its real colour and feasibility rules. */
   events: [

@@ -388,8 +388,7 @@ fn keep_mail(store: &Store, cfg: &Config, id: &str, status: &str) {
 /// What is deliberately NOT in here is the mail. No snippet, no body, no re-fetch — the snippet
 /// is the first couple of hundred characters of the message, which is exactly the raw mail this
 /// lane exists to avoid keeping a copy of. Subject, sender and date are carried because they are
-/// what makes the note findable, and because they are the same fields the tasks promotion edge
-/// already carries. Every one comes from the STORED row, so for a Private mail they are the
+/// what makes the note findable. Every one comes from the STORED row, so for a Private mail they are the
 /// redacted form the intake gate produced, and nothing here can reconstruct what it removed.
 fn export_mail_keeper(
     item: &comms::store::TriageItem,
@@ -413,8 +412,9 @@ fn export_mail_keeper(
         ));
     }
 
-    // The one link back. Same shape the tasks capability already uses for a promoted mail, so a
-    // task and a note about one thread point at the same thread.
+    // The one link back: the Gmail permalink, so the note and the thread it distils point at
+    // the same place. This was also the shape the retired `tasks` capability keyed a promoted
+    // mail on (PRD Q48), which is why it is a derived permalink rather than a stored column.
     let permalink = format!("https://mail.google.com/mail/u/0/#all/{}", item.id);
     let mut body = format!("# {subject}\n\n");
     if let Some(from) = &item.from_addr {

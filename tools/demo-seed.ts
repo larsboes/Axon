@@ -13,7 +13,7 @@
 // data. Both checks are cheap; the failure they prevent is not recoverable by re-running.
 //
 //   tools/demo-seed              seed every capability with a `writes` in demo.toml
-//   tools/demo-seed --only tasks seed one
+//   tools/demo-seed --only trips seed one
 //   tools/demo-seed --force      skip the not-empty refusal (never the overlay check)
 
 import { execFileSync } from "node:child_process";
@@ -43,7 +43,7 @@ interface Ctx {
   rng: Rng;
   anchor: string;
   manifest: DemoManifest;
-  /** Resolve a browser path to a live URL, e.g. `/tasks/api/tasks`. */
+  /** Resolve a browser path to a live URL, e.g. `/trips/api/plans`. */
   url: (browserPath: string) => string;
 }
 
@@ -104,28 +104,6 @@ async function waitFor(url: string, seconds = 60): Promise<void> {
 // what it created, so a CI run says what the published demo actually contains.
 
 const SEEDERS: Record<string, (ctx: Ctx) => Promise<string>> = {
-  async tasks(ctx) {
-    const url = ctx.url("/tasks/api/tasks");
-    const titles = ctx.rng.sample(VOCABULARY.tasks, 9);
-    let done = 0;
-    for (const [index, title] of titles.entries()) {
-      // A third of them dated, spread either side of the anchor: the demo has to show an
-      // overdue row, because "what is late" is the question the counts endpoint exists for.
-      const due = ctx.rng.bool(0.55) ? addDays(ctx.anchor, ctx.rng.int(-9, 21)) : null;
-      const created = await post<{ task: { id: string } }>(url, {
-        title,
-        due,
-        note: ctx.rng.bool(0.3) ? "Picked up from last week's review." : null,
-      });
-      // Close a couple, so the demo's done filter is not an empty list.
-      if (index % 4 === 3) {
-        await patch(`${url}/${created.task.id}`, { status: "done" });
-        done++;
-      }
-    }
-    return `${titles.length} tasks (${done} completed)`;
-  },
-
   async calendar(ctx) {
     const entries = ctx.url("/calendar/api/entries");
     const rhythms = ctx.url("/calendar/api/rhythms");
@@ -578,11 +556,16 @@ async function refuseIfPopulated(cap: string, url: string, force: boolean): Prom
   } catch {
     return; // Unreachable is the runner's problem, reported by waitFor, not this check's.
   }
+  // A bare array, or the one-key envelope every list endpoint here uses ({plans: []}).
+  // The key was hardcoded to `tasks` until that capability retired (PRD Q48); naming any
+  // single capability's key was always the accident, because this guard is about "did
+  // anything answer with rows", not about which capability answered.
   const rows = Array.isArray(body)
     ? body.length
-    : Array.isArray((body as any)?.tasks)
-      ? (body as any).tasks.length
-      : 0;
+    : (Object.values((body ?? {}) as Record<string, unknown>).find(Array.isArray) as
+        | unknown[]
+        | undefined
+      )?.length ?? 0;
   if (rows === 0) return;
   if (force) {
     console.warn(`demo-seed: ${cap} already holds ${rows} rows — seeding anyway (--force)`);
@@ -629,7 +612,7 @@ async function main(): Promise<void> {
 
   for (const cap of seeded) {
     // A fresh Rng per capability, seeded from the manifest seed plus the capability name.
-    // Seeding only tasks then has to produce the same tasks as seeding everything — with one
+    // Seeding only trips then has to produce the same trips as seeding everything — with one
     // shared generator it would not, and a `--only` run would silently differ from CI's.
     const ctx: Ctx = {
       rng: new Rng(`${manifest.seed}:${cap.name}`),

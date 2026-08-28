@@ -31,7 +31,11 @@ calendar entry before this contract existed.
 
 ## Consumers
 
-`comms` (feed, mail), `calendar` (entries), and `tasks` (inherited data class).
+`comms` (feed, mail) and `calendar` (entries).
+
+`tasks` was the third until PRD Q48 (2026-08-27) retired it. It inherited a data class
+rather than deriving one, which is still the shape this crate is for; the capability that
+demonstrated it is gone.
 
 Consumers declare the workspace path dependency in Cargo. They share one Rust type, while
 capability-to-capability communication remains the serialized JSON contract;

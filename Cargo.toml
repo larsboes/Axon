@@ -8,7 +8,6 @@ members = [
     "capabilities/punctuality",
     "capabilities/scouting",
     "capabilities/soundscape",
-    "capabilities/tasks",
     "capabilities/transit",
     "capabilities/trips",
     "capabilities/vault",

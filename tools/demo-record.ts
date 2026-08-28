@@ -43,7 +43,7 @@ interface Recorded {
 function countRows(body: unknown): number | null {
   if (Array.isArray(body)) return body.length;
   if (body && typeof body === "object") {
-    // The one-key envelope every list endpoint here uses: {tasks: []}, {backups: []}.
+    // The one-key envelope every list endpoint here uses: {plans: []}, {backups: []}.
     const values = Object.values(body as Record<string, unknown>);
     const arrays = values.filter(Array.isArray);
     if (arrays.length === 1 && values.length <= 3) return (arrays[0] as unknown[]).length;

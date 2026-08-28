@@ -204,9 +204,7 @@
       "kind": "capability",
       "service": {
         "kind": "process",
-        "requires": [
-          "tasks"
-        ]
+        "requires": []
       },
       "code": {
         "files": 1,
@@ -412,19 +410,6 @@
       }
     },
     {
-      "name": "tasks",
-      "kind": "capability",
-      "service": {
-        "kind": "process",
-        "requires": [],
-        "port": "8089"
-      },
-      "code": {
-        "files": 6,
-        "nodes": 62
-      }
-    },
-    {
       "name": "tools",
       "kind": "spine",
       "code": {
@@ -477,6 +462,11 @@
     {
       "name": "vault",
       "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [],
+        "port": "8094"
+      },
       "code": {
         "files": 7,
         "nodes": 48
@@ -517,7 +507,27 @@
     },
     {
       "from": "axon-status",
+      "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/axon-status/Cargo.toml"
+      ]
+    },
+    {
+      "from": "axon-status",
       "to": "axon-server",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/axon-status/Cargo.toml"
+      ]
+    },
+    {
+      "from": "axon-status",
+      "to": "axon-store",
       "kinds": [
         "cargo-dep"
       ],
@@ -896,56 +906,6 @@
       ]
     },
     {
-      "from": "tasks",
-      "to": "axon-config",
-      "kinds": [
-        "cargo-dep"
-      ],
-      "evidence": [
-        "capabilities/tasks/Cargo.toml"
-      ]
-    },
-    {
-      "from": "tasks",
-      "to": "axon-server",
-      "kinds": [
-        "cargo-dep"
-      ],
-      "evidence": [
-        "capabilities/tasks/Cargo.toml"
-      ]
-    },
-    {
-      "from": "tasks",
-      "to": "axon-store",
-      "kinds": [
-        "cargo-dep"
-      ],
-      "evidence": [
-        "capabilities/tasks/Cargo.toml"
-      ]
-    },
-    {
-      "from": "tasks",
-      "to": "content-item",
-      "kinds": [
-        "cargo-dep"
-      ],
-      "evidence": [
-        "capabilities/tasks/Cargo.toml"
-      ]
-    },
-    {
-      "from": "tasks",
-      "to": "route-manifest",
-      "kinds": [
-        "cargo-dep"
-      ],
-      "evidence": [
-        "capabilities/tasks/Cargo.toml"
-      ]
-    },
-    {
       "from": "transit",
       "to": "axon-config",
       "kinds": [
@@ -1057,7 +1017,27 @@
     },
     {
       "from": "vault",
+      "to": "axon-server",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/vault/Cargo.toml"
+      ]
+    },
+    {
+      "from": "vault",
       "to": "markdown-root",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/vault/Cargo.toml"
+      ]
+    },
+    {
+      "from": "vault",
+      "to": "route-manifest",
       "kinds": [
         "cargo-dep"
       ],
@@ -1481,6 +1461,12 @@
       "capabilities/lifeos/overlay/RETIRED.md",
       "capabilities/lifeos/overlay/hooks/ProseGate.hook.ts",
       "capabilities/postgres/README.md",
+      "capabilities/tasks/Cargo.toml",
+      "capabilities/tasks/README.md",
+      "capabilities/tasks/src/config.rs",
+      "capabilities/tasks/src/lib.rs",
+      "capabilities/tasks/src/server.rs",
+      "capabilities/tasks/src/store.rs",
       "tools/check-bazel-package-labels.sh",
       "tools/check-rust-crate-roots",
       "tools/check-rust-crate-roots.test.ts",

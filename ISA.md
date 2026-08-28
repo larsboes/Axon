@@ -136,9 +136,11 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
   rather than in Features.
 - **Operator installs past cooldown**, neither a security item: tailscale 1.98.9 →
   1.102.2, xberg 1.0.5 → 1.0.14.
-- **The remaining four database-URL call sites.** calendar, finance, tasks and trips each
+- **The remaining three database-URL call sites.** calendar, finance and trips each
   hand-roll the same `std::env::var("AXON_<CAP>_DATABASE_URL")` two-liner that
-  `axon_config::database_url_override` now owns. They work, so this is deduplication rather
+  `axon_config::database_url_override` now owns. Four until 2026-08-27, when PRD Q48
+  retired `tasks` and deleted its copy — the entry below still says four because that is
+  what was true when it was written. They work, so this is deduplication rather
   than a defect, and the repo's rule is that shared logic moves into the lib. Not swept in
   the run that added the helper, deliberately: that run was about the demo.
 

@@ -1,6 +1,6 @@
 //! Finance's database-backed suite, kept out of CI's hermetic run by the name every
 //! test in it carries: `db_tests::`. That is the one selector the database-backed
-//! modules in comms, places, scouting, tasks and transit are also named by, so CI names
+//! modules in comms, places, scouting and transit are also named by, so CI names
 //! a filter and never a list of capabilities — see `capabilities/scouting/src/store.rs`.
 //! It was `postgres_tests` until PRD Q45 retired the server; a temp file per test is
 //! the whole fixture now.

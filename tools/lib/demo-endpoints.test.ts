@@ -13,7 +13,7 @@ import { DEMO_OVERLAY, fixtureFile, loadManifest, registry, resolvePath, routes,
  *  capability with a legacy unstripped prefix. */
 const REGISTRY: RegistryEntry[] = [
   { name: "finance", kind: "process", scope: "capability", port: "8090", health_path: "/health", ready_path: "/ready", proxy_api_only: "true", proxy_extra: [] },
-  { name: "tasks", kind: "process", scope: "capability", port: "8089", health_path: "/health", ready_path: "", proxy_api_only: "", proxy_extra: [] },
+  { name: "vault", kind: "process", scope: "capability", port: "8094", health_path: "/health", ready_path: "/ready", proxy_api_only: "", proxy_extra: [] },
   { name: "transit", kind: "process", scope: "capability", port: "3000", health_path: "/health", ready_path: "", proxy_api_only: "", proxy_extra: ["/api"] },
   { name: "tools", kind: "process", scope: "spine", port: "", health_path: "", ready_path: "", proxy_api_only: "", proxy_extra: [] },
   { name: "store", kind: "data", scope: "capability", port: "", health_path: "", ready_path: "", proxy_api_only: "", proxy_extra: [] },
@@ -40,12 +40,12 @@ describe("resolvePath", () => {
       capability: "finance",
       url: "http://127.0.0.1:8090/api/dashboard",
     });
-    expect(resolvePath("/tasks/api/counts", TABLE).url).toBe("http://127.0.0.1:8089/api/counts");
+    expect(resolvePath("/vault/api/tasks", TABLE).url).toBe("http://127.0.0.1:8094/api/tasks");
   });
 
   test("keeps a query string intact", () => {
-    expect(resolvePath("/tasks/api/tasks?status=open", TABLE).url).toBe(
-      "http://127.0.0.1:8089/api/tasks?status=open",
+    expect(resolvePath("/vault/api/tasks?status=open", TABLE).url).toBe(
+      "http://127.0.0.1:8094/api/tasks?status=open",
     );
   });
 
@@ -64,7 +64,7 @@ describe("resolvePath", () => {
   });
 
   test("does not treat a longer capability name as a prefix match", () => {
-    expect(() => resolvePath("/tasksomething/api", TABLE)).toThrow();
+    expect(() => resolvePath("/vaultwarden/api", TABLE)).toThrow();
   });
 });
 
@@ -80,8 +80,8 @@ describe("fixtureFile", () => {
   });
 
   test("gives two different queries two different files", () => {
-    expect(fixtureFile("/tasks/api/tasks?status=open")).not.toBe(
-      fixtureFile("/tasks/api/tasks?status=done"),
+    expect(fixtureFile("/vault/api/tasks?status=open")).not.toBe(
+      fixtureFile("/vault/api/tasks?status=done"),
     );
   });
 

@@ -200,13 +200,13 @@ mod backup_tests {
 
     #[test]
     fn readiness_is_preferred_over_liveness() {
-        let mut c = cap("tasks");
-        c.port = "8089".into();
+        let mut c = cap("vault");
+        c.port = "8094".into();
         c.health_path = "/health".into();
         c.ready_path = "/ready".into();
         assert_eq!(
             c.readiness_url().as_deref(),
-            Some("http://127.0.0.1:8089/ready")
+            Some("http://127.0.0.1:8094/ready")
         );
     }
 
