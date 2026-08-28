@@ -1,0 +1,188 @@
+// renovate.json5 — the freshness half of Axon's dependency doctrine, run by standard tooling.
+//
+// PRD Q41 (2026-08-25): "replace the custom plumbing with standard tooling; keep the
+// doctrine." What this file replaces is tools/upstream-checker plus its bash-3.2 semver
+// comparator, its GHSA fetcher and the upstream-watch.yml workflow that drove them — a
+// homegrown Dependabot that Axon owned, tested and had to keep correct. Renovate answers
+// the same question ("is a newer release out?") against ecosystems it already understands.
+//
+// WHAT DID NOT MOVE: upstreams.toml. It stays the doctrine file — verdict, why, license,
+// audit note, "no entry, no entry" — and no bot writes those. Renovate reports that a
+// release exists; a human still decides whether Axon adopts it and writes down why
+// (README.md#dependency-verdicts-and-provenance).
+//
+// THIS FILE DOES NOTHING UNTIL THE RENOVATE GITHUB APP IS INSTALLED on the repository
+// (https://github.com/apps/renovate). Committing config is not enabling a bot. Until the
+// operator installs the App, Axon has no automated freshness check at all — which is an
+// honest gap, not a silent one, and is stated in the README section too.
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: [
+    "config:recommended",
+    // Keeps every `uses:` on a 40-char SHA with the human-readable tag in a trailing
+    // comment — the shape .github/workflows/ already uses by hand. Without this, a newly
+    // added action could arrive tag-pinned and nothing would object.
+    "helpers:pinGitHubActionDigests",
+  ],
+
+  // The dashboard issue is the point, not a side effect: it is the one place that answers
+  // "what is behind?" now that no script does. Everything held for approval below lands
+  // there rather than becoming a pull request nobody asked for.
+  dependencyDashboard: true,
+  dependencyDashboardTitle: "Dependency dashboard — freshness only; verdicts live in upstreams.toml",
+
+  // Weekly, not on every push. A dependency bot that opens pull requests continuously is
+  // one people learn to skim — the same failure axon.toml [audit] warns about for expiry
+  // warnings, and the reason the retired checker deliberately stayed quiet on clean rows.
+  schedule: ["before 6am on monday"],
+  timezone: "UTC",
+
+  // The cooldown, carried over rather than reinvented. axon.toml [upstream]
+  // cooldown_min_days = "7" is the hold a release waits out before Axon adopts it; this is
+  // the same number expressed in the tool that now enforces it. The two must move together
+  // — axon.toml says so at the setting, and capabilities/agentbox still reads that key for
+  // its host-install gate.
+  //
+  // Renovate treats this as a hard hold (it will not raise the update at all until the
+  // release is 7 days old), where the retired checker treated it as a recommendation it
+  // reported. The active-vulnerability carve-out in README.md#pins-and-cooldown therefore
+  // becomes a manual bump, not a bot one — correct, because that carve-out has always
+  // required a human to have read the advisory.
+  minimumReleaseAge: "7 days",
+
+  // Lifecycle hooks stay off at every install boundary. tools/check-bun-install-policy.sh
+  // gates the four places a human or a workflow runs `bun install`; this is the fifth
+  // place, the one where a bot does. ChainDrop is the reason the rule exists — a preinstall
+  // hook that ran before the tree finished resolving.
+  ignoreScripts: true,
+
+  // Exact versions, no ranges. Matches how upstreams.toml records a pin and how the
+  // workflows pin actions by SHA: what is consumed is written down.
+  //
+  // Note for the first run: the workspace crates currently declare loose ranges
+  // (libs/axon-server/Cargo.toml has `axum = "0.7"`, `serde_json = "1"`), so this setting
+  // implies a one-time rewrite of every such range to an exact version. That is a large
+  // diff and it is held behind dependencyDashboardApproval below rather than arriving
+  // unannounced.
+  rangeStrategy: "pin",
+
+  // Small, grouped, reviewable. Five open at once is a review queue; twenty is wallpaper.
+  prConcurrentLimit: 5,
+  prHourlyLimit: 2,
+
+  // Repository commit shape is `scope: lowercase sentence` (observed across git history —
+  // no convention is written down in CONTRIBUTING.md). Conventional-commit prefixes would
+  // be the only ones in the log.
+  semanticCommits: "disabled",
+  commitMessagePrefix: "deps:",
+
+  // Off on purpose. Refreshing a lockfile with no manifest change moves transitive versions
+  // that nothing in this repo decided to move, and Cargo.lock is 141 KB of exactly that.
+  lockFileMaintenance: { enabled: false },
+
+  packageRules: [
+    {
+      description: [
+        "The one-time range->exact-pin migration waits for a click.",
+        "rangeStrategy 'pin' makes Renovate want to rewrite every loose range in the",
+        "workspace on its first run. That is a legitimate change and also a very large",
+        "one, so it is listed on the dashboard and opened only when the operator asks.",
+      ],
+      matchUpdateTypes: ["pin"],
+      dependencyDashboardApproval: true,
+    },
+    {
+      description: "Cargo: one grouped pull request for the workspace, not one per crate.",
+      matchManagers: ["cargo"],
+      groupName: "cargo crates",
+    },
+    {
+      description: [
+        "Frontend: dashboard/ and capabilities/soundscape/ui/, both Bun-locked.",
+        "Grouped because they share a stack and are reviewed by looking at the same two",
+        "lockfiles.",
+      ],
+      matchManagers: ["npm", "bun"],
+      groupName: "frontend packages",
+    },
+    {
+      description: "GitHub Actions: SHA pins across ci.yml, pages.yml and codeql.yml.",
+      matchManagers: ["github-actions"],
+      groupName: "github actions",
+      pinDigests: true,
+    },
+    {
+      description: [
+        "upstreams.toml is documentation, so nothing here is ever auto-written.",
+        "A pin only moves in the same change that rewrites the entry's `why` with the",
+        "audit behind it — that is the rule the manifest header states, and a bot cannot",
+        "satisfy it. These land on the dashboard as 'a release exists', which is the whole",
+        "job the retired tools/upstream-checker did.",
+      ],
+      matchManagers: ["custom.regex"],
+      matchFileNames: ["upstreams.toml"],
+      dependencyDashboardApproval: true,
+      groupName: "upstreams.toml pins (report only)",
+    },
+    {
+      description: "The Bun the workflows run, which is not the same thing as a Bun package.",
+      matchManagers: ["custom.regex"],
+      matchFileNames: [".github/workflows/ci.yml", ".github/workflows/pages.yml"],
+      groupName: "bun runtime (CI)",
+    },
+  ],
+
+  customManagers: [
+    {
+      customType: "regex",
+      description: [
+        "upstreams.toml pins that are a plain GitHub release tag.",
+        "",
+        "Measured against the manifest on 2026-08-28: 80 entries, of which this matches 24.",
+        "The other 56 are deliberate, not oversights —",
+        "  23  pin = \"\" — nothing consumed yet, so there is no version to watch;",
+        "  19  carry pin_kind (commit/image/monorepo/hosted/dataset) — the manifest header",
+        "      already says a release tag cannot describe these, and each declares",
+        "      tracked_by instead;",
+        "   7  are not GitHub URLs;",
+        "   6  carry installed_probe — the pin means 'what this host has installed', and",
+        "      bumping it ahead of the machine is the exact failure the container entry",
+        "      records catching (upstreams.toml, Axon#54). A bot must not touch these;",
+        "   1  is vaultwarden, whose pin '1.37.0-alpine' is an image tag rather than a",
+        "      release tag; the trailing '-alpine' fails the anchored pattern below, which",
+        "      is the wanted outcome.",
+        "",
+        "The pattern relies on the manifest's field order, which is uniform: url, verdict,",
+        "license, pin, then either why (matched) or pin_kind/installed_probe (not matched).",
+        "Requiring `why` on the line after `pin` is what excludes the two opt-out shapes",
+        "without a negative lookahead, which Renovate's RE2 engine does not support.",
+      ],
+      managerFilePatterns: ["upstreams.toml"],
+      matchStrings: [
+        "\\[(?<depName>[a-z0-9][a-z0-9._-]*)\\]\\nurl = \"https://github\\.com/(?<packageName>[^/\"\\n]+/[^/\"\\n]+)\"\\nverdict = \"[^\"\\n]*\"\\nlicense = \"[^\"\\n]*\"\\npin = \"(?<currentValue>v?\\d+(?:\\.\\d+)+)\"[^\\n]*\\nwhy = ",
+      ],
+      datasourceTemplate: "github-releases",
+      // loose, not semver: the matched pins include calendar versions with a zero-padded
+      // month (pi-hole's "2026.07.2"), which semver rejects outright.
+      versioningTemplate: "loose",
+    },
+    {
+      customType: "regex",
+      description: [
+        "BUN_VERSION, the Bun the workflows install via oven-sh/setup-bun.",
+        "Declared once per workflow as an env and referenced by every job in it, so this",
+        "is the only place the number appears. tools/check-bun-pin.sh is what keeps it",
+        "agreeing with the rest of the repo.",
+      ],
+      managerFilePatterns: [".github/workflows/ci.yml", ".github/workflows/pages.yml"],
+      matchStrings: ["BUN_VERSION: \"(?<currentValue>[^\"\\n]+)\""],
+      depNameTemplate: "oven-sh/bun",
+      datasourceTemplate: "github-releases",
+      // Bun tags releases `bun-v1.4.0` (verified against the GitHub API, 2026-08-28), so
+      // the tag needs unwrapping before it can be compared to a bare "1.3.14".
+      extractVersionTemplate: "^bun-v(?<version>.+)$",
+      versioningTemplate: "semver",
+    },
+  ],
+}
