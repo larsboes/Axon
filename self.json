@@ -85,6 +85,10 @@
       }
     },
     {
+      "name": "candidate-fingerprint",
+      "kind": "lib"
+    },
+    {
       "name": "cognitive-load",
       "kind": "pack",
       "code": {
@@ -417,8 +421,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 133,
-        "nodes": 1113
+        "files": 131,
+        "nodes": 1097
       }
     },
     {
@@ -721,6 +725,16 @@
     },
     {
       "from": "finance",
+      "to": "candidate-fingerprint",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/finance/Cargo.toml"
+      ]
+    },
+    {
+      "from": "finance",
       "to": "markdown-root",
       "kinds": [
         "cargo-dep"
@@ -762,6 +776,16 @@
     {
       "from": "places",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/places/Cargo.toml"
+      ]
+    },
+    {
+      "from": "places",
+      "to": "candidate-fingerprint",
       "kinds": [
         "cargo-dep"
       ],
@@ -1173,7 +1197,7 @@
     },
     {
       "name": "hledger",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "1.52.1"
     },
     {
@@ -1481,6 +1505,8 @@
       "tools/advisories.test.sh",
       "tools/installed-probe.test.sh",
       "tools/lib/advisories.sh",
+      "tools/migrate-pg-to-sqlite",
+      "tools/migrate-pg-to-sqlite.test.sh",
       "tools/upstream-checker",
       "tools/upstream-checker.test.sh"
     ],
