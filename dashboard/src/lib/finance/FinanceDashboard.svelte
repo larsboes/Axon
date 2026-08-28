@@ -16,7 +16,7 @@
   import { exactMoney } from "$lib/finance/money";
   import { finance, type FinanceDashboard } from "$lib/api";
 
-  type Mode = "overview" | "planning" | "budget" | "transactions";
+  type Mode = "overview" | "planning" | "transactions";
   type ReviewTarget = "overview" | "transactions" | "subscriptions";
   let {
     mode,
@@ -154,7 +154,6 @@
     <span>Reimbursements <strong>{money(data.summary.reimbursement_received_cents)}</strong></span>
     <span>Shared receivables <strong>{money(outstandingShared)}</strong></span>
     <span>Savings rate <strong>{data.summary.savings_rate_percent === null ? "—" : `${data.summary.savings_rate_percent.toFixed(1)}%`}</strong></span>
-    <span>Budget variance <strong class:negative={data.summary.budget_variance_cents < 0}>{money(data.summary.budget_variance_cents)}</strong></span>
     <span>Reviewed portfolio <strong>{portfolioValue === null ? "—" : `${portfolioLowerBound ? "≥ " : ""}${exactMoney(portfolioValue.value.mantissa, portfolioValue.value.scale, portfolioValue.currency)}`}</strong></span>
   </section>
 
@@ -244,19 +243,6 @@
   </section>
 {:else if mode === "planning"}
   <PlanningPanel {data} {onnavigate} />
-{:else if mode === "budget"}
-  <section class="panel budget">
-    <div class="panel-heading"><div><h2>Budget against actual</h2><p>Variance is budget minus spending for the selected period.</p></div><strong>{money(data.summary.budget_variance_cents)}</strong></div>
-    {#if data.budgets.length}
-      {#each data.budgets as row (row.account)}
-        <article>
-          <div><strong>{short(row.account)}</strong><span>{money(row.actual_cents)} of {money(row.budget_cents)}</span></div>
-          <div class="track"><span class:over={row.actual_cents > row.budget_cents} style:width={`${Math.min(100, row.budget_cents > 0 ? row.actual_cents / row.budget_cents * 100 : 0)}%`}></span></div>
-          <strong class:negative={row.variance_cents < 0}>{money(row.variance_cents)}</strong>
-        </article>
-      {/each}
-    {:else}<p class="muted">No budget targets configured in the private Finance config.</p>{/if}
-  </section>
 {:else}
   <CategorizationReview {data} {start} {end} {account} onchanged={load} />
   <SpendingContextReview {data} {start} {end} {account} {category} onchanged={load} />
@@ -325,15 +311,8 @@
   .commitment-list small, .commitment-list span { color: var(--muted, #888); }
   .commitment-list article > strong { font-variant-numeric: tabular-nums; text-align: right; }
   .commitment-list article.inactive { opacity: .62; }
-  .budget article { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 2fr) 7rem; gap: 1rem; align-items: center; padding: .75rem 0; border-top: 1px solid var(--border, #333); font-size: .78rem; }
-  .budget article > div:first-child { display: flex; justify-content: space-between; gap: 1rem; }
-  .budget article span { color: var(--muted, #888); }
-  .budget article > strong { text-align: right; }
-  .track { height: 7px; border-radius: 4px; background: color-mix(in srgb, currentColor 10%, transparent); overflow: hidden; }
-  .track span { display: block; height: 100%; background: var(--primary); }
-  .track span.over { background: var(--danger, #b44); }
   .error { display: flex; align-items: center; gap: .35rem; }
   .muted { color: var(--muted, #888); }
-  @media (max-width: 850px) { button.rebuild { margin-left: 0; } .budget article, .commitment-list article { grid-template-columns: 1fr; gap: .4rem; } .budget article > strong, .commitment-list article > strong { text-align: left; } }
+  @media (max-width: 850px) { button.rebuild { margin-left: 0; } .commitment-list article { grid-template-columns: 1fr; gap: .4rem; } .commitment-list article > strong { text-align: left; } }
   @media (max-width: 600px) { .panel-heading, .flow-controls, .flow-note { align-items: start; flex-direction: column; } .trend-row { grid-template-columns: 3.8rem 1fr; } .trend-row > strong { grid-column: 2; text-align: left; } }
 </style>

@@ -2284,8 +2284,6 @@ export interface FinanceDashboard {
     external_cash_inflow_cents: number;
     external_cash_movement_cents: number;
     savings_rate_percent: number | null;
-    budget_cents: number;
-    budget_variance_cents: number;
     currency: string;
   };
   quality: {
@@ -2314,12 +2312,6 @@ export interface FinanceDashboard {
     month: string;
     category: string;
     amount_cents: number;
-  }>;
-  budgets: Array<{
-    account: string;
-    budget_cents: number;
-    actual_cents: number;
-    variance_cents: number;
   }>;
   transactions: FinanceTransaction[];
   sankey: Array<{

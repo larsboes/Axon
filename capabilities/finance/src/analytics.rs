@@ -1,8 +1,16 @@
 //! One normalized projection for every finance view.
 //!
-//! Cards, trends, budgets, the transaction table and Sankey links are derived in
-//! this module. Keeping the arithmetic together makes reconciliation testable and
+//! Cards, trends, the transaction table and Sankey links are derived in this
+//! module. Keeping the arithmetic together makes reconciliation testable and
 //! prevents the UI from growing a second definition of income or spending.
+//!
+//! Budget targets stood here until 2026-08-28 (PRD Q50). `BudgetTarget`,
+//! `BudgetRow`, the per-account variance loop and the two `Summary` budget fields
+//! were fed from `budgets` in the private Finance config, and nothing ever set it:
+//! the live config has no such key and `schemas/finance.json.example` ships it
+//! empty. Every deployment therefore rendered an empty panel and a variance of
+//! zero. Deleted rather than kept warm -- a projection nothing feeds reports a
+//! number that looks measured and is not.
 
 use crate::accounting::JournalTransaction;
 use crate::allocation::{SpendingPurpose, SHARED_RECEIVABLE_ACCOUNT};
@@ -60,18 +68,6 @@ pub struct TransactionRow {
     pub reimbursement_for: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BudgetTarget {
-    pub account: String,
-    pub monthly_cents: i64,
-    #[serde(default = "default_currency")]
-    pub currency: String,
-}
-
-fn default_currency() -> String {
-    "EUR".into()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct AnalyticsFilter {
     pub start: Option<String>,
@@ -93,8 +89,6 @@ pub struct Summary {
     pub external_cash_inflow_cents: i64,
     pub external_cash_movement_cents: i64,
     pub savings_rate_percent: Option<f64>,
-    pub budget_cents: i64,
-    pub budget_variance_cents: i64,
     pub currency: String,
 }
 
@@ -167,14 +161,6 @@ pub struct CategoryTrendPoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct BudgetRow {
-    pub account: String,
-    pub budget_cents: i64,
-    pub actual_cents: i64,
-    pub variance_cents: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SankeyLink {
     pub month: String,
     pub source: String,
@@ -190,7 +176,6 @@ pub struct DashboardProjection {
     pub quality: AnalyticsQuality,
     pub trend: Vec<TrendPoint>,
     pub category_trend: Vec<CategoryTrendPoint>,
-    pub budgets: Vec<BudgetRow>,
     pub transactions: Vec<TransactionRow>,
     pub sankey: Vec<SankeyLink>,
     pub accounts: Vec<String>,
@@ -325,11 +310,7 @@ pub fn project(transactions: &[JournalTransaction], currency: &str) -> Vec<Trans
     rows
 }
 
-pub fn dashboard(
-    rows: &[TransactionRow],
-    budgets: &[BudgetTarget],
-    filter: &AnalyticsFilter,
-) -> DashboardProjection {
+pub fn dashboard(rows: &[TransactionRow], filter: &AnalyticsFilter) -> DashboardProjection {
     let currency = filter.currency.as_deref().unwrap_or("EUR");
     let scoped_rows: Vec<_> = rows
         .iter()
@@ -385,37 +366,6 @@ pub fn dashboard(
     let personal_result_cents = income_cents - personal_spending_cents;
     let external_cash_inflow_cents = income_cash_cents + reimbursement_received_cents;
     let external_cash_movement_cents = external_cash_inflow_cents - gross_cash_outflow_cents;
-    let months = month_count(filter, &transactions);
-
-    let scoped_budgets: Vec<_> = budgets
-        .iter()
-        .filter(|target| target.currency == currency)
-        .collect();
-    let mut budget_rows = Vec::new();
-    for target in &scoped_budgets {
-        let budget_cents = target.monthly_cents.saturating_mul(months as i64);
-        let actual_cents = transactions
-            .iter()
-            .filter(|row| {
-                row.kind == TransactionKind::Expense
-                    && row.category.starts_with(&target.account)
-                    && !scoped_budgets.iter().any(|other| {
-                        other.account.len() > target.account.len()
-                            && row.category.starts_with(&other.account)
-                    })
-            })
-            .map(|row| row.amount_cents)
-            .sum();
-        budget_rows.push(BudgetRow {
-            account: target.account.clone(),
-            budget_cents,
-            actual_cents,
-            variance_cents: budget_cents - actual_cents,
-        });
-    }
-    budget_rows.sort_by(|left, right| left.account.cmp(&right.account));
-    let budget_cents = budget_rows.iter().map(|row| row.budget_cents).sum();
-    let budget_actual_cents = budget_rows.iter().map(|row| row.actual_cents).sum::<i64>();
 
     let mut trend: BTreeMap<String, TrendPoint> = BTreeMap::new();
     let mut category_trend: BTreeMap<(String, String), i64> = BTreeMap::new();
@@ -588,8 +538,6 @@ pub fn dashboard(
             external_cash_movement_cents,
             savings_rate_percent: (income_cents > 0)
                 .then_some(personal_result_cents as f64 / income_cents as f64 * 100.0),
-            budget_cents,
-            budget_variance_cents: budget_cents - budget_actual_cents,
             currency: currency.into(),
         },
         quality,
@@ -602,7 +550,6 @@ pub fn dashboard(
                 amount_cents,
             })
             .collect(),
-        budgets: budget_rows,
         transactions,
         sankey: sankey
             .into_iter()
@@ -788,20 +735,11 @@ mod tests {
     #[test]
     fn one_projection_drives_reconciling_metrics_and_sankey_links() {
         let rows = project(&journal(), "EUR");
-        let view = dashboard(
-            &rows,
-            &[BudgetTarget {
-                account: "expenses:food".into(),
-                monthly_cents: 40_00,
-                currency: "EUR".into(),
-            }],
-            &AnalyticsFilter::default(),
-        );
+        let view = dashboard(&rows, &AnalyticsFilter::default());
         assert_eq!(view.summary.income_cents, 200_000);
         assert_eq!(view.summary.personal_spending_cents, 25_00);
         assert_eq!(view.summary.personal_result_cents, 197_500);
         assert_eq!(view.summary.external_cash_movement_cents, 197_500);
-        assert_eq!(view.summary.budget_variance_cents, 15_00);
         assert_eq!(view.transactions.len(), 2);
         assert_eq!(view.category_trend.len(), 1);
         assert_eq!(view.category_trend[0].month, "2026-08");
@@ -824,7 +762,7 @@ mod tests {
     fn transfers_are_excluded_unless_the_filter_asks_for_them() {
         let rows = project(&journal(), "EUR");
         assert_eq!(
-            dashboard(&rows, &[], &AnalyticsFilter::default())
+            dashboard(&rows, &AnalyticsFilter::default())
                 .transactions
                 .len(),
             2
@@ -833,7 +771,7 @@ mod tests {
             include_transfers: true,
             ..AnalyticsFilter::default()
         };
-        assert_eq!(dashboard(&rows, &[], &filter).transactions.len(), 3);
+        assert_eq!(dashboard(&rows, &filter).transactions.len(), 3);
     }
 
     #[test]
@@ -868,34 +806,9 @@ mod tests {
         assert_eq!(rows[0].kind, TransactionKind::Expense);
         assert_eq!(rows[0].account, "liabilities:card:review");
         assert_eq!(rows[1].kind, TransactionKind::Transfer);
-        let view = dashboard(&rows, &[], &AnalyticsFilter::default());
+        let view = dashboard(&rows, &AnalyticsFilter::default());
         assert_eq!(view.summary.personal_spending_cents, 12_00);
         assert_eq!(view.transactions.len(), 1);
-    }
-
-    #[test]
-    fn nested_budget_targets_allocate_actuals_to_the_most_specific_target() {
-        let rows = project(&journal(), "EUR");
-        let view = dashboard(
-            &rows,
-            &[
-                BudgetTarget {
-                    account: "expenses".into(),
-                    monthly_cents: 40_00,
-                    currency: "EUR".into(),
-                },
-                BudgetTarget {
-                    account: "expenses:food".into(),
-                    monthly_cents: 40_00,
-                    currency: "EUR".into(),
-                },
-            ],
-            &AnalyticsFilter::default(),
-        );
-
-        assert_eq!(view.budgets[0].actual_cents, 0);
-        assert_eq!(view.budgets[1].actual_cents, 25_00);
-        assert_eq!(view.summary.budget_variance_cents, 55_00);
     }
 
     #[test]
@@ -917,7 +830,7 @@ mod tests {
             reimbursement_for: None,
         }];
         assert_eq!(
-            dashboard(&rows, &[], &AnalyticsFilter::default())
+            dashboard(&rows, &AnalyticsFilter::default())
                 .summary
                 .savings_rate_percent,
             None
@@ -959,7 +872,7 @@ mod tests {
         ];
 
         let rows = project(&transactions, "EUR");
-        let view = dashboard(&rows, &[], &AnalyticsFilter::default());
+        let view = dashboard(&rows, &AnalyticsFilter::default());
         assert_eq!(view.summary.personal_spending_cents, 10_00);
         assert_eq!(view.summary.gross_cash_outflow_cents, 40_00);
         assert_eq!(view.summary.reimbursement_received_cents, 20_00);
@@ -1009,7 +922,7 @@ mod tests {
             rows.iter().map(|row| row.cash_amount_cents).sum::<i64>(),
             10_00
         );
-        let view = dashboard(&rows, &[], &AnalyticsFilter::default());
+        let view = dashboard(&rows, &AnalyticsFilter::default());
         assert_eq!(view.summary.personal_spending_cents, 10_00);
         assert_eq!(view.summary.gross_cash_outflow_cents, 10_00);
         assert_eq!(view.summary.external_cash_movement_cents, -10_00);
@@ -1057,7 +970,7 @@ mod tests {
             ..AnalyticsFilter::default()
         };
 
-        let view = dashboard(&rows, &[], &filter);
+        let view = dashboard(&rows, &filter);
         assert_eq!(view.quality.expense_posting_count, 2);
         assert_eq!(view.quality.categorized_expense_posting_count, 1);
         assert_eq!(view.quality.categorization_count_percent, Some(50.0));

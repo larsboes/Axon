@@ -818,7 +818,6 @@ mod tests {
         let projection = crate::analytics::project(&transactions, "EUR");
         let dashboard = crate::analytics::dashboard(
             &projection,
-            &[],
             &crate::analytics::AnalyticsFilter::default(),
         );
         assert_eq!(dashboard.summary.income_cents, 120_000);

@@ -10,7 +10,6 @@
 //! capability would drop the cross-capability joins places builds its spend layer
 //! on.
 
-use crate::analytics::BudgetTarget;
 use crate::import::CsvMapping;
 use crate::investment::{HoldingsCoverage, InvestmentCsvMapping};
 use crate::planning::PlanningConfig;
@@ -78,7 +77,6 @@ pub struct Config {
     pub journal: Option<PathBuf>,
     pub investment_snapshot: Option<PathBuf>,
     pub balance_snapshot: Option<PathBuf>,
-    pub budgets: Vec<BudgetTarget>,
     pub commitments: Vec<RecurringCommitment>,
     pub csv_mappings: Vec<CsvMappingProfile>,
     pub investment_csv_mappings: Vec<InvestmentCsvMappingProfile>,
@@ -91,8 +89,6 @@ struct FinanceFileConfig {
     journal: Option<String>,
     investment_snapshot: Option<String>,
     balance_snapshot: Option<String>,
-    #[serde(default)]
-    budgets: Vec<BudgetTarget>,
     #[serde(default)]
     commitments: Vec<RecurringCommitment>,
     #[serde(default)]
@@ -141,10 +137,6 @@ impl Config {
                     subscriptions_dir: PathBuf::from(&obsidian.subscriptions_dir),
                 }),
         };
-        let budgets = personal
-            .as_ref()
-            .map(|config| config.budgets.clone())
-            .unwrap_or_default();
         let commitments = personal
             .as_ref()
             .map(|config| config.commitments.clone())
@@ -195,7 +187,6 @@ impl Config {
             journal,
             investment_snapshot,
             balance_snapshot,
-            budgets,
             commitments,
             csv_mappings,
             investment_csv_mappings,

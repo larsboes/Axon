@@ -14,7 +14,7 @@ use tower_http::cors::CorsLayer;
 
 use finance::accounting::AccountingEngine;
 use finance::allocation::{self, ExpenseAllocation, ReimbursementLink, SHARED_RECEIVABLE_ACCOUNT};
-use finance::analytics::{self, AnalyticsFilter, BudgetTarget};
+use finance::analytics::{self, AnalyticsFilter};
 use finance::balance::{self, ManualBalanceSnapshot, ManualBalanceUpdate, TrackedNetWorth};
 use finance::config::{
     Config, CsvMappingProfile, InvestmentCsvMappingProfile, ObsidianConfig, RecurringCommitment,
@@ -156,7 +156,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "GET",
         "/api/dashboard",
-        "One reconciled projection for KPIs, trend, budget, transactions, filters and Sankey links.",
+        "One reconciled projection for KPIs, trend, transactions, filters and Sankey links.",
     ),
 ];
 
@@ -177,7 +177,6 @@ struct AppState {
     database_path: Arc<PathBuf>,
     obsidian: Option<ObsidianConfig>,
     journal: Option<std::path::PathBuf>,
-    budgets: Arc<Vec<BudgetTarget>>,
     commitments: Arc<Vec<RecurringCommitment>>,
     planning: Arc<PlanningConfig>,
     csv_mappings: Arc<Vec<CsvMappingProfile>>,
@@ -475,7 +474,6 @@ async fn reconcile_transfer(
         return no_journal();
     };
     let database_path = state.database_path.clone();
-    let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
@@ -551,7 +549,6 @@ async fn reconcile_transfer(
         rebuild_projection(
             &database_path,
             &journal,
-            &budgets,
             investment_snapshot.as_deref(),
         )?;
         Ok(json!({
@@ -581,7 +578,6 @@ async fn allocate_expense(
         return no_journal();
     };
     let database_path = state.database_path.clone();
-    let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
@@ -608,7 +604,6 @@ async fn allocate_expense(
         rebuild_projection(
             &database_path,
             &journal,
-            &budgets,
             investment_snapshot.as_deref(),
         )?;
         Ok(json!({
@@ -637,7 +632,6 @@ async fn link_reimbursement(
         return no_journal();
     };
     let database_path = state.database_path.clone();
-    let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
@@ -699,7 +693,6 @@ async fn link_reimbursement(
         rebuild_projection(
             &database_path,
             &journal,
-            &budgets,
             investment_snapshot.as_deref(),
         )?;
         Ok(json!({
@@ -734,7 +727,6 @@ async fn confirm_candidates_batch(
         );
     }
     let database_path = state.database_path.clone();
-    let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
@@ -796,7 +788,6 @@ async fn confirm_candidates_batch(
         rebuild_projection(
             &database_path,
             &journal,
-            &budgets,
             investment_snapshot.as_deref(),
         )?;
         Ok(json!({
@@ -830,7 +821,6 @@ async fn reclassify_candidates_batch(
         );
     }
     let database_path = state.database_path.clone();
-    let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
@@ -895,7 +885,6 @@ async fn reclassify_candidates_batch(
         rebuild_projection(
             &database_path,
             &journal,
-            &budgets,
             investment_snapshot.as_deref(),
         )?;
         Ok(json!({
@@ -929,7 +918,6 @@ async fn review_candidate(
         return no_journal();
     };
     let database_path = state.database_path.clone();
-    let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let journal_write = state.journal_write.clone();
     let projection_write = state.projection_write.clone();
@@ -1005,7 +993,6 @@ async fn review_candidate(
                 rebuild_projection(
                     &database_path,
                     &journal,
-                    &budgets,
                     investment_snapshot.as_deref(),
                 )?;
                 Ok(json!({
@@ -1110,7 +1097,6 @@ async fn rebuild_ledger(State(state): State<AppState>) -> ApiResponse {
         return no_journal();
     };
     let database_path = state.database_path.clone();
-    let budgets = state.budgets.clone();
     let investment_snapshot = state.investment_snapshot.clone();
     let projection_write = state.projection_write.clone();
     match tokio::task::spawn_blocking(move || {
@@ -1120,7 +1106,6 @@ async fn rebuild_ledger(State(state): State<AppState>) -> ApiResponse {
         rebuild_projection(
             &database_path,
             &journal,
-            &budgets,
             investment_snapshot.as_deref(),
         )
     })
@@ -1138,18 +1123,17 @@ async fn rebuild_ledger(State(state): State<AppState>) -> ApiResponse {
 fn rebuild_projection(
     database_path: &std::path::Path,
     journal: &std::path::Path,
-    budgets: &[BudgetTarget],
     investment_snapshot: Option<&std::path::Path>,
 ) -> Result<usize, String> {
     let engine = JournalEngine::new(journal);
     engine.check().map_err(|error| error.to_string())?;
     let transactions = engine.transactions().map_err(|error| error.to_string())?;
-    let mut currencies = std::collections::BTreeSet::from(["EUR".to_string()]);
-    currencies.extend(budgets.iter().map(|budget| budget.currency.clone()));
-    let rows: Vec<_> = currencies
-        .iter()
-        .flat_map(|currency| analytics::project(&transactions, currency))
-        .collect();
+    // EUR, and only EUR. Budget targets were the one input that could widen this
+    // set, and they were never configured anywhere (PRD Q50, 2026-08-28); the set
+    // they widened was already `{"EUR"}` on every deployment. Stating the single
+    // currency outright is the same projection with the pretence removed -- a
+    // second currency needs a real source, not a config key nothing writes.
+    let rows: Vec<_> = analytics::project(&transactions, "EUR");
     let store = FinanceStore::open(database_path).map_err(|error| error.to_string())?;
     store
         .replace_transaction_projection(&rows)
@@ -1177,7 +1161,6 @@ async fn dashboard_projection(
     Query(filter): Query<AnalyticsFilter>,
 ) -> ApiResponse {
     let database_path = state.database_path.clone();
-    let budgets = state.budgets.clone();
     let balance_snapshot_path = state.balance_snapshot.clone();
     let commitments = state.commitments.clone();
     let planning_config = state.planning.clone();
@@ -1191,7 +1174,7 @@ async fn dashboard_projection(
             .transaction_projection()
             .map_err(|error| error.to_string())?;
         let subscriptions = store.list().map_err(|error| error.to_string())?;
-        let mut view = analytics::dashboard(&rows, &budgets, &filter);
+        let mut view = analytics::dashboard(&rows, &filter);
         let investment = store
             .holding_projection()
             .map_err(|error| error.to_string())?;
@@ -1896,7 +1879,6 @@ async fn main() {
         database_path: Arc::new(config.database_path),
         obsidian: config.obsidian,
         journal: config.journal,
-        budgets: Arc::new(config.budgets),
         commitments: Arc::new(config.commitments),
         planning: Arc::new(config.planning),
         csv_mappings: Arc::new(config.csv_mappings),
@@ -2185,7 +2167,6 @@ mod tests {
             database_path: Arc::new(PathBuf::new()),
             obsidian: None,
             journal: None,
-            budgets: Arc::new(Vec::new()),
             commitments: Arc::new(Vec::new()),
             planning: Arc::new(PlanningConfig::default()),
             csv_mappings: Arc::new(Vec::new()),
@@ -2219,7 +2200,6 @@ mod tests {
             database_path: Arc::new(PathBuf::new()),
             obsidian: None,
             journal: None,
-            budgets: Arc::new(Vec::new()),
             commitments: Arc::new(Vec::new()),
             planning: Arc::new(PlanningConfig::default()),
             csv_mappings: Arc::new(vec![profile.clone()]),
@@ -2261,7 +2241,6 @@ mod tests {
             database_path: Arc::new(PathBuf::new()),
             obsidian: None,
             journal: None,
-            budgets: Arc::new(Vec::new()),
             commitments: Arc::new(Vec::new()),
             planning: Arc::new(PlanningConfig::default()),
             csv_mappings: Arc::new(Vec::new()),
@@ -2283,7 +2262,6 @@ mod tests {
             database_path: Arc::new(PathBuf::new()),
             obsidian: None,
             journal: None,
-            budgets: Arc::new(Vec::new()),
             commitments: Arc::new(Vec::new()),
             planning: Arc::new(PlanningConfig::default()),
             csv_mappings: Arc::new(Vec::new()),

@@ -13,7 +13,7 @@
     type WritebackResult,
   } from "$lib/api";
 
-  type View = "overview" | "planning" | "budget" | "transactions" | "subscriptions";
+  type View = "overview" | "planning" | "transactions" | "subscriptions";
   let view = $state<View>("overview");
 
   // The date picker is the point of this page rather than a convenience on it. A
@@ -347,11 +347,11 @@
 <PageHeader
   badge="Finance"
   title="Money, as a system"
-  desc="Cash flow, budgets, reviewed transactions and recurring commitments from one journal-backed projection."
+  desc="Cash flow, reviewed transactions and recurring commitments from one journal-backed projection."
 />
 
 <nav aria-label="Finance views">
-  {#each ["overview", "planning", "budget", "transactions", "subscriptions"] as item (item)}
+  {#each ["overview", "planning", "transactions", "subscriptions"] as item (item)}
     <button class:active={view === item} onclick={() => view = item as View}>{item}</button>
   {/each}
 </nav>
