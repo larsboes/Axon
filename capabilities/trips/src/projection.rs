@@ -306,43 +306,11 @@ fn push_field(out: &mut String, key: &str, value: &str) {
     out.push_str(&format!("{key}: \"{escaped}\"\n"));
 }
 
-/// The plan's title, reduced to something a file system and Obsidian both accept.
-///
-/// The characters removed are the union of what macOS/Windows refuse in a name and
-/// what Obsidian refuses in a note title (`#^[]|`), so the same vault syncs to a
-/// second machine without a file going missing there.
+/// The plan's title as a file name. `markdown_root::projection::file_stem` owns the
+/// rules; the fallback for a plan with no usable title is its id tail, which is not
+/// pretty and is not ambiguous.
 fn file_stem(plan: &TripPlan) -> String {
-    let mut cleaned = String::with_capacity(plan.title.len());
-    let mut last_was_space = false;
-    for ch in plan.title.chars() {
-        let ch = match ch {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '#' | '^' | '[' | ']' => '-',
-            c if c.is_control() => ' ',
-            c => c,
-        };
-        if ch.is_whitespace() {
-            if !last_was_space && !cleaned.is_empty() {
-                cleaned.push(' ');
-            }
-            last_was_space = true;
-        } else {
-            cleaned.push(ch);
-            last_was_space = false;
-        }
-    }
-    // A leading dot hides the file on every Unix host and makes
-    // `markdown_files_recursive` skip it, so the safety copy would exist and never be
-    // seen again.
-    let cleaned = cleaned.trim().trim_start_matches('.').trim().to_string();
-    let truncated: String = cleaned.chars().take(80).collect();
-    let truncated = truncated.trim_end().to_string();
-    if truncated.is_empty() {
-        // A plan with no usable title still needs a file. Its id is not pretty and it
-        // is not ambiguous, which is the right trade for a name nobody chose.
-        id_suffix(&plan.id)
-    } else {
-        truncated
-    }
+    markdown_root::projection::file_stem(&plan.title, &id_suffix(&plan.id))
 }
 
 /// The tail of a plan id — the part that actually differs. Ids are

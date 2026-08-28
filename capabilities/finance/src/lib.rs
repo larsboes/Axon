@@ -21,7 +21,7 @@ pub mod subscription;
 
 pub use accounting::{AccountingEngine, HledgerEngine};
 pub use config::Config;
-pub use obsidian::{scan, seed_from_note, ScannedNote, WriteBack};
+pub use obsidian::{scan, seed_from_note, ScanError, ScannedNote, WriteBack};
 pub use store::FinanceStore;
 pub use subscription::{
     burn_at, burn_by_currency, BillingCycle, Burn, BurnByCurrency, CurrencyBurn, PricePoint, State,

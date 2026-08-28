@@ -1755,11 +1755,19 @@ async fn import_vault(State(state): State<AppState>) -> ApiResponse {
     }
 }
 
-/// Regenerate every note's derived block.
+/// Regenerate every note's derived block, and project the subscriptions that have no
+/// note left to hold one.
 ///
 /// A conflict is reported and counted, never resolved. The response names each
 /// conflicting note so the operator can look at it, which is the entire difference
 /// between this and a machine that overwrites what somebody wrote.
+///
+/// The second half exists because the first half had nothing to write to. Measured
+/// 2026-08-28: all seven live subscriptions point at notes that left the vault on
+/// 2026-08-23 (vault commit `ba60231`, PRD §5.5), so the price and state series — rows
+/// PRD Q47 counts as irreplaceable — were in no file anywhere. Q31 rules that case
+/// directly: a region when a human note exists, a projected file when none does. The
+/// region path is unchanged and wins whenever a note is there.
 async fn writeback(State(state): State<AppState>) -> ApiResponse {
     let Some(vault) = state.obsidian.clone() else {
         return no_vault();
@@ -1767,7 +1775,7 @@ async fn writeback(State(state): State<AppState>) -> ApiResponse {
     let database_path = state.database_path.clone();
     let now = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let notes = scan_notes(&vault)?;
+        let notes = scan_notes_or_empty(&vault)?;
         let store = FinanceStore::open(&database_path).map_err(|e| e.to_string())?;
         let subs = store.list().map_err(|e| e.to_string())?;
 
@@ -1787,12 +1795,19 @@ async fn writeback(State(state): State<AppState>) -> ApiResponse {
             }
         }
 
+        let root =
+            markdown_root::MarkdownRoot::declare(vault.root.clone()).map_err(|e| e.to_string())?;
+        let owned: Vec<String> = notes.iter().map(|n| n.source_path.clone()).collect();
+        let projected =
+            obsidian::export_projections(&root, &subs, &owned, &now).map_err(|e| e.to_string())?;
+
         Ok(json!({
-            "ok": conflicts.is_empty(),
+            "ok": conflicts.is_empty() && projected.refused.is_empty(),
             "written": written,
             "unchanged": unchanged,
             "conflicts": conflicts,
             "not_imported": unimported,
+            "projected": projected,
         }))
     })
     .await
@@ -1807,6 +1822,28 @@ fn scan_notes(vault: &ObsidianConfig) -> Result<Vec<finance::ScannedNote>, Strin
     let root =
         markdown_root::MarkdownRoot::declare(vault.root.clone()).map_err(|e| e.to_string())?;
     obsidian::scan(&root, &vault.subscriptions_dir).map_err(|e| e.to_string())
+}
+
+/// The scan, with a missing subscriptions directory reported as zero notes.
+///
+/// Only for the writeback path, and only for that one error: since 2026-08-23 the
+/// configured directory is not in the vault at all, and failing there would hide the
+/// projection pass, which is the half that does have somewhere to write.
+///
+/// Matched on the error's *type*, never on its text. `ScanError::Read` renders the same
+/// "cannot read" sentence for a note that exists and cannot be opened — swallowing that
+/// one would project a file for a subscription whose note is right there, which is the
+/// duplicate the whole boundary exists to prevent.
+fn scan_notes_or_empty(vault: &ObsidianConfig) -> Result<Vec<finance::ScannedNote>, String> {
+    let root =
+        markdown_root::MarkdownRoot::declare(vault.root.clone()).map_err(|e| e.to_string())?;
+    match obsidian::scan(&root, &vault.subscriptions_dir) {
+        Ok(notes) => Ok(notes),
+        Err(finance::ScanError::Root(markdown_root::RootError::Unreadable { .. })) => {
+            Ok(Vec::new())
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Today as an ISO date, from the wall clock, with no date dependency.

@@ -196,6 +196,49 @@ impl MarkdownRoot {
     }
 }
 
+/// A title reduced to something a file system and Obsidian both accept.
+///
+/// Here rather than in each capability because every projection has the same problem:
+/// a row's human-facing name becomes a file name, and the row does not know what a
+/// file name may contain. `trips` and `finance` had the same twenty lines.
+///
+/// The characters replaced are the union of what macOS and Windows refuse in a name and
+/// what Obsidian refuses in a note title (`#^[]|`), so a vault synced to a second
+/// machine does not lose a file there. A leading dot is stripped as well: it hides the
+/// file on every Unix host and makes [`MarkdownRoot::markdown_files_recursive`] skip
+/// it, which would leave a safety copy that exists and is never seen again.
+///
+/// `fallback` is used when nothing survives, because a row with an unusable title still
+/// needs a file. Pass something that identifies the row.
+pub fn file_stem(title: &str, fallback: &str) -> String {
+    let mut cleaned = String::with_capacity(title.len());
+    let mut last_was_space = false;
+    for ch in title.chars() {
+        let ch = match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '#' | '^' | '[' | ']' => '-',
+            c if c.is_control() => ' ',
+            c => c,
+        };
+        if ch.is_whitespace() {
+            if !last_was_space && !cleaned.is_empty() {
+                cleaned.push(' ');
+            }
+            last_was_space = true;
+        } else {
+            cleaned.push(ch);
+            last_was_space = false;
+        }
+    }
+    let cleaned = cleaned.trim().trim_start_matches('.').trim();
+    let truncated: String = cleaned.chars().take(80).collect();
+    let truncated = truncated.trim_end().to_string();
+    if truncated.is_empty() {
+        fallback.to_string()
+    } else {
+        truncated
+    }
+}
+
 fn write_file(path: &Path, body: &str) -> Result<(), RootError> {
     std::fs::write(path, body).map_err(|e| RootError::Unwritable {
         path: path.to_path_buf(),
