@@ -14,6 +14,7 @@ pub mod balance;
 pub mod config;
 pub mod import;
 pub mod investment;
+pub mod journal;
 pub mod obsidian;
 pub mod planning;
 pub mod store;

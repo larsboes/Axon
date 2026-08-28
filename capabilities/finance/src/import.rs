@@ -895,7 +895,15 @@ fn normalize_text(value: &str) -> String {
 }
 
 pub(crate) fn sanitize_description(value: &str) -> String {
-    normalize_text(value).replace([';', '\n', '\r'], " ")
+    let sanitized = normalize_text(value).replace([';', '\n', '\r'], " ");
+    // A description written directly after the status mark is read as a
+    // transaction CODE when it opens with a parenthesis -- by hledger, and so
+    // by `journal.rs`, which keeps parity with it. The bank text would come
+    // back missing its first word, so the ambiguity is removed at the one place
+    // that writes the line. Measured 2026-08-28: 0 of the 1,339 live
+    // descriptions open with `(`, so this changes no existing entry, and it
+    // never touches the fingerprint, which hashes the unsanitized text.
+    sanitized.trim_start_matches('(').trim_start().to_string()
 }
 
 pub(crate) fn decimal(cents: i64) -> String {
