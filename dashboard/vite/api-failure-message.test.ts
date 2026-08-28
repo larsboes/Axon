@@ -13,7 +13,7 @@ describe('describeFailure', () => {
   });
 
   test('the same holds for a gateway status, which is what a refused upstream can also produce', () => {
-    expect(describeFailure(502, '', '/tasks/api/tasks')).toContain('tasks is not running');
+    expect(describeFailure(502, '', '/vault/api/tasks')).toContain('vault is not running');
     expect(describeFailure(503, '   ', '/trips/api/plans')).toContain('trips is not running');
   });
 

@@ -20,10 +20,10 @@
     type OpportunityStatus,
     type ScoutingOpportunity,
     type ScoutingSource,
-    tasks,
     type Task,
     type TriageItem,
     type TripPlan,
+    vault,
   } from "$lib/api";
   import { entryLink } from "$lib/calendar/types";
   import { capabilities } from "$lib/capabilities.svelte";
@@ -147,6 +147,10 @@
     /// A task outranks the mail it came from: someone already decided this is
     /// owed, where a proposal is still awaiting that decision. Overdue and
     /// due-soon lift it; an undated task sits at the base of the band.
+    ///
+    /// Priority is the vault's own 1/2/3 and it only breaks ties: a note the
+    /// operator marked high is not more urgent than one that is due tomorrow,
+    /// so it is worth less than a single day of the due-date slope.
     for (const task of openTasks) {
       const days = task.due ? daysUntil(task.due) : null;
       const urgency = days === null ? 0 : days < 0 ? 260 : Math.max(0, 240 - days * 8);
@@ -154,7 +158,7 @@
         key: `task:${task.id}`,
         kind: "task",
         task,
-        priority: 620 + urgency,
+        priority: 620 + urgency + (3 - task.priority) * 3,
       });
     }
 
@@ -299,7 +303,7 @@
         ]);
         return { entries, proposals };
       }),
-      readCapability("tasks", () => tasks.list("open")),
+      readCapability("vault", () => vault.tasks("open")),
       readCapability("scouting", async () => {
         const [opportunityResult, sourceResult] = await Promise.all([
           scouting.opportunities(false),
@@ -380,19 +384,11 @@
     }
   }
 
-  async function completeTask(id: string): Promise<void> {
-    if (busy) return;
-    busy = `task:${id}`;
-    actionError = null;
-    try {
-      await tasks.patch(id, { status: "done" });
-      openTasks = openTasks.filter((task) => task.id !== id);
-    } catch (caught) {
-      actionError = message(caught);
-    } finally {
-      busy = null;
-    }
-  }
+  /// Marking a task done is deliberately NOT an action on this page any more.
+  /// PRD Q48 (2026-08-27) moved the Action kind back into the vault, and the
+  /// vault server has no write route: a task is a note a human owns, edited in
+  /// Obsidian. The row links to the note instead, and `completeTask` is gone
+  /// rather than reimplemented against a second writer of the same file.
 
   function mailLink(item: TriageItem): string {
     return link(`/feed/${encodeURIComponent(item.id)}?source=mail`);
@@ -487,9 +483,9 @@
     if (decision.kind === "feed") {
       location.href = `/feed/${encodeURIComponent(decision.entry.id)}`;
     } else if (decision.kind === "task") {
-      // A task's own page does not exist yet, so Enter goes to the mail it came
-      // from — the thing you actually need to read to act on it.
-      if (decision.task.source_url) location.href = decision.task.source_url;
+      // The note IS the task, so Enter opens it in Obsidian — the one place it
+      // can be read in full, edited and marked done.
+      location.href = decision.task.uri;
     } else if (decision.kind === "mail") {
       // The entry route resolves an item from its source alone, so mail opens
       // the same reader feed does — with the Gmail actions its extension adds.
@@ -831,31 +827,21 @@
                         · <span class="private-mark">overdue</span>
                       {/if}
                     {/if}
-                    {#if decision.task.source_capability}
-                      · from {decision.task.source_capability}
+                    {#if decision.task.projects.length > 0}
+                      · {decision.task.projects.join(" · ")}
                     {/if}
                   </span>
-                  {#if decision.task.source_url}
-                    <a class="decision-title" href={decision.task.source_url}>
-                      {decision.task.title}
-                    </a>
-                  {:else}
-                    <span class="decision-title">{decision.task.title}</span>
-                  {/if}
-                  {#if decision.task.note}<p>{decision.task.note}</p>{/if}
+                  <!-- The title links to the note, because the note is the task.
+                       There is no in-page title any more for the same reason
+                       there is no Done button: this row reads a file a human
+                       owns, and Obsidian is where that file gets written. -->
+                  <a class="decision-title" href={decision.task.uri}>
+                    {decision.task.title}
+                  </a>
+                  {#if decision.task.summary}<p>{decision.task.summary}</p>{/if}
                 </div>
                 <div class="decision-actions">
-                  {#if decision.task.source_url}
-                    <a class="btn" href={decision.task.source_url}>Source</a>
-                  {/if}
-                  <button
-                    class="btn action-primary"
-                    type="button"
-                    disabled={busy === decision.key}
-                    onclick={() => void completeTask(decision.task.id)}
-                  >
-                    {#if busy === decision.key}<Icon name="loader" size={13} />{:else}Done{/if}
-                  </button>
+                  <a class="btn action-primary" href={decision.task.uri}>Open note</a>
                 </div>
               {:else if decision.kind === "mail"}
                 <div class="decision-mark"><Icon name="mail" size={16} /></div>

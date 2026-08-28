@@ -1975,63 +1975,45 @@ export const comms = {
     ),
 };
 
-/** One thing to do, plus a way back to whatever said so.
+/** One action, read out of a note under the vault's `Projects/**\/Tasks/`.
  *
- *  `data_class` is inherited from the source rather than re-derived: a task
- *  promoted from a Private mail is Private, because the subject travelled into
- *  the title. */
+ *  This replaced a database row on 2026-08-27 (PRD Q48): the `tasks`
+ *  capability retired and the Action kind went back to the vault, which is
+ *  where the vault contract §5.1b had assigned it all along.
+ *
+ *  Every field here has a reader below — `due` and `priority` rank the row,
+ *  `title` and `summary` render it, `projects` labels it, `done` decides
+ *  whether it is a decision at all. The note carries five more frontmatter
+ *  keys that nothing on this page reads, so the server does not serve them. */
 export interface Task {
+  /** Vault-relative path. The identity that survives a machine. */
   id: string;
   title: string;
-  status: TaskStatus;
+  done: boolean;
   due: string | null;
-  note: string | null;
-  source_capability: string | null;
-  source_id: string | null;
-  source_url: string | null;
-  data_class: DataClass;
-  created_at: string;
-  updated_at: string;
-  completed_at: string | null;
+  /** 1 high · 2 medium · 3 low. The server defaults a blank key to 2, the same
+   *  fallback the vault's own Tasks.base applies. */
+  priority: number;
+  summary: string | null;
+  /** Display names of the note's `projects:` links. */
+  projects: string[];
+  /** `obsidian://open?…` — where the operator goes to act on it. */
+  uri: string;
 }
 
-export type TaskStatus = 'open' | 'done' | 'dropped';
+export type TaskStatus = 'open' | 'done';
 
-export interface NewTask {
-  title: string;
-  due?: string | null;
-  note?: string | null;
-  source_capability?: string | null;
-  source_id?: string | null;
-  source_url?: string | null;
-  data_class?: DataClass | null;
-}
-
-/** `created: false` means this source already owned a task — the expected
- *  result of promoting twice, not an error. */
-export interface TaskCreated {
-  task: Task;
-  created: boolean;
-}
-
-export const tasks = {
-  list: (status?: TaskStatus, signal?: AbortSignal) =>
+/** Read-only, and the whole namespace is one call.
+ *
+ *  There is no create and no patch because the vault server has no write
+ *  route: a task is written, edited and marked done in Obsidian, in a note a
+ *  human owns. Axon reads the vault and does not write to it (PRD §5.5). */
+export const vault = {
+  tasks: (status?: TaskStatus, signal?: AbortSignal) =>
     request<{ tasks: Task[] }>(
-      `/tasks/api/tasks${status ? `?status=${status}` : ''}`,
+      `/vault/api/tasks${status ? `?status=${status}` : ''}`,
       signal ? { signal } : undefined,
     ).then((response) => response.tasks),
-  create: (task: NewTask) =>
-    request<TaskCreated>('/tasks/api/tasks', jsonInit('POST', task)),
-  /** Omit a field to leave it; pass `null` to clear it. */
-  patch: (
-    id: string,
-    patch: { title?: string; status?: TaskStatus; due?: string | null; note?: string | null },
-  ) => request<{ task: Task }>(`/tasks/api/tasks/${encodeURIComponent(id)}`, jsonInit('PATCH', patch)),
-  counts: (signal?: AbortSignal) =>
-    request<{ open: number; overdue: number }>(
-      '/tasks/api/counts',
-      signal ? { signal } : undefined,
-    ),
 };
 
 // ─── Finance ─────────────────────────────────────────────────────────────────

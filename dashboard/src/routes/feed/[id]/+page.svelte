@@ -30,7 +30,6 @@
     calendar,
     comms,
     contentItem,
-    tasks,
     type CloudDerivativePreview,
     type CloudProvider,
     type CloudProviderUnavailableReason,
@@ -43,7 +42,6 @@
     type DataClass,
     type FeedStatus,
     type MailCategory,
-    type Task,
   } from "$lib/api";
 
   type GmailAction = "archive" | "trash" | "restore";
@@ -65,8 +63,6 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
   let mailCategory = $state<MailCategory>("aktiv");
-  let promoting = $state(false);
-  let promotedTask = $state<Task | null>(null);
   let selectedDataClass = $state<DataClass>("personal");
   let confirmingGmailAction = $state<GmailAction | null>(null);
   let cloudPreview = $state<CloudDerivativePreview | null>(null);
@@ -484,7 +480,6 @@
       }));
       if (entry.mail) {
         mailCategory = entry.mail.category;
-        void loadPromotedTask(entry.id);
       }
       selectedDataClass = entry.data_class.value;
       titleDraft = entry.title ?? "";
@@ -499,20 +494,6 @@
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
       loading = false;
-    }
-  }
-
-  /// Whether this mail already owns a task. The id is derivable — tasks keys a
-  /// promoted record as `<capability>:<source id>` — so this is one lookup
-  /// rather than a list scan. A failure leaves the button offering to promote;
-  /// pressing it is idempotent, so the worst case is a no-op, not a duplicate.
-  async function loadPromotedTask(entryId: string): Promise<void> {
-    try {
-      promotedTask = (await tasks.list("open")).find(
-        (task) => task.source_capability === "comms" && task.source_id === entryId,
-      ) ?? null;
-    } catch {
-      promotedTask = null;
     }
   }
 
@@ -558,32 +539,6 @@
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
       busy = false;
-    }
-  }
-
-  /// Hand this mail to tasks and keep the result, so the button can say
-  /// whether a task already exists rather than creating a second impression of
-  /// one. The dashboard composes the two capability APIs here; comms does not
-  /// know tasks exists, which is the documented composition edge.
-  async function promoteToTask(): Promise<void> {
-    if (!entry?.mail || entry.source !== "mail" || promoting) return;
-    promoting = true;
-    error = null;
-    try {
-      const result = await tasks.create({
-        // The stored subject, which for a Private mail is already redacted —
-        // promoting must not reconstruct what the intake gate removed.
-        title: entry.title ?? "(no subject)",
-        source_capability: "comms",
-        source_id: entry.id,
-        source_url: entry.url,
-        data_class: entry.data_class.value,
-      });
-      promotedTask = result.task;
-    } catch (cause) {
-      error = cause instanceof Error ? cause.message : "Could not create the task.";
-    } finally {
-      promoting = false;
     }
   }
 
@@ -1027,27 +982,12 @@
             <Icon name="close" size={13} /> Dismiss
           </button>
         {:else if entry.mail}
-          <!-- The Action lane: this mail becomes one owned record and stops
-               being the thing you track. Promoting twice is harmless — tasks
-               keys on the thread id — so the button stays live and says what
-               it found rather than disabling itself into a dead end. -->
-          <button
-            class="btn"
-            class:kept={Boolean(promotedTask)}
-            type="button"
-            disabled={busy || promoting}
-            title={promotedTask
-              ? "This mail already owns a task"
-              : "Create one task that owns this mail"}
-            onclick={() => void promoteToTask()}
-          >
-            {#if promoting}
-              <Icon name="loader" size={13} />
-            {:else}
-              <Icon name="check" size={13} />
-              {promotedTask ? "Task exists" : "Make a task"}
-            {/if}
-          </button>
+          <!-- "Make a task" was here until PRD Q48 (2026-08-27). The Action kind
+               moved back into the vault and the vault server is read-only, so
+               there is nothing for this button to POST to: a task is a note a
+               human writes in Obsidian. The mail keeps its own lane — category,
+               archive, trash — and the hand-off to an action is a note, not a
+               row this page can create. -->
           <label class="mail-category">
             <span>Category</span>
             <select
