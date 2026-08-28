@@ -34,6 +34,10 @@ axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }
 axon-summarize = { path = "../../libs/summarize" }
 content-item = { path = "../../libs/content-item" }
+# The shared machine->vault projection mechanism (PRD Q49). comms declares the
+# shape of a saved link; libs/markdown-root does the writing, the containment and
+# the ownership check.
+markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

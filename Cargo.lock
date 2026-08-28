@@ -1009,6 +1009,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "content-item",
+ "markdown-root",
  "reqwest",
  "route-manifest",
  "rusqlite",
