@@ -236,7 +236,7 @@ fn stage_line(stage: &TripStage) -> String {
     if let Some(date) = &stage.date {
         line.push_str(&format!(" · {date}"));
     }
-    line.push_str(&format!(" · {:?}", stage.status).to_lowercase());
+    line.push_str(&format!(" · {}", enum_word(&stage.status)));
     if !stage.transport_modes.is_empty() {
         line.push_str(&format!(" · {}", modes(&stage.transport_modes)));
     }
@@ -275,11 +275,20 @@ fn place(place: &PlaceRef) -> String {
 }
 
 fn modes(modes: &[crate::store::TransportMode]) -> String {
-    modes
-        .iter()
-        .map(|m| format!("{m:?}").to_lowercase())
-        .collect::<Vec<_>>()
-        .join(", ")
+    modes.iter().map(enum_word).collect::<Vec<_>>().join(", ")
+}
+
+/// An enum as the word the API and `schemas/trip-plan.schema.json` already use.
+///
+/// Through serde, not `{:?}` lowercased. The first version did the latter and wrote
+/// `optionselected` for `StageStatus::OptionSelected`, which is a value the contract
+/// does not contain — a file meant for reconstruction has to carry the vocabulary the
+/// thing being reconstructed accepts.
+fn enum_word<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(word)) => word,
+        other => format!("{other:?}"),
+    }
 }
 
 fn minor_units(cents: i64) -> String {
@@ -560,6 +569,17 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&human).unwrap(), "# Because\n");
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `{:?}` lowercased wrote `optionselected`, which is not a value the contract
+    /// contains. A file for reconstruction carries the vocabulary that reconstructs.
+    #[test]
+    fn an_enum_renders_as_the_word_the_schema_uses() {
+        let mut plan = details("trip:plan:1", "Berlin", vec![]);
+        plan.plan.stages[0].status = StageStatus::OptionSelected;
+        let rendered = render(&plan);
+        assert!(rendered.contains("option_selected"), "{rendered}");
+        assert!(!rendered.contains("optionselected"));
     }
 
     #[test]
