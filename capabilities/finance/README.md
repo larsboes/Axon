@@ -119,6 +119,25 @@ as fresh as the last press, which is the honest state of it — a scheduled writ
 would be a second trigger to keep in agreement, and this capability is `autostart`, so
 the button is always reachable.
 
+### When the note is not there
+
+Measured 2026-08-28: it is not, for any of them. The 2026-08-23 vault reorganisation
+(vault commit `ba60231`, ruled in PRD §5.5) moved all 37 finance notes out to
+`<overlay>/data/finance/vault-notes/`, on the grounds that they are entity rows rather
+than things a human wrote sentences into. So all seven live subscriptions point at a
+note the vault no longer has, the region writer had nothing to write into, and the
+series was in no file at all.
+
+PRD Q31 rules exactly this: write a region into the human's note when one exists, and
+create a projected file only when none does. `export_projections` is the second branch —
+one whole generated file per note-less subscription under `Resources/Axon/Subscriptions/`,
+carrying the same `render_block` body so the two paths cannot drift into two shapes of
+one figure.
+
+The projection deletes itself the moment a note for its subject appears in the vault,
+and the region in that note takes over. Two homes for one number is the failure this
+boundary exists to prevent, so the writeback never leaves both in place.
+
 Frontmatter seeds a subscription and is then not re-read for those fields. A
 re-import would otherwise throw away every price change recorded since, because the
 single cost figure in the note was only ever a starting point.
