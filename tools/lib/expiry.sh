@@ -69,10 +69,11 @@ osv_ignored_count() { grep -cE '^[[:space:]]*\[\[IgnoredVulns\]\]' "$1" | tr -d 
 # expiry_note <label> <total entries> <warn days> <dates…> — one status line for a policy.
 #   Exit 0 = nothing owed · 1 = needs attention · 2 = already lapsed.
 #
-# Same shape as lib/version.sh's drift_note, deliberately: the window arrives as a
-# parameter rather than being read from axon.toml in here, so this file decides only what
-# the status IS while the caller owns both the configuration and what a status costs. That
-# is also what lets the tests drive every boundary without planting a manifest.
+# The window arrives as a parameter rather than being read from axon.toml in here, so this
+# file decides only what the status IS while the caller owns both the configuration and
+# what a status costs. That is also what lets the tests drive every boundary without
+# planting a manifest. lib/version.sh's drift_note was built to the same shape until PRD
+# Q41 deleted it on 2026-08-28; this is the surviving instance of the pattern.
 #
 # Dates arrive word-split into argv rather than on stdin because a `while read` on the
 # right of a pipe runs in a subshell under bash 3.2, and every counter incremented inside
