@@ -8,8 +8,6 @@ _dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 source "$_dir/../../tools/lib/paths.sh"
 # shellcheck source=../../tools/lib/platform.sh
 source "$_dir/../../tools/lib/platform.sh"
-# shellcheck source=../../tools/lib/advisories.sh
-source "$_dir/../../tools/lib/advisories.sh"   # advisory_scan (+ version.sh, transitively)
 
 CONFIG="$AXON_PERSONAL_ROOT/config/agentbox.toml"
 DATA="$AXON_PERSONAL_ROOT/data/agentbox"
@@ -22,7 +20,7 @@ Usage:
   agentbox doctor                    # runtime, network, image, config, model endpoint
   agentbox shell [--project <dir>]   # a bash prompt in the same box, no agent
   agentbox host-install [--force]    # install the pinned agent on the HOST, through the gate
-  agentbox gate [<version>]          # the gate alone: advisories + cooldown, no install
+  agentbox gate [<version>]          # the gate alone: cooldown, no install
 
 Without --project the current directory is mounted. That is the only host path the
 box can see; --online swaps the host-only network for one with internet.
@@ -304,13 +302,18 @@ cmd_run() {
 #
 # Axon#126. Every other check in this repo describes a version the manifest names. A
 # self-updating binary replaces the thing on disk without consulting any of them, so the pin,
-# the checksum, the advisory scan and the cooldown all end up describing software the machine
+# the checksum and the cooldown all end up describing software the machine
 # stopped running. That is not hypothetical here: upstreams.toml's pi-coding-agent entry
 # records the host self-updating via `pi update` about 15h after a release, and the pin was
 # written afterwards to describe an adoption that had already happened.
 #
 # The gate answers one question — may this version be placed on this machine? — and is a
 # separate command so it can be run, and tested, without installing anything.
+#
+# It answered a second question until 2026-08-28: whether a published GHSA covered the
+# target version. PRD Q41 retired tools/lib/advisories.sh, and that half of the gate is a
+# human's now. What remains is still the check that catches the failure above, because
+# what moved the machine past the pin was time, not a vulnerability.
 
 # Resolve the upstream repo this profile's agent comes from, via profile.toml's declared
 # upstreams.toml section. Empty output means the profile did not declare one.
@@ -324,9 +327,10 @@ upstream_repo() {
 }
 
 # Days since <repo>'s <tag> was published; empty if GitHub cannot answer. Deliberately not
-# lifted into tools/lib/: it has exactly one consumer, and advisories.sh states the rule this
-# repo follows — two consumers is what makes a lib. The moment a second caller wants a release
-# date, gh_latest in tools/upstream-checker moves out with it.
+# lifted into tools/lib/: it has exactly one consumer, and this repo lifts a helper only on
+# the second one. It had a near-twin in tools/upstream-checker (gh_latest) that would have
+# gone with it; that script retired on 2026-08-28, so this is now the only release-date
+# reader in the repo and there is nothing left to share it with.
 release_age_days() {
   local repo="$1" tag="$2" pub now then
   command -v gh >/dev/null 2>&1 || return 1
@@ -350,36 +354,24 @@ cmd_gate() {
 
   echo "agentbox gate: $AGENT $target ($repo)"
 
-  # 1. Advisories — a hard refusal, not a warning. README.md#pins-and-cooldown's
-  #    active-vulnerability carve-out names an in-range advisory as the one reason to bump
-  #    inside the cooldown hold, so this gate has to be able to say it out loud.
-  adv_out="$(advisory_scan "$repo" "$target")"
-  case $? in
-    3) echo "  ○ advisories n/a — '$target' is not a version an advisory range can be compared against" ;;
-    2) die "advisories unchecked — gh is not installed, and OSV does not carry GHSA for every ecosystem.
-  Refusing rather than installing unverified: a check that could not run is not a check that passed." ;;
-    1) die "advisories not resolvable (rate-limited or unavailable) — GHSA exposure unverified.
-  Refusing rather than installing unverified." ;;
-    0)
-      hits=0; undecided=0; total=0
-      while IFS="$(printf '\t')" read -r st id sev range; do
-        case "$st" in
-          hit)       echo "  ✗ $id ($sev) — $target is inside the affected range '$range'"; hits=$((hits + 1)) ;;
-          undecided) echo "  ⚠ $id ($sev) — range '$range' is not comparable to $target"; undecided=$((undecided + 1)) ;;
-          total)     total="$id" ;;
-        esac
-      done <<GATE_ADVISORIES
-$adv_out
-GATE_ADVISORIES
-      [ "$hits" -eq 0 ] || die "refused: $hits published advisory range(s) cover $target"
-      # Undecided is not a pass, but it is also not a refusal: GitHub allows free-text ranges
-      # and refusing every unorderable one would block on the manifest's own real entries
-      # ('2025.02 to 2026.01', '8+'). It becomes a confirmation, like the cooldown below.
-      [ "$undecided" -eq 0 ] || confirm_or_deny "$undecided advisory range(s) could not be compared to $target"
-      [ "$total" -gt 0 ] && echo "  ✓ $total published advisory range(s), none affecting $target"
-      [ "$total" -eq 0 ] && echo "  ✓ no published advisories against $repo"
-      ;;
-  esac
+  # 1. Advisories — NOT checked here, and printed rather than omitted.
+  #
+  #    This step used to call advisory_scan (tools/lib/advisories.sh), which fetched
+  #    published GHSAs and refused an install whose target sat inside an affected range.
+  #    PRD Q41 retired that library on 2026-08-28 with the rest of the homegrown
+  #    supply-chain plumbing, and nothing standard replaces it for THIS dependency: the
+  #    agent arrives as a pinned release tarball, so no ecosystem lockfile names it and
+  #    neither GitHub's Dependabot alerts nor osv-scanner will ever see it. Renovate
+  #    (renovate.json5) watches earendil-works/pi for new release TAGS, which is freshness,
+  #    not exposure.
+  #
+  #    So the check is a human's now, and the gate says so at the moment of use instead of
+  #    going quiet. A silent step reads as a passed step — that is precisely the failure
+  #    this gate was built for (Axon#126), where a self-update moved the machine past the
+  #    pin and nothing said anything. Weaker and audible beats stronger and stale.
+  echo "  ○ advisories NOT checked by this gate — open the list before you accept:"
+  echo "      https://github.com/$repo/security/advisories"
+  echo "    (capabilities/agentbox/README.md#the-host-install-gate explains why this is manual)"
 
   # 2. Cooldown — a confirmation, never a hard refusal, because the manifest says so:
   #    "the cooldown is a recommendation" (172d81a, README.md#pins-and-cooldown). What it
