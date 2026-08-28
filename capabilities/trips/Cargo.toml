@@ -19,6 +19,9 @@ path = "src/server.rs"
 axon-config = { path = "../../libs/axon-config" }
 axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }
+# The vault projection: `markdown_root::projection` owns placement, containment and
+# the header; src/projection.rs owns only what a plan looks like (PRD Q49).
+markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -158,6 +158,70 @@ struct AppState {
     database_path: Arc<PathBuf>,
     obsidian: Option<ObsidianConfig>,
     travel: Arc<trips::config::TravelPrefs>,
+    /// Held across one export so two concurrent writes cannot interleave inside one
+    /// projected file. `std::fs::write` is not atomic, and a half-written safety copy
+    /// is the one state this whole mechanism exists to prevent.
+    export_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// Re-export every plan to the vault after any successful write.
+///
+/// A layer rather than a line at the end of nine handlers. Nine call sites would put
+/// the rule "a plan write is projected" in nine places, and the tenth mutation route
+/// somebody adds later would silently stop projecting — which is a data-loss bug that
+/// looks like nothing at all. Here the rule is one sentence in one place, and it
+/// covers routes that do not exist yet.
+///
+/// Non-GET plus a 2xx status is the whole test. It exports on writes that touch no
+/// plan (a flight search is a GET, so none in practice), and that costs a listing and
+/// thirteen unchanged-file comparisons — cheaper than a second definition of which
+/// routes mutate.
+///
+/// After the response, never before it: the export reads the store, so running it
+/// first would project the state the write is about to replace.
+///
+/// A failure is logged and the request still succeeds. Refusing a plan write because
+/// the vault is unreachable would trade a durable row for a missing file, which is the
+/// wrong way round; `trips export-vault` is the repair, and it is a command a human
+/// can run when this process is not even up.
+async fn project_after_write(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mutating = request.method() != axum::http::Method::GET;
+    let response = next.run(request).await;
+    if !mutating || !response.status().is_success() {
+        return response;
+    }
+    let Some(vault) = state.obsidian.clone() else {
+        return response;
+    };
+    let database_path = state.database_path.clone();
+    let lock = state.export_lock.clone();
+    tokio::spawn(async move {
+        let _held = lock.lock().await;
+        let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let root = markdown_root::MarkdownRoot::declare(vault.root.clone())
+                .map_err(|e| e.to_string())?;
+            let store = TripsStore::open(&database_path).map_err(|e| e.to_string())?;
+            let plans = store.list_every_plan().map_err(|e| e.to_string())?;
+            trips::projection::export_all(&root, &plans).map_err(|e| e.to_string())
+        })
+        .await;
+        match outcome {
+            Ok(Ok(report)) => {
+                for path in &report.refused {
+                    eprintln!("trips: vault projection refused, a human owns {path}");
+                }
+            }
+            Ok(Err(error)) => eprintln!(
+                "trips: vault projection failed ({error}); the rows are safe, the copy is stale — run `trips export-vault`"
+            ),
+            Err(error) => eprintln!("trips: vault projection task failed ({error})"),
+        }
+    });
+    response
 }
 
 type ApiResponse = (StatusCode, Json<Value>);
@@ -965,6 +1029,7 @@ async fn main() {
         database_path: Arc::new(config.database_path),
         obsidian: config.obsidian,
         travel: Arc::new(config.travel),
+        export_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
     let app = Router::new()
         .route("/routes", get(routes))
@@ -989,6 +1054,10 @@ async fn main() {
         .route("/api/import/obsidian/scan", get(scan_obsidian))
         .route("/api/import/obsidian/all", post(import_all_obsidian))
         .route("/api/import/obsidian", post(import_obsidian))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            project_after_write,
+        ))
         .layer(CorsLayer::permissive())
         .with_state(state);
     // Loopback via axon_server; the old 0.0.0.0 bind here was never a
@@ -1014,6 +1083,7 @@ mod readiness_tests {
             database_path: Arc::new(blocker.join("axon.db")),
             obsidian: None,
             travel: Arc::new(Default::default()),
+            export_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         let (status, Json(body)) = ready(State(state)).await;

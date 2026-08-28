@@ -5045,6 +5045,7 @@ dependencies = [
  "axon-server",
  "axon-store",
  "axum",
+ "markdown-root",
  "reqwest",
  "route-manifest",
  "rusqlite",

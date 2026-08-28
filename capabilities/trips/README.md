@@ -163,14 +163,53 @@ render rather than being mislabeled as alternatives.
 ## Obsidian sync boundary
 
 Obsidian integration belongs at this capability's contract, not in the Svelte dashboard
-and not as direct database access from a vault script. The current import slice scans and
+and not as direct database access from a vault script. The import slice scans and
 previews existing trip notes, then materializes a selected note as a plan with its source
-reference preserved. The next export slice should:
+reference preserved.
 
-1. export each plan to one Markdown file in a configured personal-vault folder;
-2. put `axon_trip_id`, schema version and Axon revision in frontmatter;
-3. regenerate only a marked Axon-owned section and preserve notes outside that section;
-4. keep the vault path and personal content in `axon-overlay`, never in this repository.
+### The export slice, shipped
+
+This paragraph specified it a month before anything implemented it, and PRD Q47
+(2026-08-27) then made it a requirement rather than a roadmap item: `trips_plan_items`
+holds 21 rows that exist nowhere else, and a capability holding only-copy rows projects
+them to files. Every plan is now one Markdown file under `Resources/Axon/Trips/`, in the
+vault named by `<overlay>/config/trips.json`.
+
+The four points above survive with one correction. Point 3 said "a marked Axon-owned
+section", which is right for a note a human already writes and wrong here: no human note
+exists per trip, so PRD Q31 (2026-08-23) ruled this pattern B — a whole generated file,
+in the one vault folder a human never edits. So the file carries an
+`<!-- axon:projection -->` header instead of region markers, and a file at that path
+without the header is refused rather than overwritten, which is Q31's promotion path.
+Points 1, 2 and 4 hold: one file per plan, `axon_trip_id`/`axon_schema`/`axon_revision` in
+frontmatter, and every path and personal value in the overlay.
+
+`axon_revision` is the plan's `updated_at` — the same token `expected_updated_at` uses,
+rather than a second notion of "which revision is this" that nothing could check against.
+
+The mechanism is shared, per Q49: `libs/markdown-root`'s `projection` module owns
+placement, containment, the header and the do-not-write-identical-bytes rule.
+`src/projection.rs` owns only what a plan looks like.
+
+What it is for is reconstruction, not reading (Q46: B14's projections are safety copies,
+not reading surfaces). Each item's payload is written out verbatim as JSON, because an
+unchosen fare cannot be re-queried later at yesterday's price and prose about a booking
+reference does not restore a booking.
+
+Two triggers, and both are needed:
+
+- The server re-exports after **any** successful non-GET request, as a layer rather than
+  a line in nine handlers — a tenth mutation route added later would otherwise stop
+  projecting silently. A failure is logged and the request still succeeds: refusing a plan
+  write because the vault is unreachable trades a durable row for a missing file.
+- `trips export-vault` (`--dry-run` to look first) is the copy a human can take when the
+  server is down, which is exactly when it matters.
+
+Both run the same function, so both also sweep: a projection whose plan was renamed,
+deleted or never existed is removed, because a stale safety copy is the one somebody
+would restore from. Archived plans **are** exported — `list_plans` hides them from the
+dashboard, and letting that filter reach the safety copy would make archiving a silent
+data loss.
 
 Two-way synchronization comes only after that export shape has been used. It should accept
 only explicit fields such as notes, places and links, validate them into `PlanItem` data,

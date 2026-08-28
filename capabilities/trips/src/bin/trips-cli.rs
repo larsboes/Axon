@@ -1,13 +1,17 @@
-//! Trips' first binary other than the server.
+//! Trips' commands that are not the server.
 //!
-//! One command, deliberately: turning a sentence into a plan draft nobody has
-//! submitted. It posts to the local model rung directly rather than depending on
-//! `libs/inference`, because this is one request to a loopback URL and a role
-//! lookup would be more machinery than the call it wraps.
+//! `draft-intent` turns a sentence into a plan draft nobody has submitted. It posts
+//! to the local model rung directly rather than depending on `libs/inference`, because
+//! this is one request to a loopback URL and a role lookup would be more machinery
+//! than the call it wraps. It has no HTTP route on purpose: the question it answers is
+//! "does a small local model turn a travel sentence into a valid form", and until that
+//! has started a real trip more than twice it does not need a surface.
 //!
-//! No HTTP route for this, on purpose. The question it answers is "does a small
-//! local model turn a travel sentence into a valid form", and until that has
-//! started a real trip more than twice it does not need a surface.
+//! `export-vault` writes the safety copy PRD Q47 requires. It has no HTTP route
+//! either, and for a different reason: the server already re-exports after every write
+//! (`src/server.rs`, `project_after_write`), so a route would be a third caller of one
+//! function with no reader. What a human needs is a command they can run when the
+//! server is down — which is exactly when a safety copy matters — and that is this.
 
 use std::io::Read;
 
@@ -15,10 +19,17 @@ const USAGE: &str = "\
 Usage:
   trips draft-intent \"somewhere warm in October, under 300 euro, by train\"
   trips draft-intent -            read the sentence from stdin
+  trips export-vault              write every plan to the vault projection
+  trips export-vault --dry-run    print what would be written, touch nothing
 
-Prints a CreatePlan-shaped draft plus what it could not resolve. Persists
-nothing and resolves no station: every destination comes back as a place slug
-with null coordinates, exactly as typed text does.
+draft-intent prints a CreatePlan-shaped draft plus what it could not resolve.
+Persists nothing and resolves no station: every destination comes back as a
+place slug with null coordinates, exactly as typed text does.
+
+export-vault writes one Markdown file per plan under Resources/Axon/Trips/ in
+the vault named by <overlay>/config/trips.json, each carrying every plan item's
+payload verbatim. The server does the same after every write; this is the copy
+you can take by hand.
 
 Environment:
   AXON_INTENT_URL     chat-completions endpoint (default http://127.0.0.1:8091/v1/chat/completions)
@@ -38,11 +49,65 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        (Some("export-vault"), rest) => {
+            let dry_run = matches!(rest.map(String::as_str), Some("--dry-run"));
+            if rest.is_some() && !dry_run {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            }
+            if let Err(error) = export_vault(dry_run) {
+                eprintln!("trips: {error}");
+                std::process::exit(1);
+            }
+        }
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);
         }
     }
+}
+
+/// Write every plan into the vault, or say what a write would do.
+///
+/// An unconfigured vault is an error rather than a quiet zero: the whole point of the
+/// command is that a copy exists, and "nothing to do" is indistinguishable from
+/// "nothing was saved" once the terminal scrolls.
+fn export_vault(dry_run: bool) -> Result<(), String> {
+    let config = trips::config::Config::load();
+    let vault = config
+        .obsidian
+        .ok_or("no vault configured: set obsidian.root in <overlay>/config/trips.json")?;
+    let root =
+        markdown_root::MarkdownRoot::declare(vault.root.clone()).map_err(|e| e.to_string())?;
+
+    let store = trips::store::TripsStore::open(&config.database_path).map_err(|e| e.to_string())?;
+    let plans = store.list_every_plan().map_err(|e| e.to_string())?;
+    let items: usize = plans.iter().map(|p| p.items.len()).sum();
+
+    if dry_run {
+        for projection in trips::projection::render_all(&plans) {
+            println!("{}  ({} bytes)", projection.path, projection.body.len());
+        }
+        println!("{} plan(s), {items} item(s) — nothing written", plans.len());
+        return Ok(());
+    }
+
+    let report = trips::projection::export_all(&root, &plans).map_err(|e| e.to_string())?;
+    println!(
+        "{} plan(s), {items} item(s) → {}: {} created, {} updated, {} unchanged",
+        plans.len(),
+        trips::projection::DIR,
+        report.created,
+        report.updated,
+        report.unchanged
+    );
+    for path in &report.removed {
+        println!("  removed (plan gone or renamed): {path}");
+    }
+    for path in &report.refused {
+        println!("  refused, a human owns this file now: {path}");
+    }
+    Ok(())
 }
 
 fn read_stdin() -> String {

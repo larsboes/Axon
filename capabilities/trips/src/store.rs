@@ -458,6 +458,40 @@ impl TripsStore {
         )?)
     }
 
+    /// Every plan with its items, archived ones included.
+    ///
+    /// `list_plans` hides `status = 'archived'` because the dashboard should not show
+    /// a finished trip in the workspace. A safety copy does not get to inherit that
+    /// filter: an archived plan's `plan_items` are the same only-copy rows PRD Q47
+    /// named, and letting `archive` delete the file would make archiving a data loss
+    /// with no warning. The one caller is `crate::projection`.
+    pub fn list_every_plan(&self) -> Result<Vec<PlanDetails>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let plans = conn.query_all(
+            &format!(
+                "SELECT {PLAN_COLUMNS} FROM {prefix}_plans ORDER BY created_at, id",
+                prefix = self.prefix
+            ),
+            [],
+            row_to_plan,
+        )?;
+        let mut out = Vec::with_capacity(plans.len());
+        for plan in plans {
+            let items = conn.query_all(
+                &format!(
+                    "SELECT {ITEM_COLUMNS}
+                     FROM {prefix}_plan_items WHERE plan_id = ?1
+                     ORDER BY day NULLS LAST, created_at",
+                    prefix = self.prefix
+                ),
+                params![&plan.id],
+                row_to_item,
+            )?;
+            out.push(PlanDetails { plan, items });
+        }
+        Ok(out)
+    }
+
     pub fn get_plan(&self, id: &str) -> Result<Option<PlanDetails>, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         let Some(plan) = conn
