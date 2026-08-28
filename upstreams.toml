@@ -53,11 +53,10 @@ why = "the style bar for capability READMEs and an operations quarry for local i
 
 [hledger]
 url = "https://github.com/simonmichael/hledger"
-verdict = "adopt"
+verdict = "reject"
 license = "GPL-3.0-or-later"
-pin = "1.52.1"
-installed_probe = "hledger --version"
-why = "separately installed double-entry engine behind capabilities/finance's engine-neutral Rust contract. Axon invokes the executable with --no-conf and parses normalized reports; it does not vendor, link, or redistribute hledger, and the canonical journal remains plaintext. The GPL applies to hledger itself rather than changing Axon's MIT license. A native Rust engine can later replace it by implementing the same check, transaction, register, balance, budget, cash-flow and ROI contract"
+pin = "1.52.1"          # the version that was actually invoked. Kept, not removed, so the row records what was consumed rather than drifting
+why = "RETIRED 2026-08-28 by PRD Q50 -- capabilities/finance/src/journal.rs is the engine now and no code path spawns the executable. THE FORMAT IS NOT RETIRED: the canonical journal is still plaintext hledger syntax, still opens in hledger any day, and schemas/finance-journal.example is still the published contract (Principle 8). Only the runtime dependency went, which is why this retirement changed no journal byte and no source-id. It was the separately installed double-entry engine behind an engine-neutral Rust contract, invoked with --no-conf, its normalized reports parsed rather than vendored, linked or redistributed -- the GPL applied to hledger itself and never to Axon's MIT license. The old row promised a native Rust engine could replace it 'by implementing the same check, transaction, register, balance, budget, cash-flow and ROI contract'. Measured 2026-08-28 (PRD Q49/B16), production called two of those seven: check and transactions. The other five had no caller outside the file's own test, so the replacement implements the two that were real and the row's own premise is the thing that was wrong. Re-adopting means a new audit at that date, not restoring this row"
 
 [paperless-ngx]
 url = "https://github.com/paperless-ngx/paperless-ngx"

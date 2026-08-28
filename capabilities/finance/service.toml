@@ -12,9 +12,11 @@ autostart   = "true"
 # the page becomes unreachable — the same trap trips documented (#136).
 proxy_api_only = "true"
 
-# Selects the separately installed accounting engine. This scalar is also the
-# toolchain scope: hosts that enable Finance must provide the pinned engine.
-ledger = "hledger"
+# `ledger = "hledger"` stood here until 2026-08-28. It selected the separately
+# installed accounting engine and carried the toolchain scope that made hosts
+# running Finance provide it. PRD Q50 retired that dependency — the engine is
+# capabilities/finance/src/journal.rs, in-process — so the field selected
+# nothing and scoped nothing, and toolchain.toml [hledger] went with it.
 
 # No `requires`: subscriptions, candidates and the two projections live in the
 # shared SQLite file this process opens itself, so there is no database service to
@@ -22,13 +24,13 @@ ledger = "hledger"
 
 # --- backup (tools/backup.sh) ---
 # Declared 2026-08-28, closing the exposure PRD Q47 named in writing and left open:
-# the hledger journal, `config/finance.json` and the reviewed-holdings snapshot are
+# the plaintext journal, `config/finance.json` and the reviewed-holdings snapshot are
 # canonical financial truth, they are gitignored, and until this line they were in no
 # backup contract at all — one disk, no copy.
 #
 # None of it is in the shared SQLite file, so `capabilities/store`'s contract does not
-# reach it. The journal is what hledger reads and what every reviewed posting is
-# appended to; `config/finance.json` holds budget targets, spending behaviour and the
+# reach it. The journal is what every reviewed posting is appended to and the only
+# record of one; `config/finance.json` holds budget targets, spending behaviour and the
 # CSV mappings that make an import readable, all typed by hand; the snapshots are
 # holdings and balances after an explicit human review. Nothing here is re-derivable
 # and nothing here is fetched again from anywhere.
