@@ -100,8 +100,13 @@ env_file = "config/example.env"           # relative to the selected overlay; re
 # Each completed archive embeds `axon-backup.toml` with this historical contract plus
 # the pinned image identity. tools/restore.sh verifies that identity and restores only
 # into an isolated destination; the active overlay is never a valid restore target.
+# Overlay-relative host paths. A directory is copied by contents; a single FILE is
+# copied as itself, which capabilities/finance needs — its canonical truth is one
+# journal directory plus config/finance.json and a reviewed-holdings snapshot, and
+# neither file has a directory of its own that would not also drag in every other
+# capability's configuration.
 # NB: no inline comment on the array line (toml_array wants it bare).
-backup_paths  = ["data/example/data"]
+backup_paths  = ["data/example/data", "config/example.json"]
 backup_sqlite = "data/example/data/db.sqlite3"  # a SQLite DB owned by the container: backup.sh holds the capability down and copies it COLD.
                                           # Never opened from the host while the container runs — SQLite's WAL needs every
                                           # connection on one host, and a virtiofs bind mount is not that (2026-07-25 outage).

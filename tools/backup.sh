@@ -257,6 +257,21 @@ stage_host_paths() {
   for p in "${PATHS[@]}"; do
     src="$AXON_PERSONAL_ROOT/$p"
     dest="$STAGE/$p"; mkdir -p "$(dirname "$dest")"
+    # A declared path may be a single FILE, not only a directory. `capabilities/finance`
+    # is the case that needed it: its canonical truth is one journal directory plus two
+    # individual files (config/finance.json and the reviewed-holdings snapshot), and
+    # neither has a directory of its own to declare — config/ holds every other
+    # capability's configuration and vaultwarden's credentials, so declaring it would
+    # put all of that inside finance's contract.
+    #
+    # The trailing slashes below are what makes the directory form a contents copy; on
+    # a file they make rsync fail with "Not a directory" (exit 23) AFTER mkdir -p has
+    # already created a directory with the file's name in the staging tree. So the two
+    # cases are told apart here rather than discovered there.
+    if [ -f "$src" ] && [ ! -d "$src" ]; then
+      rsync -a "$src" "$dest"
+      continue
+    fi
     rsync -a "$src/" "$dest/"
   done
 }

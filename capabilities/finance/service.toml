@@ -19,3 +19,43 @@ ledger = "hledger"
 # No `requires`: subscriptions, candidates and the two projections live in the
 # shared SQLite file this process opens itself, so there is no database service to
 # start first (PRD Q45).
+
+# --- backup (tools/backup.sh) ---
+# Declared 2026-08-28, closing the exposure PRD Q47 named in writing and left open:
+# the hledger journal, `config/finance.json` and the reviewed-holdings snapshot are
+# canonical financial truth, they are gitignored, and until this line they were in no
+# backup contract at all — one disk, no copy.
+#
+# None of it is in the shared SQLite file, so `capabilities/store`'s contract does not
+# reach it. The journal is what hledger reads and what every reviewed posting is
+# appended to; `config/finance.json` holds budget targets, spending behaviour and the
+# CSV mappings that make an import readable, all typed by hand; the snapshots are
+# holdings and balances after an explicit human review. Nothing here is re-derivable
+# and nothing here is fetched again from anywhere.
+#
+# `data/finance` as a whole rather than the three files by name. The individual paths
+# (`journal`, `investment_snapshot`, `balance_snapshot`) are declared in
+# `config/finance.json`, which is overlay data; naming them here would be a second
+# declaration of a path this manifest does not own, and it would ship nothing the day
+# the operator moved one. The directory is the capability's data by the overlay's own
+# layout. The residual gap, said out loud: a snapshot configured OUTSIDE `data/finance`
+# is outside this contract, and nothing checks that today.
+#
+# `config/finance.json` is a FILE in a directory this capability must not claim —
+# `config/` also holds every other capability's configuration and vaultwarden's
+# credentials. backup.sh copies a declared file as itself; see stage_host_paths.
+#
+# No `backup_sqlite`: this process is not the owner of the shared database, and the one
+# manifest that is (`capabilities/store`) copies it live. A second contract on that file
+# would take a second copy of it under this capability's name.
+backup_paths  = ["data/finance", "config/finance.json"]
+backup_target = "backup-target"
+backup_retain = "14"
+
+# A reviewed posting is a human decision that no re-import reproduces, so a day is the
+# advice. Two days, not seven, for what counts as overdue: the schedule is daily, and a
+# threshold of seven lets six consecutive silent failures read as merely "due" — which
+# is exactly what happened to the store contract between 2026-08-24 and 2026-08-26
+# (Q47). A stale threshold must be reachable by the cadence that is supposed to meet it.
+backup_advise_days = "1"
+backup_stale_days  = "2"

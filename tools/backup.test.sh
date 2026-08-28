@@ -97,9 +97,21 @@ printf 'rsync:%s\n' "$2" >> "$MOCK_LOG"
   exit 143
 }
 [ "${MOCK_FAIL_RSYNC:-0}" -eq 0 ] || exit 23
-src="${2%/}"; dest="${3%/}"
-mkdir -p "$dest"
-/bin/cp -R "$src/." "$dest/"
+# Real rsync's two shapes, kept apart here on purpose. `src/` means "the contents of
+# this directory" and fails with exit 23 when src is a file; `src` with no slash copies
+# the thing itself. A mock that treated both as a directory copy would report the file
+# form green against a script that cannot do it.
+case "$2" in
+  */)
+    src="${2%/}"; dest="${3%/}"
+    [ -d "$src" ] || { echo "rsync: $2: (l)stat: Not a directory" >&2; exit 23; }
+    mkdir -p "$dest"
+    /bin/cp -R "$src/." "$dest/"
+    ;;
+  *)
+    /bin/cp "$2" "$3"
+    ;;
+esac
 RSYNC
 # One mock, three verbs, dispatched on the SQL because backup.sh now calls sqlite3 to TAKE a
 # copy as well as to verify one. A mock that answered "ok" to everything would report the
@@ -420,8 +432,48 @@ MANIFEST
 reset_run
 expect_fail_with "contradictory contracts are refused" "declare one" "$BACKUP" store
 
+# --- backup_paths naming a single FILE ------------------------------------------------
+# capabilities/finance's contract. Its canonical truth is one journal directory plus two
+# individual files, and neither file has a directory of its own that would not also drag
+# in every other capability's configuration. Before this, a declared file made rsync fail
+# with "Not a directory" after mkdir -p had already created a directory with the file's
+# name in the staging tree.
+mkdir -p "$FIXTURE/capabilities/paperwork" "$OVERLAY/data/paperwork/journal"
+printf 'journal entry\n' > "$OVERLAY/data/paperwork/journal/main.journal"
+printf '{"budget": 1}\n' > "$OVERLAY/config/paperwork.json"
+cat > "$FIXTURE/capabilities/paperwork/service.toml" <<'MANIFEST'
+name = "paperwork"
+backup_paths = ["data/paperwork/journal", "config/paperwork.json"]
+backup_target = "synthetic-target"
+MANIFEST
+cat > "$OVERLAY/config/machine.toml" <<'MACHINE'
+os = "linux"
+container_runtime = "docker"
+capabilities = ["vaultwarden", "store", "paperwork"]
+MACHINE
+reset_run
+paperwork_archive="$SCRATCH/paperwork.tar.gz"
+if "$BACKUP" --stream paperwork > "$paperwork_archive" 2>/dev/null; then :; else
+  fail "a declared file in backup_paths should back up"
+fi
+members="$(tar -tzf "$paperwork_archive" 2>/dev/null)"
+printf '%s' "$members" | grep -q '^\./config/paperwork\.json$' \
+  || fail "the declared file is missing from the archive, or arrived as a directory"
+printf '%s' "$members" | grep -q '^\./data/paperwork/journal/main\.journal$' \
+  || fail "the declared directory stopped being copied by contents"
+
+# The falsifier: a declared path that exists as neither is still refused before any copy.
+cat > "$FIXTURE/capabilities/paperwork/service.toml" <<'MANIFEST'
+name = "paperwork"
+backup_paths = ["config/paperwork-that-is-not-there.json"]
+backup_target = "synthetic-target"
+MANIFEST
+reset_run
+expect_fail_with "a missing declared file is refused" "declared backup path is missing" \
+  "$BACKUP" --stream paperwork
+
 if [ "$fails" -gt 0 ]; then
   echo "backup tests: $fails failure(s)"
   exit 1
 fi
-echo "backup tests: stream, coherent hold, live copy, no-prune, retention, and resume failures passed"
+echo "backup tests: stream, coherent hold, live copy, file paths, no-prune, retention, and resume failures passed"
