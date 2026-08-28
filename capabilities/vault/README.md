@@ -1,14 +1,59 @@
 # vault
 
-Reads an Obsidian vault as data. Two verbs, both read-only.
+Reads an Obsidian vault as data. Three CLI verbs and one HTTP surface, all
+read-only.
 
 ```
 vault links [--root PATH] [--json] [--dead] [--inbound FOLDER]
 vault lint  [--root PATH] [--json] [--carrying KEY]
+vault names [--root PATH] [--json] [--folder Atlas/People]
 ```
 
 The root is a personal fact and never lives in this repo. It comes from the
-overlay's `config/knowledge.toml` (`vault_root = "..."`), or from `--root`.
+overlay's `config/knowledge.toml` (`vault_root = "..."`), or from `--root`. The
+server takes the same path from the same file and has no `--root`: a service
+resolving its own root from an argument would be a second declaration of where
+the vault is.
+
+## The server
+
+`vault-server` on `8094`, loopback. Four routes:
+
+| Route | Answers |
+|---|---|
+| `GET /health` | Liveness. A literal — it cannot see the vault. |
+| `GET /ready` | Readiness: the vault root and its `Projects/` folder resolve. |
+| `GET /routes` | This manifest, as data. |
+| `GET /api/tasks?status=open\|done` | Every action note under `Projects/`, read live. |
+
+One task is `{id, title, done, due, priority, summary, projects, uri}`. `id` is
+the vault-relative path; `uri` is the `obsidian://open` address of the note.
+
+It exists because PRD **Q48** (2026-08-27) retired the `tasks` capability and
+returned the Action kind to `Projects/**/Tasks/`, where the vault contract
+§5.1b had assigned it all along. The dashboard's decision ladder needed an HTTP
+source for band 620 and the data had moved here, so the reader that already
+existed grew a second front end.
+
+**There is no write route, and that is the ruling rather than an omission.** A
+task is created, edited and marked done in Obsidian, in a note a human owns.
+Adding a `PATCH` would make Axon a second writer of files a human is editing —
+the conflict §5.5 states as "Axon reads the vault and does not write to it". The
+ladder links to the note; it does not close it.
+
+**Which frontmatter keys are served, and why not all of them.** A task note
+carries eleven keys. Six are served, because the ladder reads all six: `title`
+and `summary` render the row, `due` and `priority` rank it, `projects` labels
+it, `done` decides whether it is a decision at all. `scheduled`, `context`,
+`energy`, `focus`, `events` and `blocked_by` have no reader, and a served field
+with no reader is a contract nothing checks.
+
+**What counts as a task** is `capabilities/vault/src/tasks.rs`'s module doc: the
+vault's own `Resources/Bases/Tasks.base` filter, scoped to `Projects/`, minus
+archived folders, minus notes with no `done` key. Each divergence is measured
+against the live vault and named there. Tracking the operator's own Base rather
+than inventing a second definition is the point — two surfaces disagreeing about
+one folder is exactly what §5.1b's no-doubling law forbids.
 
 ## Why a binary
 

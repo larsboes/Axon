@@ -5262,9 +5262,14 @@ name = "vault"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-server",
+ "axum",
  "markdown-root",
+ "route-manifest",
  "serde",
  "serde_json",
+ "tokio",
+ "tower-http 0.5.2",
 ]
 
 [[package]]

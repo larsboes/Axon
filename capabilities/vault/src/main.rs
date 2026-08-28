@@ -26,10 +26,9 @@
 //! block references as links; this one separates them), the reason is stated
 //! rather than the number quietly adjusted.
 
-mod graph;
-mod lint;
-mod names;
-mod note;
+// The modules live in the library beside this binary, so `vault-server` reads
+// notes through the same loader rather than a second copy of it.
+use vault::{graph, lint, names, note};
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;

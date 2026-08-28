@@ -4,15 +4,30 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Reads an Obsidian vault as data: link graph resolution and frontmatter conformance. The tool every vault operation calls before it touches a file."
+description = "Reads an Obsidian vault as data: link graph resolution, frontmatter conformance, and the Action kind served read-only over HTTP. The tool every vault operation calls before it touches a file."
 publish = false
+
+# One reader, two front ends. The library holds the note loader and the task
+# rule; the CLI and the server are both callers of it (PRD Q48, 2026-08-27).
+[lib]
+name = "vault"
+path = "src/lib.rs"
 
 [[bin]]
 name = "vault"
 path = "src/main.rs"
 
+[[bin]]
+name = "vault-server"
+path = "src/server.rs"
+
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
+axon-server = { path = "../../libs/axon-server" }
 markdown-root = { path = "../../libs/markdown-root" }
+route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
