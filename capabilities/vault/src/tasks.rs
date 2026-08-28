@@ -34,13 +34,14 @@
 //!
 //! ## Why a key is served only when the ladder reads it
 //!
-//! A task note carries eleven frontmatter keys. Six of them are served here
-//! because the dashboard's decision ladder consumes them: `title` and `summary`
-//! render the row, `due` and `priority` rank it, `projects` labels it, and
-//! `done` decides whether it is a decision at all. `scheduled`, `context`,
-//! `energy`, `focus`, `events` and `blocked_by` have no reader on the ladder,
-//! so serving them would publish a contract nothing checks — and an unread
-//! field is the one that rots without anything failing.
+//! A task note carries eleven frontmatter keys; five are served here because
+//! the dashboard's decision ladder consumes them: `summary` renders the row
+//! (with `title`, which is the filename, not a key), `due` and `priority`
+//! rank it, `projects` labels it, and `done` decides whether it is a decision
+//! at all. The other six — `scheduled`, `context`, `energy`, `focus`,
+//! `events` and `blocked_by` — have no reader on the ladder, so serving them
+//! would publish a contract nothing checks, and an unread field is the one
+//! that rots without anything failing.
 
 use std::collections::HashMap;
 use std::path::Path;

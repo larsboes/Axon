@@ -42,11 +42,12 @@ the conflict §5.5 states as "Axon reads the vault and does not write to it". Th
 ladder links to the note; it does not close it.
 
 **Which frontmatter keys are served, and why not all of them.** A task note
-carries eleven keys. Six are served, because the ladder reads all six: `title`
-and `summary` render the row, `due` and `priority` rank it, `projects` labels
-it, `done` decides whether it is a decision at all. `scheduled`, `context`,
-`energy`, `focus`, `events` and `blocked_by` have no reader, and a served field
-with no reader is a contract nothing checks.
+carries eleven keys; five are served, because the ladder reads them: `summary`
+renders the row (beside `title`, which is the filename, not a key), `due` and
+`priority` rank it, `projects` labels it, `done` decides whether it is a
+decision at all. The other six — `scheduled`, `context`, `energy`, `focus`,
+`events` and `blocked_by` — have no reader, and a served field with no reader
+is a contract nothing checks.
 
 **What counts as a task** is `capabilities/vault/src/tasks.rs`'s module doc: the
 vault's own `Resources/Bases/Tasks.base` filter, scoped to `Projects/`, minus

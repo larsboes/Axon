@@ -2010,7 +2010,7 @@ export const comms = {
  *
  *  Every field here has a reader below — `due` and `priority` rank the row,
  *  `title` and `summary` render it, `projects` labels it, `done` decides
- *  whether it is a decision at all. The note carries five more frontmatter
+ *  whether it is a decision at all. The note carries six more frontmatter
  *  keys that nothing on this page reads, so the server does not serve them. */
 export interface Task {
   /** Vault-relative path. The identity that survives a machine. */
