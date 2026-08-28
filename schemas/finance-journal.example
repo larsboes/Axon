@@ -2,7 +2,13 @@
 ; capabilities/finance expects. Every name here is generic on purpose: the real
 ; journal lives in the private overlay and this file is published.
 ;
-; Validate with:  hledger --no-conf -f schemas/finance-journal.example check
+; Validated by Axon's own parser, in capabilities/finance's test suite: the engine
+; checks and reads this exact file on every run (capabilities/finance/src/journal.rs).
+;
+; The format is hledger's and stays that way (Principle 8), so the same file also
+; passes `hledger --no-conf -f schemas/finance-journal.example check` on a machine
+; that happens to have hledger. That is a compatibility cross-check, not a
+; requirement -- PRD Q50 (2026-08-28) retired the executable, not the format.
 ;
 ; ---------------------------------------------------------------------------
 ; The account tree
@@ -32,7 +38,9 @@
 ; A trip expense is also a food expense, so the trip is transaction context rather than
 ; a branch of the tree. Duplicating the category tree under a trip prefix would
 ; make "what did I spend on food this year" answerable only by remembering to
-; union two subtrees.
+; union two subtrees. Finance reads the tag itself when it builds the projection
+; (capabilities/finance/src/analytics.rs). Because the format is unchanged, the
+; same grouping is also one hledger command away for anyone who wants it:
 ;
 ;   hledger -f <journal> balance tag:axon-trip-id=trip:synthetic
 ;
