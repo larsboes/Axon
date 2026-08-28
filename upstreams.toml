@@ -150,6 +150,8 @@ url = "https://github.com/dani-garcia/vaultwarden"
 verdict = "adopt"
 license = "AGPL-3.0"
 pin = "1.37.0-alpine"   # 2026-07-25, 1d old — INSIDE the 7d cooldown, adopted under the active-vulnerability carve-out in README.md#pins-and-cooldown: trivy scored the running 1.36.0-alpine at 8 HIGH across CVE-2026-{33630,45447,5773,6276} (libcurl cookie leak, OpenSSL PKCS7_verify UAF) and 1.37.0-alpine at 0. Upstream also states 1.37.0 is REQUIRED for clients >= 2026.7.0, which is what broke the browser extension.
+pin_kind = "image"      # an image tag, not a release tag — declared 2026-08-28 so renovate.json5's exclusion is stated rather than incidental (the -alpine suffix happened to fail the regex)
+tracked_by = "tools/audit's trivy image scan on the family Pi's deployment, plus the client-compatibility pressure that forced this very pin"
 why = "single-user secrets store, replaces the two-container HashiCorp Vault experiment (unnecessary Raft/unseal machinery for one user); Bitwarden-protocol compatible so real client apps/browser extensions work against it unmodified, and it's the self-hosted sibling to Proton Pass for eventual import"
 
 [bitwarden-cli]

@@ -57,7 +57,7 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Mondays ~04:17 UTC, offset from upstream-watch's 06:23 so the two never contend. A schedule
+    # Mondays ~04:17 UTC, an hour nobody else schedules (upstream-watch, its old sibling, retired 2026-08-28 with B12). A schedule
     # earns its place here for a reason a push trigger cannot cover: CodeQL's query packs change,
     # so unchanged code gets newly-known findings without anyone touching it.
     - cron: "17 4 * * 1"

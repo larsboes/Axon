@@ -74,7 +74,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       # paths.sh resolves the overlay before anything else runs; with no axon.local.toml it falls
-      # back to axon.toml's shipped default. Same minimal seed ci.yml and upstream-watch use.
+      # back to axon.toml's shipped default. Same minimal seed ci.yml uses.
       # tools/demo-up overrides it for its own steps by exporting AXON_OVERLAY_ROOT.
       - name: Minimal overlay for path resolution
         run: |
