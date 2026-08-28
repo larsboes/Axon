@@ -1,29 +1,37 @@
 # finance
 
-Journal-backed cash flow, budgets, reviewed bank imports and subscriptions with
+Journal-backed cash flow, reviewed bank imports and subscriptions with
 append-only price and state history.
 
 ## Why a capability
 
-hledger is the first accounting engine. The private plaintext journal is canonical,
-The store holds a disposable index, and this capability owns the review path and the
-product above both.
+`src/journal.rs` is the accounting engine. The private plaintext journal is
+canonical, the store holds a disposable index, and this capability owns the review
+path and the product above both.
 
 The split is not a compromise between build and adopt. A plaintext journal under
 git satisfies the knowledge-boundary's V1 and an index rebuilt from it satisfies
 V2, so choosing the storage format did the boundary work rather than a rule someone
 has to remember. What gets built here is the layer nothing off the shelf does well.
-Double-entry semantics, lot accounting, price feeds and return math are not built
-here: `hledger roi` already computes IRR and TWR, and `pricehist` already emits `P`
-directives. Source parsing is different. Axon owns the typed CSV adapter, duplicate
-detection, explicit review and journal write because those are product policy, not
-accounting-engine policy.
+Axon owns the typed CSV adapter, duplicate detection, explicit review and journal
+write because those are product policy, not accounting-engine policy. Price feeds
+are still not built here: `pricehist` already emits `P` directives.
+
+Until 2026-08-28 this paragraph also said that return math was not built here
+because `hledger roi` already computes IRR and TWR. PRD Q50 retired that claim
+along with the executable. Nothing in Axon ever called `hledger roi`, so no IRR
+or TWR figure was ever computed for this capability by anything — the sentence
+described an engine's feature list rather than this system's behaviour. Return
+math remains unbuilt, which is now stated as the absence it is.
 
 ## What exists today
 
-- `AccountingEngine` defines check, transaction, register, balance, budget, cash-flow
-  and ROI reports without exposing hledger syntax. `HledgerEngine` invokes hledger
-  with `--no-conf` and normalizes its output.
+- `AccountingEngine` defines two operations, `check` and `transactions`, without
+  exposing journal syntax. `JournalEngine` implements both against
+  `src/journal.rs`, in this process. The trait declared register, balance, budget,
+  cash-flow and ROI reports until PRD Q50 (2026-08-28); measured then, production
+  called none of the five, so they retired with the shell-out that was their only
+  reason for existing.
 - A configurable CSV adapter handles column names, delimiters, decimal marks,
   currencies and symbolic source accounts. It emits SHA-256-addressed
   `TransactionCandidate` values and discards the raw rows.
@@ -42,9 +50,9 @@ accounting-engine policy.
   The personal share remains on the expense account; money fronted for others posts
   to `assets:receivable:shared`. A linked repayment settles that receivable and is
   never projected as income or negative spending.
-- `/finance` has Overview, Planning, Budget, Transactions and Subscriptions. Personal result,
-  external cash movement, category composition, purpose/trip summaries, budget
-  variance, the table and the constrained flow explorer all use the same Rust
+- `/finance` has Overview, Planning, Transactions and Subscriptions. Personal result,
+  external cash movement, category composition, purpose/trip summaries, the table
+  and the constrained flow explorer all use the same Rust
   projection. Transactions starts with largest-first categorization review and a
   trip-first allocation workspace: Trips owns the plan and dates, while Finance loads
   that window and reviews each transaction's personal share. Internal transfers are
@@ -93,7 +101,6 @@ collapsing the two into one field wrong.
 | The price and state SERIES, row by row | the vault note, same marked region | this capability, **not** regenerable |
 | Confirmed postings | private plaintext journal | this capability, after explicit review |
 | Import candidates and transaction projection | the shared store | this capability, rebuildable |
-| Budget targets | private `config/finance.json` | the human |
 | Spending behavior, forecast adjustments and personal card/loyalty values | private `config/finance.json` | the human |
 | Reviewed aggregate holdings | private configured snapshot | this capability, after explicit review |
 | Holdings dashboard projection | the shared store | this capability, rebuildable from the private snapshot |
@@ -180,8 +187,8 @@ fact rather than a capability one: `$AXON_FINANCE_DATABASE_URL` is gone, because
 file per capability would drop the join `capabilities/places` builds its spend layer
 on. Vault location from
 the overlay's `config/finance.json`, or `AXON_FINANCE_OBSIDIAN_ROOT` for
-development. `journal` and `budgets` live in that same private file; the journal can
-also be set with `AXON_FINANCE_JOURNAL`. `schemas/finance.json.example` documents the
+development. `journal` lives in that same private file and can also be set with
+`AXON_FINANCE_JOURNAL`. `schemas/finance.json.example` documents the
 shape without carrying private deployment values. Named `csv_mappings` also live in
 that private file; the loopback API supplies them to the local review UI, where the
 operator can still edit every field before staging. A mapping explicitly declares
@@ -223,10 +230,6 @@ posts from a liability to an expense, while a settlement posts between balance a
 The latter projects as a transfer and is excluded from spending unless transfers are
 explicitly requested.
 
-Budget entries have `account`, `monthly_cents` and an optional `currency`. Accounts
-stay symbolic. Real account numbers and the mapping from a symbol to an institution
-belong in Vaultwarden, never in the journal or public config.
-
 ## Two representation choices
 
 **Money is integer cents.** A monthly burn is a sum of divisions, since a yearly
@@ -258,20 +261,26 @@ comments and commit messages too.
 
 **A trip is context, not a category branch.** A trip expense is also a food expense.
 Duplicating the category tree under a trip prefix would make "what did I spend on
-food this year" answerable only by remembering to union two subtrees. `hledger
-balance tag:axon-trip-id=<plan-id>` is the join. Finance stores only the opaque Trips
+food this year" answerable only by remembering to union two subtrees. The
+`axon-trip-id` tag is the join, read in `src/analytics.rs` when the projection is
+built. Finance stores only the opaque Trips
 plan identifier; the dashboard asks Trips for the current title. Purpose is a
 separate `axon-purpose` tag, and ownership is represented by postings, so category,
 reason and whose money was spent remain independently queryable.
 
-`service.toml` declares `ledger = "hledger"`. That makes the existing scoped
-toolchain check require hledger only on machines that enable Finance. Version 1.52.1
-is pinned in `upstreams.toml` with its GPL-3.0-or-later licence. It remains a
-separately installed executable. Axon invokes it but does not ship it with the MIT source.
+**The format is hledger's; the engine is not.** Until PRD Q50 (2026-08-28)
+`service.toml` declared `ledger = "hledger"`, `toolchain.toml` made every machine
+enabling Finance install the pinned 1.52.1 executable, and this capability shelled
+out to it. `src/journal.rs` reads the journal in-process now, so Finance needs no
+host tool and the GPL question the separate executable raised does not arise.
 
-Replacement is a measured decision. A native Rust engine can implement the same
-contract later, but it must beat the existing adapter on a golden synthetic journal
-before the system pays to recreate double-entry and return semantics.
+What survived is the file. The journal is still plaintext hledger syntax, still
+under git, still diffable, and still opens in hledger on any machine that has it —
+an operator's choice rather than a requirement. `schemas/finance-journal.example`
+is the published contract (Principle 8). This is why the swap changed no journal
+byte and no `source-id`, which `tests/live_journal.rs` and the fixture-parity test
+in `src/journal.rs` both hold to. `upstreams.toml [hledger]` keeps the pin and the
+dated verdict.
 
 ## Related tools and why this is not them
 
@@ -280,4 +289,4 @@ before the system pays to recreate double-entry and return semantics.
 | [Actual Budget](https://actualbudget.org) | Envelope budgeting, fast local-first UI | Rejected as core. Its automatic German bank sync ran through GoCardless Bank Account Data, which stopped accepting new accounts in July 2025 |
 | [Firefly III](https://firefly-iii.org) | A serious rule engine and a real REST API | PHP with its own database. A second store inside Axon, and a ledger that is not git-diffable, so agent writes stop being reviewable |
 | [Ghostfolio](https://ghostfol.io) | Portfolio math, price feeds, allocation | A candidate for the investment half later. It owns valuation well and models a subscription's history not at all |
-| [hledger](https://hledger.org) | Double-entry, commodities, reports and `roi` | Adopted as the first external engine behind `AccountingEngine`; not the importer and not bundled |
+| [hledger](https://hledger.org) | Double-entry, commodities, reports and `roi` | Its journal FORMAT is what Axon writes and reads. The executable was adopted as the engine behind `AccountingEngine` until PRD Q50 (2026-08-28) and is retired; `src/journal.rs` parses the file in-process. Never the importer, never bundled |

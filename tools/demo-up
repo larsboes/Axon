@@ -60,7 +60,8 @@ export AXON_DB_PATH="$DEMO_DB_PATH"
 # way: a missing journal path is not a startup error, it is a 409 on the first write that
 # needs one, six minutes into a CI run. So all of them are set together.
 #
-#   journal              the plaintext double-entry ledger hledger reads and writes
+#   journal              the plaintext double-entry ledger, in hledger format, that the
+#                        finance server parses and appends to itself
 #   investment_snapshot  the reviewed holdings document
 #   balance_snapshot     manual balances, which no bank export can know
 #   obsidian root/dir    the vault tools/demo-seed writes fictional subscription notes into

@@ -50,7 +50,7 @@ principal's call from measured options.
 - **D2 — places is its own capability.** Chosen over per-capability columns and
   over hledger journal tags. The registry, the geocode cache, the link tables
   and the layer endpoints live here. The finance projection is disposable — it
-  is rebuilt from the canonical hledger journal
+  is rebuilt from the canonical hledger-format journal
   (`capabilities/finance/README.md`) — so finance location links key on the
   journal-stable transaction `source_id`, never on projection row identity, and
   survive rebuilds by construction.

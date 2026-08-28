@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Reviewed finance imports, journal projections, budgets, cash flow, and append-only subscriptions."
+description = "Reviewed finance imports, journal projections, cash flow, and append-only subscriptions."
 publish = false
 
 [lib]

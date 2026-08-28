@@ -1,9 +1,11 @@
 //! Finance: the decision layer above the ledger.
 //!
-//! A private plaintext journal is canonical and Postgres is its rebuildable index.
-//! The replaceable [`AccountingEngine`](accounting::AccountingEngine) boundary keeps
-//! double-entry semantics outside Axon while this capability owns reviewed import,
-//! analytics, budgets, subscriptions and the local UI contract.
+//! A private plaintext journal is canonical and the shared SQLite file is its
+//! rebuildable index (PRD Q45). The [`AccountingEngine`](accounting::AccountingEngine)
+//! boundary is implemented in-process by [`journal`] since PRD Q50 (2026-08-28); the
+//! journal FORMAT stays hledger-compatible, which is what the boundary was really
+//! protecting. This capability owns reviewed import, analytics, subscriptions and the
+//! local UI contract.
 //!
 //! Spec, phases and the decision record: the principal's `Projects/Ledger` note.
 

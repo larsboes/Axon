@@ -109,21 +109,14 @@ jobs:
           restore-keys: |
             cargo-target-${{ runner.os }}-
 
-      # The double-entry engine behind Finance. Taken from the exact ref upstreams.toml pins
-      # rather than from apt, whose hledger trails the pinned 1.52.1 — a demo built against a
-      # different engine version is a demo of software this repository does not describe.
-      - name: Install the pinned ledger engine
-        run: |
-          pin="$(bun -e '
-            const t = Bun.TOML.parse(await Bun.file("upstreams.toml").text());
-            process.stdout.write(t.hledger.pin);
-          ')"
-          curl -fsSL -o /tmp/hledger.tar.gz \
-            "https://github.com/simonmichael/hledger/releases/download/${pin}/hledger-linux-x64.tar.gz"
-          tar -xzf /tmp/hledger.tar.gz -C /usr/local/bin hledger
-          chmod +x /usr/local/bin/hledger
-          hledger --version
-
+      # An "Install the pinned ledger engine" step stood here until 2026-08-28, when PRD Q50
+      # retired hledger. It downloaded the upstreams.toml pin so the demo would not be built
+      # against a different engine version than this repository describes. The engine is now
+      # compiled by the step below (capabilities/finance/src/journal.rs), so that is exactly
+      # what the demo is built against, and the download proved nothing but its own success:
+      # measured on this tree, no step in this job, no script under tools/ and no finance code
+      # path spawns the executable.
+      #
       # Built explicitly and together rather than left to service-runner's on-demand build:
       # one cargo invocation shares the compilation across all five, and a compile error
       # fails here with a compiler's error message instead of inside a service start.

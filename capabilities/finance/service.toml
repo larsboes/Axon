@@ -1,4 +1,4 @@
-# finance — reviewed imports, journal projections, budgets and subscriptions.
+# finance — reviewed imports, journal projections and subscriptions.
 kind        = "process"
 name        = "finance"
 command     = ["target/release/finance-server"]
@@ -30,7 +30,7 @@ proxy_api_only = "true"
 #
 # None of it is in the shared SQLite file, so `capabilities/store`'s contract does not
 # reach it. The journal is what every reviewed posting is appended to and the only
-# record of one; `config/finance.json` holds budget targets, spending behaviour and the
+# record of one; `config/finance.json` holds commitments, spending behaviour and the
 # CSV mappings that make an import readable, all typed by hand; the snapshots are
 # holdings and balances after an explicit human review. Nothing here is re-derivable
 # and nothing here is fetched again from anywhere.
