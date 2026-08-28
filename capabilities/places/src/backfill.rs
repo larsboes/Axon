@@ -3,22 +3,24 @@
 //! NOTHING — and prints counts instead of guessing.
 //!
 //! `amex` re-derives the finance candidate fingerprint from the raw export
-//! rows. The algorithm is a deliberate copy of
-//! `capabilities/finance/src/import.rs` (SHA-256 over the exact tuple
-//! `booked_at, amount_cents, currency, description, source_reference,
-//! source_account`, 0xff-separated, with the same per-file occurrence rule for
-//! reference-less repeats), because that fingerprint is the journal-stable
-//! `source_id` the projection carries and the one identity a location link can
-//! safely hang on (README D2).
+//! rows, because that fingerprint is the journal-stable `source_id` the
+//! projection carries and the one identity a location link can safely hang on
+//! (README D2).
+//!
+//! The algorithm was a deliberate copy of `capabilities/finance/src/import.rs`
+//! until 2026-08-28. It is now `libs/candidate-fingerprint`, which both call:
+//! two copies of a hash that 263 live links depend on is a divergence waiting
+//! to happen, and the divergence would be silent — every row would simply stop
+//! matching and be reported unmatched.
 
 use crate::geocode::{GeocodeQuery, Geocoder, StructuredQuery};
 use crate::layers::{normalize_eva, parse_station_ref};
 use axon_store::QueryAll;
+use candidate_fingerprint::CandidateKey;
 use rusqlite::{params, OptionalExtension};
 
 use crate::store::{stable_id, validate_prefix, Fallible, Place, PlacesStore};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -43,21 +45,6 @@ pub fn transit_url() -> String {
 // ---------------------------------------------------------------------------
 // Fingerprint recomputation (the finance candidate identity)
 // ---------------------------------------------------------------------------
-
-/// Byte-identical to finance's `fingerprint`: each part, then 0xff.
-pub fn fingerprint(parts: &[&str]) -> String {
-    let mut hash = Sha256::new();
-    for part in parts {
-        hash.update(part.as_bytes());
-        hash.update([0xff]);
-    }
-    let mut encoded = String::with_capacity(64);
-    for byte in hash.finalize() {
-        use std::fmt::Write;
-        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    encoded
-}
 
 /// finance's `normalize_text`: whitespace runs collapse to single spaces.
 pub fn normalize_text(value: &str) -> String {
@@ -141,11 +128,15 @@ pub fn parse_amount_cents(value: &str, decimal_separator: char) -> Option<i64> {
 /// export would never match its candidate.
 ///
 /// Parity with finance's fingerprint rests on two assumptions about the Amex
-/// export, hardcoded here as reference `""` and currency `"EUR"` even though
-/// the overlay mapping declares reference_column and currency_column: every
-/// measured row has an empty reference cell and an EUR currency cell. A future
-/// row that breaks either assumption hashes differently and is reported as
-/// unmatched — never guessed (the raw-file phase's honest-failure rule).
+/// export, stated here as `source_reference: None` and `currency: "EUR"` even
+/// though the overlay mapping declares reference_column and currency_column:
+/// every measured row has an empty reference cell and an EUR currency cell. A
+/// future row that breaks either assumption hashes differently and is reported
+/// as unmatched — never guessed (the raw-file phase's honest-failure rule).
+///
+/// The hash itself is `candidate_fingerprint`, the same code finance mints
+/// with, so this function is now only the Amex case of it rather than a second
+/// copy of the algorithm.
 pub fn amex_fingerprint(
     booked_at: &str,
     amount_cents: i64,
@@ -153,14 +144,15 @@ pub fn amex_fingerprint(
     source_account: &str,
     occurrence: usize,
 ) -> String {
-    let amount = amount_cents.to_string();
-    let base = fingerprint(&[booked_at, &amount, "EUR", description, "", source_account]);
-    if occurrence == 0 {
-        base
-    } else {
-        let ordinal = occurrence.to_string();
-        fingerprint(&["csv-occurrence", &base, &ordinal])
+    CandidateKey {
+        booked_at,
+        amount_cents,
+        currency: "EUR",
+        description,
+        source_reference: None,
+        source_account,
     }
+    .repeated_fingerprint(occurrence)
 }
 
 // ---------------------------------------------------------------------------

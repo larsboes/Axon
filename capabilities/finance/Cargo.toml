@@ -19,6 +19,10 @@ path = "src/server.rs"
 axon-config = { path = "../../libs/axon-config" }
 axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }
+# The candidate identity, shared with capabilities/places, which re-derives it.
+# One implementation because 263 live venue links resolve only while the two
+# agree byte for byte.
+candidate-fingerprint = { path = "../../libs/candidate-fingerprint" }
 markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }

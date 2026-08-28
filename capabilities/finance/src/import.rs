@@ -4,9 +4,9 @@
 //! and never becomes canonical. Only an explicitly confirmed candidate is rendered
 //! into the plaintext journal; rejection writes nothing.
 
+use candidate_fingerprint::CandidateKey;
 use csv::StringRecord;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -380,15 +380,15 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
                 "CSV row {row}: currency must be a three-letter code"
             )));
         }
-        let amount_text = amount_cents.to_string();
-        let base_fingerprint = fingerprint(&[
-            &booked_at,
-            &amount_text,
-            &currency,
-            &description,
-            source_reference.as_deref().unwrap_or(""),
-            &mapping.source_account,
-        ]);
+        let base_fingerprint = CandidateKey {
+            booked_at: &booked_at,
+            amount_cents,
+            currency: &currency,
+            description: &description,
+            source_reference: source_reference.as_deref(),
+            source_account: &mapping.source_account,
+        }
+        .fingerprint();
         let fingerprint = if source_reference.is_some() {
             if !stable_fingerprints.insert(base_fingerprint.clone()) {
                 duplicate_rows += 1;
@@ -399,13 +399,10 @@ pub fn prepare_csv(bytes: &[u8], mapping: &CsvMapping) -> ImportResult<PreparedC
             let occurrence = occurrence_counts
                 .entry(base_fingerprint.clone())
                 .or_insert(0_usize);
-            let fingerprint = if *occurrence == 0 {
-                base_fingerprint
-            } else {
+            if *occurrence > 0 {
                 preserved_repetitions += 1;
-                let ordinal = occurrence.to_string();
-                fingerprint(&["csv-occurrence", &base_fingerprint, &ordinal])
-            };
+            }
+            let fingerprint = candidate_fingerprint::repeated(&base_fingerprint, *occurrence);
             *occurrence += 1;
             fingerprint
         };
@@ -912,19 +909,6 @@ pub(crate) fn decimal(cents: i64) -> String {
     format!("{sign}{}.{:02}", absolute / 100, absolute % 100)
 }
 
-fn fingerprint(parts: &[&str]) -> String {
-    let mut hash = Sha256::new();
-    for part in parts {
-        hash.update(part.as_bytes());
-        hash.update([0xff]);
-    }
-    let mut encoded = String::with_capacity(64);
-    for byte in hash.finalize() {
-        use std::fmt::Write;
-        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    encoded
-}
 
 fn preview_id(
     candidates: &[TransactionCandidate],
@@ -943,7 +927,7 @@ fn preview_id(
     fingerprints.push(&duplicate_rows);
     fingerprints.push(&preserved_repetitions);
     fingerprints.push(&ignored_non_transaction_rows);
-    fingerprint(&fingerprints)
+    candidate_fingerprint::digest(&fingerprints)
 }
 
 #[cfg(test)]

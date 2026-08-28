@@ -1,0 +1,17 @@
+[package]
+name = "candidate-fingerprint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The one SHA-256 identity of a reviewed import candidate, shared by the capability that mints it and the capability that re-derives it."
+publish = false
+
+[lib]
+name = "candidate_fingerprint"
+path = "src/lib.rs"
+
+[dependencies]
+# The hash itself. Named here rather than by each caller so the two consumers
+# cannot end up on different versions of the digest that keys their live links.
+sha2 = "0.10"

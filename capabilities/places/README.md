@@ -85,8 +85,11 @@ principal's call from measured options.
   that.
 - `places_transaction_places` — `source_id, place_id, precision (venue|city),
   confidence_bp, source, created_at`. `source_id` is the finance journal's
-  SHA-256 candidate fingerprint (`capabilities/finance/src/import.rs`), the one
-  identity that survives projection rebuilds.
+  SHA-256 candidate fingerprint (`libs/candidate-fingerprint`), the one identity
+  that survives projection rebuilds. finance mints it at import and places
+  re-derives it from the raw export; since 2026-08-28 both call the same lib
+  rather than two copies of the hash, because a divergence between them would
+  not raise an error — every link would silently stop resolving.
 - `places_person_places` — the companion register. `id, person, place_id, date_start,
   date_end (null = current), confidence_bp, source, state
   (proposed|confirmed|dismissed), created_at, reviewed_at`. `person` is the

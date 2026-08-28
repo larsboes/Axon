@@ -19,6 +19,10 @@ path = "src/main.rs"
 axon-config = { path = "../../libs/axon-config" }
 axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }
+# The candidate identity, shared with capabilities/finance, which mints it.
+# A lib rather than a dependency on finance: a capability does not link another
+# capability's crate, and the shape belongs to neither of them alone.
+candidate-fingerprint = { path = "../../libs/candidate-fingerprint" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -32,8 +36,8 @@ axum = "0.7"
 # Raw Amex export parsing for `backfill amex`; the same crate finance's import
 # pipeline uses, so quoting and embedded newlines behave identically.
 csv = "1.4"
-# The candidate fingerprint is SHA-256 over the exact input tuple
-# capabilities/finance/src/import.rs hashes; sha2 keeps the two byte-identical.
+# The geocode cache key and the stable place id. The candidate fingerprint used
+# to be hashed here too; it moved to libs/candidate-fingerprint on 2026-08-28.
 sha2 = "0.10"
 # Outbound HTTP to Nominatim and transit's suggest surface; the blocking client,
 # matching capabilities/transit/src/hafas.rs.

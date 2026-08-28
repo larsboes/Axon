@@ -845,6 +845,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "candidate-fingerprint"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "caseless"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1544,6 +1551,7 @@ dependencies = [
  "axon-server",
  "axon-store",
  "axum",
+ "candidate-fingerprint",
  "csv",
  "markdown-root",
  "route-manifest",
@@ -3380,6 +3388,7 @@ dependencies = [
  "axon-server",
  "axon-store",
  "axum",
+ "candidate-fingerprint",
  "csv",
  "reqwest",
  "route-manifest",

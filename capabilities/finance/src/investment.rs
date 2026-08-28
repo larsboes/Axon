@@ -7,6 +7,7 @@
 use crate::import::{normalize_date, ImportError, ImportResult};
 use csv::StringRecord;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use candidate_fingerprint::digest;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
@@ -272,7 +273,10 @@ pub fn preview_csv(
             .unwrap_or(&mapping.default_currency)
             .to_ascii_uppercase();
         validate_currency(&currency)?;
-        let id = fingerprint(&[
+        // The same 0xff-terminated primitive the candidate identity uses, over
+        // this ledger's own tuple. Shared so the digest cannot drift; the tuple
+        // is stated here because it is this file's, not the candidate's.
+        let id = digest(&[
             &date,
             &instrument,
             &quantity.mantissa.to_string(),
@@ -890,20 +894,6 @@ fn column(headers: &StringRecord, name: &str) -> ImportResult<usize> {
 
 fn optional_column(headers: &StringRecord, name: Option<&str>) -> ImportResult<Option<usize>> {
     name.map(|name| column(headers, name)).transpose()
-}
-
-fn fingerprint(parts: &[&str]) -> String {
-    let mut hash = Sha256::new();
-    for part in parts {
-        hash.update(part.as_bytes());
-        hash.update([0xff]);
-    }
-    let mut encoded = String::with_capacity(64);
-    for byte in hash.finalize() {
-        use std::fmt::Write;
-        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    encoded
 }
 
 fn default_delimiter() -> char {
