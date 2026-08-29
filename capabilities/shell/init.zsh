@@ -49,14 +49,31 @@ fi
 # reason: printing/printctl.py is an implementation the 3d-printing Pack drives through
 # `uv run`, not a command to call directly, and the name test is what tells those apart.
 # Appended, never prepended — a capability CLI must not shadow a system binary.
-for _cap in "$AXON_ROOT"/capabilities/*/; do
-  # The glob yields a trailing slash. :t reads through it to the capability name, and
-  # %/ trims it off for the PATH entry — pure parameter expansion, so the whole sweep
-  # costs no forks at shell startup. (Not :h, which on a trailing-slash path strips the
-  # last component too and would put capabilities/ itself on PATH.)
-  [[ -x "$_cap${_cap:t}" ]] && PATH="$PATH:${_cap%/}"
+#
+# BOTH roots, because a capability is not less real for living in the overlay. This
+# swept only $AXON_ROOT until 2026-08-30, so an overlay capability shipping a CLI could
+# never be called by name: `ytalbum` and `interior` were invisible to the shell by
+# construction, and the only way to run one was to type its absolute path. The overlay
+# is where a capability goes when it is inseparable from what it is pointed at
+# (README.md#placement-guide), which is a statement about privacy, not about whether it
+# has a command.
+#
+# Public first, so a name present in both resolves to the public one. That ordering
+# should never matter — `tools/doctor` refuses one capability name declared in two roots
+# — and it is written down here as the tie-break rather than left to glob order.
+for _root in "$AXON_ROOT" "$AXON_PERSONAL_ROOT"; do
+  [[ -n "$_root" && -d "$_root/capabilities" ]] || continue
+  # (N) is null_glob for this glob only: a root whose capabilities/ is empty must
+  # contribute nothing, not print "no matches found" on every shell start.
+  for _cap in "$_root"/capabilities/*/(N); do
+    # The glob yields a trailing slash. :t reads through it to the capability name, and
+    # %/ trims it off for the PATH entry — pure parameter expansion, so the whole sweep
+    # costs no forks at shell startup. (Not :h, which on a trailing-slash path strips the
+    # last component too and would put capabilities/ itself on PATH.)
+    [[ -x "$_cap${_cap:t}" ]] && PATH="$PATH:${_cap%/}"
+  done
 done
-unset _cap
+unset _cap _root
 export PATH
 
 # --- Claude Code ---
