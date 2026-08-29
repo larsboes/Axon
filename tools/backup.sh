@@ -642,6 +642,24 @@ if [ "$TARGET_KIND" = "local" ]; then
   # asserted here; only its absence can be detected, which is the more useful half anyway. This is
   # the same lesson the vault taught: a declaration nobody verifies is how three separate backups
   # were dead for weeks without anyone noticing.
+  # Prevention first, where it can be checked. macOS records Finder's "Keep Downloaded" as an
+  # extended attribute on the directory — `com.apple.fileprovider.pinned#PX`, where the `#PX` is
+  # part of the name and not a display artifact. There is no CLI to SET it (brctl on macOS 26
+  # exposes log, status, quota and monitor and nothing that downloads or holds), but reading it
+  # turns "please remember to pin this" from an instruction nobody verifies into a fact this tool
+  # checks on every run. That distinction is the whole of D10.
+  #
+  # Only meaningful for a directory a file provider actually manages, so its absence is a warning
+  # rather than a failure: a plain external volume has no such attribute and needs none.
+  case "$REMOTE_ROOT" in
+    "$HOME/Library/Mobile Documents/"*)
+      if ! xattr "$REMOTE_ROOT" 2>/dev/null | grep -q "^com\.apple\.fileprovider\.pinned"; then
+        echo "  WARNING: $REMOTE_ROOT is not pinned — macOS may evict these archives." >&2
+        echo "  In Finder, right-click it and choose \"Keep Downloaded\"." >&2
+      fi
+      ;;
+  esac
+
   EVICTED="$(find "$LOCAL_DIR" -name ".*.icloud" 2>/dev/null | wc -l | tr -d " ")"
   if [ "$EVICTED" != "0" ]; then
     echo "  WARNING: $EVICTED archive(s) at this destination are evicted placeholders, not files." >&2
