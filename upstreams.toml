@@ -358,6 +358,12 @@ pin = "0.14.7"          # 2026-07-27, 7d old on 2026-08-03 = the near edge of th
 installed_probe = "btm --version"   # cargo install, so nothing but this pin decides which version the host runs
 why = "tools/sysmon TUI backend -- cross-platform system monitor (CPU/mem/disk/net/proc, history graphs), Rust, matches the language bias in README.md#implementation-languages-and-intelligence. Adopt over build: README.md#upstream-first requires checking for prior art before writing a system-usage overview from scratch"
 
+[auge]
+url = "https://github.com/Arthur-Ficial/auge"
+verdict = "reject"
+license = "MIT"
+why = "Considered as a third capabilities/transit DocumentBackend beside builtin and xberg, and MEASURED on 2026-08-29 the way xberg was measured on 2026-08-11: a rendered DB-style journey table, OCR'd, compared against what the seam needs. Rejected because it reads text lines, not layout. Apple Vision's VNRecognizeTextRequest returns text observations, so a table comes back COLUMN-MAJOR -- `Datum / 29.08. / Ab / 08:14 / 11:05 / Bahnhof / Koeln Hbf / Frankfurt(M) Hbf / An / ...` -- with the two legs interleaved and unrecoverable. That is the exact failure capabilities/transit/src/document.rs was written to escape, and worse than pdf_extract, which at least keeps one leg's fields adjacent. `--md` is an output format for auge's own results and reconstructs nothing. What DID hold: German is perfect (Koeln Hbf, Muenchen Hbf) with no language pack, so if this slot ever wants an OCR engine rather than a layout reader, this is the one -- and reconstructing rows from bounding boxes would be Axon writing the layout logic, which is the code the apfel adoption just deleted elsewhere. Also note the trust delta: apfel is in homebrew-core, auge needs a personal tap."
+
 [apfel]
 url = "https://github.com/Arthur-Ficial/apfel"
 verdict = "adopt"
