@@ -631,6 +631,24 @@ if [ "$TARGET_KIND" = "local" ]; then
     echo "→ prune destination to last $RETAIN"
     ls -1t "$LOCAL_DIR/$CAP-"*.tar.gz 2>/dev/null | tail -n +$((RETAIN + 1)) | while IFS= read -r old; do rm -f "$old"; done
   fi
+  # A local destination can be a directory something else replicates, and replication can also
+  # take files AWAY. macOS with `com.apple.bird optimize-storage = 1` evicts the contents of an
+  # iCloud folder under disk pressure and leaves a `.<name>.icloud` placeholder: the archive is
+  # still listed, still named, and no longer here. Restoring it would need the network and a full
+  # download, at exactly the moment that is least affordable.
+  #
+  # macOS offers no CLI to pin a folder — `brctl` on macOS 26 exposes log/status/quota/monitor and
+  # nothing that downloads or holds. "Keep Downloaded" is a Finder action. So the pin cannot be
+  # asserted here; only its absence can be detected, which is the more useful half anyway. This is
+  # the same lesson the vault taught: a declaration nobody verifies is how three separate backups
+  # were dead for weeks without anyone noticing.
+  EVICTED="$(find "$LOCAL_DIR" -name ".*.icloud" 2>/dev/null | wc -l | tr -d " ")"
+  if [ "$EVICTED" != "0" ]; then
+    echo "  WARNING: $EVICTED archive(s) at this destination are evicted placeholders, not files." >&2
+    echo "  A restore from them needs network and a full download. In Finder, right-click" >&2
+    echo "  $REMOTE_ROOT and choose \"Keep Downloaded\"." >&2
+  fi
+
   REMOTE_DIR="$LOCAL_DIR"
   SHIP_DESCRIPTION="$LOCAL_DIR"
 else
