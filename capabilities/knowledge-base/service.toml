@@ -1,0 +1,73 @@
+# knowledge-base — the vault, as a thing that gets backed up. See
+# schemas/service.toml.example for the field reference.
+#
+# `kind = "data"`: no image, no command, nothing to start. Obsidian owns this directory and
+# Axon never writes to it outside the declared projection regions
+# (libs/markdown-root/src/projection.rs). Same shape as capabilities/store: a file tree still
+# needs one owner for the one thing a file tree needs an owner for, which is backup.
+#
+# It exists because the mount was declared and never verified. The overlay's machine.toml has
+# carried `[[state_mount]] tool = "knowledge-base"` with `sync = "git"` — "git is history +
+# backup (bare repo on homepi)" — and `direction = "capture"`, "Axon config backs it up +
+# monitors", since the registry was written. Measured 2026-08-29: the vault's git checkout has
+# no remote and never had one, `tmutil` reports no Time Machine destination on the host at all,
+# no LaunchAgent references the path, and axon-status' backup registry held exactly `finance`
+# and `store`. A restic repository on the target does hold a snapshot — from 2026-08-02, taken
+# by a binary that is not installed on this machine. Twenty-seven days, unnoticed, because
+# nothing was watching a mount that no manifest owned.
+#
+# A state_mount says where data lives. Only a manifest puts it in the registry that reports
+# when a backup goes stale, and that difference is the whole reason for this file.
+kind = "data"
+name = "knowledge-base"
+
+# The path root is NOT declared here, and that is deliberate. `backup_paths` entries are tar
+# member names as well as sources, so tools/backup.sh runs them through `safe_relative()`, which
+# refuses anything absolute. The vault also sits outside the overlay, under an iCloud container
+# whose location is a fact about this machine rather than about Axon — the same reason
+# [[state_mount]] lives in the overlay and not in axon.toml.
+#
+# So the member name is tracked here and the machine names only the root it hangs from:
+#
+#   [capability.knowledge-base]
+#   backup_source_root = "~/Library/.../Documents"     # in the overlay's machine.toml
+#
+# Same per-machine override seam as `[capability.<name>] port`, and the same reason for it. The
+# default root stays the overlay, so every other capability is unaffected. tools/restore.sh needs
+# no knowledge of any of this: it compares the archive's path contract against this manifest and
+# both say `Knowledge-Base`.
+#
+# "Knowledge-Base" is an Axon-wide name, not a machine one — the vault is cited by that name
+# throughout the PRD and the agent bootstrap — so it belongs in the tracked file.
+backup_paths = ["Knowledge-Base"]
+
+# `.obsidian/plugin-backups/` is Obsidian's own copy of previously installed plugins, and on this
+# vault it held 19 symlinks pointing out of the vault at a since-retired plugin monorepo, so every
+# one of them dangles. Four kilobytes of dead links made the first 704 MB archive unrestorable,
+# because tools/restore.sh refuses any archive carrying a link (a symlink inside an archive is how
+# extraction escapes the directory the operator chose). tools/backup.sh now refuses to ship one
+# too, so this exclusion is what keeps the vault backup possible rather than what hides a warning.
+#
+# Excluded rather than deleted: it is Obsidian's directory, not Axon's, and a backup tool that
+# edits the thing it is backing up has the wrong relationship to it.
+backup_exclude = [".obsidian/plugin-backups"]
+
+backup_target = "backup-target"
+
+# 7, not store's 14. One archive is ~794 MB (measured 2026-08-29: 596 MB of it is Atlas
+# attachments; the irreplaceable markdown is 14.2 MB across 2,168 notes), and the target is a
+# 58 GB disk with 23 GB free. Fourteen generations would be ~10 GB on that disk beside an 8.9 GB
+# stale restic repo. Seven is a week of daily recovery points for ~5 GB.
+#
+# The retention can be lower here than anywhere else for a reason peculiar to this capability:
+# `.git` is inside the archive. Every generation therefore carries the vault's complete history,
+# not just its current state, so "how far back can I go" is not answered by how many tarballs
+# survive. That is also why the archive is the whole directory rather than the markdown alone.
+backup_retain = "7"
+
+# Daily, matching store. A note written and lost the same day is not re-derivable from anything;
+# unlike a feed item there is no source to re-fetch it from. Same reasoning that set store's
+# thresholds in PRD Q47: one missed run is "due", two is a problem, and a stale threshold has to
+# be reachable by the cadence meant to meet it.
+backup_advise_days = "1"
+backup_stale_days  = "2"

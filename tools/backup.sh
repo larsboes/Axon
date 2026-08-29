@@ -72,6 +72,45 @@ PATHS=()
 while IFS= read -r line; do [ -n "$line" ] && PATHS+=("$line"); done < <(toml_array backup_paths "$MANIFEST")
 CPATHS=()
 while IFS= read -r line; do [ -n "$line" ] && CPATHS+=("$line"); done < <(toml_array backup_container_paths "$MANIFEST")
+# Subtrees inside a declared path that are not this capability's data. rsync --exclude
+# patterns, relative to each declared path root.
+#
+# Needed the day the vault got a contract: `.obsidian/plugin-backups/` held 19 symlinks pointing
+# out of the vault at a since-retired plugin monorepo, so every one dangled, and 4 KB of dead
+# links made a 704 MB archive unrestorable — verify_archive below now refuses exactly that. An exclusion is
+# the right answer rather than a louder failure, because a plugin backup is not vault content:
+# nothing is protected by carrying it and it cannot be restored if it is.
+EXCLUDES=()
+while IFS= read -r line; do [ -n "$line" ] && EXCLUDES+=("$line"); done < <(toml_array backup_exclude "$MANIFEST")
+EXCLUDE_ARGS=()
+for x in ${EXCLUDES[@]+"${EXCLUDES[@]}"}; do EXCLUDE_ARGS+=(--exclude "$x"); done
+
+# Where the declared backup_paths hang from. The overlay for every capability whose data Axon
+# itself writes; a machine-local root for one whose data lives where the operator put it. The
+# vault is that case — an iCloud container path is a fact about this machine, so it cannot sit
+# in a tracked manifest, exactly as [[state_mount]] cannot.
+#
+# Only the ROOT moves. The paths stay relative and still pass safe_relative() below, because
+# they are tar member names as well as sources, and an absolute member name is how an archive
+# gets to write outside the directory a restore chose. tools/restore.sh therefore needs to know
+# nothing about this: it compares member names, which are unchanged.
+#
+# Same per-machine override seam as [capability.<name>] port in tools/service-runner.sh.
+SRC_ROOT="$AXON_PERSONAL_ROOT"
+SRC_ROOT_DECL="$(toml_get_in "capability.$CAP" backup_source_root "$AXON_MACHINE_TOML")"
+if [ -n "$SRC_ROOT_DECL" ]; then
+  case "$SRC_ROOT_DECL" in "~/"*) SRC_ROOT_DECL="$HOME/${SRC_ROOT_DECL#\~/}" ;; esac
+  case "$SRC_ROOT_DECL" in
+    /*) ;;
+    *) echo "backup.sh: [capability.$CAP] backup_source_root must be absolute or ~-relative: $SRC_ROOT_DECL" >&2; exit 1 ;;
+  esac
+  # Checked here rather than at first use. A root that does not exist yields a staging tree of
+  # empty directories and an archive that is valid and useless — the failure this whole file is
+  # written against.
+  [ -d "$SRC_ROOT_DECL" ] || {
+    echo "backup.sh: [capability.$CAP] backup_source_root is not a directory: $SRC_ROOT_DECL" >&2; exit 1; }
+  SRC_ROOT="$SRC_ROOT_DECL"
+fi
 
 # These strings become source paths and tar member names. The manifest gate catches
 # bad tracked declarations; the runtime check is still required because backup must not
@@ -140,8 +179,8 @@ fi
 # or verifier discovered after stop would create avoidable downtime, and shipping an
 # unverified credential database is not an acceptable degraded mode.
 for p in ${PATHS[@]+"${PATHS[@]}"}; do
-  [ -e "$AXON_PERSONAL_ROOT/$p" ] || {
-    echo "backup.sh: declared backup path is missing: $p" >&2; exit 1; }
+  [ -e "$SRC_ROOT/$p" ] || {
+    echo "backup.sh: declared backup path is missing: $SRC_ROOT/$p" >&2; exit 1; }
 done
 if [ "${#PATHS[@]}" -gt 0 ]; then
   command -v rsync >/dev/null 2>&1 || {
@@ -168,11 +207,41 @@ fi
 if [ "$STREAM" -eq 0 ]; then
   SYS_LOCAL="$AXON_PERSONAL_ROOT/config/systems.local.toml"
   [ -f "$SYS_LOCAL" ] || { echo "backup.sh: no $SYS_LOCAL (target coordinates)" >&2; exit 1; }
-  HOST="$(toml_get_in "$TARGET_ID" host "$SYS_LOCAL")"
-  SSH_USER="$(toml_get_in "$TARGET_ID" ssh_user "$SYS_LOCAL")"
-  REMOTE_ROOT="$(toml_get_in "$TARGET_ID" backup_root "$SYS_LOCAL")"
-  { [ -n "$HOST" ] && [ -n "$SSH_USER" ] && [ -n "$REMOTE_ROOT" ]; } || {
-    echo "backup.sh: target '$TARGET_ID' needs host + ssh_user + backup_root in $SYS_LOCAL" >&2; exit 1; }
+  # A destination is a KIND plus its coordinates. `ssh` is the original and stays the default,
+  # so every existing target entry keeps working without being edited.
+  #
+  # `local` exists because a destination does not have to be a host. A directory that some other
+  # process replicates -- an iCloud/Dropbox folder, a mounted external volume, a NAS share -- is
+  # a destination this tool can write to and verify, and the replication is somebody else's job.
+  # It is deliberately NOT called "icloud": nothing here knows or cares which service watches the
+  # directory, and a name that claimed otherwise would be the first thing to go stale.
+  TARGET_KIND="$(toml_get_in "$TARGET_ID" kind "$SYS_LOCAL")"; TARGET_KIND="${TARGET_KIND:-ssh}"
+  case "$TARGET_KIND" in
+    ssh)
+      HOST="$(toml_get_in "$TARGET_ID" host "$SYS_LOCAL")"
+      SSH_USER="$(toml_get_in "$TARGET_ID" ssh_user "$SYS_LOCAL")"
+      REMOTE_ROOT="$(toml_get_in "$TARGET_ID" backup_root "$SYS_LOCAL")"
+      { [ -n "$HOST" ] && [ -n "$SSH_USER" ] && [ -n "$REMOTE_ROOT" ]; } || {
+        echo "backup.sh: target '$TARGET_ID' needs host + ssh_user + backup_root in $SYS_LOCAL" >&2; exit 1; }
+      ;;
+    local)
+      HOST=""; SSH_USER=""
+      REMOTE_ROOT="$(toml_get_in "$TARGET_ID" path "$SYS_LOCAL")"
+      [ -n "$REMOTE_ROOT" ] || {
+        echo "backup.sh: target '$TARGET_ID' is kind=local and needs a path in $SYS_LOCAL" >&2; exit 1; }
+      case "$REMOTE_ROOT" in "~/"*) REMOTE_ROOT="$HOME/${REMOTE_ROOT#\~/}" ;; esac
+      # The directory must already exist. Creating it would turn a mistyped path, or a volume that
+      # failed to mount, into a new empty folder that accepts backups nobody will find again --
+      # the same "succeeds while protecting nothing" failure the rest of this file is written
+      # against. An external volume that is not plugged in must fail, not be reinvented.
+      [ -d "$REMOTE_ROOT" ] || {
+        echo "backup.sh: target '$TARGET_ID' path does not exist: $REMOTE_ROOT" >&2
+        echo "  Create it, or attach the volume it lives on. backup.sh will not create a destination." >&2
+        exit 1; }
+      ;;
+    *)
+      echo "backup.sh: target '$TARGET_ID' has unknown kind '$TARGET_KIND' (expected ssh or local)" >&2; exit 1 ;;
+  esac
 fi
 
 # Finish the toolchain preflight before creating staging state or acquiring a service
@@ -255,7 +324,7 @@ stage_host_paths() {
   # Guard the expansion: under `set -u`, bash 3.2 treats "${EMPTY[@]}" as unbound.
   # A database-only capability legitimately declares zero paths.
   for p in "${PATHS[@]}"; do
-    src="$AXON_PERSONAL_ROOT/$p"
+    src="$SRC_ROOT/$p"
     dest="$STAGE/$p"; mkdir -p "$(dirname "$dest")"
     # A declared path may be a single FILE, not only a directory. `capabilities/finance`
     # is the case that needed it: its canonical truth is one journal directory plus two
@@ -272,7 +341,7 @@ stage_host_paths() {
       rsync -a "$src" "$dest"
       continue
     fi
-    rsync -a "$src/" "$dest/"
+    rsync -a ${EXCLUDE_ARGS[@]+"${EXCLUDE_ARGS[@]}"} "$src/" "$dest/"
   done
 }
 
@@ -452,6 +521,11 @@ TAG="$(toml_get tag "$MANIFEST")"
   fi
   write_toml_array backup_paths ${PATHS[@]+"${PATHS[@]}"}
   write_toml_array backup_container_paths ${CPATHS[@]+"${CPATHS[@]}"}
+  # Recorded, not enforced. tools/restore.sh compares the path contract and deliberately not this
+  # one: an exclusion narrows what an archive holds, so a restore reading it can only be told
+  # something true about what is absent. Without it, "the archive has no .obsidian/plugin-backups"
+  # and "the source had none" are indistinguishable at restore time, and only one is a problem.
+  write_toml_array backup_exclude ${EXCLUDES[@]+"${EXCLUDES[@]}"}
 } > "$STAGE/axon-backup.toml"
 
 echo "→ tarball $CAP-$TS.tar.gz"
@@ -489,6 +563,25 @@ verify_archive() {  # <path>
       return 1
       ;;
   esac
+  # The same rule tools/restore.sh applies, applied here instead of only there.
+  #
+  # restore.sh refuses any archive carrying a link or special file, and it is right to: a symlink
+  # inside an archive is how extraction writes outside the directory the operator chose. But
+  # backup.sh happily PRODUCED such archives, so the two disagreed about what a valid archive is
+  # and the disagreement could only surface at restore time — which is the worst possible moment
+  # and the only one where the answer matters.
+  #
+  # Found 2026-08-29 by rehearsing the vault's first restore: it shipped 704 MB, verified the size
+  # on the target, wrote a receipt, reported success, and could never have been restored. Nothing
+  # was wrong with the copy. The producer and the consumer simply did not hold the same contract.
+  local verbose
+  verbose="$(tar -tvzf "$1" 2>/dev/null || true)"
+  if printf '%s\n' "$verbose" | LC_ALL=C grep -Eq '^[lhbcps]'; then
+    echo "backup.sh: $1 contains a link or special file, which tools/restore.sh refuses to extract." >&2
+    echo "  Declare the offending subtree in backup_exclude, or remove it from the source:" >&2
+    printf '%s\n' "$verbose" | LC_ALL=C grep -E '^[lhbcps]' | head -5 | sed 's/^/    /' >&2
+    return 1
+  fi
 }
 verify_archive "$TARBALL"
 
@@ -508,6 +601,39 @@ if [ "$STREAM" -eq 1 ]; then
   fi
   exit 0
 fi
+
+# A local destination: same contract as the remote one, minus the network. Written to a .part
+# name, byte-count verified, renamed only then, pruned to the same retention. The verification is
+# not ceremony here either -- a full disk, a volume that unmounted mid-write and a directory that
+# is really a sync placeholder all produce a short file and no error.
+if [ "$TARGET_KIND" = "local" ]; then
+  LOCAL_DIR="$REMOTE_ROOT/$CAP"
+  echo "→ ship → $LOCAL_DIR/"
+  mkdir -p "$LOCAL_DIR"
+  DEST_NAME="$(basename "$TARBALL")"
+  DEST_PART="$LOCAL_DIR/.$DEST_NAME.part"
+  cp "$TARBALL" "$DEST_PART"
+  LOCAL_BYTES="$(wc -c < "$TARBALL" | tr -d ' ')"
+  DEST_BYTES="$(wc -c < "$DEST_PART" | tr -d ' ')"
+  if [ "$LOCAL_BYTES" != "$DEST_BYTES" ]; then
+    rm -f "$DEST_PART"
+    echo "backup.sh: short write — sent $LOCAL_BYTES bytes, destination holds $DEST_BYTES. Nothing was kept." >&2
+    exit 1
+  fi
+  mv "$DEST_PART" "$LOCAL_DIR/$DEST_NAME"
+  echo "  wrote $LOCAL_BYTES bytes, size verified at the destination"
+
+  RETENTION_APPLIED=true
+  if [ "$NO_PRUNE" -eq 1 ]; then
+    RETENTION_APPLIED=false
+    echo "→ retain every prior archive (--no-prune)"
+  else
+    echo "→ prune destination to last $RETAIN"
+    ls -1t "$LOCAL_DIR/$CAP-"*.tar.gz 2>/dev/null | tail -n +$((RETAIN + 1)) | while IFS= read -r old; do rm -f "$old"; done
+  fi
+  REMOTE_DIR="$LOCAL_DIR"
+  SHIP_DESCRIPTION="$LOCAL_DIR"
+else
 
 # One shared ssh connection for every remote op (mkdir + ship + verify + prune) via
 # ControlMaster — so the Bitwarden agent asks for approval ONCE, not per-command.
@@ -552,6 +678,8 @@ else
   echo "→ prune remote to last $RETAIN"
   ssh "${SSHM[@]}" "$SSH_USER@$HOST" "ls -1t '$REMOTE_DIR'/$CAP-*.tar.gz 2>/dev/null | tail -n +$((RETAIN + 1)) | xargs -r rm -f"
 fi
+SHIP_DESCRIPTION="$SSH_USER@$HOST:$REMOTE_DIR"
+fi  # end destination-kind branch
 
 # Written only here, after the remote byte count matched and the .part was moved into
 # place. A receipt that exists therefore means a backup landed, not that a run started
@@ -583,4 +711,4 @@ cat > "$RECEIPT_DIR/$CAP.json" <<RECEIPT
 RECEIPT
 echo "  receipt → backup/receipts/$CAP.json"
 
-echo "✓ backup complete: $CAP-$TS.tar.gz → $SSH_USER@$HOST:$REMOTE_DIR/"
+echo "✓ backup complete: $CAP-$TS.tar.gz → $SHIP_DESCRIPTION/"

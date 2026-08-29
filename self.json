@@ -236,6 +236,10 @@
       }
     },
     {
+      "name": "knowledge-base",
+      "kind": "capability"
+    },
+    {
       "name": "knowledge-graph",
       "kind": "capability",
       "service": {
