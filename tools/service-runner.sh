@@ -518,6 +518,31 @@ start_process() {
   # the first `schedule` consumer: the first real run 400'd, and every surface said fine.
   if [ -n "$SCHEDULE" ]; then
     maybe_build
+    # Bring up what this job talks to, first.
+    #
+    # `requires` was a build-and-enable-time relation only: capability.sh resolves it transitively
+    # when enabling, the manifest gate checks it resolves, and nothing acted on it at RUN time. For
+    # an autostart capability that was invisible, because its dependencies were autostart too.
+    #
+    # It stops being invisible the moment capabilities go on-demand. sparpreis-watch requires
+    # transit and trips, both of which are started by a page asking for them -- and a 12-hourly job
+    # is not a page. Measured 2026-08-29: the job failed with ConnectionRefused against transit,
+    # and had been failing that way whenever it ran, because transit has never been autostart.
+    #
+    # Only for a scheduled job, deliberately. A long-running capability that needs another one is a
+    # startup-ordering question the supervisor already owns; a job that runs and exits has no
+    # supervisor watching it and one shot at finding its dependencies up.
+    while IFS= read -r dep; do
+      [ -n "$dep" ] || continue
+      # Already up is the common case and costs one probe. `status` is the runner's own answer, so
+      # this cannot drift from what every other verb means by "running" -- but it is a padded
+      # table, not a bare word, so it is matched rather than compared. (An equality test against
+      # "running" was written first and silently never matched, which would have restarted every
+      # dependency on every tick.)
+      if "$0" status "$dep" 2>/dev/null | head -1 | grep -q "running"; then continue; fi
+      echo "service-runner.sh: $CAP requires $dep — starting it"
+      "$0" start "$dep" >&2 || echo "service-runner.sh: could not start $dep; $CAP may fail" >&2
+    done < <(toml_array requires "$MANIFEST")
     (
       cd "$CAP_ROOT/${WORKDIR:-.}"
       AXON_SHELL_PORT="$(toml_get port "$AXON_ROOT/dashboard/service.toml")"
@@ -1284,7 +1309,20 @@ install_persistence() {
   fi
   case "$AXON_OS" in
     macos)
+      # `enable` BEFORE load, and this is not belt-and-braces.
+      #
+      # launchd keeps a per-user disabled set that outlives the plist. A label that was ever
+      # `launchctl disable`d -- which is what `remove-persistence` and a plain `bootout` leave
+      # behind -- stays in it, and every later `load` of a freshly rendered plist fails with
+      # "Bootstrap failed: 5: Input/output error". The plist is correct, the file is on disk,
+      # `install-persistence` prints "installed", and the job never runs.
+      #
+      # This was recorded as a known silent failure and left unfixed: sparpreis-watch hit it again
+      # on 2026-08-29, which is the second time the same five minutes were spent on it. A tool
+      # that reports success while leaving a job disabled is the failure mode this file exists to
+      # refuse everywhere else.
       launchctl unload "$unit" 2>/dev/null || true
+      launchctl enable "gui/$(id -u)/com.axon.$CAP" 2>/dev/null || true
       launchctl load "$unit"
       echo "installed $unit"
       ;;

@@ -72,6 +72,10 @@
       }
     },
     {
+      "name": "backup",
+      "kind": "capability"
+    },
+    {
       "name": "calendar",
       "kind": "capability",
       "service": {
@@ -288,6 +292,10 @@
         "files": 3,
         "nodes": 17
       }
+    },
+    {
+      "name": "people-registry",
+      "kind": "capability"
     },
     {
       "name": "pihole",
