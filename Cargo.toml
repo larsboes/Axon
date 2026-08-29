@@ -29,3 +29,34 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
 license = "MIT"
+
+# Dependencies carry no debug info; workspace crates keep all of it.
+#
+# Measured 2026-08-29, before this stanza existed: `target/debug` was 44 GB, of which `deps/`
+# alone was 27 GB and held **166,635 loose `.o` files totalling 14.9 GB**. The same 580 crates
+# under the release profile occupy 2.7 GB with zero `.o` files. Ten to one on an identical
+# dependency graph, and the whole difference is DWARF.
+#
+# Two cargo defaults produce that, and neither was ever chosen here — this file had no
+# `[profile.*]` section at all, so the workspace ran on stock settings:
+#
+#   debug = true            — "full debug info, default for `dev`" (cargo book, Profiles). Every
+#                             type and every variable, for all ~559 dependencies.
+#   split-debuginfo         — "the default value for this option is `unpacked` on macOS for
+#                             profiles that have debug information otherwise enabled". That is
+#                             why the object files sit loose on disk instead of in a bundle.
+#
+# The `"*"` glob is the precise tool for this: cargo documents it as overriding "the settings for
+# all dependencies (but not any workspace member)". So the 21 crates in `members` above keep
+# `debug = true` and stay fully steppable in lldb, and the dependencies — which nobody steps
+# into — stop paying for it.
+#
+# The trade, stated so it is not discovered: a backtrace through a dependency keeps its frames
+# but loses file, line and variable detail inside them. If that ever costs more than the disk,
+# delete these two lines; nothing else depends on them.
+#
+# Why this belongs in the tracked file rather than an overlay: it is a fact about Axon's build,
+# identical on every machine and in CI, so it is not a per-machine value (axon.toml's header
+# states that boundary). §9's R6 in the PRD is what made the number worth acting on.
+[profile.dev.package."*"]
+debug = false
