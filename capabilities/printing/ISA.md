@@ -64,8 +64,10 @@ preset, and heat is gated behind an explicit human "go" that is a separate comma
   Axon owns the step before slicing.
 
   One lead exists and is not committed work: **VibeCAD**, a working prototype of Lars's from
-  June 2026, archived at `~/Developer/Inbox/Processed/skill-packs-2026-08-19/vibecad/` (15
-  files, 72 KB). A Bun server, a Three.js/CSG viewer with a parameter panel and STL export, and
+  June 2026, 15 files and 72 KB, retired off-repo by the 2026-08-19 skill-packs sweep. It has
+  no durable home yet, and until it earns one this section is the only record of what it was —
+  which is why the description below is written to stand without the code beside it.
+  A Bun server, a Three.js/CSG viewer with a parameter panel and STL export, and
   a library where one file is one parametric model exporting `meta` plus a typed `params`
   schema the UI renders as sliders. The agent writes the model file; the browser live-reloads.
 

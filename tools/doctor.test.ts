@@ -150,6 +150,24 @@ describe("extractSiblingRepoRefs", () => {
     expect(extractSiblingRepoRefs("nothing relevant here, just prose")).toEqual([]);
   });
 
+  test("a self root is skipped at any depth, not just at the top level", () => {
+    // The live false positive: a path INSIDE the overlay reports its last segment, so a
+    // basename-only self-check saw "config" and demanded a systems.toml entry for a repo
+    // that has never existed. Depth is the fix — the root segment decides.
+    expect(extractSiblingRepoRefs("see ~/Developer/example-overlay/config", ["example-overlay"])).toEqual([]);
+    expect(extractSiblingRepoRefs("~/Developer/example-repo", ["example-repo"])).toEqual([]);
+  });
+
+  test("a self root does not swallow a genuine sibling in the same blob", () => {
+    expect(
+      extractSiblingRepoRefs("~/Developer/example-overlay/config and ~/Developer/mach-mono", ["example-overlay"]),
+    ).toEqual(["mach-mono"]);
+  });
+
+  test("with no self roots declared, nothing is skipped", () => {
+    expect(extractSiblingRepoRefs("~/Developer/example-overlay/config")).toEqual(["config"]);
+  });
+
   test("does not match Developer/ paths outside $HOME/~ (narrow-by-design blind spot)", () => {
     expect(extractSiblingRepoRefs("/opt/Developer/something-else")).toEqual([]);
   });

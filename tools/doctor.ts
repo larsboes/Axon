@@ -92,11 +92,20 @@ export function checkStateMountCoverage(
 // caught by this sweep): paths built from env vars or config indirection, where
 // the literal never appears in the file, and Packs/*/pack.toml `links` entries
 // that name a system without a literal $HOME path.
-export function extractSiblingRepoRefs(text: string): string[] {
+// `selfNames` are the roots a reference may hang from and still be about US: the checkout
+// and the selected overlay. Matching them against the ROOT segment rather than the returned
+// basename is the whole point. `~/Developer/<overlay>/config` is a path inside the overlay,
+// but its last segment is `config`, so a basename-only self-check let it through and the
+// sweep reported an undeclared connection to a repo named "config" that has never existed.
+// Overlay-path leakage in tracked files is already owned by tools/check-publication-hygiene.sh
+// — which is what the surviving hit was: that gate's own fixture, reported by this one.
+export function extractSiblingRepoRefs(text: string, selfNames: Iterable<string> = []): string[] {
   const pathPattern = /(?:\$HOME|~)\/Developer\/((?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+)/g;
+  const self = new Set(selfNames);
   const names: string[] = [];
   for (const match of text.matchAll(pathPattern)) {
     const segments = match[1].split("/");
+    if (self.has(segments[0])) continue;
     names.push(segments[segments.length - 1]);
   }
   return names;
@@ -1340,8 +1349,7 @@ const CHECKS: Check[] = [
     name: "Undeclared connections (grep sweep)",
     async run(ctx) {
       const declaredIds = new Set(Object.keys(ctx.systemsToml));
-      const declaredPaths = new Set<string>([ctx.root, ctx.overlayPath].filter(Boolean));
-      for (const m of ctx.mounts) declaredPaths.add(expandHome(m.path));
+      const selfRoots = [ctx.root, ctx.overlayPath].filter(Boolean).map((p) => basename(p));
 
       // A path the overlay declares as protected is a DENY rule, not a connection (Axon#147).
       // This sweep's premise is that a hardcoded sibling path implies an undeclared
@@ -1400,10 +1408,9 @@ const CHECKS: Check[] = [
           // overlay it holds no paths of its own, so a hardcoded one appearing there is a
           // real regression that should be reported, not hidden.
           if (isSweepExempt(rel, text)) continue;
-          for (const name of extractSiblingRepoRefs(text)) {
-            // The checkout and selected overlay are self-references. Any other hardcoded
-            // sibling path is a real undeclared connection.
-            if (name === basename(ctx.root) || (ctx.overlayPath && name === basename(ctx.overlayPath))) continue;
+          // The checkout and selected overlay are self-references, at any depth beneath
+          // them. Any other hardcoded sibling path is a real undeclared connection.
+          for (const name of extractSiblingRepoRefs(text, selfRoots)) {
             if (!hits.has(name)) hits.set(name, new Set());
             hits.get(name)!.add(rel);
           }
