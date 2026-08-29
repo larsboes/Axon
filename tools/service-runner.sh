@@ -518,6 +518,7 @@ start_process() {
   # the first `schedule` consumer: the first real run 400'd, and every surface said fine.
   if [ -n "$SCHEDULE" ]; then
     maybe_build
+    STARTED_DEPS=""
     # Bring up what this job talks to, first.
     #
     # `requires` was a build-and-enable-time relation only: capability.sh resolves it transitively
@@ -539,10 +540,74 @@ start_process() {
       # table, not a bare word, so it is matched rather than compared. (An equality test against
       # "running" was written first and silently never matched, which would have restarted every
       # dependency on every tick.)
-      if "$0" status "$dep" 2>/dev/null | head -1 | grep -q "running"; then continue; fi
+      _dep_status="$("$0" status "$dep" 2>/dev/null | head -1)"
+      case "$_dep_status" in *running*) continue ;; esac
+      # An operator held this capability. A background tick must not quietly undo that: `resume`
+      # is what a PERSON asking through the shell gets, and a 12-hourly timer is not a person.
+      # Said out loud instead, so the job's failure a second later reads as a consequence rather
+      # than a mystery.
+      case "$_dep_status" in
+        *held*)
+          echo "service-runner.sh: $CAP requires $dep, which is HELD — not overriding an operator hold." >&2
+          echo "  Release it with: tools/service-runner.sh resume $dep" >&2
+          continue
+          ;;
+      esac
       echo "service-runner.sh: $CAP requires $dep — starting it"
-      "$0" start "$dep" >&2 || echo "service-runner.sh: could not start $dep; $CAP may fail" >&2
+      if "$0" start "$dep" >&2; then
+        STARTED_DEPS="$STARTED_DEPS $dep"
+        # Wait for it to ANSWER, not merely to exist. `start` returns once the process is forked,
+        # which is well before an HTTP server has bound its port — so without this the job races
+        # the dependency it just asked for and loses. Measured: sparpreis-watch died with
+        # ConnectionRefused against trips on :8086 while trips was starting perfectly.
+        #
+        # Bounded, and a timeout is not fatal here. The job is about to try the dependency itself
+        # and will produce a better error than this loop can; refusing to run would replace one
+        # capability's failure with the whole job's.
+        # What "ready" means depends on what the dependency declared. With a health path, ready is
+        # `healthy` — the port being bound is not the same as the server answering. Without one
+        # there is nothing to poll, so `running` is the strongest available answer and waiting for
+        # `healthy` would burn the whole timeout on every start.
+        _dep_mf="$AXON_ROOT/capabilities/$dep/service.toml"
+        _dep_health="$(toml_get health_path "$_dep_mf" 2>/dev/null)"
+        _want="running"
+        [ -n "$_dep_health" ] && _want="healthy"
+        _waited=0
+        while [ "$_waited" -lt 30 ]; do
+          "$0" status "$dep" 2>/dev/null | head -1 | grep -q "$_want" && break
+          sleep 1
+          _waited=$((_waited + 1))
+        done
+        [ "$_waited" -lt 30 ] || echo "service-runner.sh: $dep did not report $_want in ${_waited}s; running $CAP anyway" >&2
+      else
+        echo "service-runner.sh: could not start $dep; $CAP may fail" >&2
+      fi
     done < <(toml_array requires "$MANIFEST")
+
+    # Started for this run, so stopped after it. Otherwise "on demand" quietly becomes "on demand
+    # once, then forever": the first 12-hourly tick brings transit and trips up and nothing ever
+    # takes them down, which is most of B20 undone by a job nobody was watching.
+    #
+    # Only what THIS run started. A dependency that was already up belongs to whoever started it —
+    # a page someone has open, or another job — and stopping it would make a background tick reach
+    # out and break something in front of a person.
+    #
+    # `idle-stop`, not `stop`: the verb axon-status' reaper already uses, and for the same reason.
+    # A finished job is not a maintenance window, so it must not leave a hold that turns the next
+    # start into a silent no-op.
+    #
+    # The race is real and accepted: somebody can open the page for a dependency while the job
+    # runs, and this will stop it underneath them. The window is one job, and the capability comes
+    # back the moment the page asks again — which is the whole point of on-demand. The alternative
+    # is a leak that never resolves, and a leak is not a race you win by waiting.
+    stop_started_deps() {
+      local d
+      for d in $STARTED_DEPS; do
+        echo "service-runner.sh: $CAP started $d for this run — stopping it"
+        "$0" idle-stop "$d" >&2 || echo "service-runner.sh: could not stop $d" >&2
+      done
+    }
+
     (
       cd "$CAP_ROOT/${WORKDIR:-.}"
       AXON_SHELL_PORT="$(toml_get port "$AXON_ROOT/dashboard/service.toml")"
@@ -552,7 +617,12 @@ start_process() {
       # for a pid file to describe.
       exec "${COMMAND[@]}"
     )
-    return $?
+    # Captured before the cleanup runs, and returned after it. A job's exit code is the whole
+    # signal the supervisor gets; letting `idle-stop` overwrite it would report every failed run
+    # as a success as long as the teardown worked.
+    _job_status=$?
+    stop_started_deps
+    return $_job_status
   fi
 
   if [ -n "$(running_pid)" ]; then return 0; fi   # already ours, already up
