@@ -86,32 +86,43 @@ the same as a machine with no light role at all.
 
 ## Requirements
 
-macOS 26+, Apple Silicon, Apple Intelligence enabled. Without them the binary refuses to
-start, instead of binding a port and failing every request:
+macOS 26+, Apple Silicon, Apple Intelligence enabled. `brew install apfel`; the pin and the
+verdict live in `upstreams.toml [apfel]`, and `toolchain.toml` declares the binary under
+`needed_by = ["capability:foundation-models"]`, so an enabled capability with it missing is
+reported rather than found later in a watchdog log.
 
 ```
-$ afm-server --check
-foundation-models: available, context 4096 tokens
+$ curl -s 127.0.0.1:8091/health
+{"model":"apple-foundationmodel","model_available":true,"context_window":4096,"status":"ok", ...}
 ```
 
-The Pi never enables this capability. There is no manifest field for "Mac only", so the
-check lives in the binary where it cannot be forgotten.
+The Pi never enables this capability. There is no manifest field for "Mac only".
+
+**Without Apple Intelligence, apfel starts anyway.** The retired `afm-server` refused to, and that
+is the one contract lost in the swap. apfel binds the port and reports
+`"status": "model_unavailable"` — its own source says an unavailable model "never crashes
+startup" — so on a misconfigured host this capability reads as up while answering nothing. The
+failure still surfaces, one layer later: `libs/inference` resolves the role through a readiness
+probe and `comms` falls back to the strong summarization role when the light one does not
+resolve. `ready_path` is the seam if that ever proves optimistic; apfel has no endpoint that
+fails on unavailability today, which is why this is a paragraph and not a manifest field.
 
 ## Design notes
 
-**No package dependencies.** `FoundationModels` and `Network` both ship in the SDK. The
-whole surface is two routes on loopback, and a server framework would be more code to
-audit than the thing it serves.
+**Over-window requests now answer 400, not 200.** The second behavioural change from the swap,
+and it inverts a decision this file used to argue for. `afm-server` returned 200 with an error
+envelope precisely because "the one consumer reads any non-2xx as *server down* rather than
+*this request will not fit*". apfel returns a correct OpenAI `context_length_exceeded` 400, which
+`libs/inference` turns into `Err("... returned HTTP 400")`.
 
-**Errors are a 200 with an error envelope**, matching what oMLX does when its memory
-guard fires. Axon reads that envelope before it reads `choices`, so a refusal arrives as
-a typed cause rather than as an empty answer. Returning a 4xx would be more correct in
-the abstract and less useful in practice: the one consumer reads any non-2xx as "server
-down" rather than "this request will not fit".
+Measured, and it is a backstop rather than the normal path: `libs/summarize::fits_context`
+decides whether a source fits **before** the request is made, so a well-behaved rung never sends
+one. What changed is the diagnostic when that estimate is wrong — a status code instead of a
+typed cause. Worse to read, still loud, and not worth 311 lines of Swift to keep.
 
-**Loopback only, not configurable.** The endpoint has no authentication because it needs
-none on 127.0.0.1. The moment it listened on a routable address that would stop being
-true, so it cannot.
+**Loopback by default.** apfel binds `127.0.0.1` unless `--host` says otherwise, the same posture
+the retired shim enforced by having no option at all. `--port ${AXON_PORT}` in the manifest keeps
+it off apfel's 11434 default, which this deployment has already given to Ollama.
 
 ## Sources
 
@@ -128,5 +139,7 @@ true, so it cannot.
   ever holds a conversation rather than answering one-shot prompts against 4,096 tokens.
 - [rudrankriyam/Foundation-Models-Framework-Lab](https://github.com/rudrankriyam/Foundation-Models-Framework-Lab)
   — a workbench of runnable examples: `@Generable`/`@Guide` structured output, tool
-  calling, streaming, availability gating. Worth reading before adding structured output
-  here, which is the obvious next step and deliberately not in this version.
+  calling, streaming, availability gating. This used to say structured output was "the obvious
+  next step and deliberately not in this version". It arrived by adopting apfel rather than by
+  writing it, along with streaming, `/v1/responses` and MCP tool calling — which is the whole
+  argument for the swap.

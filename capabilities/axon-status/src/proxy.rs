@@ -188,6 +188,13 @@ pub(crate) async fn fallback(State(proxy): State<Proxy>, req: Request) -> Respon
         Some(route) => forward(&proxy, route.clone(), req).await,
         // Not a capability path, so it is a page. `adapter-static` emits one entry point and
         // routes client-side, which makes an unknown path a route rather than a 404.
+        //
+        // The trap, since it cost a misread: an API path for a capability with NO route falls here
+        // and answers 200 with `text/html`. `GET /foundation-models/health` looked like a passing
+        // health check and was the shell's index page. The routing table is resolved once at
+        // startup, so a capability enabled afterwards has no route until this process restarts —
+        // which is the documented behaviour above, not a bug, but it fails as a plausible success.
+        // When a capability path answers HTML, restart axon-status before believing anything else.
         None => serve_ui(&proxy.ui_dir, req).await,
     }
 }

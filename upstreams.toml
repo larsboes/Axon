@@ -358,6 +358,14 @@ pin = "0.14.7"          # 2026-07-27, 7d old on 2026-08-03 = the near edge of th
 installed_probe = "btm --version"   # cargo install, so nothing but this pin decides which version the host runs
 why = "tools/sysmon TUI backend -- cross-platform system monitor (CPU/mem/disk/net/proc, history graphs), Rust, matches the language bias in README.md#implementation-languages-and-intelligence. Adopt over build: README.md#upstream-first requires checking for prior art before writing a system-usage overview from scratch"
 
+[apfel]
+url = "https://github.com/Arthur-Ficial/apfel"
+verdict = "adopt"
+license = "MIT"
+pin = "1.9.1"           # released 2026-08-05, adopted 2026-08-29 — 24 days, past the 14-day cooldown ceiling in axon.toml. Installed with `brew install apfel`.
+installed_probe = "apfel --version"
+why = "capabilities/foundation-models serves Apple's on-device model behind the OpenAI chat shape; this replaces the 311-line afm-server Axon used to maintain for that. Supersedes it on features (streaming, /v1/responses, MCP tool calling, structured output) with none of the maintenance. NOTE its README documents no port option and is wrong: Sources/CLI/CLIArguments.swift carries --port/--host and APFEL_PORT/APFEL_HOST, which is what lets it keep this deployment's 8091 instead of colliding with Ollama on its 11434 default."
+
 [macmon]
 url = "https://github.com/vladkens/macmon"
 verdict = "adopt"

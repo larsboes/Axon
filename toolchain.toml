@@ -122,6 +122,16 @@ install_linux = "apt-get install -y sqlite3"
 # build path now, so the entry was deleted rather than kept: toolchain.toml declares what a
 # machine must have, and a host tool nothing calls is a check that can only be noise.
 
+[apfel]
+required = "optional"
+os = "macos"
+needed_by = ["capability:foundation-models"]
+upstream = "apfel"
+version_cmd = "apfel --version"
+min_version = "1.9.1"
+why = "capabilities/foundation-models runs `apfel --serve`. macOS 26+, Apple Silicon and Apple Intelligence enabled; on a host without them apfel starts and reports model_unavailable rather than refusing, so the capability's README says what that costs."
+install_macos = "brew install apfel"
+
 [macmon]
 required = "optional"
 os = "macos"

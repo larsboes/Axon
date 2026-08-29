@@ -77,6 +77,10 @@
       "service": {
         "kind": "process",
         "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 3
       }
     },
     {
@@ -174,8 +178,8 @@
         "port": "8091"
       },
       "code": {
-        "files": 3,
-        "nodes": 31
+        "files": 1,
+        "nodes": 9
       }
     },
     {
@@ -303,6 +307,10 @@
       "service": {
         "kind": "process",
         "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 3
       }
     },
     {
@@ -453,8 +461,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 131,
-        "nodes": 1079
+        "files": 132,
+        "nodes": 1081
       }
     },
     {
@@ -1138,6 +1146,11 @@
       "pin": ""
     },
     {
+      "name": "apfel",
+      "verdict": "adopt",
+      "pin": "1.9.1"
+    },
+    {
       "name": "apple-container",
       "verdict": "adopt",
       "pin": "1.2.2"
@@ -1530,9 +1543,12 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 10497,
+    "nodes": 10505,
     "external": 10,
-    "stale": [],
+    "stale": [
+      "capabilities/foundation-models/Package.swift",
+      "capabilities/foundation-models/Sources/afm-server/main.swift"
+    ],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",
