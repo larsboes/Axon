@@ -23,7 +23,7 @@
       "kind": "capability",
       "code": {
         "files": 3,
-        "nodes": 43
+        "nodes": 44
       }
     },
     {
@@ -60,7 +60,7 @@
       },
       "code": {
         "files": 11,
-        "nodes": 95
+        "nodes": 94
       }
     },
     {
@@ -86,7 +86,11 @@
     },
     {
       "name": "candidate-fingerprint",
-      "kind": "lib"
+      "kind": "lib",
+      "code": {
+        "files": 2,
+        "nodes": 13
+      }
     },
     {
       "name": "cognitive-load",
@@ -105,8 +109,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 70,
-        "nodes": 1112
+        "files": 72,
+        "nodes": 1143
       }
     },
     {
@@ -137,7 +141,7 @@
       },
       "code": {
         "files": 103,
-        "nodes": 602
+        "nodes": 600
       }
     },
     {
@@ -149,8 +153,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 16,
-        "nodes": 541
+        "files": 18,
+        "nodes": 570
       }
     },
     {
@@ -262,7 +266,7 @@
       "kind": "lib",
       "code": {
         "files": 5,
-        "nodes": 104
+        "nodes": 107
       }
     },
     {
@@ -295,8 +299,8 @@
         "port": "8093"
       },
       "code": {
-        "files": 11,
-        "nodes": 209
+        "files": 12,
+        "nodes": 211
       }
     },
     {
@@ -422,7 +426,7 @@
       "kind": "spine",
       "code": {
         "files": 131,
-        "nodes": 1097
+        "nodes": 1079
       }
     },
     {
@@ -1498,18 +1502,9 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 10424,
+    "nodes": 10459,
     "external": 10,
-    "stale": [
-      "dashboard/src/routes/upstreams/+page.svelte",
-      "tools/advisories.test.sh",
-      "tools/installed-probe.test.sh",
-      "tools/lib/advisories.sh",
-      "tools/migrate-pg-to-sqlite",
-      "tools/migrate-pg-to-sqlite.test.sh",
-      "tools/upstream-checker",
-      "tools/upstream-checker.test.sh"
-    ],
+    "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",
