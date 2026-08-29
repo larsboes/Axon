@@ -122,7 +122,7 @@
       },
       "code": {
         "files": 72,
-        "nodes": 1143
+        "nodes": 1144
       }
     },
     {
@@ -462,7 +462,7 @@
       "kind": "spine",
       "code": {
         "files": 132,
-        "nodes": 1081
+        "nodes": 1082
       }
     },
     {
@@ -1166,6 +1166,11 @@
       "pin": "59.2.0"
     },
     {
+      "name": "auge",
+      "verdict": "reject",
+      "pin": ""
+    },
+    {
       "name": "awesome-selfhosted",
       "verdict": "inspiration",
       "pin": ""
@@ -1543,12 +1548,9 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 10505,
+    "nodes": 10476,
     "external": 10,
-    "stale": [
-      "capabilities/foundation-models/Package.swift",
-      "capabilities/foundation-models/Sources/afm-server/main.swift"
-    ],
+    "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",
