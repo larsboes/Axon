@@ -6,7 +6,16 @@ build       = ["cargo", "build", "--locked", "--release", "--bin", "finance-serv
 port        = "8090"
 health_path = "/health"
 ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)
-autostart   = "true"
+# false since 2026-08-29 (PRD B20). Measured before demoting, in both capabilities: no
+# `tokio::spawn` of a timer, no `interval`, no ticker. The only `sleep` is a download retry
+# backoff, and every `spawn_blocking` is per-request work moved off the async thread. So nothing
+# here observes anything between visits, and a process that is up only because it was up at boot
+# is R3's definition of a cost with no purpose.
+#
+# Starting it is not manual: axon-status owns capability lifecycle and the shell routes start
+# requests through it (`capabilities/axon-status/src/status/lifecycle.rs`), so the page that needs
+# this capability is what brings it up.
+autostart   = "false"
 # `/finance` is a dashboard route, so only `/finance/api` is proxied to this process.
 # Without this the uniform rule in vite.config.ts claims the whole `/finance` prefix and
 # the page becomes unreachable — the same trap trips documented (#136).

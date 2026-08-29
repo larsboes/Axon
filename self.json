@@ -59,8 +59,8 @@
         "port": "8082"
       },
       "code": {
-        "files": 11,
-        "nodes": 94
+        "files": 12,
+        "nodes": 115
       }
     },
     {
@@ -1514,7 +1514,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 10465,
+    "nodes": 10497,
     "external": 10,
     "stale": [],
     "unmatched": [
