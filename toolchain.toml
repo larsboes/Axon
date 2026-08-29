@@ -142,6 +142,15 @@ min_version = "0.7.0"
 why = "capabilities/macmon execs it as `macmon serve` for the dashboard's Systems page; tools/sysmon power execs the same binary as a TUI. Absent for weeks while the capability was enabled, because a capability's own command was not a declared tool here and nothing else looked."
 install_macos = "cargo install macmon --version 0.7.0 --locked"
 
+[yt-dlp]
+required = "optional"
+needed_by = ["capability:comms"]
+version_cmd = "yt-dlp --version"
+min_version = "2026.08.19"
+why = "capabilities/comms/src/media.rs and extraction.rs exec it for share-link metadata and subtitles, always with --skip-download. Undeclared until 2026-08-29, so a host without it degraded silently — the same gap the macmon entry above records. Scoped to comms alone on purpose: this file is public, and a capability that keeps itself out of the public repo does not get its name and its intent published here by its dependency. Such a capability declares its own tools in its own preflight."
+install_macos = "brew install yt-dlp"
+install_linux = "apt-get install -y yt-dlp   # or: uv tool install yt-dlp"
+
 [cargo]
 required = "optional"
 needed_by = ["workflow:build"]
