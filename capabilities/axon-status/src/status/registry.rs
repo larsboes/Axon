@@ -58,6 +58,16 @@ pub(crate) struct Service {
     /// change — an empty endpoint means loopback, exactly as before.
     #[serde(default)]
     pub(crate) endpoint: String,
+    /// Narrows the uniform `/<name>` mount to `/<name>/api`, for a capability that also serves
+    /// something at its root which the shell must not shadow. Emitted by
+    /// `tools/capability.sh registry` since the Vite proxy needed it; deserialised here since
+    /// `src/proxy.rs` became the second reader.
+    #[serde(default)]
+    pub(crate) proxy_api_only: String,
+    /// Prefixes that pass through UNSTRIPPED — transit's `/api`, scouting's `/discover`. Paths
+    /// that predate the uniform rule and are declared per capability rather than guessed.
+    #[serde(default)]
+    pub(crate) proxy_extra: Vec<String>,
     #[serde(default)]
     pub(crate) requires: Vec<String>,
 }

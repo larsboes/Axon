@@ -23,6 +23,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod proxy;
 mod status;
 
 use status::*;
@@ -69,6 +70,25 @@ async fn main() {
     // while nothing is left to bring them back.
     let _idle_reaper = IdlePanelReaper::start();
 
+    // Resolved once at startup, from the same registry every other surface here reads. A
+    // capability added later needs a restart to be proxied, which is honest: the shell's shape
+    // follows the machine's, and `dashboard/vite.config.ts` said the same about its own proxy.
+    let services = registry().await.unwrap_or_else(|e| {
+        eprintln!("[axon-status] registry unavailable ({e}); serving the shell with no capability routes");
+        Vec::new()
+    });
+    let ui_dir = std::env::var("AXON_DASHBOARD_DIST").unwrap_or_else(|_| "dashboard/dist".to_string());
+    // Said at startup rather than discovered as a blank page. The bundle is a build artifact
+    // (`dashboard/service.toml` `build`), so a fresh checkout has none until it is built, and a
+    // shell that 404s every page while every API route works is a confusing way to learn that.
+    if !std::path::Path::new(&ui_dir).is_dir() {
+        eprintln!(
+            "[axon-status] no dashboard bundle at {ui_dir} — API routes work, pages will 404. Build it: cd dashboard && bun run build"
+        );
+    }
+    let shell = proxy::Proxy::new(&services, &port.to_string(), ui_dir);
+    eprintln!("[axon-status] shell: {} capability route(s)", shell.route_count());
+
     let app = Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health_handler))
@@ -91,7 +111,13 @@ async fn main() {
         .route(
             "/api/axon-status/capabilities/:name/backup",
             post(backup_handler),
-        );
+        )
+        // Everything the routes above did not claim: a capability prefix, or a page of the
+        // shell. Registered as the fallback and not as a layer on purpose -- transit declares
+        // `proxy_extra = ["/api"]`, and that prefix evaluated before routing would swallow this
+        // surface's own `/api/axon-status/*`.
+        .fallback(proxy::fallback)
+        .with_state(shell);
 
     // This process can start and stop the machine's capabilities, so it answers to
     // this machine only (axon_server binds loopback) -- and deliberately carries no
@@ -125,6 +151,8 @@ mod backup_tests {
             backup_advise_days: String::new(),
             backup_stale_days: String::new(),
             endpoint: String::new(),
+            proxy_api_only: String::new(),
+            proxy_extra: Vec::new(),
             requires: Vec::new(),
         }
     }

@@ -237,7 +237,15 @@
     },
     {
       "name": "knowledge-base",
-      "kind": "capability"
+      "kind": "capability",
+      "service": {
+        "kind": "data",
+        "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 6
+      }
     },
     {
       "name": "knowledge-graph",
@@ -1506,7 +1514,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 10459,
+    "nodes": 10465,
     "external": 10,
     "stale": [],
     "unmatched": [
