@@ -73,7 +73,11 @@
     },
     {
       "name": "backup",
-      "kind": "capability"
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": []
+      }
     },
     {
       "name": "calendar",
@@ -295,7 +299,11 @@
     },
     {
       "name": "people-registry",
-      "kind": "capability"
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": []
+      }
     },
     {
       "name": "pihole",

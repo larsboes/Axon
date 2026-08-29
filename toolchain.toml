@@ -122,6 +122,16 @@ install_linux = "apt-get install -y sqlite3"
 # build path now, so the entry was deleted rather than kept: toolchain.toml declares what a
 # machine must have, and a host tool nothing calls is a check that can only be noise.
 
+[macmon]
+required = "optional"
+os = "macos"
+needed_by = ["capability:macmon"]
+upstream = "macmon"
+version_cmd = "macmon --version"
+min_version = "0.7.0"
+why = "capabilities/macmon execs it as `macmon serve` for the dashboard's Systems page; tools/sysmon power execs the same binary as a TUI. Absent for weeks while the capability was enabled, because a capability's own command was not a declared tool here and nothing else looked."
+install_macos = "cargo install macmon --version 0.7.0 --locked"
+
 [cargo]
 required = "optional"
 needed_by = ["workflow:build"]

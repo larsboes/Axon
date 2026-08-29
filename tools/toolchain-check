@@ -120,6 +120,21 @@ entry_scope() {
       capability-field:*)
         case "$ACTIVE_FIELDS" in *" ${s#capability-field:} "*) satisfied=0; break ;; esac
         ;;
+      # "needed when THIS capability is enabled", for a tool a capability execs directly rather
+      # than one implied by a manifest field. `capability-field` cannot express it: macmon's
+      # requirement is not that some capability declares a field, it is that the macmon capability
+      # exists here at all.
+      #
+      # The gap this closes was live and silent. macmon was enabled, its binary was not installed,
+      # its watchdog logged "nohup: macmon: No such file or directory", and toolchain-check
+      # reported "9 checked - 0 missing" throughout, because a capability's own command is not a
+      # declared tool. AGENTS.md promises the requirement set moves with the enabled list; it only
+      # moves with the part of it that something declared.
+      capability:*)
+        case " $(toml_array capabilities "$AXON_MACHINE_TOML" | tr "\n" " ") " in
+          *" ${s#capability:} "*) satisfied=0; break ;;
+        esac
+        ;;
       core) satisfied=0; break ;;
       *)
         # An unknown token must not silently widen or narrow the set. Treated as unsatisfied and
