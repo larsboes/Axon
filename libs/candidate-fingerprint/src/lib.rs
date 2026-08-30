@@ -229,7 +229,9 @@ mod tests {
         let ids: Vec<String> = (0..4).map(|n| key.repeated_fingerprint(n)).collect();
         for id in &ids {
             assert_eq!(id.len(), 64);
-            assert!(id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+            assert!(id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
         }
         let distinct: std::collections::BTreeSet<&String> = ids.iter().collect();
         assert_eq!(distinct.len(), ids.len(), "a repeat may not collide");

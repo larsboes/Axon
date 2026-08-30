@@ -546,11 +546,7 @@ async fn reconcile_transfer(
         let _projection_guard = projection_write
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
-        rebuild_projection(
-            &database_path,
-            &journal,
-            investment_snapshot.as_deref(),
-        )?;
+        rebuild_projection(&database_path, &journal, investment_snapshot.as_deref())?;
         Ok(json!({
             "ok": true,
             "canonical_id": canonical.id,
@@ -601,11 +597,7 @@ async fn allocate_expense(
         if changed {
             replace_journal_atomically(&journal, &updated)?;
         }
-        rebuild_projection(
-            &database_path,
-            &journal,
-            investment_snapshot.as_deref(),
-        )?;
+        rebuild_projection(&database_path, &journal, investment_snapshot.as_deref())?;
         Ok(json!({
             "ok": true,
             "id": id,
@@ -690,11 +682,7 @@ async fn link_reimbursement(
         {
             return Err("candidate changed before reimbursement linking".into());
         }
-        rebuild_projection(
-            &database_path,
-            &journal,
-            investment_snapshot.as_deref(),
-        )?;
+        rebuild_projection(&database_path, &journal, investment_snapshot.as_deref())?;
         Ok(json!({
             "ok": true,
             "id": id,
@@ -785,11 +773,7 @@ async fn confirm_candidates_batch(
         let _projection_guard = projection_write
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
-        rebuild_projection(
-            &database_path,
-            &journal,
-            investment_snapshot.as_deref(),
-        )?;
+        rebuild_projection(&database_path, &journal, investment_snapshot.as_deref())?;
         Ok(json!({
             "ok": true,
             "confirmed": prepared.len(),
@@ -882,11 +866,7 @@ async fn reclassify_candidates_batch(
         let _projection_guard = projection_write
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
-        rebuild_projection(
-            &database_path,
-            &journal,
-            investment_snapshot.as_deref(),
-        )?;
+        rebuild_projection(&database_path, &journal, investment_snapshot.as_deref())?;
         Ok(json!({
             "ok": true,
             "reviewed": prepared.len(),
@@ -990,11 +970,7 @@ async fn review_candidate(
                 let _projection_guard = projection_write
                     .lock()
                     .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
-                rebuild_projection(
-                    &database_path,
-                    &journal,
-                    investment_snapshot.as_deref(),
-                )?;
+                rebuild_projection(&database_path, &journal, investment_snapshot.as_deref())?;
                 Ok(json!({
                     "ok": true,
                     "id": id,
@@ -1103,11 +1079,7 @@ async fn rebuild_ledger(State(state): State<AppState>) -> ApiResponse {
         let _projection_guard = projection_write
             .lock()
             .map_err(|_| "finance projection writer lock is unavailable".to_string())?;
-        rebuild_projection(
-            &database_path,
-            &journal,
-            investment_snapshot.as_deref(),
-        )
+        rebuild_projection(&database_path, &journal, investment_snapshot.as_deref())
     })
     .await
     {

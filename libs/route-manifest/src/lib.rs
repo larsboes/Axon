@@ -143,16 +143,48 @@ pub fn undeclared_routes(source: &str, routes: &[Route]) -> Vec<String> {
 /// Text matching rather than parsing, and that is a deliberate trade: it cannot
 /// see a route built from a runtime string, and it says so here rather than
 /// pretending to be exhaustive. Every router in this repo passes a literal.
+///
+/// **Whitespace between `.route(` and the literal is skipped, and that is the
+/// whole check, not a detail.** The marker used to be the seven bytes
+/// `.route("`, which meant a call rustfmt had wrapped —
+///
+/// ```text
+/// .route(
+///     "/api/axon-status/capabilities/:name/start",
+///     post(start_handler),
+/// )
+/// ```
+///
+/// — was invisible. Measured across this repo on 2026-08-31: **22 routes in
+/// seven capabilities**, of which three were served and undeclared, including
+/// `start` and `stop` on `axon-status`, the two calls that start and stop every
+/// capability on the machine. The formatter decides where a line breaks; a
+/// detector that reads differently on either side of that decision is a
+/// detector that passes for reasons unrelated to the thing it checks.
+///
+/// It does not strip comments, and that is a decision rather than an oversight:
+/// stripping `//` would truncate any line whose string literal contains one — a
+/// URL — and the routes it could then miss are exactly what this exists to
+/// catch. So the cost lands on prose instead. A comment that spells the mount
+/// call out byte for byte reads as a served path; write about it without
+/// quoting it, the way `capabilities/axon-status/src/main.rs` does at the two
+/// mounts that occasioned this.
 fn served_paths(source: &str) -> Vec<String> {
-    const MARKER: &str = ".route(\"";
+    const MARKER: &str = ".route(";
     let mut paths = Vec::new();
     let mut rest = source;
     while let Some(start) = rest.find(MARKER) {
         rest = &rest[start + MARKER.len()..];
-        match rest.find('"') {
+        let literal = rest.trim_start();
+        // Anything that is not a string literal after the paren is a route built
+        // some other way. Skipping it is the documented limit above, not a miss.
+        let Some(body) = literal.strip_prefix('"') else {
+            continue;
+        };
+        match body.find('"') {
             Some(end) => {
-                paths.push(rest[..end].to_string());
-                rest = &rest[end..];
+                paths.push(body[..end].to_string());
+                rest = &body[end..];
             }
             // An unterminated literal cannot happen in source that compiles;
             // stopping is still better than looping.
@@ -165,6 +197,43 @@ fn served_paths(source: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bug this crate shipped with until 2026-08-31: rustfmt wraps a long
+    /// `.route(...)` call, and the detector stopped seeing it. Both shapes are
+    /// the same router; a check that disagrees with itself over a line break
+    /// reports nothing and passes.
+    #[test]
+    fn a_route_wrapped_by_the_formatter_is_still_seen() {
+        let einzeilig = r#".route("/health", get(h)).route("/api/things", get(t))"#;
+        let umbrochen = r#"
+            .route(
+                "/health",
+                get(h),
+            )
+            .route(
+                "/api/things",
+                get(t),
+            )
+        "#;
+        assert_eq!(served_paths(einzeilig), served_paths(umbrochen));
+        assert_eq!(served_paths(umbrochen), ["/health", "/api/things"]);
+
+        // Und die Wirkung, um die es geht: eine umbrochene, nicht deklarierte
+        // Route wird gemeldet statt uebersehen.
+        assert_eq!(
+            undeclared_routes(umbrochen, &[get("GET", "/health", "Liveness.")]),
+            ["/api/things"]
+        );
+    }
+
+    /// Not every `.route(` is followed by a literal. A router built from a
+    /// runtime value is the documented limit of this check — it must be skipped
+    /// without swallowing the calls that come after it.
+    #[test]
+    fn ein_nicht_literaler_pfad_verschluckt_die_folgenden_nicht() {
+        let quelle = r#".route(prefix, get(h)).route("/health", get(h))"#;
+        assert_eq!(served_paths(quelle), ["/health"]);
+    }
 
     const ROUTES: &[Route] = &[
         get("GET", "/health", "Liveness."),

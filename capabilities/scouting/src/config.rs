@@ -276,25 +276,57 @@ mod tests {
 
     use super::*;
 
-    /// Restores an env var on drop. Rust runs a crate's tests as threads of ONE
-    /// process, so `remove_var` here is not local to this test: unrestored, it
-    /// left every later store test resolving a different database file from the
-    /// one they had just written to.
-    struct EnvGuard(&'static str, Option<String>);
+    /// Clears env vars for the duration of one test and restores them on drop.
+    ///
+    /// Rust runs a crate's tests as threads of ONE process, so `remove_var` here
+    /// is not local to this test: unrestored, it left every later store test
+    /// resolving a different database file from the one they had just written to.
+    ///
+    /// That was the first half. The second half is that restoring correctly is not
+    /// enough while two tests hold guards at the same time — whichever finishes
+    /// first puts `AXON_PERSONAL_ROOT` back under the other, mid-assertion, and the
+    /// other fails on a value it never set. Measured 2026-08-31: intermittent, and
+    /// it passes eight runs out of eight in isolation, which is what made it a flake
+    /// rather than a bug anyone chased.
+    ///
+    /// So the guard takes a process-wide lock and every key at once. One guard per
+    /// test, by construction: there is no way to take a second and deadlock against
+    /// yourself, because the only constructor takes a list.
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    /// A poisoned lock is a test that panicked while holding it. Its env is already
+    /// restored by the guard's own drop, so recovering is correct and refusing would
+    /// turn one failure into every later test failing for a different reason.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     impl EnvGuard {
-        fn take(key: &'static str) -> Self {
-            let previous = std::env::var(key).ok();
-            std::env::remove_var(key);
-            Self(key, previous)
+        fn take(keys: &[&'static str]) -> Self {
+            let lock = env_lock();
+            let saved = keys
+                .iter()
+                .map(|key| {
+                    let previous = std::env::var(key).ok();
+                    std::env::remove_var(key);
+                    (*key, previous)
+                })
+                .collect();
+            Self { saved, _lock: lock }
         }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            match self.1.take() {
-                Some(v) => std::env::set_var(self.0, v),
-                None => std::env::remove_var(self.0),
+            for (key, previous) in self.saved.drain(..) {
+                match previous {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
             }
         }
     }
@@ -303,9 +335,7 @@ mod tests {
     fn load_with_no_env_and_no_file_uses_defaults() {
         // Clear the overlay/override env vars so this test exercises the
         // "zero config" path deterministically regardless of the host's env.
-        let _config = EnvGuard::take("AXON_SCOUTING_CONFIG");
-        let _overlay = EnvGuard::take("AXON_PERSONAL_ROOT");
-        let _port = EnvGuard::take("AXON_PORT");
+        let _env = EnvGuard::take(&["AXON_SCOUTING_CONFIG", "AXON_PERSONAL_ROOT", "AXON_PORT"]);
         let cfg = Config::load();
         assert_eq!(cfg.port, 8084);
         assert!(cfg.events_dir.is_none());
@@ -316,8 +346,7 @@ mod tests {
     /// the cross-capability correlation with `transit` is why it is shared.
     #[test]
     fn the_store_path_comes_from_the_deployment_not_from_scouting_json() {
-        let _config = EnvGuard::take("AXON_SCOUTING_CONFIG");
-        let _overlay = EnvGuard::take("AXON_PERSONAL_ROOT");
+        let _env = EnvGuard::take(&["AXON_SCOUTING_CONFIG", "AXON_PERSONAL_ROOT"]);
         assert_eq!(Config::load().database_path, axon_config::database_path());
     }
 }

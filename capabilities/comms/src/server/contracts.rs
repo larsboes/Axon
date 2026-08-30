@@ -185,7 +185,10 @@ impl FeedListItem {
             // digest is the longer, later artefact, and preferring it would replace a card's
             // preview with a heading tree the moment one appeared.
             digest_preview: digest.filter(|text| !text.trim().is_empty()).map(|text| {
-                text.trim().chars().take(Self::DIGEST_PREVIEW_CHARS).collect()
+                text.trim()
+                    .chars()
+                    .take(Self::DIGEST_PREVIEW_CHARS)
+                    .collect()
             }),
             day: item.day,
             created_at: item.created_at,

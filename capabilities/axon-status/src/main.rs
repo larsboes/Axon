@@ -41,6 +41,13 @@ const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/api/axon-status/backups", "Every capability with a backup contract: last success, age, and whether it is overdue."),
     r("GET", "/api/axon-status/host-watch", "Open findings from the hourly host watch: a runaway process or a filling disk."),
     r("POST", "/api/axon-status/capabilities/:name/backup", "Request a backup of one capability. Accepts the run and returns; poll /backups for the outcome."),
+    // Undeclared until 2026-08-31, and served the whole time. The dashboard's panel page
+    // calls both; `/routes` denied they existed. The coverage test below did not catch it:
+    // its detector required the path literal to sit immediately after the opening paren,
+    // and these two are the only mounts in this file long enough for rustfmt to wrap. It
+    // skips the whitespace now (PRD D19) — this pair is why.
+    r("POST", "/api/axon-status/capabilities/:name/start", "Start one capability and wait for it to answer. Idempotent: an already-running capability returns up=true."),
+    r("POST", "/api/axon-status/capabilities/:name/stop", "Stop one capability. Refuses to report success while its port still answers, because something outside the pid file holding it is the case worth seeing."),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -75,10 +82,13 @@ async fn main() {
     // capability added later needs a restart to be proxied, which is honest: the shell's shape
     // follows the machine's, and `dashboard/vite.config.ts` said the same about its own proxy.
     let services = registry().await.unwrap_or_else(|e| {
-        eprintln!("[axon-status] registry unavailable ({e}); serving the shell with no capability routes");
+        eprintln!(
+            "[axon-status] registry unavailable ({e}); serving the shell with no capability routes"
+        );
         Vec::new()
     });
-    let ui_dir = std::env::var("AXON_DASHBOARD_DIST").unwrap_or_else(|_| "dashboard/dist".to_string());
+    let ui_dir =
+        std::env::var("AXON_DASHBOARD_DIST").unwrap_or_else(|_| "dashboard/dist".to_string());
     // Said at startup rather than discovered as a blank page. The bundle is a build artifact
     // (`dashboard/service.toml` `build`), so a fresh checkout has none until it is built, and a
     // shell that 404s every page while every API route works is a confusing way to learn that.
@@ -88,7 +98,10 @@ async fn main() {
         );
     }
     let shell = proxy::Proxy::new(&services, &port.to_string(), ui_dir);
-    eprintln!("[axon-status] shell: {} capability route(s)", shell.route_count());
+    eprintln!(
+        "[axon-status] shell: {} capability route(s)",
+        shell.route_count()
+    );
 
     let app = Router::new()
         .route("/routes", get(routes))
@@ -133,9 +146,8 @@ async fn main() {
     //
     // An empty outer router sends everything to `fallback_service`, so the rewrite runs before
     // any routing at all and the inner router then decides on the path the client meant.
-    let app = Router::new().fallback_service(
-        axum::middleware::from_fn(proxy::strip_self_prefix).layer(app),
-    );
+    let app = Router::new()
+        .fallback_service(axum::middleware::from_fn(proxy::strip_self_prefix).layer(app));
 
     // This process can start and stop the machine's capabilities, so it answers to
     // this machine only (axon_server binds loopback) -- and deliberately carries no

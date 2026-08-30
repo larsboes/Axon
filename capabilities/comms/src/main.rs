@@ -535,7 +535,9 @@ fn cmd_summarize(args: &[String], cfg: &Config) {
 ///   sentence for an escalation; a lowering must be answerable afterwards, so an empty one exits
 ///   before a single row is read.
 fn cmd_reclassify_feed(args: &[String], cfg: &Config) {
-    let rationale = arg_after(args, "--rationale").map(String::as_str).unwrap_or_default();
+    let rationale = arg_after(args, "--rationale")
+        .map(String::as_str)
+        .unwrap_or_default();
     if rationale.trim().is_empty() {
         eprintln!(
             "usage: comms reclassify-feed --rationale <text> [--dry-run]\n\n\
@@ -573,7 +575,12 @@ fn cmd_reclassify_feed(args: &[String], cfg: &Config) {
     let mut refused: Vec<String> = Vec::new();
     let mut no_source: std::collections::BTreeMap<String, usize> = Default::default();
 
-    for comms::store::FeedClassRow { id, kind, data_class: stored_class } in rows {
+    for comms::store::FeedClassRow {
+        id,
+        kind,
+        data_class: stored_class,
+    } in rows
+    {
         let Some(target) = declared.get(kind.as_str()) else {
             *no_source.entry(kind).or_default() += 1;
             continue;
@@ -598,7 +605,11 @@ fn cmd_reclassify_feed(args: &[String], cfg: &Config) {
     for (kind, count) in &changed {
         println!(
             "{}{kind}: {count} -> {}",
-            if dry_run { "would reclassify " } else { "reclassified " },
+            if dry_run {
+                "would reclassify "
+            } else {
+                "reclassified "
+            },
             declared[kind.as_str()]
         );
     }

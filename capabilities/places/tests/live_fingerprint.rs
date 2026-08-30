@@ -98,7 +98,10 @@ fn the_shared_fingerprint_reproduces_every_live_link() {
             .delimiter(profile.delimiter)
             .from_path(path)
             .expect("a raw export must parse as CSV");
-        let headers = reader.headers().expect("a raw export must have headers").clone();
+        let headers = reader
+            .headers()
+            .expect("a raw export must have headers")
+            .clone();
         let at = |name: &str| {
             headers
                 .iter()
@@ -154,7 +157,10 @@ fn the_shared_fingerprint_reproduces_every_live_link() {
     println!("fingerprints re-derived:     {}", derived.len());
     println!("live amex candidates:        {}", candidates.len());
     println!("live amex-backfill links:    {}", linked.len());
-    println!("links the shared hash finds: {}", linked.len() - unresolvable.len());
+    println!(
+        "links the shared hash finds: {}",
+        linked.len() - unresolvable.len()
+    );
     println!("rows using the repeat rule:  {repeats}");
 
     assert!(

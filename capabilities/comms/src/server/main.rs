@@ -216,6 +216,14 @@ const ROUTES: &[route_manifest::Route] = &[
         "/triage/relevance/refresh",
         "Rescore mail relevance against the current profiles.",
     ),
+    // Served since it was written, absent from this list until 2026-08-31 (PRD D19). Its
+    // sibling two entries up was declared because it fits on one line; this one does not,
+    // and the coverage test could not see a mount the formatter had wrapped.
+    r(
+        "POST",
+        "/triage/data-class/refresh",
+        "Reclassify the data class of stored mail against the current folder and frontmatter rules. Optional `limit`.",
+    ),
     r(
         "POST",
         "/triage/redact",

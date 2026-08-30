@@ -224,11 +224,10 @@ impl Parser {
                  remove it or extend the parser deliberately",
             );
         }
-        let date = normalize_date(date_text)
-            .ok_or_else(|| JournalError {
-                line: number,
-                message: format!("{date_text:?} is not a YYYY-MM-DD calendar date"),
-            })?;
+        let date = normalize_date(date_text).ok_or_else(|| JournalError {
+            line: number,
+            message: format!("{date_text:?} is not a YYYY-MM-DD calendar date"),
+        })?;
         let mut rest = rest.trim_start();
         // Status mark. Axon's writer always emits `*`; the published fixture
         // leaves it off, and both are valid hledger.
@@ -285,7 +284,11 @@ impl Parser {
         }
         let amount = match amount_text.trim() {
             "" => None,
-            text => Some(parse_amount(number, text, self.decimal_mark.unwrap_or('.'))?),
+            text => Some(parse_amount(
+                number,
+                text,
+                self.decimal_mark.unwrap_or('.'),
+            )?),
         };
         transaction.postings.push(RawPosting {
             line: number,
@@ -621,7 +624,10 @@ fn parse_number(line: usize, text: &str, decimal_mark: char) -> Result<(i128, u3
             }
         } else if character == group_mark {
             if fraction.is_some() {
-                return refuse(line, format!("{text:?} groups digits after its decimal mark"));
+                return refuse(
+                    line,
+                    format!("{text:?} groups digits after its decimal mark"),
+                );
             }
         } else if character == decimal_mark {
             if fraction.is_some() {
@@ -793,8 +799,14 @@ mod tests {
         // shared-expense attribution.
         let dinner = &transactions[4];
         assert_eq!(dinner.description, "group dinner");
-        assert_eq!(dinner.tags.get("axon-purpose").map(String::as_str), Some("trip"));
-        assert_eq!(dinner.tags.get("axon-shared-cents").map(String::as_str), Some("3000"));
+        assert_eq!(
+            dinner.tags.get("axon-purpose").map(String::as_str),
+            Some("trip")
+        );
+        assert_eq!(
+            dinner.tags.get("axon-shared-cents").map(String::as_str),
+            Some("3000")
+        );
         assert_eq!(
             dinner.tags.get("axon-trip-id").map(String::as_str),
             Some("trip:synthetic")
@@ -803,7 +815,10 @@ mod tests {
 
         let repayment = &transactions[6];
         assert_eq!(
-            repayment.tags.get("axon-reimbursement-for").map(String::as_str),
+            repayment
+                .tags
+                .get("axon-reimbursement-for")
+                .map(String::as_str),
             Some("synthetic-expense")
         );
         assert_eq!(repayment.source_id.as_deref(), Some("synthetic-repayment"));
@@ -816,10 +831,8 @@ mod tests {
     fn the_published_fixture_projects_the_same_dashboard_as_before() {
         let transactions = parse_ok(&published_fixture());
         let projection = crate::analytics::project(&transactions, "EUR");
-        let dashboard = crate::analytics::dashboard(
-            &projection,
-            &crate::analytics::AnalyticsFilter::default(),
-        );
+        let dashboard =
+            crate::analytics::dashboard(&projection, &crate::analytics::AnalyticsFilter::default());
         assert_eq!(dashboard.summary.income_cents, 120_000);
         assert_eq!(dashboard.summary.personal_spending_cents, 3_640);
         assert_eq!(dashboard.summary.gross_cash_outflow_cents, 6_640);
@@ -887,13 +900,21 @@ mod tests {
         // writer will actually accept for it, so both signs are exercised
         // against all three rather than filtered away.
         let accounts = [
-            ("liabilities:card:amex", "expenses:food:groceries", "income:refunds"),
+            (
+                "liabilities:card:amex",
+                "expenses:food:groceries",
+                "income:refunds",
+            ),
             (
                 "assets:broker:trade-republic:cash",
                 "expenses:uncategorized",
                 "income:investments:dividends",
             ),
-            ("assets:bank:checking-2", "expenses:housing:rent", "income:salary"),
+            (
+                "assets:bank:checking-2",
+                "expenses:housing:rent",
+                "income:salary",
+            ),
         ];
 
         let mut checked = 0_usize;
@@ -915,13 +936,8 @@ mod tests {
                     let account = if sign < 0 { outflow } else { inflow };
                     let amount_cents = sign * magnitude;
                     let booked_at = format!("2026-{month}-{day}");
-                    let candidate = candidate(
-                        &booked_at,
-                        description,
-                        amount_cents,
-                        "EUR",
-                        source_account,
-                    );
+                    let candidate =
+                        candidate(&booked_at, description, amount_cents, "EUR", source_account);
                     let entry = render_journal_entry(&candidate, account)
                         .expect("the writer accepts this pairing");
                     let journal = format!("{HEADER}{entry}");
@@ -953,7 +969,10 @@ mod tests {
                 }
             }
         }
-        assert!(checked > 100, "the sweep must actually cover cases: {checked}");
+        assert!(
+            checked > 100,
+            "the sweep must actually cover cases: {checked}"
+        );
     }
 
     /// Appending is how the journal grows, so a file of many appended entries
@@ -1006,7 +1025,8 @@ mod tests {
 
     #[test]
     fn an_impossible_date_is_refused() {
-        let error = refusal("2026-02-30 * nonexistent\n    assets:bank:a  1.00 EUR\n    expenses:food\n");
+        let error =
+            refusal("2026-02-30 * nonexistent\n    assets:bank:a  1.00 EUR\n    expenses:food\n");
         assert_eq!(error.line, 1);
         assert!(error.message.contains("calendar date"), "{error}");
     }

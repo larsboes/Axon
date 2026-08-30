@@ -5,9 +5,9 @@
 //! never enter the canonical snapshot or the disposable database projection.
 
 use crate::import::{normalize_date, ImportError, ImportResult};
+use candidate_fingerprint::digest;
 use csv::StringRecord;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use candidate_fingerprint::digest;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;

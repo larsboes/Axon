@@ -109,7 +109,9 @@ const HOP_BY_HOP: [&str; 8] = [
 ];
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {
-    HOP_BY_HOP.iter().any(|h| name.as_str().eq_ignore_ascii_case(h))
+    HOP_BY_HOP
+        .iter()
+        .any(|h| name.as_str().eq_ignore_ascii_case(h))
 }
 
 /// Does `path` sit under `prefix` as a *segment*, rather than merely starting with its letters?
@@ -160,7 +162,11 @@ impl Proxy {
             }
         }
         // Longest prefix first, so `/trips/api` is considered before a hypothetical `/trips`.
-        routes.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+        // `Reverse` rather than a hand-written comparator: clippy's unnecessary_sort_by is
+        // right that the two are the same order, and the key form cannot get the operands
+        // backwards — which is the one way this line could break, silently, at the exact
+        // moment two prefixes overlap.
+        routes.sort_by_key(|route| std::cmp::Reverse(route.prefix.len()));
 
         Self {
             routes: Arc::new(routes),
@@ -239,7 +245,11 @@ pub(crate) async fn strip_self_prefix(mut req: Request, next: Next) -> Response 
     if matches(req.uri().path(), SELF_PREFIX) {
         let rest = &req.uri().path()[SELF_PREFIX.len()..];
         let rest = if rest.is_empty() { "/" } else { rest };
-        let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+        let query = req
+            .uri()
+            .query()
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default();
         // Origin-form request URIs carry no scheme or authority, so the path and query are the
         // whole of it and a parse round-trip is exact. A malformed result is left alone rather
         // than guessed at: the unrewritten path still reaches a handler.
@@ -270,7 +280,11 @@ pub(crate) async fn fallback(State(proxy): State<Proxy>, req: Request) -> Respon
 
 async fn serve_ui(dir: &str, req: Request) -> Response {
     let index = format!("{dir}/index.html");
-    match ServeDir::new(dir).fallback(ServeFile::new(index)).oneshot(req).await {
+    match ServeDir::new(dir)
+        .fallback(ServeFile::new(index))
+        .oneshot(req)
+        .await
+    {
         Ok(res) => res.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("static: {e}")).into_response(),
     }
@@ -282,11 +296,19 @@ async fn forward(proxy: &Proxy, route: Route, req: Request) -> Response {
     let rest = match &route.strip {
         Some(p) if path.starts_with(p.as_str()) => {
             let stripped = &path[p.len()..];
-            if stripped.is_empty() { "/" } else { stripped }
+            if stripped.is_empty() {
+                "/"
+            } else {
+                stripped
+            }
         }
         _ => path,
     };
-    let query = parts.uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = parts
+        .uri
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
     let url = format!("{}{}{}", route.target, rest, query);
 
     // Buffered rather than streamed. Every request through here is a dashboard API call, the
@@ -345,7 +367,6 @@ async fn forward(proxy: &Proxy, route: Route, req: Request) -> Response {
         .unwrap_or_else(|e| (StatusCode::BAD_GATEWAY, format!("upstream: {e}")).into_response())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,7 +397,10 @@ mod tests {
             strip("/axon-status/api/axon-status/capabilities"),
             "/api/axon-status/capabilities"
         );
-        assert_eq!(strip("/axon-status/api/axon-status/health"), "/api/axon-status/health");
+        assert_eq!(
+            strip("/axon-status/api/axon-status/health"),
+            "/api/axon-status/health"
+        );
     }
 
     #[test]
@@ -394,7 +418,10 @@ mod tests {
 
     #[test]
     fn a_query_string_survives_the_rewrite() {
-        assert_eq!(strip("/axon-status/api/axon-status/repos?dirty=1"), "/api/axon-status/repos?dirty=1");
+        assert_eq!(
+            strip("/axon-status/api/axon-status/repos?dirty=1"),
+            "/api/axon-status/repos?dirty=1"
+        );
     }
 
     #[test]
@@ -407,7 +434,10 @@ mod tests {
         // Segment matching, same rule as the proxy table: only OUR name, and only whole.
         assert_eq!(strip("/comms/api/feed"), "/comms/api/feed");
         assert_eq!(strip("/axon-statusish/api"), "/axon-statusish/api");
-        assert_eq!(strip("/api/axon-status/capabilities"), "/api/axon-status/capabilities");
+        assert_eq!(
+            strip("/api/axon-status/capabilities"),
+            "/api/axon-status/capabilities"
+        );
     }
 
     #[test]
@@ -428,7 +458,10 @@ mod tests {
     }
 
     fn table(services: &[crate::status::Service]) -> Vec<Route> {
-        Proxy::new(services, "8082", "dist".into()).routes.as_ref().clone()
+        Proxy::new(services, "8082", "dist".into())
+            .routes
+            .as_ref()
+            .clone()
     }
 
     /// The rule that broke in the first draft. `proxy_api_only` moves the MOUNT to
@@ -448,7 +481,10 @@ mod tests {
     #[test]
     fn extras_pass_through_unstripped() {
         let t = table(&[svc("scouting", "8084", false, &["/discover"])]);
-        let extra = t.iter().find(|r| r.prefix == "/discover").expect("extra route");
+        let extra = t
+            .iter()
+            .find(|r| r.prefix == "/discover")
+            .expect("extra route");
         assert!(extra.strip.is_none());
     }
 
@@ -467,7 +503,10 @@ mod tests {
     /// lets the port back in.
     #[test]
     fn never_proxies_to_itself() {
-        let t = table(&[svc("axon-status", "8082", false, &[]), svc("comms", "8083", false, &[])]);
+        let t = table(&[
+            svc("axon-status", "8082", false, &[]),
+            svc("comms", "8083", false, &[]),
+        ]);
         assert!(t.iter().all(|r| r.prefix != "/axon-status"));
         assert!(t.iter().any(|r| r.prefix == "/comms"));
     }
@@ -487,9 +526,17 @@ mod tests {
     /// have put the comms bearer token on every request to every capability.
     #[test]
     fn only_comms_carries_the_credential() {
-        let t = table(&[svc("comms", "8083", false, &[]), svc("places", "8093", false, &[])]);
+        let t = table(&[
+            svc("comms", "8083", false, &[]),
+            svc("places", "8093", false, &[]),
+        ]);
         for r in &t {
-            assert_eq!(r.inject_comms_auth, r.prefix.starts_with("/comms"), "{}", r.prefix);
+            assert_eq!(
+                r.inject_comms_auth,
+                r.prefix.starts_with("/comms"),
+                "{}",
+                r.prefix
+            );
         }
     }
 

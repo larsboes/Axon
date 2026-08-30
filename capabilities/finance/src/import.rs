@@ -909,7 +909,6 @@ pub(crate) fn decimal(cents: i64) -> String {
     format!("{sign}{}.{:02}", absolute / 100, absolute % 100)
 }
 
-
 fn preview_id(
     candidates: &[TransactionCandidate],
     duplicate_rows: usize,
@@ -1387,7 +1386,9 @@ mod tests {
         // conditional on hledger being installed until 2026-08-28, so on a
         // machine without it -- this one -- the assertion never ran at all.
         use crate::accounting::AccountingEngine;
-        crate::accounting::JournalEngine::new(&path).check().unwrap();
+        crate::accounting::JournalEngine::new(&path)
+            .check()
+            .unwrap();
         std::fs::remove_file(path).unwrap();
     }
 

@@ -305,6 +305,10 @@ mod tests {
         for kind in ["article", "youtube", "instagram", "reddit", "podcast", ""] {
             assert_eq!(item_kind(kind), None, "'{kind}' must match no adapter");
         }
-        assert_eq!(item_kind("github"), None, "the KIND is not the ADAPTER name");
+        assert_eq!(
+            item_kind("github"),
+            None,
+            "the KIND is not the ADAPTER name"
+        );
     }
 }

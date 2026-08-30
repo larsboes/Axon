@@ -61,8 +61,7 @@ fn the_live_journal_parses_with_every_source_id_intact() {
     println!("source-ids distinct: {}", distinct.len());
 
     assert_eq!(
-        recovered,
-        written,
+        recovered, written,
         "every written source-id must come back out of the parser"
     );
     assert_eq!(

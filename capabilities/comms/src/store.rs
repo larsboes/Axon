@@ -47,7 +47,6 @@ pub struct FeedClassRow {
     pub data_class: String,
 }
 
-
 /// A media/news feed item. On write, `day`/`created_at`/`status` are owned by
 /// the DB (CURRENT_DATE / now() / default 'new') and ignored; on read they are
 /// populated. `transcript` is None in list views and Some in single-item reads.
