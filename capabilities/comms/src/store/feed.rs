@@ -212,6 +212,37 @@ impl Store {
     ///
     /// `Ok(false)` is a missing item, never a refusal: a caller has to be able
     /// to tell "no such item" from "not allowed".
+    /// `(id, kind, data_class)` for every feed row a given classification method wrote.
+    ///
+    /// Exists for re-derivation: `legacy` names rows classified before the deterministic
+    /// source-declared rule existed, and they are the only rows whose stored class reflects when
+    /// they arrived rather than where they came from. Returning `kind` with the id is what lets
+    /// the caller match a row back to a declared source without a second query per row.
+    ///
+    /// Ordered by kind so a dry run reads as a summary of the decision rather than as a list.
+    pub fn feed_items_classified_by(
+        &self,
+        method: &str,
+    ) -> Result<Vec<FeedClassRow>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let mut statement = conn.prepare(&format!(
+            "SELECT id, kind, data_class FROM {}_feed_items
+             WHERE data_classification_method = ?1
+             ORDER BY kind, id",
+            self.prefix
+        ))?;
+        let rows = statement
+            .query_map(params![method], |row| {
+                Ok(FeedClassRow {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    data_class: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn set_feed_data_class(
         &self,
         id: &str,

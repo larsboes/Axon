@@ -37,6 +37,16 @@ pub struct Store {
     /// `comms` here means `comms_feed_items` and its eighteen siblings.
     prefix: String,
 }
+/// One feed row, reduced to what a re-derivation decides on: which row, which source would
+/// produce it, and what it is classified as now. Not a `FeedItem`: reading whole items to
+/// compare one column would pull every transcript in the table into memory.
+#[derive(Debug, Clone)]
+pub struct FeedClassRow {
+    pub id: String,
+    pub kind: String,
+    pub data_class: String,
+}
+
 
 /// A media/news feed item. On write, `day`/`created_at`/`status` are owned by
 /// the DB (CURRENT_DATE / now() / default 'new') and ignored; on read they are

@@ -124,6 +124,18 @@ enum HuggingFaceTarget {
 /// (kind, stream) for a URL. Watch/listen kinds land in `media`; read kinds in
 /// `news`. A URL that matches no extractor is an `article`, which is the generic
 /// fetch-and-strip path and therefore always a valid fallback.
+/// The `kind` half of [`detect`], for a caller that has a URL and no item.
+///
+/// `sources::item_kind` claims which kind each adapter's URLs land on, and a claim that drifts
+/// from this function would match stored rows to the wrong source. Exposing the real answer lets
+/// that test assert against ingest instead of against a second copy of the mapping.
+///
+/// Test-only: production callers already have the item, and reach `detect` through `fetch`.
+#[cfg(test)]
+pub(crate) fn kind_for_url(url: &str) -> &'static str {
+    detect(url).0
+}
+
 fn detect(url: &str) -> (&'static str, &'static str) {
     let low = url.to_lowercase();
     if low.contains("youtube.com") || low.contains("youtu.be") {

@@ -43,6 +43,29 @@ pub fn fetch(source: &FeedSourceConfig) -> Result<Vec<Discovered>> {
     }
 }
 
+/// The item `kind` this adapter's URLs land on, as `media::detect` reads them.
+///
+/// A third `match` on the same string, beside [`fetch`] and [`source_url`], because it answers a
+/// third question about one adapter and putting it anywhere else would make the adapter list
+/// live in two files. `None` for an adapter whose items are not identifiable by kind.
+///
+/// It exists so a stored row can be matched back to the source that would produce it *today*.
+/// `captured_via` is empty on every row in this deployment, so the origin is not recorded and
+/// cannot be read; `kind` is, and `media::detect` derives it from the URL on both paths — the
+/// collector's and a hand-paste. Matching on it is therefore the same question ingest asked,
+/// asked again, rather than a second rule about what a URL means.
+///
+/// The asymmetry is deliberate and is the safety property: `article` and `youtube` are what a
+/// hand-pasted URL falls back to, no declared source produces them, so they match nothing here
+/// and a re-derivation leaves them at whatever they had. Fail-closed, by not appearing.
+pub fn item_kind(adapter: &str) -> Option<&'static str> {
+    match adapter {
+        "github-trending" => Some("github"),
+        "arxiv" => Some("arxiv"),
+        _ => None,
+    }
+}
+
 pub fn source_url(source: &FeedSourceConfig) -> String {
     match source.adapter.as_str() {
         "github-trending" => {
@@ -251,5 +274,37 @@ mod tests {
         assert_eq!(items[0].label.as_deref(), Some("arXiv query"));
         // Authors and abstract come from media::fetch_arxiv, which reads the
         // same identifier — one path builds an arXiv item, not two.
+    }
+
+    /// The kinds `item_kind` answers for must be the kinds those adapters' URLs actually land
+    /// on, or a re-derivation matches rows to the wrong source. Asserted against
+    /// `media::detect` through a real URL of each shape rather than against a copy of the
+    /// mapping, because a copy would agree with itself while both drifted from ingest.
+    #[test]
+    fn declared_kinds_match_what_ingest_stores() {
+        for (adapter, url) in [
+            ("github-trending", "https://github.com/larsboes/Axon"),
+            ("arxiv", "https://arxiv.org/abs/2501.00001"),
+        ] {
+            let declared = item_kind(adapter).expect("adapter names a kind");
+            assert_eq!(
+                declared,
+                crate::media::kind_for_url(url),
+                "{adapter} claims kind '{declared}', but ingest files {url} elsewhere"
+            );
+        }
+    }
+
+    /// The safety property, and the whole reason a re-derivation can be run at all: a kind no
+    /// adapter produces must answer `None`, so a hand-pasted URL — which falls back to `article`,
+    /// or to `youtube` for a video — is matched to no declared source and keeps the class it has.
+    /// If this ever answers `Some`, a bulk re-derivation would start lowering the class of
+    /// whatever the operator pasted, which is the one thing it must never do.
+    #[test]
+    fn a_kind_no_adapter_produces_matches_nothing() {
+        for kind in ["article", "youtube", "instagram", "reddit", "podcast", ""] {
+            assert_eq!(item_kind(kind), None, "'{kind}' must match no adapter");
+        }
+        assert_eq!(item_kind("github"), None, "the KIND is not the ADAPTER name");
     }
 }

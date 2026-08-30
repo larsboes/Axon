@@ -55,6 +55,10 @@ fn print_help() {
     println!("  normalize --all                 re-run normalization over stored raw content");
     println!("  export-sources [--dry-run]      reconcile every saved feed item with");
     println!("                                  Resources/Sources/ in the configured vault");
+    println!("  reclassify-feed --rationale <t> re-derive `legacy` feed data classes from the");
+    println!("       [--dry-run]                CURRENT feed source declarations. Lowering a");
+    println!("                                  class is a human act, so the rationale is");
+    println!("                                  required and is stored on every row it changes.");
     println!("  --help, -h                      show this help");
     println!("\nThis CLI's Gmail sweep is READ-ONLY. Archive, Trash and the Waiting label require an explicit authenticated dashboard action.");
 }
@@ -78,6 +82,7 @@ fn main() {
         "summarize" => cmd_summarize(&args, &cfg),
         "normalize" => cmd_normalize(&args, &cfg),
         "export-sources" => cmd_export_sources(&args, &cfg),
+        "reclassify-feed" => cmd_reclassify_feed(&args, &cfg),
         other => {
             eprintln!("error: unknown command '{other}'\n");
             print_help();
@@ -503,6 +508,116 @@ fn cmd_summarize(args: &[String], cfg: &Config) {
             std::process::exit(1);
         }
     }
+}
+
+// -- reclassify-feed -----------------------------------------------------
+
+/// Re-derive `legacy` feed classes from the feed source declarations as they stand today.
+///
+/// Rows carry the class they were given when they arrived. On 2026-08-13 the deterministic
+/// source-declared rule landed; everything ingested before it is stamped `legacy`, which names
+/// *when* a row arrived and not *where it came from*. In this deployment that left 89 arXiv
+/// abstracts and 68 GitHub READMEs in the redaction lane, while the very same sources — declared
+/// `public` in `config::default_feed_sources`, with the reasons written there — were putting
+/// identical content in the `public` lane. Nothing was at risk. Quality and quota were: a
+/// published preprint reaching a provider with its authors stripped is a worse summary bought
+/// with a redaction nobody needed.
+///
+/// Three properties make this a repair rather than a loosening:
+///
+/// * It reads the DECLARATIONS. A row is matched to a source by `sources::item_kind`, which is
+///   the same adapter list `fetch` dispatches on. A kind no declared source produces — `article`
+///   and `youtube`, what a hand-pasted URL falls back to — matches nothing and is left alone.
+/// * It goes through `set_feed_data_class`, so `admit_reclassification` judges every row. A
+///   human method plus the operator's own words is what lets a class fall, and nothing else does.
+///   A row a human already classified is refused by that rule, not by a special case here.
+/// * The rationale is required, not defaulted. `human_reclassification` will invent a canned
+///   sentence for an escalation; a lowering must be answerable afterwards, so an empty one exits
+///   before a single row is read.
+fn cmd_reclassify_feed(args: &[String], cfg: &Config) {
+    let rationale = arg_after(args, "--rationale").map(String::as_str).unwrap_or_default();
+    if rationale.trim().is_empty() {
+        eprintln!(
+            "usage: comms reclassify-feed --rationale <text> [--dry-run]\n\n\
+             Lowering a data class is a human decision and is stored with the row. Say why."
+        );
+        std::process::exit(1);
+    }
+    let dry_run = args.iter().any(|a| a == "--dry-run");
+
+    // kind -> the class the source producing that kind declares TODAY. Disabled sources are
+    // skipped: a source that is off is not making a claim about anything.
+    let mut declared: std::collections::BTreeMap<&'static str, String> =
+        std::collections::BTreeMap::new();
+    for source in cfg.feed_sources.iter().filter(|s| s.enabled) {
+        if let Some(kind) = comms::sources::item_kind(&source.adapter) {
+            declared.insert(kind, source.data_class.clone());
+        }
+    }
+    if declared.is_empty() {
+        eprintln!("no enabled feed source declares a kind — nothing to re-derive against");
+        std::process::exit(1);
+    }
+
+    let store = open_store(cfg);
+    let rows = match store.feed_items_classified_by("legacy") {
+        Ok(rows) => rows,
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut changed: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut unchanged: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut refused: Vec<String> = Vec::new();
+    let mut no_source: std::collections::BTreeMap<String, usize> = Default::default();
+
+    for comms::store::FeedClassRow { id, kind, data_class: stored_class } in rows {
+        let Some(target) = declared.get(kind.as_str()) else {
+            *no_source.entry(kind).or_default() += 1;
+            continue;
+        };
+        if target == &stored_class {
+            *unchanged.entry(kind).or_default() += 1;
+            continue;
+        }
+        if dry_run {
+            *changed.entry(kind).or_default() += 1;
+            continue;
+        }
+        match store.set_feed_data_class(&id, target, Some(rationale)) {
+            Ok(true) => *changed.entry(kind).or_default() += 1,
+            // The row vanished between the read and the write. Counted as refused rather than
+            // silently dropped: this pass is the record of what it did.
+            Ok(false) => refused.push(format!("{id}: no such row")),
+            Err(error) => refused.push(format!("{id}: {error}")),
+        }
+    }
+
+    for (kind, count) in &changed {
+        println!(
+            "{}{kind}: {count} -> {}",
+            if dry_run { "would reclassify " } else { "reclassified " },
+            declared[kind.as_str()]
+        );
+    }
+    for (kind, count) in &unchanged {
+        println!("{kind}: {count} already match the declaration");
+    }
+    for (kind, count) in &no_source {
+        println!("{kind}: {count} left alone — no enabled source declares this kind");
+    }
+    for line in &refused {
+        println!("refused {line}");
+    }
+    println!(
+        "{} row(s) {}, {} left alone, {} refused",
+        changed.values().sum::<usize>(),
+        if dry_run { "would change" } else { "changed" },
+        unchanged.values().sum::<usize>() + no_source.values().sum::<usize>(),
+        refused.len()
+    );
 }
 
 // -- normalize -----------------------------------------------------------
