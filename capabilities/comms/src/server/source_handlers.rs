@@ -197,3 +197,28 @@ pub(super) async fn source_scan_handler(Json(body): Json<SourceScanBody>) -> Htt
         ),
     }
 }
+
+/// `GET /__axon/freshness` — when this capability last took delivery of data.
+///
+/// The shared shape behind `freshness_advise_hours` / `freshness_stale_hours` in
+/// `schemas/service.toml.example`. One integer, `last_arrival_at`, epoch seconds, or `null` if
+/// nothing has ever arrived. Named for arrival rather than for a row: a source that publishes
+/// nothing for a week is quiet, not broken, and a contract keyed on the newest ITEM would call
+/// that a fault. What the contract is for is a producer that stopped.
+///
+/// This exists because nine days of an empty Inbox passed with every check on the machine green
+/// (PRD D13). `tools/doctor` verifies declarations, health and persistence; none of those is
+/// falsified by a collector nobody is running.
+pub(super) async fn freshness_handler() -> HttpResponse {
+    let result = tokio::task::spawn_blocking(move || -> Result<Option<i64>, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
+        store.newest_source_success().map_err(|e| e.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok(last)) => (StatusCode::OK, Json(json!({ "last_arrival_at": last }))),
+        Ok(Err(error)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}

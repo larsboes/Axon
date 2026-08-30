@@ -57,6 +57,32 @@ impl Store {
             .optional()?)
     }
 
+    /// The most recent moment ANY declared source successfully collected, as epoch seconds.
+    ///
+    /// `last_success_at`, not `last_run_at`, and the distinction is the whole point: a run that
+    /// failed still ran, so the run column stays fresh while nothing arrives. This answers the
+    /// question the freshness contract asks — "is data still reaching this capability" — and a
+    /// failing collector must not be able to answer it yes.
+    ///
+    /// The MAX across sources rather than per source: one working source means the capability is
+    /// still being fed. A single source that has stopped is a narrower fault and belongs to the
+    /// sources page, which already shows per-source state.
+    ///
+    /// `None` when no source has ever succeeded, which reads downstream as "never" rather than
+    /// as "fresh" — the same way a missing backup receipt does.
+    pub fn newest_source_success(&self) -> Result<Option<i64>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        Ok(conn.query_row(
+            &format!(
+                "SELECT MAX(CAST(last_success_at AS INTEGER)) FROM {}_source_state
+                 WHERE last_success_at IS NOT NULL AND last_success_at <> ''",
+                self.prefix
+            ),
+            [],
+            |r| r.get::<_, Option<i64>>(0),
+        )?)
+    }
+
     /// Record a completed pass. Success clears the failure streak; the counts
     /// describe the pass that just ran, not a running total, because "how much
     /// did the last run see" is the question a stale schedule raises.

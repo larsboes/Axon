@@ -342,7 +342,8 @@ _emit_service() {  # <name> <manifest> <scope> [endpoint]
   # down. A consumer reading only `backup_sqlite` would render "this stops the service"
   # over a contract that does not.
   for key in port health_path ready_path panel_port panel_path autostart schedule proxy_api_only idle_timeout \
-             backup_target backup_sqlite backup_sqlite_online backup_advise_days backup_stale_days; do
+             backup_target backup_sqlite backup_sqlite_online backup_advise_days backup_stale_days \
+             freshness_advise_hours freshness_stale_hours; do
     value="$(toml_get "$key" "$mf")"
     # A manifest says how its OWNER runs the capability. Project that onto a machine which only
     # consumes it and every field becomes a claim of authority it does not have: `autostart`

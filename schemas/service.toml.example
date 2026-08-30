@@ -148,6 +148,33 @@ backup_stale_days  = "7"                  # past this age the last backup counts
                                           # declares a backup but no cadence is only ever reported as "last run
                                           # <age>", never as overdue, because nothing said what timely means.
 
+freshness_advise_hours = "12"             # how often data SHOULD reach this capability.
+freshness_stale_hours  = "24"             # past this age nothing is arriving, and that is a fault.
+                                          # The same two-number shape as the backup pair above, and the same
+                                          # reasoning: `stale` is not "a bit more than advise", it is the age
+                                          # only reachable when the thing that should be feeding this is not
+                                          # running. A 6h collector reaches 12h by missing two passes and 24h
+                                          # by missing four.
+                                          #
+                                          # A capability that declares these serves `GET /__axon/freshness`
+                                          # answering `{"last_arrival_at": <epoch seconds>}`, or `null` if
+                                          # nothing ever arrived. axon-status polls it; tools/doctor reports it.
+                                          # The path is a convention, not a field, so one shape works for every
+                                          # capability -- same namespace as ytalbum's `/__axon/idle`. It answers
+                                          # before the inbound gate (libs/axon-server/src/auth.rs), because one
+                                          # integer about WHEN is liveness-shaped and a status page must not
+                                          # need every capability's credential to draw itself.
+                                          #
+                                          # ARRIVAL, never the newest row. A source that publishes nothing for a
+                                          # week is quiet, not broken; a contract keyed on the newest item would
+                                          # call that a fault and teach the reader to skim. What this exists to
+                                          # catch is a producer that stopped -- PRD D13, after nine days of an
+                                          # empty Inbox passed with every check on the machine green.
+                                          #
+                                          # No default. A capability that declares neither is never reported as
+                                          # stale, exactly as with the backup pair: nothing said what timely
+                                          # means, so nothing may claim it was missed.
+
 # ── Process kind ───────────────────────────────────────────────────────────
 # Everything below applies ONLY to kind = "process". A process manifest declares
 # none of the container fields above — the schema gate rejects a manifest carrying

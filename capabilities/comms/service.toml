@@ -22,3 +22,15 @@ autostart   = "true"
 
 # No `requires`: the nineteen tables live in the shared SQLite file this process
 # opens itself, so there is no database service to start first (PRD Q45).
+
+# The freshness contract (schemas/service.toml.example). comms owns the Feed, so "is data still
+# arriving" is a question about this capability -- but what satisfies it is capabilities/feed-sweep,
+# whose 6h schedule is the only unattended caller of `POST /sources/scan`. 12h is two missed passes
+# and 24h is four, which is the age that needs a stopped collector rather than a quiet source.
+#
+# The coupling is deliberate and is the point: on a machine running comms without feed-sweep this
+# contract fails, and it should. Nothing is feeding the Inbox there, which is precisely the
+# condition that went unnoticed for nine days (PRD D13) and precisely what a declaration nobody
+# verifies looks like from the outside.
+freshness_advise_hours = "12"
+freshness_stale_hours  = "24"

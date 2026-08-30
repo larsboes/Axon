@@ -58,7 +58,16 @@ use serde_json::json;
 /// all; behind a token they would report a healthy capability as down, and the
 /// answer carries nothing an unauthenticated caller could not learn by
 /// observing that the port accepts a connection.
-const EXEMPT_PATHS: &[&str] = &["/health", "/ready"];
+///
+/// `/__axon/freshness` joins them on the same argument and no weaker one. It answers *when* this
+/// capability last took delivery of data, as one integer — never what the data is, how much of
+/// it there is, or where it came from. A caller who can reach the port can already watch it
+/// accept connections; learning that a collector last succeeded at T tells them nothing further
+/// about the operator. It is exempt because the surface that reads it, axon-status, polls every
+/// capability and must not need each one's credential to ask a liveness-shaped question — the
+/// alternative is a status page that reports a healthy capability as unknown, which is exactly
+/// the failure the two paths above are exempt to prevent.
+const EXEMPT_PATHS: &[&str] = &["/health", "/ready", "/__axon/freshness"];
 
 /// The resolved inbound gate for one server.
 ///

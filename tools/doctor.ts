@@ -1492,6 +1492,101 @@ const CHECKS: Check[] = [
     },
   },
 
+  // Data freshness — the check that would have caught a nine-day outage (PRD D13).
+  //
+  // Every other check here verifies a DECLARATION: the manifest is well formed, the unit matches
+  // it, the port is unique, the process answers /health. None of those is falsified by a producer
+  // nobody is running, which is why the Feed's newest item was nine days old on 2026-08-30 while
+  // doctor reported a clean machine. `feed-sweep` had been deleted; comms stayed up, healthy, and
+  // empty.
+  //
+  // Asks the capability, rather than reading its data. `GET /__axon/freshness` answers
+  // `{"last_arrival_at": <epoch>}` and nothing else, so this stays a check about liveness of a
+  // FLOW and never becomes a second reader of anyone's tables.
+  //
+  // A stopped capability is `skipped`, not failed. On-demand is the normal resting state here
+  // (PRD B20) and a doctor that failed on it would fail on every capability the dashboard has not
+  // opened yet — the permanent-warning failure `axon.toml [audit]` already argues about.
+  {
+    name: "Data freshness (declared contracts)",
+    async run(ctx) {
+      const proc = Bun.spawnSync({
+        cmd: [join(ctx.root, "tools/capability.sh"), "registry"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (proc.exitCode !== 0) return ctx.warn("capability.sh registry failed — skipping");
+      let registry: Array<Record<string, string>>;
+      try {
+        registry = JSON.parse(proc.stdout.toString());
+      } catch {
+        return ctx.warn("capability.sh registry did not return JSON — skipping");
+      }
+
+      // Same source as the capability checks above: the machine's own list, not the registry's,
+      // because the registry answers for both roots and this must only speak about what runs here.
+      const enabled = new Set<string>(
+        Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : [],
+      );
+      const declaring = registry.filter(
+        (s) => s.freshness_stale_hours && (enabled.size === 0 || enabled.has(s.name)),
+      );
+      if (declaring.length === 0) {
+        return ctx.ok("no capability declares a freshness contract");
+      }
+
+      for (const service of declaring) {
+        // `|| 0` was wrong here and the negative test is what said so: a declared `0` is falsy,
+        // so `if (stale && ...)` skipped the comparison entirely and the strictest possible
+        // contract became the one that could never fail. Absence and zero are different answers,
+        // so absence is NaN and every use is guarded on finiteness.
+        const hours_declared = (value: string | undefined) =>
+          value && value.trim() !== "" ? Number(value) : Number.NaN;
+        const advise = hours_declared(service.freshness_advise_hours);
+        const stale = hours_declared(service.freshness_stale_hours);
+        const port = service.port;
+        if (!port) {
+          ctx.warn(`${service.name} declares a freshness contract but has no port to ask`);
+          continue;
+        }
+        let body: string;
+        try {
+          const response = await fetch(`http://127.0.0.1:${port}/__axon/freshness`, {
+            signal: AbortSignal.timeout(4000),
+          });
+          if (!response.ok) {
+            ctx.ok(`${service.name} — skipped, not answering (HTTP ${response.status})`);
+            continue;
+          }
+          body = await response.text();
+        } catch {
+          ctx.ok(`${service.name} — skipped, not running`);
+          continue;
+        }
+        let last: number | null;
+        try {
+          last = JSON.parse(body).last_arrival_at ?? null;
+        } catch {
+          ctx.bad(`${service.name} — /__axon/freshness did not answer JSON`);
+          continue;
+        }
+        if (last === null) {
+          ctx.bad(`${service.name} — nothing has ever arrived, and a contract says something should`);
+          continue;
+        }
+        const hours = (Date.now() / 1000 - last) / 3600;
+        const age = hours < 1 ? `${Math.round(hours * 60)}m` : `${hours.toFixed(1)}h`;
+        if (Number.isFinite(stale) && hours >= stale) {
+          ctx.bad(`${service.name} — nothing has arrived for ${age} (stale past ${stale}h); its producer is not running`);
+        } else if (Number.isFinite(advise) && hours >= advise) {
+          ctx.warn(`${service.name} — last arrival ${age} ago (due past ${advise}h)`);
+        } else {
+          ctx.ok(`${service.name} — data arrived ${age} ago`);
+        }
+      }
+    },
+  },
+
   // Port uniqueness across both roots.
   //
   // Added 2026-08-30, after `vault` (Axon) and `ytalbum` (the overlay) both declared 8094 while

@@ -155,6 +155,11 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r("GET", "/sources", "Declared feed sources."),
     r(
+        "GET",
+        "/__axon/freshness",
+        "When data last arrived, for the freshness contract.",
+    ),
+    r(
         "POST",
         "/sources/scan",
         "Collect from the declared sources.",
@@ -279,6 +284,7 @@ fn build_router(dashboard_origin: &str) -> Router {
         .route("/content/cloud-providers", get(cloud_providers_handler))
         .route("/content/:source/:id", get(content_item_handler))
         .route("/sources", get(sources_handler))
+        .route("/__axon/freshness", get(freshness_handler))
         .route("/triage", get(triage_handler))
         .route("/triage/sweep/status", get(triage_sweep_status_handler));
 
