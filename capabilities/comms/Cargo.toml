@@ -27,6 +27,10 @@ path = "src/server/main.rs"
 name = "comms-extraction-eval"
 path = "src/extraction_eval_main.rs"
 
+[[bin]]
+name = "comms-redaction-eval"
+path = "src/redaction_eval_main.rs"
+
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
 axon-inference = { path = "../../libs/inference" }

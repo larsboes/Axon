@@ -29,6 +29,7 @@ pub mod people_registry;
 pub mod projection;
 pub mod provenance;
 pub mod quality;
+pub mod redaction_eval;
 pub mod quiet;
 pub mod relevance;
 pub mod rules;

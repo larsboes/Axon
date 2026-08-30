@@ -1406,6 +1406,11 @@
       "pin": "17.10-alpine"
     },
     {
+      "name": "presidio",
+      "verdict": "reject",
+      "pin": ""
+    },
+    {
       "name": "r2d2",
       "verdict": "adopt",
       "pin": "0.8.10"

@@ -358,6 +358,13 @@ pin = "0.14.7"          # 2026-07-27, 7d old on 2026-08-03 = the near edge of th
 installed_probe = "btm --version"   # cargo install, so nothing but this pin decides which version the host runs
 why = "tools/sysmon TUI backend -- cross-platform system monitor (CPU/mem/disk/net/proc, history graphs), Rust, matches the language bias in README.md#implementation-languages-and-intelligence. Adopt over build: README.md#upstream-first requires checking for prior art before writing a system-usage overview from scratch"
 
+[presidio]
+url = "https://github.com/microsoft/presidio"
+verdict = "reject"
+license = "MIT"
+pin = ""
+why = "measured 2026-08-30 as a replacement for capabilities/comms/src/cloud_derivative.rs::transform_text, on a frozen 24-fixture corpus of real mail (12 DE, 12 EN, 48 labels) with the labels written before either redactor ran. It lost on the metric that decides: recall 83.3% against the incumbent's 91.7%, and it wrote 153 redaction markers where the incumbent wrote 52 -- 3x the over-redaction, which is summary quality spent for no privacy gained. The split is entirely person names in English (53.8% vs 76.9%); German ties at 85.7%, which killed the hypothesis that German prose was the gap. Six of its eight misses are names `people_registry::is_known_person` knows and a general model cannot -- the second measurement agreeing with that file's own claim, after the 2-of-2,802 one. NOT measured: Presidio tuned, with the contact list as a deny-list recognizer and a DE account pattern; stock recognizers and stock de_core_news_lg/en_core_web_lg are what adopting it on day one would have given, and that is what was tested. Cost side, unchanged by tuning: a Python + spaCy runtime and ~1.1 GB of models in a Rust/Bun repo, plus the model version would have to become part of REDACTION_VERSION or a spaCy upgrade silently invalidates every preview_hash a human already approved. What held, and is worth more than the verdict: its 4 unique catches are a defect list for ours -- a name in English apposition ('X from Y', 'I am X') is invisible to a salutation-only gate, and a login handle identifies a person under no current rule. Both are cheaper to fix in transform_text than a second runtime is to carry; recorded as PRD D14. Record: <overlay>/config/comms-redaction-shadow.md. Uninstalled after measuring, per R4"
+
 [auge]
 url = "https://github.com/Arthur-Ficial/auge"
 verdict = "reject"
