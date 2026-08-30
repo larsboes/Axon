@@ -33,10 +33,24 @@
 //! to the port this process is listening on, and forwarding to it would re-enter this fallback and
 //! loop until the connection pool gave out. Excluded by port, not by name, so a rename cannot
 //! reintroduce it.
+//!
+//! That exclusion alone made the mirror a lie, and cost the whole Capabilities page. Vite proxies
+//! `/axon-status` -> 8082 *with the prefix stripped*, so the client asks for
+//! `/axon-status/api/axon-status/capabilities` and 8082 receives `/api/axon-status/capabilities`.
+//! Serving the bundle from this process removed the hop but not the prefix the client still sends,
+//! and an unrouted path is a page: all ten `axonStatus.*` calls in `dashboard/src/lib/api.ts`
+//! answered **200 with the SPA's own HTML**, `JSON.parse` threw on `<!doctype`, and the page that
+//! this process was at that moment serving reported that this process was unavailable. The footer
+//! read `0 capabilities` for the same reason, and `start`/`stop` were on the same dead prefix --
+//! so on-demand capabilities could not be started from the surface that exists to start them.
+//!
+//! [`strip_self_prefix`] restores the missing half. Stripping before routing is what Vite does,
+//! and it is the reason the client needs no change and no rebuild.
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -177,8 +191,63 @@ fn comms_authorization() -> Option<HeaderValue> {
     } else {
         std::path::PathBuf::from("capabilities/comms/comms.config.json")
     };
-    let token = axon_server::token_from_file(&path)?;
+    // Two hops, because `comms.json` NAMES the token file rather than holding the token:
+    // `api_secret_file` -> that path -> the value (`capabilities/comms/src/config.rs`
+    // `api_key_from_file`, which is the same two hops through the same reader).
+    //
+    // Handing `comms.json` straight to `token_from_file` was the first version and it failed in
+    // silence. That reader accepts either a raw token file or a JSON file carrying
+    // `auth.api_key`; `comms.json` parses as JSON and has no such key, so it returned `None`,
+    // the fail-closed path below sent no header, and comms answered 401 to every proxied read
+    // WHILE RUNNING AND HEALTHY. The dashboard showed "Feed" unavailable, which is
+    // indistinguishable from the capability being down and is why it survived the B19 cutover.
+    let config = std::fs::read_to_string(&path).ok()?;
+    let secret_file = serde_json::from_str::<serde_json::Value>(&config)
+        .ok()?
+        .get("api_secret_file")?
+        .as_str()?
+        .to_string();
+    let token = axon_server::token_from_file(&axon_config::expand_tilde(&secret_file))?;
     HeaderValue::from_str(&format!("Bearer {token}")).ok()
+}
+
+/// This surface's own name, as the dashboard addresses it. One constant, because the routing
+/// table must never carry it (see the module docs' self-proxy rule) and this layer must always.
+pub(crate) const SELF_PREFIX: &str = "/axon-status";
+
+/// Strip a leading `/axon-status` segment before routing, mirroring the rewrite Vite's dev
+/// proxy performs (`dashboard/vite.config.ts`, `rewrite: path.replace(^/<name>, "")`).
+///
+/// Must run before *any* routing, so it is installed as an empty outer router's
+/// `fallback_service` (see `main.rs`) rather than with `Router::layer`. `Router::layer` maps
+/// each route's service and the fallback, which leaves matchit deciding first -- measured, and
+/// it fails in the most confusing available way: the path matches nothing, reaches the proxy
+/// fallback, is rewritten there, and `/api/axon-status/capabilities` then matches transit's
+/// `proxy_extra = ["/api"]` and is answered by port 3000.
+///
+/// Ordering it before routing does not reintroduce what the module docs reject. They reject
+/// resolving the PROXY table before routing; this resolves no table. It removes one prefix no
+/// route and no page can claim: axon-status registers only `/health`, `/routes` and
+/// `/api/axon-status/*`, and `dashboard/src/routes/` has no `axon-status` entry. After the
+/// rewrite the ordinary router -- real routes first, proxy fallback second -- decides as it
+/// always did.
+///
+/// Strips once, never in a loop. A crafted `/axon-status/axon-status/x` becomes
+/// `/axon-status/x`, which then finds no route and is served as a page. That is a dead end,
+/// not recursion, because the layer sees each request exactly once.
+pub(crate) async fn strip_self_prefix(mut req: Request, next: Next) -> Response {
+    if matches(req.uri().path(), SELF_PREFIX) {
+        let rest = &req.uri().path()[SELF_PREFIX.len()..];
+        let rest = if rest.is_empty() { "/" } else { rest };
+        let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+        // Origin-form request URIs carry no scheme or authority, so the path and query are the
+        // whole of it and a parse round-trip is exact. A malformed result is left alone rather
+        // than guessed at: the unrewritten path still reaches a handler.
+        if let Ok(uri) = format!("{rest}{query}").parse::<Uri>() {
+            *req.uri_mut() = uri;
+        }
+    }
+    next.run(req).await
 }
 
 /// Router fallback: proxy when a prefix claims the path, otherwise serve the SPA.
@@ -280,6 +349,73 @@ async fn forward(proxy: &Proxy, route: Route, req: Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The regression this layer exists for. The client addresses this surface the way Vite
+    /// taught it to, and the built bundle has to answer the same way the dev proxy did.
+    fn strip(path: &str) -> String {
+        // The layer's rewrite, isolated from axum's plumbing so the RULE is what is tested.
+        if !matches(path_of(path), SELF_PREFIX) {
+            return path.to_string();
+        }
+        let rest = &path_of(path)[SELF_PREFIX.len()..];
+        let rest = if rest.is_empty() { "/" } else { rest };
+        match path.split_once('?') {
+            Some((_, q)) => format!("{rest}?{q}"),
+            None => rest.to_string(),
+        }
+    }
+
+    fn path_of(uri: &str) -> &str {
+        uri.split_once('?').map(|(p, _)| p).unwrap_or(uri)
+    }
+
+    #[test]
+    fn self_prefix_is_stripped_so_own_routes_match() {
+        // Every axonStatus.* call in dashboard/src/lib/api.ts has this shape.
+        assert_eq!(
+            strip("/axon-status/api/axon-status/capabilities"),
+            "/api/axon-status/capabilities"
+        );
+        assert_eq!(strip("/axon-status/api/axon-status/health"), "/api/axon-status/health");
+    }
+
+    #[test]
+    fn start_and_stop_reach_their_handlers() {
+        // These two are why the page could not start an on-demand capability: same dead prefix.
+        assert_eq!(
+            strip("/axon-status/api/axon-status/capabilities/finance/start"),
+            "/api/axon-status/capabilities/finance/start"
+        );
+        assert_eq!(
+            strip("/axon-status/api/axon-status/capabilities/finance/stop"),
+            "/api/axon-status/capabilities/finance/stop"
+        );
+    }
+
+    #[test]
+    fn a_query_string_survives_the_rewrite() {
+        assert_eq!(strip("/axon-status/api/axon-status/repos?dirty=1"), "/api/axon-status/repos?dirty=1");
+    }
+
+    #[test]
+    fn the_bare_prefix_becomes_the_index_rather_than_an_empty_path() {
+        assert_eq!(strip("/axon-status"), "/");
+    }
+
+    #[test]
+    fn another_capability_is_left_alone() {
+        // Segment matching, same rule as the proxy table: only OUR name, and only whole.
+        assert_eq!(strip("/comms/api/feed"), "/comms/api/feed");
+        assert_eq!(strip("/axon-statusish/api"), "/axon-statusish/api");
+        assert_eq!(strip("/api/axon-status/capabilities"), "/api/axon-status/capabilities");
+    }
+
+    #[test]
+    fn a_doubled_prefix_strips_once_and_stops() {
+        // One pass per request. The result finds no route and is served as a page, which is a
+        // dead end rather than recursion.
+        assert_eq!(strip("/axon-status/axon-status/x"), "/axon-status/x");
+    }
 
     fn svc(name: &str, port: &str, api_only: bool, extra: &[&str]) -> crate::status::Service {
         serde_json::from_value(serde_json::json!({

@@ -22,6 +22,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tower::Layer;
 
 mod proxy;
 mod status;
@@ -118,6 +119,23 @@ async fn main() {
         // surface's own `/api/axon-status/*`.
         .fallback(proxy::fallback)
         .with_state(shell);
+
+    // The self-prefix rewrite, wrapped AROUND the router above rather than layered onto it.
+    //
+    // `Router::layer` was the first attempt and is wrong here, for a reason worth keeping:
+    // it applies the middleware to each route's service and to the fallback, so matchit has
+    // already chosen by the time the middleware sees the request. `/axon-status/api/...`
+    // therefore matched nothing, went to the fallback, and only then had its prefix removed --
+    // at which point the proxy read the rewritten path and matched transit's `proxy_extra`
+    // `/api`, sending this surface's own capability list to port 3000. The 502 was measured,
+    // not predicted, and it is the same swallowing the module docs warn about arriving by a
+    // different door.
+    //
+    // An empty outer router sends everything to `fallback_service`, so the rewrite runs before
+    // any routing at all and the inner router then decides on the path the client meant.
+    let app = Router::new().fallback_service(
+        axum::middleware::from_fn(proxy::strip_self_prefix).layer(app),
+    );
 
     // This process can start and stop the machine's capabilities, so it answers to
     // this machine only (axon_server binds loopback) -- and deliberately carries no
