@@ -21,13 +21,14 @@ if [ "$PRIVATE_ROOT" != "$AXON_OVERLAY_ROOT" ]; then
 fi
 
 usage() {
-  echo "usage: materialize-inference-key <gemini|groq|nvidia-nim|opencode-go>" >&2
+  echo "usage: materialize-inference-key <cohere|gemini|groq|nvidia-nim|opencode-go>" >&2
   exit 1
 }
 
 [ $# -eq 1 ] || usage
 PROVIDER="$1"
 case "$PROVIDER" in
+  cohere) ITEM="inference-cohere-api-key" ;;
   gemini) ITEM="inference-gemini-api-key" ;;
   # The second public-tier provider (systems.toml [groq]). Same handling as every other entry
   # here -- only the item name is new, which is the point of keeping one bridge rather than a
