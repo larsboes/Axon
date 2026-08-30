@@ -124,6 +124,16 @@ pub struct Role {
     /// that reasoning in `message.content` -- not in `reasoning_content` -- whenever the token
     /// budget runs out mid-thought. 15 of 23 stored cloud digests were the model's own monologue
     /// (measured 2026-08-30). `{"thinking": false}` spends the budget on the answer instead.
+    ///
+    /// KNOWN LIMIT, and the reason it is written here rather than filed away: the key name is
+    /// fixed. `cloud_dispatch::chat` inserts this under the literal `chat_template_kwargs`,
+    /// which is what vLLM and NIM read and what Gemini's OpenAI-compatible endpoint does not.
+    /// `gemini-3.6-flash` reasons too, and with no way to declare its control it fails every
+    /// digest with `finish_reason: length` -- measured 2026-08-30 at 32 failures and 0 successes
+    /// in a day, against 42 successes and 0 failures for the NIM role that has the kwarg. The
+    /// role was demoted below NVIDIA on that evidence; the real fix is a role field that can
+    /// carry an arbitrary request override (Gemini wants top-level `reasoning_effort`), and it
+    /// is unmeasured because the free tier was rate-limiting by the time the question was asked.
     #[serde(default)]
     pub chat_template_kwargs: Option<serde_json::Value>,
     /// The same job on another local runtime, keyed by backend id. Read only
