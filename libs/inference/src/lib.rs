@@ -72,7 +72,12 @@ pub struct Backend {
     pub api_key_file: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `Default` is for the tests, and it earns its place: adding an optional field to this struct
+/// broke the same six test constructors twice in one day, once for `chat_template_kwargs` and
+/// once for `request_overrides`. Deserialization is unaffected -- `backend` and `model` carry no
+/// `serde(default)` and stay required -- so this only lets a test say which fields it cares
+/// about and leave the rest alone.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Role {
     pub backend: String,
     pub model: String,
@@ -148,6 +153,21 @@ pub struct Role {
     /// is unmeasured because the free tier was rate-limiting by the time the question was asked.
     #[serde(default)]
     pub chat_template_kwargs: Option<serde_json::Value>,
+    /// Extra top-level fields merged verbatim into the chat-completions request body.
+    ///
+    /// The general form of the field above, and the reason it exists: `chat_template_kwargs`
+    /// can only ever emit the key of that name, which is what vLLM and NIM read. A provider
+    /// with the same need and a different spelling could not be configured at all --
+    /// `gemini-3.6-flash` reasons before answering exactly as nemotron does, wants top-level
+    /// `reasoning_effort`, and failed 33 of 33 digests on 2026-08-30 for want of a place to
+    /// say so.
+    ///
+    /// Per role and never global, for the same reason as the narrow field: a key one provider
+    /// requires another is entitled to reject with a 400. Merged after the request is built, so
+    /// a role can also override a default the task set -- which is deliberate, and is why this
+    /// is an operator-reviewed config value rather than something a caller passes.
+    #[serde(default)]
+    pub request_overrides: Option<serde_json::Value>,
     /// The same job on another local runtime, keyed by backend id. Read only
     /// when [`BACKEND_OVERRIDE_ENV`] names one of these; a role that names none
     /// is simply not available on a machine that overrides its backend.
@@ -263,6 +283,8 @@ pub struct ResolvedRole {
     /// See the config field of the same name: provider-specific chat-template arguments,
     /// forwarded verbatim by the caller that builds the request.
     pub chat_template_kwargs: Option<serde_json::Value>,
+    /// See the config field of the same name: extra top-level request fields, merged verbatim.
+    pub request_overrides: Option<serde_json::Value>,
 }
 
 fn model_ids_match(configured: &str, installed: &str) -> bool {
@@ -472,6 +494,7 @@ impl InferenceConfig {
             max_input_tokens: role.max_input_tokens,
             credit_expires_on: role.credit_expires_on.clone(),
             chat_template_kwargs: role.chat_template_kwargs.clone(),
+            request_overrides: role.request_overrides.clone(),
             query_prefix: query_prefix.to_string(),
             document_prefix: document_prefix.to_string(),
         })
@@ -1043,7 +1066,7 @@ mod tests {
                 query_prefix: String::new(),
                 document_prefix: String::new(),
                 chat_template_kwargs: None,
-                on_backend: HashMap::new(),
+                ..Default::default()
             },
         );
         let mut backup = cfg.roles["cloud_summarization"].clone();
@@ -1294,7 +1317,7 @@ mod tests {
                 query_prefix: String::new(),
                 document_prefix: String::new(),
                 chat_template_kwargs: None,
-                on_backend: HashMap::new(),
+                ..Default::default()
             },
         );
         assert!(!cfg.role("cloud_incomplete").unwrap().has_cloud_policy());
@@ -1337,7 +1360,7 @@ mod tests {
                 query_prefix: String::new(),
                 document_prefix: String::new(),
                 chat_template_kwargs: None,
-                on_backend: HashMap::new(),
+                ..Default::default()
             },
         );
         let role = cfg.role("ungoverned").unwrap();
@@ -1370,7 +1393,7 @@ mod tests {
                 query_prefix: String::new(),
                 document_prefix: String::new(),
                 chat_template_kwargs: None,
-                on_backend: HashMap::new(),
+                ..Default::default()
             },
         );
         let governed = cfg.role("cloud_governed").unwrap();
@@ -1413,7 +1436,7 @@ mod tests {
                 query_prefix: String::new(),
                 document_prefix: String::new(),
                 chat_template_kwargs: None,
-                on_backend: HashMap::new(),
+                ..Default::default()
             },
         );
         let role = cfg.role("cloud_credit").unwrap();
@@ -1526,7 +1549,7 @@ mod tests {
                 query_prefix: String::new(),
                 document_prefix: String::new(),
                 chat_template_kwargs: None,
-                on_backend: HashMap::new(),
+                ..Default::default()
             },
         );
         let role = cfg

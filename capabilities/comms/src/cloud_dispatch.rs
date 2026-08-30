@@ -141,15 +141,34 @@ pub fn digest(
 /// the response size ceiling and — the one that keeps costing people an
 /// afternoon — the 200-with-an-error-envelope case are properties of talking to
 /// a hosted provider, not of the question being asked.
-fn chat(role: &ResolvedRole, mut body: serde_json::Value) -> Result<String, String> {
-    // The role's chat-template conventions, merged here rather than at each call site, so the
-    // two cloud tasks cannot disagree about them. Per role and never global: `thinking` is what
-    // nemotron understands, and a provider that does not know the key is entitled to 400 on it.
+/// Merge the role's declared request conventions into a built request body.
+///
+/// Split out from [`chat`] so it can be tested without a provider: what a role adds to a request
+/// is the part most likely to be wrong and the part a network test would never reach.
+///
+/// Two fields, and the second is the general form of the first. `chat_template_kwargs` can only
+/// emit the key of that name, which vLLM and NIM read; `request_overrides` sets arbitrary
+/// top-level fields, which is what a provider spelling the same idea differently needs --
+/// Gemini's `reasoning_effort` has no other way in. Both are per role and never global, because
+/// a key one provider requires another is entitled to answer 400 on.
+///
+/// Overrides are applied last, so a role can deliberately replace something the task set.
+fn apply_role_conventions(role: &ResolvedRole, body: &mut serde_json::Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
     if let Some(kwargs) = &role.chat_template_kwargs {
-        if let Some(object) = body.as_object_mut() {
-            object.insert("chat_template_kwargs".to_string(), kwargs.clone());
+        object.insert("chat_template_kwargs".to_string(), kwargs.clone());
+    }
+    if let Some(serde_json::Value::Object(overrides)) = &role.request_overrides {
+        for (key, value) in overrides {
+            object.insert(key.clone(), value.clone());
         }
     }
+}
+
+fn chat(role: &ResolvedRole, mut body: serde_json::Value) -> Result<String, String> {
+    apply_role_conventions(role, &mut body);
     if !role.is_cloud_endpoint() {
         return Err("the selected role is not an approved HTTPS cloud endpoint".into());
     }
@@ -341,6 +360,83 @@ fn bounded_optional(value: Option<String>, limit: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn role_with(extra: serde_json::Value) -> ResolvedRole {
+        let mut declaration = serde_json::json!({
+            "backend": "hosted",
+            "model": "some-model",
+            "provider_name": "Some Provider",
+            "cloud_data_tier": "public",
+            "billing_mode": "free_only",
+            "max_requests_per_day": 10,
+            "max_input_tokens": 24000,
+        });
+        let (Some(object), Some(more)) = (declaration.as_object_mut(), extra.as_object()) else {
+            panic!("both sides of the test declaration are objects");
+        };
+        for (key, value) in more {
+            object.insert(key.clone(), value.clone());
+        }
+        let config: axon_inference::InferenceConfig = serde_json::from_value(serde_json::json!({
+            "backends": { "hosted": { "api": "openai", "base_url": "https://example.invalid/v1" } },
+            "roles": { "probe": declaration },
+        }))
+        .expect("the probe config parses");
+        config.role("probe").expect("the probe role resolves")
+    }
+
+    /// The narrow field still emits exactly the key vLLM and NIM read, under that name.
+    #[test]
+    fn a_chat_template_kwarg_is_sent_under_its_own_key() {
+        let role = role_with(serde_json::json!({
+            "chat_template_kwargs": { "thinking": false }
+        }));
+        let mut body = serde_json::json!({ "model": "some-model", "max_tokens": 500 });
+        apply_role_conventions(&role, &mut body);
+
+        assert_eq!(body["chat_template_kwargs"]["thinking"], false);
+        assert_eq!(body["max_tokens"], 500, "the task's own fields survive");
+    }
+
+    /// PRD-less but measured: `gemini-3.6-flash` reasons before answering and wants a top-level
+    /// `reasoning_effort`, which the fixed-key field above cannot spell. 33 of 33 digests failed
+    /// at `finish_reason: length` on 2026-08-30 for want of somewhere to say this.
+    #[test]
+    fn a_request_override_reaches_the_top_level_of_the_body() {
+        let role = role_with(serde_json::json!({
+            "request_overrides": { "reasoning_effort": "none" }
+        }));
+        let mut body = serde_json::json!({ "model": "some-model", "max_tokens": 500 });
+        apply_role_conventions(&role, &mut body);
+
+        assert_eq!(body["reasoning_effort"], "none");
+        assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    /// Applied last on purpose: a role reviewed by an operator is allowed to correct a default
+    /// the task chose, and a merge that silently lost to the task would be a config that reads
+    /// as set and behaves as unset.
+    #[test]
+    fn an_override_wins_against_the_field_the_task_set() {
+        let role = role_with(serde_json::json!({
+            "request_overrides": { "max_tokens": 4096 }
+        }));
+        let mut body = serde_json::json!({ "model": "some-model", "max_tokens": 500 });
+        apply_role_conventions(&role, &mut body);
+
+        assert_eq!(body["max_tokens"], 4096);
+    }
+
+    /// A role declaring neither leaves the request exactly as the task built it.
+    #[test]
+    fn a_role_with_no_conventions_changes_nothing() {
+        let role = role_with(serde_json::json!({}));
+        let before = serde_json::json!({ "model": "some-model", "max_tokens": 500 });
+        let mut body = before.clone();
+        apply_role_conventions(&role, &mut body);
+
+        assert_eq!(body, before);
+    }
 
     #[test]
     fn input_token_bound_is_local_conservative_and_monotonic() {
