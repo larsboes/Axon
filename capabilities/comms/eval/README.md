@@ -144,6 +144,13 @@ corpus unchanged and passes at 6/6 useful top-1, `0.912` pairwise accuracy and `
 Its result is kept separately because cross-encoder scores and embedding cosine scores are not
 the same scale.
 
+That second stage is **measured but not running**. No `reranking` role is declared in this
+deployment, and `relevance.rs` enters the stage only when one resolves — so every Feed ranking
+is first-stage only. It is not a regression from oMLX leaving the host: neither pre-change
+backup of the inference config declares the role either. Restoring it needs oMLX, because
+`ResolvedRole::rerank_endpoint` returns `Err` for an Ollama backend — the Ollama-native API
+exposes no `/v1/rerank`, and Ollama is what holds the local roles now.
+
 [`bge-m3` served by Ollama](results/2026-08-30-bge-m3-ollama.md) cleared the unchanged gate on
 2026-08-30 at 6/6 useful top-1, `0.941` pairwise accuracy and `0.994` mean nDCG, prefix-free, and
 **is now the adopted first stage**. E5-base remains the selection on a machine whose `[inference]`
