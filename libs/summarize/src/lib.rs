@@ -106,7 +106,7 @@ impl Shape {
     /// The ceiling that goes with the rung. A bigger structure needs room to
     /// finish; a smaller one must not be allowed to sprawl into the larger
     /// one's territory, or the ladder stops meaning anything.
-    pub fn max_tokens(self) -> u32 {
+    pub const fn max_tokens(self) -> u32 {
         match self {
             Shape::None => 0,
             Shape::Brief => 200,
@@ -152,6 +152,24 @@ pub const CHARS_PER_TOKEN: usize = 3;
 /// wrapped around the source. The prompt preamble is about 60 words; the rest
 /// is headroom.
 pub const PROMPT_OVERHEAD_TOKENS: u32 = 400;
+
+/// The largest prompt this module can construct, in tokens.
+///
+/// Every input is capped at [`INPUT_CAP`], every prompt carries
+/// [`PROMPT_OVERHEAD_TOKENS`], and the widest reply is [`Shape::Sectioned`]. So the context a
+/// summarization backend must offer is arithmetic, not a judgement — which matters because the
+/// number has to be configured *outside* this repo, on whatever server holds the role, and a
+/// number nobody can derive is one somebody eventually guesses.
+///
+/// Guessing it cost something measurable. Ollama loads a model at 4,096 tokens whatever window
+/// the architecture declares, and its `/v1/chat/completions` — the endpoint an `api = "ollama"`
+/// backend uses — accepts no per-request `num_ctx`. It does not refuse an over-window prompt
+/// either: it drops the front and answers 200. Measured 2026-08-30, a 7,399-token prompt came
+/// back reported as 2,050 with the opening silently gone. A digest of the tail of a document,
+/// presented as a digest of the document.
+pub const fn worst_case_prompt_tokens() -> u32 {
+    (INPUT_CAP / CHARS_PER_TOKEN) as u32 + PROMPT_OVERHEAD_TOKENS + Shape::Sectioned.max_tokens()
+}
 
 /// Whether a source of this length, digested at this rung, fits a context
 /// window of `context_tokens`.
@@ -757,6 +775,25 @@ pub fn server_error(body: &serde_json::Value) -> Option<ServerError> {
 
 #[cfg(test)]
 mod tests {
+    /// The number a backend has to be configured to hold, pinned so a change to any of its three
+    /// inputs shows up here rather than as a truncated digest on somebody's machine.
+    ///
+    /// 8,192 is what `axon-qwen3-4b:ctx8k` was built with on 2026-08-30, and this is the margin
+    /// that made 8,192 the answer instead of the next power of two down.
+    #[test]
+    fn the_context_a_summarization_backend_must_offer_is_derivable() {
+        assert_eq!(
+            worst_case_prompt_tokens(),
+            (INPUT_CAP / CHARS_PER_TOKEN) as u32 + PROMPT_OVERHEAD_TOKENS + 1_000
+        );
+        assert_eq!(worst_case_prompt_tokens(), 6_400);
+        assert!(
+            worst_case_prompt_tokens() > 4_096,
+            "Ollama's default window cannot hold this, which is why a role on it needs a model \
+             built with an explicit num_ctx"
+        );
+    }
+
     use super::*;
 
     #[test]

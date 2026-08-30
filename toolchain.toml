@@ -156,7 +156,7 @@ required = "optional"
 needed_by = ["capability:comms", "capability:scouting"]
 version_cmd = "ollama --version"
 min_version = "0.33.0"
-why = "serves the `embedding` inference role, consumed by capabilities/comms/src/relevance.rs for Feed-TELOS ranking and capabilities/scouting/src/embed.rs for profile vectors. Absent, both degrade rather than fail -- relevance drops to the deterministic `lexical` control -- which is why this is optional and also exactly why it must be declared: the same silence the macmon and yt-dlp entries above record. It is a systems.toml service ([ollama]), not adopted code, so no `upstream` id: Axon calls it and builds nothing from it."
+why = "serves the `embedding` and `summarization` inference roles: capabilities/comms/src/relevance.rs for Feed-TELOS ranking, capabilities/scouting/src/embed.rs for profile vectors, and the strong local digest rung an operator reaches by pressing Regenerate. Absent, both degrade rather than fail -- relevance drops to the deterministic `lexical` control -- which is why this is optional and also exactly why it must be declared: the same silence the macmon and yt-dlp entries above record. It is a systems.toml service ([ollama]), not adopted code, so no `upstream` id: Axon calls it and builds nothing from it."
 install_macos = "brew install --cask ollama"
 install_linux = "curl -fsSL https://ollama.com/install.sh | sh"
 

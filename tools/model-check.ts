@@ -15,9 +15,11 @@
 //   3. Is something newer available in the same family?  Advisory, never a failure — newer is a
 //      decision about quality, cost and capacity, and question 2 is why it cannot be automatic.
 //
-// Not wired into `tools/doctor`: this dials third-party APIs and spends quota, which no check
-// that runs on every invocation should do. `doctor --online` is the sibling that probes declared
-// endpoints; this one is run when a model is being chosen or reviewed.
+// The full sweep is not wired into `tools/doctor`: it dials third-party APIs and spends quota,
+// which no check that runs on every invocation should do. `--local` is, because it restricts the
+// sweep to loopback backends and so spends nothing and leaves the machine for nothing — and a
+// stopped local server is precisely the condition nothing else reported. `doctor --online` probes
+// declared systems endpoints; this one asks whether the model a ROLE names is really there.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -39,6 +41,22 @@ interface InferenceConfig {
 }
 
 const PROBE = process.argv.includes("--probe");
+// `--local` restricts the sweep to backends on loopback, which removes the one reason this tool
+// stays out of `tools/doctor`: it spends no third-party quota and dials nothing off the machine.
+// It implies probing, because on loopback a probe is free and "is it listed" without "does it
+// answer" is the weaker half of the question a stopped server makes urgent.
+const LOCAL_ONLY = process.argv.includes("--local");
+const JSON_OUT = process.argv.includes("--json");
+
+function isLoopback(backend: Backend): boolean {
+  try {
+    return ["127.0.0.1", "localhost", "::1"].includes(
+      new URL(backend.base_url ?? "").hostname,
+    );
+  } catch {
+    return false;
+  }
+}
 
 const AXON_ROOT = axonRoot();
 const OVERLAY = overlayRoot(AXON_ROOT);
@@ -158,7 +176,13 @@ async function probe(backend: Backend, model: string, key?: string): Promise<str
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (key) headers.Authorization = `Bearer ${key}`;
   try {
-    const response = await fetch(`${base}/chat/completions`, {
+    // Mirrors libs/inference `ResolvedRole::chat_completions_endpoint`: an OpenAI backend's
+    // base_url already carries its version segment, an Ollama one does not. Wrong here and a
+    // served model answers 404 and reads as absent -- the failure this tool reports, arriving
+    // from the tool itself.
+    const path =
+      backend.api === "ollama" ? "/v1/chat/completions" : "/chat/completions";
+    const response = await fetch(`${base}${path}`, {
       method: "POST",
       headers,
       // Generous, because a reasoning model spends its budget thinking and a stingy cap comes
@@ -180,7 +204,21 @@ async function probe(backend: Backend, model: string, key?: string): Promise<str
 }
 
 let failures = 0;
-const roles = Object.entries(config.roles ?? {});
+const entries: {
+  role: string;
+  backend: string;
+  model: string;
+  status: "ok" | "missing" | "unreachable" | "incomplete";
+  detail: string;
+}[] = [];
+const say = (line: string) => {
+  if (!JSON_OUT) console.log(line);
+};
+const roles = Object.entries(config.roles ?? {}).filter(([, role]) => {
+  if (!LOCAL_ONLY) return true;
+  const backend = config.backends?.[role.backend ?? ""];
+  return backend ? isLoopback(backend) : false;
+});
 const cache = new Map<string, string[] | string>();
 
 for (const [roleName, role] of roles) {
@@ -188,7 +226,11 @@ for (const [roleName, role] of roles) {
   const backend = config.backends?.[backendName];
   const model = role.model ?? "";
   if (!backend || !model) {
-    console.log(`${roleName}: incomplete declaration (backend='${backendName}' model='${model}')`);
+    say(`${roleName}: incomplete declaration (backend='${backendName}' model='${model}')`);
+    entries.push({
+      role: roleName, backend: backendName, model,
+      status: "incomplete", detail: "no backend or no model declared",
+    });
     failures += 1;
     continue;
   }
@@ -199,7 +241,11 @@ for (const [roleName, role] of roles) {
   if (typeof listed === "string") {
     // Never a failure. A local backend that is not running and a provider without a catalogue
     // endpoint are both normal, and reporting them as faults is how a check becomes noise.
-    console.log(`${roleName}: ${model} on ${backendName} — skipped, ${listed}`);
+    say(`${roleName}: ${model} on ${backendName} — skipped, ${listed}`);
+    entries.push({
+      role: roleName, backend: backendName, model,
+      status: "unreachable", detail: listed,
+    });
     continue;
   }
 
@@ -218,24 +264,55 @@ for (const [roleName, role] of roles) {
   if (!present) {
     failures += 1;
     const near = listed.filter((id) => family(id) === family(model));
-    console.log(
-      `${roleName}: ✗ ${model} is NOT in ${backendName}'s catalogue` +
-        (near.length ? ` — same family: ${near.sort().join(", ")}` : ""),
-    );
+    const near_note = near.length ? ` — same family: ${near.sort().join(", ")}` : "";
+    say(`${roleName}: ✗ ${model} is NOT in ${backendName}'s catalogue${near_note}`);
+    entries.push({
+      role: roleName, backend: backendName, model,
+      status: "missing", detail: `not in ${backendName}'s catalogue${near_note}`,
+    });
     continue;
   }
   // `libs/inference` resolves rungs by name -- `role_on("embedding", ...)` is how a caller asks
   // for the retrieval rung -- so the name is the existing contract for what a role is, and the
   // right question to ask it follows from that rather than from a new field.
   const asksForAVector = /(^|_)embedding(_|$)/.test(roleName);
-  const answer = PROBE
-    ? ` — ${await (asksForAVector ? probeEmbedding : probe)(backend, model, key)}`
-    : "";
-  console.log(`${roleName}: ${model} on ${backendName} ok${answer}${suffix}`);
+  const spoke =
+    PROBE || LOCAL_ONLY
+      ? await (asksForAVector ? probeEmbedding : probe)(backend, model, key)
+      : "";
+  say(`${roleName}: ${model} on ${backendName} ok${spoke ? ` — ${spoke}` : ""}${suffix}`);
+  entries.push({
+    role: roleName, backend: backendName, model,
+    // A probe that came back as an HTTP status or a timeout is not an ok. Reporting it as one
+    // would make this tool agree that a served-but-silent model is fine, which is question 2's
+    // entire reason for being separate from question 1.
+    status: spoke && !spoke.startsWith("answers (") && spoke !== "answers"
+      ? "unreachable"
+      : "ok",
+    detail: spoke || "listed",
+  });
 }
 
-console.log(
-  `\n${roles.length} role(s) checked${PROBE ? ", each probed" : " (pass --probe to ask each one to answer)"}` +
-    `, ${failures} naming a model its backend does not list`,
-);
+if (JSON_OUT) {
+  console.log(
+    JSON.stringify({
+      scope: LOCAL_ONLY ? "loopback" : "all",
+      entries,
+      totals: {
+        count: entries.length,
+        ok: entries.filter((e) => e.status === "ok").length,
+        missing: entries.filter((e) => e.status === "missing").length,
+        unreachable: entries.filter((e) => e.status === "unreachable").length,
+        incomplete: entries.filter((e) => e.status === "incomplete").length,
+      },
+    }),
+  );
+} else {
+  const probed = PROBE || LOCAL_ONLY;
+  console.log(
+    `\n${roles.length} role(s) checked${LOCAL_ONLY ? " on loopback" : ""}` +
+      `${probed ? ", each probed" : " (pass --probe to ask each one to answer)"}` +
+      `, ${failures} naming a model its backend does not list`,
+  );
+}
 if (failures > 0) process.exit(1);

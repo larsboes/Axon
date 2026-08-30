@@ -788,6 +788,60 @@ const CHECKS: Check[] = [
     },
   },
 
+  // Local inference roles — delegate to tools/model-check --local, same shape as the
+  // toolchain-check delegation above. Only the loopback backends: the full sweep dials
+  // third-party APIs and spends quota, which nothing running on every invocation may do.
+  //
+  // This check exists because nothing had it. The `embedding` role named oMLX for as long as
+  // oMLX had been uninstalled, `summarization` named it too, and every surface agreed the
+  // machine was healthy: toolchain-check did not know the binary, doctor --online probed the
+  // project homepage rather than the endpoint, and the Feed simply served its lexical fallback.
+  // A declared role whose model is not there is the same class as the apple-on-device typo that
+  // survived months, one layer down.
+  {
+    name: "Local inference roles (tools/model-check --local)",
+    run(ctx) {
+      const checker = join(ctx.root, "tools", "model-check.ts");
+      if (!existsSync(checker)) {
+        ctx.warn(`missing ${checker}`);
+        return;
+      }
+      const proc = Bun.spawnSync({
+        cmd: ["bun", checker, "--local", "--json"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      let data: any;
+      try {
+        data = JSON.parse(proc.stdout.toString());
+      } catch {
+        ctx.warn("model-check did not emit JSON — run 'bun tools/model-check.ts --local' for detail");
+        return;
+      }
+      const entries: any[] = Array.isArray(data.entries) ? data.entries : [];
+      if (entries.length === 0) {
+        ctx.ok("no inference role names a loopback backend on this machine");
+        return;
+      }
+      for (const e of entries) {
+        // A model the backend does not list is a declaration that cannot work — bad. A backend
+        // that is not running is machine state, and every consumer degrades rather than fails
+        // (relevance to its lexical control, the digest ladder to the light and cloud rungs), so
+        // it is a warning. Collapsing the two would make a stopped server fail doctor on a
+        // laptop that is deliberately not serving models.
+        if (e.status === "missing" || e.status === "incomplete") {
+          ctx.bad(`${e.role}: ${e.model} on ${e.backend} — ${e.detail}`);
+        } else if (e.status === "unreachable") {
+          ctx.warn(`${e.role}: ${e.model} on ${e.backend} — ${e.detail}`);
+        }
+      }
+      const t = data.totals ?? {};
+      if (!t.missing && !t.incomplete && !t.unreachable) {
+        ctx.ok(`${t.ok}/${t.count} local role(s) answering`);
+      }
+    },
+  },
+
   // Assistant harness integrations. This section is optional infrastructure, so
   // stale/incomplete state is a warning, not a hard failure; install-time
   // guidance is handled separately in tools/install.sh.
