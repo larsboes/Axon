@@ -112,6 +112,20 @@ pub struct Role {
     /// Prefixed onto the *document* side.
     #[serde(default)]
     pub document_prefix: String,
+    /// Provider-specific chat-template arguments, passed through verbatim as
+    /// `chat_template_kwargs` on a chat-completions request.
+    ///
+    /// The same category as the prefixes above -- this file's own words for what a role names are
+    /// "the backend, the model on it, and that model's input conventions" -- and a reasoning
+    /// toggle is an input convention rather than a Comms concern. Per role and never global,
+    /// because a key one provider requires another rejects with a 400.
+    ///
+    /// Why it exists: `nvidia/nemotron-3-nano-30b-a3b` reasons before answering, and NIM returns
+    /// that reasoning in `message.content` -- not in `reasoning_content` -- whenever the token
+    /// budget runs out mid-thought. 15 of 23 stored cloud digests were the model's own monologue
+    /// (measured 2026-08-30). `{"thinking": false}` spends the budget on the answer instead.
+    #[serde(default)]
+    pub chat_template_kwargs: Option<serde_json::Value>,
     /// The same job on another local runtime, keyed by backend id. Read only
     /// when [`BACKEND_OVERRIDE_ENV`] names one of these; a role that names none
     /// is simply not available on a machine that overrides its backend.
@@ -201,6 +215,9 @@ pub struct ResolvedRole {
     pub credit_expires_on: Option<String>,
     pub query_prefix: String,
     pub document_prefix: String,
+    /// See the config field of the same name: provider-specific chat-template arguments,
+    /// forwarded verbatim by the caller that builds the request.
+    pub chat_template_kwargs: Option<serde_json::Value>,
 }
 
 fn model_ids_match(configured: &str, installed: &str) -> bool {
@@ -409,6 +426,7 @@ impl InferenceConfig {
             max_requests_per_day: role.max_requests_per_day,
             max_input_tokens: role.max_input_tokens,
             credit_expires_on: role.credit_expires_on.clone(),
+            chat_template_kwargs: role.chat_template_kwargs.clone(),
             query_prefix: query_prefix.to_string(),
             document_prefix: document_prefix.to_string(),
         })

@@ -141,7 +141,15 @@ pub fn digest(
 /// the response size ceiling and — the one that keeps costing people an
 /// afternoon — the 200-with-an-error-envelope case are properties of talking to
 /// a hosted provider, not of the question being asked.
-fn chat(role: &ResolvedRole, body: serde_json::Value) -> Result<String, String> {
+fn chat(role: &ResolvedRole, mut body: serde_json::Value) -> Result<String, String> {
+    // The role's chat-template conventions, merged here rather than at each call site, so the
+    // two cloud tasks cannot disagree about them. Per role and never global: `thinking` is what
+    // nemotron understands, and a provider that does not know the key is entitled to 400 on it.
+    if let Some(kwargs) = &role.chat_template_kwargs {
+        if let Some(object) = body.as_object_mut() {
+            object.insert("chat_template_kwargs".to_string(), kwargs.clone());
+        }
+    }
     if !role.is_cloud_endpoint() {
         return Err("the selected role is not an approved HTTPS cloud endpoint".into());
     }
@@ -192,6 +200,28 @@ fn chat(role: &ResolvedRole, body: serde_json::Value) -> Result<String, String> 
             "cloud provider returned an error: {}",
             error.message()
         ));
+    }
+    // A truncated completion is not an answer, and taking one is how 15 of 23 stored cloud
+    // digests came to be the model's own chain of thought (measured 2026-08-30).
+    //
+    // `nvidia/nemotron-3-nano-30b-a3b` reasons first. NIM keeps that reasoning in
+    // `message.reasoning_content` and returns a clean `content` — until the token budget runs
+    // out mid-thought, at which point the partial REASONING is what arrives in `content`.
+    // Reproduced directly against the provider: at `max_tokens` 60 and 150 the same request
+    // answers `finish_reason: "length"` with "We need to digest this paper..." as its content.
+    //
+    // So the guard is on truncation, not on reasoning. It is the more general defect and the one
+    // worth refusing: a digest cut off mid-sentence was already not a digest, whatever produced
+    // it, and every provider signals it the same way. `over_window` records the failure and the
+    // item is picked up again rather than being stored wrong and looking finished.
+    let finish_reason = body
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .and_then(|choice| choice.get("finish_reason"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if finish_reason == "length" {
+        return Err("cloud provider truncated its answer at the token limit".to_string());
     }
     body.get("choices")
         .and_then(|choices| choices.get(0))
