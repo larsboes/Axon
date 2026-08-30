@@ -94,6 +94,18 @@ pub struct Role {
     pub failover_priority: Option<u16>,
     /// Local hard ceiling for provider requests started on one UTC date.
     /// Cloud roles without a non-zero ceiling are deliberately inert.
+    ///
+    /// It is a guard, not a description, and that makes it worthless set ABOVE the provider's
+    /// own limit -- a distinction with a measured cost. On 2026-08-30 this deployment declared
+    /// 1000/day for a Gemini free-tier role whose real quota is 20, and 200/day for a Cloudflare
+    /// role that stopped serving after 81: 119 requests past the ceiling that mattered, all
+    /// answered 429, all counted as failures against the items that asked for them.
+    ///
+    /// So the number belongs to the provider, and the provider will usually tell you. Google
+    /// names it in the 429 body (`quotaId`, `quotaValue`); Cloudflare meters a compute unit
+    /// rather than requests, so a count there is an approximation that moves with model size and
+    /// has to be re-measured. Both are recorded in `systems.toml` beside the service they
+    /// describe, which is where a role's ceiling should be read from rather than guessed.
     #[serde(default)]
     pub max_requests_per_day: Option<u32>,
     /// Local upper bound for request input tokens. Dispatch uses UTF-8 bytes as

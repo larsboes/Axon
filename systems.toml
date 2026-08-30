@@ -140,6 +140,18 @@ kind  = "service"
 local = "no"
 why   = "OpenAI-compatible hosted inference, the paid fallback behind nvidia-nim for tools/graphify.sh semantic extraction. NOT free despite the tier name: models.dev lists 24 models on it and zero at zero cost, cheapest gpt-5.6-luna at $0.10/M in and $0.60/M out, which is roughly eight cents for a full extraction over this repo. What it buys over the free tier is context -- several models carry 1M-token windows, so the chunk budget stops being a constraint at all. Endpoint id and model list resolved from models.dev, the same registry opencode itself reads; the account is the existing opencode-go auth. Key via Vaultwarden and tools/materialize-inference-key, never inline."
 
+[gemini]
+url   = "https://generativelanguage.googleapis.com/"
+kind  = "service"
+local = "no"
+why   = "Free-tier hosted inference (OpenAI-compatible /v1beta/openai/chat/completions, bearer key) behind the comms `cloud_gemini_content_analysis` role. FREE-TIER CEILING IS 20 REQUESTS PER DAY, per project per model, for gemini-3.6-flash -- not an estimate: the provider names it in its own 429 body as quotaId GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue 20, read on 2026-08-30. The role had declared 1000, so Axon kept dispatching 50x past the point the provider stopped serving; `max_requests_per_day` is a LOCAL guard and is worth nothing set above the real limit. Second caveat, measured the same day: gemini-3.6-flash reasons before answering and truncates every digest at finish_reason=length, 33 failures to 0 successes, because `chat_template_kwargs` can only emit the key vLLM and NIM read and this endpoint wants top-level `reasoning_effort` -- see libs/inference/src/lib.rs. Key provisioned via Vaultwarden and tools/materialize-inference-key, never by an agent."
+
+[cloudflare-workers-ai]
+url   = "https://developers.cloudflare.com/workers-ai/"
+kind  = "service"
+local = "no"
+why   = "Free-tier hosted inference (OpenAI-compatible /v1/chat/completions) behind the comms `cloud_cloudflare_content_analysis` role, and the provider that wrote most of this machine's cloud digests. MEASURED 2026-08-30: 81 digests of @cf/meta/llama-3.3-70b-instruct-fp8-fast succeeded, then every later call that day returned 429 -- so the role's declared 200 sent 119 requests past the real ceiling before failover existed to absorb them. Set to 80 on that observation. UNVERIFIED, and the reason a request count can only ever approximate here: the free tier is metered in a compute unit rather than in requests, so the number of requests it buys moves with model size. Re-measure rather than trust this figure if the model changes."
+
 [nvidia-nim]
 url   = "https://build.nvidia.com/"
 kind  = "service"
