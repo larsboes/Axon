@@ -1162,6 +1162,12 @@
             {/if}
             {#if e.summary}
               <p class="preview">{e.summary}</p>
+            {:else if e.digest_preview}
+              <!-- No summary of its own: past the on-device window, so the enrichment drain left
+                   it and the digest drain took it through the cloud instead. Showing the digest's
+                   opening rather than an empty card, labelled so the two are not confused. -->
+              <p class="preview">{e.digest_preview}</p>
+              <p class="muted from-digest">from the digest</p>
             {:else if ingested === e.id}
               <p class="muted pending">
                 <Icon name="loader" size={12} /> Summary is running — it will appear after the next load.
@@ -1563,6 +1569,11 @@
   .card-select input {
     margin: 0;
     accent-color: var(--primary);
+  }
+
+  .from-digest {
+    font-size: 0.75rem;
+    margin-top: 0.15rem;
   }
 
   .proposal-summary {

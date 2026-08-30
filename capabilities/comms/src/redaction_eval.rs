@@ -30,21 +30,13 @@ struct Corpus {
     fixtures: Vec<Fixture>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct Acceptance {
     /// Recall the incumbent must hold, per entity type. Absent in the first pass on purpose:
     /// the first run's job is to find out what recall IS, and a threshold invented before the
     /// measurement is a number chosen to be met.
     #[serde(default)]
     minimum_recall_percent: Option<f64>,
-}
-
-impl Default for Acceptance {
-    fn default() -> Self {
-        Self {
-            minimum_recall_percent: None,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]

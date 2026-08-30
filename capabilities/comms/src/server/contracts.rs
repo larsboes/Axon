@@ -142,6 +142,19 @@ pub(super) struct FeedListItem {
     pub(super) url: String,
     pub(super) author: Option<String>,
     pub(super) summary: Option<String>,
+    /// The opening of this item's digest, for a card that has no summary of its own.
+    ///
+    /// A SEPARATE field rather than a fallback written into `summary`, because the two have
+    /// different producers and different lengths, and collapsing them would make the card claim a
+    /// summary that no summarization pass produced. The client chooses; the server does not
+    /// pretend.
+    ///
+    /// Why it is needed: the enrichment drain (`media::summarize_pending`) runs on the light rung
+    /// only and has no cloud door -- `digest::over_window` is the one that opens one. So an item
+    /// past the 4,096-token window gets a digest and never a summary, and 66 items sat with a
+    /// perfectly good digest behind an empty card (measured 2026-08-30). This spends nothing: the
+    /// digest already exists.
+    pub(super) digest_preview: Option<String>,
     pub(super) day: String,
     pub(super) created_at: String,
     pub(super) status: String,
@@ -150,10 +163,15 @@ pub(super) struct FeedListItem {
 }
 
 impl FeedListItem {
+    /// How much of a digest is a card preview. Long enough to be worth reading, short enough
+    /// that the card stays a card; the digest itself is one fetch away on the item.
+    const DIGEST_PREVIEW_CHARS: usize = 320;
+
     pub(super) fn from_store(
         item: FeedItem,
         relevance: Option<RelevanceMatch>,
         evaluation: Option<FeedEvaluation>,
+        digest: Option<String>,
     ) -> Self {
         Self {
             id: item.id,
@@ -163,6 +181,12 @@ impl FeedListItem {
             url: item.url,
             author: item.author,
             summary: item.summary,
+            // Only when there is nothing better. An item with its own summary keeps it: the
+            // digest is the longer, later artefact, and preferring it would replace a card's
+            // preview with a heading tree the moment one appeared.
+            digest_preview: digest.filter(|text| !text.trim().is_empty()).map(|text| {
+                text.trim().chars().take(Self::DIGEST_PREVIEW_CHARS).collect()
+            }),
             day: item.day,
             created_at: item.created_at,
             status: item.status,

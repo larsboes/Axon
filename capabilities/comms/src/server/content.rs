@@ -70,7 +70,18 @@ pub(super) async fn feed_handler(Query(params): Query<FeedParams>) -> Json<Value
                 let evaluation = store
                     .feed_evaluation(&item.id)
                     .map_err(|error| error.to_string())?;
-                Ok(FeedListItem::from_store(item, relevance, evaluation))
+                // Only fetched for a card that has nothing to show. The list is bounded by the
+                // day window, but one extra indexed read per item is still a cost worth not
+                // paying for the items that already read fine.
+                let digest = if item.summary.as_deref().unwrap_or_default().trim().is_empty() {
+                    store
+                        .content_digest("feed", &item.id)
+                        .map_err(|error| error.to_string())?
+                        .and_then(|stored| stored.text)
+                } else {
+                    None
+                };
+                Ok(FeedListItem::from_store(item, relevance, evaluation, digest))
             })
             .collect()
     })

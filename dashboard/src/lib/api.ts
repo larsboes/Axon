@@ -938,6 +938,13 @@ interface FeedEntryBase {
   url: string;
   author: string | null;
   summary: string | null;
+  /** The opening of this item's digest, sent only when it has no summary of its own.
+   *
+   *  Separate from `summary` because the two have different producers: the enrichment drain
+   *  writes summaries on the light rung and has no cloud door, so an item past the 4,096-token
+   *  window gets a digest and never a summary. Collapsing them server-side would make the card
+   *  claim a summary nothing produced. */
+  digest_preview: string | null;
   day: string; // YYYY-MM-DD grouping key
   created_at: string;
   status: FeedStatus;
