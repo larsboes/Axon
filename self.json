@@ -157,6 +157,16 @@
       }
     },
     {
+      "name": "feed-sweep",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "comms"
+        ]
+      }
+    },
+    {
       "name": "finance",
       "kind": "capability",
       "service": {
