@@ -142,6 +142,39 @@ async function catalogue(backend: Backend, key?: string): Promise<string[] | str
 /// Asking `bge-m3` to reply "OK" gets an HTTP 4xx and reports a model that is installed, served
 /// and correct as broken -- the same false alarm in the opposite direction from the one this
 /// tool was written to catch.
+/// What a refusal says about itself, when it says anything useful.
+///
+/// A 429 is where a provider states its real limit, and reading it is how `max_requests_per_day`
+/// stops being a guess. On 2026-08-30 this deployment declared 1000/day for a Gemini role whose
+/// free-tier quota is 20 -- the provider had been naming that number in every rejection for as
+/// long as the role had been wrong, in `error.details[].violations[].quotaValue`. Cloudflare
+/// meters something else entirely and says so differently, hence the fallback to a short excerpt
+/// rather than a second provider-shaped parser.
+async function refusalDetail(response: Response): Promise<string> {
+  let raw: string;
+  try {
+    raw = await response.text();
+  } catch {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const error = (Array.isArray(parsed) ? parsed[0] : parsed)?.error;
+    for (const detail of error?.details ?? []) {
+      for (const violation of detail?.violations ?? []) {
+        if (violation?.quotaValue !== undefined) {
+          const id = violation.quotaId ? ` (${violation.quotaId})` : "";
+          return `provider states a quota of ${violation.quotaValue}${id}`;
+        }
+      }
+    }
+    if (typeof error?.message === "string") return error.message.slice(0, 120);
+  } catch {
+    // Not JSON, or not a shape we know. The excerpt is still worth more than the bare status.
+  }
+  return raw.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
 async function probeEmbedding(
   backend: Backend,
   model: string,
@@ -160,7 +193,10 @@ async function probeEmbedding(
       body: JSON.stringify(ollama ? { model, input: ["probe"] } : { model, input: "probe" }),
       signal: AbortSignal.timeout(60_000),
     });
-    if (!response.ok) return `answers HTTP ${response.status}`;
+    if (!response.ok) {
+      const said = await refusalDetail(response);
+      return `answers HTTP ${response.status}${said ? ` — ${said}` : ""}`;
+    }
     const body = await response.json();
     const vector = ollama ? body?.embeddings?.[0] : body?.data?.[0]?.embedding;
     return Array.isArray(vector) && vector.length
@@ -195,7 +231,10 @@ async function probe(backend: Backend, model: string, key?: string): Promise<str
       }),
       signal: AbortSignal.timeout(60_000),
     });
-    if (!response.ok) return `answers HTTP ${response.status}`;
+    if (!response.ok) {
+      const said = await refusalDetail(response);
+      return `answers HTTP ${response.status}${said ? ` — ${said}` : ""}`;
+    }
     const body = await response.json();
     return body?.choices?.[0]?.message ? "answers" : "answered without a message";
   } catch {
