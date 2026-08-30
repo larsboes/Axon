@@ -1492,6 +1492,56 @@ const CHECKS: Check[] = [
     },
   },
 
+  // Port uniqueness across both roots.
+  //
+  // Added 2026-08-30, after `vault` (Axon) and `ytalbum` (the overlay) both declared 8094 while
+  // doctor reported a clean machine. Each manifest justified the number in a comment as "the next
+  // free port across both roots" — two surveys, each true when written, neither re-run, and
+  // neither able to see the other. Nothing had collided only because both are on-demand and never
+  // ran at the same moment; the second to start would have failed to bind, on a machine every
+  // other check called healthy. That is the shape this file exists to catch: a declaration nobody
+  // verified.
+  //
+  // DECLARED ports, not enabled ones. A collision that appears the moment a capability is enabled
+  // is one to find before enabling it, and the registry only sees the enabled set.
+  //
+  // `port` and `panel_port` are collected together because they are claims on the same namespace,
+  // and one capability serving its panel on its own port is normal (ytalbum did) — so duplicates
+  // are counted per capability NAME, never per claim.
+  {
+    name: "Port uniqueness (declared, both roots)",
+    async run(ctx) {
+      const claims = new Map<string, Set<string>>();
+      const roots = [
+        { dir: join(ctx.root, "capabilities"), label: "" },
+        { dir: join(ctx.overlayPath ?? "", "capabilities"), label: "overlay:" },
+      ];
+      for (const { dir, label } of roots) {
+        if (!dir || !existsSync(dir)) continue;
+        for (const cap of readdirSync(dir, { withFileTypes: true })) {
+          if (!cap.isDirectory()) continue;
+          const svc = join(dir, cap.name, "service.toml");
+          if (!existsSync(svc)) continue;
+          const parsed = await readToml(svc);
+          for (const field of ["port", "panel_port"]) {
+            const value = String(parsed?.[field] ?? "").trim();
+            if (!value) continue;
+            if (!claims.has(value)) claims.set(value, new Set());
+            claims.get(value)!.add(`${label}${cap.name}`);
+          }
+        }
+      }
+      const collisions = [...claims].filter(([, owners]) => owners.size > 1);
+      if (collisions.length === 0) {
+        ctx.ok(`${claims.size} declared port(s) across both roots, each claimed by one capability`);
+        return;
+      }
+      for (const [port, owners] of collisions) {
+        ctx.bad(`port ${port} is declared by ${[...owners].join(" and ")} — whichever starts second cannot bind`);
+      }
+    },
+  },
+
   // Packs — Claude Code deployment state.
   //
   // This used to assert that every destination was a SYMLINK into Packs/. It stopped being
