@@ -1,0 +1,568 @@
+//! Das gemessene Modell: Wohnung, Regeln, Inventar, Layouts.
+//!
+//! Alles in Zentimetern, Ursprung innere Nordwest-Ecke, x nach Osten, y nach Sueden — genau
+//! wie `room.toml` es festlegt. Meter kommen in diesem Programm nirgends vor.
+//!
+//! Die Daten liegen im privaten Overlay unter `<overlay>/data/interior` und werden nur
+//! gelesen. Sie sind auf Papier mit einem Bandmass entstanden; dieser Code ist nicht befugt,
+//! sie zu korrigieren.
+//!
+//! Aufteilung nach Lebensdauer, nicht nach Dateigroesse:
+//!   inventory/        Moebel, die jeden Umzug ueberleben
+//!   flats/<id>/       Geometrie und Regeln, die ihn nicht ueberleben
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+pub type Pt = [i32; 2];
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModelError {
+    #[error("{path}: {source}")]
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("{path}: {source}")]
+    Parse {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+    #[error("AXON_PERSONAL_ROOT ist nicht gesetzt — ohne Overlay gibt es keine Wohnungsdaten")]
+    NoOverlay,
+    #[error("{0}")]
+    Missing(String),
+    #[error("Inventar nicht lesbar: {0}")]
+    Store(String),
+}
+
+fn read_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, ModelError> {
+    let text = std::fs::read_to_string(path).map_err(|source| ModelError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    toml::from_str(&text).map_err(|source| ModelError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// `<overlay>/data/interior`. Kein Fallback auf ein Verzeichnis im Repo: eine Planung gegen
+/// erfundene Masse waere schlimmer als gar keine.
+pub fn data_dir() -> Result<PathBuf, ModelError> {
+    axon_config::overlay_data_dir("interior").ok_or(ModelError::NoOverlay)
+}
+
+// ---------------------------------------------------------------- Wohnung
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Opening {
+    pub id: String,
+    pub wand: String,
+    /// Absolute Koordinate entlang der Wandachse, kein Versatz zum Wandanfang.
+    pub von: i32,
+    pub bis: i32,
+    pub breite: i32,
+    #[serde(default)]
+    pub typ: Option<String>,
+    #[serde(default)]
+    pub freihaltezone: Option<i32>,
+    #[serde(default)]
+    pub sperrflaeche: Option<Zone>,
+    #[serde(default)]
+    pub schwenk: Option<String>,
+    #[serde(default)]
+    pub schwenk_nach_innen: Option<bool>,
+    #[serde(default)]
+    pub notiz: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct Zone {
+    pub x: [i32; 2],
+    pub y: [i32; 2],
+}
+
+impl Zone {
+    pub fn rect(&self) -> Rect {
+        Rect {
+            x: self.x[0],
+            y: self.y[0],
+            w: self.x[1] - self.x[0],
+            d: self.y[1] - self.y[0],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Wall {
+    pub von: Pt,
+    pub bis: Pt,
+    pub laenge: i32,
+    #[serde(default)]
+    pub frei: bool,
+    #[serde(default)]
+    pub notiz: Option<String>,
+}
+
+impl Wall {
+    /// Waagerecht heisst: die Wand laeuft entlang x. Wird gebraucht, um eine Oeffnung auf die
+    /// richtige Achse zu legen — `west` und `sued_hauptraum` laufen entgegen der Kantenrichtung
+    /// des Polygons, deshalb wird die Achse aus den Koordinaten bestimmt und nicht angenommen.
+    pub fn horizontal(&self) -> bool {
+        (self.bis[0] - self.von[0]).abs() > (self.bis[1] - self.von[1]).abs()
+    }
+}
+
+/// Welche Seite eines Rechtecks gemeint ist. Deutsch wie der Rest des Modells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Seite {
+    Nord,
+    Sued,
+    Ost,
+    West,
+}
+
+impl Seite {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Seite::Nord => "nord",
+            Seite::Sued => "sued",
+            Seite::Ost => "ost",
+            Seite::West => "west",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Seite> {
+        match s {
+            "nord" => Some(Seite::Nord),
+            "sued" => Some(Seite::Sued),
+            "ost" => Some(Seite::Ost),
+            "west" => Some(Seite::West),
+            _ => None,
+        }
+    }
+
+    /// Dieselbe Seite, nachdem das Stueck gedreht wurde.
+    ///
+    /// `rot` zaehlt im Uhrzeigersinn, und y waechst nach Sueden — auf dem Plan ist das die
+    /// Richtung, in die ein Zeiger dreht. Nord wird also zu Ost, Ost zu Sued, und so weiter.
+    /// Nur Vielfache von 90 Grad; alles andere bleibt, wo es ist, weil `footprint` eine
+    /// Grundflaeche auch nur bei nahe 90 Grad tauscht und zwei verschiedene Rundungen fuer
+    /// dieselbe Drehung die Art von Fehler sind, die niemand sucht.
+    pub fn gedreht(self, rot: i32) -> Seite {
+        const IM_UHRZEIGERSINN: [Seite; 4] = [Seite::Nord, Seite::Ost, Seite::Sued, Seite::West];
+        let schritte = rot.rem_euclid(360) / 90;
+        if rot.rem_euclid(90) != 0 {
+            return self;
+        }
+        let i = IM_UHRZEIGERSINN
+            .iter()
+            .position(|s| *s == self)
+            .unwrap_or(0);
+        IM_UHRZEIGERSINN[(i + schritte as usize) % 4]
+    }
+}
+
+/// Der Platz, den ein Mensch vor einem festen Einbau braucht, damit dieser benutzbar bleibt.
+///
+/// `seite` ist Geometrie und steht deshalb hier. `abstand` ist der NAME einer Schwelle in
+/// `rules.toml` und nicht die Zahl selbst: wie viel Platz man vor einer Kuechenzeile braucht,
+/// ist eine Norm und keine Eigenschaft dieser Wohnung. Eine hier ausgeschriebene Zahl waere
+/// eine zweite Fassung derselben Regel, und zwei Fassungen stimmen genau bis zur ersten
+/// Aenderung ueberein.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Anlaufzone {
+    pub seite: Seite,
+    pub abstand: String,
+}
+
+/// Ein Weg, der begehbar bleiben muss.
+///
+/// `von` und `nach` nennen Wegpunkte: eine Oeffnung, die kein Fenster ist, oder ein festes
+/// Moebel mit `anlaufzone`. Bis 2026-08-30 stand diese Liste als Literal in `clearance.rs` und
+/// nannte drei Oeffnungen dieser einen Wohnung beim Namen (PRD B26a). Eine Wohnung mit einem
+/// Flur, zwei Zimmern oder ohne Badtuer bekam damit gar keine Route gemessen und meldete
+/// nichts — nicht einmal einen Fehler. Welche Wege zaehlen, weiss die Wohnung.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Route {
+    pub von: String,
+    pub nach: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FixedFurniture {
+    pub id: String,
+    pub x: [i32; 2],
+    pub y: [i32; 2],
+    #[serde(default)]
+    pub zone: Option<String>,
+    #[serde(default)]
+    pub tiefe: Option<i32>,
+    #[serde(default)]
+    pub laenge: Option<i32>,
+    #[serde(default)]
+    pub enthaelt: Vec<String>,
+    /// Ohne diese Angabe ist der Einbau nur ein Hindernis: er belegt Flaeche, verlangt aber
+    /// keinen freien Platz davor und taugt nicht als Ziel eines Laufwegs.
+    #[serde(default)]
+    pub anlaufzone: Option<Anlaufzone>,
+}
+
+impl FixedFurniture {
+    pub fn rect(&self) -> Rect {
+        Rect {
+            x: self.x[0],
+            y: self.y[0],
+            w: self.x[1] - self.x[0],
+            d: self.y[1] - self.y[0],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Hauptraum {
+    pub polygon: Vec<Pt>,
+    /// 0 bedeutet "nicht gemessen". Siehe `todo.offen` — es gibt hier keinen Platzhalterwert,
+    /// weil eine erfundene Raumhoehe still in jede Hoehenpruefung durchschlaegt.
+    #[serde(default)]
+    pub hoehe: i32,
+    #[serde(default)]
+    pub flaeche_m2: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Terrasse {
+    #[serde(default)]
+    pub geschaetzt: bool,
+    pub x: [i32; 2],
+    pub y: [i32; 2],
+    #[serde(default)]
+    pub flaeche_geschaetzt_m2: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct Todo {
+    #[serde(default)]
+    pub offen: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Room {
+    pub flat: FlatMeta,
+    pub hauptraum: Hauptraum,
+    #[serde(default)]
+    pub zonen: BTreeMap<String, ZoneNamed>,
+    pub bad: Option<BadRoom>,
+    #[serde(default)]
+    pub terrasse: Option<Terrasse>,
+    pub waende: BTreeMap<String, Wall>,
+    #[serde(default)]
+    pub oeffnungen: Vec<Opening>,
+    #[serde(default)]
+    pub fix_moebel: Vec<FixedFurniture>,
+    /// Welche Wege gemessen werden. Leer heisst: keiner — und das ist eine Aussage, keine
+    /// Voreinstellung. Ein stiller Standard waere hier genau der Weg, auf dem eine Wohnung
+    /// besteht, weil niemand nachgesehen hat, ob jemand durch sie hindurchkommt.
+    #[serde(default)]
+    pub routen: Vec<Route>,
+    #[serde(default)]
+    pub todo: Todo,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FlatMeta {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ZoneNamed {
+    pub x: [i32; 2],
+    pub y: [i32; 2],
+    #[serde(default)]
+    pub flaeche_m2: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BadRoom {
+    pub x: [i32; 2],
+    pub y: [i32; 2],
+    #[serde(default)]
+    pub flaeche_m2: f64,
+}
+
+impl Room {
+    /// Aus dem Polygon gerechnet, nicht aus der Datei gelesen — so kann die angegebene Flaeche
+    /// nicht unbemerkt von der Geometrie abdriften, aus der jede Pruefung sie ableitet.
+    pub fn area_m2(&self) -> f64 {
+        crate::geometry::polygon_area_m2(&self.hauptraum.polygon)
+    }
+
+    /// Wo eine Oeffnung physisch sitzt. `von`/`bis` sind absolute Koordinaten entlang der
+    /// Wandachse; fuer nord/ost/west faellt das mit einem Versatz zusammen, fuer `badtuer`
+    /// nicht — als Versatz gelesen laege sie ausserhalb ihrer eigenen Wand.
+    pub fn opening_span(&self, o: &Opening) -> Option<(Pt, Pt)> {
+        let w = self.waende.get(&o.wand)?;
+        Some(if w.horizontal() {
+            ([o.von, w.von[1]], [o.bis, w.von[1]])
+        } else {
+            ([w.von[0], o.von], [w.von[0], o.bis])
+        })
+    }
+}
+
+// ---------------------------------------------------------------- Regeln
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Laufwege {
+    pub haupt_soll: i32,
+    pub haupt_min: i32,
+    pub neben_min: i32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Lichtkorridor {
+    pub x: [i32; 2],
+    pub y: [i32; 2],
+    pub max_hoehe: i32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Regel {
+    pub id: String,
+    pub schwere: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Rules {
+    pub laufwege: Laufwege,
+    /// Absichtlich eine Map: jede Distanz wird ueber ihren Namen gelesen, damit eine Regel,
+    /// die einen Wert erfindet statt ihn nachzuschlagen, beim Lesen auffaellt.
+    pub abstaende: BTreeMap<String, i32>,
+    pub lichtkorridor: Lichtkorridor,
+    #[serde(default)]
+    pub regeln: Vec<Regel>,
+}
+
+impl Rules {
+    pub fn abstand(&self, key: &str) -> Result<i32, ModelError> {
+        self.abstaende
+            .get(key)
+            .copied()
+            .ok_or_else(|| ModelError::Missing(format!("rules.toml kennt keinen Abstand `{key}`")))
+    }
+}
+
+// ---------------------------------------------------------------- Inventar
+
+/// Der Katalog ist keine Datei mehr. Seit PRD B25 (2026-08-31) sind Moebel Zeilen in der
+/// geteilten SQLite-Datei; `inventory/*.toml` war die Migrationsquelle und ist jetzt das
+/// Herkunftsprotokoll. Q60 zieht die Grenze: ein Moebel ist eine Zeile, ein Raum nicht.
+pub type Catalogue = BTreeMap<String, crate::store::Item>;
+
+// ---------------------------------------------------------------- Layout
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PlacedItem {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub x: i32,
+    pub y: i32,
+    #[serde(default)]
+    pub rot: i32,
+    /// Ueberschreibt die Katalogmasse — fuer den zweiten Zustand eines Klappmoebels.
+    #[serde(default)]
+    pub size: Option<[i32; 2]>,
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Layout {
+    pub name: String,
+    #[serde(default, rename = "item")]
+    pub items: Vec<PlacedItem>,
+    #[serde(skip_deserializing, default)]
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub d: i32,
+}
+
+impl Rect {
+    pub fn overlaps(&self, o: &Rect) -> bool {
+        self.x < o.x + o.w && o.x < self.x + self.w && self.y < o.y + o.d && o.y < self.y + self.d
+    }
+    pub fn right(&self) -> i32 {
+        self.x + self.w
+    }
+    pub fn bottom(&self) -> i32 {
+        self.y + self.d
+    }
+}
+
+/// Grundflaeche nach Drehung. Eine Drehung nahe 90 Grad tauscht Breite und Tiefe; alles
+/// andere laesst sie stehen. `size` im Layout schlaegt den Katalog.
+pub fn footprint(p: &PlacedItem, cat: &Catalogue) -> Result<(i32, i32, Option<i32>), ModelError> {
+    let item = cat.get(&p.reference);
+    let (b, t) = match p.size {
+        Some([b, t]) => (Some(b), Some(t)),
+        None => (item.and_then(|i| i.b), item.and_then(|i| i.t)),
+    };
+    let (b, t) = match (b, t) {
+        (Some(b), Some(t)) => (b, t),
+        _ => {
+            return Err(ModelError::Missing(format!(
+                "kein Grundriss fuer `{}` — weder im Inventar noch als size: im Layout",
+                p.reference
+            )))
+        }
+    };
+    let swap = ((p.rot.rem_euclid(180)) - 90).abs() < 45;
+    let h = item.and_then(|i| i.h);
+    Ok(if swap { (t, b, h) } else { (b, t, h) })
+}
+
+// ---------------------------------------------------------------- Laden
+
+pub struct Model {
+    pub room: Room,
+    pub rules: Rules,
+    pub catalogue: Catalogue,
+    /// Besitz je Eintrag, getrennt gehalten statt als Feld auf dem Item: der Zustand hat eine
+    /// Geschichte (`interior_item_state`) und das Item hat keine.
+    pub states: BTreeMap<String, crate::store::State>,
+    pub flat_dir: PathBuf,
+}
+
+/// Welche Wohnungen unter `data/interior/flats/` liegen.
+pub fn flats() -> Result<Vec<String>, ModelError> {
+    let dir = data_dir()?.join("flats");
+    let rd = std::fs::read_dir(&dir).map_err(|source| ModelError::Read { path: dir, source })?;
+    let mut out: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
+/// Die Wohnung, gegen die gerechnet wird: `AXON_INTERIOR_FLAT`, sonst die einzige vorhandene.
+///
+/// Gibt es mehrere und keine ist gewaehlt, ist das ein Fehler und keine Vorauswahl. Sobald ein
+/// zweiter Raum zum Vergleich existiert (PRD B28), waere ein stiller Standard genau der Weg, auf
+/// dem ein Plan der falschen Wohnung als der richtige durchgeht.
+pub fn default_flat() -> Result<String, ModelError> {
+    if let Ok(v) = std::env::var("AXON_INTERIOR_FLAT") {
+        if !v.trim().is_empty() {
+            return Ok(v);
+        }
+    }
+    let all = flats()?;
+    match all.len() {
+        0 => Err(ModelError::Missing(
+            "keine Wohnung unter data/interior/flats/ — ohne Geometrie gibt es nichts zu rechnen"
+                .into(),
+        )),
+        1 => Ok(all.into_iter().next().unwrap()),
+        _ => Err(ModelError::Missing(format!(
+            "mehrere Wohnungen ({}) — waehle eine mit AXON_INTERIOR_FLAT oder --flat",
+            all.join(", ")
+        ))),
+    }
+}
+
+impl Model {
+    pub fn load(flat: &str) -> Result<Self, ModelError> {
+        let root = data_dir()?;
+        let flat_dir = root.join("flats").join(flat);
+        let room: Room = read_toml(&flat_dir.join("room.toml"))?;
+        let rules: Rules = read_toml(&flat_dir.join("rules.toml"))?;
+
+        // Der Katalog kommt aus der Datenbank, nicht mehr aus `inventory/*.toml` (B25). Der
+        // Pfad ist derselbe, den jede andere Capability nimmt: AXON_DB_PATH, sonst das
+        // Overlay. Ein leerer Katalog ist kein Fehler beim Laden — er faellt dort auf, wo
+        // ein Layout ein Stueck nennt, das es nicht gibt, und das ist die Stelle mit dem
+        // besseren Fehlertext.
+        let store = crate::store::Store::open(&axon_config::database_path())
+            .map_err(|e| ModelError::Store(e.to_string()))?;
+        let rows = store
+            .catalogue()
+            .map_err(|e| ModelError::Store(e.to_string()))?;
+
+        let mut catalogue = Catalogue::new();
+        let mut states = BTreeMap::new();
+        for (id, (item, state)) in rows {
+            if let Some(s) = state {
+                states.insert(id.clone(), s);
+            }
+            catalogue.insert(id, item);
+        }
+        Ok(Model {
+            room,
+            rules,
+            catalogue,
+            states,
+            flat_dir,
+        })
+    }
+
+    /// Die Wunschliste: alles, was `wanted` ist, in Katalogreihenfolge. Der Anschluss, den
+    /// PRD B29 an `finance` legt — ein gewuenschtes Stueck traegt einen Preis, und Geld
+    /// gehoert `finance`.
+    pub fn wishlist(&self) -> Vec<&crate::store::Item> {
+        self.catalogue
+            .values()
+            .filter(|i| self.states.get(&i.id) == Some(&crate::store::State::Wanted))
+            .collect()
+    }
+
+    pub fn layouts_dir(&self) -> PathBuf {
+        self.flat_dir.join("layouts")
+    }
+
+    pub fn load_layout(&self, name: &str) -> Result<Layout, ModelError> {
+        let path = self.layouts_dir().join(format!("{name}.toml"));
+        let mut l: Layout = read_toml(&path)?;
+        l.id = name.to_string();
+        Ok(l)
+    }
+
+    pub fn layout_names(&self) -> Result<Vec<String>, ModelError> {
+        let dir = self.layouts_dir();
+        let rd =
+            std::fs::read_dir(&dir).map_err(|source| ModelError::Read { path: dir, source })?;
+        let mut out: Vec<String> = rd
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let p = e.path();
+                (p.extension()? == "toml").then(|| p.file_stem()?.to_str().map(str::to_string))?
+            })
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
+    /// Jedes Moebel im Katalog, dessen Masse nicht gemessen sind. Wandert unveraendert in jeden
+    /// Pruefbericht.
+    pub fn uncertainties(&self) -> Vec<(&str, &str, &[String])> {
+        let mut v: Vec<_> = self
+            .catalogue
+            .values()
+            .filter(|i| i.is_uncertain())
+            .map(|i| (i.id.as_str(), i.label.as_str(), i.unsicher.as_slice()))
+            .collect();
+        v.sort_by_key(|(id, _, _)| *id);
+        v
+    }
+}

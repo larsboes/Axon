@@ -121,8 +121,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 72,
-        "nodes": 1144
+        "files": 75,
+        "nodes": 1191
       }
     },
     {
@@ -246,7 +246,16 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 87
+        "nodes": 89
+      }
+    },
+    {
+      "name": "interior",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [],
+        "port": "8092"
       }
     },
     {
@@ -464,15 +473,15 @@
       "kind": "lib",
       "code": {
         "files": 4,
-        "nodes": 105
+        "nodes": 107
       }
     },
     {
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 132,
-        "nodes": 1082
+        "files": 134,
+        "nodes": 1115
       }
     },
     {
@@ -801,6 +810,46 @@
       ],
       "evidence": [
         "capabilities/finance/Cargo.toml"
+      ]
+    },
+    {
+      "from": "interior",
+      "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/interior/Cargo.toml"
+      ]
+    },
+    {
+      "from": "interior",
+      "to": "axon-server",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/interior/Cargo.toml"
+      ]
+    },
+    {
+      "from": "interior",
+      "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/interior/Cargo.toml"
+      ]
+    },
+    {
+      "from": "interior",
+      "to": "route-manifest",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/interior/Cargo.toml"
       ]
     },
     {
@@ -1231,6 +1280,16 @@
       "pin": "monthly_processed_data/data-2025-11 .. data-2026-06"
     },
     {
+      "name": "docling",
+      "verdict": "reject",
+      "pin": ""
+    },
+    {
+      "name": "dolphin",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
       "name": "esphome",
       "verdict": "reject",
       "pin": "2026.5.3"
@@ -1356,6 +1415,11 @@
       "pin": "5050537"
     },
     {
+      "name": "ocrs",
+      "verdict": "inspiration",
+      "pin": ""
+    },
+    {
       "name": "openfreemap",
       "verdict": "adopt",
       "pin": "hosted-style-api"
@@ -1372,7 +1436,7 @@
     },
     {
       "name": "pascal-editor",
-      "verdict": "adopt",
+      "verdict": "inspiration",
       "pin": "0.3.2"
     },
     {
@@ -1563,7 +1627,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 10486,
+    "nodes": 10583,
     "external": 10,
     "stale": [],
     "unmatched": [

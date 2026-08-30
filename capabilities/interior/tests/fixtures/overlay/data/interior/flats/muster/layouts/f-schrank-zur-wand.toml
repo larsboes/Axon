@@ -1,0 +1,23 @@
+# Derselbe Schrank wie in A, um 180 Grad gedreht: seine Tueren zeigen jetzt zur Nordwand.
+# Die Grundflaeche ist identisch, die Position ist identisch, und trotzdem faellt das Layout
+# durch — weil `opens = "sued"` mit `wall_ok = false` an der Seite haengt und nicht am Stueck
+# im Allgemeinen. Die Namensfassung konnte das nicht sehen: sie nahm die beste von vier Seiten.
+name = "F — Schranktueren zur Wand"
+
+[[item]]
+ref = "kleiderschrank"
+x = 0
+y = 0
+rot = 180
+
+[[item]]
+ref = "schreibtisch"
+x = 170
+y = 0
+rot = 0
+
+[[item]]
+ref = "bett"
+x = 400
+y = 0
+rot = 0

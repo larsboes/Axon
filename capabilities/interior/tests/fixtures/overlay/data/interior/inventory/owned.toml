@@ -1,0 +1,90 @@
+# ============================================================
+# INVENTAR der Musterwohnung. Erfundene Moebel mit erfundenen Massen, alle in cm.
+#
+# Die Ids sind so gewaehlt, dass `clearance::kind_of` sie ueber den Namen einsortiert — das
+# ist die Heuristik, die Q61 ersetzen wird, und solange sie lebt, gehoert sie geprueft.
+# `couchtisch` steht bewusst neben `couch`: die Reihenfolge der Praefixe ist die Stelle, an
+# der die Vorlaeuferimplementierung einen Couchtisch als Sofa eingestuft hat.
+# ============================================================
+
+# Die vier Stuecke unten erklaeren selbst, was sie an Platz brauchen (PRD Q61 / B26). Wer das
+# tut, wird nicht mehr am Namen erkannt: `clearance.rs` prueft dann diese Felder und sonst
+# nichts. `sideboard` und `kallax_regal` erklaeren bewusst nichts — sie sind der Beleg, dass
+# die alte Namensfassung daneben weiterlaeuft, statt an einem Stichtag umzukippen.
+[[item]]
+id = "kleiderschrank"
+label = "Kleiderschrank (erfunden)"
+b = 120
+t = 60
+h = 200
+# Am eigenen Schrank gemessen und niedriger als die 90 aus rules.toml — genau der Fall, fuer
+# den Q61 die Felder ans Stueck haengt. `wall_ok = false` bindet den Platz an die Seite, die
+# `opens` nennt: ein Schrank, dessen Tueren zur Wand zeigen, ist kein gedrehter Schrank.
+opens = "sued"
+open_clear = 65
+wall_ok = false
+
+[[item]]
+id = "schreibtisch"
+label = "Schreibtisch (erfunden)"
+b = 160
+t = 80
+h = 120
+
+[[item]]
+id = "bett"
+label = "Bett (erfunden)"
+b = 140
+t = 200
+h = 45
+# Eine Person, eine Zugangsseite. Das ist eine Aussage ueber die NUTZUNG und kein gelockerter
+# Standard — wird daraus eine Zweipersonenwohnung, steht hier 2 und die Wohnung rechnet neu.
+access_sides = 1
+access_clear = 60
+
+[[item]]
+id = "couch"
+label = "Schlafsofa (erfunden)"
+b = 200
+t = 90
+h = 85
+t_ausgeklappt = 165
+# 165 ausgeklappt bei 90 zugeklappt: 75 cm, die dauerhaft frei bleiben muessen. Nicht nur im
+# Gastfall — ein Sofa, das zum Ausziehen verschoben wird, wird nicht ausgezogen.
+expands = { dir = "sued", to = 165 }
+
+[[item]]
+id = "couchtisch"
+label = "Couchtisch (erfunden)"
+b = 90
+t = 55
+h = 42
+
+[[item]]
+id = "esstisch"
+label = "Esstisch (erfunden)"
+b = 120
+t = 80
+h = 75
+# Ein Tisch, an dem niemand einen Stuhl herausziehen kann, ist ein Regal. Zwei Seiten, weil
+# ein Esstisch fuer eine Person kein Esstisch ist.
+access_sides = 2
+access_clear = 80
+
+[[item]]
+id = "kallax_regal"
+label = "Regal quer (erfunden)"
+b = 145
+t = 41
+h = 77
+
+# Das einzige Stueck mit geschaetzten Massen. Es beweist, dass `unsicher` bis in den
+# Pruefbericht durchschlaegt: eine Schaetzung, die unterwegs zur Messung wird, ist der Fehler,
+# gegen den das Feld existiert.
+[[item]]
+id = "sideboard"
+label = "Sideboard (erfunden, ungemessen)"
+b = 150
+t = 45
+h = 80
+unsicher = ["b", "t"]

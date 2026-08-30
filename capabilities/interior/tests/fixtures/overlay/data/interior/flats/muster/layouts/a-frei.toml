@@ -1,0 +1,21 @@
+# Der saubere Fall: drei Stuecke an der Nordwand, jede Zone frei. Muss bestehen, ohne eine
+# einzige weiche Warnung — sonst hat eine Regel eine Meinung, die niemand aufgeschrieben hat.
+name = "A — frei, drei Stuecke an der Nordwand"
+
+[[item]]
+ref = "kleiderschrank"
+x = 0
+y = 0
+rot = 0
+
+[[item]]
+ref = "schreibtisch"
+x = 170
+y = 0
+rot = 0
+
+[[item]]
+ref = "bett"
+x = 400
+y = 0
+rot = 0

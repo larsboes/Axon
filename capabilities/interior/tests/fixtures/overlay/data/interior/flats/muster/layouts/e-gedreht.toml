@@ -1,0 +1,20 @@
+# Dasselbe Bett um 90 Grad gedreht: 140 x 200 wird zu 200 x 140. Quer belegt es 200 cm der
+# Nordwand statt 140 und reicht dafuer nur 140 cm in den Raum — genau die Vertauschung, die
+# `footprint` vornimmt, und der einzige Grund, warum es hier passt und in D nicht.
+#
+# Die 50 cm Abstand zur Nordwand sind kein Zierrat: quer liegen die Laengsseiten im Norden und
+# Sueden, und `bett_zugang_zweite_seite` verlangt 40 davon. Ein Bett dicht an der Wand faellt
+# in dieser Wohnung durch, weil ihre rules.toml von zwei Personen ausgeht.
+name = "E — Bett quer, mit Sideboard und ungemessenen Massen"
+
+[[item]]
+ref = "bett"
+x = 380
+y = 50
+rot = 90
+
+[[item]]
+ref = "sideboard"
+x = 0
+y = 0
+rot = 0

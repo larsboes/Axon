@@ -1,0 +1,21 @@
+# Der Schrank steht in der Anlaufzone der Terrassentuer. R1 ist HART: das Layout faellt durch,
+# egal wie gut alles andere steht.
+name = "C — Schrank vor der Terrassentuer"
+
+[[item]]
+ref = "kleiderschrank"
+x = 0
+y = 150
+rot = 0
+
+[[item]]
+ref = "schreibtisch"
+x = 170
+y = 0
+rot = 0
+
+[[item]]
+ref = "bett"
+x = 400
+y = 0
+rot = 0

@@ -1,0 +1,22 @@
+# Wie A, nur steht der Schrank 60 cm tiefer und ragt damit in den Lichtkorridor. R3 ist WEICH:
+# das Layout besteht weiter, meldet aber, was es kostet. Der Fall trennt "faellt durch" von
+# "hat eine Meinung dazu" — ein Pruefer, der beides gleich behandelt, ist unbrauchbar.
+name = "B — Schrank im Lichtkorridor"
+
+[[item]]
+ref = "kleiderschrank"
+x = 0
+y = 60
+rot = 0
+
+[[item]]
+ref = "schreibtisch"
+x = 170
+y = 0
+rot = 0
+
+[[item]]
+ref = "bett"
+x = 400
+y = 0
+rot = 0

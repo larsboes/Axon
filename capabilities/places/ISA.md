@@ -184,9 +184,11 @@ data, and every coordinate on it is traceable to a registry row with a source.
   measurement context in `README.md` here.
 
 - **2026-08-25 — port 8093, after two collisions.** 8091 belongs to
-  foundation-models (repo), 8092 to interior (private overlay). A repo-only
+  foundation-models (repo), 8092 to interior. A repo-only
   `grep '^port' capabilities/*/service.toml` misses overlay service.tomls —
-  sweep both roots before assigning a port.
+  sweep both roots before assigning a port. (interior was in the overlay when
+  this was written and moved here 2026-08-30, PRD Q59; the sweep rule is what
+  survives, and it survives because the overlay still holds capabilities.)
 - **2026-08-25 — PLC-3 and PLC-4 falsifiers corrected against measurement.**
   The raw registry-token join flags street-name coincidences, and a large
   share of the raw addresses are unresolvable raw-data defects. The claims now

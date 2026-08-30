@@ -1,0 +1,58 @@
+# ============================================================
+# REGELN der Musterwohnung. Erfunden, aber vollstaendig: jede Regel, die `clearance.rs` lesen
+# kann, steht hier einmal, damit ein fehlender Schluessel als Fehler auffaellt und nicht als
+# uebersprungene Pruefung.
+#
+# `bett_zugang_zweite_seite = 40` — anders als die reale Wohnung, die dort 0 fuehrt. Der
+# Unterschied ist Absicht: er beweist, dass die Zahl aus der Datei kommt und nicht aus dem Code.
+# ============================================================
+
+[laufwege]
+haupt_soll = 90
+haupt_min  = 75
+neben_min  = 60
+
+[abstaende]
+bett_zugang_laengsseite  = 60
+bett_zugang_zweite_seite = 40
+schreibtisch_stuhlzone   = 100
+esstisch_stuhl_ausziehen = 80
+couchtisch_vor_sofa      = 40
+schrank_tuer_oeffnen     = 90
+couch_ausklapptiefe      = 75
+vor_kuechenzeile         = 100
+
+[lichtkorridor]
+x = [0, 170]
+y = [70, 350]
+max_hoehe = 140
+
+[[regeln]]
+id = "R1"
+schwere = "hart"
+text = "Anlaufzone vor der gesamten Breite der Terrassentuer freihalten."
+
+[[regeln]]
+id = "R2"
+schwere = "hart"
+text = "Tuerschwenkzonen sind Sperrflaechen."
+
+[[regeln]]
+id = "R3"
+schwere = "weich"
+text = "Kein Moebel ueber der Grenzhoehe im Lichtkorridor."
+
+[[regeln]]
+id = "R4"
+schwere = "weich"
+text = "Bettkopfende nicht an die Verglasung."
+
+[[regeln]]
+id = "R7"
+schwere = "hart"
+text = "Kein Moebel darf die Anlaufzone der Kuechenzeile blockieren."
+
+[[regeln]]
+id = "R8"
+schwere = "hart"
+text = "Ausklappzone des Schlafsofas dauerhaft frei."

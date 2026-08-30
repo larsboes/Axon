@@ -1,0 +1,21 @@
+# ============================================================
+# BEDARF der Musterwohnung. `[[slot]]` ist ein Beduerfnis mit Zielmassen, `[[produkt]]` ein
+# konkretes Produkt. Beide landen im selben Katalog wie `owned.toml` und unterscheiden sich
+# nur durch die `group`, die aus der Datei folgt und in keiner Datei steht.
+# ============================================================
+
+[[slot]]
+id = "teppich"
+label = "Teppich Wohnzone (erfunden)"
+status = "pflicht"
+b = 200
+t = 140
+ziel = "Markiert die Wohnzone, ohne in eine Anlaufzone zu laufen."
+
+[[produkt]]
+id = "stehlampe"
+label = "Stehleuchte (erfunden)"
+b = 40
+t = 40
+h = 170
+preis_eur = 89.0

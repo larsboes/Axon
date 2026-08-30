@@ -53,6 +53,9 @@ export const PRIMARY_NAV: NavItem[] = [
   { href: "/travel", label: "Travel", icon: "map-pin", capability: "transit" },
   { href: "/map", label: "Map", icon: "globe", capability: "places" },
   { href: "/finance", label: "Finance", icon: "database", capability: "finance" },
+  // Ein Ziel in der Shell und nicht nur ein Panel: das ist der Unterschied, den PRD Q59
+  // ausdruecklich nennt, und der Grund, aus dem die Capability nach core Axon gezogen ist.
+  { href: "/interior", label: "Interior", icon: "layout", capability: "interior" },
 ];
 
 /**

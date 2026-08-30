@@ -13,12 +13,15 @@
     | "map-pin" | "database" | "external" | "arrow-right" | "play" | "square"
     | "refresh" | "sun" | "moon" | "menu" | "close" | "clock" | "alert" | "wifi-off"
     | "check" | "loader" | "plus" | "search" | "swap" | "calendar" | "ticket"
-    | "git-branch" | "thermometer" | "cpu" | "activity" | "chevron" | "mail" | "globe";
+    | "git-branch" | "thermometer" | "cpu" | "activity" | "chevron" | "mail" | "globe"
+    | "layout";
 
   let { name, size = 16 }: { name: Name; size?: number } = $props();
 
   const paths: Record<Name, string> = {
     "home": "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10",
+    // Vier Felder statt eines Hauses: die Seite zeigt einen Grundriss, und /"/" ist schon home.
+    "layout": "M3 3h7v9H3z M14 3h7v5h-7z M14 12h7v9h-7z M3 16h7v5H3z",
     "feed": "M4 11a9 9 0 0 1 9 9 M4 4a16 16 0 0 1 16 16 M5 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2",
     "boxes": "M7 16.5 3 14v-4l4-2.5L11 10v4z M17 16.5 13 14v-4l4-2.5L21 10v4z M12 8.5 8 6V2l4-2.5",
     "graduation": "M22 10 12 5 2 10l10 5z M6 12v5c3 3 9 3 12 0v-5",

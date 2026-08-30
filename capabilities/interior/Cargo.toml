@@ -1,0 +1,38 @@
+[package]
+name = "interior"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Raumplanung: misst Layouts gegen die Raeumungsregeln einer Wohnung und sucht Positionen, die sie erfuellen."
+publish = false
+
+[[bin]]
+name = "interior"
+path = "src/main.rs"
+
+[lib]
+name = "interior"
+path = "src/lib.rs"
+
+[dependencies]
+# Pflicht, kein Komfort: doctors "Server bind policy" weist jede Capability zurueck, die sich
+# einen eigenen Listener baut.
+axon-server = { path = "../../libs/axon-server" }
+# Loest AXON_PERSONAL_ROOT auf. Jede Zahl, die diese Capability rechnet, liegt unter
+# <overlay>/data/interior — hier liegt keine.
+axon-config = { path = "../../libs/axon-config" }
+# `/routes` neben `/health`, wie jede andere Capability mit HTTP-Oberflaeche.
+route-manifest = { path = "../../libs/route-manifest" }
+# Das Inventar sind Zeilen (PRD Q58/B25). Eine Datei fuer alle Capabilities, `interior_`
+# als Praefix — libs/axon-store/README.md hat das Warum.
+axon-store = { path = "../../libs/axon-store" }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+thiserror = "2.0"
+# Der eigentliche Hebel der Suche: die Kandidaten sind voneinander unabhaengig.
+rayon = "1"

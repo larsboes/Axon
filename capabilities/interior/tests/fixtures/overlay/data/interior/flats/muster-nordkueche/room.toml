@@ -1,0 +1,91 @@
+# ============================================================
+# ZWEITE MUSTERWOHNUNG — erfunden, und sie existiert wegen genau einer Eigenschaft: ihre
+# Kuechenzeile steht an der NORDWAND und wird von Sueden angelaufen.
+#
+# Bis 2026-08-30 hat `clearance.rs` die Anlaufzone der Kueche als Rechteck OBERHALB des Einbaus
+# gerechnet — ein Literal, das fuer die eine reale Wohnung stimmte und fuer diese hier falsch
+# gewesen waere, ohne dass irgendetwas es gemeldet haette. Diese Wohnung ist der Test dafuer.
+#
+# Sie ist ausserdem die zweite unter flats/, also der Fall, in dem `default_flat()` sich
+# weigern muss zu raten.
+# ============================================================
+
+[flat]
+id   = "muster-nordkueche"
+name = "Musterwohnung mit Nordkueche (erfunden, fuer Tests)"
+
+[hauptraum]
+polygon    = [[0, 0], [400, 0], [400, 300], [0, 300]]
+hoehe      = 250
+flaeche_m2 = 12.0
+
+[bad]
+x = [400, 550]
+y = [300, 450]
+flaeche_m2 = 2.3
+
+[waende.nord]
+von = [0, 0]
+bis = [400, 0]
+laenge = 400
+frei = false
+
+[waende.ost]
+von = [400, 0]
+bis = [400, 300]
+laenge = 300
+frei = true
+
+[waende.sued]
+von = [400, 300]
+bis = [0, 300]
+laenge = 400
+frei = false
+
+[waende.west]
+von = [0, 300]
+bis = [0, 0]
+laenge = 300
+frei = false
+
+[[oeffnungen]]
+id = "terrassentuer"
+wand = "west"
+von = 80
+bis = 220
+breite = 140
+typ = "glastuer"
+freihaltezone = 90
+
+[[oeffnungen]]
+id = "eingangstuer"
+wand = "sued"
+von = 300
+bis = 380
+breite = 80
+typ = "tuer"
+
+[[fix_moebel]]
+id = "kuechenzeile"
+x = [0, 200]
+y = [0, 60]
+tiefe = 60
+laenge = 200
+enthaelt = ["herd", "spuele"]
+# Der ganze Grund fuer diese Wohnung: Norden waere hier die Wand.
+anlaufzone = { seite = "sued", abstand = "vor_kuechenzeile" }
+
+[[routen]]
+von  = "eingangstuer"
+nach = "kuechenzeile"
+
+[[routen]]
+von  = "eingangstuer"
+nach = "terrassentuer"
+
+[licht]
+tageslicht_richtung = "west"
+belichtete_waende = 1
+
+[todo]
+offen = []

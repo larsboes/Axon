@@ -1,0 +1,9 @@
+# Das Bett ragt durch die Ostwand. Prueft die Grenze vor jeder Regel: ein Layout, das den Raum
+# verlaesst, ist nicht "knapp", es ist unmoeglich.
+name = "D — Bett ragt aus dem Raum"
+
+[[item]]
+ref = "bett"
+x = 520
+y = 0
+rot = 0

@@ -478,6 +478,105 @@ export interface ConnectionLeg {
   platform?: string | null;
 }
 
+// ─── Interior ────────────────────────────────────────────────────────────────
+
+/** One measured or wanted thing. Mirrors `capabilities/interior/src/store.rs::Item`. */
+export interface InteriorItem {
+  id: string;
+  kind: 'piece' | 'slot';
+  label: string;
+  b: number | null;
+  t: number | null;
+  h: number | null;
+  h_min: number | null;
+  laenge: number | null;
+  anzahl: number | null;
+  unsicher: string[];
+  zustaende: string[];
+  preis_cent: number | null;
+  kosten_min_cent: number | null;
+  kosten_max_cent: number | null;
+  link: string | null;
+  quelle: string | null;
+  gemessen_am: string | null;
+  mitnahme: string | null;
+  prioritaet: string | null;
+  ziel: string | null;
+  hinweis: string | null;
+  begruendung: string | null;
+}
+
+export type InteriorState = 'owned' | 'wanted' | 'gone';
+
+export interface InteriorViolation {
+  rule: string;
+  severity: 'hart' | 'weich';
+  item: string | null;
+  message: string;
+  measured: number | null;
+  required: number | null;
+}
+
+export interface InteriorLayoutSummary {
+  id: string;
+  name: string;
+  pass: boolean;
+  hard: number;
+  soft: number;
+  corridors: { from: string; to: string; width_cm: number | null }[];
+  occupied_m2: number;
+}
+
+/** The full check plus the finished plan. The SVG is built by the capability, never here. */
+export interface InteriorLayoutDetail {
+  layout: { name: string; item: unknown[] };
+  check: {
+    layout: string;
+    pass: boolean;
+    hard: InteriorViolation[];
+    soft: InteriorViolation[];
+    uncertainties: { reference: string; label: string; fields: string[] }[];
+    metrics: {
+      room_area_m2: number;
+      occupied_area_m2: number;
+      free_area_m2: number;
+      corridors: { from: string; to: string; width_cm: number | null }[];
+    };
+  };
+  svg: string;
+}
+
+export interface InteriorWishlist {
+  items: InteriorItem[];
+  summe_untere_kante_cent: number;
+  summe_obere_kante_cent: number;
+  posten_ohne_preis: number;
+  monatssaldo: { median_cent: number; monate: number; von: string; bis: string } | null;
+  monate_bis_bezahlt: number | null;
+}
+
+/**
+ * The room planner.
+ *
+ * Every verdict, every corridor width and the plan SVG itself come from these endpoints.
+ * Nothing on the page recomputes a clearance rule: a second implementation of one is exactly
+ * the drift the capability exists to prevent (PRD B27).
+ */
+export const interior = {
+  model: () => request<Record<string, unknown>>('/interior/api/model'),
+  layouts: () => request<InteriorLayoutSummary[]>('/interior/api/layouts'),
+  layout: (name: string) =>
+    request<InteriorLayoutDetail>(`/interior/api/layouts/${encodeURIComponent(name)}`),
+  inventory: () =>
+    request<{ item: InteriorItem; state: InteriorState | null }[]>('/interior/api/inventory'),
+  wishlist: () => request<InteriorWishlist>('/interior/api/wishlist'),
+  saveItem: (id: string, item: InteriorItem) =>
+    request<{ id: string; ok: boolean }>(
+      `/interior/api/items/${encodeURIComponent(id)}`,
+      jsonInit('PUT', item),
+    ),
+};
+
 export const scouting = {
   discover: (opts: { adapter: string; location?: string; query?: string }) => {
     const params = new URLSearchParams({ adapter: opts.adapter });

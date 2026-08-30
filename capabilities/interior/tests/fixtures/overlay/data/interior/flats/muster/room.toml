@@ -1,0 +1,139 @@
+# ============================================================
+# MUSTERWOHNUNG — erfundene Geometrie fuer die Tests. Nichts hier ist gemessen.
+#
+# Alle Masse in cm. Ursprung = innere Nordwest-Ecke, x nach Osten, y nach Sueden.
+#
+# Der Grundriss ist absichtlich rechteckig und grosszuegig: dieser Raum existiert, um die
+# MASCHINE zu pruefen, nicht um eine Einrichtung zu entscheiden. Jede Zone, die eine Regel
+# braucht, ist einmal vorhanden und sonst nichts.
+# ============================================================
+
+[flat]
+id   = "muster"
+name = "Musterwohnung (erfunden, fuer Tests)"
+
+[hauptraum]
+polygon    = [[0, 0], [600, 0], [600, 450], [0, 450]]
+hoehe      = 250
+# ABSICHTLICH FALSCH. Das Polygon misst 27,0 m2. `Room::area_m2` behauptet in seinem
+# Doc-Kommentar, die Flaeche aus dem Polygon zu RECHNEN statt sie hier zu lesen — diese Zahl
+# ist die Falle, die das prueft. Steht sie je in einem Bericht, liest jemand die Datei.
+flaeche_m2 = 99.0
+
+[zonen.hauptraum]
+x = [0, 600]
+y = [0, 390]
+
+[zonen.kuechennische]
+x = [0, 250]
+y = [390, 450]
+
+[bad]
+x = [600, 850]
+y = [450, 630]
+flaeche_m2 = 4.5
+
+[waende.nord]
+von = [0, 0]
+bis = [600, 0]
+laenge = 600
+frei = true
+
+[waende.ost]
+von = [600, 0]
+bis = [600, 450]
+laenge = 450
+frei = false
+
+# Laeuft entgegen der Kantenrichtung des Polygons — genau der Fall, fuer den `Wall::horizontal`
+# die Achse aus den Koordinaten bestimmt statt sie anzunehmen.
+[waende.sued]
+von = [600, 450]
+bis = [0, 450]
+laenge = 600
+frei = false
+
+[waende.west]
+von = [0, 450]
+bis = [0, 0]
+laenge = 450
+frei = false
+
+[[oeffnungen]]
+id = "terrassentuer"
+wand = "west"
+von = 120
+bis = 300
+breite = 180
+typ = "glastuer"
+freihaltezone = 90
+
+[[oeffnungen]]
+id = "eingangstuer"
+wand = "ost"
+von = 300
+bis = 400
+breite = 100
+typ = "tuer"
+schwenk_nach_innen = true
+sperrflaeche = { x = [500, 600], y = [300, 400] }
+
+[[oeffnungen]]
+id = "badtuer"
+wand = "sued"
+von = 470
+bis = 560
+breite = 90
+typ = "tuer"
+schwenk = "ins_bad"
+
+# Ein Fenster ist keine Tuer: es taugt nicht als Wegpunkt und muss aus der Routenliste fallen.
+[[oeffnungen]]
+id = "kuechenfenster"
+wand = "nord"
+von = 500
+bis = 580
+breite = 80
+typ = "fenster"
+
+[[fix_moebel]]
+id = "kuechenzeile"
+zone = "kuechennische"
+x = [0, 250]
+y = [390, 450]
+tiefe = 60
+laenge = 250
+enthaelt = ["herd", "spuele", "kuehlschrank"]
+# Wo ein Mensch davorsteht, und wie viel Platz das kostet. `seite` ist Geometrie und steht
+# deshalb hier; `abstand` ist der NAME einer Schwelle in rules.toml und nicht die Zahl selbst —
+# wie viel Platz eine Kuechenzeile braucht, ist eine Norm und keine Eigenschaft dieser Wohnung.
+# Ohne diese Zeile waere der Einbau nur ein Hindernis: belegte Flaeche, kein Laufweg-Ziel.
+anlaufzone = { seite = "nord", abstand = "vor_kuechenzeile" }
+
+# ------------------------------------------------------------
+# WEGE, die begehbar bleiben muessen. Bis 2026-08-30 stand diese Liste als Literal in
+# clearance.rs und nannte drei Oeffnungen dieser Wohnung beim Namen (PRD B26a). Sie gehoert
+# hierher: welche Wege zaehlen, ist eine Aussage ueber diesen Grundriss und nicht ueber
+# Wohnungen im Allgemeinen.
+#
+# Wegpunkte sind Oeffnungen ausser Fenstern und feste Moebel mit `anlaufzone`. Ein Name, den es
+# nicht gibt, ist ein Fehler — nicht eine Route, die still ausfaellt.
+# ------------------------------------------------------------
+[[routen]]
+von  = "eingangstuer"
+nach = "terrassentuer"
+
+[[routen]]
+von  = "eingangstuer"
+nach = "kuechenzeile"
+
+[[routen]]
+von  = "eingangstuer"
+nach = "badtuer"
+
+[licht]
+tageslicht_richtung = "west"
+belichtete_waende = 1
+
+[todo]
+offen = ["nichts — diese Wohnung ist erfunden und damit vollstaendig"]

@@ -1,0 +1,10 @@
+# Derselbe Tisch, in der Anlaufzone der Kueche — die hier SUEDLICH des Einbaus liegt.
+# Dieselben Koordinaten waeren in der ersten Musterwohnung, deren Kueche im Sueden steht,
+# vollkommen unauffaellig. Der Unterschied steht in room.toml und nirgends sonst.
+name = "B — Tisch vor der Kuechenzeile"
+
+[[item]]
+ref = "esstisch"
+x = 100
+y = 80
+rot = 0

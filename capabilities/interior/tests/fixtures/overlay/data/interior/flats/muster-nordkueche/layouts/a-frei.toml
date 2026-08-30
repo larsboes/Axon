@@ -1,0 +1,8 @@
+# Ein Tisch, weit weg von jeder Zone. Muss sauber bestehen.
+name = "A — ein Tisch, nichts verstellt"
+
+[[item]]
+ref = "esstisch"
+x = 240
+y = 100
+rot = 0

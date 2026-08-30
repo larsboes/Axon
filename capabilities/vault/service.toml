@@ -13,8 +13,9 @@ build       = ["cargo", "build", "--locked", "--release", "--bin", "vault-server
 
 # 8094, the next free slot after places' 8093. Not 8089: that was `tasks`, and a
 # freed port re-used in the same change is a port where a stale process answers
-# for the capability that replaced it. 8092 is spoken for by the private
-# overlay's interior capability (capabilities/places/src/config.rs).
+# for the capability that replaced it. 8092 is spoken for by the interior
+# capability (capabilities/places/src/config.rs), which sat in the private
+# overlay when this was written and moved here 2026-08-30 (PRD Q59).
 port        = "8094"
 health_path = "/health"
 
