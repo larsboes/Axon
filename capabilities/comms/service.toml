@@ -7,6 +7,15 @@ port        = "8083"
 health_path = "/health"
 ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)
 
+# autostart, decided 2026-08-30. B20 demoted finance and punctuality because neither observes
+# anything between visits, and that reasoning was correct for them and silent about these two.
+# The Home page is the surface opened daily (PRD M1), and it aggregates the feed without
+# opening the capability's own page -- so the on-demand trigger, which fires when you open a
+# capability's surface, never fires for the panel that needs it. The result was a Home page
+# reporting its own core panels unavailable. Always-on is the honest reading of "I open it
+# daily without being reminded to".
+autostart   = "true"
+
 # No proxy_extra: comms-server serves bare paths (/feed, /triage) precisely so its
 # contract stays dashboard-independent, and the uniform stripped /comms prefix is
 # what the dashboard client already calls.
