@@ -167,6 +167,29 @@ impl CloudDataTier {
             Self::PseudonymizedPersonal => "pseudonymized_personal",
         }
     }
+
+    /// How much this tier admits. Higher accepts everything lower accepts, and more.
+    ///
+    /// Not an arbitrary ranking: `cloud_derivative::tier_allows` already says a
+    /// `pseudonymized_personal` role takes a public passthrough *as well as* a redacted
+    /// personal derivative, while a `public` role takes only the passthrough. This makes
+    /// that containment a value the rest of the code can ask about instead of restating.
+    fn breadth(self) -> u8 {
+        match self {
+            Self::Public => 0,
+            Self::PseudonymizedPersonal => 1,
+        }
+    }
+
+    /// Whether a role at this tier may take work selected for `other`.
+    ///
+    /// Widening is safe and narrowing is not, which is the whole asymmetry: a provider
+    /// reviewed for pseudonymized personal content is already trusted with more than a
+    /// public document, so handing it one takes nothing new. The reverse would put a
+    /// redacted personal derivative in front of a role reviewed only for public text.
+    pub fn admits_at_least(self, other: Self) -> bool {
+        self.breadth() >= other.breadth()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,17 +478,44 @@ impl InferenceConfig {
         let Some(selected_role) = self.role(selected).filter(|role| role.has_cloud_policy()) else {
             return Vec::new();
         };
-        let tier = selected_role.cloud_data_tier;
+        let Some(tier) = selected_role.cloud_data_tier else {
+            return Vec::new();
+        };
+        // Same tier OR WIDER, not equality. Equality is what parked 41 public feed digests
+        // on this machine: `public` is the narrowest tier, `tier_rank` in comms' cloud_run
+        // deliberately selects the narrowest role first, and so the only failover candidate
+        // for a public digest was the single `public` role that had just returned 429. The
+        // two roles that would have taken it -- `tier_allows` says a pseudonymized_personal
+        // role admits a public passthrough, in as many words -- were never offered, and the
+        // job burned its attempts against one rate-limited provider.
+        //
+        // Widening the CANDIDATE list is not widening permission. `cloud_run::admits` still
+        // asks `tier_allows` and `verbatim_send_allowed` about every candidate at dispatch,
+        // per candidate, which is the actual door.
         let mut roles = self
             .roles_with_prefix("cloud_")
             .into_iter()
-            .filter(|(_, role)| role.has_cloud_policy() && role.cloud_data_tier == tier)
+            .filter(|(_, role)| {
+                role.has_cloud_policy()
+                    && role
+                        .cloud_data_tier
+                        .is_some_and(|candidate| candidate.admits_at_least(tier))
+            })
             .collect::<Vec<_>>();
         roles.sort_by(|(left_name, left), (right_name, right)| {
             let left_selected = left_name != selected;
             let right_selected = right_name != selected;
             left_selected
                 .cmp(&right_selected)
+                // Narrowest tier first among the rest, for the same reason `tier_rank` sorts
+                // that way: a role declared for exactly this work should be preferred over one
+                // that merely also permits it, or the role reviewed for the wider class ends up
+                // doing all the narrow work.
+                .then_with(|| {
+                    left.cloud_data_tier
+                        .map(CloudDataTier::breadth)
+                        .cmp(&right.cloud_data_tier.map(CloudDataTier::breadth))
+                })
                 .then_with(|| left.failover_priority().cmp(&right.failover_priority()))
                 .then_with(|| left_name.cmp(right_name))
         });
@@ -1001,8 +1051,28 @@ mod tests {
                 .map(|(name, _)| name)
                 .collect::<Vec<_>>(),
             vec!["cloud_summarization", "cloud_backup"],
-            "the chosen role stays first and a different data tier never enters failover"
+            "the chosen role stays first, and a NARROWER tier never enters failover: \
+             cloud_public is reviewed for public text only and must never be offered a \
+             redacted personal derivative"
         );
+
+        // The other direction, which is not symmetric and was wrong until 2026-08-30.
+        // `tier_allows` says a pseudonymized_personal role admits a public passthrough, so
+        // those two roles can take this job -- and `tier_rank` in comms' cloud_run selects
+        // the NARROWEST role first, which made cloud_public the selected role and, under an
+        // equality filter, the only candidate. One rate-limited provider then burned the
+        // job's whole attempt budget with two healthy providers sitting idle.
+        assert_eq!(
+            cfg.cloud_failover_roles("cloud_public")
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["cloud_public", "cloud_backup", "cloud_summarization"],
+            "a public job falls over to the wider tier, selected role still first and the \
+             rest by failover_priority (backup is 5, summarization is 10)"
+        );
+        assert!(CloudDataTier::PseudonymizedPersonal.admits_at_least(CloudDataTier::Public));
+        assert!(!CloudDataTier::Public.admits_at_least(CloudDataTier::PseudonymizedPersonal));
         assert!(config().role("embedding").unwrap().is_loopback());
     }
 

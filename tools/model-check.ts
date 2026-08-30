@@ -238,13 +238,34 @@ for (const [roleName, role] of roles) {
   if (!cache.has(backendName)) cache.set(backendName, await catalogue(backend, key));
   const listed = cache.get(backendName)!;
 
+  // `libs/inference` resolves rungs by name -- `role_on("embedding", ...)` is how a caller asks
+  // for the retrieval rung -- so the name is the existing contract for what a role is, and the
+  // right question to ask it follows from that rather than from a new field.
+  const asksForAVector = /(^|_)embedding(_|$)/.test(roleName);
+  const ask = () =>
+    (asksForAVector ? probeEmbedding : probe)(backend, model, key);
+  const answered = (reply: string) =>
+    reply === "answers" || reply.startsWith("answers (");
+
   if (typeof listed === "string") {
-    // Never a failure. A local backend that is not running and a provider without a catalogue
-    // endpoint are both normal, and reporting them as faults is how a check becomes noise.
-    say(`${roleName}: ${model} on ${backendName} — skipped, ${listed}`);
+    // No catalogue is never a failure by itself: a local backend that is not running and a
+    // provider that publishes no model list are both ordinary.
+    //
+    // But it used to skip the PROBE too, and that is the wrong half to drop. Question 1 asks
+    // whether the model is listed; question 2 asks whether it answers, and question 2 is still
+    // answerable when the list is missing. Cloudflare's catalogue 405s here, so the provider
+    // that wrote 160 of this machine's 298 digests was the one role the tool said nothing
+    // about at all.
+    const reply = PROBE || LOCAL_ONLY ? await ask() : "";
+    const detail = reply ? `${listed}, but ${reply}` : listed;
+    say(`${roleName}: ${model} on ${backendName} — ${detail}`);
     entries.push({
       role: roleName, backend: backendName, model,
-      status: "unreachable", detail: listed,
+      // Answering is what the role is for. A model that answers while its provider publishes
+      // no list is working, and calling that unreachable would be this tool contradicting the
+      // request that just succeeded.
+      status: answered(reply) ? "ok" : "unreachable",
+      detail,
     });
     continue;
   }
@@ -272,23 +293,14 @@ for (const [roleName, role] of roles) {
     });
     continue;
   }
-  // `libs/inference` resolves rungs by name -- `role_on("embedding", ...)` is how a caller asks
-  // for the retrieval rung -- so the name is the existing contract for what a role is, and the
-  // right question to ask it follows from that rather than from a new field.
-  const asksForAVector = /(^|_)embedding(_|$)/.test(roleName);
-  const spoke =
-    PROBE || LOCAL_ONLY
-      ? await (asksForAVector ? probeEmbedding : probe)(backend, model, key)
-      : "";
+  const spoke = PROBE || LOCAL_ONLY ? await ask() : "";
   say(`${roleName}: ${model} on ${backendName} ok${spoke ? ` — ${spoke}` : ""}${suffix}`);
   entries.push({
     role: roleName, backend: backendName, model,
     // A probe that came back as an HTTP status or a timeout is not an ok. Reporting it as one
     // would make this tool agree that a served-but-silent model is fine, which is question 2's
     // entire reason for being separate from question 1.
-    status: spoke && !spoke.startsWith("answers (") && spoke !== "answers"
-      ? "unreachable"
-      : "ok",
+    status: spoke && !answered(spoke) ? "unreachable" : "ok",
     detail: spoke || "listed",
   });
 }

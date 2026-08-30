@@ -669,8 +669,14 @@ Routes:
   derivative against the role's reviewed data tier and materialized credential, then idempotently
   records a queue job. Queueing is local and performs zero provider calls.
 - `POST /content/cloud-jobs/:job_id/run` → explicitly sends only the staged, hash-approved
-  derivative to the selected role first, then only to configured same-tier fallbacks in stable
-  priority order. It runs the fixed
+  derivative to the selected role first, then to configured fallbacks whose reviewed tier admits
+  at least what the selected one does — never a narrower tier — in stable order: narrowest tier
+  first, then priority. Widening the candidate list is not widening permission; `tier_allows` is
+  asked again about every candidate immediately before its attempt. Same-tier-only was the rule
+  until 2026-08-30, and because `public` is the narrowest tier and is deliberately selected first
+  for public work, it left a public digest with exactly one possible provider: 39 feed digests
+  parked at the attempt cap against one rate-limited role while two healthy wider-tier roles were
+  never offered the job. It runs the fixed
   `content-analysis-v1` task, validates and bounds the structured response, and persists the
   result or a safe retryable error. Credentials, credit expiry, input-token upper bound and the
   UTC daily request ceiling are revalidated immediately before every attempt. A policy-disabled
