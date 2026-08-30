@@ -832,7 +832,19 @@ const CHECKS: Check[] = [
         if (e.status === "missing" || e.status === "incomplete") {
           ctx.bad(`${e.role}: ${e.model} on ${e.backend} — ${e.detail}`);
         } else if (e.status === "unreachable") {
-          ctx.warn(`${e.role}: ${e.model} on ${e.backend} — ${e.detail}`);
+          // Name the consequence, not just the state. "backend not reachable" reads as
+          // infrastructure noise; "the Feed is ranking lexically" is the thing the operator
+          // actually wanted to know, and it is what makes this line worth a second of attention.
+          const cost =
+            e.role === "embedding"
+              ? " — relevance falls back to its lexical control until it is up"
+              : e.role.startsWith("summarization")
+                ? " — the digest ladder falls through to the remaining rungs"
+                : "";
+          ctx.warn(
+            `${e.role}: ${e.model} on ${e.backend} — ${e.detail}${cost}. ` +
+              `Axon does not supervise a systems.toml tool (see [${e.backend}]); start it, or point the role elsewhere.`,
+          );
         }
       }
       const t = data.totals ?? {};

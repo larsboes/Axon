@@ -288,9 +288,18 @@ mod tests {
     use super::*;
 
     fn temp_root() -> (PathBuf, MarkdownRoot) {
+        // The counter is what makes this unique, and the pid and clock are what keep it unique
+        // ACROSS runs. Rust runs a crate's tests as threads of one process, so the pid is the
+        // same for all of them, and `SystemTime` on macOS does not tick per nanosecond -- two
+        // tests entering here together got the same path, and the first to reach its closing
+        // `remove_dir_all` deleted the other's root mid-test. It failed about one
+        // `cargo test --workspace` in two and passed every time the crate ran alone, which is
+        // the shape of a flake that gets re-run rather than read.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "axon-projection-{}-{:?}",
+            "axon-projection-{}-{}-{:?}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
