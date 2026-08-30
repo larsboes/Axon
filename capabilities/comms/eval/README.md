@@ -56,7 +56,9 @@ the configured key reference.
 The runner reads `.auth.api_key` from `~/.omlx/settings.json`, sends one batch to the loopback
 `/v1/embeddings` endpoint and never prints the key or vectors. `OMLX_SETTINGS_PATH`,
 `OMLX_BASE_URL` and `OMLX_EMBEDDING_MODEL` override machine-specific details; E5-base is the
-default. A non-loopback endpoint is rejected because this evaluation is intentionally local.
+default. A non-loopback endpoint is rejected because this evaluation is intentionally local. A
+loopback server that enforces no key of its own may set `OMLX_NO_AUTH=1`, the same spelling
+`run-reranking.ts` uses; the normal path still requires the configured key reference.
 
 An explicit first argument selects another schema-compatible corpus. Private real-world corpora
 and their results stay in the private overlay and are never copied into this directory:
@@ -137,3 +139,10 @@ The second-stage
 corpus unchanged and passes at 6/6 useful top-1, `0.912` pairwise accuracy and `0.993` mean nDCG.
 Its result is kept separately because cross-encoder scores and embedding cosine scores are not
 the same scale.
+
+A second first-stage candidate cleared the unchanged gate on 2026-08-30:
+[`bge-m3` served by Ollama](results/2026-08-30-bge-m3-ollama.md), at 6/6 useful top-1, `0.912`
+pairwise accuracy and `0.987` mean nDCG. It is recorded as measured and **not** as adopted —
+which backend serves the `embedding` role is a deployment fact in the overlay. That record also
+carries why it was run: the configured oMLX backend is absent from the host, so the ranking had
+been falling back to the deterministic `lexical` control.

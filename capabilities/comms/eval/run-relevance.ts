@@ -39,6 +39,12 @@ const settingsPath =
   process.env.OMLX_SETTINGS_PATH ?? `${homedir()}/.omlx/settings.json`;
 const baseUrl = process.env.OMLX_BASE_URL ?? "http://127.0.0.1:8000/v1";
 const model = process.env.OMLX_EMBEDDING_MODEL ?? "multilingual-e5-base-mlx";
+// Same escape hatch, same spelling, as run-reranking.ts: a loopback server that
+// enforces no key of its own. Ollama's OpenAI-compatible endpoint is one, and
+// without this the only way to measure a candidate served by it is a throwaway
+// settings file holding a key nothing reads -- a shim that makes the run
+// unreproducible and is therefore not evidence.
+const noAuth = process.env.OMLX_NO_AUTH === "1";
 const queryVariant = process.env.RELEVANCE_EVAL_QUERY_VARIANT?.trim() || null;
 
 function fail(message: string): never {
@@ -122,11 +128,11 @@ function dcg(judgements: number[]): number {
 const corpus = (await Bun.file(corpusPath).json()) as Corpus;
 validateCorpus(corpus);
 const endpoint = assertLocalEndpoint(baseUrl);
-const settings = (await Bun.file(settingsPath).json()) as {
-  auth?: { api_key?: string };
-};
-const apiKey = settings.auth?.api_key?.trim();
-if (!apiKey) fail(`no .auth.api_key in ${settingsPath}`);
+const apiKey = noAuth
+  ? null
+  : ((await Bun.file(settingsPath).json()) as { auth?: { api_key?: string } })
+      .auth?.api_key?.trim();
+if (!noAuth && !apiKey) fail(`no .auth.api_key in ${settingsPath}`);
 
 const inputs: string[] = [];
 const queryIndexes = new Map<string, number>();
@@ -150,7 +156,7 @@ const response = await fetch(
   {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ model, input: inputs }),
