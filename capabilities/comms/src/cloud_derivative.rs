@@ -12,7 +12,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 pub const PREVIEW_SCHEMA_VERSION: &str = "cloud-derivative-preview-v1";
-pub const REDACTION_VERSION: &str = "deterministic-entity-redaction-v2";
+pub const REDACTION_VERSION: &str = "deterministic-entity-redaction-v3";
 pub const PASSTHROUGH_VERSION: &str = "bounded-public-v1";
 const MAX_DOCUMENT_CHARS: usize = 16_000;
 
@@ -234,7 +234,7 @@ pub fn prepare(input: &CloudDocumentInput) -> Result<CloudDerivativePreview, Vau
     ];
     if needs_redaction {
         limitations.push(
-            "Local deterministic entity detection removes recognized people after salutations, email addresses, links, phone or account numbers, and token-like secrets; unrecognized names and contextual clues may remain.",
+            "Local deterministic entity detection removes recognized people after a salutation or a self-introduction, a person named as being from an organisation, login handles, email addresses, links, phone or account numbers, and token-like secrets; unrecognized names and contextual clues may remain.",
         );
         limitations.push("Human review is required before this derivative becomes cloud-eligible.");
     } else {
@@ -254,7 +254,7 @@ pub fn prepare(input: &CloudDocumentInput) -> Result<CloudDerivativePreview, Vau
         redaction_count: redactions.iter().map(|finding| finding.count).sum(),
         redactions,
         entity_detection: if needs_redaction {
-            "local-deterministic-v2"
+            "local-deterministic-v3"
         } else {
             "not-required"
         },
@@ -315,11 +315,14 @@ fn transform_text(value: &str, redact: bool, redactions: &mut Vec<RedactionFindi
 
     let tokens = value.split_whitespace().collect::<Vec<_>>();
     let mut output = Vec::with_capacity(tokens.len());
-    let mut redact_next_person = false;
     let mut redact_person_tail = false;
 
-    for token in tokens {
+    for (index, token) in tokens.iter().copied().enumerate() {
         let lowered = token.to_ascii_lowercase();
+        // A cue reads backwards over the token slice rather than carrying a flag
+        // forward, because "I am X" and "my name is X" are two tokens wide and a
+        // one-token flag cannot see the word before the one that set it.
+        let cued = redact_person_tail || introduces_person(&tokens, index);
         let finding = if looks_like_url(&lowered) {
             Some(("link", "[link]"))
         } else if looks_like_email(token) {
@@ -338,7 +341,12 @@ fn transform_text(value: &str, redact: bool, redactions: &mut Vec<RedactionFindi
             // A list the operator wrote by hand beats a heuristic here, so it is
             // consulted first.
             Some(("person", "[person]"))
-        } else if (redact_next_person || redact_person_tail) && looks_like_person_name(token) {
+        } else if names_a_person_in_apposition(&tokens, index) {
+            Some(("person", "[person]"))
+        } else if cued && (looks_like_person_name(token) || looks_like_handle(token)) {
+            // A handle is only a person behind a cue. Ungated, `looks_like_handle`
+            // fires on every "iPhone15" and order code in the corpus, which is the
+            // over-redaction the Presidio trial rejected a whole runtime for.
             Some(("person", "[person]"))
         } else {
             None
@@ -348,11 +356,9 @@ fn transform_text(value: &str, redact: bool, redactions: &mut Vec<RedactionFindi
             record_redaction(redactions, entity_type, marker);
             output.push(marker);
             redact_person_tail = entity_type == "person";
-            redact_next_person = false;
         } else {
             output.push(token);
             redact_person_tail = false;
-            redact_next_person = is_salutation(token);
         }
     }
 
@@ -421,14 +427,89 @@ fn looks_like_token(value: &str) -> bool {
         && cleaned.chars().any(|c| c.is_ascii_digit())
 }
 
-fn is_salutation(value: &str) -> bool {
-    matches!(
-        value
-            .trim_matches(|c: char| !c.is_alphabetic())
-            .to_lowercase()
-            .as_str(),
-        "dear" | "hello" | "hi" | "hallo" | "liebe" | "lieber"
-    )
+/// One token reduced to the word a cue test compares against: entities decoded,
+/// lowercased, surrounding punctuation dropped.
+///
+/// The decode is not decoration. Stored mail reaches this module still holding
+/// `&#39;`, so the token that carries the "I'm X" cue is literally `I&#39;m`, and
+/// a matcher written against `i'm` would never fire on the corpus it was written
+/// for. `extraction::decode_basic_entities` already owns that table; a second
+/// copy here is how the two drift apart.
+///
+/// The apostrophe survives the trim on purpose. It is the only thing separating
+/// the English cue `i'm` from the German preposition `im`, which precedes a
+/// capitalised noun in a language that capitalises every noun.
+fn cue_word(value: &str) -> String {
+    crate::extraction::decode_basic_entities(value)
+        .to_lowercase()
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+        .to_string()
+}
+
+/// Whether the tokens before `index` announce that the next word names a person.
+///
+/// Two families, and the second one is PRD D14. A salutation gate sees `Dear X`
+/// and nothing else; the shadow evaluation
+/// (`<overlay>/config/comms-redaction-shadow.md`, 2026-08-30) found three of
+/// Presidio's four unique catches were English self-introductions mid-body, where
+/// there is no salutation to fire on.
+///
+/// German self-introduction (`ich bin X`, `mein Name ist X`) is deliberately
+/// absent. No labelled miss asked for it — that measurement put German person
+/// recall *above* English — and German capitalises every noun, so `ich bin Ihr
+/// Ansprechpartner` would redact a pronoun. The rule is added when a miss asks
+/// for it, not before.
+fn introduces_person(tokens: &[&str], index: usize) -> bool {
+    let word = |back: usize| index.checked_sub(back).map(|i| cue_word(tokens[i]));
+    let Some(previous) = word(1) else {
+        return false;
+    };
+    match previous.as_str() {
+        "dear" | "hello" | "hi" | "hallo" | "liebe" | "lieber" => true,
+        "i'm" => true,
+        "am" => word(2).as_deref() == Some("i"),
+        "is" => matches!(word(2).as_deref(), Some("this") | Some("name")),
+        _ => false,
+    }
+}
+
+/// Whether the token at `index` is a person named by the company they are from.
+///
+/// PRD D14's first gap, and the one with a price. `X from Y` is a person only
+/// when `Y` is a proper noun too — the shape of "co-hosted by Rayn from
+/// Scriptbee", not of "Regards from Berlin", where the first word is a common
+/// noun that happens to start a line. Nothing here can tell those apart by
+/// vocabulary, so the rule is kept to the narrow shape and the cost is measured
+/// rather than argued: it moves the marker count over the whole personal mail
+/// body by a number recorded in `<overlay>/config/comms-redaction-shadow.md`.
+///
+/// German is untouched by construction. `from` is not a German word, and the
+/// corpus's German half already scores full person recall without this.
+fn names_a_person_in_apposition(tokens: &[&str], index: usize) -> bool {
+    looks_like_person_name(tokens[index])
+        && tokens
+            .get(index + 1)
+            .is_some_and(|next| cue_word(next) == "from")
+        && tokens
+            .get(index + 2)
+            .is_some_and(|after| looks_like_person_name(after))
+}
+
+/// A login handle: letters and digits fused into one opaque word.
+///
+/// PRD D14's second gap. `labo2764` identifies its owner as surely as the name
+/// on the account, and it passes every other recognizer here — too short for
+/// `looks_like_token`, too few digits for `looks_like_sensitive_number`, and
+/// lowercase, so `looks_like_person_name` refuses it. Only reachable behind a
+/// person cue; see the call site.
+fn looks_like_handle(value: &str) -> bool {
+    let cleaned = value.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    let letters = cleaned.chars().filter(char::is_ascii_alphabetic).count();
+    let digits = cleaned.chars().filter(char::is_ascii_digit).count();
+    (4..=32).contains(&cleaned.len())
+        && cleaned.chars().all(|c| c.is_ascii_alphanumeric())
+        && letters >= 2
+        && digits >= 2
 }
 
 fn looks_like_person_name(value: &str) -> bool {
@@ -484,7 +565,7 @@ mod tests {
         assert!(preview.document.contains("[link]"));
         assert!(preview.document.contains("[token]"));
         assert!(!preview.document.contains("alice@example.com"));
-        assert_eq!(preview.entity_detection, "local-deterministic-v2");
+        assert_eq!(preview.entity_detection, "local-deterministic-v3");
         assert!(preview
             .redactions
             .iter()
@@ -527,6 +608,99 @@ mod tests {
             .redactions
             .iter()
             .any(|finding| finding.entity_type == "person" && finding.count == 2));
+    }
+
+    /// PRD D14, gap one. Three of the four labels Presidio caught and the
+    /// incumbent missed were English self-introductions in the body of a mail,
+    /// where a salutation-only gate has nothing to fire on. The entity form is
+    /// the one the corpus actually holds: stored mail reaches this module with
+    /// `&#39;` unresolved, so a matcher written against a bare apostrophe would
+    /// pass this test and still miss every real mail.
+    #[test]
+    fn a_self_introduction_names_a_person_without_any_salutation() {
+        for phrasing in [
+            "Thanks for signing up. I&#39;m Josh, one of the co-founders.",
+            "Thanks for signing up. I'm Josh, one of the co-founders.",
+            "Thanks for signing up. I am Josh, one of the co-founders.",
+            "Thanks for signing up. My name is Josh, one of the co-founders.",
+            "Thanks for signing up. This is Josh, one of the co-founders.",
+        ] {
+            let mut value = input("personal");
+            value.content = Some(phrasing.into());
+            let preview = prepare(&value).unwrap();
+            assert!(
+                !preview.document.contains("Josh"),
+                "self-introduction leaked the name: {phrasing}"
+            );
+        }
+    }
+
+    /// The negative that pays for the rule above. German `im` reduces to the
+    /// same letters as the English cue `i'm`, and German capitalises every noun,
+    /// so a cue test that dropped the apostrophe would redact a noun after every
+    /// `im` in half the corpus. The corpus's German person recall was already the
+    /// higher of the two; this rule must not spend that.
+    #[test]
+    fn the_german_preposition_im_is_not_a_self_introduction() {
+        let mut value = input("personal");
+        value.content = Some("Die Unterlagen finden Sie im Anhang dieser Nachricht.".into());
+
+        let preview = prepare(&value).unwrap();
+        assert!(preview.document.contains("im Anhang"));
+    }
+
+    /// PRD D14, gap two. `labo2764` passes every other recognizer here — too
+    /// short for `looks_like_token`, too few digits for
+    /// `looks_like_sensitive_number`, lowercase so not a name — and it identifies
+    /// its owner as surely as the name on the account.
+    #[test]
+    fn a_login_handle_after_a_salutation_is_a_person() {
+        let mut value = input("personal");
+        value.content = Some("Hallo labo2764, wir haben eine neue Login-Aktivitaet.".into());
+
+        let preview = prepare(&value).unwrap();
+        assert!(!preview.document.contains("labo2764"));
+        assert!(preview
+            .redactions
+            .iter()
+            .any(|finding| finding.entity_type == "person"));
+    }
+
+    /// The handle rule is reachable only behind a cue. Ungated it fires on every
+    /// product name and order code in the corpus, which is the over-redaction the
+    /// Presidio trial rejected a whole Python runtime for.
+    #[test]
+    fn a_handle_shaped_word_with_no_cue_before_it_stays() {
+        let mut value = input("personal");
+        value.content = Some("Your order for the iPhone15 ships on Tuesday.".into());
+
+        let preview = prepare(&value).unwrap();
+        assert!(preview.document.contains("iPhone15"));
+    }
+
+    /// PRD D14, gap one again, in its other shape: a person named by the
+    /// organisation they are from, mid-sentence, with no cue in front.
+    #[test]
+    fn a_person_named_as_being_from_an_organisation_is_redacted() {
+        let mut value = input("personal");
+        value.content = Some("A workshop co-hosted by Rayn from Scriptbee this Thursday.".into());
+
+        let preview = prepare(&value).unwrap();
+        assert!(!preview.document.contains("Rayn"));
+        assert!(preview.document.contains("[person] from"));
+    }
+
+    /// The apposition needs a proper noun on both sides. `from` followed by a
+    /// lowercase word is the ordinary preposition and must cost nothing.
+    #[test]
+    fn from_followed_by_a_common_noun_is_not_an_apposition() {
+        let mut value = input("personal");
+        value.content = Some("Download the report from our website before Friday.".into());
+
+        let preview = prepare(&value).unwrap();
+        assert!(preview
+            .document
+            .contains("Download the report from our website"));
     }
 
     /// This test used to prepare a `vault` document and assert on the redacted

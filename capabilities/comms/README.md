@@ -57,8 +57,10 @@ For `vault` mail the metadata *is* the payload: a one-time code arrives in the
 subject line, so storing that subject verbatim would publish it to a log, an API
 response and a dashboard at once. The sweep therefore redacts subject and
 snippet before the row is written, using the same local deterministic detector
-the cloud preview uses (`deterministic-entity-redaction-v2` — links, addresses,
-IBANs, phone numbers, long numbers, token-like secrets). A redacted subject
+the cloud preview uses (`deterministic-entity-redaction-v3` — links, addresses,
+IBANs, phone numbers, long numbers, token-like secrets, and people named by a
+salutation, a self-introduction, an organisation apposition or a login handle).
+A redacted subject
 reads `Your verification code is [number]`. The sender is kept: it is what makes
 a proposal reviewable when its subject cannot be read. Both sweep entry points —
 the CLI and the HTTP API — go through one intake path, because a gate only one
@@ -647,7 +649,9 @@ Routes:
   It never touches a row an operator refined.
 - `POST /content/:source/:id/cloud-preview` → builds a bounded local preview. Public content
   is copied as-is; Personal content receives local deterministic entity redaction for recognized
-  people after salutations, addresses, links, phone/account numbers and token-like secrets. The
+  people — after a salutation or a self-introduction, named as being from an organisation, or
+  carried as a login handle — plus addresses, links, phone/account numbers and token-like
+  secrets. The
   response lists the recognized entity types, names the limitations, and always reports zero
   provider calls. **Private content has no preview**: the request is refused with 400, because a
   preview is a hashable, approvable object and producing one for content that may never leave the

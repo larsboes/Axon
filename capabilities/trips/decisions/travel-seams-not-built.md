@@ -65,18 +65,22 @@ The cloud path in comms gates on trust class before anything leaves the machine.
 `tier_allows` in `capabilities/comms/src/cloud_derivative.rs` refuses `vault` content outright,
 lets a `public` tier through only for a public original with a `bounded-public-v1` passthrough
 derivative, and lets `pseudonymized_personal` through only when a personal original produced a
-personal derivative under `deterministic-entity-redaction-v2`. Ranking an itinerary in the cloud
+personal derivative under `deterministic-entity-redaction-v3`. Ranking an itinerary in the cloud
 would have to ride that second lane.
 
 That redactor is structurally wrong for an itinerary, and reading it
 (`capabilities/comms/src/cloud_derivative.rs`) is how you see it rather than a suspicion. It
 works token by token and replaces links, email addresses, IBAN-shaped strings, phone-shaped
 tokens, alphanumerics of sixteen characters or more, and any token holding six or more digits. A
-person's name is replaced only when the previous token was a salutation: `is_salutation` matches
-dear, hello, hi, hallo, liebe and lieber, and nothing else seeds a person redaction. An itinerary
-has no salutation, so every proper noun in it, station and city and hotel and venue, passes
+person's name is replaced only when something seeds it: `introduces_person` matches a salutation
+(dear, hello, hi, hallo, liebe, lieber) or an English self-introduction (I'm, I am, this is, my
+name is), `names_a_person_in_apposition` matches a proper noun followed by `from` and a second
+proper noun, and the operator's contact list matches by name. An itinerary greets nobody and
+introduces nobody, so every proper noun in it, station and city and hotel and venue, passes
 through verbatim, and a short alphanumeric booking reference is under every length threshold and
-passes too. Meanwhile what it does catch is the itinerary itself: an ISO date has eight digits
+passes too. The apposition rule makes this worse rather than better here: "Departure from
+Stuttgart" is two proper nouns around a `from`, so the word that carries the meaning is the one
+that goes. Meanwhile what it does catch is the itinerary itself: an ISO date has eight digits
 and a hyphen, so `looks_like_phone` rewrites it to `[phone]`, and a seven-digit EVA station code
 becomes `[number]`. The pass strips what makes a plan legible and keeps what identifies the
 traveller, which is the inverse of what a pseudonymized derivative is supposed to be. It is also

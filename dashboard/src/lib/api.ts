@@ -1083,11 +1083,11 @@ export interface CloudDerivativePreview {
   preview_hash: string;
   original_data_class: DataClass;
   derivative_data_class: 'public' | 'personal';
-  transformation: 'bounded-public-v1' | 'deterministic-entity-redaction-v2';
+  transformation: 'bounded-public-v1' | 'deterministic-entity-redaction-v3';
   document: string;
   redaction_count: number;
   redactions: RedactionFinding[];
-  entity_detection: 'not-required' | 'local-deterministic-v2';
+  entity_detection: 'not-required' | 'local-deterministic-v3';
   truncated: boolean;
   approval_required: true;
   provider_calls: 0;

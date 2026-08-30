@@ -30,7 +30,7 @@
     "preview_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "original_data_class": { "enum": ["public", "personal", "vault"] },
     "derivative_data_class": { "enum": ["public", "personal"] },
-    "transformation": { "enum": ["bounded-public-v1", "deterministic-entity-redaction-v2"] },
+    "transformation": { "enum": ["bounded-public-v1", "deterministic-entity-redaction-v3"] },
     "document": { "type": "string", "maxLength": 16000 },
     "redaction_count": { "type": "integer", "minimum": 0 },
     "redactions": {
@@ -46,7 +46,7 @@
         "additionalProperties": false
       }
     },
-    "entity_detection": { "enum": ["not-required", "local-deterministic-v2"] },
+    "entity_detection": { "enum": ["not-required", "local-deterministic-v3"] },
     "truncated": { "type": "boolean" },
     "approval_required": { "const": true },
     "provider_calls": { "const": 0 },
