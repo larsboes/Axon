@@ -970,6 +970,7 @@ mod tests {
                 credit_expires_on: None,
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                chat_template_kwargs: None,
                 on_backend: HashMap::new(),
             },
         );
@@ -1200,6 +1201,7 @@ mod tests {
                 credit_expires_on: None,
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                chat_template_kwargs: None,
                 on_backend: HashMap::new(),
             },
         );
@@ -1242,6 +1244,7 @@ mod tests {
                 credit_expires_on: None,
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                chat_template_kwargs: None,
                 on_backend: HashMap::new(),
             },
         );
@@ -1274,6 +1277,7 @@ mod tests {
                 credit_expires_on: None,
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                chat_template_kwargs: None,
                 on_backend: HashMap::new(),
             },
         );
@@ -1316,6 +1320,7 @@ mod tests {
                 credit_expires_on: Some("2026-08-31".into()),
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                chat_template_kwargs: None,
                 on_backend: HashMap::new(),
             },
         );
@@ -1428,6 +1433,7 @@ mod tests {
                 credit_expires_on: None,
                 query_prefix: String::new(),
                 document_prefix: String::new(),
+                chat_template_kwargs: None,
                 on_backend: HashMap::new(),
             },
         );
