@@ -306,6 +306,20 @@ for (const [roleName, role] of roles) {
     continue;
   }
   const key = apiKey(backend);
+  // A backend that names a key file it cannot read is not broken, it is not provisioned -- the
+  // ordinary state of a provider that has been declared and whose Vaultwarden item has not been
+  // materialized yet. Dialling it anyway spends a round trip to be told 401, and reports a
+  // pending setup step as a fault. `libs/inference::credential_ready` refuses the same way
+  // before any request, which is why comms never sends one either.
+  if (backend.api_key_file && key === undefined) {
+    say(`${roleName}: ${model} on ${backendName} — credential unavailable, not probed ` +
+        `(materialize its key to enable this role)`);
+    entries.push({
+      role: roleName, backend: backendName, model,
+      status: "unreachable", detail: "credential unavailable — key file is absent or empty",
+    });
+    continue;
+  }
   if (!cache.has(backendName)) cache.set(backendName, await catalogue(backend, key));
   const listed = cache.get(backendName)!;
 

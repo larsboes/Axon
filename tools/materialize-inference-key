@@ -21,7 +21,7 @@ if [ "$PRIVATE_ROOT" != "$AXON_OVERLAY_ROOT" ]; then
 fi
 
 usage() {
-  echo "usage: materialize-inference-key <gemini|nvidia-nim|opencode-go>" >&2
+  echo "usage: materialize-inference-key <gemini|groq|nvidia-nim|opencode-go>" >&2
   exit 1
 }
 
@@ -29,6 +29,10 @@ usage() {
 PROVIDER="$1"
 case "$PROVIDER" in
   gemini) ITEM="inference-gemini-api-key" ;;
+  # The second public-tier provider (systems.toml [groq]). Same handling as every other entry
+  # here -- only the item name is new, which is the point of keeping one bridge rather than a
+  # script per provider.
+  groq) ITEM="inference-groq-api-key" ;;
   nvidia-nim) ITEM="inference-nvidia-nim-api-key" ;;
   # The PAID fallback behind nvidia-nim's free tier (systems.toml [opencode-zen-go]). Nothing
   # about the handling differs: the bytes go from `bw get notes` into a mode-0600 file and are
