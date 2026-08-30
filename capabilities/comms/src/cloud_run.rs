@@ -120,6 +120,10 @@ pub fn enqueue_digest_job(
             blocked.push(format!("{name}: input ceiling exceeded"));
             continue;
         }
+        if provider_is_cooling(store, &name) {
+            blocked.push(format!("{name}: only failing for the last hour"));
+            continue;
+        }
         let calls = store
             .cloud_provider_calls_today(&name)
             .map_err(|error| DigestNotQueued::Store(error.to_string()))?;
@@ -157,6 +161,42 @@ pub fn enqueue_digest_job(
         });
     }
     Err(DigestNotQueued::NoProviderAvailable(blocked.join("; ")))
+}
+
+/// How long a role that is only failing stays out of the roster's lead.
+///
+/// One hour rather than one drain period: the conditions this catches are provider-side and
+/// slow -- a spent daily quota, a model that truncates every reply -- so retrying every fifteen
+/// minutes is 4x the requests for the same answer. Long enough to matter, short enough that a
+/// provider coming back is picked up the same morning.
+const PROVIDER_COOLDOWN_MINUTES: i64 = 60;
+
+/// Consecutive failures inside that window before a role is skipped.
+///
+/// Three, matching the per-item attempt cap: one failure is an item, three with nothing
+/// succeeding between them is the provider.
+const PROVIDER_COOLDOWN_FAILURES: u32 = 3;
+
+/// Whether this role should be passed over because it is currently only failing.
+///
+/// Not a permanent verdict and not recorded anywhere: it is read from the attempts ledger each
+/// time, so a single success clears it immediately.
+///
+/// What it prevents, measured on 2026-08-30: Cloudflare answered 429 to 119 consecutive requests
+/// across five hours because every new job re-selected it from the top of the roster, and the
+/// only per-provider gate was a budget counter that still said 81 remaining. Each of those
+/// failures also spent an attempt on the item that asked for it, which is how 39 digests ended
+/// up parked. Failing over is what saves the item; this is what stops the roster asking a
+/// provider that has already said no, several hundred times a day.
+///
+/// A store error is not a cooldown. The caller has a job to dispatch and this is an
+/// optimisation; refusing to try because the ledger could not be read would turn a reporting
+/// problem into an outage.
+fn provider_is_cooling(store: &Store, provider_role: &str) -> bool {
+    match store.cloud_provider_recent_outcomes(provider_role, PROVIDER_COOLDOWN_MINUTES) {
+        Ok((failed, succeeded)) => succeeded == 0 && failed >= PROVIDER_COOLDOWN_FAILURES,
+        Err(_) => false,
+    }
 }
 
 /// Configured cloud roles whose tier admits this class **verbatim**, best
@@ -253,6 +293,13 @@ pub fn run_job(store: &Store, cfg: &Config, job_id: &str) -> Result<CloudDerivat
         }
         if input_upper_bound > role.max_input_tokens.unwrap_or(0) {
             outcomes.push(format!("{candidate_name}: input ceiling exceeded"));
+            continue;
+        }
+        // Checked per candidate rather than once for the job: the point is to walk past a
+        // provider that is only failing and reach one that is not, which is the same reason
+        // every other condition in this loop is asked per candidate.
+        if provider_is_cooling(store, &candidate_name) {
+            outcomes.push(format!("{candidate_name}: only failing for the last hour"));
             continue;
         }
 

@@ -603,6 +603,38 @@ impl Store {
         Ok(calls.try_into()?)
     }
 
+    /// Failures and successes this role has recorded in the last `window_minutes`.
+    ///
+    /// The evidence a caller needs to stop leading with a provider that is refusing. The daily
+    /// count above is a budget question -- "may I spend another" -- and answers nothing about
+    /// whether spending it would work: on 2026-08-30 Cloudflare answered 429 to 119 consecutive
+    /// requests while its budget said 81 remaining, because every new job re-selected it from
+    /// the top of a roster that had no memory of the last one.
+    ///
+    /// Read from the attempts ledger rather than stored as provider state, so there is one
+    /// record of what happened and nothing to keep in step with it.
+    pub fn cloud_provider_recent_outcomes(
+        &self,
+        provider_role: &str,
+        window_minutes: i64,
+    ) -> Result<(u32, u32), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let (failed, succeeded): (i64, i64) = conn.query_row(
+            &format!(
+                "SELECT
+                   COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END), 0)
+                 FROM {}_content_cloud_attempts
+                 WHERE provider_role = ?1
+                   AND started_at >= datetime('now', ?2)",
+                self.prefix
+            ),
+            params![&provider_role, &format!("-{window_minutes} minutes")],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((failed.try_into()?, succeeded.try_into()?))
+    }
+
     pub fn utc_date(&self) -> Result<String, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         Ok(conn.query_row("SELECT date('now')", [], |row| row.get(0))?)

@@ -1265,6 +1265,104 @@ pub(crate) mod db_tests {
         assert!(attempt.4.is_some());
     }
 
+    /// The evidence a roster needs to stop leading with a provider that is refusing.
+    ///
+    /// `cloud_provider_calls_today` answers "may I spend another", which said 81 remaining while
+    /// Cloudflare answered 429 to 119 consecutive requests on 2026-08-30. This answers the other
+    /// question -- would spending it work -- and a single success has to clear it, or a provider
+    /// coming back stays shut out.
+    #[test]
+    fn recent_provider_outcomes_separate_a_bad_hour_from_a_spent_budget() {
+        let store = open_test_store("cloud_provider_health");
+        let queue = |item: &str| {
+            store
+                .stage_cloud_derivative(&CloudDerivativeApproval {
+                    source: "mail".into(),
+                    item_id: item.into(),
+                    source_revision: "source-v1".into(),
+                    preview_hash: "preview-v1".into(),
+                    original_data_class: "personal".into(),
+                    derivative_data_class: "personal".into(),
+                    transformation: "deterministic-entity-redaction-v3".into(),
+                    document: "Reviewed pseudonymized text".into(),
+                    redaction_count: 1,
+                })
+                .unwrap();
+            store
+                .queue_cloud_derivative(&CloudQueueRequest {
+                    source: "mail".into(),
+                    item_id: item.into(),
+                    source_revision: "source-v1".into(),
+                    preview_hash: "preview-v1".into(),
+                    provider_role: "cloud_flaky".into(),
+                    task: crate::cloud_dispatch::TASK_VERSION.into(),
+                })
+                .unwrap()
+                .job_id
+                .unwrap()
+        };
+
+        assert_eq!(
+            store
+                .cloud_provider_recent_outcomes("cloud_flaky", 60)
+                .unwrap(),
+            (0, 0),
+            "a role nobody has called yet is not failing"
+        );
+
+        // One job each, which is how the digest drain actually produces them.
+        for item in ["thread:a", "thread:b", "thread:c"] {
+            let job_id = queue(item);
+            let attempt_id = match store
+                .claim_cloud_job_attempt(&job_id, "cloud_flaky", "model-a", 100)
+                .unwrap()
+            {
+                CloudAttemptClaim::Started(attempt_id) => attempt_id,
+                other => panic!("unexpected claim: {other:?}"),
+            };
+            store
+                .fail_cloud_job_attempt(&job_id, attempt_id, "cloud provider returned HTTP 429")
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .cloud_provider_recent_outcomes("cloud_flaky", 60)
+                .unwrap(),
+            (3, 0)
+        );
+
+        // And it clears on the first thing that works.
+        let job_id = queue("thread:d");
+        let attempt_id = match store
+            .claim_cloud_job_attempt(&job_id, "cloud_flaky", "model-a", 100)
+            .unwrap()
+        {
+            CloudAttemptClaim::Started(attempt_id) => attempt_id,
+            other => panic!("unexpected claim: {other:?}"),
+        };
+        store
+            .complete_cloud_job_attempt(&job_id, attempt_id, &serde_json::json!({"ok": true}))
+            .unwrap();
+        let (failed, succeeded) = store
+            .cloud_provider_recent_outcomes("cloud_flaky", 60)
+            .unwrap();
+        assert_eq!((failed, succeeded), (3, 1));
+        assert!(
+            succeeded > 0,
+            "one success is what lets the role lead the roster again"
+        );
+
+        // Scoped per role, which is the whole point: one provider having a bad hour must not
+        // push the roster past the one that is answering.
+        assert_eq!(
+            store
+                .cloud_provider_recent_outcomes("cloud_healthy", 60)
+                .unwrap(),
+            (0, 0),
+            "another role's failures are not this role's"
+        );
+    }
+
     #[test]
     fn cloud_daily_ceiling_blocks_before_a_second_provider_attempt() {
         let store = open_test_store("cloud_daily_budget");
