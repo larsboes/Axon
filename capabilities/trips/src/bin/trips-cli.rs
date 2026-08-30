@@ -33,7 +33,7 @@ you can take by hand.
 
 Environment:
   AXON_INTENT_URL     chat-completions endpoint (default http://127.0.0.1:8091/v1/chat/completions)
-  AXON_INTENT_MODEL   model name (default apple-on-device)";
+  AXON_INTENT_MODEL   model name (default apple-foundationmodel)";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -123,7 +123,7 @@ fn draft(sentence: &str) -> Result<(), String> {
     }
     let url = std::env::var("AXON_INTENT_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8091/v1/chat/completions".into());
-    let model = std::env::var("AXON_INTENT_MODEL").unwrap_or_else(|_| "apple-on-device".into());
+    let model = std::env::var("AXON_INTENT_MODEL").unwrap_or_else(|_| "apple-foundationmodel".into());
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60))

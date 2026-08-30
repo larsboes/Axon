@@ -60,10 +60,15 @@ Add a second summarization role to `inference.json` in the overlay:
 ```json
 "summarization_light": {
   "backend": "foundation-models",
-  "model": "apple-on-device",
+  "model": "apple-foundationmodel",
   "max_input_tokens": 4096
 }
 ```
+
+`apple-foundationmodel` is the only id apfel serves, and it refuses any other with
+`model_not_found` — a 404 that arrives at request time, not at startup, so a wrong name here
+reads as "the light rung never summarizes anything" rather than as a typo. `apple-on-device` was
+the name the retired Swift server answered to and is the shape of that mistake.
 
 with the matching backend:
 

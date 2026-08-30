@@ -42,7 +42,15 @@ health_path = "/health"
 # as the `summarization_light` role, and a role that does not resolve is simply
 # not offered work.
 #
-# autostart is deliberately absent. The light role is an optimisation, not a
-# floor: a machine where this is not running digests everything on the strong
-# model exactly as it did before, so starting it is a choice rather than a
-# prerequisite.
+# autostart, decided 2026-08-30, reversing the reasoning below.
+#
+# It read: "the light role is an optimisation, not a floor: a machine where this is not running
+# digests everything on the strong model exactly as it did before, so starting it is a choice
+# rather than a prerequisite." That was true while there was a strong model to fall back to. There
+# is not: oMLX and Ollama are both retired, so `summarization` resolves to nothing local, and the
+# unattended pass never falls back to it anyway -- `quiet::rung` refuses that fallthrough on
+# purpose, so the light role IS the floor for every drain on this machine.
+#
+# The original sentence is kept rather than replaced because the reversal is a fact about the
+# machine, not about the argument: restore a local strong model and the old reasoning holds again.
+autostart   = "true"
