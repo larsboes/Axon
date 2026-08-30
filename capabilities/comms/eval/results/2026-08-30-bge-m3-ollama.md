@@ -7,11 +7,17 @@
 - Shape: 30 vectors in one batch, 1024 dimensions, `query:`/`passage:` roles
 - Result: **PASS**
 
-| Metric | Observed | Required | E5-base (adopted) |
-|---|---:|---:|---:|
-| Useful top-1 | 1.000 (6/6) | 1.000 | 1.000 (6/6) |
-| Pairwise accuracy | **0.912** | 0.750 | 0.882 |
-| Mean nDCG | **0.987** | 0.900 | 0.986 |
+| Metric | prefix-free | with E5 prefixes | Required | E5-base (previous) |
+|---|---:|---:|---:|---:|
+| Useful top-1 | 1.000 (6/6) | 1.000 (6/6) | 1.000 | 1.000 (6/6) |
+| Pairwise accuracy | **0.941** | 0.912 | 0.750 | 0.882 |
+| Mean nDCG | **0.994** | 0.987 | 0.900 | 0.986 |
+
+**Prefix-free is the adopted configuration**, and it was measured because the config disagreed
+with itself: the role carried E5's `query: `/`passage: ` prefixes while the `on_backend.ollama`
+entry that named `bge-m3` left them at their empty default. Both pass; the empty pair is better on
+both moving metrics, and BGE-M3 is documented as needing no instruction prefix. Running the E5
+prefixes on it would have been a configuration nobody measured and nobody wanted.
 
 Same corpus, same judgements, same runner, unchanged. Nothing here was relabelled: this run used
 `relevance-corpus.json` exactly as `multilingual-e5-base-mlx` left it on 2026-07-30, which is the
@@ -64,10 +70,34 @@ without it the only way to measure a candidate on a keyless loopback server is a
 settings file holding a key nothing reads, and a run that needs an unrecorded shim is not
 evidence.
 
+## The route comms actually calls
+
+The runs above went through Ollama's OpenAI-compatible `/v1/embeddings`. `ResolvedRole::
+embedding_endpoint` in `libs/inference/src/lib.rs:493` sends an `api = "ollama"` backend to the
+native `/api/embed` instead, so a result measured on one route and deployed on the other proves
+nothing until the two are shown to agree.
+
+Checked, on the same text: both return 1024 dimensions, both are already L2-normalised, and the
+cosine between them is **1.000000000**. The measurement transfers.
+
 ## Status
 
-**Measured, not adopted.** Which backend serves the `embedding` role is a deployment fact in the
-overlay, not a repo decision, and the standing selection in
-`results/2026-07-30-multilingual-e5-base-mlx.md` is unchanged by this file alone. What this record
-establishes is that a passing local option is already on this disk, and that the reason the Feed
-is not semantic is an absent binary rather than a missing model.
+**Adopted 2026-08-30.** `roles.embedding` now reads `backend: "ollama"`, `model: "bge-m3"`, with
+both prefixes empty and an `on_backend.omlx` entry carrying the E5 model and its prefixes so the
+previous selection stays one field away. This supersedes
+`results/2026-07-30-multilingual-e5-base-mlx.md` as the serving configuration; that record stays
+as the evidence it was, and its model remains the choice on any machine whose `[inference]`
+backend is oMLX.
+
+Verified after the switch by the machine's own instrument rather than by assertion:
+
+```
+$ bun tools/model-check.ts --probe
+embedding: bge-m3 on ollama ok — answers (1024-dimensional)
+```
+
+`ollama` is now declared in `toolchain.toml`, which it was not while it held nothing. Two bugs in
+`tools/model-check.ts` had to be fixed before that line could be true: it compared the declared
+`bge-m3` against the catalogue's `bge-m3:latest` by exact string and called an installed model
+missing, and it probed every role with a chat completion, which an embedding model cannot answer.
+Both would have reported a healthy retrieval rung as broken.

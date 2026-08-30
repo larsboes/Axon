@@ -45,6 +45,12 @@ const model = process.env.OMLX_EMBEDDING_MODEL ?? "multilingual-e5-base-mlx";
 // settings file holding a key nothing reads -- a shim that makes the run
 // unreproducible and is therefore not evidence.
 const noAuth = process.env.OMLX_NO_AUTH === "1";
+// The role carries its own `query_prefix`/`document_prefix` (libs/inference), and a model that
+// wants none is as ordinary as one that wants E5's. Measuring a candidate under prefixes it will
+// not run with is measuring a configuration nobody deploys, so these are overridable here under
+// the field names the role uses. Empty string is a real value and must survive `??`.
+const queryPrefix = process.env.OMLX_QUERY_PREFIX ?? "query: ";
+const documentPrefix = process.env.OMLX_DOCUMENT_PREFIX ?? "passage: ";
 const queryVariant = process.env.RELEVANCE_EVAL_QUERY_VARIANT?.trim() || null;
 
 function fail(message: string): never {
@@ -142,11 +148,14 @@ const candidateKey = (queryId: string, candidateId: string): string =>
 const queryText = (query: Query): string =>
   queryVariant ? query.text_variants![queryVariant] : query.text;
 for (const query of corpus.queries) {
-  queryIndexes.set(query.id, inputs.push(`query: ${queryText(query)}`) - 1);
+  queryIndexes.set(
+    query.id,
+    inputs.push(`${queryPrefix}${queryText(query)}`) - 1,
+  );
   for (const candidate of query.candidates) {
     candidateIndexes.set(
       candidateKey(query.id, candidate.id),
-      inputs.push(`passage: ${candidate.text}`) - 1,
+      inputs.push(`${documentPrefix}${candidate.text}`) - 1,
     );
   }
 }

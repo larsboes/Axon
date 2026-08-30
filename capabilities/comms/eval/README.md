@@ -59,6 +59,10 @@ The runner reads `.auth.api_key` from `~/.omlx/settings.json`, sends one batch t
 default. A non-loopback endpoint is rejected because this evaluation is intentionally local. A
 loopback server that enforces no key of its own may set `OMLX_NO_AUTH=1`, the same spelling
 `run-reranking.ts` uses; the normal path still requires the configured key reference.
+`OMLX_QUERY_PREFIX` and `OMLX_DOCUMENT_PREFIX` override the `query: `/`passage: ` pair, under the
+field names the inference role uses for the same thing. A model that wants no instruction prefix
+is as ordinary as one that wants E5's, and measuring a candidate under prefixes it will not run
+with measures a configuration nobody deploys. The empty string is a real value here.
 
 An explicit first argument selects another schema-compatible corpus. Private real-world corpora
 and their results stay in the private overlay and are never copied into this directory:
@@ -140,9 +144,9 @@ corpus unchanged and passes at 6/6 useful top-1, `0.912` pairwise accuracy and `
 Its result is kept separately because cross-encoder scores and embedding cosine scores are not
 the same scale.
 
-A second first-stage candidate cleared the unchanged gate on 2026-08-30:
-[`bge-m3` served by Ollama](results/2026-08-30-bge-m3-ollama.md), at 6/6 useful top-1, `0.912`
-pairwise accuracy and `0.987` mean nDCG. It is recorded as measured and **not** as adopted —
-which backend serves the `embedding` role is a deployment fact in the overlay. That record also
-carries why it was run: the configured oMLX backend is absent from the host, so the ranking had
+[`bge-m3` served by Ollama](results/2026-08-30-bge-m3-ollama.md) cleared the unchanged gate on
+2026-08-30 at 6/6 useful top-1, `0.941` pairwise accuracy and `0.994` mean nDCG, prefix-free, and
+**is now the adopted first stage**. E5-base remains the selection on a machine whose `[inference]`
+backend is oMLX, and its record stands as the evidence it was. That record also carries why the
+question was reopened at all: the configured oMLX backend is absent from the host, so ranking had
 been falling back to the deterministic `lexical` control.

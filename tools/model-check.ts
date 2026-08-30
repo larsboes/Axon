@@ -118,6 +118,41 @@ async function catalogue(backend: Backend, key?: string): Promise<string[] | str
   }
 }
 
+/// Ask an embedding model for a vector.
+///
+/// Question 2 is "does it actually answer", and for a retrieval model the answer is a vector.
+/// Asking `bge-m3` to reply "OK" gets an HTTP 4xx and reports a model that is installed, served
+/// and correct as broken -- the same false alarm in the opposite direction from the one this
+/// tool was written to catch.
+async function probeEmbedding(
+  backend: Backend,
+  model: string,
+  key?: string,
+): Promise<string> {
+  const base = (backend.base_url ?? "").replace(/\/$/, "");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (key) headers.Authorization = `Bearer ${key}`;
+  // Two shapes, matching libs/inference `ResolvedRole::embedding_endpoint`: a second opinion
+  // about which URL is correct is how this tool starts disagreeing with the thing it checks.
+  const ollama = backend.api === "ollama";
+  try {
+    const response = await fetch(`${base}${ollama ? "/api/embed" : "/embeddings"}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(ollama ? { model, input: ["probe"] } : { model, input: "probe" }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) return `answers HTTP ${response.status}`;
+    const body = await response.json();
+    const vector = ollama ? body?.embeddings?.[0] : body?.data?.[0]?.embedding;
+    return Array.isArray(vector) && vector.length
+      ? `answers (${vector.length}-dimensional)`
+      : "answered without a vector";
+  } catch {
+    return "no answer within 60s";
+  }
+}
+
 async function probe(backend: Backend, model: string, key?: string): Promise<string> {
   const base = (backend.base_url ?? "").replace(/\/$/, "");
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -168,7 +203,15 @@ for (const [roleName, role] of roles) {
     continue;
   }
 
-  const present = listed.includes(model);
+  // Ollama resolves an untagged name to its `:latest` tag: `ollama run bge-m3` and the
+  // `bge-m3:latest` its catalogue reports are one model. A role naming the untagged form names
+  // it the way the CLI does, so an exact-string test called an installed, answering model
+  // missing -- and a check that cries wolf is the one the next person learns to ignore.
+  const declaredAs = (id: string): string[] =>
+    backend.api === "ollama" && id.endsWith(":latest")
+      ? [id, id.slice(0, -":latest".length)]
+      : [id];
+  const present = listed.some((id) => declaredAs(id).includes(model));
   const candidates = listed.filter((id) => family(id) === family(model) && newer(id, model));
   const suffix = candidates.length ? `  newer available: ${candidates.sort().join(", ")}` : "";
 
@@ -181,7 +224,13 @@ for (const [roleName, role] of roles) {
     );
     continue;
   }
-  const answer = PROBE ? ` — ${await probe(backend, model, key)}` : "";
+  // `libs/inference` resolves rungs by name -- `role_on("embedding", ...)` is how a caller asks
+  // for the retrieval rung -- so the name is the existing contract for what a role is, and the
+  // right question to ask it follows from that rather than from a new field.
+  const asksForAVector = /(^|_)embedding(_|$)/.test(roleName);
+  const answer = PROBE
+    ? ` — ${await (asksForAVector ? probeEmbedding : probe)(backend, model, key)}`
+    : "";
   console.log(`${roleName}: ${model} on ${backendName} ok${answer}${suffix}`);
 }
 
