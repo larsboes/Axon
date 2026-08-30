@@ -88,3 +88,26 @@ b = 150
 t = 45
 h = 80
 unsicher = ["b", "t"]
+
+# --- Zwei gleiche Bretter, ein Unterschied (PRD B31) -----------------------
+#
+# Identische Masse, damit der Vergleich nur eine Variable hat: `trenner_erklaert` sagt von
+# sich, dass es frei stehen soll, `trenner_stumm` sagt nichts. Die Wandsumme der Suche zaehlt
+# das erste nicht mit und das zweite schon.
+#
+# Zwei Stuecke und nicht eines mit umgeschalteter Zeile: ein Test, der die Fixture zwischen
+# zwei Laeufen editiert, prueft die Datei und nicht den Code.
+[[item]]
+id = "trenner_erklaert"
+label = "Raumtrenner, erklaert (erfunden)"
+b = 145
+t = 41
+h = 77
+raumtrenner = true
+
+[[item]]
+id = "trenner_stumm"
+label = "Raumtrenner, stumm (erfunden)"
+b = 145
+t = 41
+h = 77

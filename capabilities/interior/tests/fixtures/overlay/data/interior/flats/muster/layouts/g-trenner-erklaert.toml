@@ -1,0 +1,20 @@
+# Basis fuer `tests/search.rs`. Ein einziges Brett, frei im Raum, an derselben Stelle wie in
+# der Schwesterdatei — der Unterschied zwischen beiden ist `raumtrenner` im Inventar und
+# sonst nichts.
+#
+# Zwei Layouts mit je EINEM Stueck und nicht eines mit zweien: bei zwei Stuecken bleibt beim
+# Verschieben des einen das andere als Hindernis stehen, und das Hindernis stuende dann in den
+# beiden Laeufen woanders. Der Vergleich haette zwei Variablen gehabt, und der erste Entwurf
+# dieser Fixture ist genau daran gescheitert — das stehengebliebene Brett lag in der
+# Anlaufzone der Kuechenzeile, also verwarf R7 jeden Kandidaten, bevor die Rangfolge ueberhaupt
+# an die Reihe kam.
+#
+# Kein Verdikt haengt hieran. Geprueft wird eine RANGFOLGE: `raumtrenner` kann ein Layout
+# weder bestehen noch durchfallen lassen.
+name = "G — ein Brett, frei im Raum (erklaert)"
+
+[[item]]
+ref = "trenner_erklaert"
+x = 200
+y = 200
+rot = 0

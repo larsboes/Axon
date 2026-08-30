@@ -121,8 +121,17 @@ gestorben, an dem die Seite eine HTTP-API wurde, die Medien erst auf Anfrage aus
 
 `wandkontakt_cm` bevorzugt Möbel mit einer Wand im Rücken, weil der Räumungsprüfer nur Abstände
 kennt und einen Esstisch mitten im Raum für genauso richtig hält wie einen an der Wand. Das Maß
-ist grob und **bestraft einen Raumtrenner dafür, dass er seine Aufgabe erfüllt** — ein Regal
-quer im Raum bekommt 0 cm. Die Rangfolge ist eine Hilfe, kein Urteil.
+ist grob, und die Rangfolge bleibt eine Hilfe und kein Urteil.
+
+Ein Stück, das **frei stehen soll**, wurde dafür bis 2026-08-31 bestraft: ein Regal quer im Raum
+bekam 0 cm und sank. Es kann jetzt `raumtrenner = true` sagen und fällt dann aus der Wandsumme
+heraus — nicht mit 0 cm, sondern gar nicht, damit es die Bewertung der übrigen Stücke weder hebt
+noch senkt. Freiwillig wie jedes Feld aus Q61: wer nichts erklärt, wird weiter an der Wand
+gemessen, also bewegt sich kein bestehender Rang, bis jemand eine Zeile füllt.
+
+Das betrifft **nur die Rangfolge**. `raumtrenner` kann kein Layout bestehen oder durchfallen
+lassen. `tests/search.rs` belegt es an zwei Brettern mit identischen Maßen an derselben Stelle,
+von denen genau eines die Zeile führt — vorher hatte diese Datei überhaupt keinen Test.
 
 ## Was die Wohnung erklären muss
 
@@ -145,9 +154,28 @@ gibt, ist ein **Fehler** und keine Route, die still ausfällt — die alte Fassu
 und der Bericht sah danach aus wie einer über eine Wohnung mit weniger Wegen. Keine `[[routen]]`
 heißt: kein Weg wird gemessen. Das ist eine Aussage, keine Voreinstellung.
 
-Was noch nicht deklariert ist: die Regel-**Kennungen**. `R1`, `R2`, `R3`, `R4`, `R7` stehen als
-Literale im Code und ihre Texte in `rules.toml`. Das ist eine geteilte Namenskonvention über alle
-Wohnungen und nicht wohnungsspezifisch — aber es ist auch keine, die eine Wohnung ändern könnte.
+## Wer die Regeln besitzt
+
+Bis 2026-08-31 stand hier, die Regel-**Kennungen** seien „noch nicht deklariert": `R1`…`R7` als
+Literale im Code, ihre Texte in `rules.toml`. Das war zu freundlich formuliert. Die Datei führte
+`[[regeln]]` mit `id`, `schwere` und `text`, `model::Rules` parste die Liste, und **nichts las
+sie**: die Schwere stand an allen 21 Ausgabestellen im Code, und `clearance.rs` behauptete im
+Modulkopf trotzdem „Schwere folgt `rules.toml`". Eine Wohnung konnte R3 auf `hart` setzen und
+bekam weiterhin eine Warnung. Dazu meldete der Prüfer die Ausklappzone des Schlafsofas als
+`couch_ausklappen`, während jede `rules.toml` sie als **R8** führt — zwei Namen für eine Regel,
+und der Bericht nannte den, den die Wohnung nicht kennt.
+
+Seit 2026-08-31 (PRD B31) schlägt der Prüfer nach, und der Abgleich läuft in beide Richtungen:
+
+| | |
+|---|---|
+| **Hausregeln** — `R1 R2 R3 R4 R7 R8` | Schwere **und** Text kommen aus `rules.toml`. Fehlt die Kennung dort, bricht die Prüfung ab und nennt die, die es gibt. Der Text wandert in den Bericht |
+| **Invarianten** — `kollision`, `raumgrenze`, `laufweg`, `zugang`, … | Stehen im Code und tragen keinen Text. Zwei Möbel können sich nicht überlappen, und keine Wohnung kann das erlauben. Sie deklarieren zu lassen hieße, jede Wohnung eine Invariante wiederholen zu lassen, die sie nicht ändern kann — und die erste vergessene wäre eine still abgeschaltete Prüfung |
+| **Deklariert, aber nicht geprüft** | Kein Fehler, sondern ein Bericht: `CheckResult::nicht_geprueft`. Die reale Wohnung führt R5 (Blendung am Schreibtisch) und R6 (der Blick vom Eingang aufs Bett), und beides prüft hier niemand. „Bestanden" heißt ab hier „bestanden, gemessen an den Regeln, die gemessen wurden" |
+
+`tests/rules.rs` ist der Beleg und nicht der Modulkopf: er kopiert die Musterwohnung, setzt R3 in
+der Kopie auf `hart`, und **dasselbe Layout fällt durch**. Käme die Schwere je wieder aus dem
+Code, bestünden beide Kopien und der Test fiele um.
 
 ## Was ein Stück von sich aus verlangt
 
@@ -165,6 +193,7 @@ wall_ok      = false                      # diese Seite darf NICHT an eine Wand
 expands      = { dir = "sued", to = 165 } # Gesamttiefe ausgeklappt, nicht der Zuwachs
 access_sides = 1                          # ein Bett für eine Person braucht eine Seite
 access_clear = 60
+raumtrenner  = true                       # soll frei stehen; zählt nicht in die Wandsumme
 ```
 
 `opens` und `expands.dir` gelten in der Ausrichtung des Stücks und drehen mit `rot` mit. Damit

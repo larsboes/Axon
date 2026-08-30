@@ -110,6 +110,18 @@ pub struct Item {
     pub access_sides: Option<i32>,
     /// Wie tief eine solche Seite sein muss, in cm.
     pub access_clear: Option<i32>,
+    /// Dieses Stueck soll frei im Raum stehen und teilt ihn.
+    ///
+    /// Betrifft nur die **Rangfolge** der Suche, nie ein Verdikt: `search::wandkontakt_cm`
+    /// belohnt eine Wand im Ruecken, weil der Raeumungspruefer einen Esstisch mitten im Raum
+    /// fuer genauso richtig haelt wie einen an der Wand. Ein Regal quer im Raum bekam damit 0 cm
+    /// und sank — bestraft dafuer, dass es seine Aufgabe erfuellt. Gesetzt faellt es aus der
+    /// Wandsumme heraus.
+    ///
+    /// Wie jedes Feld aus PRD Q61 ist es eine Aussage ueber das Stueck und nicht ueber die
+    /// Wohnung, und wie sie alle ist es freiwillig: wer nichts erklaert, wird weiter an der
+    /// Wand gemessen.
+    pub raumtrenner: Option<bool>,
 }
 
 impl Item {
@@ -280,6 +292,7 @@ impl Store {
                 expands_to         INTEGER,
                 access_sides       INTEGER,
                 access_clear       INTEGER,
+                raumtrenner        INTEGER,
                 created_at         TEXT NOT NULL,
                 updated_at         TEXT NOT NULL
             );
@@ -307,6 +320,37 @@ impl Store {
             ",
             prefix = prefix
         ))?;
+        Self::add_column_if_missing(conn, prefix, "raumtrenner", "INTEGER")?;
+        Ok(())
+    }
+
+    /// `ALTER TABLE ... ADD COLUMN`, idempotent, weil SQLite kein `IF NOT EXISTS` dafuer hat.
+    ///
+    /// Der Kommentar ueber `run_migration` sagt, eine Datei beginne leer und es gebe keine
+    /// ALTER-Kette zu bewahren. Das galt bis 2026-08-31 und gilt seit B25 nicht mehr: die
+    /// Tabelle traegt importierte Zeilen, und `CREATE TABLE IF NOT EXISTS` erreicht eine
+    /// bestehende Tabelle nicht. Die Zeilen einfach neu zu importieren waere kein Ausweg —
+    /// `{prefix}_item_state` haelt die Zustandsgeschichte, und die ist der Grund, aus dem
+    /// B25 sie als eigene Tabelle angelegt hat.
+    ///
+    /// `pragma_table_info` ist die Sonde, die `capabilities/places/src/backfill.rs:396` fuer
+    /// dieselbe Frage benutzt.
+    fn add_column_if_missing(
+        conn: &Connection,
+        prefix: &str,
+        column: &str,
+        typ: &str,
+    ) -> Result<(), Fehler> {
+        let vorhanden: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            params![format!("{prefix}_item"), column],
+            |row| row.get(0),
+        )?;
+        if vorhanden == 0 {
+            conn.execute_batch(&format!(
+                "ALTER TABLE {prefix}_item ADD COLUMN {column} {typ};"
+            ))?;
+        }
         Ok(())
     }
 
@@ -330,14 +374,14 @@ impl Store {
                     quelle, gemessen_am, mitnahme, prioritaet, basiert_auf, ersetzt,
                     varianten, ziel, hinweis, begruendung, entscheidung_offen,
                     opens, open_clear, wall_ok, expands_dir, expands_to,
-                    access_sides, access_clear, created_at, updated_at
+                    access_sides, access_clear, raumtrenner, created_at, updated_at
                  ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                     ?11, ?12, ?13, ?14, ?15,
                     ?16, ?17, ?18, ?19, ?20,
                     ?21, ?22, ?23, ?24, ?25, ?26,
                     ?27, ?28, ?29, ?30, ?31,
-                    ?32, ?33, ?34, ?35, ?36, ?37, ?38, {now}, {now}
+                    ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, {now}, {now}
                  )
                  ON CONFLICT(id) DO UPDATE SET
                     kind=excluded.kind, label=excluded.label, b=excluded.b, t=excluded.t,
@@ -362,6 +406,7 @@ impl Store {
                     wall_ok=excluded.wall_ok, expands_dir=excluded.expands_dir,
                     expands_to=excluded.expands_to, access_sides=excluded.access_sides,
                     access_clear=excluded.access_clear,
+                    raumtrenner=excluded.raumtrenner,
                     updated_at={now}",
                 p = p,
                 now = axon_store::now_offset("'+0 seconds'")
@@ -405,6 +450,7 @@ impl Store {
                 it.expands_to,
                 it.access_sides,
                 it.access_clear,
+                it.raumtrenner,
             ],
         )?;
         Ok(())
@@ -498,7 +544,7 @@ impl Store {
                     i.mitnahme, i.prioritaet, i.basiert_auf, i.ersetzt, i.varianten, i.ziel,
                     i.hinweis, i.begruendung, i.entscheidung_offen,
                     i.opens, i.open_clear, i.wall_ok, i.expands_dir, i.expands_to,
-                    i.access_sides, i.access_clear,
+                    i.access_sides, i.access_clear, i.raumtrenner,
                     (SELECT s.state FROM {p}_item_state s
                       WHERE s.item_id = i.id ORDER BY s.since DESC, s.id DESC LIMIT 1)
              FROM {p}_item i ORDER BY i.id"
@@ -511,7 +557,7 @@ impl Store {
                     .as_deref()
                     .and_then(Seite::parse))
             };
-            let state: Option<String> = row.get(38)?;
+            let state: Option<String> = row.get(39)?;
             Ok((
                 Item {
                     id: row.get(0)?,
@@ -552,6 +598,7 @@ impl Store {
                     expands_to: row.get(35)?,
                     access_sides: row.get(36)?,
                     access_clear: row.get(37)?,
+                    raumtrenner: row.get(38)?,
                 },
                 state.as_deref().and_then(State::parse),
             ))

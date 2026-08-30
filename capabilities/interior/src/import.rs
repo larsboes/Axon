@@ -105,6 +105,9 @@ struct Roh {
     access_sides: Option<i32>,
     #[serde(default)]
     access_clear: Option<i32>,
+    /// `raumtrenner = true` — dieses Stueck soll frei stehen und teilt den Raum.
+    #[serde(default)]
+    raumtrenner: Option<bool>,
 }
 
 /// `expands = { dir = "sued", to = 145 }` — die Gesamttiefe ausgeklappt, nicht der Zuwachs.
@@ -181,6 +184,7 @@ impl Roh {
             expands_to: self.expands.as_ref().map(|e| e.to),
             access_sides: self.access_sides,
             access_clear: self.access_clear,
+            raumtrenner: self.raumtrenner,
         }
     }
 }

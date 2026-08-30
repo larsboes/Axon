@@ -7,23 +7,45 @@
 //! keine harte Regel verletzt ist. Es gibt absichtlich keinen Weg, ein Bestehen zu melden,
 //! solange ein harter Verstoss offen ist — ein Pruefer, der weich durchwinkt, ist schlechter
 //! als gar keiner.
+//!
+//! Der Satz oben stimmt seit 2026-08-31, und vorher war er eine Behauptung ueber Code, den
+//! niemand nachgelesen hatte: die Schwere stand an allen 21 Ausgabestellen als Literal, und
+//! `Regel { id, schwere, text }` wurde aus `rules.toml` geparst und von **nichts** gelesen.
+//! Eine Wohnung konnte R3 auf `hart` setzen und bekam weiterhin eine Warnung. In genau der
+//! Capability, die es gegen zwei Fassungen derselben Zahl gibt.
+//!
+//! ## Zwei Klassen von Kennungen, und die Grenze dazwischen
+//!
+//! `REGEL_IDS` sind **Hausregeln**: die Wohnung deklariert sie in `rules.toml` mit Schwere und
+//! Text, und dieser Pruefer schlaegt beides ueber `rules.regel(id)` nach. Fehlt die Kennung
+//! dort, ist das ein Fehler und kein textloser Verstoss.
+//!
+//! Die uebrigen Kennungen — `kollision`, `raumgrenze`, `zugang`, `laufweg` und die anderen —
+//! sind **keine Hausregeln**, sondern Geometrie und Nutzbarkeit. Zwei Moebel koennen sich
+//! nicht ueberlappen, und keine Wohnung kann das erlauben. Sie deklarieren zu lassen hiesse,
+//! jede Wohnung eine Invariante wiederholen zu lassen, die sie nicht aendern kann, und die
+//! erste vergessene waere eine still abgeschaltete Pruefung.
 
 use crate::geometry::{
     clearance_field, free_depth_on_side, overlap_area, point_in_polygon, widest_path, Grid, Side,
     RES, SIDES,
 };
 use crate::model::{
-    footprint, Catalogue, Layout, Model, ModelError, Opening, PlacedItem, Pt, Rect, Room, Seite,
+    footprint, Catalogue, Layout, Model, ModelError, Opening, PlacedItem, Pt, Rect, Room, Rules,
+    Seite,
 };
 use crate::store::Item;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Hart,
-    Weich,
-}
+pub use crate::model::Severity;
+
+/// Die Hausregeln, die diese Maschine prueft.
+///
+/// Der Abgleich laeuft in beide Richtungen und beide sind noetig. Was hier steht, MUSS die
+/// Wohnung deklarieren, sonst bricht die Pruefung ab — eine Kennung ohne Text ist ein Verstoss,
+/// den niemand nachschlagen kann. Was die Wohnung deklariert und hier fehlt, meldet
+/// `CheckResult::nicht_geprueft` als Luecke, statt es fallen zu lassen.
+pub const REGEL_IDS: &[&str] = &["R1", "R2", "R3", "R4", "R7", "R8"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Violation {
@@ -32,10 +54,50 @@ pub struct Violation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
     pub message: String,
+    /// Der Regeltext aus `rules.toml`, wo es einen gibt.
+    ///
+    /// Nur Hausregeln haben einen. `message` sagt, was dieses Layout falsch macht; `text` sagt,
+    /// welche Regel das ueberhaupt zu einer Regel macht — und der stand bis 2026-08-31 in einer
+    /// Datei, die kein Bericht las.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub measured: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<i32>,
+}
+
+/// Ein Verstoss gegen eine deklarierte Hausregel: Schwere und Text kommen aus der Wohnung.
+fn haus_regel(
+    rules: &Rules,
+    id: &str,
+    item: Option<String>,
+    message: String,
+    measured: Option<i32>,
+    required: Option<i32>,
+) -> Result<Violation, ModelError> {
+    let regel = rules.regel(id)?;
+    Ok(Violation {
+        rule: regel.id.clone(),
+        severity: regel.severity()?,
+        item,
+        message,
+        text: Some(regel.text.clone()),
+        measured,
+        required,
+    })
+}
+
+/// Legt einen Verstoss in `hart` oder `weich`, je nach seiner eigenen Schwere.
+///
+/// Die Sortierung folgt jetzt der Datei, also darf sie nicht mehr an der Aufrufstelle stehen:
+/// `hard.push(..)` mit einem weichen Verstoss darin waere genau die Divergenz, die diese
+/// Aenderung schliesst.
+fn einsortieren(v: Violation, hard: &mut Vec<Violation>, soft: &mut Vec<Violation>) {
+    match v.severity {
+        Severity::Hart => hard.push(v),
+        Severity::Weich => soft.push(v),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,6 +130,19 @@ pub struct CheckResult {
     pub soft: Vec<Violation>,
     pub uncertainties: Vec<Uncertainty>,
     pub metrics: Metrics,
+    /// Regeln, die diese Wohnung deklariert und diese Maschine nicht prueft.
+    ///
+    /// Gehoert in das Ergebnis und nicht in ein Log, weil es das Verdikt qualifiziert:
+    /// „bestanden" heisst ab hier „bestanden, gemessen an den Regeln, die gemessen wurden".
+    /// Die reale Wohnung fuehrt zwei davon (R5, R6), und vor 2026-08-31 sagte das nichts.
+    pub nicht_geprueft: Vec<UngeprueteRegel>,
+}
+
+/// Eine deklarierte Regel ohne Pruefung dahinter.
+#[derive(Debug, Clone, Serialize)]
+pub struct UngeprueteRegel {
+    pub rule: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,6 +299,7 @@ fn eigene_ansprueche(p: &Placed, grid: &Grid, hard: &mut Vec<Violation>) -> bool
                 message: format!(
                     "\"{name}\" hat {gemessen} cm zum Oeffnen an {wo}, braucht {want}"
                 ),
+                text: None,
                 measured: Some(gemessen),
                 required: Some(want),
             });
@@ -244,6 +320,7 @@ fn eigene_ansprueche(p: &Placed, grid: &Grid, hard: &mut Vec<Violation>) -> bool
                 message: format!(
                     "\"{name}\" ist von {genug} Seiten mit {want} cm erreichbar, braucht {n}"
                 ),
+                text: None,
                 measured: Some(genug),
                 required: Some(n),
             });
@@ -268,6 +345,7 @@ fn eigene_ansprueche(p: &Placed, grid: &Grid, hard: &mut Vec<Violation>) -> bool
                         "\"{name}\" hat {frei} cm nach {} zum Ausklappen, braucht {zusatz} (ausgeklappt {to} tief)",
                         seite.as_str()
                     ),
+                    text: None,
                     measured: Some(frei),
                     required: Some(zusatz),
                 });
@@ -417,6 +495,7 @@ pub fn check_layout(
                     "\"{}\" ragt aus dem Raum bei {},{} ({}×{} cm)",
                     p.it.reference, p.it.x, p.it.y, p.w, p.d
                 ),
+                text: None,
                 measured: None,
                 required: None,
             });
@@ -436,6 +515,7 @@ pub fn check_layout(
                         b.it.reference,
                         (overlap_area(&a.rect, &b.rect) as f64 / 100.0).round() as i32
                     ),
+                    text: None,
                     measured: None,
                     required: None,
                 });
@@ -454,17 +534,21 @@ pub fn check_layout(
         let zone = approach_rect(&seg, depth);
         for p in &placed {
             if p.rect.overlaps(&zone) {
-                hard.push(Violation {
-                    rule: "R1".into(),
-                    severity: Severity::Hart,
-                    item: Some(p.it.reference.clone()),
-                    message: format!(
-                        "\"{}\" ragt in die {} cm Anlaufzone von {}",
-                        p.it.reference, depth, o.id
-                    ),
-                    measured: None,
-                    required: Some(depth),
-                });
+                einsortieren(
+                    haus_regel(
+                        rules,
+                        "R1",
+                        Some(p.it.reference.clone()),
+                        format!(
+                            "\"{}\" ragt in die {} cm Anlaufzone von {}",
+                            p.it.reference, depth, o.id
+                        ),
+                        None,
+                        Some(depth),
+                    )?,
+                    &mut hard,
+                    &mut soft,
+                );
             }
         }
     }
@@ -473,17 +557,21 @@ pub fn check_layout(
         let zone = sp.rect();
         for p in &placed {
             if p.rect.overlaps(&zone) {
-                hard.push(Violation {
-                    rule: "R2".into(),
-                    severity: Severity::Hart,
-                    item: Some(p.it.reference.clone()),
-                    message: format!(
-                        "\"{}\" steht im Tuerschwenkbereich von {}",
-                        p.it.reference, o.id
-                    ),
-                    measured: None,
-                    required: None,
-                });
+                einsortieren(
+                    haus_regel(
+                        rules,
+                        "R2",
+                        Some(p.it.reference.clone()),
+                        format!(
+                            "\"{}\" steht im Tuerschwenkbereich von {}",
+                            p.it.reference, o.id
+                        ),
+                        None,
+                        None,
+                    )?,
+                    &mut hard,
+                    &mut soft,
+                );
             }
         }
     }
@@ -498,17 +586,21 @@ pub fn check_layout(
         let zone = anlauf_rect(&f.rect(), zone_decl.seite, depth);
         for p in &placed {
             if p.rect.overlaps(&zone) {
-                hard.push(Violation {
-                    rule: "R7".into(),
-                    severity: Severity::Hart,
-                    item: Some(p.it.reference.clone()),
-                    message: format!(
-                        "\"{}\" blockiert die {} cm Anlaufzone von {}",
-                        p.it.reference, depth, f.id
-                    ),
-                    measured: None,
-                    required: Some(depth),
-                });
+                einsortieren(
+                    haus_regel(
+                        rules,
+                        "R7",
+                        Some(p.it.reference.clone()),
+                        format!(
+                            "\"{}\" blockiert die {} cm Anlaufzone von {}",
+                            p.it.reference, depth, f.id
+                        ),
+                        None,
+                        Some(depth),
+                    )?,
+                    &mut hard,
+                    &mut soft,
+                );
             }
         }
     }
@@ -527,17 +619,21 @@ pub fn check_layout(
     for p in &placed {
         if let Some(h) = p.h {
             if h > lc.max_hoehe && p.rect.overlaps(&corridor) {
-                soft.push(Violation {
-                    rule: "R3".into(),
-                    severity: Severity::Weich,
-                    item: Some(p.it.reference.clone()),
-                    message: format!(
-                        "\"{}\" ist {} cm hoch im Lichtkorridor (max {}); dieser Raum hat eine Fensterwand",
-                        p.it.reference, h, lc.max_hoehe
-                    ),
-                    measured: Some(h),
-                    required: Some(lc.max_hoehe),
-                });
+                einsortieren(
+                    haus_regel(
+                        rules,
+                        "R3",
+                        Some(p.it.reference.clone()),
+                        format!(
+                            "\"{}\" ist {} cm hoch im Lichtkorridor (max {}); dieser Raum hat eine Fensterwand",
+                            p.it.reference, h, lc.max_hoehe
+                        ),
+                        Some(h),
+                        Some(lc.max_hoehe),
+                    )?,
+                    &mut hard,
+                    &mut soft,
+                );
             }
         }
     }
@@ -552,14 +648,18 @@ pub fn check_layout(
             let band = approach_rect(&seg, 20);
             for p in placed.iter().filter(|p| p.kind == Kind::Bed) {
                 if p.rect.overlaps(&band) {
-                    soft.push(Violation {
-                        rule: "R4".into(),
-                        severity: Severity::Weich,
-                        item: Some(p.it.reference.clone()),
-                        message: "Bett beruehrt die Verglasung (Kaelte, Zug, keine Privatsphaere zur Terrasse)".into(),
-                        measured: None,
-                        required: None,
-                    });
+                    einsortieren(
+                        haus_regel(
+                            rules,
+                            "R4",
+                            Some(p.it.reference.clone()),
+                            "Bett beruehrt die Verglasung (Kaelte, Zug, keine Privatsphaere zur Terrasse)".into(),
+                            None,
+                            None,
+                        )?,
+                        &mut hard,
+                        &mut soft,
+                    );
                 }
             }
         }
@@ -596,6 +696,7 @@ pub fn check_layout(
                             "Bett hat {} cm an seiner besten Laengsseite, braucht {}",
                             depths[0], want
                         ),
+                        text: None,
                         measured: Some(depths[0]),
                         required: Some(want),
                     });
@@ -609,6 +710,7 @@ pub fn check_layout(
                             "Bett hat {} cm an seiner zweiten Laengsseite, braucht {}",
                             depths[1], second
                         ),
+                        text: None,
                         measured: Some(depths[1]),
                         required: Some(second),
                     });
@@ -626,6 +728,7 @@ pub fn check_layout(
                         rule: "stuhlzone".into(), severity: Severity::Hart,
                         item: Some(p.it.reference.clone()),
                         message: format!("Schreibtisch hat {} cm fuer den Stuhl an seiner besten Seite, braucht {}", best, want),
+                        text: None,
                         measured: Some(best), required: Some(want),
                     });
                 }
@@ -646,6 +749,7 @@ pub fn check_layout(
                             "Schrank hat {} cm zum Tueroeffnen, braucht {}",
                             best, want
                         ),
+                        text: None,
                         measured: Some(best),
                         required: Some(want),
                     });
@@ -668,12 +772,21 @@ pub fn check_layout(
                         .max()
                         .unwrap_or(0);
                     if best < want {
-                        hard.push(Violation {
-                            rule: "couch_ausklappen".into(), severity: Severity::Hart,
-                            item: Some(p.it.reference.clone()),
-                            message: format!("Couch hat {} cm zum Ausklappen an ihrer besten Laengsseite, braucht {} — sie soll dafuer nicht verschoben werden", best, want),
-                            measured: Some(best), required: Some(want),
-                        });
+                        // Bis 2026-08-31 hiess dieser Verstoss `couch_ausklappen`, waehrend
+                        // jede rules.toml dieselbe Regel als R8 fuehrte. Zwei Namen fuer eine
+                        // Regel, und der Bericht nannte den, den die Wohnung nicht kannte.
+                        einsortieren(
+                            haus_regel(
+                                rules,
+                                "R8",
+                                Some(p.it.reference.clone()),
+                                format!("Couch hat {} cm zum Ausklappen an ihrer besten Laengsseite, braucht {} — sie soll dafuer nicht verschoben werden", best, want),
+                                Some(best),
+                                Some(want),
+                            )?,
+                            &mut hard,
+                            &mut soft,
+                        );
                     }
                 }
             }
@@ -693,6 +806,7 @@ pub fn check_layout(
                         rule: "stuhl_ausziehen".into(), severity: Severity::Hart,
                         item: Some(p.it.reference.clone()),
                         message: format!("Tisch hat {} cm zum Stuhlherausziehen an seiner besten Seite, braucht {}", best, want),
+                        text: None,
                         measured: Some(best), required: Some(want),
                     });
                 } else if seats < 2 {
@@ -700,6 +814,7 @@ pub fn check_layout(
                         rule: "stuhl_ausziehen".into(), severity: Severity::Weich,
                         item: Some(p.it.reference.clone()),
                         message: format!("Tisch bietet {} Sitzplatz — nur eine Seite hat die {} cm, die ein Stuhl braucht", seats, want),
+                        text: None,
                         measured: Some(seats as i32), required: Some(2),
                     });
                 }
@@ -720,6 +835,7 @@ pub fn check_layout(
                             severity: Severity::Weich,
                             item: Some(p.it.reference.clone()),
                             message: format!("Couchtisch steht {} cm vom Sofa, will {}", gap, want),
+                            text: None,
                             measured: Some(gap),
                             required: Some(want),
                         });
@@ -787,6 +903,7 @@ pub fn check_layout(
                 severity: Severity::Hart,
                 item: None,
                 message: format!("gar kein begehbarer Weg von {} nach {}", from, to),
+                text: None,
                 measured: None,
                 required: Some(rules.laufwege.haupt_min),
             }),
@@ -798,6 +915,7 @@ pub fn check_layout(
                     "Route {} → {} schnuert auf {} cm ein, unter dem Minimum von {} cm",
                     from, to, w, rules.laufwege.haupt_min
                 ),
+                text: None,
                 measured: Some(w),
                 required: Some(rules.laufwege.haupt_min),
             }),
@@ -809,6 +927,7 @@ pub fn check_layout(
                     "Route {} → {} schnuert auf {} cm ein, unter dem Ziel von {} cm",
                     from, to, w, rules.laufwege.haupt_soll
                 ),
+                text: None,
                 measured: Some(w),
                 required: Some(rules.laufwege.haupt_soll),
             }),
@@ -841,5 +960,13 @@ pub fn check_layout(
             free_area_m2: (grid.free_cells() as f64 * (RES * RES) as f64) / 10_000.0,
             corridors,
         },
+        nicht_geprueft: rules
+            .nicht_geprueft(REGEL_IDS)
+            .into_iter()
+            .map(|r| UngeprueteRegel {
+                rule: r.id.clone(),
+                text: r.text.clone(),
+            })
+            .collect(),
     })
 }

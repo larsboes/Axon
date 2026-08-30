@@ -234,7 +234,11 @@ fn ungemessene_masse_wandern_in_den_bericht_des_layouts_das_sie_benutzt() {
 fn kind_und_zustand_sind_zwei_tatsachen_und_nicht_eine() {
     use interior::store::{Kind, State};
     let m = model();
-    assert_eq!(m.catalogue.len(), 10);
+    // 12 seit 2026-08-31: `trenner_erklaert` und `trenner_stumm` kamen mit B31 dazu, zwei
+    // Bretter mit identischen Massen, von denen genau eines `raumtrenner = true` fuehrt. Die
+    // Zahl steht hier fest, damit ein Import, der still Zeilen verliert, an ihr auffaellt —
+    // sie mitwachsen zu lassen hiesse, die Pruefung abzuschaffen, die sie ist.
+    assert_eq!(m.catalogue.len(), 12);
     let kind = |id: &str| m.catalogue.get(id).map(|i| i.kind);
     let state = |id: &str| m.states.get(id).copied();
 

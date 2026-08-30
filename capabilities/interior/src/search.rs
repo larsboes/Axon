@@ -92,6 +92,23 @@ fn wandkontakt_cm(model: &Model, r: &Rect) -> i32 {
     n
 }
 
+/// Sagt dieses Stueck selbst, dass es frei stehen soll?
+///
+/// Die Wandsumme belohnt eine Wand im Ruecken, und ein Raumtrenner hat per Definition keine.
+/// Bis 2026-08-31 sank er deshalb in der Rangfolge — bestraft dafuer, dass er seine Aufgabe
+/// erfuellt. Er zaehlt jetzt gar nicht mit, statt mit 0 cm zu zaehlen: ein Regal quer im Raum
+/// soll die Bewertung der uebrigen Stuecke weder heben noch senken.
+///
+/// Freiwillig wie jedes Feld aus PRD Q61. Ein Stueck ohne die Angabe wird weiter an der Wand
+/// gemessen, also aendert sich kein bestehender Rang, bis jemand eine Zeile fuellt.
+fn ist_raumtrenner(model: &Model, reference: &str) -> bool {
+    model
+        .catalogue
+        .get(reference)
+        .and_then(|i| i.raumtrenner)
+        .unwrap_or(false)
+}
+
 fn inside_room(model: &Model, r: &Rect) -> bool {
     let poly = &model.room.hauptraum.polygon;
     let xs = [r.x + 1, r.x + r.w / 2, r.right() - 1];
@@ -226,6 +243,7 @@ pub fn search(model: &Model, base: &Layout, spec: &Spec) -> Result<SearchReport,
                 bottleneck_cm: bottleneck,
                 wandkontakt_cm: combo
                     .iter()
+                    .filter(|(reference, _, _)| !ist_raumtrenner(model, reference))
                     .map(|(_, _, rect)| wandkontakt_cm(model, rect))
                     .sum(),
             })

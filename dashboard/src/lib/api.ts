@@ -513,8 +513,22 @@ export interface InteriorViolation {
   severity: 'hart' | 'weich';
   item: string | null;
   message: string;
+  /**
+   * The rule's own wording from the flat's `rules.toml`, for a house rule (R1…R8).
+   *
+   * Absent on invariants like `kollision` or `raumgrenze`: no flat declares that two pieces
+   * may not overlap, so there is no text to quote. `message` says what this layout gets
+   * wrong; `text` says what makes it a rule at all.
+   */
+  text?: string;
   measured: number | null;
   required: number | null;
+}
+
+/** A rule the flat declares and the engine does not check. */
+export interface InteriorUncheckedRule {
+  rule: string;
+  text: string;
 }
 
 export interface InteriorLayoutSummary {
@@ -536,6 +550,14 @@ export interface InteriorLayoutDetail {
     hard: InteriorViolation[];
     soft: InteriorViolation[];
     uncertainties: { reference: string; label: string; fields: string[] }[];
+    /**
+     * Declared, not measured — so "passes" means "passes the rules that were checked".
+     *
+     * The real flat declares two of these (glare at the desk, the sightline from the door to
+     * the bed). Before 2026-08-31 they fell out silently and a partial verdict read as a
+     * complete one.
+     */
+    nicht_geprueft: InteriorUncheckedRule[];
     metrics: {
       room_area_m2: number;
       occupied_area_m2: number;

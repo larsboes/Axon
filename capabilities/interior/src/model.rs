@@ -330,11 +330,42 @@ pub struct Lichtkorridor {
     pub max_hoehe: i32,
 }
 
+/// Wie schwer ein Verstoss wiegt. `hart` blockiert, `weich` warnt.
+///
+/// Steht hier und nicht in `clearance.rs`, weil die Wohnung sie deklariert und der Pruefer sie
+/// nur nachschlaegt. Bis 2026-08-31 war es umgekehrt: `clearance.rs` trug die Schwere an jeder
+/// der 21 Ausgabestellen als Literal, waehrend `rules.toml` ein `schwere`-Feld fuehrte, das
+/// nichts las. Der Modulkopf dort behauptete trotzdem "Schwere folgt rules.toml".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Hart,
+    Weich,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Regel {
     pub id: String,
     pub schwere: String,
     pub text: String,
+}
+
+impl Regel {
+    /// Die deklarierte Schwere, oder ein Fehler.
+    ///
+    /// Ein unbekanntes Wort ist absichtlich kein stillschweigendes `weich`: eine Wohnung, die
+    /// sich vertippt, bekaeme sonst eine Regel, die nie blockiert, und der Bericht saehe aus
+    /// wie einer ueber eine Wohnung, in der alles erlaubt ist.
+    pub fn severity(&self) -> Result<Severity, ModelError> {
+        match self.schwere.as_str() {
+            "hart" => Ok(Severity::Hart),
+            "weich" => Ok(Severity::Weich),
+            other => Err(ModelError::Missing(format!(
+                "rules.toml: Regel `{}` hat die Schwere `{other}` — erlaubt sind `hart` und `weich`",
+                self.id
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -354,6 +385,40 @@ impl Rules {
             .get(key)
             .copied()
             .ok_or_else(|| ModelError::Missing(format!("rules.toml kennt keinen Abstand `{key}`")))
+    }
+
+    /// Die deklarierte Regel zu einer Kennung, oder ein Fehler.
+    ///
+    /// Dieselbe Form wie `abstand`, aus demselben Grund: eine Regel, die ihren Text oder ihre
+    /// Schwere erfindet, statt sie nachzuschlagen, faellt beim Lesen auf. Der Pruefer ruft das
+    /// an jeder Stelle, an der er eine R-Kennung ausgibt — eine Kennung, die die Wohnung nicht
+    /// fuehrt, ist damit ein Fehler und kein Verstoss ohne Text.
+    pub fn regel(&self, id: &str) -> Result<&Regel, ModelError> {
+        self.regeln.iter().find(|r| r.id == id).ok_or_else(|| {
+            let bekannt: Vec<&str> = self.regeln.iter().map(|r| r.id.as_str()).collect();
+            ModelError::Missing(format!(
+                "rules.toml deklariert keine Regel `{id}` — deklariert sind: {}",
+                if bekannt.is_empty() {
+                    "keine".to_string()
+                } else {
+                    bekannt.join(", ")
+                }
+            ))
+        })
+    }
+
+    /// Deklarierte Kennungen, die diese Maschine nicht pruefen kann.
+    ///
+    /// **Kein Fehler, sondern ein Bericht.** Die reale Wohnung fuehrt R5 (Schreibtisch weder
+    /// frontal noch mit dem Ruecken zur Verglasung) und R6 (der Blick vom Eingang faellt nicht
+    /// zuerst aufs Bett) — beides Hausregeln, die hier niemand prueft. Bis 2026-08-31 fielen
+    /// sie stumm heraus, und ein Bericht ohne sie sah aus wie ein vollstaendiger. Er nennt sie
+    /// jetzt, damit die Luecke sichtbar bleibt, statt sich als Bestehen auszugeben.
+    pub fn nicht_geprueft(&self, geprueft: &[&str]) -> Vec<&Regel> {
+        self.regeln
+            .iter()
+            .filter(|r| !geprueft.contains(&r.id.as_str()))
+            .collect()
     }
 }
 

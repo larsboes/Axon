@@ -86,31 +86,38 @@ fn jedes_layout_faellt_gleich_aus_wie_in_der_vorlage() {
         if got.pass != want_pass {
             abweichungen.push(format!("{name}: pass {} statt {}", got.pass, want_pass));
         }
-        let want_hard = want["hard"].as_array().unwrap().len();
-        let want_soft = want["soft"].as_array().unwrap().len();
-        if got.hard.len() != want_hard {
-            abweichungen.push(format!(
-                "{name}: {} harte Verstoesse statt {} ({})",
-                got.hard.len(),
-                want_hard,
-                got.hard
-                    .iter()
-                    .map(|v| v.rule.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        if got.soft.len() != want_soft {
-            abweichungen.push(format!(
-                "{name}: {} weiche Warnungen statt {} ({})",
-                got.soft.len(),
-                want_soft,
-                got.soft
-                    .iter()
-                    .map(|v| v.rule.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+        // Kennungen und nicht nur Anzahlen, seit 2026-08-31.
+        //
+        // Die Vorlage hat die Kennungen immer aufgezeichnet und dieser Test hat sie immer
+        // weggeworfen: er verglich `hard.len()` gegen `hard.len()`. Damit war eine Umbenennung
+        // fuer ihn unsichtbar — und genau eine war passiert. Die TypeScript-Fassung meldete
+        // die Ausklappzone des Schlafsofas als **R8**, so wie jede rules.toml sie deklariert;
+        // die Rust-Portierung nannte sie `couch_ausklappen` und hat die zweite Fassung damit
+        // selbst erfunden. Zwei Verstoesse mit vertauschten Namen haetten hier bestanden.
+        let ids = |vs: &[interior::clearance::Violation]| -> Vec<String> {
+            let mut v: Vec<String> = vs.iter().map(|x| x.rule.clone()).collect();
+            v.sort();
+            v
+        };
+        let want_ids = |key: &str| -> Vec<String> {
+            let mut v: Vec<String> = want[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x["rule"].as_str().unwrap().to_string())
+                .collect();
+            v.sort();
+            v
+        };
+        for (key, got_v) in [("hard", &got.hard), ("soft", &got.soft)] {
+            let (a, b) = (ids(got_v), want_ids(key));
+            if a != b {
+                abweichungen.push(format!(
+                    "{name}: {key} meldet [{}] statt [{}]",
+                    a.join(", "),
+                    b.join(", ")
+                ));
+            }
         }
         // Die Korridorbreiten sind die empfindlichste Zahl im ganzen System: sie haengen an
         // Raster, Distanzfeld und Wegsuche zugleich. Stimmen sie, stimmt der Kern.

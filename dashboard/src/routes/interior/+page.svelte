@@ -177,16 +177,36 @@
           {#if detail.check.hard.length > 0}
             <ul class="violations hard">
               {#each detail.check.hard as v, i (v.rule + i)}
-                <li><span class="rule mono">{v.rule}</span> {v.message}</li>
+                <li>
+                  <span class="rule mono">{v.rule}</span>
+                  {v.message}
+                  {#if v.text}<span class="rule-text">{v.text}</span>{/if}
+                </li>
               {/each}
             </ul>
           {/if}
           {#if detail.check.soft.length > 0}
             <ul class="violations soft">
               {#each detail.check.soft as v, i (v.rule + i)}
-                <li><span class="rule mono">{v.rule}</span> {v.message}</li>
+                <li>
+                  <span class="rule mono">{v.rule}</span>
+                  {v.message}
+                  {#if v.text}<span class="rule-text">{v.text}</span>{/if}
+                </li>
               {/each}
             </ul>
+          {/if}
+          <!--
+            Declared and not measured. Shown on a passing layout too, and that is the point:
+            "passes" means "passes the rules that were checked", and this is the difference
+            between the two. It was invisible until 2026-08-31.
+          -->
+          {#if detail.check.nicht_geprueft.length > 0}
+            <p class="unchecked">
+              <Icon name="alert" size={14} />
+              Declared by this flat, not measured here:
+              {detail.check.nicht_geprueft.map((r) => `${r.rule} — ${r.text}`).join(" · ")}
+            </p>
           {/if}
           {#if detail.check.uncertainties.length > 0}
             <p class="guessed">
@@ -447,8 +467,18 @@
     margin-right: 0.4rem;
   }
 
+  /* The rule's own wording, under the violation it explains. Quiet: the reader came for what
+     is wrong, and stays for why it counts as wrong. */
+  .rule-text {
+    color: var(--text-tertiary);
+    display: block;
+    font-size: 0.75rem;
+    margin-top: 0.15rem;
+  }
+
   .guessed,
-  .caveat {
+  .caveat,
+  .unchecked {
     align-items: center;
     color: var(--warning);
     display: flex;
