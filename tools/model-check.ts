@@ -34,6 +34,7 @@ interface Backend {
 interface Role {
   backend?: string;
   model?: string;
+  max_requests_per_day?: number;
 }
 interface InferenceConfig {
   backends?: Record<string, Backend>;
@@ -46,6 +47,10 @@ const PROBE = process.argv.includes("--probe");
 // It implies probing, because on loopback a probe is free and "is it listed" without "does it
 // answer" is the weaker half of the question a stopped server makes urgent.
 const LOCAL_ONLY = process.argv.includes("--local");
+/// Set by whichever probe last read a stated quota out of a refusal, consumed immediately after
+/// by the role loop. A slot rather than a return value because both probes already answer with
+/// the operator-facing string and this is the one extra fact either can learn.
+let lastStatedQuota: number | undefined;
 const JSON_OUT = process.argv.includes("--json");
 
 function isLoopback(backend: Backend): boolean {
@@ -150,12 +155,14 @@ async function catalogue(backend: Backend, key?: string): Promise<string[] | str
 /// long as the role had been wrong, in `error.details[].violations[].quotaValue`. Cloudflare
 /// meters something else entirely and says so differently, hence the fallback to a short excerpt
 /// rather than a second provider-shaped parser.
-async function refusalDetail(response: Response): Promise<string> {
+async function refusalDetail(
+  response: Response,
+): Promise<{ text: string; statedQuota?: number }> {
   let raw: string;
   try {
     raw = await response.text();
   } catch {
-    return "";
+    return { text: "" };
   }
   try {
     const parsed = JSON.parse(raw);
@@ -164,15 +171,38 @@ async function refusalDetail(response: Response): Promise<string> {
       for (const violation of detail?.violations ?? []) {
         if (violation?.quotaValue !== undefined) {
           const id = violation.quotaId ? ` (${violation.quotaId})` : "";
-          return `provider states a quota of ${violation.quotaValue}${id}`;
+          const value = Number(violation.quotaValue);
+          return {
+            text: `provider states a quota of ${violation.quotaValue}${id}`,
+            statedQuota: Number.isFinite(value) ? value : undefined,
+          };
         }
       }
     }
-    if (typeof error?.message === "string") return error.message.slice(0, 120);
+    if (typeof error?.message === "string") {
+      return { text: error.message.slice(0, 120) };
+    }
   } catch {
     // Not JSON, or not a shape we know. The excerpt is still worth more than the bare status.
   }
-  return raw.replace(/\s+/g, " ").trim().slice(0, 120);
+  return { text: raw.replace(/\s+/g, " ").trim().slice(0, 120) };
+}
+
+/// The declared ceiling, checked against the one the provider just named.
+///
+/// `max_requests_per_day` is a LOCAL guard, so above the provider's real limit it guards
+/// nothing -- and community directories are exactly where a wrong one comes from. The two lists
+/// consulted on 2026-08-30 both put Groq at 14,400/day where Groq's own docs say 1,000 per model,
+/// and both put Gemini in the thousands where the provider itself answers 20. Discovery is what
+/// those lists are for; the number has to come from here.
+let statedQuotaBreaches = 0;
+function reportQuotaMismatch(roleName: string, declared: number | undefined, stated: number) {
+  if (declared === undefined || declared <= stated) return;
+  statedQuotaBreaches += 1;
+  say(
+    `  ! ${roleName} declares max_requests_per_day ${declared}, provider states ${stated} ` +
+      `— the local guard is above the real ceiling and stops guarding`,
+  );
 }
 
 async function probeEmbedding(
@@ -195,7 +225,8 @@ async function probeEmbedding(
     });
     if (!response.ok) {
       const said = await refusalDetail(response);
-      return `answers HTTP ${response.status}${said ? ` — ${said}` : ""}`;
+      if (said.statedQuota !== undefined) lastStatedQuota = said.statedQuota;
+      return `answers HTTP ${response.status}${said.text ? ` — ${said.text}` : ""}`;
     }
     const body = await response.json();
     const vector = ollama ? body?.embeddings?.[0] : body?.data?.[0]?.embedding;
@@ -233,7 +264,8 @@ async function probe(backend: Backend, model: string, key?: string): Promise<str
     });
     if (!response.ok) {
       const said = await refusalDetail(response);
-      return `answers HTTP ${response.status}${said ? ` — ${said}` : ""}`;
+      if (said.statedQuota !== undefined) lastStatedQuota = said.statedQuota;
+      return `answers HTTP ${response.status}${said.text ? ` — ${said.text}` : ""}`;
     }
     const body = await response.json();
     return body?.choices?.[0]?.message ? "answers" : "answered without a message";
@@ -281,8 +313,14 @@ for (const [roleName, role] of roles) {
   // for the retrieval rung -- so the name is the existing contract for what a role is, and the
   // right question to ask it follows from that rather than from a new field.
   const asksForAVector = /(^|_)embedding(_|$)/.test(roleName);
-  const ask = () =>
-    (asksForAVector ? probeEmbedding : probe)(backend, model, key);
+  const ask = async () => {
+    lastStatedQuota = undefined;
+    const reply = await (asksForAVector ? probeEmbedding : probe)(backend, model, key);
+    if (lastStatedQuota !== undefined) {
+      reportQuotaMismatch(roleName, role.max_requests_per_day, lastStatedQuota);
+    }
+    return reply;
+  };
   const answered = (reply: string) =>
     reply === "answers" || reply.startsWith("answers (");
 
@@ -349,6 +387,7 @@ if (JSON_OUT) {
     JSON.stringify({
       scope: LOCAL_ONLY ? "loopback" : "all",
       entries,
+      stated_quota_breaches: statedQuotaBreaches,
       totals: {
         count: entries.length,
         ok: entries.filter((e) => e.status === "ok").length,
@@ -363,7 +402,10 @@ if (JSON_OUT) {
   console.log(
     `\n${roles.length} role(s) checked${LOCAL_ONLY ? " on loopback" : ""}` +
       `${probed ? ", each probed" : " (pass --probe to ask each one to answer)"}` +
-      `, ${failures} naming a model its backend does not list`,
+      `, ${failures} naming a model its backend does not list` +
+      (statedQuotaBreaches
+        ? `, ${statedQuotaBreaches} declaring a daily ceiling above the provider's own`
+        : ""),
   );
 }
 if (failures > 0) process.exit(1);
