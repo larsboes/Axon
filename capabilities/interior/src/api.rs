@@ -48,6 +48,11 @@ const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
     r(
         "POST",
+        "/api/layouts/:name/preview",
+        "Verdikt und Plan zu einer Aufstellung, ohne sie zu schreiben. Fuers Drehen noetig.",
+    ),
+    r(
+        "POST",
         "/api/layouts",
         "Ein neues Layout anlegen. Ueberschreibt nie ein bestehendes.",
     ),
@@ -569,6 +574,34 @@ async fn api_put_layout(
     ))
 }
 
+/// Wie ein Layout AUSSAEHE und ausfiele, ohne es zu schreiben.
+///
+/// Verschieben kann die Oberflaeche selbst zeichnen: eine Verschiebung ist eine Translation und
+/// aendert an der Grundflaeche nichts. **Drehen kann sie nicht** — bei 90 Grad tauschen Breite
+/// und Tiefe, und `opens` und `expands_dir` drehen mit. Das im Browser nachzubauen waere eine
+/// zweite Fassung von `footprint` und `Seite::gedreht`, also genau die Doppelung, gegen die
+/// diese Capability existiert. Sie fragt stattdessen hier nach.
+async fn api_preview_layout(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<LayoutBody>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    let vorlage = model
+        .load_layout(&id)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let l = crate::model::Layout {
+        name: vorlage.name,
+        items: body.items,
+        id: id.clone(),
+    };
+    let r = check_layout(&model, &l).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let svg = plan::svg(&model, &l).map_err(boom)?;
+    Ok(Json(
+        serde_json::json!({ "layout": l, "check": r, "svg": svg }),
+    ))
+}
+
 /// Ein neues Layout anlegen. Ueberschreibt nie ein bestehendes.
 async fn api_post_layout(
     State(s): State<Arc<AppState>>,
@@ -652,6 +685,7 @@ pub async fn serve(flat: &str, port: u16) {
         .route("/api/model", get(api_model))
         .route("/api/layouts", get(api_layouts).post(api_post_layout))
         .route("/api/layouts/:name", get(api_layout).put(api_put_layout))
+        .route("/api/layouts/:name/preview", post(api_preview_layout))
         .route("/api/placements", put(api_put_placements))
         .route("/api/flats", get(api_flats))
         .route("/api/inventory", get(api_inventory))

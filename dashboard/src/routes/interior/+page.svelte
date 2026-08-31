@@ -104,6 +104,7 @@
       const svg = g.ownerSVGElement;
       if (!svg) return;
       active = g;
+      picked = g.dataset.ref ?? null;
       dragging = true;
       const p = toModel(svg, e.clientX, e.clientY);
       startX = p.x;
@@ -152,6 +153,61 @@
   }
 
   let planRoot = $state<HTMLElement | null>(null);
+  let picked = $state<string | null>(null);
+
+  // The SVG is replaced wholesale on every re-render, so the highlight is reapplied rather than
+  // kept — there is no element to keep it on.
+  $effect(() => {
+    if (!planRoot) return;
+    const want = picked;
+    for (const g of planRoot.querySelectorAll<SVGGElement>("g[data-ref]")) {
+      g.classList.toggle("picked", g.dataset.ref === want);
+    }
+  });
+
+  function onKey(e: KeyboardEvent): void {
+    const target = e.target as HTMLElement | null;
+    if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+    if (e.key === "r" || e.key === "R") {
+      e.preventDefault();
+      void rotatePicked();
+    }
+    if (e.key === "Escape") picked = null;
+  }
+
+  /**
+   * Turn the selected piece by 90°.
+   *
+   * Only multiples of 90 exist: `footprint` swaps width and depth near 90°, and
+   * `Seite::gedreht` refuses anything else outright rather than round it a second way. The new
+   * position keeps the piece's CENTRE, because rotating about a corner is not what anyone means
+   * by turning a wardrobe — the capability re-renders, so the swapped footprint is its answer
+   * and not ours.
+   */
+  async function rotatePicked(): Promise<void> {
+    if (!planRoot || picked === null || selected === null) return;
+    const items = itemsFromPlan(planRoot).map((it) => {
+      if (it.ref !== picked) return it;
+      const g = planRoot!.querySelector<SVGGElement>(`g[data-ref="${CSS.escape(it.ref)}"]`);
+      const w = Number(g?.dataset.w ?? 0);
+      const d = Number(g?.dataset.d ?? 0);
+      const cx = it.x + w / 2;
+      const cy = it.y + d / 2;
+      const snap = (v: number) => Math.round(v / SNAP) * SNAP;
+      // After the turn the footprint is swapped, so the centre implies a new top-left.
+      return { ...it, rot: (it.rot + 90) % 360, x: snap(cx - d / 2), y: snap(cy - w / 2) };
+    });
+    savingPlan = true;
+    planError = null;
+    try {
+      detail = await interior.previewLayout(selected, items);
+      dirty = true;
+    } catch (caught) {
+      planError = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      savingPlan = false;
+    }
+  }
 
   async function savePlan(): Promise<void> {
     if (!planRoot || selected === null) return;
@@ -452,6 +508,8 @@
   });
 </script>
 
+<svelte:window onkeydown={onKey} />
+
 <PageHeader
   badge="Interior"
   title="Rooms and what stands in them"
@@ -513,6 +571,9 @@
             <div class="svg" class:dragging bind:this={planRoot} use:draggable>{@html detail.svg}</div>
           {/key}
           <div class="planbar">
+            <button class="ghost" disabled={picked === null || savingPlan} onclick={rotatePicked}>
+              {picked === null ? "Rotate (pick a piece)" : `Rotate ${picked} 90°`}
+            </button>
             {#if dirty}<span class="moved">moved — not saved</span>{/if}
             <button class="ghost" disabled={!dirty || savingPlan} onclick={savePlan}>
               {savingPlan ? "Saving…" : "Save into this layout"}
@@ -1042,6 +1103,11 @@
 
   .plan .svg :global(g[data-ref]:hover rect) {
     stroke: var(--primary);
+  }
+
+  .plan .svg :global(g[data-ref].picked rect) {
+    stroke: var(--primary);
+    stroke-width: 6;
   }
 
   .planbar {

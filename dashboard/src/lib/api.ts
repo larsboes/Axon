@@ -683,6 +683,19 @@ export const interior = {
       jsonInit('PUT', { items }),
     ),
 
+  /**
+   * Verdict and plan for an arrangement, without writing it.
+   *
+   * Needed for rotation: at 90° width and depth swap, and `opens`/`expands_dir` turn with the
+   * piece. Rebuilding that in the browser would be a second copy of `footprint` and
+   * `Seite::gedreht` — so the page asks instead of guessing.
+   */
+  previewLayout: (id: string, items: InteriorPlacedItem[]) =>
+    request<InteriorLayoutDetail>(
+      `/interior/api/layouts/${encodeURIComponent(id)}/preview`,
+      jsonInit('POST', { items }),
+    ),
+
   /** Create a layout. Never overwrites an existing one. */
   createLayout: (id: string, name: string, items: InteriorPlacedItem[], notiz?: string) =>
     request<{ id: string; check: unknown }>(

@@ -361,3 +361,45 @@ fn eine_fehlende_messung_macht_die_regel_ungeprueft_statt_still() {
         );
     }
 }
+
+/// Drehen dreht mit, was ein Stueck von sich aus verlangt.
+///
+/// `opens` steht in der Ausrichtung des Stuecks, nicht des Raums, und `Seite::gedreht` fuehrt es
+/// mit. Genau das konnte die Namensfassung nicht sehen: ein Schrank mit den Tueren zur Wand ist
+/// kein gedrehter Schrank, sondern ein unbenutzbarer (PRD B26).
+///
+/// Dieselbe Ecke, vier Drehungen, ein Stueck. Nach Sueden und Osten oeffnet es in den Raum,
+/// nach Westen und Norden gegen die Waende bei x = 0 und y = 0.
+#[test]
+fn eine_drehung_dreht_die_oeffnende_seite_mit() {
+    use interior::model::{Layout, PlacedItem};
+    let m = variante("drehung", &[]);
+
+    let verdikt = |rot: i32| -> (bool, Vec<String>) {
+        let l = Layout {
+            name: "Drehprobe".into(),
+            id: String::new(),
+            items: vec![PlacedItem {
+                reference: "kleiderschrank".into(),
+                x: 0,
+                y: 0,
+                rot,
+                size: None,
+                kind: None,
+            }],
+        };
+        let r = check_layout(&m, &l).expect("Pruefung");
+        (r.pass, r.hard.iter().map(|v| v.rule.clone()).collect())
+    };
+
+    assert!(verdikt(0).0, "Tueren nach Sueden: oeffnet in den Raum");
+    assert!(verdikt(270).0, "Tueren nach Osten: oeffnet in den Raum");
+
+    let (pass, regeln) = verdikt(90);
+    assert!(!pass, "Tueren nach Westen: gegen die Wand bei x = 0");
+    assert!(regeln.contains(&"oeffnen".to_string()), "{regeln:?}");
+
+    let (pass, regeln) = verdikt(180);
+    assert!(!pass, "Tueren nach Norden: gegen die Wand bei y = 0");
+    assert!(regeln.contains(&"oeffnen".to_string()), "{regeln:?}");
+}
