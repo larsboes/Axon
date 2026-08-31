@@ -108,6 +108,9 @@ struct Roh {
     /// `raumtrenner = true` — dieses Stueck soll frei stehen und teilt den Raum.
     #[serde(default)]
     raumtrenner: Option<bool>,
+    /// Pfad unterhalb von `media/`.
+    #[serde(default)]
+    bild: Option<String>,
 }
 
 /// `expands = { dir = "sued", to = 145 }` — die Gesamttiefe ausgeklappt, nicht der Zuwachs.
@@ -185,6 +188,7 @@ impl Roh {
             access_sides: self.access_sides,
             access_clear: self.access_clear,
             raumtrenner: self.raumtrenner,
+            bild: self.bild,
         }
     }
 }

@@ -365,11 +365,12 @@
     access_sides: string | number;
     access_clear: string | number;
     raumtrenner: boolean;
+    bild: string;
   };
   let draft = $state<Draft>({
     label: "", b: "", t: "", h: "", preis_cent: "", prioritaet: "", hinweis: "",
     begruendung: "", opens: "", open_clear: "", wall_ok: "", access_sides: "",
-    access_clear: "", raumtrenner: false,
+    access_clear: "", raumtrenner: false, bild: "",
   });
   let impact = $state<InteriorImpact | null>(null);
   let impactBusy = $state(false);
@@ -423,6 +424,7 @@
       access_sides: i.access_sides ?? "",
       access_clear: i.access_clear ?? "",
       raumtrenner: i.raumtrenner ?? false,
+      bild: i.bild ?? "",
     };
     history = [];
     try {
@@ -455,6 +457,7 @@
     put("access_sides", num(draft.access_sides), i.access_sides);
     put("access_clear", num(draft.access_clear), i.access_clear);
     put("raumtrenner", draft.raumtrenner ? true : null, i.raumtrenner);
+    put("bild", String(draft.bild ?? "").trim() || null, i.bild);
     return out;
   }
 
@@ -790,6 +793,9 @@
             {#if i.prioritaet}<span class="tag">{i.prioritaet}</span>{/if}
             {#if i.kind === "slot"}<span class="tag slot">slot</span>{/if}
           </div>
+          {#if i.bild}
+            <img class="shot" src={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
+          {/if}
           <span class="dims mono">{size(i)}</span>
           <span class="price mono">
             {#if floorPrice(i) === null}
@@ -823,6 +829,9 @@
           <span class="label">{i.label}</span>
           {#if i.mitnahme}<span class="tag">{i.mitnahme}</span>{/if}
         </div>
+        {#if i.bild}
+          <img class="shot" src={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
+        {/if}
         <span class="dims mono">{size(i)}</span>
         {#if i.unsicher.length > 0}
           <span class="guess" title="measured? no.">~ {i.unsicher.join(", ")}</span>
@@ -860,6 +869,16 @@
         <label>priority <input bind:value={draft.prioritaet} /></label>
       </div>
 
+      <label class="wide">
+        picture <input bind:value={draft.bild} placeholder="produkt/…-01-….png" />
+      </label>
+      <p class="note">
+        A path below the overlay's <code>media/</code> directory. Kept out of the bundle and
+        fetched only when shown.
+      </p>
+      {#if draft.bild}
+        <img class="shot big" src={interior.mediaUrl(String(draft.bild))} alt="" />
+      {/if}
       <label class="wide">note <textarea rows="2" bind:value={draft.hinweis}></textarea></label>
       <label class="wide">reasoning <textarea rows="2" bind:value={draft.begruendung}></textarea></label>
 
@@ -1397,6 +1416,21 @@
 
   .history .why {
     color: var(--text-secondary);
+  }
+
+  .shot {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: block;
+    margin: 0.4rem 0;
+    max-height: 8rem;
+    object-fit: cover;
+    width: 100%;
+  }
+
+  .shot.big {
+    max-height: 18rem;
+    object-fit: contain;
   }
 
   .declares {

@@ -122,6 +122,16 @@ pub struct Item {
     pub access_sides: Option<i32>,
     /// Wie tief eine solche Seite sein muss, in cm.
     pub access_clear: Option<i32>,
+    /// Ein Bild zu diesem Stueck, als Pfad UNTERHALB von `<overlay>/data/interior/media/`.
+    ///
+    /// Nur der relative Pfad, nie ein absoluter: die Zeilen liegen in der geteilten Datenbank
+    /// und beschreiben ein Moebel, nicht diese Maschine. Wo `media/` liegt, weiss
+    /// `axon_config::overlay_data_dir` und sonst niemand.
+    ///
+    /// Ausgeliefert wird es ueber `GET /api/media/*pfad` und nur auf Anfrage — service.toml
+    /// nennt genau das als Grund, warum diese Capability oeffentlich stehen darf: im Bundle
+    /// steckt kein Foto.
+    pub bild: Option<String>,
     /// Dieses Stueck soll frei im Raum stehen und teilt ihn.
     ///
     /// Betrifft nur die **Rangfolge** der Suche, nie ein Verdikt: `search::wandkontakt_cm`
@@ -305,6 +315,7 @@ impl Store {
                 access_sides       INTEGER,
                 access_clear       INTEGER,
                 raumtrenner        INTEGER,
+                bild               TEXT,
                 created_at         TEXT NOT NULL,
                 updated_at         TEXT NOT NULL
             );
@@ -333,6 +344,7 @@ impl Store {
             prefix = prefix
         ))?;
         Self::add_column_if_missing(conn, prefix, "raumtrenner", "INTEGER")?;
+        Self::add_column_if_missing(conn, prefix, "bild", "TEXT")?;
         Ok(())
     }
 
@@ -386,14 +398,14 @@ impl Store {
                     quelle, gemessen_am, mitnahme, prioritaet, basiert_auf, ersetzt,
                     varianten, ziel, hinweis, begruendung, entscheidung_offen,
                     opens, open_clear, wall_ok, expands_dir, expands_to,
-                    access_sides, access_clear, raumtrenner, created_at, updated_at
+                    access_sides, access_clear, raumtrenner, bild, created_at, updated_at
                  ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                     ?11, ?12, ?13, ?14, ?15,
                     ?16, ?17, ?18, ?19, ?20,
                     ?21, ?22, ?23, ?24, ?25, ?26,
                     ?27, ?28, ?29, ?30, ?31,
-                    ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, {now}, {now}
+                    ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, {now}, {now}
                  )
                  ON CONFLICT(id) DO UPDATE SET
                     kind=excluded.kind, label=excluded.label, b=excluded.b, t=excluded.t,
@@ -418,7 +430,7 @@ impl Store {
                     wall_ok=excluded.wall_ok, expands_dir=excluded.expands_dir,
                     expands_to=excluded.expands_to, access_sides=excluded.access_sides,
                     access_clear=excluded.access_clear,
-                    raumtrenner=excluded.raumtrenner,
+                    raumtrenner=excluded.raumtrenner, bild=excluded.bild,
                     updated_at={now}",
                 p = p,
                 now = axon_store::now_offset("'+0 seconds'")
@@ -463,6 +475,7 @@ impl Store {
                 it.access_sides,
                 it.access_clear,
                 it.raumtrenner,
+                it.bild,
             ],
         )?;
         Ok(())
@@ -601,7 +614,7 @@ impl Store {
                     i.mitnahme, i.prioritaet, i.basiert_auf, i.ersetzt, i.varianten, i.ziel,
                     i.hinweis, i.begruendung, i.entscheidung_offen,
                     i.opens, i.open_clear, i.wall_ok, i.expands_dir, i.expands_to,
-                    i.access_sides, i.access_clear, i.raumtrenner,
+                    i.access_sides, i.access_clear, i.raumtrenner, i.bild,
                     (SELECT s.state FROM {p}_item_state s
                       WHERE s.item_id = i.id ORDER BY s.since DESC, s.id DESC LIMIT 1)
              FROM {p}_item i ORDER BY i.id"
@@ -614,7 +627,7 @@ impl Store {
                     .as_deref()
                     .and_then(Seite::parse))
             };
-            let state: Option<String> = row.get(39)?;
+            let state: Option<String> = row.get(40)?;
             Ok((
                 Item {
                     id: row.get(0)?,
@@ -656,6 +669,7 @@ impl Store {
                     access_sides: row.get(36)?,
                     access_clear: row.get(37)?,
                     raumtrenner: row.get(38)?,
+                    bild: row.get(39)?,
                 },
                 state.as_deref().and_then(State::parse),
             ))

@@ -524,6 +524,13 @@ export interface InteriorItem {
   access_clear: number | null;
   /** Meant to stand free. Affects the search ranking only, never a verdict. */
   raumtrenner: boolean | null;
+  /**
+   * A picture of this piece, as a path below the overlay's `media/` directory.
+   *
+   * Served by `GET /interior/api/media/<path>` on request only — the reason the capability may
+   * sit in a public repository is that the bundle carries no photograph.
+   */
+  bild: string | null;
 }
 
 export type InteriorState = 'owned' | 'wanted' | 'gone';
@@ -721,6 +728,10 @@ export const interior = {
       '/interior/api/placements',
       jsonInit('PUT', { items }),
     ),
+
+  /** URL for a picture stored in the overlay. Nothing is embedded; it is fetched when shown. */
+  mediaUrl: (path: string) =>
+    `/interior/api/media/${path.split('/').map(encodeURIComponent).join('/')}`,
 
   impact: (id: string, patch: Partial<InteriorItem>) =>
     request<InteriorImpact>(

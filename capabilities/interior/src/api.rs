@@ -48,6 +48,11 @@ const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
     r(
         "GET",
+        "/api/media/*pfad",
+        "Ein Bild aus dem Medienverzeichnis des Overlays. Nur von dort, und nur auf Anfrage.",
+    ),
+    r(
+        "GET",
         "/api/layouts/:name/allowed",
         "Erlaubte Positionen eines Stuecks als Lauflaengen. Harte Kanten fuers Ziehen. ?ref=&rot=",
     ),
@@ -579,6 +584,51 @@ async fn api_put_layout(
     ))
 }
 
+/// Ein Bild aus `<overlay>/data/interior/media/`, auf Anfrage und nur von dort.
+///
+/// **Der Pfad kommt vom Client, also wird er aufgeloest und geprueft, nicht zusammengesetzt.**
+/// `canonicalize` beidseitig und dann ein `starts_with`: ein `..`, ein absoluter Pfad oder ein
+/// Symlink, der aus dem Verzeichnis zeigt, faellt damit auf, statt eine Datei auszuliefern, die
+/// niemand gemeint hat. Eine Pruefung auf die Zeichenfolge `..` allein waere die Fassung, die
+/// bei einem Symlink still versagt.
+///
+/// `service.toml` nennt diese Trennung als den Grund, aus dem die Capability oeffentlich stehen
+/// darf: das Bundle enthaelt kein Foto, die Dateien liegen im Overlay, und geliefert wird erst
+/// auf Anfrage.
+async fn api_media(Path(pfad): Path<String>) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let wurzel = crate::model::data_dir()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .join("media");
+    let wurzel = wurzel
+        .canonicalize()
+        .map_err(|_| (StatusCode::NOT_FOUND, "kein media-Verzeichnis".to_string()))?;
+    let ziel = wurzel
+        .join(&pfad)
+        .canonicalize()
+        .map_err(|_| (StatusCode::NOT_FOUND, format!("kein Medium `{pfad}`")))?;
+    if !ziel.starts_with(&wurzel) || !ziel.is_file() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("`{pfad}` liegt nicht unter media/"),
+        ));
+    }
+    let typ = match ziel
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        // Kein Standardtyp: was hier unbekannt ist, wird nicht geraten und nicht geliefert.
+        _ => return Err((StatusCode::UNSUPPORTED_MEDIA_TYPE, "kein Bildformat".into())),
+    };
+    let bytes = std::fs::read(&ziel).map_err(boom)?;
+    Ok(([(axum::http::header::CONTENT_TYPE, typ)], bytes))
+}
+
 /// Wo die linke obere Ecke eines Stuecks liegen darf — harte Kanten fuers Ziehen.
 ///
 /// Die Oberflaeche fragt einmal beim Aufnehmen und rastet danach auf die Liste ein. Sie
@@ -723,6 +773,7 @@ pub async fn serve(flat: &str, port: u16) {
         .route("/api/placements", put(api_put_placements))
         .route("/api/flats", get(api_flats))
         .route("/api/inventory", get(api_inventory))
+        .route("/api/media/*pfad", get(api_media))
         .route("/api/wishlist", get(api_wishlist))
         .route("/api/placements/:flat", get(api_placements))
         .route("/api/items", post(api_post_item))

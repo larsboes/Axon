@@ -156,3 +156,54 @@ fn der_test_liest_alle_drei_baeume() {
         wurzel.iter().map(|(n, _)| n).collect::<Vec<_>>()
     );
 }
+
+/// Der Medienpfad kommt vom Client, also darf er nicht aus `media/` herausfuehren.
+///
+/// Geprueft wird die Aufloesung selbst und nicht der HTTP-Weg: `canonicalize` beidseitig, dann
+/// `starts_with`. Eine Pruefung auf die Zeichenfolge `..` waere die naheliegende Fassung und die
+/// falsche — sie versagt still, sobald ein Symlink aus dem Verzeichnis zeigt, und genau das
+/// prueft der letzte Fall hier.
+#[test]
+fn ein_medienpfad_fuehrt_nicht_aus_dem_verzeichnis_heraus() {
+    let tmp = std::env::temp_dir().join(format!("interior-media-{}", std::process::id()));
+    let media = tmp.join("media");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(media.join("produkt")).expect("Testbaum");
+    std::fs::write(media.join("produkt/bild.png"), b"x").expect("Bild");
+    std::fs::write(tmp.join("geheim.txt"), b"x").expect("Datei daneben");
+
+    // Dieselbe Aufloesung, die `api_media` fuehrt.
+    let erlaubt = |pfad: &str| -> bool {
+        let wurzel = match media.canonicalize() {
+            Ok(w) => w,
+            Err(_) => return false,
+        };
+        match wurzel.join(pfad).canonicalize() {
+            Ok(ziel) => ziel.starts_with(&wurzel) && ziel.is_file(),
+            Err(_) => false,
+        }
+    };
+
+    assert!(
+        erlaubt("produkt/bild.png"),
+        "das Bild selbst wird geliefert"
+    );
+    assert!(!erlaubt("../geheim.txt"), "eine Ebene hoeher: nein");
+    assert!(
+        !erlaubt("produkt/../../geheim.txt"),
+        "ueber einen Umweg: nein"
+    );
+    assert!(!erlaubt("produkt"), "ein Verzeichnis ist keine Datei");
+
+    // Der Fall, den eine `..`-Pruefung durchliesse: ein Symlink ohne einen einzigen Punkt.
+    #[cfg(unix)]
+    {
+        let link = media.join("raus.txt");
+        std::os::unix::fs::symlink(tmp.join("geheim.txt"), &link).expect("Symlink");
+        assert!(
+            !erlaubt("raus.txt"),
+            "ein Symlink aus dem Verzeichnis heraus wird nicht geliefert"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
