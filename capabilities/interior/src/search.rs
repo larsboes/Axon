@@ -14,7 +14,7 @@
 //!     Grund, warum hier rayon steht und keine DataFrame-Bibliothek.
 
 use crate::clearance::{check_layout, CheckResult};
-use crate::geometry::point_in_polygon;
+use crate::geometry::{point_in_polygon, RES};
 use crate::model::{footprint, Layout, Model, ModelError, PlacedItem, Rect};
 use rayon::prelude::*;
 use serde::Serialize;
@@ -272,4 +272,113 @@ pub fn search(model: &Model, base: &Layout, spec: &Spec) -> Result<SearchReport,
         hits,
         elapsed_ms: t0.elapsed().as_millis(),
     })
+}
+
+/// Wo die linke obere Ecke eines Stuecks liegen DARF, als Lauflaengen je Rasterzeile.
+///
+/// Die Frage, die eine Oberflaeche beim Ziehen stellt: harte Kanten, damit ein Moebel gar nicht
+/// erst durch eine Wand geschoben werden kann, statt es hinterher als Verstoss zu melden.
+///
+/// **Warum das hier steht und nicht im Browser.** Der Hauptraum ist ein Sechseck, kein Rechteck
+/// — an einer Ecke liegt das Bad. Auf ein umschliessendes Rechteck zu klemmen wuerde ein Bett in
+/// der Kerbe abstellen, die nicht zum Raum gehoert. Richtig klemmen heisst `point_in_polygon`,
+/// und eine zweite Fassung davon in JavaScript waere die Doppelung, gegen die diese Capability
+/// existiert. Die Oberflaeche bekommt deshalb eine LISTE und rechnet nichts.
+///
+/// Hart sind Waende und was sich nicht bewegen laesst: feste Einbauten und Tuerschwenkbereiche,
+/// dieselben `blockers`, gegen die auch die Suche prueft. **Andere Moebel sind NICHT hart** —
+/// beim Umstellen muss man ein Stueck an einem anderen vorbeifuehren koennen, und eine
+/// Ueberlappung meldet `kollision` ohnehin sichtbar. Eine Kante, die das Umstellen unmoeglich
+/// macht, waere schlimmer als der Verstoss, den sie verhindert.
+pub fn allowed_positions(
+    model: &Model,
+    base: &Layout,
+    reference: &str,
+    rot: i32,
+) -> Result<AllowedPositions, ModelError> {
+    let it = base
+        .items
+        .iter()
+        .find(|i| i.reference == reference)
+        .ok_or_else(|| {
+            ModelError::Missing(format!("`{reference}` steht nicht in \"{}\"", base.name))
+        })?;
+    // Die Grundflaeche fuer die GEFRAGTE Drehung, nicht fuer die aktuelle.
+    let gedreht = PlacedItem { rot, ..it.clone() };
+    let (w, d, _) = footprint(&gedreht, &model.catalogue)?;
+
+    // Was sich NICHT bewegen laesst: feste Einbauten und Tuerschwenkbereiche. Beides steht in
+    // room.toml, beides wird hier gelesen statt abgetippt.
+    let mut sperr: Vec<Rect> = model.room.fix_moebel.iter().map(|f| f.rect()).collect();
+    sperr.extend(
+        model
+            .room
+            .oeffnungen
+            .iter()
+            .filter_map(|o| o.sperrflaeche.map(|z| z.rect())),
+    );
+
+    let poly = &model.room.hauptraum.polygon;
+    let (mut min_x, mut min_y) = (i32::MAX, i32::MAX);
+    let (mut max_x, mut max_y) = (i32::MIN, i32::MIN);
+    for p in poly {
+        min_x = min_x.min(p[0]);
+        min_y = min_y.min(p[1]);
+        max_x = max_x.max(p[0]);
+        max_y = max_y.max(p[1]);
+    }
+
+    let mut rows = Vec::new();
+    let mut y = min_y;
+    while y + d <= max_y {
+        let mut runs: Vec<[i32; 2]> = Vec::new();
+        let mut lauf: Option<i32> = None;
+        let mut x = min_x;
+        while x + w <= max_x {
+            let r = Rect { x, y, w, d };
+            let frei = inside_room(model, &r) && !sperr.iter().any(|b| r.overlaps(b));
+            match (frei, lauf) {
+                (true, None) => lauf = Some(x),
+                (false, Some(start)) => {
+                    runs.push([start, x - RES]);
+                    lauf = None;
+                }
+                _ => {}
+            }
+            x += RES;
+        }
+        if let Some(start) = lauf {
+            runs.push([start, x - RES]);
+        }
+        if !runs.is_empty() {
+            rows.push(AllowedRow { y, x: runs });
+        }
+        y += RES;
+    }
+
+    Ok(AllowedPositions {
+        reference: reference.to_string(),
+        rot,
+        w,
+        d,
+        step: RES,
+        rows,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AllowedRow {
+    pub y: i32,
+    /// Erlaubte x-Bereiche, jeweils [von, bis] einschliesslich.
+    pub x: Vec<[i32; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AllowedPositions {
+    pub reference: String,
+    pub rot: i32,
+    pub w: i32,
+    pub d: i32,
+    pub step: i32,
+    pub rows: Vec<AllowedRow>,
 }

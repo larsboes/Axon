@@ -696,6 +696,18 @@ export const interior = {
       jsonInit('POST', { items }),
     ),
 
+  /**
+   * Where a piece's top-left corner may sit, as run-lengths per grid row.
+   *
+   * Hard edges for dragging. The page receives a LIST and computes nothing: the main room is a
+   * hexagon, so clamping to a bounding box would park furniture in the notch the bathroom
+   * occupies, and doing it properly means `point_in_polygon` — which belongs in one place.
+   */
+  allowedPositions: (layout: string, ref: string, rot: number) =>
+    request<InteriorAllowed>(
+      `/interior/api/layouts/${encodeURIComponent(layout)}/allowed?ref=${encodeURIComponent(ref)}&rot=${rot}`,
+    ),
+
   /** Create a layout. Never overwrites an existing one. */
   createLayout: (id: string, name: string, items: InteriorPlacedItem[], notiz?: string) =>
     request<{ id: string; check: unknown }>(
@@ -723,6 +735,16 @@ export interface InteriorPlacedItem {
   y: number;
   rot: number;
   size?: [number, number] | null;
+}
+
+export interface InteriorAllowed {
+  reference: string;
+  rot: number;
+  w: number;
+  d: number;
+  step: number;
+  /** Per row: the inclusive x ranges the top-left corner may take. */
+  rows: { y: number; x: [number, number][] }[];
 }
 
 export interface InteriorImpact {

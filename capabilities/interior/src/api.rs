@@ -47,6 +47,11 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r("GET", "/health", "Liveness."),
     r(
+        "GET",
+        "/api/layouts/:name/allowed",
+        "Erlaubte Positionen eines Stuecks als Lauflaengen. Harte Kanten fuers Ziehen. ?ref=&rot=",
+    ),
+    r(
         "POST",
         "/api/layouts/:name/preview",
         "Verdikt und Plan zu einer Aufstellung, ohne sie zu schreiben. Fuers Drehen noetig.",
@@ -574,6 +579,34 @@ async fn api_put_layout(
     ))
 }
 
+/// Wo die linke obere Ecke eines Stuecks liegen darf — harte Kanten fuers Ziehen.
+///
+/// Die Oberflaeche fragt einmal beim Aufnehmen und rastet danach auf die Liste ein. Sie
+/// bekommt Lauflaengen und keine Geometrie: der Hauptraum ist ein Sechseck, und auf ein
+/// umschliessendes Rechteck zu klemmen wuerde ein Moebel in der Kerbe abstellen, in der das
+/// Bad liegt.
+async fn api_allowed(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<AllowedQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    let base = model
+        .load_layout(&name)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let a = crate::search::allowed_positions(&model, &base, &q.reference, q.rot)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(a))
+}
+
+#[derive(serde::Deserialize)]
+struct AllowedQuery {
+    #[serde(rename = "ref")]
+    reference: String,
+    #[serde(default)]
+    rot: i32,
+}
+
 /// Wie ein Layout AUSSAEHE und ausfiele, ohne es zu schreiben.
 ///
 /// Verschieben kann die Oberflaeche selbst zeichnen: eine Verschiebung ist eine Translation und
@@ -686,6 +719,7 @@ pub async fn serve(flat: &str, port: u16) {
         .route("/api/layouts", get(api_layouts).post(api_post_layout))
         .route("/api/layouts/:name", get(api_layout).put(api_put_layout))
         .route("/api/layouts/:name/preview", post(api_preview_layout))
+        .route("/api/layouts/:name/allowed", get(api_allowed))
         .route("/api/placements", put(api_put_placements))
         .route("/api/flats", get(api_flats))
         .route("/api/inventory", get(api_inventory))

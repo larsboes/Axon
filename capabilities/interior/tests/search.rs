@@ -152,3 +152,85 @@ fn kein_treffer_verletzt_eine_harte_regel() {
         );
     }
 }
+
+/// Harte Kanten: was die Liste erlaubt, steht wirklich im Raum und nicht in einem Einbau.
+///
+/// Zwei Richtungen, und die zweite ist die wichtigere. Dass jede erlaubte Position zulaessig
+/// ist, faellt bei einem Fehler sofort auf. Dass die Liste **nicht einfach das umschliessende
+/// Rechteck** ist, faellt sonst nie auf — und genau das waere die naheliegende falsche Fassung
+/// im Browser. Die Musterwohnung hat dafuer eine Kuechenzeile und einen Tuerschwenkbereich; die
+/// echte Wohnung ist obendrein ein Sechseck.
+#[test]
+fn erlaubte_positionen_liegen_im_raum_und_nicht_in_einem_einbau() {
+    use interior::model::{Layout, PlacedItem};
+    let m = model();
+    let base = m.load_layout("g-trenner-stumm").expect("g-trenner-stumm");
+    let a = interior::search::allowed_positions(&m, &base, "trenner_stumm", 0)
+        .expect("erlaubte Positionen");
+
+    assert!(!a.rows.is_empty(), "es gibt Platz fuer das Brett");
+    assert_eq!(a.step, 5);
+
+    // Jede erlaubte Position ueberlebt die Raumgrenze.
+    let mut geprueft = 0;
+    for row in &a.rows {
+        for [lo, hi] in &row.x {
+            for x in [*lo, *hi] {
+                let l = Layout {
+                    name: "Kantenprobe".into(),
+                    id: String::new(),
+                    items: vec![PlacedItem {
+                        reference: "trenner_stumm".into(),
+                        x,
+                        y: row.y,
+                        rot: 0,
+                        size: None,
+                        kind: None,
+                    }],
+                };
+                let r = interior::clearance::check_layout(&m, &l).expect("Pruefung");
+                assert!(
+                    !r.hard.iter().any(|v| v.rule == "raumgrenze"),
+                    "erlaubte Position {x},{} liegt ausserhalb des Raums",
+                    row.y
+                );
+                geprueft += 1;
+            }
+        }
+    }
+    assert!(geprueft > 50, "nur {geprueft} Kanten geprueft");
+
+    // Und die Liste ist enger als das umschliessende Rechteck. Die Kuechenzeile liegt bei
+    // x 0..250, y 390..450: eine Zeile, die sie beruehrt, darf nicht bei x = 0 anfangen, eine
+    // freie Zeile schon. Genau diese Verengung waere in einer Rechteck-Fassung verschwunden —
+    // und die Rechteck-Fassung ist die, die im Browser naheliegt.
+    let anfang = |y: i32| -> Option<i32> { a.rows.iter().find(|r| r.y == y).map(|r| r.x[0][0]) };
+    assert_eq!(anfang(0), Some(0), "oben ist die Wand die einzige Grenze");
+    let unten = anfang(380).expect("es gibt eine Zeile bei y = 380");
+    assert!(
+        unten > 0,
+        "bei y = 380 reicht das Brett in die Kuechenzeile, also darf x = 0 nicht erlaubt sein \
+         (bekommen: {unten})"
+    );
+}
+
+/// Eine Position IM Einbau steht nicht auf der Liste.
+#[test]
+fn eine_position_in_der_kuechenzeile_ist_nicht_erlaubt() {
+    let m = model();
+    let base = m.load_layout("g-trenner-stumm").expect("g-trenner-stumm");
+    let a = interior::search::allowed_positions(&m, &base, "trenner_stumm", 0)
+        .expect("erlaubte Positionen");
+
+    // Die Kuechenzeile der Musterwohnung liegt bei x 0..250, y 390..450.
+    let drin = |x: i32, y: i32| {
+        a.rows
+            .iter()
+            .find(|r| r.y == y)
+            .is_some_and(|r| r.x.iter().any(|[lo, hi]| x >= *lo && x <= *hi))
+    };
+    assert!(
+        !drin(0, 390),
+        "0,390 liegt in der Kuechenzeile und darf nicht erlaubt sein"
+    );
+}

@@ -22,6 +22,7 @@
     type InteriorWishlist,
     type InteriorImpact,
     type InteriorPlacedItem,
+    type InteriorAllowed,
   } from "$lib/api";
   import { capabilities } from "$lib/capabilities.svelte";
 
@@ -70,6 +71,36 @@
   /** Snapped to the grid the checker itself rasterises on, so a drop cannot land between cells. */
   const SNAP = 5;
 
+  /**
+   * The legal region for the piece currently being dragged.
+   *
+   * Fetched from the capability when a piece is picked up, and again after a rotation, because
+   * turning swaps width and depth and therefore changes where the corner may sit. The page only
+   * looks positions up in it — the geometry that produced it stays in one place.
+   */
+  let allowed = $state<InteriorAllowed | null>(null);
+
+  /** Nearest legal position to a free-dragged one. Walls become edges you cannot cross. */
+  function snapToAllowed(x: number, y: number): { x: number; y: number } {
+    const a = allowed;
+    if (!a || a.rows.length === 0) return { x, y };
+    let bestRow = a.rows[0];
+    for (const r of a.rows) {
+      if (Math.abs(r.y - y) < Math.abs(bestRow.y - y)) bestRow = r;
+    }
+    let bx = bestRow.x[0][0];
+    let bd = Infinity;
+    for (const [lo, hi] of bestRow.x) {
+      const cand = Math.min(Math.max(x, lo), hi);
+      const dist = Math.abs(cand - x);
+      if (dist < bd) {
+        bd = dist;
+        bx = cand;
+      }
+    }
+    return { x: bx, y: bestRow.y };
+  }
+
   /** Read the current arrangement straight out of the drawing. */
   function itemsFromPlan(root: HTMLElement): InteriorPlacedItem[] {
     return [...root.querySelectorAll<SVGGElement>("g[data-ref]")].map((g) => ({
@@ -106,6 +137,15 @@
       active = g;
       picked = g.dataset.ref ?? null;
       dragging = true;
+      allowed = null;
+      if (picked && selected) {
+        // Fetched, not computed. Until it arrives the drag is free and the drop still snaps,
+        // because the answer is applied on release rather than per frame.
+        void interior
+          .allowedPositions(selected, picked, Number(g.dataset.rot ?? 0))
+          .then((a) => (allowed = a))
+          .catch(() => (allowed = null));
+      }
       const p = toModel(svg, e.clientX, e.clientY);
       startX = p.x;
       startY = p.y;
@@ -132,12 +172,19 @@
       if (!active) return;
       const dx = Number(active.dataset.dx ?? 0);
       const dy = Number(active.dataset.dy ?? 0);
-      active.dataset.x = String(originX + dx);
-      active.dataset.y = String(originY + dy);
+      const want = { x: originX + dx, y: originY + dy };
+      const landed = snapToAllowed(want.x, want.y);
+      active.dataset.x = String(landed.x);
+      active.dataset.y = String(landed.y);
+      // Redraw the preview at the position it actually took, so what you see is where it is.
+      active.setAttribute("transform", `translate(${landed.x - originX} ${landed.y - originY})`);
+      if (landed.x !== want.x || landed.y !== want.y) {
+        planError = "Walls are hard: snapped to the nearest position that fits.";
+      }
       active.style.cursor = "";
       active = null;
       dragging = false;
-      if (dx !== 0 || dy !== 0) dirty = true;
+      if (landed.x !== originX || landed.y !== originY) dirty = true;
     };
 
     root.addEventListener("pointerdown", down);
