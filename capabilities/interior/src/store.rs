@@ -32,6 +32,14 @@ use std::path::Path;
 ///
 /// Die Feldnamen folgen den TOML-Dateien, aus denen die Zeilen stammen, statt sie zu
 /// uebersetzen: ein zweites Vokabular fuer dieselbe Sache ist die teure Version dieses Fehlers.
+/// Die vier Listenfelder tragen `#[serde(default)]`, `id`, `kind` und `label` nicht.
+///
+/// Das ist der Vertrag fuer `POST /api/items`: sag, was es ist und wie es heisst, alles andere
+/// ist freiwillig. Ein leeres `zustaende` von einem Formular zu verlangen waere Schikane; ein
+/// Stueck ohne Namen anzulegen waere eine Zeile, die niemand wiederfindet.
+///
+/// Betrifft den Import NICHT — der liest `import::Roh` mit `deny_unknown_fields`, und dort ist
+/// jedes Feld weiterhin genau so streng wie seit B25.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Item {
     pub id: String,
@@ -49,8 +57,10 @@ pub struct Item {
     pub laenge: Option<i32>,
     pub anzahl: Option<i32>,
     /// Benannte Zustaende eines Klappmoebels, z. B. `["zu", "ausgeklappt"]`.
+    #[serde(default)]
     pub zustaende: Vec<String>,
     /// Welche Masse geschaetzt sind. Wandert unveraendert in jeden Pruefbericht.
+    #[serde(default)]
     pub unsicher: Vec<String>,
     pub platzbedarf_zone: Option<i32>,
     pub platzbedarf_block: Option<i32>,
@@ -73,7 +83,9 @@ pub struct Item {
     /// gehalten und nicht als Tabelle, weil sie hoechstens zwei Eintraege lang ist und
     /// nichts darauf joint. Sobald B29 die Wunschliste auf das Budget trifft und daraus ein
     /// Join wird, wird es eine Tabelle.
+    #[serde(default)]
     pub ersetzt: Vec<String>,
+    #[serde(default)]
     pub varianten: Vec<String>,
     pub ziel: Option<String>,
     pub hinweis: Option<String>,
@@ -479,6 +491,51 @@ impl Store {
             params![item_id, state.as_str(), note],
         )?;
         Ok(true)
+    }
+
+    /// Wie viele Eintraege es gibt. Die Frage, an der `interior import` entscheidet, ob es
+    /// eine Migration ist oder ein Ueberschreiben (PRD Q64).
+    pub fn item_count(&self) -> Result<i64, Fehler> {
+        let p = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn.query_row(&format!("SELECT COUNT(*) FROM {p}_item"), [], |r| r.get(0))?)
+    }
+
+    /// Ein einzelner Eintrag mit seinem aktuellen Zustand.
+    pub fn item(&self, id: &str) -> Result<Option<(Item, Option<State>)>, Fehler> {
+        Ok(self.catalogue()?.remove(id))
+    }
+
+    /// Die ganze Zustandsgeschichte eines Eintrags, aelteste zuerst.
+    ///
+    /// Die Oberflaeche zeigt sie, weil sie der Grund ist, warum `interior_item_state` eine
+    /// Tabelle ist und keine Spalte: „gekauft" ist eine Zeile mehr und kein ueberschriebenes
+    /// Feld, und wer das nicht sieht, haelt die Trennung fuer Umstaendlichkeit.
+    pub fn state_history(
+        &self,
+        item_id: &str,
+    ) -> Result<Vec<(State, String, Option<String>)>, Fehler> {
+        let p = &self.prefix;
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT state, since, note FROM {p}_item_state
+             WHERE item_id = ?1 ORDER BY since ASC, id ASC"
+        ))?;
+        let rows = stmt.query_map(params![item_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (s, since, note) = r?;
+            if let Some(st) = State::parse(&s) {
+                out.push((st, since, note));
+            }
+        }
+        Ok(out)
     }
 
     pub fn current_state(&self, item_id: &str) -> Result<Option<State>, Fehler> {

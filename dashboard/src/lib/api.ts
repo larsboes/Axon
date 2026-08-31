@@ -504,6 +504,26 @@ export interface InteriorItem {
   ziel: string | null;
   hinweis: string | null;
   begruendung: string | null;
+
+  /**
+   * What this piece states it needs (PRD Q61 / B26).
+   *
+   * Fill any of them and the clearance check measures the piece against exactly these and stops
+   * guessing from its name — the guess that once checked a coffee table against a sofa's rules,
+   * because `^couch` caught `couchtisch`. Leave them null and the name still decides.
+   *
+   * `opens` and `expands_dir` are in the piece's own orientation and turn with `rot`.
+   */
+  opens: 'nord' | 'sued' | 'ost' | 'west' | null;
+  open_clear: number | null;
+  wall_ok: boolean | null;
+  expands_dir: 'nord' | 'sued' | 'ost' | 'west' | null;
+  /** Total extent when unfolded, not the increase — a product page names the total. */
+  expands_to: number | null;
+  access_sides: number | null;
+  access_clear: number | null;
+  /** Meant to stand free. Affects the search ranking only, never a verdict. */
+  raumtrenner: boolean | null;
 }
 
 export type InteriorState = 'owned' | 'wanted' | 'gone';
@@ -597,7 +617,71 @@ export const interior = {
       `/interior/api/items/${encodeURIComponent(id)}`,
       jsonInit('PUT', item),
     ),
+
+  /**
+   * Change named fields and leave the rest alone.
+   *
+   * Prefer this over `saveItem` from a form. `PUT` replaces the whole row, and an entry has 40
+   * fields while a form shows six — everything it does not send would be blanked. An explicit
+   * `null` clears a field; an absent key leaves it. An unknown key is refused rather than
+   * ignored, which is the same stance `deny_unknown_fields` takes on import.
+   */
+  patchItem: (id: string, patch: Partial<InteriorItem>) =>
+    request<{ id: string; ok: boolean }>(
+      `/interior/api/items/${encodeURIComponent(id)}`,
+      jsonInit('PATCH', patch),
+    ),
+
+  /** Create an entry. `state` is required: without it the row joins to nothing and is invisible. */
+  createItem: (item: Partial<InteriorItem> & { id: string; kind: 'piece' | 'slot'; label: string; state: InteriorState; note?: string }) =>
+    request<{ id: string; state: InteriorState; ok: boolean }>(
+      '/interior/api/items',
+      jsonInit('POST', item),
+    ),
+
+  /**
+   * Append a state change. Appends, never overwrites — a wish that gets bought is a second row,
+   * and that span is what the wishlist later joins to money with (PRD B25).
+   *
+   * `changed: false` means the state already held: not an error, and not an invented second row.
+   */
+  setState: (id: string, state: InteriorState, note?: string) =>
+    request<{ id: string; state: InteriorState; changed: boolean }>(
+      `/interior/api/items/${encodeURIComponent(id)}/state`,
+      jsonInit('POST', { state, note }),
+    ),
+
+  stateHistory: (id: string) =>
+    request<{ state: InteriorState; since: string; note: string | null }[]>(
+      `/interior/api/items/${encodeURIComponent(id)}/state`,
+    ),
+
+  /**
+   * What a change would do to the verdicts, without writing it.
+   *
+   * The clearance fields are exactly the ones whose effect you cannot see before setting them:
+   * declaring which side the wardrobe opens costs 2 or 4 layouts depending on the direction,
+   * and nothing said so until it was computed by hand. The form shows the same arithmetic
+   * before you save.
+   */
+  impact: (id: string, patch: Partial<InteriorItem>) =>
+    request<InteriorImpact>(
+      `/interior/api/items/${encodeURIComponent(id)}/impact`,
+      jsonInit('POST', patch),
+    ),
 };
+
+export interface InteriorImpact {
+  item: string;
+  layouts: number;
+  bestanden_vorher: number;
+  bestanden_nachher: number;
+  geaendert: {
+    layout: string;
+    vorher: { pass: boolean; hard: string[]; soft: string[] };
+    nachher: { pass: boolean; hard: string[]; soft: string[] };
+  }[];
+}
 
 export const scouting = {
   discover: (opts: { adapter: string; location?: string; query?: string }) => {

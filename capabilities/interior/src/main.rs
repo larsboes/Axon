@@ -152,7 +152,7 @@ async fn main() {
     // Beide brauchen keine Wohnung: das Inventar ueberlebt jede.
     if cmd == "import" || cmd == "inventory" {
         let code = match cmd {
-            "import" => inventory_import(),
+            "import" => inventory_import(&argv),
             _ => inventory_show(),
         };
         std::process::exit(code);
@@ -459,10 +459,16 @@ async fn interior_serve() {
     interior::api::serve(&flat, port).await;
 }
 
-/// `inventory/*.toml` in die Tabellen. Wiederholbar, und der Bericht sagt, was passiert ist —
-/// ein Import, der "ok" meldet und nichts geschrieben hat, ist die stille Variante des Fehlers,
-/// gegen den er existiert.
-fn inventory_import() -> i32 {
+/// `inventory/*.toml` in die Tabellen. Der Bericht sagt, was passiert ist — ein Import, der
+/// "ok" meldet und nichts geschrieben hat, ist die stille Variante des Fehlers, gegen den er
+/// existiert.
+///
+/// **Seit PRD Q64 (2026-08-31) verweigert er sich, sobald Zeilen da sind.** Bis dahin war er
+/// wiederholbar, und das war richtig, solange die Dateien die einzige Quelle waren. Sobald die
+/// Oberflaeche schreibt, ist Wiederholbarkeit das Gegenteil: derselbe Befehl, der gestern nichts
+/// kaputt machte, setzt heute jede Eingabe auf den Stand der Dateien zurueck — still, mit
+/// Exit-Code 0 und einer Erfolgsmeldung. `--force` macht daraus eine Entscheidung.
+fn inventory_import(argv: &[String]) -> i32 {
     let dir = match interior::model::data_dir() {
         Ok(d) => d.join("inventory"),
         Err(e) => {
@@ -477,6 +483,30 @@ fn inventory_import() -> i32 {
             return 2;
         }
     };
+    let force = argv.iter().any(|a| a == "--force");
+    match store.item_count() {
+        Ok(n) if n > 0 && !force => {
+            eprintln!(
+                "\n  {}\n\n  Die Tabellen sind seit PRD Q64 die Wahrheit, nicht `inventory/*.toml`.\n  \
+                 Ein Import wuerde jede Aenderung aus der Oberflaeche auf den Stand der Dateien\n  \
+                 zuruecksetzen.\n\n  {}\n",
+                red(&format!("{n} Eintraege stehen schon in der Datenbank.")),
+                dim("Wenn genau das gemeint ist: interior import --force")
+            );
+            return 2;
+        }
+        Err(e) => {
+            eprintln!("{}", red(&format!("Datenbank nicht lesbar: {e}")));
+            return 2;
+        }
+        _ => {}
+    }
+    if force {
+        eprintln!(
+            "  {}",
+            dim("--force: die Dateien ueberschreiben die Tabellen")
+        );
+    }
     match interior::import::inventory(&store, &dir) {
         Ok(b) => {
             println!(
