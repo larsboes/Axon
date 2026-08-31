@@ -101,12 +101,30 @@
     return { x: bx, y: bestRow.y };
   }
 
+  /**
+   * Where a piece is now, as opposed to where the capability drew it.
+   *
+   * `data-x`/`data-y` are the RENDERED position and are never written to: an SVG `transform` is
+   * measured from where the element was drawn, so overwriting them made every drag after the
+   * first render in the wrong place — it looked like the piece snapped back. `nx`/`ny` hold the
+   * dragged position instead, and the transform is always taken against the rendered one.
+   */
+  const posOf = (g: SVGGElement) => ({
+    x: Number(g.dataset.nx ?? g.dataset.x ?? 0),
+    y: Number(g.dataset.ny ?? g.dataset.y ?? 0),
+  });
+
+  /** The position the capability drew this piece at. Fixed for as long as the SVG lives. */
+  const drawnAt = (g: SVGGElement) => ({
+    x: Number(g.dataset.x ?? 0),
+    y: Number(g.dataset.y ?? 0),
+  });
+
   /** Read the current arrangement straight out of the drawing. */
   function itemsFromPlan(root: HTMLElement): InteriorPlacedItem[] {
     return [...root.querySelectorAll<SVGGElement>("g[data-ref]")].map((g) => ({
       ref: g.dataset.ref ?? "",
-      x: Number(g.dataset.x ?? 0),
-      y: Number(g.dataset.y ?? 0),
+      ...posOf(g),
       rot: Number(g.dataset.rot ?? 0),
     }));
   }
@@ -149,8 +167,12 @@
       const p = toModel(svg, e.clientX, e.clientY);
       startX = p.x;
       startY = p.y;
-      originX = Number(g.dataset.x ?? 0);
-      originY = Number(g.dataset.y ?? 0);
+      const now = posOf(g);
+      originX = now.x;
+      originY = now.y;
+      // A stale delta from the previous drag would be reused by an `up` with no `move`.
+      delete g.dataset.dx;
+      delete g.dataset.dy;
       g.style.cursor = "grabbing";
       (e.target as Element).setPointerCapture?.(e.pointerId);
       e.preventDefault();
@@ -163,7 +185,12 @@
       const p = toModel(svg, e.clientX, e.clientY);
       const dx = Math.round((p.x - startX) / SNAP) * SNAP;
       const dy = Math.round((p.y - startY) / SNAP) * SNAP;
-      active.setAttribute("transform", `translate(${dx} ${dy})`);
+      // Against where it was DRAWN, not where it logically is — the two differ after one drag.
+      const base = drawnAt(active);
+      active.setAttribute(
+        "transform",
+        `translate(${originX + dx - base.x} ${originY + dy - base.y})`,
+      );
       active.dataset.dx = String(dx);
       active.dataset.dy = String(dy);
     };
@@ -174,10 +201,14 @@
       const dy = Number(active.dataset.dy ?? 0);
       const want = { x: originX + dx, y: originY + dy };
       const landed = snapToAllowed(want.x, want.y);
-      active.dataset.x = String(landed.x);
-      active.dataset.y = String(landed.y);
-      // Redraw the preview at the position it actually took, so what you see is where it is.
-      active.setAttribute("transform", `translate(${landed.x - originX} ${landed.y - originY})`);
+      active.dataset.nx = String(landed.x);
+      active.dataset.ny = String(landed.y);
+      // Redraw where it actually landed, measured from where it was drawn.
+      const base = drawnAt(active);
+      active.setAttribute(
+        "transform",
+        `translate(${landed.x - base.x} ${landed.y - base.y})`,
+      );
       if (landed.x !== want.x || landed.y !== want.y) {
         planError = "Walls are hard: snapped to the nearest position that fits.";
       }
