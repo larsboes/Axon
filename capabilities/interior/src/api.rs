@@ -15,6 +15,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use serde::Serialize;
 use std::sync::Arc;
 
 struct AppState {
@@ -102,6 +103,51 @@ const ROUTES: &[route_manifest::Route] = &[
         "Was ein Feld mit den Verdikten machen wuerde, ohne es zu schreiben.",
     ),
     r("GET", "/routes", "Dieser Katalog."),
+    r(
+        "GET",
+        "/api/layouts/:name/toleranz",
+        "Bis zu welchem Messfehler das Verdikt haelt, und woran es dann kippt.",
+    ),
+    r(
+        "GET",
+        "/api/layouts/:name/sonne",
+        "Wann im Jahr welches Stueck in direkter Sonne steht. Braucht [lage] in room.toml.",
+    ),
+    r(
+        "GET",
+        "/api/layouts/:name/einbringung",
+        "Kommt jedes Stueck durch die Tuer und bis an seinen Platz.",
+    ),
+    r(
+        "GET",
+        "/api/passt",
+        "Passt ein gedachtes Stueck durch die Tuer? ?b=&t=&zerlegbar= — die Frage vor dem Kauf.",
+    ),
+    r(
+        "GET",
+        "/api/deklaration",
+        "Wer wird noch am Namen gemessen, was waere die Zeile, und was aendert sie.",
+    ),
+    r(
+        "GET",
+        "/api/kaufen",
+        "Welcher Bedarf zuerst, kumuliert, und wann er aus dem Monatssaldo erreicht ist.",
+    ),
+    r(
+        "POST",
+        "/api/search",
+        "Eine Suche anstossen. Antwortet 202 mit einer Auftragsnummer, nicht mit dem Ergebnis.",
+    ),
+    r(
+        "POST",
+        "/api/compose",
+        "Eine ganze Wohnung stellen lassen. Ebenfalls ein Auftrag: die Strahlsuche rechnet Minuten.",
+    ),
+    r(
+        "GET",
+        "/api/auftraege/:id",
+        "Was aus einem Auftrag geworden ist: laeuft, fertig mit Ergebnis, oder gescheitert.",
+    ),
     r(
         "GET",
         "/api/model",
@@ -784,6 +830,15 @@ pub async fn serve(flat: &str, port: u16) {
         )
         .route("/api/items/:id/impact", post(api_item_impact))
         .route("/api/placements/:flat/:item", put(api_put_placement))
+        .route("/api/layouts/:name/toleranz", get(api_toleranz))
+        .route("/api/layouts/:name/sonne", get(api_sonne))
+        .route("/api/layouts/:name/einbringung", get(api_einbringung))
+        .route("/api/passt", get(api_passt))
+        .route("/api/deklaration", get(api_deklaration))
+        .route("/api/kaufen", get(api_kaufen))
+        .route("/api/search", post(api_search))
+        .route("/api/compose", post(api_compose))
+        .route("/api/auftraege/:id", get(api_auftrag))
         .with_state(state);
     axon_server::serve_local("interior", port, app).await;
 }
@@ -805,7 +860,7 @@ mod route_manifest_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_patch;
+    use super::{merge_patch, Auftraege, Auftragsstand, AUFTRAEGE_MAX};
     use crate::store::Item;
     use serde_json::json;
 
@@ -875,4 +930,355 @@ mod tests {
     fn ein_rumpf_der_kein_objekt_ist_wird_abgelehnt() {
         assert!(merge_patch(&schrank(), json!([1, 2, 3])).is_err());
     }
+
+    /// Zehn Auftraege anlegen und die jungen davon fertig melden.
+    fn volle_karte(laufen: u64) -> Auftraege {
+        let mut a = Auftraege::default();
+        for _ in 0..AUFTRAEGE_MAX {
+            a.anlegen().expect("unter der Grenze");
+        }
+        for id in laufen..AUFTRAEGE_MAX as u64 {
+            a.stand.get_mut(&id).expect("gerade angelegt").1 = Auftragsstand::Fertig {
+                ergebnis: json!(null),
+            };
+        }
+        a
+    }
+
+    /// Verdraengt wird der aelteste FERTIGE, nicht der aelteste.
+    ///
+    /// Bis 2026-08-31 warf `anlegen` blind den ersten Schluessel weg. Traf es einen, der noch
+    /// rechnete, schrieb sein Hintergrundfaden das Ergebnis in eine Nummer, die es nicht mehr
+    /// gab — und der Abholer bekam 404 auf eine Suche, die Minuten gelaufen war.
+    #[test]
+    fn ein_laufender_auftrag_wird_nicht_verdraengt() {
+        let mut a = volle_karte(1);
+        let neu = a.anlegen().expect("neun fertige machen Platz");
+        assert!(a.stand.contains_key(&0), "der laufende steht noch da");
+        assert!(
+            !a.stand.contains_key(&1),
+            "der aelteste fertige ist gewichen"
+        );
+        assert!(a.stand.contains_key(&neu));
+        assert_eq!(a.stand.len(), AUFTRAEGE_MAX);
+    }
+
+    /// Rechnen alle zehn, ist die Absage die einzige ehrliche Antwort.
+    #[test]
+    fn eine_volle_karte_aus_laufenden_lehnt_ab() {
+        let mut a = volle_karte(AUFTRAEGE_MAX as u64);
+        let grund = a.anlegen().expect_err("es gibt nichts zu verdraengen");
+        assert!(grund.contains("rechnen bereits"), "{grund}");
+        assert_eq!(a.stand.len(), AUFTRAEGE_MAX, "und keiner ist verschwunden");
+        assert!((0..AUFTRAEGE_MAX as u64).all(|id| a.stand.contains_key(&id)));
+    }
+}
+
+// ---------------------------------------------------------------- lange Rechnungen
+
+/// Was aus einer Suche geworden ist.
+///
+/// **Warum das ueberhaupt eine eigene Form braucht.** `search` prueft die Kandidaten
+/// erschoepfend — 3,5 Millionen in rund hundert Sekunden (PRD §13.1). Eine HTTP-Anfrage, die
+/// hundert Sekunden offen steht, ist keine Anfrage mehr, sondern eine Wette auf jeden Proxy
+/// und jedes Zeitlimit dazwischen. Bis 2026-08-31 gab es die Suche deshalb nur auf der
+/// Kommandozeile: die teuerste Rechnung dieser Capability war von der Oberflaeche aus, die sie
+/// braucht, nicht erreichbar.
+///
+/// Der Auftrag ist die Antwort darauf, und er ist absichtlich das kleinste, was funktioniert:
+/// eine Nummer, ein Zustand, ein Ergebnis. Keine Warteschlange, keine Wiederaufnahme, keine
+/// Tabelle. Er lebt im Prozess und stirbt mit ihm — was richtig ist, weil sein Ergebnis eine
+/// Liste von Vorschlaegen ist und keine Tatsache ueber die Wohnung. Wer den Vorschlag behalten
+/// will, schreibt ihn als Layout.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "zustand", rename_all = "snake_case")]
+pub enum Auftragsstand {
+    Laeuft { seit_ms: u128 },
+    Fertig { ergebnis: serde_json::Value },
+    Gescheitert { grund: String },
+}
+
+#[derive(Default)]
+struct Auftraege {
+    naechste: u64,
+    stand: std::collections::BTreeMap<u64, (std::time::Instant, Auftragsstand)>,
+}
+
+/// Wie viele fertige Auftraege aufgehoben werden.
+///
+/// Ohne Grenze waechst die Karte mit jeder Suche, und ein Prozess, der wochenlang laeuft,
+/// haelt jedes Ergebnis fest, das je jemand angesehen hat. Zehn, weil die Oberflaeche das
+/// letzte abholt und die davor nur noch Verlauf sind.
+const AUFTRAEGE_MAX: usize = 10;
+
+impl Auftraege {
+    /// Platz schaffen und die naechste Nummer ziehen — oder ablehnen.
+    ///
+    /// Verdraengt wird nur, was schon fertig ist. Ein laufender Auftrag hat seinen Schreiber
+    /// noch im Hintergrund: verschwindet der Eintrag, schreibt der in nichts, und der Abholer
+    /// bekommt 404 auf eine Rechnung, die minutenlang lief. Sind alle zehn belegt, ist die
+    /// ehrliche Antwort eine Absage und keine stillschweigend verlorene Suche.
+    fn anlegen(&mut self) -> Result<u64, String> {
+        while self.stand.len() >= AUFTRAEGE_MAX {
+            // Die Schluessel steigen, also ist der erste verdraengbare auch der aelteste.
+            let Some(alt) = self
+                .stand
+                .iter()
+                .find(|(_, (_, s))| !matches!(s, Auftragsstand::Laeuft { .. }))
+                .map(|(id, _)| *id)
+            else {
+                return Err(format!(
+                    "{AUFTRAEGE_MAX} Auftraege rechnen bereits — warte, bis einer fertig ist"
+                ));
+            };
+            self.stand.remove(&alt);
+        }
+        let id = self.naechste;
+        self.naechste += 1;
+        self.stand.insert(
+            id,
+            (
+                std::time::Instant::now(),
+                Auftragsstand::Laeuft { seit_ms: 0 },
+            ),
+        );
+        Ok(id)
+    }
+}
+
+fn auftraege() -> &'static std::sync::Mutex<Auftraege> {
+    static A: std::sync::OnceLock<std::sync::Mutex<Auftraege>> = std::sync::OnceLock::new();
+    A.get_or_init(|| std::sync::Mutex::new(Auftraege::default()))
+}
+
+/// Eine Rechnung im Hintergrund starten und sofort ihre Nummer zurueckgeben.
+///
+/// `spawn_blocking`, weil `search` und `compose` rayon benutzen und minutenlang rechnen: auf
+/// einem async-Thread wuerde das jede andere Anfrage dieses Prozesses anhalten. Dieselbe
+/// Begruendung, aus der `punctuality` und `finance` ihre schweren Wege dorthin legen (PRD B20).
+fn im_hintergrund<F>(f: F) -> Result<u64, (StatusCode, String)>
+where
+    F: FnOnce() -> Result<serde_json::Value, String> + Send + 'static,
+{
+    let id = auftraege()
+        .lock()
+        .expect("Auftragskarte")
+        .anlegen()
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
+    tokio::task::spawn_blocking(move || {
+        let ergebnis = f();
+        let mut a = auftraege().lock().expect("Auftragskarte");
+        if let Some((_, stand)) = a.stand.get_mut(&id) {
+            *stand = match ergebnis {
+                Ok(v) => Auftragsstand::Fertig { ergebnis: v },
+                Err(e) => Auftragsstand::Gescheitert { grund: e },
+            };
+        }
+    });
+    Ok(id)
+}
+
+async fn api_auftrag(Path(id): Path<u64>) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let a = auftraege().lock().map_err(boom)?;
+    let (start, stand) = a
+        .stand
+        .get(&id)
+        .ok_or((StatusCode::NOT_FOUND, format!("kein Auftrag {id}")))?;
+    // Die Laufzeit wird beim Lesen gerechnet und nicht fortgeschrieben: ein Auftrag, der sie
+    // selbst zaehlen muesste, braeuchte einen zweiten Faden fuer nichts.
+    let stand = match stand {
+        Auftragsstand::Laeuft { .. } => Auftragsstand::Laeuft {
+            seit_ms: start.elapsed().as_millis(),
+        },
+        fertig => fertig.clone(),
+    };
+    Ok(Json(serde_json::json!({ "id": id, "stand": stand })))
+}
+
+#[derive(serde::Deserialize)]
+struct SucheAnfrage {
+    layout: String,
+    #[serde(default)]
+    move_refs: Vec<String>,
+    #[serde(default = "raster_standard")]
+    step: i32,
+    #[serde(default = "suche_grenze")]
+    limit: usize,
+}
+
+fn raster_standard() -> i32 {
+    20
+}
+/// Dieselbe Zahl wie `--limit` auf der Kommandozeile (`main.rs`, `cmd_search`). Ohne sie stand
+/// hier `usize::default()`, und die Null heisst in `search::search` *unbegrenzt*: dieselbe
+/// Anfrage lieferte auf der Oberflaeche Tausende Treffer und im Terminal sechs.
+fn suche_grenze() -> usize {
+    6
+}
+
+/// Eine Suche anstossen. Antwortet mit der Auftragsnummer, nicht mit dem Ergebnis.
+async fn api_search(
+    State(s): State<Arc<AppState>>,
+    Json(anfrage): Json<SucheAnfrage>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if anfrage.move_refs.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "`move_refs` ist leer — ohne bewegliche Moebel gibt es nichts zu suchen".into(),
+        ));
+    }
+    let flat = s.flat.clone();
+    let id = im_hintergrund(move || {
+        let model = Model::load(&flat).map_err(|e| e.to_string())?;
+        let base = model
+            .load_layout(&anfrage.layout)
+            .map_err(|e| e.to_string())?;
+        let spec = crate::search::Spec {
+            move_refs: anfrage.move_refs,
+            step: anfrage.step,
+            bands: Default::default(),
+            limit: anfrage.limit,
+        };
+        let rep = crate::search::search(&model, &base, &spec).map_err(|e| e.to_string())?;
+        serde_json::to_value(rep).map_err(|e| e.to_string())
+    })?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "auftrag": id })),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct ComposeAnfrage {
+    refs: Vec<String>,
+    #[serde(default = "compose_raster")]
+    step: i32,
+    #[serde(default = "compose_strahl")]
+    beam: usize,
+    #[serde(default = "compose_grenze")]
+    limit: usize,
+    #[serde(default = "compose_drehungen")]
+    rotations: Vec<i32>,
+}
+
+fn compose_raster() -> i32 {
+    25
+}
+fn compose_strahl() -> usize {
+    60
+}
+/// Dieselbe Zahl wie `--limit` auf der Kommandozeile (`main.rs`, `cmd_compose`).
+fn compose_grenze() -> usize {
+    5
+}
+fn compose_drehungen() -> Vec<i32> {
+    vec![0, 90]
+}
+
+/// Eine ganze Wohnung stellen lassen. Ebenfalls ein Auftrag: die Strahlsuche rechnet Minuten.
+async fn api_compose(
+    State(s): State<Arc<AppState>>,
+    Json(anfrage): Json<ComposeAnfrage>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if anfrage.refs.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "`refs` ist leer — ohne Stuecke gibt es nichts zu stellen".into(),
+        ));
+    }
+    let flat = s.flat.clone();
+    let id = im_hintergrund(move || {
+        let model = Model::load(&flat).map_err(|e| e.to_string())?;
+        let spec = crate::search::ComposeSpec {
+            refs: anfrage.refs,
+            step: anfrage.step,
+            beam: anfrage.beam,
+            rotations: anfrage.rotations,
+            limit: anfrage.limit,
+        };
+        let out = crate::search::compose(&model, &spec).map_err(|e| e.to_string())?;
+        serde_json::to_value(out).map_err(|e| e.to_string())
+    })?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "auftrag": id })),
+    ))
+}
+
+// ---------------------------------------------------------------- die neuen Auskuenfte
+
+async fn api_toleranz(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    let l = model.load_layout(&name).map_err(nicht_gefunden)?;
+    Ok(Json(crate::toleranz::robustheit(&model, &l).map_err(boom)?))
+}
+
+async fn api_sonne(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    let l = model.load_layout(&name).map_err(nicht_gefunden)?;
+    Ok(Json(crate::sonne::bericht(&model, &l).map_err(boom)?))
+}
+
+async fn api_einbringung(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    let l = model.load_layout(&name).map_err(nicht_gefunden)?;
+    let mut out = Vec::new();
+    for it in &l.items {
+        out.push(crate::einbringung::einbringung(&model, &l, &it.reference).map_err(boom)?);
+    }
+    Ok(Json(out))
+}
+
+#[derive(serde::Deserialize)]
+struct StueckMasse {
+    b: i32,
+    t: i32,
+    #[serde(default)]
+    zerlegbar: bool,
+}
+
+/// Passt ein gedachtes Stueck durch die Tuer? Die Frage VOR dem Kauf.
+async fn api_passt(
+    State(s): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<StueckMasse>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    Ok(Json(crate::einbringung::durch_die_tuer(
+        &model,
+        q.b,
+        q.t,
+        q.zerlegbar,
+    )))
+}
+
+async fn api_deklaration(
+    State(s): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    Ok(Json(crate::deklaration::uebersicht(&model).map_err(boom)?))
+}
+
+async fn api_kaufen(
+    State(s): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    let st = store()?;
+    let conn = st.borrow_connection().map_err(boom)?;
+    let saldo = crate::budget::monatssaldo(&conn).map_err(boom)?;
+    Ok(Json(
+        crate::budget::kaufreihenfolge(&model, saldo).map_err(boom)?,
+    ))
+}
+
+fn nicht_gefunden(e: crate::model::ModelError) -> (StatusCode, String) {
+    (StatusCode::NOT_FOUND, e.to_string())
 }

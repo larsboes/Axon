@@ -229,7 +229,7 @@ fn deklarierte_regeln_ohne_pruefung_werden_gemeldet() {
     let offen: Vec<&str> = r.nicht_geprueft.iter().map(|u| u.rule.as_str()).collect();
     assert_eq!(
         offen,
-        vec!["R9"],
+        vec!["R10"],
         "ein bestandenes Layout sagt trotzdem, was an ihm nicht gemessen wurde"
     );
     let u = &r.nicht_geprueft[0];

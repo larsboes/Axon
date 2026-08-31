@@ -97,11 +97,15 @@ fn ein_erklaerter_raumtrenner_wird_nicht_fuer_freies_stehen_bestraft() {
 
 /// Die Rangfolge ist stabil und in der dokumentierten Reihenfolge.
 ///
-/// Erst keine Warnungen, dann moeglichst viel Wand im Ruecken, dann der breiteste Engpass. Der
+/// Erst die Front, dann keine Warnungen, dann Wand im Ruecken, dann der breiteste Engpass. Der
 /// Kommentar in `search.rs` behauptet das; hier steht es als Pruefung, damit eine vertauschte
 /// `then`-Kette auffaellt.
+///
+/// Die erste Stufe kam am 2026-08-31 dazu und ist die einzige, die keine Meinung ist: ein
+/// dominierter Treffer ist unter JEDER Gewichtung der vier Ziele schlechter als ein bestimmter
+/// anderer. Innerhalb einer Klasse gilt die Rangfolge vom 2026-08-30 unveraendert weiter.
 #[test]
-fn die_rangfolge_sortiert_warnungen_vor_wand_vor_engpass() {
+fn die_rangfolge_sortiert_front_vor_warnungen_vor_wand_vor_engpass() {
     let m = model();
     let r = suche(&m, "stumm");
     assert!(
@@ -111,9 +115,68 @@ fn die_rangfolge_sortiert_warnungen_vor_wand_vor_engpass() {
 
     for paar in r.hits.windows(2) {
         let (a, b) = (&paar[0], &paar[1]);
-        let a_key = (a.soft, -a.wandkontakt_cm, -a.bottleneck_cm);
-        let b_key = (b.soft, -b.wandkontakt_cm, -b.bottleneck_cm);
+        let a_key = (
+            !a.pareto,
+            a.soft,
+            -a.wandkontakt_cm,
+            -a.bottleneck_cm,
+            std::cmp::Reverse(a.engste_reserve_cm),
+        );
+        let b_key = (
+            !b.pareto,
+            b.soft,
+            -b.wandkontakt_cm,
+            -b.bottleneck_cm,
+            std::cmp::Reverse(b.engste_reserve_cm),
+        );
         assert!(a_key <= b_key, "Rangfolge verletzt: {a:?} steht vor {b:?}");
+    }
+}
+
+/// Die Front ist eine Auswahl und keine Umbenennung aller Treffer.
+///
+/// Ein Flag, das ueberall `true` steht, sortiert nichts und meldet trotzdem Erfolg — genau die
+/// Art von stiller Nulloperation, die diese Datei bei `raumtrenner` schon einmal gefunden hat.
+#[test]
+fn die_front_ist_echt_kleiner_als_die_treffermenge() {
+    let m = model();
+    let r = suche(&m, "stumm");
+    let front = r.hits.iter().filter(|h| h.pareto).count();
+    assert!(front > 0, "ohne Front gibt es keine beste Antwort");
+    assert!(
+        front < r.hits.len(),
+        "{front} von {} Treffern sind Front — dann trennt das Flag nichts",
+        r.hits.len()
+    );
+}
+
+/// Kein dominierter Treffer steht vor einem, der ihn dominiert.
+///
+/// Das ist die Eigenschaft, wegen der die Front ueberhaupt vorne sortiert wird, und sie wird
+/// hier an den Zahlen geprueft statt am Flag: ein falsch gesetztes Flag bestuende den Test
+/// oben und diesen nicht.
+#[test]
+fn kein_treffer_steht_vor_einem_der_ihn_in_allem_schlaegt() {
+    let m = model();
+    let r = suche(&m, "stumm");
+    let ziel = |h: &interior::search::Hit| {
+        [
+            h.engste_reserve_cm.unwrap_or(i32::MIN),
+            h.wandkontakt_cm,
+            h.bottleneck_cm,
+            -(h.soft as i32),
+        ]
+    };
+    for (i, a) in r.hits.iter().enumerate() {
+        for b in r.hits.iter().skip(i + 1) {
+            let (za, zb) = (ziel(a), ziel(b));
+            let dominiert = zb.iter().zip(za.iter()).all(|(x, y)| x >= y)
+                && zb.iter().zip(za.iter()).any(|(x, y)| x > y);
+            assert!(
+                !dominiert,
+                "{b:?} schlaegt {a:?} in allem und steht dahinter"
+            );
+        }
     }
 }
 

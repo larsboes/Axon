@@ -1,0 +1,20 @@
+# Regelkonform und trotzdem unmoeglich.
+#
+# Die Glasvitrine misst 110 x 110 cm und ist nicht zerlegbar; die Wohnungstuer ist 100 cm
+# breit. Sie steht hier an der Nordwand, wo sie keine Zone beruehrt, keinen Laufweg einschnuert
+# und keine Regel verletzt: `check` sagt BESTANDEN.
+#
+# Genau das ist der Punkt. Bis 2026-08-31 war das die ganze Antwort dieser Capability, und sie
+# war falsch — nicht in der Rechnung, sondern in der Frage. `einbringung` stellt die zweite:
+# kommt das Stueck ueberhaupt dorthin.
+name = "K — Vitrine, regelkonform und zu breit fuer die Tuer"
+
+# Der erste Entwurf stellte die Vitrine zehn Zentimeter weiter westlich, und diese Koordinate
+# steht auf der Sperrliste von `tests/containment.rs`: es ist ein Mass der echten Wohnung.
+# Gefunden wurde das in einer erfundenen Wohnung, wo es nichts verraten haette — und genau
+# deshalb funktioniert der Test. Die Zahl steht auch in diesem Kommentar nicht.
+[[item]]
+ref = "glasvitrine"
+x = 470
+y = 0
+rot = 0

@@ -1,0 +1,21 @@
+# Ein Layout, das GENAU um funf Zentimeter besteht — und zwar an einem geschaetzten Mass.
+#
+# Das Sideboard ist das einzige Stueck der Musterwohnung mit `unsicher = ["b", "t"]`: seine
+# Masse sind geraten, nicht gemessen. Es steht hier so, dass zwischen seiner Suedkante (y 285)
+# und der Anlaufzone der Kuechenzeile (ab y 290) fuenf Zentimeter Luft bleiben.
+#
+# x = 100 und nicht 0, weil die Anlaufzone der Terrassentuer bis x 90 reicht. Der erste
+# Entwurf stand dort und fiel an R1 durch — die Absicht war eine Aussage ueber R7.
+#
+# Damit ist die Antwort KONSTRUIERT und nicht abgelesen: bei einem Messfehler von 5 cm beruehrt
+# es die Zone und besteht noch (die Zonen sind halboffen), bei 6 cm ragt es hinein und R7 —
+# hart — laesst es durchfallen. `toleranz::robustheit` muss also `Bis { cm: 5 }` und `R7`
+# nennen. Ein Layout, das nur "besteht" meldet, wuerde hier eine Schaetzung als Messung
+# ausgeben.
+name = "J — Sideboard fuenf Zentimeter vor der Kuechenzone"
+
+[[item]]
+ref = "sideboard"
+x = 100
+y = 240
+rot = 0

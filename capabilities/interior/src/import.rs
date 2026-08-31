@@ -108,6 +108,8 @@ struct Roh {
     /// `raumtrenner = true` — dieses Stueck soll frei stehen und teilt den Raum.
     #[serde(default)]
     raumtrenner: Option<bool>,
+    /// `zerlegbar = true` — kommt in Teilen durch die Tuer (siehe `einbringung.rs`).
+    zerlegbar: Option<bool>,
     /// Pfad unterhalb von `media/`.
     #[serde(default)]
     bild: Option<String>,
@@ -188,6 +190,7 @@ impl Roh {
             access_sides: self.access_sides,
             access_clear: self.access_clear,
             raumtrenner: self.raumtrenner,
+            zerlegbar: self.zerlegbar,
             bild: self.bild,
         }
     }

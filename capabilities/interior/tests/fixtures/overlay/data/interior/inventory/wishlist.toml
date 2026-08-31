@@ -19,3 +19,68 @@ b = 40
 t = 40
 h = 170
 preis_eur = 89.0
+
+# --- drei Bedarfe, die eine Reihenfolge pruefbar machen (PRD B33) -----------
+#
+# Die Rangfolge von `budget::kaufreihenfolge` ist: Dringlichkeit, dann ob ein Entwurf schon
+# darauf baut, dann der Preis. Damit das eine Pruefung sein kann und keine Behauptung, muss
+# die Fixture an jeder der drei Stufen einen Fall haben, an dem sich die Stufen widersprechen —
+# sonst bestuende die Pruefung auch bei einer Sortierung nach Preis allein.
+#
+# `nachttisch` ist Pflicht und teuer, `wandregal` nur Empfehlung und billig: eine Sortierung
+# nach Preis stellte das Regal voran. `bilderleiste` ist Konzept und am billigsten, steht also
+# hinten, obwohl es am wenigsten kostet.
+#
+# Dazu zwei Woerter der ENTSCHEIDUNGSachse, die es in der echten Wohnung gibt und die dieser
+# Fixture bis 2026-08-31 fehlten: `gesetzt` (die Entscheidung ist gefallen, das wird gekauft)
+# und `zurueckgestellt` (bewusst verschoben). Sie fehlten auch in `budget::rang`, also fielen
+# beide auf denselben Rang, und was zwischen einem gesetzten und einem zurueckgestellten
+# Produkt entschied, war der Preis. Gefunden wurde das an der echten Wohnung; hier steht der
+# Fall, damit es nicht wieder passiert.
+[[produkt]]
+id = "nachttisch"
+label = "Nachttisch (erfunden)"
+status = "pflicht"
+b = 40
+t = 35
+h = 50
+preis_eur = 120.0
+
+[[produkt]]
+id = "wandregal"
+label = "Wandregal (erfunden)"
+status = "empfehlung"
+b = 80
+t = 22
+h = 20
+preis_eur = 35.0
+
+[[produkt]]
+id = "bilderleiste"
+label = "Bilderleiste (erfunden)"
+status = "konzept"
+b = 60
+t = 9
+h = 5
+preis_eur = 12.0
+
+# Teuer und gesetzt: es steht trotzdem an erster Stelle, weil die Entscheidung gefallen ist.
+[[produkt]]
+id = "deckenlampe"
+label = "Deckenlampe (erfunden, entschieden)"
+status = "gesetzt"
+b = 45
+t = 45
+h = 30
+preis_eur = 199.0
+
+# Billig und zurueckgestellt: es steht trotzdem hinten, weil dagegen entschieden wurde — nur
+# nicht endgueltig.
+[[produkt]]
+id = "garderobenhaken"
+label = "Garderobenhaken (erfunden, zurueckgestellt)"
+status = "zurueckgestellt"
+b = 40
+t = 8
+h = 12
+preis_eur = 9.0

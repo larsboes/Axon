@@ -32,12 +32,59 @@ pub struct Spec {
     pub limit: usize,
 }
 
+/// Wie viele Ziele eine Aufstellung gleichzeitig verfolgt.
+///
+/// Vier, und keines von ihnen ist der Sieger: mehr Wand im Ruecken kostet Laufbreite, mehr
+/// Reserve kostet Wand. Eine einzelne Zahl aus vieren zu machen hiesse, drei Gewichte zu
+/// erfinden, die niemand gemessen hat.
+pub const ZIELE: usize = 4;
+
+/// Welche Kandidaten unter KEINER Gewichtung der Ziele die besten sein koennen.
+///
+/// Ein Punkt ist dominiert, wenn ein anderer in jedem Ziel mindestens so gut und in einem
+/// echt besser ist. Solche Punkte koennen nie gewinnen, egal wie man gewichtet — sie hinter
+/// die Front zu sortieren ist deshalb keine Meinung ueber Geschmack, sondern Arithmetik.
+///
+/// Alle Ziele zeigen in dieselbe Richtung: **groesser ist besser**. Wer eine Zahl beitraegt,
+/// bei der weniger besser ist, uebergibt sie negiert — `soft` tut das.
+///
+/// Die Front wird ueber die VERSCHIEDENEN Zielwerten gebildet, nicht ueber die Kandidaten:
+/// zehntausend Aufstellungen fallen typisch auf einige hundert verschiedene Vierlinge
+/// zusammen, und der quadratische Vergleich laeuft dann auf denen. Ohne das waere die Front
+/// bei einer erschoepfenden Suche teurer als die Suche.
+pub fn pareto_front(punkte: &[[i32; ZIELE]]) -> Vec<bool> {
+    let dominiert = |a: &[i32; ZIELE], b: &[i32; ZIELE]| {
+        a.iter().zip(b.iter()).all(|(x, y)| x >= y) && a.iter().zip(b.iter()).any(|(x, y)| x > y)
+    };
+    let mut verschieden: Vec<[i32; ZIELE]> = punkte.to_vec();
+    verschieden.sort_unstable_by(|a, b| b.cmp(a));
+    verschieden.dedup();
+
+    let mut front: Vec<[i32; ZIELE]> = Vec::new();
+    for t in verschieden {
+        if front.iter().any(|f| dominiert(f, &t)) {
+            continue;
+        }
+        front.retain(|f| !dominiert(&t, f));
+        front.push(t);
+    }
+    let front: std::collections::BTreeSet<[i32; ZIELE]> = front.into_iter().collect();
+    punkte.iter().map(|p| front.contains(p)).collect()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Hit {
     pub places: BTreeMap<String, [i32; 2]>,
     pub soft: usize,
     /// Engste der geprueften Routen in cm — hoeher ist besser.
     pub bottleneck_cm: i32,
+    /// Die knappste harte Messung dieser Aufstellung in cm: um so viel besteht sie.
+    ///
+    /// Zwei Treffer koennen beide bestehen und dabei 2 cm und 30 cm Luft haben. Bis diese
+    /// Zahl hier stand, waren sie in jedem Bericht dasselbe Wort.
+    pub engste_reserve_cm: Option<i32>,
+    /// Auf der Pareto-Front: unter keiner Gewichtung der Ziele schlechter als ein anderer.
+    pub pareto: bool,
     /// Wie viele Zentimeter der bewegten Moebel an einer Wand anliegen.
     ///
     /// Der Raeumungspruefer kennt nur Abstaende, nicht Sinn: er haelt einen Esstisch mitten
@@ -138,6 +185,19 @@ fn blockers(model: &Model, fixed: &[&PlacedItem]) -> Result<Vec<Rect>, ModelErro
         }
     }
     Ok(out)
+}
+
+/// Die vier Ziele eines Treffers, alle so gedreht, dass groesser besser ist.
+///
+/// Eine fehlende Reserve zaehlt als `i32::MIN`, damit eine Aufstellung, an der nichts gemessen
+/// wurde, nicht durch Schweigen die Front gewinnt.
+fn hit_ziele(h: &Hit) -> [i32; ZIELE] {
+    [
+        h.engste_reserve_cm.unwrap_or(i32::MIN),
+        h.wandkontakt_cm,
+        h.bottleneck_cm,
+        -(h.soft as i32),
+    ]
 }
 
 pub fn search(model: &Model, base: &Layout, spec: &Spec) -> Result<SearchReport, ModelError> {
@@ -241,6 +301,8 @@ pub fn search(model: &Model, base: &Layout, spec: &Spec) -> Result<SearchReport,
                 places: combo.iter().map(|(k, p, _)| (k.clone(), *p)).collect(),
                 soft: r.soft.len(),
                 bottleneck_cm: bottleneck,
+                engste_reserve_cm: r.engste_reserve_cm,
+                pareto: false,
                 wandkontakt_cm: combo
                     .iter()
                     .filter(|(reference, _, _)| !ist_raumtrenner(model, reference))
@@ -250,14 +312,28 @@ pub fn search(model: &Model, base: &Layout, spec: &Spec) -> Result<SearchReport,
         })
         .collect();
 
-    // Rangfolge: erst keine Warnungen, dann moeglichst viel Wand im Ruecken, dann der breiteste
-    // Engpass. Die mittlere Stufe ist die wichtigste — ohne sie gewinnen Layouts, die jede Regel
-    // erfuellen und trotzdem aussehen wie ein Moebellager.
+    // Die Front zuerst, und das ist keine Geschmacksfrage: ein dominierter Treffer ist unter
+    // JEDER Gewichtung der vier Ziele schlechter als ein bestimmter anderer, also kann er die
+    // Antwort nicht sein. Innerhalb der Front gilt weiter die Rangfolge von 2026-08-30 — erst
+    // keine Warnungen, dann Wand im Ruecken, dann der breiteste Engpass —, weil eine Front
+    // ungeordnet ist und eine Liste trotzdem eine Reihenfolge braucht.
+    let ziele: Vec<[i32; ZIELE]> = hits.iter().map(hit_ziele).collect();
+    for (h, front) in hits.iter_mut().zip(pareto_front(&ziele)) {
+        h.pareto = front;
+    }
+    // Die Reserve steht als LETZTE Stufe und nicht weiter vorn, und das ist der Unterschied
+    // zwischen einer neuen Rangfolge und einer widerspruchsfreien. Genau so wird die Kette zu
+    // einer lexikographischen Ordnung ueber alle vier Ziele — und damit kann kein Treffer mehr
+    // vor einem stehen, der ihn in allem schlaegt. Ein Test haelt das fest; ohne diese Stufe
+    // fand er zwei Aufstellungen, die sich nur in einem Zentimeter Reserve unterschieden und
+    // in der falschen Reihenfolge standen.
     hits.sort_by(|a, b| {
-        a.soft
-            .cmp(&b.soft)
+        b.pareto
+            .cmp(&a.pareto)
+            .then(a.soft.cmp(&b.soft))
             .then(b.wandkontakt_cm.cmp(&a.wandkontakt_cm))
             .then(b.bottleneck_cm.cmp(&a.bottleneck_cm))
+            .then(b.engste_reserve_cm.cmp(&a.engste_reserve_cm))
     });
     if spec.limit > 0 {
         hits.truncate(spec.limit);
@@ -454,6 +530,10 @@ pub struct Composed {
     pub wandkontakt_cm: i32,
     pub bottleneck_cm: i32,
     pub free_m2: f64,
+    /// Die knappste harte Messung dieser Aufstellung in cm: um so viel besteht sie.
+    pub engste_reserve_cm: Option<i32>,
+    /// Auf der Pareto-Front der vier Ziele.
+    pub pareto: bool,
 }
 
 /// Eine Wohnung von Grund auf stellen, statt eine bestehende Aufstellung zu verschieben.
@@ -653,6 +733,8 @@ pub fn compose(model: &Model, spec: &ComposeSpec) -> Result<Vec<Composed>, Model
                     .min()
                     .unwrap_or(0),
                 free_m2: r.metrics.free_area_m2,
+                engste_reserve_cm: r.engste_reserve_cm,
+                pareto: false,
             })
         })
         .collect();
@@ -662,15 +744,75 @@ pub fn compose(model: &Model, spec: &ComposeSpec) -> Result<Vec<Composed>, Model
     // Aufstellung mit 0 cm Wandkontakt, also jedes Stueck frei im Raum. Formal fehlerfrei, und
     // niemand richtet so ein. Zwei Rangfolgen fuer dieselbe Frage waeren ausserdem genau die
     // Doppelung, gegen die diese Capability existiert.
+    // Die Front wird nur unter den BESTEHENDEN gebildet. Eine durchgefallene Aufstellung mit
+    // viel Wandkontakt waere sonst nicht dominiert und stuende vorn — auf einer Liste, deren
+    // erste Frage ist, ob man so einziehen kann.
+    let ziele: Vec<[i32; ZIELE]> = fertig
+        .iter()
+        .map(|c| {
+            [
+                c.engste_reserve_cm.unwrap_or(i32::MIN),
+                c.wandkontakt_cm,
+                c.bottleneck_cm,
+                -(c.soft.len() as i32),
+            ]
+        })
+        .collect();
+    let front = pareto_front(&ziele);
+    for (c, f) in fertig.iter_mut().zip(front) {
+        c.pareto = c.pass && f;
+    }
     fertig.sort_by(|a, b| {
         b.pass
             .cmp(&a.pass)
+            .then(b.pareto.cmp(&a.pareto))
             .then(a.soft.len().cmp(&b.soft.len()))
             .then(b.wandkontakt_cm.cmp(&a.wandkontakt_cm))
             .then(b.bottleneck_cm.cmp(&a.bottleneck_cm))
+            .then(b.engste_reserve_cm.cmp(&a.engste_reserve_cm))
     });
     if spec.limit > 0 {
         fertig.truncate(spec.limit);
     }
     Ok(fertig)
+}
+
+#[cfg(test)]
+mod pareto_tests {
+    use super::{pareto_front, ZIELE};
+
+    /// Ein Punkt, der in allem schlechter ist, gehoert nicht auf die Front.
+    #[test]
+    fn ein_in_allem_schlechterer_punkt_faellt_heraus() {
+        let p: Vec<[i32; ZIELE]> = vec![[10, 10, 10, 0], [9, 9, 9, -1]];
+        assert_eq!(pareto_front(&p), vec![true, false]);
+    }
+
+    /// Ein Tausch ist keine Niederlage: wer ein Ziel aufgibt und ein anderes gewinnt, bleibt.
+    #[test]
+    fn ein_tausch_haelt_beide_auf_der_front() {
+        let p: Vec<[i32; ZIELE]> = vec![[10, 0, 5, 0], [0, 10, 5, 0]];
+        assert_eq!(pareto_front(&p), vec![true, true]);
+    }
+
+    /// Gleiche Punkte dominieren einander nicht — sonst faengt die Front an, Duplikate zu
+    /// verwerfen, und zwei gleich gute Aufstellungen an verschiedenen Orten waeren eine.
+    #[test]
+    fn identische_punkte_bleiben_beide() {
+        let p: Vec<[i32; ZIELE]> = vec![[3, 3, 3, 3], [3, 3, 3, 3]];
+        assert_eq!(pareto_front(&p), vec![true, true]);
+    }
+
+    /// Gleich in drei Zielen, besser im vierten: das ist Dominanz und kein Gleichstand.
+    #[test]
+    fn ein_einziges_besseres_ziel_reicht_zur_dominanz() {
+        let p: Vec<[i32; ZIELE]> = vec![[5, 5, 5, 5], [5, 5, 5, 6]];
+        assert_eq!(pareto_front(&p), vec![false, true]);
+    }
+
+    /// Die Front eines leeren Feldes ist leer und kein Absturz.
+    #[test]
+    fn leer_bleibt_leer() {
+        assert!(pareto_front(&[]).is_empty());
+    }
 }

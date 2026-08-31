@@ -277,6 +277,17 @@ pub fn widest_path(grid: &Grid, field: &[f64], from: Pt, to: Pt) -> Option<f64> 
 /// Ein Mensch braucht einen Platz zum Stehen, und ungefaehr 60 cm Laenge, um darin zu stehen.
 pub const STANDING_RUN_CM: i32 = 60;
 
+/// Wie weit ueber eine Schwelle hinaus noch gemessen wird, damit eine Reserve eine Zahl hat.
+///
+/// `free_depth_on_side` deckelt auf die geforderte Tiefe — richtig fuer ein Verdikt, das nur
+/// wissen muss, ob es reicht, und **ruinoes fuer eine Reserve**: die knappste und die
+/// grosszuegigste Aufstellung meldeten beide genau die Schwelle, also ueberall null Luft.
+///
+/// Gemessen wird deshalb bis eine Standtiefe darueber hinaus. Weiter nicht, weil es teuer ist
+/// und weil die Frage, ob vor dem Schrank 165 oder 210 cm frei sind, keine Raeumungsfrage mehr
+/// ist. Wo der Deckel greift, sagt die Reserve `gedeckelt` und die Oberflaeche schreibt „ab".
+pub const RESERVE_HORIZONT: i32 = 100;
+
 /// Freie Tiefe an einer Seite eines Rechtecks, gedeckelt auf `want`.
 ///
 /// Geprueft wird ein ZUSAMMENHAENGENDER Lauf, nicht jede Zelle und kein Prozentsatz. Ein
@@ -355,6 +366,106 @@ pub fn overlap_area(a: &Rect, b: &Rect) -> i32 {
     w * h
 }
 
+/// Der vorzeichenbehaftete Abstand zweier Rechtecke in cm.
+///
+/// **Positiv** ist der Luftspalt: so weit stehen sie auseinander, euklidisch, also ueber Eck
+/// gemessen und nicht nur entlang einer Achse. **Negativ** ist die Eindringtiefe: um so viele
+/// cm muesste man eines verschieben, damit sie sich nicht mehr beruehren — die kleinere der
+/// beiden Ueberlappungsachsen, weil das die billigste Richtung heraus ist.
+///
+/// Das ist die Reserve einer Zonenregel. `overlaps()` beantwortet ja/nein, und ja/nein ist
+/// genau die Antwort, aus der niemand ablesen kann, ob ein Layout um 2 cm besteht oder um 40.
+pub fn rect_gap(a: &Rect, b: &Rect) -> i32 {
+    let ux = (a.right().min(b.right()) - a.x.max(b.x)).max(0);
+    let uy = (a.bottom().min(b.bottom()) - a.y.max(b.y)).max(0);
+    if ux > 0 && uy > 0 {
+        return -ux.min(uy);
+    }
+    let dx = (b.x - a.right()).max(a.x - b.right()).max(0);
+    let dy = (b.y - a.bottom()).max(a.y - b.bottom()).max(0);
+    (((dx * dx + dy * dy) as f64).sqrt()).round() as i32
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use super::rect_gap;
+    use crate::model::Rect;
+
+    fn r(x: i32, y: i32, w: i32, d: i32) -> Rect {
+        Rect { x, y, w, d }
+    }
+
+    #[test]
+    fn getrennt_liefert_den_luftspalt() {
+        assert_eq!(rect_gap(&r(0, 0, 100, 100), &r(130, 0, 50, 50)), 30);
+    }
+
+    /// Ueber Eck ist der Abstand die Diagonale und nicht die groessere Achse — sonst meldete
+    /// ein Stueck, das schraeg 30/40 danebensteht, 40 cm Luft, wo 50 sind.
+    #[test]
+    fn ueber_eck_zaehlt_die_diagonale() {
+        assert_eq!(rect_gap(&r(0, 0, 100, 100), &r(130, 140, 50, 50)), 50);
+    }
+
+    /// Beruehrung ist null Reserve und kein Verstoss: die Zonen sind halboffen wie `overlaps`.
+    #[test]
+    fn beruehrung_ist_null() {
+        assert_eq!(rect_gap(&r(0, 0, 100, 100), &r(100, 0, 50, 50)), 0);
+    }
+
+    /// Die Eindringtiefe ist die kuerzeste Strecke heraus, nicht die laengste.
+    #[test]
+    fn ueberlapp_ist_negativ_und_nimmt_die_billigere_achse() {
+        assert_eq!(rect_gap(&r(0, 0, 100, 100), &r(90, 50, 100, 100)), -10);
+    }
+}
+
+/// Wie tief ein Rechteck im Polygon liegt, in cm. **Negativ heisst: es ragt heraus.**
+///
+/// Gemessen an denselben vier Ecken, die `check_layout` auf Zugehoerigkeit prueft, und mit
+/// demselben Zentimeter Einzug. Das ist Absicht: eine Reserve, die genauer misst als die
+/// Regel, meldet Verstoesse, die die Regel nicht kennt, und dann streiten zwei Fassungen
+/// derselben Frage — genau das, wogegen diese Capability existiert.
+///
+/// Die gemeinsame Grenze beider: bei einem konkaven Polygon koennen alle vier Ecken innen
+/// liegen und eine Kante trotzdem durch die Einbuchtung schneiden. Wer das aendert, aendert
+/// die Regel und diese Messung zusammen.
+pub fn rect_in_polygon_cm(r: &Rect, poly: &[Pt]) -> i32 {
+    let ecken = [
+        [r.x + 1, r.y + 1],
+        [r.right() - 1, r.y + 1],
+        [r.x + 1, r.bottom() - 1],
+        [r.right() - 1, r.bottom() - 1],
+    ];
+    let mut schlimmste = f64::MAX;
+    for c in ecken {
+        let p = [c[0] as f64, c[1] as f64];
+        let mut naechste = f64::MAX;
+        for i in 0..poly.len() {
+            let a = poly[i];
+            let b = poly[(i + 1) % poly.len()];
+            naechste = naechste.min(punkt_zu_strecke(p, a, b));
+        }
+        let drin = point_in_polygon(p, poly);
+        let signiert = if drin { naechste } else { -naechste };
+        schlimmste = schlimmste.min(signiert);
+    }
+    schlimmste.round() as i32
+}
+
+/// Abstand eines Punktes zu einer Strecke.
+fn punkt_zu_strecke(p: [f64; 2], a: Pt, b: Pt) -> f64 {
+    let (ax, ay) = (a[0] as f64, a[1] as f64);
+    let (bx, by) = (b[0] as f64, b[1] as f64);
+    let (dx, dy) = (bx - ax, by - ay);
+    let laenge2 = dx * dx + dy * dy;
+    if laenge2 < 1e-9 {
+        return ((p[0] - ax).powi(2) + (p[1] - ay).powi(2)).sqrt();
+    }
+    let t = (((p[0] - ax) * dx + (p[1] - ay) * dy) / laenge2).clamp(0.0, 1.0);
+    ((p[0] - (ax + t * dx)).powi(2) + (p[1] - (ay + t * dy)).powi(2)).sqrt()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     North,
@@ -364,3 +475,51 @@ pub enum Side {
 }
 
 pub const SIDES: [Side; 4] = [Side::North, Side::South, Side::East, Side::West];
+
+#[cfg(test)]
+mod polygon_tests {
+    use super::rect_in_polygon_cm;
+    use crate::model::Rect;
+
+    /// Ein Quadrat von 400 x 400, damit sich jede Zahl im Kopf nachrechnen laesst.
+    fn raum() -> Vec<[i32; 2]> {
+        vec![[0, 0], [400, 0], [400, 400], [0, 400]]
+    }
+
+    /// Mittig: der Abstand zur naechsten Wand, minus dem einen Zentimeter Einzug, den auch die
+    /// Regel benutzt.
+    #[test]
+    fn mittig_ist_der_abstand_zur_naechsten_wand() {
+        let r = Rect {
+            x: 100,
+            y: 100,
+            w: 100,
+            d: 100,
+        };
+        assert_eq!(rect_in_polygon_cm(&r, &raum()), 101);
+    }
+
+    /// An der Wand ist die Reserve null und kein Verstoss.
+    #[test]
+    fn an_der_wand_ist_die_reserve_null() {
+        let r = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            d: 100,
+        };
+        assert_eq!(rect_in_polygon_cm(&r, &raum()), 1);
+    }
+
+    /// Herausragend ist die Zahl negativ und nennt die Tiefe des Ueberstands.
+    #[test]
+    fn heraus_ist_negativ_und_nennt_die_tiefe() {
+        let r = Rect {
+            x: 350,
+            y: 100,
+            w: 100,
+            d: 100,
+        };
+        assert_eq!(rect_in_polygon_cm(&r, &raum()), -49);
+    }
+}

@@ -568,6 +568,182 @@ export interface InteriorUncheckedRule {
   grund: string;
 }
 
+/**
+ * How much room a check has left — recorded whether it fires or not.
+ *
+ * A verdict is one bit, and one bit cannot say whether a layout passes by 2 cm or by 40. Both
+ * report `pass`, and only one survives a tape measure that was a centimetre out.
+ */
+export interface InteriorReserve {
+  rule: string;
+  item?: string;
+  /** The other side of the comparison where there is one: the opening, the built-in, the route. */
+  bezug?: string;
+  measured: number;
+  required: number;
+  grenze: 'mindestens' | 'hoechstens';
+  /** What is left. **Negative means missed by that much.** */
+  slack: number;
+  /** `cm`, `seiten`, `plaetze`, `stunden`. Only `cm` feeds `engste_reserve_cm`. */
+  einheit: string;
+  hart: boolean;
+  /** The measurement hit its horizon: it is *at least* this much, not exactly. */
+  gedeckelt: boolean;
+  /**
+   * Does a POSITIVE value here say anything about how much room is left?
+   *
+   * True for almost every rule. False for the room boundary: a wardrobe against the wall sits
+   * a centimetre from it because that is where it belongs. Counting that would make every
+   * sensibly furnished flat report "1 cm spare".
+   */
+  bindend: boolean;
+}
+
+/** How much measurement error a verdict survives. */
+export type InteriorHaltbarkeit =
+  | { art: 'faellt_durch' }
+  | { art: 'nichts_geraten' }
+  | { art: 'bis'; cm: number }
+  | { art: 'ueber_horizont'; horizont_cm: number };
+
+export interface InteriorRobustheit {
+  layout: string;
+  nominal_pass: boolean;
+  engste_reserve_cm: number | null;
+  haelt: InteriorHaltbarkeit;
+  /** Which rules break first, one centimetre past `haelt`. */
+  kippt_an: string[];
+  geraten: { reference: string; label: string; fields: string[] }[];
+  /** Pieces carrying their own `size:` in the layout — the perturbation does not reach them. */
+  nicht_variiert: string[];
+}
+
+/** Does the piece get through the door? */
+export type InteriorTuerpass =
+  | { art: 'passt'; luft_cm: number; tuer_cm: number }
+  | { art: 'passt_nicht'; fehlen_cm: number; tuer_cm: number }
+  | { art: 'zerlegt_getragen'; fehlen_cm: number; tuer_cm: number }
+  | { art: 'kein_eingang' };
+
+export interface InteriorEinbringung {
+  reference: string;
+  b: number;
+  t: number;
+  tuer: InteriorTuerpass;
+  erreichbar: boolean;
+  schritte?: number;
+  dreht: boolean;
+  grund?: string;
+}
+
+export interface InteriorSonnenstunde {
+  tag: string;
+  stunde_lokal: number;
+  hoehe_grad: number;
+  azimut_grad: number;
+  getroffen: string[];
+}
+
+export interface InteriorSonne {
+  layout: string;
+  stunden: InteriorSonnenstunde[];
+  treffer_je_stueck: Record<string, number>;
+  /** Glazing without measured heights throws no light here — and must. */
+  ohne_glashoehen: string[];
+}
+
+export interface InteriorDeklaration {
+  id: string;
+  label: string;
+  erklaert: boolean;
+  geraten_als: string;
+  geerbte_schwellen: [string, number][];
+  in_layouts: string[];
+  vorschlag?: {
+    open_clear: number | null;
+    access_sides: number | null;
+    access_clear: number | null;
+    expands_dir: string | null;
+    expands_to: number | null;
+    toml: string;
+  };
+  folgen?: {
+    layouts: number;
+    bestanden_vorher: number;
+    bestanden_nachher: number;
+    geaendert: string[];
+  };
+}
+
+export interface InteriorKaufposten {
+  id: string;
+  label: string;
+  prioritaet: string | null;
+  preis_cent: number | null;
+  in_layouts: string[];
+  kumuliert_cent: number;
+  erreichbar_nach_monaten: number | null;
+}
+
+export interface InteriorKaufreihenfolge {
+  posten: InteriorKaufposten[];
+  /** Needs with no price at all. They are **not** in the order — zero would buy them first. */
+  ohne_preis: InteriorKaufposten[];
+  saldo: { median_cent: number; monate: number; von: string; bis: string } | null;
+  /**
+   * Priority words in the data this ranking does not know.
+   *
+   * They sort last and are *reported* rather than silently ranked. That is the lesson from the
+   * bug itself: the first version knew three of the flat's eight words and still looked sorted.
+   */
+  unbekannte_prioritaeten: string[];
+}
+
+/**
+ * A long computation, addressed by number.
+ *
+ * The exhaustive search checks millions of candidates and takes minutes. An HTTP request held
+ * open that long is a bet on every proxy in between, which is why the search was reachable
+ * only from the command line until 2026-08-31 — the most expensive calculation in the
+ * capability, missing from the surface that needs it.
+ */
+export type InteriorAuftragsstand =
+  | { zustand: 'laeuft'; seit_ms: number }
+  | { zustand: 'fertig'; ergebnis: unknown }
+  | { zustand: 'gescheitert'; grund: string };
+
+export interface InteriorHit {
+  places: Record<string, [number, number]>;
+  soft: number;
+  bottleneck_cm: number;
+  engste_reserve_cm: number | null;
+  /** On the Pareto front: not worse than another under any weighting of the four goals. */
+  pareto: boolean;
+  wandkontakt_cm: number;
+}
+
+export interface InteriorSearchReport {
+  base: string;
+  moved: string[];
+  step: number;
+  candidates_after_filter: number;
+  fully_checked: number;
+  hits: InteriorHit[];
+  elapsed_ms: number;
+}
+
+export interface InteriorComposed {
+  places: [string, [number, number], number][];
+  pass: boolean;
+  hard: string[];
+  soft: string[];
+  wandkontakt_cm: number;
+  bottleneck_cm: number;
+  free_m2: number;
+  engste_reserve_cm: number | null;
+  pareto: boolean;
+}
+
 export interface InteriorLayoutSummary {
   id: string;
   name: string;
@@ -597,6 +773,15 @@ export interface InteriorLayoutDetail {
     nicht_geprueft: InteriorUncheckedRule[];
     /** Pieces in this layout that have already been decided against (`prioritaet: verworfen`). */
     veraltet: string[];
+    /** Every measurement with its threshold — the ones that passed too. */
+    reserven: InteriorReserve[];
+    /**
+     * The tightest hard measurement in cm: by how much this layout passes.
+     *
+     * `null` when no hard rule measured in centimetres — not `0`, which would read as "passes
+     * by nothing" where "nothing was measured" is meant. Negative when a hard rule is broken.
+     */
+    engste_reserve_cm: number | null;
     metrics: {
       room_area_m2: number;
       occupied_area_m2: number;
@@ -737,6 +922,53 @@ export const interior = {
     request<InteriorImpact>(
       `/interior/api/items/${encodeURIComponent(id)}/impact`,
       jsonInit('POST', patch),
+    ),
+
+  /** Up to how much measurement error the verdict holds, and what breaks first past it. */
+  toleranz: (layout: string) =>
+    request<InteriorRobustheit>(
+      `/interior/api/layouts/${encodeURIComponent(layout)}/toleranz`,
+    ),
+
+  /** When over the year each piece stands in direct sun. Needs `[lage]` in the flat's room.toml. */
+  sonne: (layout: string) =>
+    request<InteriorSonne>(`/interior/api/layouts/${encodeURIComponent(layout)}/sonne`),
+
+  /** Does each piece get through the door and to its place? */
+  einbringung: (layout: string) =>
+    request<InteriorEinbringung[]>(
+      `/interior/api/layouts/${encodeURIComponent(layout)}/einbringung`,
+    ),
+
+  /** The question before buying: does a piece this size fit through the entrance at all? */
+  passt: (b: number, t: number, zerlegbar = false) =>
+    request<InteriorTuerpass>(
+      `/interior/api/passt?b=${b}&t=${t}&zerlegbar=${zerlegbar}`,
+    ),
+
+  /** Who is still judged by name, what the line would say, and what it changes. */
+  deklaration: () => request<InteriorDeklaration[]>('/interior/api/deklaration'),
+
+  /** Which need first, cumulative, and when it is reached out of the monthly balance. */
+  kaufen: () => request<InteriorKaufreihenfolge>('/interior/api/kaufen'),
+
+  /** Start a search. Answers with a job number, not a result. */
+  search: (layout: string, move_refs: string[], step: number, limit: number) =>
+    request<{ auftrag: number }>(
+      '/interior/api/search',
+      jsonInit('POST', { layout, move_refs, step, limit }),
+    ),
+
+  /** Have the machine lay out the whole flat. Also a job: the beam search takes minutes. */
+  compose: (refs: string[], step: number, beam: number, limit: number) =>
+    request<{ auftrag: number }>(
+      '/interior/api/compose',
+      jsonInit('POST', { refs, step, beam, limit }),
+    ),
+
+  auftrag: (id: number) =>
+    request<{ id: number; stand: InteriorAuftragsstand }>(
+      `/interior/api/auftraege/${id}`,
     ),
 };
 

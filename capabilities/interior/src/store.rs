@@ -144,6 +144,17 @@ pub struct Item {
     /// Wohnung, und wie sie alle ist es freiwillig: wer nichts erklaert, wird weiter an der
     /// Wand gemessen.
     pub raumtrenner: Option<bool>,
+    /// Kommt zerlegt an oder laesst sich zum Tragen zerlegen.
+    ///
+    /// Betrifft genau eine Frage: `einbringung::durch_die_tuer`. Ein 140 cm breites Bett
+    /// passt nicht durch eine 100 cm breite Tuer und steht trotzdem in jedem Schlafzimmer —
+    /// es kommt in Teilen herein. Ohne diese Zeile meldet die Pruefung dort einen Verstoss,
+    /// der keiner ist, und wird deshalb nach dem dritten Mal nicht mehr gelesen.
+    ///
+    /// Freiwillig wie jedes Feld aus PRD Q61: wer nichts sagt, wird als ein Stueck getragen.
+    /// Das ist die vorsichtige Richtung — eine falsche Warnung kostet ein Nachdenken, eine
+    /// fehlende kostet den Schrank.
+    pub zerlegbar: Option<bool>,
 }
 
 impl Item {
@@ -315,6 +326,7 @@ impl Store {
                 access_sides       INTEGER,
                 access_clear       INTEGER,
                 raumtrenner        INTEGER,
+                zerlegbar          INTEGER,
                 bild               TEXT,
                 created_at         TEXT NOT NULL,
                 updated_at         TEXT NOT NULL
@@ -344,6 +356,7 @@ impl Store {
             prefix = prefix
         ))?;
         Self::add_column_if_missing(conn, prefix, "raumtrenner", "INTEGER")?;
+        Self::add_column_if_missing(conn, prefix, "zerlegbar", "INTEGER")?;
         Self::add_column_if_missing(conn, prefix, "bild", "TEXT")?;
         Ok(())
     }
@@ -398,14 +411,15 @@ impl Store {
                     quelle, gemessen_am, mitnahme, prioritaet, basiert_auf, ersetzt,
                     varianten, ziel, hinweis, begruendung, entscheidung_offen,
                     opens, open_clear, wall_ok, expands_dir, expands_to,
-                    access_sides, access_clear, raumtrenner, bild, created_at, updated_at
+                    access_sides, access_clear, raumtrenner, bild, zerlegbar,
+                    created_at, updated_at
                  ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                     ?11, ?12, ?13, ?14, ?15,
                     ?16, ?17, ?18, ?19, ?20,
                     ?21, ?22, ?23, ?24, ?25, ?26,
                     ?27, ?28, ?29, ?30, ?31,
-                    ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, {now}, {now}
+                    ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, {now}, {now}
                  )
                  ON CONFLICT(id) DO UPDATE SET
                     kind=excluded.kind, label=excluded.label, b=excluded.b, t=excluded.t,
@@ -431,6 +445,7 @@ impl Store {
                     expands_to=excluded.expands_to, access_sides=excluded.access_sides,
                     access_clear=excluded.access_clear,
                     raumtrenner=excluded.raumtrenner, bild=excluded.bild,
+                    zerlegbar=excluded.zerlegbar,
                     updated_at={now}",
                 p = p,
                 now = axon_store::now_offset("'+0 seconds'")
@@ -476,6 +491,7 @@ impl Store {
                 it.access_clear,
                 it.raumtrenner,
                 it.bild,
+                it.zerlegbar,
             ],
         )?;
         Ok(())
@@ -614,7 +630,7 @@ impl Store {
                     i.mitnahme, i.prioritaet, i.basiert_auf, i.ersetzt, i.varianten, i.ziel,
                     i.hinweis, i.begruendung, i.entscheidung_offen,
                     i.opens, i.open_clear, i.wall_ok, i.expands_dir, i.expands_to,
-                    i.access_sides, i.access_clear, i.raumtrenner, i.bild,
+                    i.access_sides, i.access_clear, i.raumtrenner, i.bild, i.zerlegbar,
                     (SELECT s.state FROM {p}_item_state s
                       WHERE s.item_id = i.id ORDER BY s.since DESC, s.id DESC LIMIT 1)
              FROM {p}_item i ORDER BY i.id"
@@ -627,7 +643,7 @@ impl Store {
                     .as_deref()
                     .and_then(Seite::parse))
             };
-            let state: Option<String> = row.get(40)?;
+            let state: Option<String> = row.get(41)?;
             Ok((
                 Item {
                     id: row.get(0)?,
@@ -670,6 +686,7 @@ impl Store {
                     access_clear: row.get(37)?,
                     raumtrenner: row.get(38)?,
                     bild: row.get(39)?,
+                    zerlegbar: row.get(40)?,
                 },
                 state.as_deref().and_then(State::parse),
             ))

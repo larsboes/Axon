@@ -238,7 +238,7 @@ fn kind_und_zustand_sind_zwei_tatsachen_und_nicht_eine() {
     // Bretter mit identischen Massen, von denen genau eines `raumtrenner = true` fuehrt. Die
     // Zahl steht hier fest, damit ein Import, der still Zeilen verliert, an ihr auffaellt —
     // sie mitwachsen zu lassen hiesse, die Pruefung abzuschaffen, die sie ist.
-    assert_eq!(m.catalogue.len(), 12);
+    assert_eq!(m.catalogue.len(), 18);
     let kind = |id: &str| m.catalogue.get(id).map(|i| i.kind);
     let state = |id: &str| m.states.get(id).copied();
 
@@ -262,7 +262,18 @@ fn kind_und_zustand_sind_zwei_tatsachen_und_nicht_eine() {
     // Und die Wunschliste ist genau die Menge, die B29 an ein Budget legt.
     let mut offen: Vec<&str> = m.wishlist().iter().map(|i| i.id.as_str()).collect();
     offen.sort_unstable();
-    assert_eq!(offen, ["stehlampe", "teppich"]);
+    assert_eq!(
+        offen,
+        [
+            "bilderleiste",
+            "deckenlampe",
+            "garderobenhaken",
+            "nachttisch",
+            "stehlampe",
+            "teppich",
+            "wandregal"
+        ]
+    );
 }
 
 /// Preise wandern in Cent, weil `finance` in Cent rechnet. 49,99 EUR sind 4999 Cent und nicht
@@ -480,5 +491,185 @@ fn mehrere_wohnungen_ohne_wahl_sind_ein_fehler() {
     assert!(
         text.contains("AXON_INTERIOR_FLAT"),
         "nennt den Ausweg: {text}"
+    );
+}
+
+// ---------------------------------------------------------------- die Reserven
+
+/// Ein Verdikt ist ein Bit, und ein Bit sagt nicht, ob es knapp war.
+///
+/// Diese Zahl ist der Grund, warum `Reserve` ueberhaupt existiert: zwei Layouts, die beide
+/// `pass` melden, koennen 0 cm und 80 cm Luft haben, und bis 2026-08-31 waren sie im Bericht
+/// dasselbe Wort. Geprueft wird die Eigenschaft, nicht der Wert — ein aufgeschriebener
+/// Zentimeterstand waere ein Protokoll dessen, was der Code tut, und kein Anspruch an ihn.
+#[test]
+fn ein_bestandenes_layout_sagt_um_wie_viel_es_besteht() {
+    let r = check("a-frei");
+    assert!(r.pass);
+    assert!(
+        !r.reserven.is_empty(),
+        "keine einzige Messung festgehalten — dann misst der Pruefer nichts, was er nennt"
+    );
+    let engste = r
+        .engste_reserve_cm
+        .expect("ein bestehendes Layout hat eine knappste harte Messung");
+    assert!(
+        engste >= 0,
+        "bestanden, aber die knappste harte Reserve ist {engste} cm"
+    );
+}
+
+/// Und umgekehrt: wo es reisst, ist die Reserve negativ und sagt, um wie viel.
+///
+/// `c-terrassentuer` stellt den Schrank in die Anlaufzone der Terrassentuer (R1, hart). Die
+/// zugehoerige Reserve muss die Eindringtiefe tragen, sonst ist sie eine Zahl, die nur im
+/// guten Fall stimmt.
+#[test]
+fn ein_harter_verstoss_macht_seine_reserve_negativ() {
+    let r = check("c-terrassentuer");
+    assert!(!r.pass);
+    let r1 = r
+        .reserven
+        .iter()
+        .find(|x| x.rule == "R1")
+        .expect("R1 wird gemessen, ob sie greift oder nicht");
+    assert!(
+        r1.slack < 0,
+        "R1 ist verletzt und die Reserve meldet {} cm",
+        r1.slack
+    );
+    assert!(
+        r.engste_reserve_cm.is_some_and(|c| c < 0),
+        "die knappste Reserve eines durchgefallenen Layouts kann nicht positiv sein"
+    );
+}
+
+/// Reserve und Verdikt duerfen sich nicht widersprechen — ueber ALLE Layouts der Wohnung.
+///
+/// Das ist die Invariante, die eine zweite Fassung derselben Messung verhindert: sagt eine
+/// harte Reserve „verfehlt", muss ein harter Verstoss derselben Regel danebenstehen. Ohne
+/// diesen Test koennte die Reserve still ihre eigene Geometrie entwickeln, und genau das ist
+/// der Fehler, gegen den diese Capability existiert.
+#[test]
+fn keine_harte_reserve_widerspricht_ihrem_verdikt() {
+    let m = model();
+    for name in m.layout_names().unwrap() {
+        let r = check(&name);
+        for res in r.reserven.iter().filter(|x| x.hart && x.slack < 0) {
+            assert!(
+                r.hard.iter().any(|v| v.rule == res.rule),
+                "{name}: Reserve {} meldet {} cm zu wenig, aber kein harter Verstoss nennt sie",
+                res.rule,
+                res.slack
+            );
+        }
+    }
+}
+
+/// Wo die Messung ihren Horizont erreicht, sagt sie das, statt eine Schranke als Messwert
+/// auszugeben.
+///
+/// In einem 600 x 450 cm grossen Raum mit drei Stuecken hat mindestens eine Seite mehr Luft,
+/// als `RESERVE_HORIZONT` weit gezaehlt wird. Ohne `gedeckelt` stuende dort eine exakte Zahl,
+/// die keine ist.
+#[test]
+fn eine_gedeckelte_messung_gibt_sich_als_untere_schranke_zu_erkennen() {
+    let r = check("a-frei");
+    let gedeckelt: Vec<&str> = r
+        .reserven
+        .iter()
+        .filter(|x| x.gedeckelt)
+        .map(|x| x.rule.as_str())
+        .collect();
+    assert!(
+        !gedeckelt.is_empty(),
+        "in diesem Raum muss mindestens eine Seitentiefe an den Horizont stossen"
+    );
+    for res in r.reserven.iter().filter(|x| x.gedeckelt) {
+        assert!(
+            res.slack >= interior::geometry::RESERVE_HORIZONT,
+            "{} ist als gedeckelt gemeldet, liegt aber unter dem Horizont",
+            res.rule
+        );
+    }
+}
+
+/// Ein durchgefallenes Layout hat eine negative Reserve — oder eine, die nicht in cm misst.
+///
+/// Der Anlass steht in der echten Wohnung und nicht in dieser Fixture: `d-schrank-trennt`
+/// meldete am 2026-08-31 **DURCHGEFALLEN und +5 cm Reserve zugleich**, weil die einzige
+/// verletzte Regel — `raumgrenze` — als einzige harte Regel gar nichts mass. Die knappste Zahl
+/// beschrieb dann die Regeln, die bestanden hatten.
+///
+/// Der Ausweg war nicht, den Test zu lockern, sondern `raumgrenze` messen zu lassen. Was hier
+/// steht, ist die Bedingung, unter der das so bleibt: `zugang` zaehlt Seiten und R9 Stunden, und
+/// beide koennen reissen, ohne dass ein Zentimeter negativ wird — deshalb ist die Aussage eine
+/// Oder-Aussage und keine Aufweichung.
+#[test]
+fn ein_durchgefallenes_layout_hat_keine_positive_knappste_reserve() {
+    let m = model();
+    for name in m.layout_names().unwrap() {
+        let r = check(&name);
+        if r.pass {
+            continue;
+        }
+        let in_cm = r.engste_reserve_cm.is_some_and(|c| c < 0);
+        let anders = r
+            .reserven
+            .iter()
+            .any(|x| x.hart && x.einheit != "cm" && x.slack < 0);
+        assert!(
+            in_cm || anders,
+            "{name} faellt durch, aber keine harte Reserve ist negativ: {:?}",
+            r.hard.iter().map(|v| &v.rule).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Ein Stueck, das aus dem Raum ragt, meldet die Tiefe seines Ueberstands.
+#[test]
+fn die_raumgrenze_misst_wie_weit_ein_stueck_heraussteht() {
+    let r = check("d-ausserhalb");
+    assert!(!r.pass);
+    let g = r
+        .reserven
+        .iter()
+        .find(|x| x.rule == "raumgrenze")
+        .expect("die Raumgrenze wird gemessen");
+    assert!(
+        g.slack < 0,
+        "das Bett ragt durch die Ostwand, die Reserve meldet {} cm",
+        g.slack
+    );
+}
+
+/// Eine Wand im Ruecken ist keine Enge.
+///
+/// `k-vitrine` stellt ein Stueck buendig an die Nordwand. Die Raumgrenze misst dort einen
+/// Zentimeter — den Einzug, mit dem die Regel selbst ihre Ecken prueft —, und wuerde sie
+/// mitzaehlen, meldete **jede vernuenftig eingerichtete Wohnung 1 cm Reserve**. Genau das ist
+/// am 2026-08-31 an der echten Wohnung passiert, eine Stunde nachdem die Messung dazukam: aus
+/// 9 cm wurden 1 cm, und die Zahl sagte nichts mehr.
+///
+/// Ein NEGATIVER Wert zaehlt weiter — herausragen ist ein Verstoss. Das prueft der Test
+/// darueber.
+#[test]
+fn eine_wand_im_ruecken_zieht_die_knappste_reserve_nicht_herunter() {
+    let r = check("k-vitrine");
+    assert!(r.pass);
+    let g = r
+        .reserven
+        .iter()
+        .find(|x| x.rule == "raumgrenze")
+        .expect("die Raumgrenze wird gemessen");
+    assert_eq!(
+        g.slack, 1,
+        "buendig an der Wand, also ein Zentimeter Einzug"
+    );
+    assert!(!g.bindend, "eine Wand im Ruecken ist kein knapper Platz");
+    assert!(
+        r.engste_reserve_cm.is_some_and(|c| c > 1),
+        "die knappste Reserve darf nicht die Wand sein: {:?}",
+        r.engste_reserve_cm
     );
 }

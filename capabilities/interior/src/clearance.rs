@@ -27,8 +27,8 @@
 //! erste vergessene waere eine still abgeschaltete Pruefung.
 
 use crate::geometry::{
-    clearance_field, free_depth_on_side, overlap_area, point_in_polygon, widest_path, Grid, Side,
-    RES, SIDES,
+    clearance_field, free_depth_on_side, overlap_area, point_in_polygon, rect_gap,
+    rect_in_polygon_cm, widest_path, Grid, Side, RES, SIDES,
 };
 use crate::model::{
     footprint, Catalogue, Layout, Model, ModelError, Opening, PlacedItem, Pt, Rect, Room, Rules,
@@ -46,6 +46,19 @@ pub use crate::model::Severity;
 /// den niemand nachschlagen kann. Was die Wohnung deklariert und hier fehlt, meldet
 /// `CheckResult::nicht_geprueft` als Luecke, statt es fallen zu lassen.
 pub const REGEL_IDS: &[&str] = &["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"];
+
+/// Hausregeln, die nur laufen, wenn die Wohnung sie **fuehrt**.
+///
+/// Der Unterschied zu `REGEL_IDS` ist nicht Bequemlichkeit, sondern eine Aussage darueber,
+/// wem die Regel gehoert. R1 bis R8 muss jede Wohnung beantworten — sie beschreiben Fragen,
+/// die in jeder Wohnung auftreten. R9 verlangt einen Standort, eine Nordrichtung und die
+/// Hoehen der Verglasung; eine Wohnung, die davon nichts weiss, soll nicht abbrechen, sondern
+/// schweigen.
+///
+/// Wird sie gefuehrt und fehlen die Angaben, ist das kein Schweigen mehr, sondern eine Luecke:
+/// dann steht sie in `nicht_geprueft` mit dem Grund. Genau die Unterscheidung, die B31 fuer
+/// R5 und R6 eingefuehrt hat.
+pub const OPTIONALE_REGEL_IDS: &[&str] = &["R9"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Violation {
@@ -115,6 +128,154 @@ pub fn harte_zonen(room: &Room, rules: &Rules) -> Result<Vec<Rect>, ModelError> 
     Ok(out)
 }
 
+/// In welche Richtung eine Schwelle wirkt.
+///
+/// Ohne diese Unterscheidung haette die Reserve ein Vorzeichen, das von der Regel abhaengt und
+/// nirgends steht: R3 begrenzt eine Hoehe nach OBEN, jede Abstandsregel eine Tiefe nach UNTEN,
+/// und `measured - required` ist genau bei einer der beiden falsch herum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Grenze {
+    /// Der gemessene Wert muss mindestens so gross sein wie der geforderte.
+    Mindestens,
+    /// Der gemessene Wert darf hoechstens so gross sein wie der geforderte.
+    Hoechstens,
+}
+
+/// Wie viel Luft eine Pruefung uebrig laesst — **auch dann, wenn sie besteht**.
+///
+/// Ein Verdikt ist ein Bit, und ein Bit beantwortet die Frage nicht, die beim Moebelkauf
+/// wirklich ansteht: besteht dieses Layout mit 2 cm oder mit 40? Beide melden `pass`, und nur
+/// eines ueberlebt ein Bandmass, das sich um einen Zentimeter geirrt hat.
+///
+/// Jede Stelle, die eine Zahl gegen eine Schwelle haelt, legt hier eine Zeile ab, ob sie
+/// ausloest oder nicht. Der Verstoss bleibt, was er war; die Reserve ist das, was vorher
+/// verworfen wurde, sobald der Vergleich `true` ergab.
+#[derive(Debug, Clone, Serialize)]
+pub struct Reserve {
+    pub rule: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// Der Gegenstand des Vergleichs, wo es einen gibt: die Oeffnung, der Einbau, die Route.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bezug: Option<String>,
+    pub measured: i32,
+    pub required: i32,
+    pub grenze: Grenze,
+    /// Was uebrig ist. **Negativ heisst: um so viel verfehlt** — dieselbe Zahl, die der
+    /// Verstoss daneben in Worten sagt.
+    pub slack: i32,
+    /// `cm`, `seiten`, `plaetze`. Nur `cm` geht in `engste_reserve_cm` ein: das Minimum aus
+    /// Zentimetern und Sitzplaetzen waere eine Zahl ohne Einheit.
+    pub einheit: &'static str,
+    /// Die Messung hat ihren Horizont erreicht: es ist **mindestens** so viel, nicht genau.
+    ///
+    /// `free_depth_on_side` hoert bei `RESERVE_HORIZONT` ueber der Schwelle auf zu zaehlen.
+    /// Ohne dieses Flag stuende in der Oberflaeche eine gemessene Zahl, wo eine untere Schranke
+    /// gemeint ist — und das ist genau die Sorte stiller Praezision, gegen die diese
+    /// Capability existiert.
+    pub gedeckelt: bool,
+    /// Waere eine Unterschreitung hart? Folgt bei Hausregeln der Wohnung, nicht dem Code.
+    pub hart: bool,
+    /// Sagt ein POSITIVER Wert hier etwas darueber, wie viel Luft noch ist?
+    ///
+    /// Fuer fast jede Regel ja. Fuer die Raumgrenze nein, und das ist keine Feinheit: ein
+    /// Schrank an der Wand hat einen Zentimeter Abstand zu ihr, weil er dort **hingehoert**.
+    /// Zaehlte das mit, meldete jede vernuenftig eingerichtete Wohnung „1 cm Reserve", und die
+    /// Zahl, die sagen soll, wie knapp ein Layout besteht, saehe in jedem Layout gleich aus.
+    /// Genau das ist am 2026-08-31 an der echten Wohnung passiert, eine Stunde nachdem die
+    /// Messung dazukam.
+    ///
+    /// Ein NEGATIVER Wert zaehlt immer: herausragen ist ein Verstoss, egal welche Regel.
+    pub bindend: bool,
+}
+
+/// Haelt eine Messung fest, ob sie nun ausloest oder nicht.
+#[allow(clippy::too_many_arguments)]
+fn merken(
+    out: &mut Vec<Reserve>,
+    rule: &str,
+    item: Option<&str>,
+    bezug: Option<&str>,
+    measured: i32,
+    required: i32,
+    grenze: Grenze,
+    einheit: &'static str,
+    hart: bool,
+) {
+    merken_bis(
+        out, rule, item, bezug, measured, required, grenze, einheit, hart, None, true,
+    )
+}
+
+/// Eine Messung, deren positiver Wert KEINE Reserve ist — siehe `Reserve::bindend`.
+#[allow(clippy::too_many_arguments)]
+fn merken_nur_verstoss(
+    out: &mut Vec<Reserve>,
+    rule: &str,
+    item: Option<&str>,
+    measured: i32,
+    einheit: &'static str,
+) {
+    merken_bis(
+        out,
+        rule,
+        item,
+        None,
+        measured,
+        0,
+        Grenze::Mindestens,
+        einheit,
+        true,
+        None,
+        false,
+    )
+}
+
+/// Wie `merken`, aber die Messung kennt einen Horizont und sagt, wenn sie ihn erreicht hat.
+#[allow(clippy::too_many_arguments)]
+fn merken_bis(
+    out: &mut Vec<Reserve>,
+    rule: &str,
+    item: Option<&str>,
+    bezug: Option<&str>,
+    measured: i32,
+    required: i32,
+    grenze: Grenze,
+    einheit: &'static str,
+    hart: bool,
+    deckel: Option<i32>,
+    bindend: bool,
+) {
+    let slack = match grenze {
+        Grenze::Mindestens => measured - required,
+        Grenze::Hoechstens => required - measured,
+    };
+    out.push(Reserve {
+        rule: rule.to_string(),
+        item: item.map(str::to_string),
+        bezug: bezug.map(str::to_string),
+        measured,
+        required,
+        grenze,
+        slack,
+        einheit,
+        hart,
+        gedeckelt: deckel == Some(measured),
+        bindend,
+    });
+}
+
+/// Bis wohin eine Seitentiefe gemessen wird, wenn ihre Reserve eine Zahl tragen soll.
+fn horizont(want: i32) -> i32 {
+    want + crate::geometry::RESERVE_HORIZONT
+}
+
+/// Ob eine Hausregel hart ist — aus der Wohnung, nicht aus dem Code.
+fn ist_hart(rules: &Rules, id: &str) -> Result<bool, ModelError> {
+    Ok(rules.regel(id)?.severity()? == Severity::Hart)
+}
+
 /// Legt einen Verstoss in `hart` oder `weich`, je nach seiner eigenen Schwere.
 ///
 /// Die Sortierung folgt jetzt der Datei, also darf sie nicht mehr an der Aufrufstelle stehen:
@@ -171,6 +332,14 @@ pub struct CheckResult {
     /// „bestanden" heisst ab hier „bestanden, gemessen an den Regeln, die gemessen wurden".
     /// Die reale Wohnung fuehrt zwei davon (R5, R6), und vor 2026-08-31 sagte das nichts.
     pub nicht_geprueft: Vec<UngeprueteRegel>,
+    /// Jede Messung mit ihrer Schwelle, bestanden oder nicht.
+    pub reserven: Vec<Reserve>,
+    /// Die knappste harte Messung in cm. **Das ist die Zahl, um die dieses Layout besteht.**
+    ///
+    /// `None`, wenn keine harte Regel in Zentimetern gemessen hat — nicht `0`, weil das
+    /// „knapp bestanden" hiesse, wo „nichts gemessen" gemeint ist. Negativ, wenn ein harter
+    /// Verstoss offen ist: dann sagt sie, um wie viel.
+    pub engste_reserve_cm: Option<i32>,
 }
 
 /// Eine Regel, die auf dieses Layout nicht angewendet wurde, und warum nicht.
@@ -219,7 +388,16 @@ pub fn kind_of(p: &PlacedItem) -> Kind {
             _ => Kind::Other,
         };
     }
-    let r = p.reference.as_str();
+    kind_of_name(&p.reference)
+}
+
+/// Dieselbe Heuristik, nur ueber den Namen — fuer Eintraege, die noch nirgends stehen.
+///
+/// `deklaration.rs` braucht sie, um einem Inventareintrag zu sagen, wofuer diese Maschine ihn
+/// haelt, solange er selbst nichts erklaert. Eine zweite Abschrift derselben Praefixliste waere
+/// genau die Doppelung, die `^couch` gegen `couchtisch` einmal gekostet hat.
+pub fn kind_of_name(reference: &str) -> Kind {
+    let r = reference;
     if r.starts_with("bett") {
         Kind::Bed
     } else if r.starts_with("schreibtisch") || r.starts_with("buerostuhl") {
@@ -256,16 +434,21 @@ struct Placed<'a> {
     rect: Rect,
 }
 
-struct Segment {
-    a: Pt,
-    b: Pt,
-    normal: [f64; 2],
+/// Eine Oeffnung als Strecke in Raumkoordinaten, mit der Normalen, die nach INNEN zeigt.
+///
+/// Oeffentlich, weil `einbringung.rs` dieselbe Frage stellt — wo im Raum liegt diese Tuer und
+/// wo ist innen — und eine zweite Fassung davon genau die Doppelung waere, gegen die diese
+/// Capability existiert.
+pub struct Segment {
+    pub a: Pt,
+    pub b: Pt,
+    pub normal: [f64; 2],
 }
 
 /// Loest eine Oeffnung in eine Strecke in Raumkoordinaten auf, samt der Normalen, die nach
 /// INNEN zeigt. Die Normale wird probiert, nicht angenommen: `west` und `sued_hauptraum`
 /// laufen entgegen der Kantenrichtung des Polygons.
-fn opening_segment(room: &Room, o: &Opening) -> Option<Segment> {
+pub fn opening_segment(room: &Room, o: &Opening) -> Option<Segment> {
     let (a, b) = room.opening_span(o)?;
     let len = (((b[0] - a[0]).pow(2) + (b[1] - a[1]).pow(2)) as f64)
         .sqrt()
@@ -311,7 +494,12 @@ fn als_side(s: Seite) -> Side {
 /// * `access_sides` / `access_clear` — wie viele Seiten begehbar sein muessen und wie tief.
 /// * `expands` — der zweite Zustand eines Klappmoebels. `to` ist die Gesamttiefe ausgeklappt,
 ///   also ist der zusaetzlich noetige Platz `to` minus der Tiefe in dieser Richtung.
-fn eigene_ansprueche(p: &Placed, grid: &Grid, hard: &mut Vec<Violation>) -> bool {
+fn eigene_ansprueche(
+    p: &Placed,
+    grid: &Grid,
+    hard: &mut Vec<Violation>,
+    reserven: &mut Vec<Reserve>,
+) -> bool {
     let Some(it) = p.item else { return false };
     let deklariert =
         it.open_clear.is_some() || it.access_sides.is_some() || it.expands_to.is_some();
@@ -323,20 +511,34 @@ fn eigene_ansprueche(p: &Placed, grid: &Grid, hard: &mut Vec<Violation>) -> bool
     if let Some(want) = it.open_clear {
         let seite = it.opens.map(|s| s.gedreht(p.it.rot));
         let bindend = it.wall_ok == Some(false);
+        let deckel = horizont(want);
         let (gemessen, wo) = match (seite, bindend) {
             (Some(s), true) => (
-                free_depth_on_side(grid, &p.rect, als_side(s), want),
+                free_depth_on_side(grid, &p.rect, als_side(s), deckel),
                 s.as_str().to_string(),
             ),
             _ => (
                 SIDES
                     .iter()
-                    .map(|s| free_depth_on_side(grid, &p.rect, *s, want))
+                    .map(|s| free_depth_on_side(grid, &p.rect, *s, deckel))
                     .max()
                     .unwrap_or(0),
                 "seiner besten Seite".to_string(),
             ),
         };
+        merken_bis(
+            reserven,
+            "oeffnen",
+            Some(name),
+            Some(&wo),
+            gemessen,
+            want,
+            Grenze::Mindestens,
+            "cm",
+            true,
+            Some(deckel),
+            true,
+        );
         if gemessen < want {
             hard.push(Violation {
                 rule: "oeffnen".into(),
@@ -358,6 +560,17 @@ fn eigene_ansprueche(p: &Placed, grid: &Grid, hard: &mut Vec<Violation>) -> bool
             .iter()
             .filter(|s| free_depth_on_side(grid, &p.rect, **s, want) >= want)
             .count() as i32;
+        merken(
+            reserven,
+            "zugang",
+            Some(name),
+            None,
+            genug,
+            n,
+            Grenze::Mindestens,
+            "seiten",
+            true,
+        );
         if genug < n {
             hard.push(Violation {
                 rule: "zugang".into(),
@@ -381,7 +594,21 @@ fn eigene_ansprueche(p: &Placed, grid: &Grid, hard: &mut Vec<Violation>) -> bool
         };
         let zusatz = to - tiefe;
         if zusatz > 0 {
-            let frei = free_depth_on_side(grid, &p.rect, als_side(seite), zusatz);
+            let deckel = horizont(zusatz);
+            let frei = free_depth_on_side(grid, &p.rect, als_side(seite), deckel);
+            merken_bis(
+                reserven,
+                "ausklappen",
+                Some(name),
+                Some(seite.as_str()),
+                frei,
+                zusatz,
+                Grenze::Mindestens,
+                "cm",
+                true,
+                Some(deckel),
+                true,
+            );
             if frei < zusatz {
                 hard.push(Violation {
                     rule: "ausklappen".into(),
@@ -482,6 +709,8 @@ pub fn check_layout(
     let cat: &Catalogue = &model.catalogue;
     let mut hard: Vec<Violation> = Vec::new();
     let mut soft: Vec<Violation> = Vec::new();
+    // Jede Messung, nicht nur die gescheiterten. Siehe `Reserve`.
+    let mut reserven: Vec<Reserve> = Vec::new();
     // Regeln, die laufen wollten und nicht konnten. Wird unten mit den gar nicht
     // implementierten zusammengelegt — fuer den Leser ist beides dasselbe: nicht gemessen.
     let mut ausgefallen: Vec<(String, String)> = Vec::new();
@@ -525,6 +754,24 @@ pub fn check_layout(
     }
 
     // --- Raumgrenze und gegenseitige Ueberlappung ---------------------------
+    //
+    // Das knappste Stueck an der Wand, als eine Reserve. Sie kam am 2026-08-31 dazu, und der
+    // Anlass war ein Bericht ueber die echte Wohnung: ein Layout meldete DURCHGEFALLEN und
+    // gleichzeitig „5 cm Reserve", weil die einzige verletzte Regel als einzige harte Regel
+    // gar nichts mass. Eine knappste Zahl, die die verletzte Regel auslaesst, ist schlimmer
+    // als keine — sie wird gelesen.
+    if let Some(engstes) = placed
+        .iter()
+        .min_by_key(|p| rect_in_polygon_cm(&p.rect, &room.hauptraum.polygon))
+    {
+        merken_nur_verstoss(
+            &mut reserven,
+            "raumgrenze",
+            Some(&engstes.it.reference),
+            rect_in_polygon_cm(&engstes.rect, &room.hauptraum.polygon),
+            "cm",
+        );
+    }
     for p in &placed {
         let corners = [
             [p.rect.x + 1, p.rect.y + 1],
@@ -550,9 +797,17 @@ pub fn check_layout(
             });
         }
     }
+    // Der engste Abstand zwischen zwei Stuecken, als EINE Reserve und nicht als n².
+    // Ein Paar je Kombination waere bei 13 Stuecken 78 Zeilen, von denen 77 nichts sagen; was
+    // interessiert, ist die Stelle, an der es zuerst reisst.
+    let mut engstes_paar: Option<(i32, String)> = None;
     for i in 0..placed.len() {
         for j in (i + 1)..placed.len() {
             let (a, b) = (&placed[i], &placed[j]);
+            let gap = rect_gap(&a.rect, &b.rect);
+            if engstes_paar.as_ref().is_none_or(|(g, _)| gap < *g) {
+                engstes_paar = Some((gap, format!("{} / {}", a.it.reference, b.it.reference)));
+            }
             if a.rect.overlaps(&b.rect) {
                 hard.push(Violation {
                     rule: "kollision".into(),
@@ -572,6 +827,20 @@ pub fn check_layout(
         }
     }
 
+    if let Some((gap, paar)) = engstes_paar {
+        merken(
+            &mut reserven,
+            "kollision",
+            None,
+            Some(&paar),
+            gap,
+            0,
+            Grenze::Mindestens,
+            "cm",
+            true,
+        );
+    }
+
     // --- R1 / R2 / R7: Anlauf- und Sperrzonen -------------------------------
     for o in &room.oeffnungen {
         let Some(depth) = o.freihaltezone else {
@@ -581,6 +850,20 @@ pub fn check_layout(
             continue;
         };
         let zone = approach_rect(&seg, depth);
+        // Das naechste Moebel an dieser Zone, ob es sie nun beruehrt oder nicht.
+        if let Some(naechstes) = placed.iter().min_by_key(|p| rect_gap(&p.rect, &zone)) {
+            merken(
+                &mut reserven,
+                "R1",
+                Some(&naechstes.it.reference),
+                Some(&o.id),
+                rect_gap(&naechstes.rect, &zone),
+                0,
+                Grenze::Mindestens,
+                "cm",
+                ist_hart(rules, "R1")?,
+            );
+        }
         for p in &placed {
             if p.rect.overlaps(&zone) {
                 einsortieren(
@@ -604,6 +887,19 @@ pub fn check_layout(
     for o in &room.oeffnungen {
         let Some(sp) = o.sperrflaeche else { continue };
         let zone = sp.rect();
+        if let Some(naechstes) = placed.iter().min_by_key(|p| rect_gap(&p.rect, &zone)) {
+            merken(
+                &mut reserven,
+                "R2",
+                Some(&naechstes.it.reference),
+                Some(&o.id),
+                rect_gap(&naechstes.rect, &zone),
+                0,
+                Grenze::Mindestens,
+                "cm",
+                ist_hart(rules, "R2")?,
+            );
+        }
         for p in &placed {
             if p.rect.overlaps(&zone) {
                 einsortieren(
@@ -633,6 +929,19 @@ pub fn check_layout(
         };
         let depth = rules.abstand(&zone_decl.abstand)?;
         let zone = anlauf_rect(&f.rect(), zone_decl.seite, depth);
+        if let Some(naechstes) = placed.iter().min_by_key(|p| rect_gap(&p.rect, &zone)) {
+            merken(
+                &mut reserven,
+                "R7",
+                Some(&naechstes.it.reference),
+                Some(&f.id),
+                rect_gap(&naechstes.rect, &zone),
+                0,
+                Grenze::Mindestens,
+                "cm",
+                ist_hart(rules, "R7")?,
+            );
+        }
         for p in &placed {
             if p.rect.overlaps(&zone) {
                 einsortieren(
@@ -678,6 +987,22 @@ pub fn check_layout(
                 ),
             ));
         }
+        if let (Some(h), true) = (p.h, p.rect.overlaps(&corridor)) {
+            // Die einzige Schwelle, die nach oben begrenzt. Ohne `Grenze` traege ihre Reserve
+            // das falsche Vorzeichen, und ein 80 cm hohes Lowboard im Korridor sähe knapper
+            // aus als ein 200 cm hoher Schrank.
+            merken(
+                &mut reserven,
+                "R3",
+                Some(&p.it.reference),
+                Some("lichtkorridor"),
+                h,
+                lc.max_hoehe,
+                Grenze::Hoechstens,
+                "cm",
+                ist_hart(rules, "R3")?,
+            );
+        }
         if let Some(h) = p.h {
             if h > lc.max_hoehe && p.rect.overlaps(&corridor) {
                 einsortieren(
@@ -707,6 +1032,23 @@ pub fn check_layout(
     {
         if let Some(seg) = opening_segment(room, glaz) {
             let band = approach_rect(&seg, 20);
+            if let Some(naechstes) = placed
+                .iter()
+                .filter(|p| p.kind == Kind::Bed)
+                .min_by_key(|p| rect_gap(&p.rect, &band))
+            {
+                merken(
+                    &mut reserven,
+                    "R4",
+                    Some(&naechstes.it.reference),
+                    Some(&glaz.id),
+                    rect_gap(&naechstes.rect, &band),
+                    0,
+                    Grenze::Mindestens,
+                    "cm",
+                    ist_hart(rules, "R4")?,
+                );
+            }
             for p in placed.iter().filter(|p| p.kind == Kind::Bed) {
                 if p.rect.overlaps(&band) {
                     einsortieren(
@@ -850,12 +1192,70 @@ pub fn check_layout(
         }
     }
 
+    // --- R9: kein Dauersonnenplatz am Schreibtisch (nur wenn die Wohnung sie fuehrt) ---
+    //
+    // Die erste Regel dieser Maschine, die ein Datum kennt. R5 fragt, auf welcher Achse die
+    // Verglasung liegt — eine Aussage ueber die Aufstellung, die ohne Ort und Jahreszeit
+    // auskommt und deshalb auch nicht beantworten kann, ob im Maerz um neun die Sonne auf dem
+    // Bildschirm steht. R9 rechnet den Sonnenstand und den Lichtfleck auf dem Boden.
+    if rules.regel("R9").is_ok() {
+        let desks: Vec<&Placed> = placed.iter().filter(|p| p.kind == Kind::Desk).collect();
+        match (model.room.lage, rules.sonne, desks.is_empty()) {
+            (_, _, true) => {}
+            (None, _, _) => ausgefallen.push((
+                "R9".to_string(),
+                "room.toml fuehrt kein [lage] — ohne Breite, Laenge und Nordrichtung gibt es \
+                 keinen Sonnenstand"
+                    .to_string(),
+            )),
+            (_, None, _) => ausgefallen.push((
+                "R9".to_string(),
+                "rules.toml fuehrt R9, aber keinen [sonne]-Block mit der Stundenschwelle"
+                    .to_string(),
+            )),
+            (Some(_), Some(regel), false) => {
+                let nenner = crate::sonne::gepruefte_stunden();
+                for p in desks {
+                    let n = crate::sonne::stunden_in_der_sonne(model, &p.rect)?;
+                    merken(
+                        &mut reserven,
+                        "R9",
+                        Some(&p.it.reference),
+                        Some("sonnenstunden"),
+                        n as i32,
+                        regel.max_stunden_am_schreibtisch as i32,
+                        Grenze::Hoechstens,
+                        "stunden",
+                        ist_hart(rules, "R9")?,
+                    );
+                    if n > regel.max_stunden_am_schreibtisch {
+                        einsortieren(
+                            haus_regel(
+                                rules,
+                                "R9",
+                                Some(p.it.reference.clone()),
+                                format!(
+                                    "\"{}\" liegt in {n} von {nenner} geprueften Stunden in direkter Sonne, erlaubt sind {}",
+                                    p.it.reference, regel.max_stunden_am_schreibtisch
+                                ),
+                                Some(n as i32),
+                                Some(regel.max_stunden_am_schreibtisch as i32),
+                            )?,
+                            &mut hard,
+                            &mut soft,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // --- Zugangsabstaende ----------------------------------------------------
     for p in &placed {
         // Sagt das Stueck selbst, was es braucht, gilt das und sonst nichts. Beides zu pruefen
         // hiesse, ein Moebel gegen zwei Regelsaetze zu messen und den strengeren gewinnen zu
         // lassen — dann waere die Deklaration keine Ersetzung, sondern eine Verschaerfung.
-        if eigene_ansprueche(p, &grid, &mut hard) {
+        if eigene_ansprueche(p, &grid, &mut hard, &mut reserven) {
             continue;
         }
         match p.kind {
@@ -867,11 +1267,38 @@ pub fn check_layout(
                 } else {
                     [Side::West, Side::East]
                 };
+                let deckel = horizont(want.max(second));
                 let mut depths: Vec<i32> = long
                     .iter()
-                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, want))
+                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, deckel))
                     .collect();
                 depths.sort_unstable_by(|a, b| b.cmp(a));
+                merken_bis(
+                    &mut reserven,
+                    "bett_zugang",
+                    Some(&p.it.reference),
+                    Some("beste laengsseite"),
+                    depths[0],
+                    want,
+                    Grenze::Mindestens,
+                    "cm",
+                    true,
+                    Some(deckel),
+                    true,
+                );
+                merken_bis(
+                    &mut reserven,
+                    "bett_zugang",
+                    Some(&p.it.reference),
+                    Some("zweite laengsseite"),
+                    depths[1],
+                    second,
+                    Grenze::Mindestens,
+                    "cm",
+                    true,
+                    Some(deckel),
+                    true,
+                );
                 if depths[0] < want {
                     hard.push(Violation {
                         rule: "bett_zugang".into(),
@@ -903,11 +1330,25 @@ pub fn check_layout(
             }
             Kind::Desk => {
                 let want = rules.abstand("schreibtisch_stuhlzone")?;
+                let deckel = horizont(want);
                 let best = SIDES
                     .iter()
-                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, want))
+                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, deckel))
                     .max()
                     .unwrap_or(0);
+                merken_bis(
+                    &mut reserven,
+                    "stuhlzone",
+                    Some(&p.it.reference),
+                    None,
+                    best,
+                    want,
+                    Grenze::Mindestens,
+                    "cm",
+                    true,
+                    Some(deckel),
+                    true,
+                );
                 if best < want {
                     hard.push(Violation {
                         rule: "stuhlzone".into(), severity: Severity::Hart,
@@ -920,11 +1361,25 @@ pub fn check_layout(
             }
             Kind::Wardrobe => {
                 let want = rules.abstand("schrank_tuer_oeffnen")?;
+                let deckel = horizont(want);
                 let best = SIDES
                     .iter()
-                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, want))
+                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, deckel))
                     .max()
                     .unwrap_or(0);
+                merken_bis(
+                    &mut reserven,
+                    "schrank_tuer",
+                    Some(&p.it.reference),
+                    None,
+                    best,
+                    want,
+                    Grenze::Mindestens,
+                    "cm",
+                    true,
+                    Some(deckel),
+                    true,
+                );
                 if best < want {
                     hard.push(Violation {
                         rule: "schrank_tuer".into(),
@@ -951,11 +1406,25 @@ pub fn check_layout(
                     } else {
                         [Side::West, Side::East]
                     };
+                    let deckel = horizont(want);
                     let best = long
                         .iter()
-                        .map(|s| free_depth_on_side(&grid, &p.rect, *s, want))
+                        .map(|s| free_depth_on_side(&grid, &p.rect, *s, deckel))
                         .max()
                         .unwrap_or(0);
+                    merken_bis(
+                        &mut reserven,
+                        "R8",
+                        Some(&p.it.reference),
+                        Some("beste laengsseite"),
+                        best,
+                        want,
+                        Grenze::Mindestens,
+                        "cm",
+                        ist_hart(rules, "R8")?,
+                        Some(deckel),
+                        true,
+                    );
                     if best < want {
                         // Bis 2026-08-31 hiess dieser Verstoss `couch_ausklappen`, waehrend
                         // jede rules.toml dieselbe Regel als R8 fuehrte. Zwei Namen fuer eine
@@ -980,12 +1449,37 @@ pub fn check_layout(
             // Sitzplatzzahl und kein Verstoss: ein Wandklapptisch hat legitim eine Seite.
             Kind::Table => {
                 let want = rules.abstand("esstisch_stuhl_ausziehen")?;
+                let deckel = horizont(want);
                 let sides: Vec<i32> = SIDES
                     .iter()
-                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, want))
+                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, deckel))
                     .collect();
                 let best = *sides.iter().max().unwrap_or(&0);
                 let seats = sides.iter().filter(|d| **d >= want).count();
+                merken_bis(
+                    &mut reserven,
+                    "stuhl_ausziehen",
+                    Some(&p.it.reference),
+                    Some("beste seite"),
+                    best,
+                    want,
+                    Grenze::Mindestens,
+                    "cm",
+                    true,
+                    Some(deckel),
+                    true,
+                );
+                merken(
+                    &mut reserven,
+                    "stuhl_ausziehen",
+                    Some(&p.it.reference),
+                    Some("sitzplaetze"),
+                    seats as i32,
+                    2,
+                    Grenze::Mindestens,
+                    "plaetze",
+                    false,
+                );
                 if seats == 0 {
                     hard.push(Violation {
                         rule: "stuhl_ausziehen".into(), severity: Severity::Hart,
@@ -1014,6 +1508,17 @@ pub fn check_layout(
                         .max(p.rect.y - c.rect.bottom())
                         .max(0);
                     let gap = (((dx * dx + dy * dy) as f64).sqrt()).round() as i32;
+                    merken(
+                        &mut reserven,
+                        "couchtisch_abstand",
+                        Some(&p.it.reference),
+                        Some(&c.it.reference),
+                        gap,
+                        want,
+                        Grenze::Mindestens,
+                        "cm",
+                        false,
+                    );
                     if gap < want {
                         soft.push(Violation {
                             rule: "couchtisch_abstand".into(),
@@ -1082,6 +1587,19 @@ pub fn check_layout(
             to: to.into(),
             width_cm: width,
         });
+        // Kein Weg ist null Breite und nicht „nicht gemessen": die Route wurde gesucht und es
+        // gibt sie nicht, was die knappste denkbare Reserve ist und nicht die fehlende.
+        merken(
+            &mut reserven,
+            "laufweg",
+            None,
+            Some(&format!("{from} → {to}")),
+            width.unwrap_or(0),
+            rules.laufwege.haupt_min,
+            Grenze::Mindestens,
+            "cm",
+            true,
+        );
         match width {
             None => hard.push(Violation {
                 rule: "laufweg".into(),
@@ -1133,12 +1651,32 @@ pub fn check_layout(
         })
         .collect();
 
+    // Nur Zentimeter. Das Minimum aus einer Tiefe und einer Sitzplatzzahl waere eine Zahl
+    // ohne Einheit, und sie stuende an der Stelle, an der die Oberflaeche „so knapp besteht
+    // dieses Layout" schreibt.
+    // Was diese Maschine ueberhaupt prueft — die Pflichtregeln plus die optionalen. Ohne die
+    // zweite Haelfte meldete eine gefuehrte und tatsaechlich gelaufene R9 sich selbst als
+    // ungeprueft.
+    let geprueft: Vec<&str> = REGEL_IDS
+        .iter()
+        .chain(OPTIONALE_REGEL_IDS.iter())
+        .copied()
+        .collect();
+
+    let engste_reserve_cm = reserven
+        .iter()
+        .filter(|r| r.hart && r.einheit == "cm" && (r.bindend || r.slack < 0))
+        .map(|r| r.slack)
+        .min();
+
     Ok(CheckResult {
         layout: layout.name.clone(),
         pass: hard.is_empty(),
         hard,
         soft,
         uncertainties,
+        reserven,
+        engste_reserve_cm,
         metrics: Metrics {
             room_area_m2: room.area_m2(),
             occupied_area_m2: occupied as f64 / 10_000.0,
@@ -1155,7 +1693,7 @@ pub fn check_layout(
             .map(|p| p.it.reference.clone())
             .collect(),
         nicht_geprueft: rules
-            .nicht_geprueft(REGEL_IDS)
+            .nicht_geprueft(&geprueft)
             .into_iter()
             .map(|r| UngeprueteRegel {
                 rule: r.id.clone(),

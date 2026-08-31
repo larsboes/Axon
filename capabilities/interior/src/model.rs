@@ -78,6 +78,15 @@ pub struct Opening {
     /// laeuft R6 nicht und der Bericht sagt, dass sie fehlt.
     #[serde(default)]
     pub eingang: Option<bool>,
+    /// Unter- und Oberkante der Verglasung ueber dem Boden, in cm.
+    ///
+    /// Nur fuer `sonne.rs`, und dort unverzichtbar: die Ausdehnung eines Lichtflecks haengt
+    /// linear an beiden. Eine Fensterhoehe anzunehmen hiesse, den Schattenwurf auf den
+    /// Zentimeter genau aus einer Erfindung zu rechnen.
+    #[serde(default)]
+    pub glas_von_cm: Option<i32>,
+    #[serde(default)]
+    pub glas_bis_cm: Option<i32>,
     #[serde(default)]
     pub schwenk: Option<String>,
     #[serde(default)]
@@ -257,9 +266,34 @@ pub struct Todo {
     pub offen: Vec<String>,
 }
 
+/// Wo die Wohnung auf der Erde steht und wie ihr Plan zur Himmelsrichtung liegt.
+///
+/// Ohne diesen Block rechnet `sonne.rs` nicht. Das ist Absicht: ein erfundener Standort
+/// ergaebe einen Lichtfleck auf den Zentimeter genau, der auf nichts beruht.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct Lage {
+    /// Geographische Breite in Grad, Nord positiv.
+    pub breite: f64,
+    /// Geographische Laenge in Grad, Ost positiv.
+    pub laenge: f64,
+    /// Der Abstand der Ortszeit zu UTC in Stunden, **einschliesslich Sommerzeit**.
+    ///
+    /// Eine Zahl und keine Zeitzonendatenbank: diese Capability haengt an keiner solchen, und
+    /// wer die Uhrzeiten als Sommerzeit meint, traegt hier die Sommerzeit ein.
+    pub utc_offset_h: f64,
+    /// Welche Kompassrichtung im Plan nach oben zeigt (Richtung -y), in Grad.
+    ///
+    /// 0 heisst: oben ist Norden. Ohne diese Zahl waere jede Himmelsrichtung im Plan geraten,
+    /// und `room.toml` haelt bereits `nord`, `ost`, `sued`, `west` als reine PLANrichtungen.
+    #[serde(default)]
+    pub nordrichtung_grad: f64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Room {
     pub flat: FlatMeta,
+    #[serde(default)]
+    pub lage: Option<Lage>,
     pub hauptraum: Hauptraum,
     #[serde(default)]
     pub zonen: BTreeMap<String, ZoneNamed>,
@@ -376,8 +410,23 @@ impl Regel {
     }
 }
 
+/// Was die Wohnung ueber Sonne am Arbeitsplatz sagt (Regel R9).
+///
+/// Eigener Block und keine Zeile in `[abstaende]`: dort stehen Zentimeter, und das hier sind
+/// Stunden. Eine Schwelle in der falschen Einheit ist die Sorte Zahl, die beim Lesen stimmt
+/// und beim Rechnen nicht.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct Sonnenregel {
+    /// Wie viele der geprueften Stunden ein Schreibtisch hoechstens in direkter Sonne liegen
+    /// darf. Der Nenner ist `sonne::gepruefte_stunden()`.
+    pub max_stunden_am_schreibtisch: usize,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Rules {
+    /// Nur gesetzt, wenn die Wohnung R9 fuehrt. Fehlt sie, laeuft die Regel nicht und sagt das.
+    #[serde(default)]
+    pub sonne: Option<Sonnenregel>,
     pub laufwege: Laufwege,
     /// Absichtlich eine Map: jede Distanz wird ueber ihren Namen gelesen, damit eine Regel,
     /// die einen Wert erfindet statt ihn nachzuschlagen, beim Lesen auffaellt.

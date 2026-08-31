@@ -12,6 +12,20 @@
 id   = "muster"
 name = "Musterwohnung (erfunden, fuer Tests)"
 
+# Wo diese erfundene Wohnung steht, und wie ihr Plan zur Himmelsrichtung liegt. Ohne diesen
+# Block rechnet `sonne.rs` nicht — ein erfundener Standort ergaebe einen Lichtfleck auf den
+# Zentimeter genau, der auf nichts beruht. Erfunden ist er hier trotzdem, wie alles hier:
+# gemessen wird an dieser Datei die MASCHINE und keine Einrichtung.
+#
+# `nordrichtung_grad = 0` heisst: oben im Plan ist Norden. Damit zeigt die Westwand nach
+# Westen, und die Terrassentuer bekommt Nachmittagssonne — was `[licht]` weiter unten seit
+# jeher als Prosa behauptet und jetzt jemand nachrechnen kann.
+[lage]
+breite = 52.0
+laenge = 13.0
+utc_offset_h = 2
+nordrichtung_grad = 0
+
 [hauptraum]
 polygon    = [[0, 0], [600, 0], [600, 450], [0, 450]]
 hoehe      = 250
@@ -67,6 +81,11 @@ bis = 300
 breite = 180
 typ = "glastuer"
 freihaltezone = 90
+# Bodentief bis 210 cm. Beide Zahlen gehen linear in die Groesse des Lichtflecks ein, deshalb
+# steht hier keine angenommene Fensterhoehe: ohne sie rechnet `sonne.rs` fuer diese Oeffnung
+# nichts und meldet, dass sie fehlt.
+glas_von_cm = 0
+glas_bis_cm = 210
 
 [[oeffnungen]]
 id = "eingangstuer"
@@ -98,6 +117,9 @@ von = 500
 bis = 580
 breite = 80
 typ = "fenster"
+# Ein Fenster ueber der Arbeitsplatte: Bruestung 90, Sturz 150.
+glas_von_cm = 90
+glas_bis_cm = 150
 
 [[fix_moebel]]
 id = "kuechenzeile"

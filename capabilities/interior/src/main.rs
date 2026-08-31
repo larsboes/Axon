@@ -42,12 +42,18 @@ fn usage() -> ! {
   {model}                        gemessener Raum, und was daran noch geraten ist
   {layouts}                      Layouts auf der Platte
   {check} <layout> [--json]      gegen rules.toml pruefen (Exit 1 bei hartem Verstoss)
+  {toleranz} <layout> [--json]   bis zu welchem Messfehler das Verdikt haelt
+  {sonne} <layout> [--json]      wann im Jahr welches Stueck in der Sonne steht
+  {einbringung} <layout>         kommt jedes Stueck durch die Tuer und an seinen Platz
+                                 [--b 120 --t 60] stattdessen ein gedachtes Stueck
   {compose} --pieces a,b,c       eine Wohnung von Grund auf stellen (Strahlsuche)
   {search} <layout> --move a,b   Positionen rastern, bis nichts mehr verletzt ist
                                  [--step 20] [--limit 6] [--band id=x0,x1,y0,y1]
                                  [--out <name>]  besten Treffer als Layout schreiben
   {plan} [layout...] [--out f]   Plaene als HTML mit Verdikt; ohne Layouts: alle
   {inventory}                    was da ist und was fehlt, mit Zustand und Preis
+  {deklaration} [--json]         wer noch am Namen gemessen wird, und was es kostet
+  {kaufen} [--json]              welcher Bedarf zuerst, und wann er erreicht ist
   {import}                       inventory/*.toml in die Tabellen (wiederholbar)
   {serve}                        HTTP-API fuer die Oberflaeche
 "#,
@@ -56,8 +62,13 @@ fn usage() -> ! {
         layouts = bold("layouts"),
         plan = bold("plan"),
         inventory = bold("inventory"),
+        deklaration = bold("deklaration"),
+        kaufen = bold("kaufen"),
         import = bold("import"),
         check = bold("check"),
+        toleranz = bold("toleranz"),
+        einbringung = bold("einbringung"),
+        sonne = bold("sonne"),
         search = bold("search"),
         compose = bold("compose"),
         serve = bold("serve"),
@@ -258,6 +269,33 @@ async fn main() {
             }
             std::process::exit(if r.pass { 0 } else { 1 });
         }
+        "einbringung" => std::process::exit(cmd_einbringung(&model, &argv)),
+        "sonne" => std::process::exit(cmd_sonne(&model, &argv)),
+        "deklaration" => std::process::exit(cmd_deklaration(&model, &argv)),
+        "kaufen" => std::process::exit(cmd_kaufen(&model, &argv)),
+        "toleranz" => {
+            let Some(name) = argv.get(1) else { usage() };
+            let layout = match model.load_layout(name) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("{}", red(&e.to_string()));
+                    std::process::exit(2);
+                }
+            };
+            let r = match interior::toleranz::robustheit(&model, &layout) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("{}", red(&e.to_string()));
+                    std::process::exit(2);
+                }
+            };
+            if argv.contains(&"--json".to_string()) {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                toleranz_report(&r);
+            }
+            std::process::exit(if r.nominal_pass { 0 } else { 1 });
+        }
         "compose" => std::process::exit(cmd_compose(&model, &argv)),
         "search" => {
             let Some(name) = argv.get(1) else { usage() };
@@ -346,12 +384,17 @@ async fn main() {
                     } else {
                         yellow(&format!("{} Warnungen", h.soft))
                     };
+                    let front = if h.pareto { "★ " } else { "  " };
                     println!(
-                        "  {}  {}",
+                        "  {front}{}  {}",
                         tag,
                         dim(&format!(
-                            "Wandkontakt {} cm · engste Route {} cm",
-                            h.wandkontakt_cm, h.bottleneck_cm
+                            "Reserve {} · Wandkontakt {} cm · engste Route {} cm",
+                            h.engste_reserve_cm
+                                .map(|r| format!("{r} cm"))
+                                .unwrap_or_else(|| "—".into()),
+                            h.wandkontakt_cm,
+                            h.bottleneck_cm
                         ))
                     );
                     println!(
@@ -377,7 +420,7 @@ async fn main() {
                         items,
                         id: out.clone(),
                     };
-                    let note = format!("Bester Treffer der Suche in \"{}\": {} Warnungen, {} cm Wandkontakt, engste Route {} cm.", rep.base, best.soft, best.wandkontakt_cm, best.bottleneck_cm);
+                    let note = format!("Bester Treffer der Suche in \"{}\": {} Warnungen, {} cm Wandkontakt, engste Route {} cm, knappste harte Reserve {}.", rep.base, best.soft, best.wandkontakt_cm, best.bottleneck_cm, best.engste_reserve_cm.map(|r| format!("{r} cm")).unwrap_or_else(|| "nicht gemessen".into()));
                     match write_layout(&model, &out, &l, &note) {
                         Ok(()) => println!(
                             "\n  {} {}",
@@ -522,10 +565,14 @@ fn cmd_compose(model: &Model, argv: &[String]) -> i32 {
             red("DURCHGEFALLEN")
         };
         println!(
-            "  {} {}  {} weiche, Engpass {} cm, Wand {} cm, frei {:.2} m²",
+            "  {} {}{}  {} weiche, Reserve {}, Engpass {} cm, Wand {} cm, frei {:.2} m²",
             bold(&format!("#{}", n + 1)),
+            if c.pareto { "★ " } else { "" },
             status,
             c.soft.len(),
+            c.engste_reserve_cm
+                .map(|r| format!("{r} cm"))
+                .unwrap_or_else(|| "—".into()),
             c.bottleneck_cm,
             c.wandkontakt_cm,
             c.free_m2
@@ -726,4 +773,417 @@ fn inventory_show() -> i32 {
         dim("untere Kante: Produktpreis, sonst das Minimum der Schaetzung. `~` = Masse geraten.")
     );
     0
+}
+
+/// Was ein Verdikt aushaelt, in Worten.
+fn toleranz_report(r: &interior::toleranz::Robustheit) {
+    use interior::toleranz::Haltbarkeit;
+    println!("\n{}", bold(&r.layout));
+    match &r.haelt {
+        Haltbarkeit::FaelltDurch => println!(
+            "  {}",
+            red("faellt schon bei den eingetragenen Massen durch — ein Messfehler ist hier nicht die Frage")
+        ),
+        Haltbarkeit::NichtsGeraten => println!(
+            "  {}",
+            dim("kein Mass in diesem Layout ist als geschaetzt gefuehrt — es gibt nichts zu variieren")
+        ),
+        Haltbarkeit::UeberHorizont { horizont_cm } => println!(
+            "  {}",
+            green(&format!(
+                "haelt auch {horizont_cm} cm Messfehler noch aus (weiter wurde nicht gesucht)"
+            ))
+        ),
+        Haltbarkeit::Bis { cm } => {
+            println!("  {}", green(&format!("haelt bis {cm} cm Messfehler")));
+            println!(
+                "  {}",
+                yellow(&format!(
+                    "bei {} cm reisst zuerst: {}",
+                    cm + 1,
+                    r.kippt_an.join(", ")
+                ))
+            );
+        }
+    }
+    if let Some(cm) = r.engste_reserve_cm {
+        println!("  {}", dim(&format!("knappste harte Messung: {cm} cm")));
+    }
+    for u in &r.geraten {
+        println!(
+            "  {}",
+            dim(&format!(
+                "geschaetzt: {} — {}",
+                u.label,
+                u.fields.join(", ")
+            ))
+        );
+    }
+    for n in &r.nicht_variiert {
+        println!(
+            "  {}",
+            dim(&format!(
+                "`{n}` traegt sein Mass im Layout (size:) und wurde nicht variiert"
+            ))
+        );
+    }
+    println!();
+}
+
+/// Kommt es herein? Fuer jedes Stueck eines Layouts, oder fuer ein gedachtes.
+fn cmd_einbringung(model: &Model, argv: &[String]) -> i32 {
+    use interior::einbringung::{
+        durch_die_tuer, einbringung, weg_zum_platz, Einbringung, Tuerpass,
+    };
+
+    let zeile = |e: &Einbringung| {
+        let tuer = match &e.tuer {
+            Tuerpass::Passt { luft_cm, tuer_cm } => {
+                green(&format!("durch die {tuer_cm} cm Tuer, {luft_cm} cm Luft"))
+            }
+            Tuerpass::PasstNicht { fehlen_cm, tuer_cm } => red(&format!(
+                "passt NICHT durch die {tuer_cm} cm Tuer — {fehlen_cm} cm zu breit"
+            )),
+            Tuerpass::ZerlegtGetragen { fehlen_cm, tuer_cm } => yellow(&format!(
+                "{fehlen_cm} cm breiter als die {tuer_cm} cm Tuer, kommt laut Zeile zerlegt herein"
+            )),
+            Tuerpass::KeinEingang => yellow("keine Tuer als Eingang deklariert"),
+        };
+        let weg = if e.erreichbar {
+            green(&format!(
+                "Weg frei ({} Schritte{})",
+                e.schritte.unwrap_or(0),
+                if e.dreht { ", mit Drehung" } else { "" }
+            ))
+        } else {
+            red("kein Weg bis zum Platz")
+        };
+        println!(
+            "  {:26} {:>3}×{:<3}  {tuer}  {weg}",
+            bold(&e.reference),
+            e.b,
+            e.t
+        );
+        if let Some(g) = &e.grund {
+            println!("      {}", dim(g));
+        }
+    };
+
+    // Ein gedachtes Stueck: die Frage vor dem Kauf, ohne dass es schon irgendwo steht.
+    if let (Some(b), Some(t)) = (
+        flag(argv, "b").and_then(|v| v.parse::<i32>().ok()),
+        flag(argv, "t").and_then(|v| v.parse::<i32>().ok()),
+    ) {
+        let zerlegbar = argv.contains(&"--zerlegbar".to_string());
+        println!("\n{}  {b}×{t} cm\n", bold("einbringung"));
+        match durch_die_tuer(model, b, t, zerlegbar) {
+            Tuerpass::Passt { luft_cm, tuer_cm } => {
+                println!(
+                    "  {}",
+                    green(&format!(
+                        "passt hochkant durch die {tuer_cm} cm Tuer, {luft_cm} cm Luft"
+                    ))
+                );
+                0
+            }
+            Tuerpass::PasstNicht { fehlen_cm, tuer_cm } => {
+                println!(
+                    "  {}",
+                    red(&format!(
+                        "passt nicht: die schmale Seite ist {fehlen_cm} cm breiter als die {tuer_cm} cm Tuer"
+                    ))
+                );
+                println!(
+                    "  {}",
+                    dim(
+                        "kommt es zerlegt? dann `--zerlegbar`, und in der Zeile `zerlegbar = true`"
+                    )
+                );
+                1
+            }
+            Tuerpass::ZerlegtGetragen { fehlen_cm, tuer_cm } => {
+                println!(
+                    "  {}",
+                    yellow(&format!(
+                        "{fehlen_cm} cm breiter als die {tuer_cm} cm Tuer — zerlegt erklaert, also herein"
+                    ))
+                );
+                0
+            }
+            Tuerpass::KeinEingang => {
+                println!(
+                    "  {}",
+                    yellow("keine Oeffnung ist als Eingang deklariert (`eingang = true`)")
+                );
+                1
+            }
+        }
+    } else {
+        let Some(name) = argv.get(1) else { usage() };
+        let layout = match model.load_layout(name) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("{}", red(&e.to_string()));
+                return 2;
+            }
+        };
+        println!("\n{}  \"{}\"\n", bold("einbringung"), layout.name);
+        let mut schlecht = 0;
+        for it in &layout.items {
+            match einbringung(model, &layout, &it.reference) {
+                Ok(e) => {
+                    if !e.erreichbar || matches!(e.tuer, Tuerpass::PasstNicht { .. }) {
+                        // `ZerlegtGetragen` zaehlt hier bewusst nicht: die Wohnung hat eine
+                        // Antwort darauf, und ein Exit-Code, der bei einer beantworteten
+                        // Frage rot wird, wird abgeschaltet.
+                        schlecht += 1;
+                    }
+                    zeile(&e);
+                }
+                Err(e) => eprintln!("  {} {e}", red(&it.reference)),
+            }
+        }
+        // Verhindert, dass `weg_zum_platz` als tote Ausfuhr gilt, und ist die Zeile, die den
+        // Unterschied zwischen "steht dort" und "kommt dorthin" ueberhaupt sichtbar macht.
+        let _ = weg_zum_platz;
+        println!();
+        i32::from(schlecht > 0)
+    }
+}
+
+/// Wann im Jahr welches Stueck in der Sonne steht.
+fn cmd_sonne(model: &Model, argv: &[String]) -> i32 {
+    let Some(name) = argv.get(1) else { usage() };
+    let layout = match model.load_layout(name) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("{}", red(&e.to_string()));
+            return 2;
+        }
+    };
+    let b = match interior::sonne::bericht(model, &layout) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{}", red(&e.to_string()));
+            return 2;
+        }
+    };
+    if argv.contains(&"--json".to_string()) {
+        println!("{}", serde_json::to_string_pretty(&b).unwrap());
+        return 0;
+    }
+
+    println!("\n{}  \"{}\"\n", bold("sonne"), b.layout);
+    // Eine Zeile je Tag, eine Spalte je Stunde. Ein Jahr passt so auf vier Zeilen, und die
+    // Form zeigt, was eine Liste verbirgt: die Sonne wandert.
+    for (tag, _) in interior::sonne::TAGE {
+        let stunden: Vec<&interior::sonne::Sonnenstunde> =
+            b.stunden.iter().filter(|s| s.tag == *tag).collect();
+        let kopf: String = stunden
+            .iter()
+            .map(|s| format!("{:>3}", s.stunde_lokal))
+            .collect();
+        let zeile: String = stunden
+            .iter()
+            .map(|s| {
+                if s.hoehe_grad <= 0.0 {
+                    "  ·".to_string()
+                } else if s.getroffen.is_empty() {
+                    "  -".to_string()
+                } else {
+                    format!("{:>3}", s.getroffen.len())
+                }
+            })
+            .collect();
+        // Erst auffuellen, dann faerben: die Escape-Sequenzen zaehlen sonst als Breite mit,
+        // und die Spalten wandern je nach Laenge des Tagesnamens.
+        println!("  {}{}", bold(&format!("{tag:<16}")), dim(&kopf));
+        println!("  {:<16}{}", "", yellow(&zeile));
+    }
+    println!(
+        "\n  {}",
+        dim("· unter dem Horizont · - kein Stueck in der Sonne · Zahl = getroffene Stuecke")
+    );
+    if !b.treffer_je_stueck.is_empty() {
+        println!("\n  {}", bold("Stunden in direkter Sonne"));
+        for (k, n) in &b.treffer_je_stueck {
+            println!(
+                "    {k:26} {n:>3} von {}",
+                interior::sonne::gepruefte_stunden()
+            );
+        }
+    }
+    for o in &b.ohne_glashoehen {
+        println!(
+            "  {}",
+            yellow(&format!(
+                "`{o}` hat keine Glashoehen (glas_von_cm/glas_bis_cm) und wirft hier kein Licht"
+            ))
+        );
+    }
+    println!();
+    0
+}
+
+/// Wer wird noch am Namen gemessen — und was aendert sich, wenn er sich erklaert.
+fn cmd_deklaration(model: &Model, argv: &[String]) -> i32 {
+    let stand = match interior::deklaration::uebersicht(model) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{}", red(&e.to_string()));
+            return 2;
+        }
+    };
+    if argv.contains(&"--json".to_string()) {
+        println!("{}", serde_json::to_string_pretty(&stand).unwrap());
+        return 0;
+    }
+
+    let erklaert = stand.iter().filter(|s| s.erklaert).count();
+    println!(
+        "\n{}  {} von {} Eintraegen erklaeren sich selbst\n",
+        bold("deklaration"),
+        erklaert,
+        stand.len()
+    );
+    for s in &stand {
+        if s.erklaert {
+            println!("  {} {}", green("erklaert "), bold(&s.id));
+            continue;
+        }
+        let Some(v) = &s.vorschlag else {
+            println!(
+                "  {} {}  {}",
+                dim("am Namen"),
+                bold(&s.id),
+                dim(&format!(
+                    "als {} eingestuft, und daraus folgt keine Schwelle",
+                    s.geraten_als
+                ))
+            );
+            continue;
+        };
+        let f = s.folgen.as_ref();
+        let wirkung = match f {
+            Some(f) if f.geaendert.is_empty() => green("aendert kein Verdikt"),
+            Some(f) => yellow(&format!("aendert: {}", f.geaendert.join(", "))),
+            None => dim("nicht gerechnet"),
+        };
+        println!(
+            "  {} {}  {}  {wirkung}",
+            yellow("am Namen"),
+            bold(&s.id),
+            dim(&format!("als {} eingestuft", s.geraten_als))
+        );
+        for zeile in v.toml.lines() {
+            println!("      {}", dim(zeile));
+        }
+        if !s.in_layouts.is_empty() {
+            println!(
+                "      {}",
+                dim(&format!("steht in {} Layouts", s.in_layouts.len()))
+            );
+        }
+    }
+    println!();
+    0
+}
+
+/// Welcher Bedarf zuerst, und wann er erreicht ist.
+fn cmd_kaufen(model: &Model, argv: &[String]) -> i32 {
+    // Ohne Saldo laeuft die Reihenfolge trotzdem: sie ist eine Ordnung und keine Zeitachse,
+    // und die Zeitachse ist der Zusatz. Ein `finance`, das hier nichts geschrieben hat, ist
+    // kein Grund, die Frage nach dem Was-zuerst unbeantwortet zu lassen.
+    let saldo = interior::store::Store::open(&axon_config::database_path())
+        .ok()
+        .and_then(|s| s.borrow_connection().ok())
+        .and_then(|conn| interior::budget::monatssaldo(&conn).ok().flatten());
+    let r = match interior::budget::kaufreihenfolge(model, saldo) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{}", red(&e.to_string()));
+            return 2;
+        }
+    };
+    if argv.contains(&"--json".to_string()) {
+        println!("{}", serde_json::to_string_pretty(&r).unwrap());
+        return 0;
+    }
+
+    println!("\n{}\n", bold("Kaufreihenfolge"));
+    if r.posten.is_empty() {
+        println!("  {}\n", dim("kein Bedarf mit Preis offen"));
+    }
+    for (n, p) in r.posten.iter().enumerate() {
+        // Zwei Gruende fuer keine Monatszahl, und sie duerfen nicht dasselbe Wort bekommen:
+        // „es gibt keinen Saldo" ist eine fehlende Messung, „der Saldo ist nicht positiv" ist
+        // eine Antwort. Die erste Fassung schrieb beidem „ohne Saldo" hin, an einer Wohnung,
+        // deren Median gemessen -269,98 € betraegt.
+        let wann = match (p.erreichbar_nach_monaten, &r.saldo) {
+            (Some(m), _) => green(&format!("nach {m:.1} Monaten")),
+            (None, Some(_)) => dim("aus diesem Saldo nicht ansparbar"),
+            (None, None) => dim("kein Monatssaldo gemessen"),
+        };
+        println!(
+            "  {:>2}. {:28} {:>9}  {:>10} kumuliert  {wann}",
+            n + 1,
+            bold(&p.label),
+            euro(p.preis_cent.unwrap_or(0)),
+            euro(p.kumuliert_cent)
+        );
+        if !p.in_layouts.is_empty() {
+            println!(
+                "      {}",
+                dim(&format!("eingeplant in {}", p.in_layouts.join(", ")))
+            );
+        }
+    }
+    if !r.ohne_preis.is_empty() {
+        println!(
+            "\n  {}",
+            yellow(&format!(
+                "{} Bedarfe ohne Preis — sie stehen in keiner Reihenfolge",
+                r.ohne_preis.len()
+            ))
+        );
+        for p in &r.ohne_preis {
+            println!("      {}", dim(&p.label));
+        }
+    }
+    if !r.unbekannte_prioritaeten.is_empty() {
+        println!(
+            "\n  {}",
+            yellow(&format!(
+                "unbekannte Prioritaet, hinten einsortiert und hier genannt: {}",
+                r.unbekannte_prioritaeten.join(", ")
+            ))
+        );
+    }
+    match &r.saldo {
+        Some(s) if s.median_cent > 0 => println!(
+            "\n  {}",
+            dim(&format!(
+                "Median des Monatssaldos {} ueber {} Monate ({} bis {})",
+                euro(s.median_cent),
+                s.monate,
+                s.von,
+                s.bis
+            ))
+        ),
+        Some(s) => println!(
+            "\n  {}",
+            yellow(&format!(
+                "Median des Monatssaldos {} — daraus laesst sich nichts ansparen, also gibt es keine Monatszahl",
+                euro(s.median_cent)
+            ))
+        ),
+        None => println!("\n  {}", dim("kein Monatssaldo verfuegbar (finance hat hier nichts geschrieben)")),
+    }
+    println!();
+    0
+}
+
+/// Cent als Euro mit Komma. Die einzige Rechnung, die eine Anzeige fuehren darf.
+fn euro(cent: i64) -> String {
+    format!("{},{:02} €", cent / 100, (cent % 100).abs())
 }

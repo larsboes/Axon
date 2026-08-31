@@ -57,6 +57,26 @@ id = "R8"
 schwere = "hart"
 text = "Ausklappzone des Schlafsofas dauerhaft frei."
 
+# --- die einzige Regel, die ein Datum kennt --------------------------------
+#
+# R9 ist OPTIONAL (`clearance::OPTIONALE_REGEL_IDS`): eine Wohnung, die keinen Standort, keine
+# Nordrichtung und keine Glashoehen fuehrt, soll darueber nicht abbrechen, sondern schweigen.
+# Diese hier fuehrt alle drei, also laeuft sie. Die reale Wohnung fuehrt R9 bewusst NICHT —
+# ihre Verglasungen sind nicht in der Hoehe vermessen, und eine erfundene Fensterhoehe ergaebe
+# einen Lichtfleck auf den Zentimeter genau, der auf nichts beruht.
+#
+# Die Schwelle steht auf 12 von 44 geprueften Stunden. Sie trennt: der Schreibtisch in `a-frei`
+# bekommt 11 und schweigt, derselbe Schreibtisch in `i-blick-aufs-bett` bekommt 15 und meldet.
+# Eine Schwelle, an der kein Layout auf der einen und keines auf der anderen Seite liegt,
+# prueft nichts.
+[[regeln]]
+id = "R9"
+schwere = "weich"
+text = "Der Schreibtisch soll nicht den halben Tag in der direkten Sonne stehen."
+
+[sonne]
+max_stunden_am_schreibtisch = 12
+
 # --- deklariert, aber von dieser Maschine NICHT geprueft -------------------
 #
 # Die reale Wohnung fuehrt zwei solche Regeln (R5, R6), und bis 2026-08-31 fielen sie stumm
@@ -80,6 +100,6 @@ text = "Vom Eingang aus faellt der Blick nicht zuerst auf das Bett."
 # Fall einen eigenen Vertreter. Eine Wohnung darf eine Hausregel fuehren, die der Pruefer nicht
 # umsetzt — sie faellt dann NICHT still heraus, sondern steht als ungeprueft im Bericht.
 [[regeln]]
-id = "R9"
+id = "R10"
 schwere = "weich"
 text = "Ein Teppich unter dem Esstisch, gross genug fuer die zurueckgeschobenen Stuehle."

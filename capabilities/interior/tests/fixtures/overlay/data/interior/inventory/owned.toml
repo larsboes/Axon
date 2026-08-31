@@ -37,6 +37,10 @@ label = "Bett (erfunden)"
 b = 140
 t = 200
 h = 45
+# 140 cm breit an einer 100 cm breiten Tuer, und trotzdem steht in jedem Schlafzimmer eines:
+# es kommt in Teilen herein. Ohne diese Zeile meldet `einbringung` hier einen Verstoss, der
+# keiner ist — und eine Pruefung, die dreimal falsch warnt, wird nicht mehr gelesen.
+zerlegbar = true
 # Eine Person, eine Zugangsseite. Das ist eine Aussage ueber die NUTZUNG und kein gelockerter
 # Standard — wird daraus eine Zweipersonenwohnung, steht hier 2 und die Wohnung rechnet neu.
 access_sides = 1
@@ -77,6 +81,17 @@ label = "Regal quer (erfunden)"
 b = 145
 t = 41
 h = 77
+
+# Quadratisch, massiv, nicht zerlegbar: 110 cm in BEIDEN Richtungen an einer 100 cm breiten
+# Tuer. Das Stueck existiert fuer genau einen Fall, den keine Raeumungsregel sehen kann — ein
+# Layout, das jede Regel erfuellt und trotzdem nie stattfindet, weil das Moebel nicht
+# hereinkommt. `layouts/k-vitrine.toml` stellt es regelkonform auf.
+[[item]]
+id = "glasvitrine"
+label = "Glasvitrine (erfunden, quadratisch)"
+b = 110
+t = 110
+h = 180
 
 # Das einzige Stueck mit geschaetzten Massen. Es beweist, dass `unsicher` bis in den
 # Pruefbericht durchschlaegt: eine Schaetzung, die unterwegs zur Messung wird, ist der Fehler,

@@ -23,10 +23,17 @@
     type InteriorImpact,
     type InteriorPlacedItem,
     type InteriorAllowed,
+    type InteriorRobustheit,
+    type InteriorSonne,
+    type InteriorEinbringung,
+    type InteriorDeklaration,
+    type InteriorKaufreihenfolge,
+    type InteriorSearchReport,
+    type InteriorComposed,
   } from "$lib/api";
   import { capabilities } from "$lib/capabilities.svelte";
 
-  type View = "plans" | "inventory";
+  type View = "plans" | "inventory" | "solve" | "buy";
 
   let view = $state<View>("plans");
   let loading = $state(true);
@@ -40,6 +47,36 @@
 
   let inventory = $state<{ item: InteriorItem; state: InteriorState | null }[]>([]);
   let wishlist = $state<InteriorWishlist | null>(null);
+
+  /**
+   * The three questions a verdict alone cannot answer, fetched per layout and never guessed:
+   * by how much does it pass, does the furniture even get in, and when is the sun on it.
+   *
+   * Loaded beside the layout rather than with it: each is a separate endpoint and a separate
+   * cost, and a plan that will not draw until the sun is computed would be a worse plan.
+   */
+  let robust = $state<InteriorRobustheit | null>(null);
+  let sun = $state<InteriorSonne | null>(null);
+  let sunError = $state<string | null>(null);
+  let moveIn = $state<InteriorEinbringung[]>([]);
+
+  let declarations = $state<InteriorDeklaration[]>([]);
+  let order = $state<InteriorKaufreihenfolge | null>(null);
+
+  /** A hypothetical piece, measured against the entrance before anyone buys it. */
+  let probeB = $state(120);
+  let probeT = $state(60);
+  let probeZerlegbar = $state(false);
+  let probeAnswer = $state<string | null>(null);
+
+  let solverBusy = $state(false);
+  let solverError = $state<string | null>(null);
+  let solverElapsed = $state(0);
+  let searchResult = $state<InteriorSearchReport | null>(null);
+  let composeResult = $state<InteriorComposed[] | null>(null);
+  let moveRefs = $state<string[]>([]);
+  let composeRefs = $state<string[]>([]);
+  let step = $state(20);
 
   const euro = (cents: number): string =>
     (cents / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
@@ -562,11 +599,145 @@
     selected = id;
     detail = null;
     detailError = null;
+    robust = null;
+    sun = null;
+    sunError = null;
+    moveIn = [];
     try {
       detail = await interior.layout(id);
     } catch (caught) {
       detailError = caught instanceof Error ? caught.message : String(caught);
+      return;
     }
+    // Beside the plan, not before it. Each answers its own question and each may fail on its
+    // own — a flat without `[lage]` has no sun report and still has a layout.
+    void interior
+      .toleranz(id)
+      .then((r) => (robust = r))
+      .catch(() => (robust = null));
+    void interior
+      .einbringung(id)
+      .then((r) => (moveIn = r))
+      .catch(() => (moveIn = []));
+    void interior
+      .sonne(id)
+      .then((r) => (sun = r))
+      .catch((e) => (sunError = e instanceof Error ? e.message : String(e)));
+  }
+
+  /** How much error the verdict survives, in one sentence. */
+  const holdsUpTo = (r: InteriorRobustheit): string => {
+    switch (r.haelt.art) {
+      case "faellt_durch":
+        return "fails already at the measurements on file";
+      case "nichts_geraten":
+        return "no measurement in this layout is marked as a guess";
+      case "bis":
+        return `holds up to ${r.haelt.cm} cm of measurement error`;
+      case "ueber_horizont":
+        return `holds past ${r.haelt.horizont_cm} cm — further was not searched`;
+    }
+  };
+
+  const doorLine = (e: InteriorEinbringung): string => {
+    switch (e.tuer.art) {
+      case "passt":
+        return `through the ${e.tuer.tuer_cm} cm door, ${e.tuer.luft_cm} cm to spare`;
+      case "passt_nicht":
+        return `does NOT fit the ${e.tuer.tuer_cm} cm door — ${e.tuer.fehlen_cm} cm too wide`;
+      case "zerlegt_getragen":
+        return `${e.tuer.fehlen_cm} cm wider than the ${e.tuer.tuer_cm} cm door, carried in parts`;
+      case "kein_eingang":
+        return "no opening is declared as the entrance";
+    }
+  };
+
+  async function loadDeclarations(): Promise<void> {
+    try {
+      declarations = await interior.deklaration();
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+  }
+
+  async function loadOrder(): Promise<void> {
+    try {
+      order = await interior.kaufen();
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+  }
+
+  async function probeDoor(): Promise<void> {
+    probeAnswer = null;
+    try {
+      const t = await interior.passt(probeB, probeT, probeZerlegbar);
+      probeAnswer = doorLine({
+        reference: "",
+        b: probeB,
+        t: probeT,
+        tuer: t,
+        erreichbar: false,
+        dreht: false,
+      });
+    } catch (caught) {
+      probeAnswer = caught instanceof Error ? caught.message : String(caught);
+    }
+  }
+
+  /**
+   * Wait for a job, then hand back its result.
+   *
+   * Polling and not a socket: the answer arrives once, minutes from now, and a second
+   * transport for one message would be more machinery than the message is worth. The interval
+   * is a second because the job takes minutes — a tighter loop would ask the same question
+   * sixty times for one answer.
+   */
+  async function awaitJob<T>(id: number): Promise<T> {
+    const started = Date.now();
+    for (;;) {
+      const { stand } = await interior.auftrag(id);
+      if (stand.zustand === "fertig") return stand.ergebnis as T;
+      if (stand.zustand === "gescheitert") throw new Error(stand.grund);
+      solverElapsed = Math.round((Date.now() - started) / 1000);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+
+  async function runSearch(): Promise<void> {
+    if (selected === null || moveRefs.length === 0) return;
+    solverBusy = true;
+    solverError = null;
+    searchResult = null;
+    composeResult = null;
+    try {
+      const { auftrag } = await interior.search(selected, moveRefs, step, 12);
+      searchResult = await awaitJob<InteriorSearchReport>(auftrag);
+    } catch (caught) {
+      solverError = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      solverBusy = false;
+    }
+  }
+
+  async function runCompose(): Promise<void> {
+    if (composeRefs.length === 0) return;
+    solverBusy = true;
+    solverError = null;
+    searchResult = null;
+    composeResult = null;
+    try {
+      const { auftrag } = await interior.compose(composeRefs, 25, 60, 5);
+      composeResult = await awaitJob<InteriorComposed[]>(auftrag);
+    } catch (caught) {
+      solverError = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      solverBusy = false;
+    }
+  }
+
+  function toggle(list: string[], id: string): string[] {
+    return list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
   }
 
   async function start(): Promise<void> {
@@ -614,6 +785,22 @@
     </button>
     <button class:active={view === "inventory"} onclick={() => (view = "inventory")}>
       Inventory <span class="count">{inventory.length}</span>
+    </button>
+    <button
+      class:active={view === "solve"}
+      onclick={() => (view = "solve")}
+    >
+      Solve
+    </button>
+    <button
+      class:active={view === "buy"}
+      onclick={() => {
+        view = "buy";
+        if (order === null) void loadOrder();
+        if (declarations.length === 0) void loadDeclarations();
+      }}
+    >
+      Buy &amp; declare
     </button>
   </nav>
 {/if}
@@ -668,6 +855,23 @@
             </button>
           </div>
           {#if planError}<p class="note">{planError}</p>{/if}
+
+          <!--
+            By how much, not whether. Two layouts that both report `pass` can have 2 cm and
+            40 cm of air, and until 2026-08-31 they were the same word in every report.
+          -->
+          {#if detail.check.engste_reserve_cm !== null}
+            <p class="reserve" class:tight={detail.check.engste_reserve_cm < 10}>
+              <strong class="mono">{detail.check.engste_reserve_cm} cm</strong>
+              {detail.check.engste_reserve_cm < 0
+                ? "short at its tightest hard rule"
+                : "is all the room the tightest hard rule has left"}
+              {#if robust}<span class="holds">· {holdsUpTo(robust)}</span>{/if}
+              {#if robust && robust.kippt_an.length > 0}
+                <span class="holds">· breaks first at {robust.kippt_an.join(", ")}</span>
+              {/if}
+            </p>
+          {/if}
 
           <dl class="metrics mono">
             <div><dt>room</dt><dd>{detail.check.metrics.room_area_m2.toFixed(2)} m²</dd></div>
@@ -740,9 +944,311 @@
               {detail.check.uncertainties.map((u) => `${u.label} (${u.fields.join(", ")})`).join("; ")}
             </p>
           {/if}
+
+          <!--
+            Every measurement, including the ones that passed. The table is the difference
+            between "this layout works" and "this layout works, and here is where it is thin".
+          -->
+          {#if detail.check.reserven.length > 0}
+            <details class="reserves">
+              <summary>Every measurement, passed or not ({detail.check.reserven.length})</summary>
+              <table class="corridors">
+                <tbody>
+                  {#each detail.check.reserven as r, i (r.rule + i)}
+                    <tr class:tight={r.hart && r.bindend && r.slack < 10}>
+                      <th scope="row">
+                        {r.rule}{#if r.item}<span class="of"> · {r.item}</span>{/if}{#if r.bezug}<span class="of"> · {r.bezug}</span>{/if}
+                      </th>
+                      <td class="mono">
+                        {r.measured}/{r.required} {r.einheit}
+                      </td>
+                      <td class="mono slack" class:neg={r.slack < 0}>
+                        {r.gedeckelt ? "≥ " : ""}{r.slack > 0 ? "+" : ""}{r.slack}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </details>
+          {/if}
+
+          <!--
+            A layout can satisfy every clearance rule and still never happen, because the piece
+            does not fit through the front door. Until 2026-08-31 the answer to that was
+            "passes" — computed right, wrong question.
+          -->
+          {#if moveIn.length > 0}
+            <details class="reserves" open={moveIn.some((e) => e.tuer.art === "passt_nicht" || !e.erreichbar)}>
+              <summary>Getting it in ({moveIn.length})</summary>
+              <ul class="movein">
+                {#each moveIn as e (e.reference)}
+                  <li class:bad={e.tuer.art === "passt_nicht" || !e.erreichbar}>
+                    <span class="mono">{e.reference}</span>
+                    <span class="dims mono">{e.b}×{e.t}</span>
+                    <span>{doorLine(e)}</span>
+                    <span class="way">
+                      {e.erreichbar
+                        ? `route free${e.dreht ? ", with a turn" : ""}`
+                        : (e.grund ?? "no way to its place")}
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+            </details>
+          {/if}
+
+          <!--
+            Four days carry the whole year: the two solstices are the extremes, the equinoxes
+            the middle. Every other day lies between them.
+          -->
+          {#if sun}
+            <details class="reserves">
+              <summary>Sun over the year</summary>
+              <table class="sun mono">
+                <tbody>
+                  {#each [...new Set(sun.stunden.map((s) => s.tag))] as tag (tag)}
+                    <tr>
+                      <th scope="row">{tag}</th>
+                      {#each sun.stunden.filter((s) => s.tag === tag) as h (h.stunde_lokal)}
+                        <td
+                          class:night={h.hoehe_grad <= 0}
+                          class:hit={h.getroffen.length > 0}
+                          title={`${h.stunde_lokal}:00 · ${h.hoehe_grad.toFixed(0)}° up, ${h.azimut_grad.toFixed(0)}° · ${h.getroffen.join(", ") || "nothing in the sun"}`}
+                        >
+                          {h.hoehe_grad <= 0 ? "·" : h.getroffen.length || "–"}
+                        </td>
+                      {/each}
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+              <ul class="sunlist">
+                {#each Object.entries(sun.treffer_je_stueck) as [ref, n] (ref)}
+                  <li><span class="mono">{ref}</span> {n} hours in direct sun</li>
+                {/each}
+              </ul>
+              {#if sun.ohne_glashoehen.length > 0}
+                <p class="note">
+                  No glazing heights on file for {sun.ohne_glashoehen.join(", ")} — those
+                  windows throw no light here, and they should.
+                </p>
+              {/if}
+            </details>
+          {:else if sunError}
+            <p class="note">No sun report: {sunError}</p>
+          {/if}
         {/if}
       </section>
     </div>
+  {/if}
+{/if}
+
+{#if !loading && !error && view === "solve"}
+  <!--
+    The most expensive calculation in the capability, finally reachable from the surface that
+    needs it. It runs as a job because it takes minutes: the page asks for a number and comes
+    back for the answer (PRD B36).
+  -->
+  <section class="card solver">
+    <h2>Move pieces in {selected ?? "a layout"}</h2>
+    {#if selected === null}
+      <p class="empty">Pick a layout under Plans first.</p>
+    {:else}
+      <p class="note">
+        Every position on the grid is checked, not the first that works. A ★ marks the Pareto
+        front: under no weighting of the four goals is such a hit worse than another.
+      </p>
+      <div class="picks">
+        {#each detail?.layout.item ?? [] as it (JSON.stringify(it))}
+          {@const ref = (it as { ref: string }).ref}
+          <label>
+            <input
+              type="checkbox"
+              checked={moveRefs.includes(ref)}
+              onchange={() => (moveRefs = toggle(moveRefs, ref))}
+            />
+            {ref}
+          </label>
+        {/each}
+      </div>
+      <label class="stepper">
+        grid <input type="number" min="5" max="50" step="5" bind:value={step} /> cm
+      </label>
+      <button disabled={solverBusy || moveRefs.length === 0} onclick={runSearch}>
+        {solverBusy ? `Searching… ${solverElapsed}s` : "Search"}
+      </button>
+    {/if}
+  </section>
+
+  <section class="card solver">
+    <h2>Lay out the flat from nothing</h2>
+    <p class="note">
+      A beam search, and it says so: only the best partial arrangements survive each round, so
+      the answer is computed and reproducible — not proven optimal.
+    </p>
+    <div class="picks">
+      {#each owned as row (row.item.id)}
+        <label>
+          <input
+            type="checkbox"
+            checked={composeRefs.includes(row.item.id)}
+            onchange={() => (composeRefs = toggle(composeRefs, row.item.id))}
+          />
+          {row.item.label}
+        </label>
+      {/each}
+    </div>
+    <button disabled={solverBusy || composeRefs.length === 0} onclick={runCompose}>
+      {solverBusy ? `Placing… ${solverElapsed}s` : "Lay it out"}
+    </button>
+  </section>
+
+  {#if solverError}<p class="error"><Icon name="alert" size={15} /> {solverError}</p>{/if}
+
+  {#if searchResult}
+    <section class="card">
+      <h2>
+        {searchResult.hits.length} of {searchResult.fully_checked.toLocaleString()} checked
+        <span class="note">in {(searchResult.elapsed_ms / 1000).toFixed(1)} s</span>
+      </h2>
+      <table class="corridors">
+        <tbody>
+          {#each searchResult.hits as h, i (i)}
+            <tr>
+              <th scope="row">{h.pareto ? "★" : ""} {Object.entries(h.places).map(([k, p]) => `${k} ${p[0]},${p[1]}`).join(" · ")}</th>
+              <td class="mono">{h.engste_reserve_cm ?? "—"} cm spare</td>
+              <td class="mono">{h.wandkontakt_cm} cm wall</td>
+              <td class="mono">{h.bottleneck_cm} cm walk</td>
+              <td class="mono">{h.soft} soft</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </section>
+  {/if}
+
+  {#if composeResult}
+    <section class="card">
+      <h2>{composeResult.length} arrangements</h2>
+      {#each composeResult as c, i (i)}
+        <article class="composed">
+          <h3>
+            #{i + 1} {c.pareto ? "★" : ""}
+            <span class="verdict" class:pass={c.pass}>{c.pass ? "passes" : "fails"}</span>
+          </h3>
+          <p class="mono">
+            {c.engste_reserve_cm ?? "—"} cm spare · {c.wandkontakt_cm} cm wall ·
+            {c.bottleneck_cm} cm walk · {c.free_m2.toFixed(2)} m² free
+          </p>
+          {#if c.hard.length > 0}<p class="note">hard: {c.hard.join(", ")}</p>{/if}
+          <ul class="places mono">
+            {#each c.places as [ref, p, rot] (ref)}
+              <li>{ref} — x {p[0]}, y {p[1]}, {rot}°</li>
+            {/each}
+          </ul>
+        </article>
+      {/each}
+    </section>
+  {/if}
+{/if}
+
+{#if !loading && !error && view === "buy"}
+  <section class="card">
+    <h2>Does it even fit through the door?</h2>
+    <p class="note">The question before buying, answered from the flat's own entrance width.</p>
+    <div class="probe">
+      <label>width <input type="number" bind:value={probeB} /></label>
+      <label>depth <input type="number" bind:value={probeT} /></label>
+      <label>
+        <input type="checkbox" bind:checked={probeZerlegbar} /> comes in parts
+      </label>
+      <button onclick={probeDoor}>Check</button>
+    </div>
+    {#if probeAnswer}<p class="reserve">{probeAnswer}</p>{/if}
+  </section>
+
+  {#if order}
+    <section class="card">
+      <h2>What to buy first</h2>
+      <p class="note">
+        Urgency, then whether a layout already builds on it, then price. No budget: nobody set a
+        ceiling and this page does not invent one.
+      </p>
+      <table class="corridors">
+        <tbody>
+          {#each order.posten as p, i (p.id)}
+            <tr>
+              <th scope="row">{i + 1}. {p.label}</th>
+              <td class="mono">{p.prioritaet ?? "—"}</td>
+              <td class="mono">{euro(p.preis_cent ?? 0)}</td>
+              <td class="mono">{euro(p.kumuliert_cent)}</td>
+              <!--
+                Two reasons for no month count, and they must not read the same: "no balance"
+                is a missing measurement, "the balance is not positive" is an answer.
+              -->
+              <td class="mono">
+                {p.erreichbar_nach_monaten !== null
+                  ? `${p.erreichbar_nach_monaten.toFixed(1)} months`
+                  : order.saldo
+                    ? "not out of this balance"
+                    : "no balance measured"}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      {#if order.ohne_preis.length > 0}
+        <p class="unchecked">
+          <Icon name="alert" size={14} />
+          {order.ohne_preis.length} needs carry no price and stand in no order:
+          {order.ohne_preis.map((p) => p.label).join(", ")} — the move here is a price, not a
+          purchase.
+        </p>
+      {/if}
+      {#if order.unbekannte_prioritaeten.length > 0}
+        <p class="unchecked">
+          <Icon name="alert" size={14} />
+          Priority words this ranking does not know, sorted last:
+          {order.unbekannte_prioritaeten.join(", ")}
+        </p>
+      {/if}
+      {#if order.saldo && order.saldo.median_cent <= 0}
+        <p class="note">
+          Median monthly balance {euro(order.saldo.median_cent)} over {order.saldo.monate}
+          months — nothing accrues out of that, so there is no month count.
+        </p>
+      {/if}
+    </section>
+  {/if}
+
+  {#if declarations.length > 0}
+    <section class="card">
+      <h2>
+        Still judged by name
+        <span class="count">{declarations.filter((d) => !d.erklaert).length}</span>
+      </h2>
+      <p class="note">
+        The engine has been cleverer than its data since 2026-08-31. Each line below is what the
+        machine already assumes, written in the vocabulary the piece can carry itself — and what
+        accepting it would change.
+      </p>
+      <ul class="declarations">
+        {#each declarations.filter((d) => !d.erklaert && d.vorschlag) as d (d.id)}
+          <li>
+            <span class="mono">{d.id}</span>
+            <span class="of">read as {d.geraten_als}, in {d.in_layouts.length} layouts</span>
+            <pre class="mono">{d.vorschlag?.toml}</pre>
+            {#if d.folgen}
+              <span class="holds" class:tight={d.folgen.geaendert.length > 0}>
+                {d.folgen.geaendert.length === 0
+                  ? "changes no verdict"
+                  : `changes ${d.folgen.geaendert.join(", ")}`}
+              </span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </section>
   {/if}
 {/if}
 
@@ -1583,5 +2089,167 @@
   }
   .mono {
     font-family: var(--font-mono);
+  }
+
+  /* By how much, not whether. */
+  .reserve {
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    margin: 0.85rem 0 0;
+  }
+  .reserve.tight {
+    color: var(--warning);
+  }
+  .reserve strong {
+    color: var(--text-primary);
+  }
+  .holds,
+  .of {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+  }
+  .holds.tight {
+    color: var(--warning);
+  }
+
+  .reserves {
+    margin-top: 0.85rem;
+  }
+  .reserves summary {
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 0.75rem;
+  }
+  .reserves .slack {
+    text-align: right;
+  }
+  .reserves .slack.neg {
+    color: var(--danger);
+  }
+  .reserves tr.tight th,
+  .reserves tr.tight td {
+    color: var(--warning);
+  }
+
+  .movein {
+    list-style: none;
+    margin: 0.5rem 0 0;
+    padding: 0;
+  }
+  .movein li {
+    border-top: 1px solid var(--card-border);
+    display: grid;
+    font-size: 0.75rem;
+    gap: 0.5rem;
+    grid-template-columns: 10rem 5rem 1fr 1fr;
+    padding: 0.35rem 0;
+  }
+  .movein li.bad {
+    color: var(--danger);
+  }
+  .movein .dims,
+  .movein .way {
+    color: var(--text-tertiary);
+  }
+
+  /* One row per day, one column per hour: a year on four lines. */
+  .sun {
+    border-collapse: collapse;
+    font-size: 0.75rem;
+    margin-top: 0.5rem;
+  }
+  .sun th {
+    color: var(--text-tertiary);
+    font-weight: 400;
+    padding-right: 0.75rem;
+    text-align: left;
+  }
+  .sun td {
+    border: 1px solid var(--card-border);
+    color: var(--text-tertiary);
+    min-width: 1.5rem;
+    padding: 0.15rem 0.3rem;
+    text-align: center;
+  }
+  .sun td.night {
+    background: var(--surface);
+    color: var(--text-tertiary);
+  }
+  .sun td.hit {
+    background: color-mix(in srgb, var(--warning) 22%, transparent);
+    color: var(--text-primary);
+  }
+  .sunlist {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    list-style: none;
+    margin: 0.5rem 0 0;
+    padding: 0;
+  }
+
+  .solver h2 {
+    font-size: 0.9375rem;
+    margin: 0 0 0.5rem;
+  }
+  .picks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    margin: 0.6rem 0;
+  }
+  .picks label,
+  .probe label,
+  .stepper {
+    align-items: center;
+    color: var(--text-secondary);
+    display: inline-flex;
+    font-size: 0.8125rem;
+    gap: 0.35rem;
+  }
+  .stepper input,
+  .probe input[type="number"] {
+    width: 4.5rem;
+  }
+  .probe {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin: 0.6rem 0;
+  }
+
+  .composed {
+    border-top: 1px solid var(--card-border);
+    padding: 0.6rem 0;
+  }
+  .composed h3 {
+    font-size: 0.8125rem;
+    margin: 0 0 0.3rem;
+  }
+  .places {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+    list-style: none;
+    margin: 0.35rem 0 0;
+    padding: 0;
+  }
+
+  .declarations {
+    list-style: none;
+    margin: 0.6rem 0 0;
+    padding: 0;
+  }
+  .declarations li {
+    border-top: 1px solid var(--card-border);
+    padding: 0.5rem 0;
+  }
+  .declarations pre {
+    background: var(--surface);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    margin: 0.35rem 0;
+    padding: 0.4rem 0.6rem;
+    white-space: pre-wrap;
   }
 </style>
