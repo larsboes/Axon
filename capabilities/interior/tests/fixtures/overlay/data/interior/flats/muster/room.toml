@@ -47,6 +47,17 @@ x = [600, 850]
 y = [450, 630]
 flaeche_m2 = 4.5
 
+# Eine GESCHAETZTE Aussenflaeche westlich der Verglasung, erfunden wie alles hier. Sie steht in
+# dieser Fixture, damit `tests/plan.rs` zeigen kann, dass eine Schaetzung den Bildausschnitt
+# nicht aufspannt: waere sie dabei, naehme sie ein Drittel der Blattbreite und der gemessene
+# Raum stuende auf dem Rest.
+[terrasse]
+geschaetzt = true
+x = [-180, 0]
+y = [0, 450]
+tiefe_geschaetzt = 180
+flaeche_geschaetzt_m2 = 8.1
+
 [waende.nord]
 von = [0, 0]
 bis = [600, 0]
