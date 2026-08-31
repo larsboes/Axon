@@ -1217,7 +1217,7 @@
 
   .planbar button {
     background: transparent;
-    border: 1px solid var(--border);
+    border: 1px solid var(--card-border);
     border-radius: 6px;
     color: var(--text-secondary);
     cursor: pointer;
@@ -1232,10 +1232,10 @@
   }
 
   .planbar input {
-    background: var(--bg);
-    border: 1px solid var(--border);
+    background: var(--input-bg);
+    border: 1px solid var(--card-border);
     border-radius: 5px;
-    color: var(--text);
+    color: var(--text-primary);
     font: inherit;
     font-size: 0.75rem;
     padding: 0.3rem 0.45rem;
@@ -1261,7 +1261,7 @@
     background: var(--primary);
     border: 1px solid transparent;
     border-radius: 6px;
-    color: var(--bg);
+    color: var(--card-bg);
     cursor: pointer;
     font: inherit;
     font-size: 0.75rem;
@@ -1270,7 +1270,7 @@
 
   .actions button.ghost {
     background: transparent;
-    border-color: var(--border);
+    border-color: var(--card-border);
     color: var(--text-secondary);
   }
 
@@ -1285,7 +1285,7 @@
 
   .addrow button {
     background: transparent;
-    border: 1px dashed var(--border);
+    border: 1px dashed var(--card-border);
     border-radius: 6px;
     color: var(--text-secondary);
     cursor: pointer;
@@ -1344,10 +1344,10 @@
   .editor input,
   .editor select,
   .editor textarea {
-    background: var(--bg);
-    border: 1px solid var(--border);
+    background: var(--input-bg);
+    border: 1px solid var(--card-border);
     border-radius: 5px;
-    color: var(--text);
+    color: var(--text-primary);
     font: inherit;
     font-size: 0.8rem;
     padding: 0.35rem 0.45rem;
@@ -1369,8 +1369,8 @@
 
   /* The arithmetic that used to have to be done by hand, one direction at a time. */
   .impact {
-    background: var(--bg);
-    border: 1px solid var(--border);
+    background: var(--input-bg);
+    border: 1px solid var(--card-border);
     border-left: 3px solid var(--primary);
     border-radius: 6px;
     font-size: 0.78rem;
@@ -1419,7 +1419,7 @@
   }
 
   .shot {
-    border: 1px solid var(--border);
+    border: 1px solid var(--card-border);
     border-radius: 6px;
     display: block;
     margin: 0.4rem 0;
