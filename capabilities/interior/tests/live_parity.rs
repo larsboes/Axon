@@ -17,9 +17,13 @@
 //!
 //! Die Routenbreiten haengen an der Rasterweite (geometry::RES = 5 cm). Wer sie aendert,
 //! aendert diese Zahlen.
+//!
+//! Die zehn Layouts stehen seit der Kuratierung vom 2026-08-31 nicht mehr in der Liste, sondern
+//! im Archiv daneben. Wie sie trotzdem gefunden werden, steht bei `aufgezeichnetes_layout`.
 
 use interior::clearance::check_layout;
-use interior::model::{default_flat, Model};
+use interior::layout_io;
+use interior::model::{default_flat, Layout, Model, ModelError};
 use serde_json::Value;
 
 /// Das Modell der aktiven Wohnung und ihre aufgezeichnete Vorlage, oder `None` mit einem Grund.
@@ -69,6 +73,42 @@ macro_rules! live_or_skip {
     };
 }
 
+/// Ein aufgezeichnetes Layout laden: erst `layouts/<id>.toml`, dann `layouts/archiv/<id>.toml`.
+///
+/// **Archivierte Layouts bleiben vergleichbar** — `layout_io::archiviere` (src/layout_io.rs:164-174)
+/// loescht nicht, sondern verschiebt nach `layouts/archiv/` und hebt die Datei genau dafuer
+/// lesbar auf. Die Kuratierung vom 2026-08-31 hat alle zehn aufgezeichneten Layouts dorthin
+/// gelegt; die Vorlage kennt sie unveraendert, also muss dieser Test sie unveraendert finden.
+/// Der Vergleich verliert dabei keinen Fall: es bleiben zehn.
+///
+/// Warum das hier steht und nicht als `Model::load_layout("archiv/…")`: ein Layoutname wird zu
+/// einem Dateinamen, und `layout_io::pruefe_id` laesst darin kein Trennzeichen zu — das ist die
+/// Grenze, die einen Schreiber aus dem Netz in diesem Verzeichnis haelt. Ein Name mit `/` waere
+/// die Ausnahme, die sie aufweicht. Wo eine Datei liegt, ist eine Frage des Ladens, also loest
+/// dieser Test den Pfad selbst auf.
+fn aufgezeichnetes_layout(model: &Model, id: &str) -> Result<Layout, ModelError> {
+    let dir = model.layouts_dir();
+    let datei = format!("{id}.toml");
+    let pfad = [dir.join(&datei), dir.join(layout_io::ARCHIV).join(&datei)]
+        .into_iter()
+        .find(|p| p.is_file())
+        .ok_or_else(|| {
+            ModelError::Missing(format!(
+                "weder layouts/{datei} noch layouts/{}/{datei}",
+                layout_io::ARCHIV
+            ))
+        })?;
+    let text = std::fs::read_to_string(&pfad).map_err(|source| ModelError::Read {
+        path: pfad.clone(),
+        source,
+    })?;
+    let mut layout: Layout =
+        toml::from_str(&text).map_err(|source| ModelError::Parse { path: pfad, source })?;
+    // Wie in `Model::load_layout`: die Kennung steht nicht in der Datei, sie ist der Dateiname.
+    layout.id = id.to_string();
+    Ok(layout)
+}
+
 #[test]
 fn jedes_layout_faellt_gleich_aus_wie_in_der_vorlage() {
     let (model, base) = live_or_skip!();
@@ -77,9 +117,7 @@ fn jedes_layout_faellt_gleich_aus_wie_in_der_vorlage() {
     let mut abweichungen: Vec<String> = Vec::new();
 
     for (name, want) in layouts {
-        let layout = model
-            .load_layout(name)
-            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let layout = aufgezeichnetes_layout(&model, name).unwrap_or_else(|e| panic!("{name}: {e}"));
         let got = check_layout(&model, &layout).unwrap_or_else(|e| panic!("{name}: {e}"));
 
         let want_pass = want["pass"].as_bool().unwrap();
