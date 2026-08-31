@@ -145,6 +145,16 @@ pub fn svg(model: &Model, layout: &Layout) -> Result<String, ModelError> {
                 .get(&it.reference)
                 .map_or(&it.reference, |c| &c.label),
         );
+        // Rechteck und Beschriftung in EINER Gruppe, mit dem Ref als Griff.
+        //
+        // Gruppiert, weil beim Ziehen sonst die Beschriftung stehen bleibt und das Moebel ohne
+        // sie wandert. `data-x`/`data-y` tragen die Modellkoordinaten in Zentimetern mit, damit
+        // die Oberflaeche beim Loslassen nicht aus Bildschirmpixeln zurueckrechnen muss: die
+        // viewBox laeuft ohnehin in Zentimetern, also ist die Umrechnung eine Matrixinversion
+        // und keine eigene Skalenrechnung. Eine solche waere eine zweite Fassung der Geometrie.
+        p.push_str(&format!(
+            r##"<g data-ref="{}" data-x="{}" data-y="{}" data-w="{w}" data-d="{d}" data-rot="{}">"##,
+            esc(&it.reference), r.x, r.y, it.rot));
         p.push_str(&format!(
             r##"<rect x="{}" y="{}" width="{w}" height="{d}" fill="#DAD2C4" stroke="#6E655A" stroke-width="3"/>"##,
             r.x, r.y));
@@ -159,6 +169,7 @@ pub fn svg(model: &Model, layout: &Layout) -> Result<String, ModelError> {
         p.push_str(&format!(
             r##"<text x="{cx}" y="{cy}"{rot} font-family="Helvetica,Arial" font-size="19" fill="#16181A" text-anchor="middle" dominant-baseline="central">{}</text>"##,
             esc(&label)));
+        p.push_str("</g>");
     }
 
     p.push_str("</svg>");

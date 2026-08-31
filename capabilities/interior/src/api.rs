@@ -48,6 +48,21 @@ const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/health", "Liveness."),
     r(
         "POST",
+        "/api/layouts",
+        "Ein neues Layout anlegen. Ueberschreibt nie ein bestehendes.",
+    ),
+    r(
+        "PUT",
+        "/api/layouts/:name",
+        "Die Positionen eines Layouts ersetzen und sofort neu pruefen. Der Kopf der Datei bleibt.",
+    ),
+    r(
+        "PUT",
+        "/api/placements",
+        "Wo die Stuecke wirklich stehen, fuer die aktive Wohnung. Body: {items}.",
+    ),
+    r(
+        "POST",
         "/api/items",
         "Einen Eintrag anlegen. Zustand ist Pflicht, sonst taucht er in keiner Liste auf.",
     ),
@@ -526,6 +541,95 @@ async fn api_put_placement(
     ))
 }
 
+#[derive(serde::Deserialize)]
+struct LayoutBody {
+    items: Vec<crate::model::PlacedItem>,
+}
+
+/// Die Positionen eines bestehenden Layouts ersetzen und sofort neu pruefen.
+///
+/// Antwortet mit dem Verdikt und dem fertigen Plan, damit die Oberflaeche nach einem Zug nichts
+/// selbst zu rechnen hat. Der Kopf der Datei bleibt stehen — `layout_io` erhaelt ihn, und wo er
+/// nicht genuegt, bricht es ab statt zu kuerzen.
+async fn api_put_layout(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<LayoutBody>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    crate::layout_io::update(&model, &id, &body.items)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let l = model
+        .load_layout(&id)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let r = check_layout(&model, &l).map_err(boom)?;
+    let svg = plan::svg(&model, &l).map_err(boom)?;
+    Ok(Json(
+        serde_json::json!({ "layout": l, "check": r, "svg": svg }),
+    ))
+}
+
+/// Ein neues Layout anlegen. Ueberschreibt nie ein bestehendes.
+async fn api_post_layout(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<NewLayout>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    let layout = crate::model::Layout {
+        name: body.name.clone(),
+        items: body.items,
+        id: body.id.clone(),
+    };
+    crate::layout_io::create(&model, &body.id, &layout, &body.notiz)
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    let l = model
+        .load_layout(&body.id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let r = check_layout(&model, &l).map_err(boom)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "id": body.id, "check": r })),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct NewLayout {
+    id: String,
+    name: String,
+    items: Vec<crate::model::PlacedItem>,
+    #[serde(default = "standard_notiz")]
+    notiz: String,
+}
+
+fn standard_notiz() -> String {
+    "In der Oberflaeche gestellt.".to_string()
+}
+
+/// Wo die Stuecke in dieser Wohnung WIRKLICH stehen — nicht, was vorgeschlagen ist.
+///
+/// Der Unterschied ist der Grund, aus dem `interior_placement` eine eigene Tabelle ist: ein
+/// Layout ist ein Vorschlag und eine Datei, eine Platzierung ist der Zustand und eine Zeile.
+/// Die Tabelle stand seit B25 leer, weil nichts sie geschrieben hat.
+async fn api_put_placements(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<LayoutBody>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let st = store()?;
+    for it in &body.items {
+        st.place(&crate::store::Placement {
+            item_id: it.reference.clone(),
+            flat: s.flat.clone(),
+            x: it.x,
+            y: it.y,
+            rot: it.rot,
+        })
+        .map_err(boom)?;
+    }
+    Ok(Json(
+        serde_json::json!({ "flat": s.flat, "gesetzt": body.items.len() }),
+    ))
+}
+
 async fn index(State(s): State<Arc<AppState>>) -> Result<Html<String>, (StatusCode, String)> {
     let m = load(&s)?;
     let names = m
@@ -546,8 +650,9 @@ pub async fn serve(flat: &str, port: u16) {
         .route("/health", get(health))
         .route("/routes", get(routes))
         .route("/api/model", get(api_model))
-        .route("/api/layouts", get(api_layouts))
-        .route("/api/layouts/:name", get(api_layout))
+        .route("/api/layouts", get(api_layouts).post(api_post_layout))
+        .route("/api/layouts/:name", get(api_layout).put(api_put_layout))
+        .route("/api/placements", put(api_put_placements))
         .route("/api/flats", get(api_flats))
         .route("/api/inventory", get(api_inventory))
         .route("/api/wishlist", get(api_wishlist))

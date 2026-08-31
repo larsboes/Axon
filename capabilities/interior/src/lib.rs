@@ -3,6 +3,7 @@ pub mod budget;
 pub mod clearance;
 pub mod geometry;
 pub mod import;
+pub mod layout_io;
 pub mod model;
 pub mod plan;
 pub mod search;

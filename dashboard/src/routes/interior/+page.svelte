@@ -21,6 +21,7 @@
     type InteriorState,
     type InteriorWishlist,
     type InteriorImpact,
+    type InteriorPlacedItem,
   } from "$lib/api";
   import { capabilities } from "$lib/capabilities.svelte";
 
@@ -50,6 +51,161 @@
 
   const owned = $derived(inventory.filter((r) => r.state === "owned"));
   const gone = $derived(inventory.filter((r) => r.state === "gone"));
+
+  // ─── Dragging on the plan ──────────────────────────────────────────────────
+  //
+  // The capability draws the plan and every piece arrives as a `<g data-ref>` carrying its
+  // model coordinates in centimetres. The SVG's viewBox is in centimetres too, so screen → model
+  // is one matrix inversion; the page never holds a scale factor of its own, which would be a
+  // second version of the geometry.
+  //
+  // A drag is UI state until it is saved. Nothing is written while you move.
+
+  let dragging = $state(false);
+  let dirty = $state(false);
+  let planError = $state<string | null>(null);
+  let savingPlan = $state(false);
+  let saveAs = $state("");
+
+  /** Snapped to the grid the checker itself rasterises on, so a drop cannot land between cells. */
+  const SNAP = 5;
+
+  /** Read the current arrangement straight out of the drawing. */
+  function itemsFromPlan(root: HTMLElement): InteriorPlacedItem[] {
+    return [...root.querySelectorAll<SVGGElement>("g[data-ref]")].map((g) => ({
+      ref: g.dataset.ref ?? "",
+      x: Number(g.dataset.x ?? 0),
+      y: Number(g.dataset.y ?? 0),
+      rot: Number(g.dataset.rot ?? 0),
+    }));
+  }
+
+  /** Attach drag handlers to a freshly rendered plan. Re-runs whenever the SVG is replaced. */
+  function draggable(root: HTMLElement) {
+    let active: SVGGElement | null = null;
+    let startX = 0;
+    let startY = 0;
+    let originX = 0;
+    let originY = 0;
+
+    const toModel = (svg: SVGSVGElement, clientX: number, clientY: number) => {
+      const pt = svg.createSVGPoint();
+      pt.x = clientX;
+      pt.y = clientY;
+      const ctm = svg.getScreenCTM();
+      if (!ctm) return { x: 0, y: 0 };
+      const p = pt.matrixTransform(ctm.inverse());
+      return { x: p.x, y: p.y };
+    };
+
+    const down = (e: PointerEvent) => {
+      const g = (e.target as Element).closest<SVGGElement>("g[data-ref]");
+      if (!g) return;
+      const svg = g.ownerSVGElement;
+      if (!svg) return;
+      active = g;
+      dragging = true;
+      const p = toModel(svg, e.clientX, e.clientY);
+      startX = p.x;
+      startY = p.y;
+      originX = Number(g.dataset.x ?? 0);
+      originY = Number(g.dataset.y ?? 0);
+      g.style.cursor = "grabbing";
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+      e.preventDefault();
+    };
+
+    const move = (e: PointerEvent) => {
+      if (!active) return;
+      const svg = active.ownerSVGElement;
+      if (!svg) return;
+      const p = toModel(svg, e.clientX, e.clientY);
+      const dx = Math.round((p.x - startX) / SNAP) * SNAP;
+      const dy = Math.round((p.y - startY) / SNAP) * SNAP;
+      active.setAttribute("transform", `translate(${dx} ${dy})`);
+      active.dataset.dx = String(dx);
+      active.dataset.dy = String(dy);
+    };
+
+    const up = () => {
+      if (!active) return;
+      const dx = Number(active.dataset.dx ?? 0);
+      const dy = Number(active.dataset.dy ?? 0);
+      active.dataset.x = String(originX + dx);
+      active.dataset.y = String(originY + dy);
+      active.style.cursor = "";
+      active = null;
+      dragging = false;
+      if (dx !== 0 || dy !== 0) dirty = true;
+    };
+
+    root.addEventListener("pointerdown", down);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    return {
+      destroy() {
+        root.removeEventListener("pointerdown", down);
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+      },
+    };
+  }
+
+  let planRoot = $state<HTMLElement | null>(null);
+
+  async function savePlan(): Promise<void> {
+    if (!planRoot || selected === null) return;
+    savingPlan = true;
+    planError = null;
+    try {
+      detail = await interior.saveLayout(selected, itemsFromPlan(planRoot));
+      dirty = false;
+      layouts = await interior.layouts();
+    } catch (caught) {
+      planError = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      savingPlan = false;
+    }
+  }
+
+  async function savePlanAs(): Promise<void> {
+    if (!planRoot || !saveAs.trim()) return;
+    savingPlan = true;
+    planError = null;
+    try {
+      const id = saveAs.trim();
+      const stamp = new Date().toISOString().slice(0, 10);
+      await interior.createLayout(
+        id,
+        id,
+        itemsFromPlan(planRoot),
+        `Am ${stamp} in der Oberflaeche gestellt, ausgehend von ${selected ?? "einem leeren Plan"}.`,
+      );
+      saveAs = "";
+      dirty = false;
+      layouts = await interior.layouts();
+      await select(id);
+    } catch (caught) {
+      planError = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      savingPlan = false;
+    }
+  }
+
+  /** Record the arrangement as where things actually stand, not as a proposal. */
+  async function markAsActual(): Promise<void> {
+    if (!planRoot) return;
+    savingPlan = true;
+    planError = null;
+    try {
+      const r = await interior.savePlacements(itemsFromPlan(planRoot));
+      planError = `Recorded ${r.gesetzt} pieces as actually placed.`;
+    } catch (caught) {
+      planError = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      savingPlan = false;
+    }
+  }
 
   // ─── Editing ───────────────────────────────────────────────────────────────
   //
@@ -349,7 +505,27 @@
           <p class="empty">Drawing…</p>
         {:else}
           <!-- The capability draws it. eslint-disable-next-line svelte/no-at-html-tags -->
-          <div class="svg">{@html detail.svg}</div>
+          <!--
+            Drag a piece; nothing is written until you save. The verdict below is the
+            capability's, recomputed on the arrangement you land on — the page decides nothing.
+          -->
+          {#key detail.svg}
+            <div class="svg" class:dragging bind:this={planRoot} use:draggable>{@html detail.svg}</div>
+          {/key}
+          <div class="planbar">
+            {#if dirty}<span class="moved">moved — not saved</span>{/if}
+            <button class="ghost" disabled={!dirty || savingPlan} onclick={savePlan}>
+              {savingPlan ? "Saving…" : "Save into this layout"}
+            </button>
+            <input placeholder="save as new id…" bind:value={saveAs} />
+            <button class="ghost" disabled={!saveAs.trim() || savingPlan} onclick={savePlanAs}>
+              Save as
+            </button>
+            <button class="ghost" disabled={savingPlan} onclick={markAsActual}>
+              This is how it stands
+            </button>
+          </div>
+          {#if planError}<p class="note">{planError}</p>{/if}
 
           <dl class="metrics mono">
             <div><dt>room</dt><dd>{detail.check.metrics.room_area_m2.toFixed(2)} m²</dd></div>
@@ -851,6 +1027,62 @@
     display: block;
     font-size: 0.75rem;
     margin-top: 0.15rem;
+  }
+
+  /* ─── Dragging ────────────────────────────────────────────────────────── */
+
+  .plan .svg :global(g[data-ref]) {
+    cursor: grab;
+  }
+
+  /* No text selection while a piece is being moved. */
+  .plan .svg.dragging {
+    user-select: none;
+  }
+
+  .plan .svg :global(g[data-ref]:hover rect) {
+    stroke: var(--primary);
+  }
+
+  .planbar {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-top: 0.7rem;
+  }
+
+  .planbar button {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.3rem 0.7rem;
+  }
+
+  .planbar button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .planbar input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.3rem 0.45rem;
+    width: 9rem;
+  }
+
+  .planbar .moved {
+    color: var(--warning);
+    font-size: 0.75rem;
+    margin-right: 0.2rem;
   }
 
   /* ─── Editing ─────────────────────────────────────────────────────────── */

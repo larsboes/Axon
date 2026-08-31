@@ -676,12 +676,41 @@ export const interior = {
    * and nothing said so until it was computed by hand. The form shows the same arithmetic
    * before you save.
    */
+  /** Replace a layout's positions and get the fresh verdict + plan back. The file's header survives. */
+  saveLayout: (id: string, items: InteriorPlacedItem[]) =>
+    request<InteriorLayoutDetail>(
+      `/interior/api/layouts/${encodeURIComponent(id)}`,
+      jsonInit('PUT', { items }),
+    ),
+
+  /** Create a layout. Never overwrites an existing one. */
+  createLayout: (id: string, name: string, items: InteriorPlacedItem[], notiz?: string) =>
+    request<{ id: string; check: unknown }>(
+      '/interior/api/layouts',
+      jsonInit('POST', { id, name, items, notiz }),
+    ),
+
+  /** Record where the pieces actually stand, as opposed to what a layout proposes. */
+  savePlacements: (items: InteriorPlacedItem[]) =>
+    request<{ flat: string; gesetzt: number }>(
+      '/interior/api/placements',
+      jsonInit('PUT', { items }),
+    ),
+
   impact: (id: string, patch: Partial<InteriorItem>) =>
     request<InteriorImpact>(
       `/interior/api/items/${encodeURIComponent(id)}/impact`,
       jsonInit('POST', patch),
     ),
 };
+
+export interface InteriorPlacedItem {
+  ref: string;
+  x: number;
+  y: number;
+  rot: number;
+  size?: [number, number] | null;
+}
 
 export interface InteriorImpact {
   item: string;
