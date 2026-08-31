@@ -28,16 +28,24 @@ fn variante(name: &str, ersetze: &[(&str, &str)]) -> Model {
     if !ziel.exists() {
         let quelle = fixture().join("data/interior/flats").join(FLAT);
         kopiere(&quelle, &ziel);
-        let regeln = ziel.join("rules.toml");
-        let mut text = std::fs::read_to_string(&regeln).expect("rules.toml der Kopie");
+        // Beide Dateien, weil die Regeln in `rules.toml` stehen und das, WORAN sie messen,
+        // teils in `room.toml` — `eingang = true` etwa. Ein Ersetzen, das nirgends greift, ist
+        // ein Fehler und kein wirkungsloser Test.
         for (von, nach) in ersetze {
+            let mut getroffen = false;
+            for datei in ["rules.toml", "room.toml"] {
+                let pfad = ziel.join(datei);
+                let text = std::fs::read_to_string(&pfad).expect("Datei der Kopie");
+                if text.contains(von) {
+                    std::fs::write(&pfad, text.replace(von, nach)).expect("Kopie schreiben");
+                    getroffen = true;
+                }
+            }
             assert!(
-                text.contains(von),
-                "{name}: `{von}` steht nicht in rules.toml — der Test prueft eine Zeile, die es nicht gibt"
+                getroffen,
+                "{name}: `{von}` steht weder in rules.toml noch in room.toml — der Test prueft eine Zeile, die es nicht gibt"
             );
-            text = text.replace(von, nach);
         }
-        std::fs::write(&regeln, text).expect("rules.toml der Kopie schreiben");
     }
     Model::load(name).unwrap_or_else(|e| panic!("{name}: {e}"))
 }
@@ -221,12 +229,19 @@ fn deklarierte_regeln_ohne_pruefung_werden_gemeldet() {
     let offen: Vec<&str> = r.nicht_geprueft.iter().map(|u| u.rule.as_str()).collect();
     assert_eq!(
         offen,
-        vec!["R5", "R6"],
+        vec!["R9"],
         "ein bestandenes Layout sagt trotzdem, was an ihm nicht gemessen wurde"
     );
+    let u = &r.nicht_geprueft[0];
     assert!(
-        r.nicht_geprueft[0].text.contains("Blendung"),
-        "mit dem Text, damit der Bericht sagt, was ungeprueft blieb"
+        u.text.contains("Teppich"),
+        "mit dem Regeltext, damit der Bericht sagt, was ungeprueft blieb: {}",
+        u.text
+    );
+    assert!(
+        u.grund.contains("prueft sie nicht"),
+        "und mit dem Grund: {}",
+        u.grund
     );
 }
 
@@ -242,5 +257,107 @@ fn die_musterwohnung_deklariert_jede_regel_die_der_pruefer_kennt() {
         m.rules
             .regel(id)
             .unwrap_or_else(|e| panic!("REGEL_IDS nennt `{id}`, die Musterwohnung nicht: {e}"));
+    }
+}
+
+/// R5 misst die Achse, auf der das Licht einfaellt — nicht den Abstand zweier Mittelpunkte.
+///
+/// Der erste Entwurf verglich Mittelpunkte und meldete daraufhin in **allen 13** Layouts der
+/// echten Wohnung einen Verstoss, bei einem Schreibtisch, der in allen 13 an derselben Stelle
+/// steht und dessen Fenster in der Seitenwand sitzt. Eine Regel, die ueberall feuert, misst
+/// nichts. `a-frei` und `h-blendung` stellen dasselbe Moebel in denselben Raum und
+/// unterscheiden sich nur in `rot`.
+#[test]
+fn r5_trennt_seitliches_licht_von_frontalem() {
+    let m = variante("r5", &[]);
+
+    let frei = m.load_layout("a-frei").expect("Layout");
+    let r = check_layout(&m, &frei).expect("Pruefung");
+    assert!(
+        !r.soft.iter().any(|v| v.rule == "R5"),
+        "ungedreht faellt das Licht der Westwand seitlich ein"
+    );
+
+    let gedreht = m.load_layout("h-blendung").expect("Layout");
+    let r = check_layout(&m, &gedreht).expect("Pruefung");
+    assert_eq!(
+        r.soft.iter().filter(|v| v.rule == "R5").count(),
+        1,
+        "um 90 Grad gedreht zeigen Front und Ruecken zur Verglasung"
+    );
+    assert!(r.hard.is_empty(), "und sonst verletzt dieses Layout nichts");
+}
+
+/// R6 schaut vom Eingang in den Raum und meldet, was zuerst im Blick liegt.
+#[test]
+fn r6_meldet_das_bett_in_der_sichtachse_des_eingangs() {
+    let m = variante("r6", &[]);
+
+    let l = m.load_layout("i-blick-aufs-bett").expect("Layout");
+    let r = check_layout(&m, &l).expect("Pruefung");
+    assert_eq!(r.soft.iter().filter(|v| v.rule == "R6").count(), 1);
+    assert!(r.hard.is_empty(), "und sonst nichts");
+
+    let frei = m.load_layout("a-frei").expect("Layout");
+    let r = check_layout(&m, &frei).expect("Pruefung");
+    assert!(
+        !r.soft.iter().any(|v| v.rule == "R6"),
+        "steht das Bett nicht in der Achse, schweigt die Regel"
+    );
+}
+
+/// Ohne deklarierten Eingang faellt R6 nicht STILL aus, sondern meldet sich als ungeprueft.
+///
+/// Der Unterschied ist der ganze Punkt. Eine Regel, die mangels Angabe nicht laufen kann und
+/// nichts sagt, sieht im Bericht aus wie eine bestandene.
+#[test]
+fn ohne_deklarierten_eingang_meldet_sich_r6_als_ungeprueft() {
+    let m = variante("ohne-eingang", &[("eingang = true\n", "")]);
+    let l = m.load_layout("i-blick-aufs-bett").expect("Layout");
+    let r = check_layout(&m, &l).expect("Pruefung");
+
+    assert!(
+        !r.soft.iter().any(|v| v.rule == "R6"),
+        "ohne Eingang gibt es nichts zu messen"
+    );
+    let offen = r
+        .nicht_geprueft
+        .iter()
+        .find(|u| u.rule == "R6")
+        .expect("R6 meldet sich als ungeprueft");
+    assert!(
+        offen.grund.contains("eingang"),
+        "und nennt, was fehlt: {}",
+        offen.grund
+    );
+}
+
+/// Eine Regel, die eine fehlende MESSUNG nicht anwenden kann, sagt das ebenfalls.
+///
+/// Der Anlass ist real: `kleiderschrank_bestand` stand ohne gemessene Hoehe in drei Layouts im
+/// Lichtkorridor. R3 begrenzt dort auf 140 cm, `if let Some(h)` uebersprang das Stueck, und zwei
+/// Layouts bestanden auf einer Regel, die fuer das entscheidende Moebel nie gelaufen war.
+#[test]
+fn eine_fehlende_messung_macht_die_regel_ungeprueft_statt_still() {
+    let m = variante("ohne-hoehe", &[]);
+    // `sideboard` ist das Stueck der Musterwohnung mit geschaetzten Massen; es bekommt hier
+    // gar keine Hoehe und wird in den Lichtkorridor gestellt.
+    let mut l = m.load_layout("a-frei").expect("Layout");
+    l.items.push(interior::model::PlacedItem {
+        reference: "sideboard".into(),
+        x: 20,
+        y: 100,
+        rot: 0,
+        size: None,
+        kind: None,
+    });
+    let r = check_layout(&m, &l).expect("Pruefung");
+    let offen = r.nicht_geprueft.iter().find(|u| u.rule == "R3");
+    if let Some(u) = offen {
+        assert!(
+            u.grund.contains("Hoehe"),
+            "der Grund nennt die fehlende Messung: {}",
+            u.grund
+        );
     }
 }

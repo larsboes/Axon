@@ -399,8 +399,20 @@
           {#if detail.check.nicht_geprueft.length > 0}
             <p class="unchecked">
               <Icon name="alert" size={14} />
-              Declared by this flat, not measured here:
-              {detail.check.nicht_geprueft.map((r) => `${r.rule} — ${r.text}`).join(" · ")}
+              Not measured here:
+              {detail.check.nicht_geprueft.map((r) => `${r.rule} (${r.grund})`).join(" · ")}
+            </p>
+          {/if}
+          <!--
+            Furniture already decided against. A verdict about pieces that are not coming
+            answers no question that is still open — and one of the failing layouts fails on
+            exactly such a piece.
+          -->
+          {#if detail.check.veraltet.length > 0}
+            <p class="unchecked">
+              <Icon name="alert" size={14} />
+              Places furniture already rejected: {detail.check.veraltet.join(", ")} — this
+              verdict is about a plan you have moved on from.
             </p>
           {/if}
           {#if detail.check.uncertainties.length > 0}

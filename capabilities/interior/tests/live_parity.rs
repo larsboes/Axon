@@ -109,8 +109,24 @@ fn jedes_layout_faellt_gleich_aus_wie_in_der_vorlage() {
             v.sort();
             v
         };
+        // Bewusste Abweichungen stehen in der Vorlage selbst, im Overlay neben der Wohnung —
+        // nicht hier. Sie beschreiben eine Wohnung, und dieser Test steht in einem oeffentlichen
+        // Repository. Die Vorlage bleibt dabei unveraendert: `abweichungen` ist ein zweiter
+        // Schluessel daneben, kein korrigierter Messwert.
+        let erlaubt = |key: &str| -> Vec<String> {
+            base["abweichungen"][name][format!("{key}_zusaetzlich")]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         for (key, got_v) in [("hard", &got.hard), ("soft", &got.soft)] {
-            let (a, b) = (ids(got_v), want_ids(key));
+            let (a, mut b) = (ids(got_v), want_ids(key));
+            b.extend(erlaubt(key));
+            b.sort();
             if a != b {
                 abweichungen.push(format!(
                     "{name}: {key} meldet [{}] statt [{}]",

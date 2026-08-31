@@ -59,6 +59,9 @@ freihaltezone = 90
 
 [[oeffnungen]]
 id = "eingangstuer"
+# R6 misst von hier aus: der Blick beim Eintreten soll nicht zuerst aufs Bett fallen.
+# Deklariert und nicht am Namen erraten — `badtuer` traegt denselben `typ`.
+eingang = true
 wand = "sued"
 von = 300
 bis = 380

@@ -73,3 +73,13 @@ text = "Schreibtisch nicht frontal zur Fensterwand — Blendung auf dem Bildschi
 id = "R6"
 schwere = "weich"
 text = "Vom Eingang aus faellt der Blick nicht zuerst auf das Bett."
+
+# Deklariert, und diese Maschine kennt sie nicht.
+#
+# R5 und R6 standen bis 2026-08-31 an dieser Stelle; seit sie implementiert sind, braucht der
+# Fall einen eigenen Vertreter. Eine Wohnung darf eine Hausregel fuehren, die der Pruefer nicht
+# umsetzt — sie faellt dann NICHT still heraus, sondern steht als ungeprueft im Bericht.
+[[regeln]]
+id = "R9"
+schwere = "weich"
+text = "Ein Teppich unter dem Esstisch, gross genug fuer die zurueckgeschobenen Stuehle."

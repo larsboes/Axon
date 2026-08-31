@@ -45,7 +45,7 @@ pub use crate::model::Severity;
 /// Wohnung deklarieren, sonst bricht die Pruefung ab — eine Kennung ohne Text ist ein Verstoss,
 /// den niemand nachschlagen kann. Was die Wohnung deklariert und hier fehlt, meldet
 /// `CheckResult::nicht_geprueft` als Luecke, statt es fallen zu lassen.
-pub const REGEL_IDS: &[&str] = &["R1", "R2", "R3", "R4", "R7", "R8"];
+pub const REGEL_IDS: &[&str] = &["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Violation {
@@ -130,6 +130,14 @@ pub struct CheckResult {
     pub soft: Vec<Violation>,
     pub uncertainties: Vec<Uncertainty>,
     pub metrics: Metrics,
+    /// Stuecke in diesem Layout, gegen die schon entschieden ist.
+    ///
+    /// Abgeleitet aus `prioritaet = "verworfen"` im Inventar, nicht am Layout deklariert: die
+    /// Entscheidung faellt am Moebel und soll nicht in jeder Datei wiederholt werden, die es
+    /// aufstellt. Zwei Layouts stellten am 2026-08-31 einen Tisch auf, der seit dem 30. verworfen
+    /// war — eines davon war eines der vier durchgefallenen, und es fiel an genau diesem Tisch.
+    /// Ein Verdikt ueber Moebel, die nicht kommen, beantwortet keine Frage, die noch offen ist.
+    pub veraltet: Vec<String>,
     /// Regeln, die diese Wohnung deklariert und diese Maschine nicht prueft.
     ///
     /// Gehoert in das Ergebnis und nicht in ein Log, weil es das Verdikt qualifiziert:
@@ -138,11 +146,22 @@ pub struct CheckResult {
     pub nicht_geprueft: Vec<UngeprueteRegel>,
 }
 
-/// Eine deklarierte Regel ohne Pruefung dahinter.
+/// Eine Regel, die auf dieses Layout nicht angewendet wurde, und warum nicht.
+///
+/// Zwei Gruende, gleiche Folge. **Nicht implementiert:** die Wohnung fuehrt die Regel, diese
+/// Maschine kennt sie nicht. **Nicht anwendbar:** die Maschine kennt sie, aber es fehlt eine
+/// Angabe, ohne die sie nichts messen kann.
+///
+/// Der zweite Fall ist der gefaehrlichere, weil er wie Bestehen aussieht. `kleiderschrank_bestand`
+/// stand bis 2026-08-31 ohne gemessene Hoehe in drei Layouts im Lichtkorridor; R3 begrenzt dort
+/// auf 140 cm, und `if let Some(h)` uebersprang das Stueck **stillschweigend**. Zwei Layouts
+/// bestanden auf einer Regel, die fuer das entscheidende Moebel nie gelaufen war.
 #[derive(Debug, Clone, Serialize)]
 pub struct UngeprueteRegel {
     pub rule: String,
     pub text: String,
+    /// Im Klartext, was fehlt. Wandert in den Bericht, damit die Luecke benannt ist.
+    pub grund: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -436,6 +455,9 @@ pub fn check_layout(
     let cat: &Catalogue = &model.catalogue;
     let mut hard: Vec<Violation> = Vec::new();
     let mut soft: Vec<Violation> = Vec::new();
+    // Regeln, die laufen wollten und nicht konnten. Wird unten mit den gar nicht
+    // implementierten zusammengelegt — fuer den Leser ist beides dasselbe: nicht gemessen.
+    let mut ausgefallen: Vec<(String, String)> = Vec::new();
 
     let mut placed: Vec<Placed> = Vec::new();
     for it in &layout.items {
@@ -617,6 +639,18 @@ pub fn check_layout(
         d: lc.y[1] - lc.y[0],
     };
     for p in &placed {
+        // Ohne gemessene Hoehe kann R3 hier nichts sagen — und ein Stueck, das gar nicht im
+        // Korridor steht, braucht auch keine: gemeldet wird nur, wo die Regel wirklich gegriffen
+        // haette.
+        if p.h.is_none() && p.rect.overlaps(&corridor) {
+            ausgefallen.push((
+                "R3".to_string(),
+                format!(
+                    "\"{}\" steht im Lichtkorridor und hat keine gemessene Hoehe",
+                    p.it.reference
+                ),
+            ));
+        }
         if let Some(h) = p.h {
             if h > lc.max_hoehe && p.rect.overlaps(&corridor) {
                 einsortieren(
@@ -662,6 +696,130 @@ pub fn check_layout(
                     );
                 }
             }
+        }
+    }
+
+    // --- R5: Fensterlicht faellt seitlich auf den Schreibtisch ---------------
+    //
+    // "Weder frontal zur Verglasung (Blendung) noch mit dem Ruecken dazu (Reflexionen)."
+    // Beides sind Aussagen ueber die Achse, auf der der Schreibtisch zur Verglasung steht:
+    // sitzt man an einer Tiefenseite, liegt vorne und hinten auf der Tiefenachse. Zeigt die
+    // Verglasung dorthin, ist sie im Gesicht oder im Ruecken; liegt sie auf der Breitenachse,
+    // faellt das Licht seitlich ein — genau das, was die Regel verlangt.
+    //
+    // Ohne Verglasung im Raum ist nichts zu messen, und das wird gemeldet statt uebersprungen.
+    {
+        let glas = room
+            .oeffnungen
+            .iter()
+            .find(|o| o.typ.as_deref().is_some_and(|t| t.starts_with("glastuer")));
+        let desks = placed.iter().filter(|p| p.kind == Kind::Desk).count();
+        match glas.and_then(|g| opening_segment(room, g)) {
+            None if desks > 0 => ausgefallen.push((
+                "R5".to_string(),
+                "der Raum fuehrt keine Verglasung, gegen die ein Schreibtisch stehen koennte"
+                    .to_string(),
+            )),
+            Some(seg) => {
+                // Aus welcher Richtung das Licht kommt, sagt die NORMALE der Verglasung, nicht
+                // der Abstand zwischen zwei Mittelpunkten. Der erste Entwurf verglich
+                // Mittelpunkte und meldete daraufhin in allen 13 Layouts einen Verstoss — bei
+                // einem Schreibtisch, der in allen 13 an derselben Stelle steht und dessen
+                // Fenster in der Seitenwand sitzt. Eine Regel, die ueberall feuert, misst
+                // nichts.
+                //
+                // Die Verglasung liegt in einer Wand; ihre Normale zeigt in den Raum. Faellt das
+                // Licht entlang der Achse ein, auf der der Schreibtisch vorne und hinten hat,
+                // steht er frontal oder mit dem Ruecken dazu. Steht die Normale quer dazu,
+                // kommt es seitlich — und genau das verlangt die Regel.
+                let licht_laeuft_in_y = seg.normal[1].abs() > seg.normal[0].abs();
+                for p in placed.iter().filter(|p| p.kind == Kind::Desk) {
+                    // `p.rect` ist bereits gedreht, also entscheidet es selbst, welche Achse
+                    // gerade die Tiefe ist: an der Tiefenseite sitzt man.
+                    let tiefe_laeuft_in_y = p.rect.d <= p.rect.w;
+                    if licht_laeuft_in_y == tiefe_laeuft_in_y {
+                        einsortieren(
+                            haus_regel(
+                                rules,
+                                "R5",
+                                Some(p.it.reference.clone()),
+                                format!(
+                                    "\"{}\" steht mit Front oder Ruecken zur Verglasung — Blendung bzw. Reflexionen; das Licht soll seitlich einfallen",
+                                    p.it.reference
+                                ),
+                                None,
+                                None,
+                            )?,
+                            &mut hard,
+                            &mut soft,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // --- R6: der Blick vom Eingang faellt nicht zuerst aufs Bett -------------
+    //
+    // Ein Strahl von der Eingangsoeffnung nach innen, entlang ihrer Normalen. Was er zuerst
+    // trifft, ist das, was man beim Eintreten sieht. Ist das ein Bett, ist die Regel verletzt.
+    //
+    // **Welche Oeffnung der Eingang ist, sagt die Wohnung** (`eingang = true`), nicht der Code.
+    // `badtuer` und `eingangstuer` sind beide `typ = "tuer"`, und die nach dem Namen zu
+    // unterscheiden waere genau der Fehler, den B26a mit der Kuechen-Anlaufzone geschlossen hat.
+    // Sagt die Wohnung nichts, laeuft R6 nicht und sagt das.
+    {
+        let betten = placed.iter().filter(|p| p.kind == Kind::Bed).count();
+        let eingang = room.oeffnungen.iter().find(|o| o.eingang == Some(true));
+        match eingang.and_then(|e| opening_segment(room, e)) {
+            None if betten > 0 => ausgefallen.push((
+                "R6".to_string(),
+                "keine Oeffnung ist als Eingang deklariert (`eingang = true` in room.toml)"
+                    .to_string(),
+            )),
+            Some(seg) => {
+                let mut x = (seg.a[0] + seg.b[0]) as f64 / 2.0;
+                let mut y = (seg.a[1] + seg.b[1]) as f64 / 2.0;
+                let mut gesehen: Option<&Placed> = None;
+                // In Schritten von 5 cm, hoechstens die Diagonale eines sehr grossen Raums.
+                for _ in 0..400 {
+                    x += seg.normal[0] * 5.0;
+                    y += seg.normal[1] * 5.0;
+                    if !point_in_polygon([x, y], &room.hauptraum.polygon) {
+                        break;
+                    }
+                    if let Some(hit) = placed.iter().find(|p| {
+                        x >= p.rect.x as f64
+                            && x < p.rect.right() as f64
+                            && y >= p.rect.y as f64
+                            && y < p.rect.bottom() as f64
+                    }) {
+                        gesehen = Some(hit);
+                        break;
+                    }
+                }
+                if let Some(p) = gesehen {
+                    if p.kind == Kind::Bed {
+                        einsortieren(
+                            haus_regel(
+                                rules,
+                                "R6",
+                                Some(p.it.reference.clone()),
+                                format!(
+                                    "vom Eingang aus faellt der Blick zuerst auf \"{}\"",
+                                    p.it.reference
+                                ),
+                                None,
+                                None,
+                            )?,
+                            &mut hard,
+                            &mut soft,
+                        );
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -960,13 +1118,28 @@ pub fn check_layout(
             free_area_m2: (grid.free_cells() as f64 * (RES * RES) as f64) / 10_000.0,
             corridors,
         },
+        veraltet: placed
+            .iter()
+            .filter(|p| {
+                p.item
+                    .and_then(|i| i.prioritaet.as_deref())
+                    .is_some_and(|s| s == "verworfen")
+            })
+            .map(|p| p.it.reference.clone())
+            .collect(),
         nicht_geprueft: rules
             .nicht_geprueft(REGEL_IDS)
             .into_iter()
             .map(|r| UngeprueteRegel {
                 rule: r.id.clone(),
                 text: r.text.clone(),
+                grund: "diese Maschine prueft sie nicht".to_string(),
             })
+            .chain(ausgefallen.into_iter().map(|(id, grund)| UngeprueteRegel {
+                rule: id.clone(),
+                text: rules.regel(&id).map(|r| r.text.clone()).unwrap_or_default(),
+                grund,
+            }))
             .collect(),
     })
 }

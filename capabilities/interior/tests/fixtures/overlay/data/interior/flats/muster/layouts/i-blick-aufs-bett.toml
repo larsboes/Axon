@@ -1,0 +1,25 @@
+# Der Blick vom Eingang faellt zuerst aufs Bett (R6).
+#
+# Die Eingangstuer sitzt in der OSTwand ueber y 300..400; ihre Normale zeigt nach Westen. Der
+# Strahl laeuft von ihrer Mitte in den Raum, und was er zuerst trifft, ist das, was man beim
+# Eintreten sieht. Hier ist es das Bett.
+#
+# **Welche Oeffnung der Eingang ist, sagt `room.toml` mit `eingang = true`** — `badtuer` traegt
+# denselben `typ = "tuer"`, und die beiden am Namen zu unterscheiden waere der Fehler, den B26a
+# mit der nach Norden festverdrahteten Kuechenzone geschlossen hat. Nimmt man die Zeile heraus,
+# faellt R6 nicht still aus, sondern meldet sich als ungeprueft.
+#
+# Verletzt R6 und sonst nichts; die Position ist dafuer gesucht worden.
+name = "I — Bett in der Sichtachse des Eingangs"
+
+[[item]]
+ref = "bett"
+x = 260
+y = 260
+rot = 90
+
+[[item]]
+ref = "schreibtisch"
+x = 0
+y = 0
+rot = 0

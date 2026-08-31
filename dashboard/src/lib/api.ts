@@ -549,6 +549,16 @@ export interface InteriorViolation {
 export interface InteriorUncheckedRule {
   rule: string;
   text: string;
+  /**
+   * Why it did not run. Two kinds, one consequence.
+   *
+   * "not implemented" — the flat declares it, the engine has no check for it.
+   * "not applicable"  — the engine has one, but a measurement or declaration is missing. This
+   *                     is the dangerous kind: it reads as a pass. The wardrobe sat in the light
+   *                     corridor with no measured height in three layouts, and R3 skipped it in
+   *                     silence.
+   */
+  grund: string;
 }
 
 export interface InteriorLayoutSummary {
@@ -578,6 +588,8 @@ export interface InteriorLayoutDetail {
      * complete one.
      */
     nicht_geprueft: InteriorUncheckedRule[];
+    /** Pieces in this layout that have already been decided against (`prioritaet: verworfen`). */
+    veraltet: string[];
     metrics: {
       room_area_m2: number;
       occupied_area_m2: number;

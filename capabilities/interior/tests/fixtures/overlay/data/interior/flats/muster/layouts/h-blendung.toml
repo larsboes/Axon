@@ -1,0 +1,24 @@
+# Der Schreibtisch mit Front und Ruecken zur Verglasung (R5).
+#
+# Die Terrassentuer sitzt in der WESTwand, ihr Licht faellt also entlang x in den Raum. Um
+# 90 Grad gedreht liegt die Tiefenachse des Schreibtischs ebenfalls auf x — an einer Tiefenseite
+# sitzt man, also zeigen Front und Ruecken zur Verglasung. Genau das verbietet R5.
+#
+# In `a-frei` steht dasselbe Moebel ungedreht und bekommt sein Licht von der Seite: derselbe
+# Raum, dasselbe Fenster, dieselbe Regel, kein Verstoss. Der Unterschied ist `rot`.
+#
+# Die Positionen sind gesucht und nicht geraten: dieses Layout verletzt R5 und **sonst nichts**.
+# Ein Testlayout, das nebenbei drei weitere Regeln reisst, belegt nicht, welche davon gemeint war.
+name = "H — Schreibtisch gedreht, Licht von vorn"
+
+[[item]]
+ref = "schreibtisch"
+x = 180
+y = 20
+rot = 90
+
+[[item]]
+ref = "bett"
+x = 380
+y = 20
+rot = 0

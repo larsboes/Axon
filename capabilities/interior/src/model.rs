@@ -70,6 +70,14 @@ pub struct Opening {
     pub freihaltezone: Option<i32>,
     #[serde(default)]
     pub sperrflaeche: Option<Zone>,
+    /// Ist dies die Tuer, durch die man die Wohnung betritt?
+    ///
+    /// Die Wohnung sagt es, nicht der Code. `badtuer` und `eingangstuer` fuehren beide
+    /// `typ = "tuer"`, und sie am Namen zu unterscheiden waere derselbe Fehler, den B26a mit
+    /// der nach Norden festverdrahteten Kuechen-Anlaufzone geschlossen hat. Fehlt die Angabe,
+    /// laeuft R6 nicht und der Bericht sagt, dass sie fehlt.
+    #[serde(default)]
+    pub eingang: Option<bool>,
     #[serde(default)]
     pub schwenk: Option<String>,
     #[serde(default)]
