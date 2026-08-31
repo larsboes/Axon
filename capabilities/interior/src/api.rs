@@ -65,7 +65,12 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "POST",
         "/api/layouts",
-        "Ein neues Layout anlegen. Ueberschreibt nie ein bestehendes.",
+        "Ein Layout anlegen: {id, name?, von?, items?, notiz?}. Ohne von und items ist es leer.",
+    ),
+    r(
+        "DELETE",
+        "/api/layouts/:name",
+        "Ein Layout aus der Liste nehmen. Es wandert nach layouts/archiv/ und wird nie geloescht.",
     ),
     r(
         "PUT",
@@ -151,7 +156,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "GET",
         "/api/model",
-        "Der gemessene Raum: Polygon, Waende, Oeffnungen, und was daran geschaetzt ist.",
+        "Der gemessene Raum: Masse, Polygon, Waende, Oeffnungen, und was daran geschaetzt ist.",
     ),
     r(
         "GET",
@@ -212,9 +217,13 @@ async fn api_model(
     State(s): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let m = load(&s)?;
+    let (b, t) = m.room.masse();
     Ok(Json(serde_json::json!({
         "flat": m.room.flat,
         "area_m2": m.room.area_m2(),
+        // Die aeusseren Masse, damit die Oberflaeche sie neben den Plan schreiben kann, ohne
+        // sich das Polygon selbst auszumessen.
+        "masse": { "b": b, "t": t },
         "hoehe": m.room.hauptraum.hoehe,
         "polygon": m.room.hauptraum.polygon,
         "bad": m.room.bad,
@@ -732,39 +741,104 @@ async fn api_preview_layout(
 }
 
 /// Ein neues Layout anlegen. Ueberschreibt nie ein bestehendes.
+///
+/// Drei Wege in einen Rumpf, weil es drei Arten gibt, einen Plan anzufangen, und keine davon
+/// eine Sonderform verdient: **leer** (weder `von` noch `items`), **als Kopie** (`von`), oder
+/// **fertig gestellt** (`items`). Ein Aufrufer, der eine Variante durchspielen will, schickt
+/// eine Zeile und faengt nicht damit an, sich eine Aufstellung aus `GET` zusammenzusuchen.
+///
+/// Antwortet wie `PUT` und die Vorschau mit `{layout, check, svg}`: wer einen Plan anlegt, will
+/// als Naechstes wissen, ob er besteht und wie er aussieht, und das ist dieselbe Rechnung.
 async fn api_post_layout(
     State(s): State<Arc<AppState>>,
     Json(body): Json<NewLayout>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let model = load(&s)?;
+    // Ein unbrauchbarer Name ist eine schlechte Anfrage und kein Konflikt. Beides auf 409 zu
+    // legen hiesse, einem Aufrufer „gibt es schon" zu melden, wo „so darf es nicht heissen"
+    // gemeint ist.
+    crate::layout_io::pruefe_id(&body.id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let vorlage = match &body.von {
+        // Der Name der Vorlage und nicht der Lesefehler: der traegt den Pfad im privaten
+        // Overlay, und der Aufrufer hat nach einem Layout gefragt, nicht nach einer Datei.
+        Some(v) => Some(
+            model
+                .load_layout(v)
+                .map_err(|_| (StatusCode::NOT_FOUND, format!("keine Vorlage `{v}`")))?,
+        ),
+        None => None,
+    };
+    let items = match (body.items, &vorlage) {
+        (Some(eigene), _) => eigene,
+        (None, Some(v)) => v.items.clone(),
+        (None, None) => Vec::new(),
+    };
+    let notiz = body.notiz.unwrap_or_else(|| match &body.von {
+        Some(v) => format!(
+            "Erstellt {} ueber die API, als Kopie von `{v}`.",
+            crate::layout_io::heute()
+        ),
+        None => format!("Erstellt {} ueber die API.", crate::layout_io::heute()),
+    });
     let layout = crate::model::Layout {
-        name: body.name.clone(),
-        items: body.items,
+        name: body.name.unwrap_or_else(|| body.id.clone()),
+        items,
         id: body.id.clone(),
     };
-    crate::layout_io::create(&model, &body.id, &layout, &body.notiz)
+    crate::layout_io::create(&model, &body.id, &layout, &notiz)
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
     let l = model
         .load_layout(&body.id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let r = check_layout(&model, &l).map_err(boom)?;
+    let svg = plan::svg(&model, &l).map_err(boom)?;
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({ "id": body.id, "check": r })),
+        Json(serde_json::json!({ "id": body.id, "layout": l, "check": r, "svg": svg })),
     ))
 }
 
 #[derive(serde::Deserialize)]
 struct NewLayout {
     id: String,
-    name: String,
-    items: Vec<crate::model::PlacedItem>,
-    #[serde(default = "standard_notiz")]
-    notiz: String,
+    /// Der Anzeigename. Fehlt er, ist es die Id — ein Plan ohne Namen waere in jeder Liste eine
+    /// leere Zeile, und ein erfundener waere schlimmer.
+    #[serde(default)]
+    name: Option<String>,
+    /// Die Vorlage, deren Aufstellung uebernommen wird.
+    #[serde(default)]
+    von: Option<String>,
+    /// Schlaegt `von`. Fehlen beide, entsteht ein **leerer** Plan — kein Versehen, sondern der
+    /// Anfang jeder Planung, die von Hand gezogen wird.
+    #[serde(default)]
+    items: Option<Vec<crate::model::PlacedItem>>,
+    /// Die erste Zeile des Dateikopfs, und damit die Begruendung. Ohne sie schreibt der Kopf
+    /// das Datum und die API hin, statt eine Herkunft zu behaupten, die niemand hat.
+    #[serde(default)]
+    notiz: Option<String>,
 }
 
-fn standard_notiz() -> String {
-    "In der Oberflaeche gestellt.".to_string()
+/// Ein Layout aus der Liste nehmen, ohne es zu verlieren.
+///
+/// `DELETE` heisst hier **archivieren**: die Datei wandert nach `layouts/archiv/` und bleibt
+/// lesbar. Ihr Kopf traegt die Begruendung, aus der ein Moebel verworfen wurde (PRD Q60), und
+/// die wird genau dann gebraucht, wenn dasselbe Moebel wieder zur Debatte steht.
+async fn api_delete_layout(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = load(&s)?;
+    crate::layout_io::pruefe_id(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    // Ueber die Namensliste und nicht ueber `load_layout`: die liest die Datei, und ein Layout
+    // mit einem Tippfehler im TOML ist genau eins, das jemand wegraeumen will.
+    if !model.layout_names().map_err(boom)?.iter().any(|n| n == &id) {
+        return Err((StatusCode::NOT_FOUND, format!("kein Layout `{id}`")));
+    }
+    let nach = crate::layout_io::archiviere(&model, &id)
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    Ok(Json(
+        serde_json::json!({ "id": id, "archiviert": nach, "geloescht": false }),
+    ))
 }
 
 /// Wo die Stuecke in dieser Wohnung WIRKLICH stehen — nicht, was vorgeschlagen ist.
@@ -813,7 +887,12 @@ pub async fn serve(flat: &str, port: u16) {
         .route("/routes", get(routes))
         .route("/api/model", get(api_model))
         .route("/api/layouts", get(api_layouts).post(api_post_layout))
-        .route("/api/layouts/:name", get(api_layout).put(api_put_layout))
+        .route(
+            "/api/layouts/:name",
+            get(api_layout)
+                .put(api_put_layout)
+                .delete(api_delete_layout),
+        )
         .route("/api/layouts/:name/preview", post(api_preview_layout))
         .route("/api/layouts/:name/allowed", get(api_allowed))
         .route("/api/placements", put(api_put_placements))

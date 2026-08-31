@@ -88,10 +88,14 @@ pub fn svg(model: &Model, layout: &Layout) -> Result<String, ModelError> {
             if t.geschaetzt { " (ca.)" } else { "" }));
     }
 
-    let pts: Vec<String> = poly.iter().map(|q| format!("{},{}", q[0], q[1])).collect();
-    p.push_str(&format!(
-        r##"<polygon points="{}" fill="#F4F1EB" stroke="#16181A" stroke-width="5" stroke-linejoin="miter"/>"##,
-        pts.join(" ")));
+    // Nur die Flaeche. Die Kontur wird nach den Moebeln gezeichnet, und der Absatz dort sagt,
+    // warum das keine Kosmetik ist.
+    let pts = poly
+        .iter()
+        .map(|q| format!("{},{}", q[0], q[1]))
+        .collect::<Vec<_>>()
+        .join(" ");
+    p.push_str(&format!(r##"<polygon points="{pts}" fill="#F4F1EB"/>"##));
 
     if let Some(b) = &room.bad {
         let (w, h) = (b.x[1] - b.x[0], b.y[1] - b.y[0]);
@@ -108,26 +112,12 @@ pub fn svg(model: &Model, layout: &Layout) -> Result<String, ModelError> {
         p.push_str(&format!(
             r##"<rect x="{}" y="{}" width="{w}" height="{h}" fill="none" stroke="#6E655A" stroke-width="3" stroke-dasharray="12 8"/>"##,
             f.x[0], f.y[0]));
+        // Mittig und mit dem Namen aus der Datei. Bis 2026-08-31 stand hier das Wort KUECHE
+        // fuer jeden Einbau, 40 cm nach Sueden versetzt — bei einem Einbau an der Suedwand fiel
+        // die Beschriftung damit AUS der Wohnung heraus.
         p.push_str(&format!(
-            r##"<text x="{}" y="{}" font-family="Helvetica,Arial" font-size="20" fill="#5B5F63" text-anchor="middle" dominant-baseline="central" letter-spacing="1">KUECHE</text>"##,
-            f.x[0] + w / 2, f.y[0] + h / 2 + 40));
-    }
-
-    // Oeffnungen: Glastuer voll, Fenster gestrichelt, Tuer grau — drei Signaturen, weil sie
-    // drei verschiedene Dinge sind. Die TypeScript-Vorlage zeichnete Fenster wie Glastueren.
-    for o in &room.oeffnungen {
-        let Some((a, b)) = room.opening_span(o) else {
-            continue;
-        };
-        let (stroke, dash) = match o.typ.as_deref() {
-            Some("tuer") => ("#5B5F63", r##" stroke-dasharray="16 10""##),
-            Some("fenster") => ("#B0764A", r##" stroke-dasharray="4 6""##),
-            _ => ("#B0764A", ""),
-        };
-        p.push_str(&format!(
-            r##"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{stroke}" stroke-width="9"{dash}/>"##,
-            a[0], a[1], b[0], b[1]
-        ));
+            r##"<text x="{}" y="{}" font-family="Helvetica,Arial" font-size="20" fill="#5B5F63" text-anchor="middle" dominant-baseline="central" letter-spacing="1">{}</text>"##,
+            f.x[0] + w / 2, f.y[0] + h / 2, esc(&f.id.to_uppercase())));
     }
 
     for it in &layout.items {
@@ -170,6 +160,35 @@ pub fn svg(model: &Model, layout: &Layout) -> Result<String, ModelError> {
             r##"<text x="{cx}" y="{cy}"{rot} font-family="Helvetica,Arial" font-size="19" fill="#16181A" text-anchor="middle" dominant-baseline="central">{}</text>"##,
             esc(&label)));
         p.push_str("</g>");
+    }
+
+    // Die Huelle liegt OBEN, und das ist keine Kosmetik.
+    //
+    // Eine Kontur liegt mittig auf ihrer Linie, also deckt jedes Moebel an einer Wand die halbe
+    // Wandstaerke zu. Bis 2026-08-31 wurde die Wand vor den Moebeln gezeichnet: im Bild
+    // verschwand sie hinter jedem Stueck, das sie beruehrt, und der Schrank an der Nordwand sah
+    // aus, als ragte er aus der Wohnung heraus. Die Zahlen waren dabei die ganze Zeit richtig.
+    //
+    // Die Oeffnungen gehoeren aus demselben Grund darueber, und zusaetzlich aus einem zweiten:
+    // dass ein Schrank vor der Tuer steht, ist genau die Auskunft, fuer die jemand den Plan
+    // ansieht. Glastuer voll, Fenster gestrichelt, Tuer grau — drei Signaturen, weil sie drei
+    // verschiedene Dinge sind. Die TypeScript-Vorlage zeichnete Fenster wie Glastueren.
+    p.push_str(&format!(
+        r##"<polygon points="{pts}" fill="none" stroke="#16181A" stroke-width="5" stroke-linejoin="miter"/>"##
+    ));
+    for o in &room.oeffnungen {
+        let Some((a, b)) = room.opening_span(o) else {
+            continue;
+        };
+        let (stroke, dash) = match o.typ.as_deref() {
+            Some("tuer") => ("#5B5F63", r##" stroke-dasharray="16 10""##),
+            Some("fenster") => ("#B0764A", r##" stroke-dasharray="4 6""##),
+            _ => ("#B0764A", ""),
+        };
+        p.push_str(&format!(
+            r##"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{stroke}" stroke-width="9"{dash}/>"##,
+            a[0], a[1], b[0], b[1]
+        ));
     }
 
     p.push_str("</svg>");

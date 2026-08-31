@@ -368,6 +368,68 @@ für `compose`. Bis 2026-08-31 fehlte dieser Wert für `search`, und die eingese
 im Prüfer *unbegrenzt* — dieselbe Frage lieferte über HTTP Tausende Treffer und im Terminal
 sechs. Wer mehr will, sagt eine größere Zahl.
 
+## Einen Plan anlegen, und keinen verlieren
+
+Diese Capability konnte Layouts messen, verschieben, drehen und suchen. **Anlegen** konnte sie
+bis 2026-08-31 nur nebenbei: `POST /api/layouts` verlangte eine fertige Aufstellung, also musste
+jeder, der eine Variante durchspielen wollte, sich erst eine besorgen. Ein leerer Plan war kein
+vorgesehener Zustand, und eine Kopie hieß, die Stücke einmal herunterzuladen und wieder
+hochzuschicken.
+
+Es sind drei Anfänge, und keiner verdient eine eigene Route:
+
+| | |
+|---|---|
+| `{id}` | ein **leerer** Plan — der Anfang jeder Planung, die von Hand gezogen wird |
+| `{id, von}` | eine **Kopie**. Die Vorlage wird gelesen und nicht angefasst |
+| `{id, items}` | eine **fertige** Aufstellung, wie die Oberfläche sie nach einem Zug schickt |
+
+Dazu freiwillig `name` (sonst die Id) und `notiz`. Geantwortet wird mit `{layout, check, svg}` wie
+bei `PUT` und der Vorschau: wer einen Plan anlegt, will als Nächstes wissen, ob er besteht und wie
+er aussieht, und das ist dieselbe Rechnung.
+
+Der Dateikopf war dabei ein Defekt. `layout_io::create` schrieb in **jede** neue Datei „Von einer
+Maschine gesetzt … jede Position hat die volle Räumungsprüfung durchlaufen". Für `interior
+compose` stimmt der Satz. Für einen leeren Plan, den jemand über die API anlegt und danach von
+Hand zieht, ist er erfunden — und eine Datei, die ihre eigene Herkunft falsch behauptet, ist
+schlimmer als eine ohne Kopf, weil sie geglaubt wird. Der Satz steht jetzt beim Aufrufer, der ihn
+verantworten kann; ohne `notiz` schreibt der Kopf das Datum und die API hin und sonst nichts.
+
+`DELETE /api/layouts/:name` **archiviert**. Die Datei wandert nach `layouts/archiv/` und fällt aus
+`Model::layout_names` heraus, weil ein Verzeichnis keine `.toml`-Endung trägt. Gelöscht wird
+nichts: `h-esstisch-offen` trägt drei Absätze darüber, warum eine Klappe nicht aufgeht, und genau
+dieses Argument wird gebraucht, wenn derselbe Tisch wieder zur Debatte steht. Ein `DELETE`, das
+die Datei entfernt, entfernt die Begründung mit.
+
+## Der Plan zeichnete die Möbel über die Wände
+
+Ein Plan, dessen Zahlen stimmen, kann trotzdem falsch aussehen, und dann wird ihm nicht geglaubt.
+Bis 2026-08-31 zeichnete `plan.rs` die Wände **vor** den Möbeln. Eine Kontur mit `stroke-width`
+liegt mittig auf ihrer Linie, also deckte jedes Stück, das an einer Wand steht, die halbe
+Wandstärke zu — im Bild verschwand die Wand hinter dem Schrank, und der Schrank sah aus, als
+stünde er halb außerhalb der Wohnung. Die geprüfte Geometrie war die ganze Zeit richtig; kein
+Layout meldete `raumgrenze`.
+
+Wand und Öffnung werden jetzt zuletzt gezeichnet. Die Öffnung gehört aus einem zweiten Grund nach
+oben: **dass ein Schrank vor der Tür steht, ist genau die Auskunft, für die jemand den Plan
+ansieht**, und darunter war sie unsichtbar. Dazu stand die Beschriftung eines festen Einbaus 40 cm
+nach Süden versetzt und trug für jeden Einbau das Wort `KUECHE`; bei einer Küchenzeile an der
+Südwand fiel sie damit aus der Wohnung heraus. Sie steht jetzt mittig und nennt die `id` aus der
+Datei.
+
+**Nicht** geändert wurde der Ausschnitt. Er umfasst Bad und Terrasse mit, und wo die Terrasse
+`geschätzt = true` führt, bekommt die gemessene Wohnung dadurch weniger als die Hälfte der
+Bildbreite. Das ist eine Aussage über die Daten und kein Zeichenfehler: die Terrassentür führt
+dorthin, und der Ausschnitt eine erfundene Zahl kleiner zu rechnen wäre schlimmer als ein Plan mit
+Luft daneben.
+
+Die Oberfläche zeigt seitdem beim Überfahren eines Stücks seine Maße — die Grundfläche **wie
+gezeichnet**, denn eine Drehung um 90 Grad vertauscht b und t, und `footprint` ist das, was sie
+vertauscht. Sie liest sie deshalb aus der Zeichnung zurück, statt sie nachzurechnen. Ebenfalls
+korrigiert: der Ziehe-Editor baute jeden Eintrag beim Speichern neu aus dem SVG auf und verlor
+dabei `size`, die Angabe, dass ein Tisch **aufgeklappt** ist. Acht Layouts dieser Wohnung führen
+eine, also setzte jedes Verschieben eines Stücks ein anderes still auf sein Katalogmaß zurück.
+
 ## Was zuerst gekauft wird
 
 `interior kaufen` ordnet den offenen Bedarf: Dringlichkeit, dann ob ein Entwurf schon darauf

@@ -30,6 +30,7 @@
     type InteriorKaufreihenfolge,
     type InteriorSearchReport,
     type InteriorComposed,
+    type InteriorModel,
   } from "$lib/api";
   import { capabilities } from "$lib/capabilities.svelte";
 
@@ -47,6 +48,8 @@
 
   let inventory = $state<{ item: InteriorItem; state: InteriorState | null }[]>([]);
   let wishlist = $state<InteriorWishlist | null>(null);
+  /** The flat itself: its name, its outer measurements, its area. Measured, not drawn from. */
+  let room = $state<InteriorModel | null>(null);
 
   /**
    * The three questions a verdict alone cannot answer, fetched per layout and never guessed:
@@ -157,13 +160,25 @@
     y: Number(g.dataset.y ?? 0),
   });
 
-  /** Read the current arrangement straight out of the drawing. */
+  /**
+   * The current arrangement: position out of the drawing, every other field out of the layout.
+   *
+   * A drag can change x, y and rot and nothing else, so nothing else is read back off the SVG.
+   * Until 2026-08-31 this built each entry from scratch and `size` fell out — the override that
+   * says a table is folded OUT. Eight of the flat's layouts carry one, so moving any piece in
+   * them quietly resized a different piece back to its catalogue footprint.
+   */
   function itemsFromPlan(root: HTMLElement): InteriorPlacedItem[] {
-    return [...root.querySelectorAll<SVGGElement>("g[data-ref]")].map((g) => ({
-      ref: g.dataset.ref ?? "",
-      ...posOf(g),
-      rot: Number(g.dataset.rot ?? 0),
-    }));
+    const known = new Map((detail?.layout.item ?? []).map((it) => [it.ref, it]));
+    return [...root.querySelectorAll<SVGGElement>("g[data-ref]")].map((g) => {
+      const ref = g.dataset.ref ?? "";
+      return {
+        ...known.get(ref),
+        ref,
+        ...posOf(g),
+        rot: Number(g.dataset.rot ?? 0),
+      };
+    });
   }
 
   /** Attach drag handlers to a freshly rendered plan. Re-runs whenever the SVG is replaced. */
@@ -184,6 +199,18 @@
       return { x: p.x, y: p.y };
     };
 
+    // Hovering names the piece the detail line describes; picking one up pins it. Without the
+    // pin the line would empty itself the moment the pointer left the rectangle, which is
+    // exactly when someone is reading it.
+    const over = (e: PointerEvent) => {
+      const g = (e.target as Element).closest<SVGGElement>("g[data-ref]");
+      if (g) focusRef = g.dataset.ref ?? null;
+    };
+
+    const out = () => {
+      if (!dragging) focusRef = picked;
+    };
+
     const down = (e: PointerEvent) => {
       const g = (e.target as Element).closest<SVGGElement>("g[data-ref]");
       if (!g) return;
@@ -191,6 +218,7 @@
       if (!svg) return;
       active = g;
       picked = g.dataset.ref ?? null;
+      focusRef = picked;
       dragging = true;
       allowed = null;
       if (picked && selected) {
@@ -256,11 +284,15 @@
     };
 
     root.addEventListener("pointerdown", down);
+    root.addEventListener("pointerover", over);
+    root.addEventListener("pointerout", out);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     return {
       destroy() {
         root.removeEventListener("pointerdown", down);
+        root.removeEventListener("pointerover", over);
+        root.removeEventListener("pointerout", out);
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
       },
@@ -269,15 +301,35 @@
 
   let planRoot = $state<HTMLElement | null>(null);
   let picked = $state<string | null>(null);
+  let focusRef = $state<string | null>(null);
 
-  // The SVG is replaced wholesale on every re-render, so the highlight is reapplied rather than
-  // kept — there is no element to keep it on.
+  /**
+   * The focused piece's footprint AS DRAWN, read back out of the plan.
+   *
+   * Not derived from the catalogue: a 90° turn swaps b and t, and `footprint` is what performs
+   * that swap. Recomputing it here would be a second copy of it, and a second copy is what this
+   * page exists not to have (PRD B27). The capability writes the answer onto the group.
+   */
+  let focusPlan = $state<{ w: number; d: number; rot: number } | null>(null);
+
+  // The SVG is replaced wholesale on every re-render, so the highlight and the measured
+  // footprint are reapplied rather than kept — there is no element to keep them on.
   $effect(() => {
     if (!planRoot) return;
     const want = picked;
     for (const g of planRoot.querySelectorAll<SVGGElement>("g[data-ref]")) {
       g.classList.toggle("picked", g.dataset.ref === want);
     }
+    const g = focusRef
+      ? planRoot.querySelector<SVGGElement>(`g[data-ref="${CSS.escape(focusRef)}"]`)
+      : null;
+    focusPlan = g
+      ? {
+          w: Number(g.dataset.w ?? 0),
+          d: Number(g.dataset.d ?? 0),
+          rot: Number(g.dataset.rot ?? 0),
+        }
+      : null;
   });
 
   function onKey(e: KeyboardEvent): void {
@@ -287,7 +339,10 @@
       e.preventDefault();
       void rotatePicked();
     }
-    if (e.key === "Escape") picked = null;
+    if (e.key === "Escape") {
+      picked = null;
+      focusRef = null;
+    }
   }
 
   /**
@@ -346,16 +401,88 @@
     try {
       const id = saveAs.trim();
       const stamp = new Date().toISOString().slice(0, 10);
-      await interior.createLayout(
+      await interior.createLayout({
         id,
-        id,
-        itemsFromPlan(planRoot),
-        `Am ${stamp} in der Oberflaeche gestellt, ausgehend von ${selected ?? "einem leeren Plan"}.`,
-      );
+        items: itemsFromPlan(planRoot),
+        notiz: `Am ${stamp} in der Oberflaeche gestellt, ausgehend von ${selected ?? "einem leeren Plan"}.`,
+      });
       saveAs = "";
       dirty = false;
       layouts = await interior.layouts();
       await select(id);
+    } catch (caught) {
+      planError = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      savingPlan = false;
+    }
+  }
+
+  // ─── A new plan ────────────────────────────────────────────────────────────
+
+  let planNew = $state(false);
+  let newId = $state("");
+  /** Start from the layout on screen, or from an empty room. */
+  let newCopy = $state(true);
+
+  /**
+   * Why the name is refused, or null.
+   *
+   * The same shape the ids on disk already have, and a file name that needs no escaping: the
+   * capability turns this into `layouts/<id>.toml`. Checked here so the answer arrives while
+   * typing, and again in the capability, which is the one that owns the file.
+   */
+  function nameProblem(v: string): string | null {
+    const id = v.trim();
+    if (id === "") return null;
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(id)) {
+      return "lowercase letters, digits and single hyphens only";
+    }
+    if (layouts.some((l) => l.id === id)) return `${id} already exists`;
+    return null;
+  }
+  const newProblem = $derived(nameProblem(newId));
+
+  async function createPlan(): Promise<void> {
+    const id = newId.trim();
+    if (!id || newProblem) return;
+    savingPlan = true;
+    planError = null;
+    try {
+      // `von` copies server-side: the page has no business rebuilding an arrangement it
+      // already asked for once. An empty plan sends neither, and the capability writes a
+      // header saying the date and that the API made it — not a provenance it does not have.
+      await interior.createLayout({ id, von: newCopy && selected ? selected : undefined });
+      newId = "";
+      planNew = false;
+      dirty = false;
+      layouts = await interior.layouts();
+      await select(id);
+    } catch (caught) {
+      planError = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      savingPlan = false;
+    }
+  }
+
+  /** Second click confirms. Nothing is destroyed — the file moves to `layouts/archiv/`. */
+  let archiveArmed = $state<string | null>(null);
+
+  async function archivePlan(): Promise<void> {
+    if (selected === null) return;
+    if (archiveArmed !== selected) {
+      archiveArmed = selected;
+      return;
+    }
+    savingPlan = true;
+    planError = null;
+    try {
+      const r = await interior.archiveLayout(selected);
+      planError = `Moved to ${r.archiviert}. Nothing was deleted.`;
+      archiveArmed = null;
+      selected = null;
+      detail = null;
+      layouts = await interior.layouts();
+      if (layouts.length > 0) await select(layouts[0].id);
     } catch (caught) {
       planError = caught instanceof Error ? caught.message : String(caught);
     } finally {
@@ -579,14 +706,16 @@
     loading = true;
     error = null;
     try {
-      const [l, inv, wish] = await Promise.all([
+      const [l, inv, wish, m] = await Promise.all([
         interior.layouts(),
         interior.inventory(),
         interior.wishlist(),
+        interior.model(),
       ]);
       layouts = l;
       inventory = inv;
       wishlist = wish;
+      room = m;
       if (selected === null && l.length > 0) await select(l[0].id);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -599,6 +728,10 @@
     selected = id;
     detail = null;
     detailError = null;
+    picked = null;
+    focusRef = null;
+    archiveArmed = null;
+    dirty = false;
     robust = null;
     sun = null;
     sunError = null;
@@ -810,19 +943,47 @@
     <p class="empty">No layout on disk for this flat.</p>
   {:else}
     <div class="plans">
-      <ul class="variants">
-        {#each layouts as l (l.id)}
-          <li>
-            <button class:active={selected === l.id} onclick={() => select(l.id)}>
-              <span class="verdict" class:pass={l.pass}>{l.pass ? "passes" : "fails"}</span>
-              <span class="name">{l.name}</span>
-              <span class="tally mono">
-                {l.hard} hard · {l.soft} soft
-              </span>
+      <!-- One grid column: the list of plans, and the way to add one. -->
+      <div class="side">
+        <ul class="variants">
+          {#each layouts as l (l.id)}
+            <li>
+              <button class:active={selected === l.id} onclick={() => select(l.id)}>
+                <span class="verdict" class:pass={l.pass}>{l.pass ? "passes" : "fails"}</span>
+                <span class="name">{l.name}</span>
+                <span class="tally mono">
+                  {l.hard} hard · {l.soft} soft
+                </span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+
+        <!--
+          A plan of one's own. The name becomes `layouts/<id>.toml`, so it is checked against
+          the shape the ids on disk already have — and against the ones that exist, because the
+          capability refuses to overwrite and this says so before the round trip.
+        -->
+        <div class="newplan">
+          <button class="ghost" onclick={() => (planNew = !planNew)}>
+            {planNew ? "Cancel" : "+ New plan"}
+          </button>
+          {#if planNew}
+            <input placeholder="bett-an-der-ostwand" bind:value={newId} />
+            <label>
+              <input type="checkbox" bind:checked={newCopy} disabled={selected === null} />
+              start from {selected ?? "an empty room"}
+            </label>
+            {#if newProblem}<p class="bad">{newProblem}</p>{/if}
+            <button
+              disabled={newId.trim() === "" || newProblem !== null || savingPlan}
+              onclick={createPlan}
+            >
+              {savingPlan ? "Creating…" : "Create"}
             </button>
-          </li>
-        {/each}
-      </ul>
+          {/if}
+        </div>
+      </div>
 
       <section class="plan">
         {#if detailError}
@@ -830,6 +991,20 @@
         {:else if detail === null}
           <p class="empty">Drawing…</p>
         {:else}
+          <!--
+            Which plan, and how big the room it is drawn in actually is. The measurements come
+            from the capability, which reads them off the same polygon every check rasterises.
+          -->
+          <p class="where">
+            <strong>{detail.layout.name}</strong>
+            <span class="mono id">{selected}</span>
+            {#if room}
+              <span class="of">
+                {room.flat.name} · {room.masse.b} × {room.masse.t} cm ·
+                {room.area_m2.toFixed(1)} m²
+              </span>
+            {/if}
+          </p>
           <!-- The capability draws it. eslint-disable-next-line svelte/no-at-html-tags -->
           <!--
             Drag a piece; nothing is written until you save. The verdict below is the
@@ -838,6 +1013,57 @@
           {#key detail.svg}
             <div class="svg" class:dragging bind:this={planRoot} use:draggable>{@html detail.svg}</div>
           {/key}
+
+          <!--
+            What the piece under the pointer measures. The footprint is the one the capability
+            DREW: a 90° turn swaps b and t, and `footprint` is what swaps them. Everything below
+            it is the catalogue row, including the clearances the piece states for itself (Q61)
+            — a wardrobe that needs 65 cm in front of its doors says so here, not in a rule.
+          -->
+          {#if focusRef}
+            {@const it = byId.get(focusRef)?.item}
+            <p class="piece">
+              <span class="mono ref">{focusRef}</span>
+              {#if it}<span class="what">{it.label}</span>{/if}
+              {#if focusPlan}
+                <strong class="mono">{focusPlan.w} × {focusPlan.d} cm</strong>
+                <span class="of">
+                  in the plan{focusPlan.rot ? `, turned ${focusPlan.rot}°` : ""}
+                </span>
+              {/if}
+              {#if it}
+                <span class="of mono">
+                  h {it.h ?? "—"}{it.h_min !== null ? ` · h_min ${it.h_min}` : ""} cm
+                </span>
+                {#if it.b !== null && it.t !== null}
+                  <span class="of mono">catalogue {it.b} × {it.t}</span>
+                {/if}
+                {#if it.open_clear !== null}
+                  <span class="needs mono">
+                    open_clear {it.open_clear} cm{it.opens ? ` ${it.opens}` : ""}
+                  </span>
+                {/if}
+                {#if it.access_sides !== null}
+                  <span class="needs mono">
+                    access_sides {it.access_sides}{it.access_clear !== null
+                      ? ` × ${it.access_clear} cm`
+                      : ""}
+                  </span>
+                {/if}
+                {#if it.expands_to !== null}
+                  <span class="needs mono">
+                    expands {it.expands_dir ?? "?"} to {it.expands_to} cm
+                  </span>
+                {/if}
+                {#if it.raumtrenner}<span class="needs mono">raumtrenner</span>{/if}
+                {#if it.unsicher.length > 0}
+                  <span class="guess" title="measured? no.">~ {it.unsicher.join(", ")}</span>
+                {/if}
+              {:else}
+                <span class="of">no inventory row — the plan draws it from its own size</span>
+              {/if}
+            </p>
+          {/if}
           <div class="planbar">
             <button class="ghost" disabled={picked === null || savingPlan} onclick={rotatePicked}>
               {picked === null ? "Rotate (pick a piece)" : `Rotate ${picked} 90°`}
@@ -852,6 +1078,15 @@
             </button>
             <button class="ghost" disabled={savingPlan} onclick={markAsActual}>
               This is how it stands
+            </button>
+            <!-- Not a delete. The file moves to layouts/archiv/ and keeps its reasoning. -->
+            <button
+              class="ghost"
+              class:armed={archiveArmed === selected}
+              disabled={savingPlan}
+              onclick={archivePlan}
+            >
+              {archiveArmed === selected ? "Archive — click again" : "Archive"}
             </button>
           </div>
           {#if planError}<p class="note">{planError}</p>{/if}
@@ -1609,6 +1844,103 @@
   }
   .verdict.pass {
     color: var(--success);
+  }
+
+  /* Which plan, in which room. Above the drawing, because that is where the eye starts. */
+  .where {
+    align-items: baseline;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 0 0 0.5rem;
+  }
+  .where strong {
+    color: var(--text-primary);
+    font-size: 0.9375rem;
+  }
+  .where .id {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+  }
+
+  /* The list of plans and the way to add one are one grid column, not two. */
+  .side {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .newplan {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+  }
+  .newplan button {
+    background: transparent;
+    border: 1px dashed var(--card-border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.35rem 0.7rem;
+  }
+  .newplan button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+  .newplan input:not([type="checkbox"]) {
+    background: var(--input-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 5px;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.3rem 0.45rem;
+    width: 100%;
+  }
+  .newplan label {
+    align-items: center;
+    color: var(--text-tertiary);
+    display: flex;
+    font-size: 0.72rem;
+    gap: 0.35rem;
+  }
+  .newplan .bad {
+    color: var(--warning);
+    font-size: 0.72rem;
+    margin: 0;
+  }
+
+  /* The measurements of one piece, while the pointer is on it. */
+  .piece {
+    align-items: baseline;
+    border-top: 1px solid var(--card-border);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    gap: 0.15rem 0.7rem;
+    margin: 0.6rem 0 0;
+    padding-top: 0.45rem;
+  }
+  .piece .ref {
+    color: var(--primary);
+  }
+  .piece .what {
+    color: var(--text-secondary);
+  }
+  .piece strong {
+    color: var(--text-primary);
+  }
+  /* What the piece states it needs, in the vocabulary the file uses for it (PRD Q61). */
+  .piece .needs {
+    color: var(--warning);
+    font-size: 0.72rem;
+  }
+
+  .planbar button.armed {
+    border-color: var(--warning);
+    color: var(--warning);
   }
 
   .plan .svg :global(svg) {

@@ -343,6 +343,21 @@ impl Room {
         crate::geometry::polygon_area_m2(&self.hauptraum.polygon)
     }
 
+    /// Die aeusseren Masse des Hauptraums, in derselben Sprache wie ein Moebel: `b` nach Osten,
+    /// `t` nach Sueden.
+    ///
+    /// Aus dem Polygon gerechnet und nicht aus `[flat.aufmass...]` gelesen, aus demselben Grund
+    /// wie `area_m2`: die angegebene Zahl kann von der Geometrie abdriften, aus der jede
+    /// Pruefung rechnet. Sie steht hier, damit die Oberflaeche die Raummasse anzeigen kann,
+    /// ohne sich eine zweite Fassung des Polygons zu halten.
+    pub fn masse(&self) -> (i32, i32) {
+        let spanne = |f: fn(&Pt) -> i32| {
+            let werte = self.hauptraum.polygon.iter().map(f);
+            werte.clone().max().unwrap_or(0) - werte.min().unwrap_or(0)
+        };
+        (spanne(|p| p[0]), spanne(|p| p[1]))
+    }
+
     /// Wo eine Oeffnung physisch sitzt. `von`/`bis` sind absolute Koordinaten entlang der
     /// Wandachse; fuer nord/ost/west faellt das mit einem Versatz zusammen, fuer `badtuer`
     /// nicht — als Versatz gelesen laege sie ausserhalb ihrer eigenen Wand.

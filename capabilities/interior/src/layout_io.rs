@@ -87,20 +87,52 @@ pub fn update(model: &Model, id: &str, items: &[PlacedItem]) -> Result<(), Model
     std::fs::write(&pfad, neu).map_err(|source| ModelError::Read { path: pfad, source })
 }
 
-/// Ein neues Layout anlegen. Der Kopf sagt, woher es kommt.
+/// Ein Layoutname, der eine Datei sein darf.
 ///
-/// Wortlaut wie bei `interior search --out`: ein Layout, das eine Maschine gesetzt hat, soll
-/// sich nicht als handverlesenes ausgeben.
-pub fn create(model: &Model, id: &str, layout: &Layout, notiz: &str) -> Result<(), ModelError> {
-    if !id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        || id.is_empty()
+/// Der Name wird zu einem Dateinamen, also entscheidet diese Pruefung, was ein Aufrufer ueber
+/// HTTP in das Overlay schreiben kann. Ein Punkt oder ein Trennzeichen ist deshalb kein
+/// Schoenheitsfehler, sondern der Weg aus dem Verzeichnis heraus.
+pub fn pruefe_id(id: &str) -> Result<(), ModelError> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err(ModelError::Missing(format!(
             "`{id}` ist kein Layoutname — erlaubt sind Buchstaben, Ziffern, - und _"
         )));
     }
+    Ok(())
+}
+
+/// Die Notiz als Kommentarblock, Zeile fuer Zeile.
+///
+/// Mehrzeilig, weil die Herkunft eines Layouts ein Absatz ist und keine Zeile davon: `interior
+/// compose` hat drei Saetze zu sagen, die API einen.
+fn als_kommentar(notiz: &str) -> String {
+    notiz
+        .lines()
+        .map(|z| {
+            let z = z.trim_end();
+            if z.is_empty() {
+                "#\n".to_string()
+            } else {
+                format!("# {z}\n")
+            }
+        })
+        .collect()
+}
+
+/// Ein neues Layout anlegen. Der Kopf sagt, woher es kommt.
+///
+/// **Was hier NICHT steht, ist der Punkt.** Bis 2026-08-31 schrieb dieser Kopf in jede neue
+/// Datei „Von einer Maschine gesetzt … jede Position hat die volle Raeumungspruefung
+/// durchlaufen". Fuer `interior compose` stimmt das; fuer einen leeren Plan, den jemand ueber
+/// `POST /api/layouts` anlegt und danach von Hand zieht, ist es schlicht falsch — und eine
+/// Datei, die ihre eigene Herkunft falsch behauptet, ist schlimmer als eine ohne Kopf. Wer
+/// etwas ueber die Herkunft zu sagen hat, sagt es in `notiz`.
+pub fn create(model: &Model, id: &str, layout: &Layout, notiz: &str) -> Result<(), ModelError> {
+    pruefe_id(id)?;
     let pfad = model.layouts_dir().join(format!("{id}.toml"));
     if pfad.exists() {
         return Err(ModelError::Missing(format!(
@@ -108,21 +140,96 @@ pub fn create(model: &Model, id: &str, layout: &Layout, notiz: &str) -> Result<(
         )));
     }
     let kopf = format!(
-        "# {notiz}\n#\n\
-         # Von einer Maschine gesetzt, nicht von Hand. Jede Position hat die volle\n\
-         # Raeumungspruefung durchlaufen; was sie ergeben hat, steht im Verdikt daneben und\n\
-         # nicht hier. Wer diese Aufstellung behalten will, schreibt darueber, WARUM — dieser\n\
-         # Kopf ist der Platz dafuer und ueberlebt jedes spaetere Verschieben.\n\n\
+        "{}#\n\
+         # Dieser Kopf ist der Platz fuer das WARUM: wofuer diese Aufstellung steht und wogegen\n\
+         # sie entschieden wurde. Er ueberlebt jedes spaetere Verschieben — die Eintraege\n\
+         # darunter werden neu geschrieben, dieser Absatz nicht.\n\n\
          name = \"{}\"\n\n",
+        als_kommentar(notiz),
         layout.name.replace('"', "'")
     );
+    if let Some(dir) = pfad.parent() {
+        std::fs::create_dir_all(dir).map_err(|source| ModelError::Read {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+    }
     std::fs::write(&pfad, format!("{kopf}{}", eintraege(&layout.items)))
         .map_err(|source| ModelError::Read { path: pfad, source })
 }
 
+/// Wohin ein zurueckgelegtes Layout wandert. Ein Unterverzeichnis, kein Muelleimer.
+pub const ARCHIV: &str = "archiv";
+
+/// Ein Layout aus der Liste nehmen, ohne es zu verlieren.
+///
+/// **Geloescht wird nicht.** Der Kopf einer Layoutdatei traegt die Begruendung, aus der ein
+/// Moebel verworfen wurde (PRD Q60) — `h-esstisch-offen` traegt drei Absaetze darueber, warum
+/// eine Klappe nicht aufgeht, und das ist der einzige Ort, an dem dieses Argument steht. Ein
+/// `DELETE`, das die Datei entfernt, entfernt die Begruendung mit; wer sie spaeter braucht,
+/// braucht sie genau dann, wenn dasselbe Moebel wieder zur Debatte steht.
+///
+/// `layouts/archiv/` faellt aus `Model::layout_names` heraus, weil ein Verzeichnis keine
+/// `.toml`-Endung hat. Das Layout verschwindet also aus jeder Liste und bleibt auf der Platte,
+/// mit seiner Geschichte im Git des Overlays.
+pub fn archiviere(model: &Model, id: &str) -> Result<String, ModelError> {
+    pruefe_id(id)?;
+    let von = model.layouts_dir().join(format!("{id}.toml"));
+    if !von.exists() {
+        return Err(ModelError::Missing(format!("kein Layout `{id}`")));
+    }
+    let archiv = model.layouts_dir().join(ARCHIV);
+    std::fs::create_dir_all(&archiv).map_err(|source| ModelError::Read {
+        path: archiv.clone(),
+        source,
+    })?;
+    let nach = archiv.join(format!("{id}.toml"));
+    if nach.exists() {
+        return Err(ModelError::Missing(format!(
+            "im Archiv liegt schon ein `{id}` — zwei Fassungen unter einem Namen waeren eine \
+             verlorene Begruendung"
+        )));
+    }
+    std::fs::rename(&von, &nach).map_err(|source| ModelError::Read { path: von, source })?;
+    // Relativ zum Layoutverzeichnis: der absolute Pfad zeigt in das private Overlay und hat in
+    // einer HTTP-Antwort nichts verloren.
+    Ok(format!("{ARCHIV}/{id}.toml"))
+}
+
+/// Das heutige Datum als `JJJJ-MM-TT`, aus der Uhr statt aus dem Quelltext.
+///
+/// Ein Kopf, der sein Datum nennt, ist der Unterschied zwischen „ueber die API angelegt" und
+/// einer Aussage, die jemand nachschlagen kann.
+pub fn heute() -> String {
+    let sekunden = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let (j, m, t) = datum_von_tagen(sekunden.div_euclid(86_400));
+    format!("{j:04}-{m:02}-{t:02}")
+}
+
+/// Tage seit 1970-01-01 als Kalenderdatum, nach Howard Hinnants `civil_from_days`.
+///
+/// Von Hand gerechnet und nicht aus einer Kalenderbibliothek: fuer ein Datum in einem Kommentar
+/// waere das eine Abhaengigkeit zu viel. `sonne.rs` traegt dieselbe Rechnung fuer die Jahreszahl
+/// aus demselben Grund.
+fn datum_von_tagen(tage: i64) -> (i64, i64, i64) {
+    let z = tage + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let tag = doy - (153 * mp + 2) / 5 + 1;
+    // Hinnants Jahr beginnt im Maerz, damit der Schalttag ans Ende faellt.
+    let monat = if mp < 10 { mp + 3 } else { mp - 9 };
+    let jahr = yoe + era * 400 + i64::from(monat <= 2);
+    (jahr, monat, tag)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{eintraege, kopf, pruefe_kopf_genuegt};
+    use super::{als_kommentar, datum_von_tagen, eintraege, kopf, pruefe_id, pruefe_kopf_genuegt};
     use crate::model::PlacedItem;
     use std::path::Path;
 
@@ -170,5 +277,30 @@ mod tests {
     #[test]
     fn ohne_spaete_kommentare_darf_geschrieben_werden() {
         assert!(pruefe_kopf_genuegt(DATEI, Path::new("k.toml")).is_ok());
+    }
+
+    /// Ein Absatz bleibt ein Absatz, und die Leerzeile bleibt eine Zeile.
+    #[test]
+    fn eine_mehrzeilige_notiz_wird_ein_kommentarblock() {
+        let k = als_kommentar("Erste Zeile.\n\nDritte Zeile.");
+        assert_eq!(k, "# Erste Zeile.\n#\n# Dritte Zeile.\n");
+    }
+
+    /// Der Name wird zu einem Dateinamen. Was hier durchkommt, darf ins Overlay schreiben.
+    #[test]
+    fn ein_layoutname_kann_nicht_aus_dem_verzeichnis_zeigen() {
+        assert!(pruefe_id("p-gerechnet_2").is_ok());
+        for boese in ["", "../heim", "a/b", "a.toml", "a b"] {
+            assert!(pruefe_id(boese).is_err(), "`{boese}` darf keine Datei sein");
+        }
+    }
+
+    /// Gegen zwei Tage, die von Hand nachschlagbar sind, und gegen den Schalttag.
+    #[test]
+    fn tage_seit_der_epoche_werden_zum_kalenderdatum() {
+        assert_eq!(datum_von_tagen(0), (1970, 1, 1));
+        assert_eq!(datum_von_tagen(-1), (1969, 12, 31));
+        assert_eq!(datum_von_tagen(11_016), (2000, 2, 29), "Schalttag");
+        assert_eq!(datum_von_tagen(20_696), (2026, 8, 31));
     }
 }

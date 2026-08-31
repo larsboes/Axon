@@ -744,6 +744,24 @@ export interface InteriorComposed {
   pareto: boolean;
 }
 
+/**
+ * The measured room itself, as `room.toml` states it.
+ *
+ * `masse` is the main room's outer extent in centimetres, computed by the capability from the
+ * same polygon every check rasterises — the page shows it and does not measure it, for the same
+ * reason it does not decide a verdict.
+ */
+export interface InteriorModel {
+  flat: { id: string; name: string };
+  area_m2: number;
+  masse: { b: number; t: number };
+  /** 0 means not measured. `room.toml` invents no placeholder ceiling height. */
+  hoehe: number;
+  polygon: [number, number][];
+  katalog_groesse: number;
+  todo: string[];
+}
+
 export interface InteriorLayoutSummary {
   id: string;
   name: string;
@@ -756,7 +774,7 @@ export interface InteriorLayoutSummary {
 
 /** The full check plus the finished plan. The SVG is built by the capability, never here. */
 export interface InteriorLayoutDetail {
-  layout: { name: string; item: unknown[] };
+  layout: { name: string; id: string; item: InteriorPlacedItem[] };
   check: {
     layout: string;
     pass: boolean;
@@ -809,7 +827,7 @@ export interface InteriorWishlist {
  * the drift the capability exists to prevent (PRD B27).
  */
 export const interior = {
-  model: () => request<Record<string, unknown>>('/interior/api/model'),
+  model: () => request<InteriorModel>('/interior/api/model'),
   layouts: () => request<InteriorLayoutSummary[]>('/interior/api/layouts'),
   layout: (name: string) =>
     request<InteriorLayoutDetail>(`/interior/api/layouts/${encodeURIComponent(name)}`),
@@ -900,11 +918,36 @@ export const interior = {
       `/interior/api/layouts/${encodeURIComponent(layout)}/allowed?ref=${encodeURIComponent(ref)}&rot=${rot}`,
     ),
 
-  /** Create a layout. Never overwrites an existing one. */
-  createLayout: (id: string, name: string, items: InteriorPlacedItem[], notiz?: string) =>
-    request<{ id: string; check: unknown }>(
+  /**
+   * Create a layout. Never overwrites an existing one.
+   *
+   * Three ways to start, one body: empty (neither `von` nor `items`), a copy of another layout
+   * (`von`), or a finished arrangement (`items`). `notiz` becomes the file's first comment line
+   * and is where the reasoning goes; left out, the capability writes the date and the fact that
+   * the API made it, rather than claiming a provenance nobody has.
+   */
+  createLayout: (plan: {
+    id: string;
+    name?: string;
+    von?: string;
+    items?: InteriorPlacedItem[];
+    notiz?: string;
+  }) =>
+    request<InteriorLayoutDetail & { id: string }>(
       '/interior/api/layouts',
-      jsonInit('POST', { id, name, items, notiz }),
+      jsonInit('POST', plan),
+    ),
+
+  /**
+   * Take a layout out of the list. It moves to `layouts/archiv/`; nothing is deleted.
+   *
+   * The file's header carries why a piece was ruled out (PRD Q60), and that argument is needed
+   * exactly when the same piece comes up again. Deleting the file deletes the argument.
+   */
+  archiveLayout: (id: string) =>
+    request<{ id: string; archiviert: string; geloescht: boolean }>(
+      `/interior/api/layouts/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
     ),
 
   /** Record where the pieces actually stand, as opposed to what a layout proposes. */
@@ -977,7 +1020,9 @@ export interface InteriorPlacedItem {
   x: number;
   y: number;
   rot: number;
+  /** Overrides the catalogue footprint — the second state of a folding piece. */
   size?: [number, number] | null;
+  kind?: string | null;
 }
 
 export interface InteriorAllowed {

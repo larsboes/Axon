@@ -621,8 +621,16 @@ fn cmd_compose(model: &Model, argv: &[String]) -> i32 {
                 })
                 .collect(),
         };
+        // Der Satz ueber die Raeumungspruefung steht hier und nicht mehr in `layout_io`: er ist
+        // wahr fuer `compose`, das jede Position geprueft hat, und falsch fuer einen leeren
+        // Plan, den die API anlegt.
         let notiz = format!(
-            "Von `interior compose` gestellt: {} Stuecke, Schritt {} cm, Strahl {}.",
+            "Von `interior compose` gestellt am {}: {} Stuecke, Schritt {} cm, Strahl {}.\n\
+             \n\
+             Von einer Maschine gesetzt, nicht von Hand. Jede Position hat die volle\n\
+             Raeumungspruefung durchlaufen; was sie ergeben hat, steht im Verdikt daneben und\n\
+             nicht hier.",
+            interior::layout_io::heute(),
             refs.len(),
             spec.step,
             spec.beam
