@@ -88,6 +88,33 @@ fn haus_regel(
     })
 }
 
+/// Jede Flaeche, die eine HARTE Regel dauerhaft freihaelt.
+///
+/// Waende sind Geometrie und stehen woanders; das hier sind die Zonen, die aus Regeln folgen:
+/// die Anlaufzone vor einer Oeffnung (R1), der Tuerschwenkbereich (R2), der feste Einbau selbst
+/// und die Zone, die er sich ausbedingt (R7).
+///
+/// Steht hier und nicht in `search.rs`, weil es dieselben Rechtecke sind, die `check_layout`
+/// prueft. Ein Platzierer, der sie neu ableitet, waere die zweite Fassung, die genau bis zur
+/// ersten Regelaenderung mit der ersten uebereinstimmt.
+pub fn harte_zonen(room: &Room, rules: &Rules) -> Result<Vec<Rect>, ModelError> {
+    let mut out: Vec<Rect> = room.fix_moebel.iter().map(|f| f.rect()).collect();
+    for o in &room.oeffnungen {
+        if let Some(sp) = o.sperrflaeche {
+            out.push(sp.rect());
+        }
+        if let (Some(depth), Some(seg)) = (o.freihaltezone, opening_segment(room, o)) {
+            out.push(approach_rect(&seg, depth));
+        }
+    }
+    for f in &room.fix_moebel {
+        if let Some(z) = &f.anlaufzone {
+            out.push(anlauf_rect(&f.rect(), z.seite, rules.abstand(&z.abstand)?));
+        }
+    }
+    Ok(out)
+}
+
 /// Legt einen Verstoss in `hart` oder `weich`, je nach seiner eigenen Schwere.
 ///
 /// Die Sortierung folgt jetzt der Datei, also darf sie nicht mehr an der Aufrufstelle stehen:

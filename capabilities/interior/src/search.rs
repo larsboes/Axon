@@ -15,7 +15,7 @@
 
 use crate::clearance::{check_layout, CheckResult};
 use crate::geometry::{point_in_polygon, RES};
-use crate::model::{footprint, Layout, Model, ModelError, PlacedItem, Rect};
+use crate::model::{footprint, Layout, Model, ModelError, PlacedItem, Rect, Seite};
 use rayon::prelude::*;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -274,6 +274,52 @@ pub fn search(model: &Model, base: &Layout, spec: &Spec) -> Result<SearchReport,
     })
 }
 
+/// Die Flaeche, die ein Stueck DAUERHAFT belegt — Grundflaeche plus die Zone, die es selbst
+/// verlangt und die nicht wieder freigeraeumt wird.
+///
+/// Nur Angaben mit einer RICHTUNG: `expands = {dir, to}` und `opens` mit `open_clear`. Die
+/// Zahlen stammen aus der Deklaration des Stuecks, hier wird keine Regel nachgebaut — der
+/// Unterschied ist, dass `check_layout` prueft, ob die Flaeche frei IST, und dieser Platzierer
+/// sie von vornherein mitreserviert.
+///
+/// `access_sides` bleibt draussen, weil es keine Seite nennt: welche Laengsseite eines Bettes
+/// begehbar sein soll, entscheidet erst die Aufstellung. Das faengt die Schlusspruefung.
+fn dauerflaeche(model: &Model, reference: &str, rot: i32, r: Rect) -> Rect {
+    let Some(it) = model.catalogue.get(reference) else {
+        return r;
+    };
+    let mut out = r;
+    let mut wachsen = |seite: Seite, zusatz: i32| {
+        if zusatz <= 0 {
+            return;
+        }
+        match seite {
+            Seite::Nord => {
+                out.y -= zusatz;
+                out.d += zusatz;
+            }
+            Seite::Sued => out.d += zusatz,
+            Seite::West => {
+                out.x -= zusatz;
+                out.w += zusatz;
+            }
+            Seite::Ost => out.w += zusatz,
+        }
+    };
+    if let (Some(dir), Some(to)) = (it.expands_dir, it.expands_to) {
+        let seite = dir.gedreht(rot);
+        let jetzt = match seite {
+            Seite::Nord | Seite::Sued => r.d,
+            Seite::Ost | Seite::West => r.w,
+        };
+        wachsen(seite, to - jetzt);
+    }
+    if let (Some(dir), Some(frei)) = (it.opens, it.open_clear) {
+        wachsen(dir.gedreht(rot), frei);
+    }
+    out
+}
+
 /// Wo die linke obere Ecke eines Stuecks liegen DARF, als Lauflaengen je Rasterzeile.
 ///
 /// Die Frage, die eine Oberflaeche beim Ziehen stellt: harte Kanten, damit ein Moebel gar nicht
@@ -381,4 +427,250 @@ pub struct AllowedPositions {
     pub d: i32,
     pub step: i32,
     pub rows: Vec<AllowedRow>,
+}
+
+/// Was `compose` stellen soll und wie gruendlich.
+#[derive(Debug, Clone)]
+pub struct ComposeSpec {
+    /// Die Stuecke, in der Reihenfolge, in der sie gestellt werden. Grosses zuerst.
+    pub refs: Vec<String>,
+    /// Rasterschritt in cm. Grob suchen, dann von Hand verfeinern.
+    pub step: i32,
+    /// Wie viele Teilaufstellungen je Runde ueberleben.
+    pub beam: usize,
+    /// Erlaubte Drehungen je Stueck.
+    pub rotations: Vec<i32>,
+    /// Wie viele fertige Aufstellungen zurueckkommen.
+    pub limit: usize,
+}
+
+/// Eine fertig gestellte Wohnung und ihr Verdikt.
+#[derive(Debug, Clone, Serialize)]
+pub struct Composed {
+    pub places: Vec<(String, [i32; 2], i32)>,
+    pub pass: bool,
+    pub hard: Vec<String>,
+    pub soft: Vec<String>,
+    pub wandkontakt_cm: i32,
+    pub bottleneck_cm: i32,
+    pub free_m2: f64,
+}
+
+/// Eine Wohnung von Grund auf stellen, statt eine bestehende Aufstellung zu verschieben.
+///
+/// `search` bewegt eine Handvoll Stuecke in einem Layout, das schon existiert. Das reicht nicht,
+/// um zu fragen *wie sollte diese Wohnung ueberhaupt aussehen* — und die Antwort ist auch nicht
+/// dieselbe Funktion mit mehr Stuecken: `search` sammelt das volle kartesische Produkt, bevor es
+/// irgendetwas prueft. Sechs Stuecke waeren rund 10^15 Kombinationen. Nicht langsam, unmoeglich.
+///
+/// Deshalb eine **Strahlsuche**: Stueck fuer Stueck, und nach jeder Runde ueberleben nur die
+/// besten `beam` Teilaufstellungen. Das ist der Preis, und er wird hier genannt statt verschwiegen
+/// — eine Strahlsuche findet nicht garantiert das Optimum, weil sie eine Teilaufstellung
+/// verwerfen kann, die erst durch das letzte Stueck gut geworden waere. Was sie liefert, ist
+/// gerechnet und reproduzierbar, nicht geraten.
+///
+/// **Geprueft wird erst am Ende.** Waehrend des Stellens zaehlt nur Geometrie: im Raum, kein
+/// Ueberlapp, moeglichst viel Wand im Ruecken. Die volle Raeumungspruefung auf eine halbe
+/// Wohnung anzuwenden waere sinnlos — ohne Moebel ist jeder Laufweg frei, und eine Regel, die
+/// auf einer Teilaufstellung besteht, sagt nichts ueber die ganze.
+pub fn compose(model: &Model, spec: &ComposeSpec) -> Result<Vec<Composed>, ModelError> {
+    // Die vollen harten Zonen, nicht nur die Waende: eine Position in der Anlaufzone der
+    // Terrassentuer ist nie gueltig, und ein Platzierer, der sie erst am Ende verwirft, hat den
+    // ganzen Strahl mit Kandidaten gefuellt, die nicht bestehen koennen. Genau das ist beim
+    // ersten Lauf passiert — alle drei Vorschlaege scheiterten an R1 und R7.
+    let sperr = crate::clearance::harte_zonen(&model.room, &model.rules)?;
+
+    // Zulaessige Plaetze je (Stueck, Drehung), einmal gegen Waende und feste Einbauten gerechnet.
+    // Was gegen die Nachbarn kollidiert, faellt beim Erweitern weg — das haengt an der
+    // Teilaufstellung und laesst sich nicht vorher wissen.
+    type Platz = ([i32; 2], i32, Rect);
+    let mut plaetze: BTreeMap<String, Vec<Platz>> = BTreeMap::new();
+    for r in &spec.refs {
+        let mut alle = Vec::new();
+        for rot in &spec.rotations {
+            let probe = PlacedItem {
+                reference: r.clone(),
+                x: 0,
+                y: 0,
+                rot: *rot,
+                size: None,
+                kind: None,
+            };
+            let (w, d, _) = footprint(&probe, &model.catalogue)?;
+            let poly = &model.room.hauptraum.polygon;
+            let (min_x, max_x) = (
+                poly.iter().map(|q| q[0]).min().unwrap_or(0),
+                poly.iter().map(|q| q[0]).max().unwrap_or(0),
+            );
+            let (min_y, max_y) = (
+                poly.iter().map(|q| q[1]).min().unwrap_or(0),
+                poly.iter().map(|q| q[1]).max().unwrap_or(0),
+            );
+            let mut y = min_y;
+            while y + d <= max_y {
+                let mut x = min_x;
+                while x + w <= max_x {
+                    let rect = Rect { x, y, w, d };
+                    // Der Platz muss fuer die DAUERFLAECHE reichen, nicht nur fuer das Moebel:
+                    // die Klappe des Esstischs und die Schranktuer sind dauerhaft freizuhalten,
+                    // also darf dort von vornherein nichts hin.
+                    let belegt = dauerflaeche(model, r, *rot, rect);
+                    if inside_room(model, &rect) && !sperr.iter().any(|b| belegt.overlaps(b)) {
+                        alle.push(([x, y], *rot, belegt));
+                    }
+                    x += spec.step;
+                }
+                y += spec.step;
+            }
+        }
+        if alle.is_empty() {
+            return Err(ModelError::Missing(format!(
+                "fuer `{r}` gibt es bei Schritt {} cm keinen Platz im Raum",
+                spec.step
+            )));
+        }
+        plaetze.insert(r.clone(), alle);
+    }
+
+    // Runde fuer Runde erweitern, dann auf die besten `beam` kuerzen.
+    let mut strahl: Vec<Vec<Platz>> = vec![Vec::new()];
+    for r in &spec.refs {
+        let optionen = &plaetze[r];
+        let mut naechste: Vec<(i32, Vec<Platz>)> = strahl
+            .par_iter()
+            .flat_map(|teil| {
+                optionen
+                    .par_iter()
+                    .filter(|(_, _, rect)| !teil.iter().any(|(_, _, q)| rect.overlaps(q)))
+                    .map(|p| {
+                        let mut c = teil.clone();
+                        c.push(*p);
+                        // Wand im Ruecken, ausser das Stueck sagt, es solle frei stehen.
+                        // Wandkontakt am MOEBEL, nicht an seiner reservierten Zone — sonst
+                        // zaehlte die Klappe eines Tisches als Rueckenlehne an der Wand.
+                        let score: i32 = c
+                            .iter()
+                            .zip(spec.refs.iter())
+                            .filter(|(_, name)| !ist_raumtrenner(model, name))
+                            .filter_map(|((pos, rot, _), name)| {
+                                let probe = PlacedItem {
+                                    reference: name.clone(),
+                                    x: pos[0],
+                                    y: pos[1],
+                                    rot: *rot,
+                                    size: None,
+                                    kind: None,
+                                };
+                                let (w, d, _) = footprint(&probe, &model.catalogue).ok()?;
+                                Some(wandkontakt_cm(
+                                    model,
+                                    &Rect {
+                                        x: pos[0],
+                                        y: pos[1],
+                                        w,
+                                        d,
+                                    },
+                                ))
+                            })
+                            .sum();
+                        (score, c)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if naechste.is_empty() {
+            return Err(ModelError::Missing(format!(
+                "nach `{r}` bleibt keine Aufstellung uebrig — Schritt zu grob oder zu viele Stuecke"
+            )));
+        }
+        // Vielfalt vor Menge: je Position des GERADE gestellten Stuecks ueberlebt nur die beste
+        // Teilaufstellung. Ohne das fuellt sich der Strahl mit Varianten derselben Idee — der
+        // erste Lauf lieferte drei Vorschlaege, die sich in einer einzigen Koordinate
+        // unterschieden, und verwarf dafuer jede andere Anordnung.
+        naechste.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        let mut gesehen: std::collections::HashSet<[i32; 2]> = std::collections::HashSet::new();
+        naechste.retain(|(_, c)| {
+            c.last()
+                .map(|(pos, _, _)| gesehen.insert(*pos))
+                .unwrap_or(false)
+        });
+        naechste.truncate(spec.beam);
+        strahl = naechste.into_iter().map(|(_, c)| c).collect();
+    }
+
+    // Erst jetzt die volle Pruefung, auf ganzen Wohnungen.
+    let mut fertig: Vec<Composed> = strahl
+        .par_iter()
+        .filter_map(|c| {
+            let items: Vec<PlacedItem> = c
+                .iter()
+                .zip(spec.refs.iter())
+                .map(|((pos, rot, _), name)| PlacedItem {
+                    reference: name.clone(),
+                    x: pos[0],
+                    y: pos[1],
+                    rot: *rot,
+                    size: None,
+                    kind: None,
+                })
+                .collect();
+            let l = Layout {
+                name: "compose".into(),
+                items,
+                id: String::new(),
+            };
+            let r = crate::clearance::check_layout(model, &l).ok()?;
+            Some(Composed {
+                places: l
+                    .items
+                    .iter()
+                    .map(|i| (i.reference.clone(), [i.x, i.y], i.rot))
+                    .collect(),
+                pass: r.pass,
+                hard: r.hard.iter().map(|v| v.rule.clone()).collect(),
+                soft: r.soft.iter().map(|v| v.rule.clone()).collect(),
+                wandkontakt_cm: l
+                    .items
+                    .iter()
+                    .filter_map(|i| {
+                        let (w, d, _) = footprint(i, &model.catalogue).ok()?;
+                        Some(wandkontakt_cm(
+                            model,
+                            &Rect {
+                                x: i.x,
+                                y: i.y,
+                                w,
+                                d,
+                            },
+                        ))
+                    })
+                    .sum(),
+                bottleneck_cm: r
+                    .metrics
+                    .corridors
+                    .iter()
+                    .filter_map(|x| x.width_cm)
+                    .min()
+                    .unwrap_or(0),
+                free_m2: r.metrics.free_area_m2,
+            })
+        })
+        .collect();
+
+    // Dieselbe Rangfolge wie `search`: bestehen, wenige Warnungen, Wand im Ruecken, dann der
+    // breiteste Engpass. Die dritte Stufe ist nicht schmueckend — mit Engpass davor gewann eine
+    // Aufstellung mit 0 cm Wandkontakt, also jedes Stueck frei im Raum. Formal fehlerfrei, und
+    // niemand richtet so ein. Zwei Rangfolgen fuer dieselbe Frage waeren ausserdem genau die
+    // Doppelung, gegen die diese Capability existiert.
+    fertig.sort_by(|a, b| {
+        b.pass
+            .cmp(&a.pass)
+            .then(a.soft.len().cmp(&b.soft.len()))
+            .then(b.wandkontakt_cm.cmp(&a.wandkontakt_cm))
+            .then(b.bottleneck_cm.cmp(&a.bottleneck_cm))
+    });
+    if spec.limit > 0 {
+        fertig.truncate(spec.limit);
+    }
+    Ok(fertig)
 }

@@ -42,6 +42,7 @@ fn usage() -> ! {
   {model}                        gemessener Raum, und was daran noch geraten ist
   {layouts}                      Layouts auf der Platte
   {check} <layout> [--json]      gegen rules.toml pruefen (Exit 1 bei hartem Verstoss)
+  {compose} --pieces a,b,c       eine Wohnung von Grund auf stellen (Strahlsuche)
   {search} <layout> --move a,b   Positionen rastern, bis nichts mehr verletzt ist
                                  [--step 20] [--limit 6] [--band id=x0,x1,y0,y1]
                                  [--out <name>]  besten Treffer als Layout schreiben
@@ -58,6 +59,7 @@ fn usage() -> ! {
         import = bold("import"),
         check = bold("check"),
         search = bold("search"),
+        compose = bold("compose"),
         serve = bold("serve"),
     );
     std::process::exit(1)
@@ -256,6 +258,7 @@ async fn main() {
             }
             std::process::exit(if r.pass { 0 } else { 1 });
         }
+        "compose" => std::process::exit(cmd_compose(&model, &argv)),
         "search" => {
             let Some(name) = argv.get(1) else { usage() };
             let move_refs: Vec<String> = flag(&argv, "move")
@@ -457,6 +460,135 @@ async fn interior_serve() {
         }
     };
     interior::api::serve(&flat, port).await;
+}
+
+/// Eine Wohnung von Grund auf stellen lassen.
+///
+/// `search` verschiebt in einem bestehenden Layout; das hier stellt eins. Der Unterschied ist
+/// nicht die Groesse, sondern das Verfahren: das volle Produkt ueber sechs Stuecke waere rund
+/// 10^15 Kombinationen, also laeuft eine Strahlsuche Stueck fuer Stueck. Was sie findet, ist
+/// gerechnet und wiederholbar; das globale Optimum ist es nicht garantiert, und `search.rs`
+/// sagt warum.
+fn cmd_compose(model: &Model, argv: &[String]) -> i32 {
+    let refs: Vec<String> = match flag(argv, "pieces") {
+        Some(v) => v.split(',').map(|s| s.trim().to_string()).collect(),
+        None => {
+            eprintln!(
+                "{}",
+                red("--pieces fehlt: interior compose --pieces a,b,c [--step 25] [--beam 60] [--limit 5] [--out name]")
+            );
+            return 2;
+        }
+    };
+    let spec = interior::search::ComposeSpec {
+        refs: refs.clone(),
+        step: flag(argv, "step")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(25),
+        beam: flag(argv, "beam")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60),
+        rotations: flag(argv, "rot")
+            .map(|v| v.split(',').filter_map(|s| s.trim().parse().ok()).collect())
+            .unwrap_or_else(|| vec![0, 90]),
+        limit: flag(argv, "limit")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5),
+    };
+    let t0 = std::time::Instant::now();
+    let out = match interior::search::compose(model, &spec) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("{}", red(&e.to_string()));
+            return 2;
+        }
+    };
+    println!(
+        "\n{}  {} Stuecke, Schritt {} cm, Strahl {}, {:.1} s\n",
+        bold("compose"),
+        refs.len(),
+        spec.step,
+        spec.beam,
+        t0.elapsed().as_secs_f64()
+    );
+    if out.is_empty() {
+        println!("{}\n", red("  keine vollstaendige Aufstellung gefunden"));
+        return 1;
+    }
+    for (n, c) in out.iter().enumerate() {
+        let status = if c.pass {
+            green("BESTANDEN")
+        } else {
+            red("DURCHGEFALLEN")
+        };
+        println!(
+            "  {} {}  {} weiche, Engpass {} cm, Wand {} cm, frei {:.2} m²",
+            bold(&format!("#{}", n + 1)),
+            status,
+            c.soft.len(),
+            c.bottleneck_cm,
+            c.wandkontakt_cm,
+            c.free_m2
+        );
+        if !c.hard.is_empty() {
+            println!("      {} {}", red("hart:"), c.hard.join(", "));
+        }
+        if !c.soft.is_empty() {
+            println!("      {} {}", yellow("weich:"), c.soft.join(", "));
+        }
+        for (r, p, rot) in &c.places {
+            println!("      {r:26} x={:<4} y={:<4} rot={rot}", p[0], p[1]);
+        }
+        println!();
+    }
+    // Nur der beste, und nur auf Verlangen: eine Suche, die ungefragt Dateien anlegt, ist eine
+    // Suche, der man beim Ausprobieren nicht trauen kann.
+    if let Some(name) = flag(argv, "out") {
+        // Welchen Rang schreiben. Standard ist der erste, aber die Rangfolge kennt keine Regel
+        // gegen frei stehende Moebel — sie hat nur `wandkontakt_cm` als Nachrang. Wer die Liste
+        // gelesen hat, darf einen anderen nehmen, ohne die Suche neu zu starten.
+        let rang: usize = flag(argv, "rank").and_then(|v| v.parse().ok()).unwrap_or(1);
+        let Some(best) = out.get(rang.saturating_sub(1)) else {
+            eprintln!(
+                "{}",
+                red(&format!(
+                    "--rank {rang} gibt es nicht, es sind {}",
+                    out.len()
+                ))
+            );
+            return 2;
+        };
+        let layout = Layout {
+            name: format!("{name} (compose)"),
+            id: name.clone(),
+            items: best
+                .places
+                .iter()
+                .map(|(r, p, rot)| interior::model::PlacedItem {
+                    reference: r.clone(),
+                    x: p[0],
+                    y: p[1],
+                    rot: *rot,
+                    size: None,
+                    kind: None,
+                })
+                .collect(),
+        };
+        let notiz = format!(
+            "Von `interior compose` gestellt: {} Stuecke, Schritt {} cm, Strahl {}.",
+            refs.len(),
+            spec.step,
+            spec.beam
+        );
+        match interior::layout_io::create(model, &name, &layout, &notiz) {
+            Ok(()) => println!("  {} {name}\n", green("geschrieben:")),
+            Err(e) => {
+                eprintln!("{}", red(&e.to_string()));
+                return 2;
+            }
+        }
+    }
+    0
 }
 
 /// `inventory/*.toml` in die Tabellen. Der Bericht sagt, was passiert ist — ein Import, der
