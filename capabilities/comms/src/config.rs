@@ -73,7 +73,7 @@ impl Default for TravelContextConfig {
 #[serde(default)]
 pub struct CalendarContextConfig {
     /// Calendar owns its entries. Comms reads one over Calendar's existing
-    /// `content-item-v1` route to digest it — the same bounded
+    /// `content-item-v2` route to digest it — the same bounded
     /// cross-capability read it already does against Trips, rather than
     /// reaching into a second capability's database schema.
     pub base_url: String,
@@ -172,7 +172,7 @@ impl Default for FeedSourceConfig {
             limit: default_source_limit(),
             // Serde no longer reaches this, but a programmatic caller does, and
             // it must fail closed the same way an omission in the file does.
-            data_class: "personal".into(),
+            data_class: "c1".into(),
         }
     }
 }
@@ -189,7 +189,7 @@ fn default_feed_sources() -> Vec<FeedSourceConfig> {
             limit: 12,
             // The Trending page is world-readable and fetched anonymously; no
             // session of the operator's is involved in what it returns.
-            data_class: "public".into(),
+            data_class: "c0".into(),
         },
         FeedSourceConfig {
             id: "arxiv-ai-recent".into(),
@@ -199,10 +199,10 @@ fn default_feed_sources() -> Vec<FeedSourceConfig> {
             language: None,
             since: None,
             limit: 12,
-            // Published preprints. The query itself can be personal, which is
-            // why a saved personal query belongs in the overlay and can declare
-            // itself otherwise; the abstracts it returns are not.
-            data_class: "public".into(),
+            // Published preprints. The query itself can be the operator's,
+            // which is why a saved private query belongs in the overlay and can
+            // declare itself otherwise; the abstracts it returns are not.
+            data_class: "c0".into(),
         },
     ]
 }
@@ -442,9 +442,9 @@ impl Config {
             })
             .collect();
         // A declared class outside the vocabulary is a typo, and a typo must not
-        // be more permissive than saying nothing. Refused down to `personal`
-        // and reported, rather than passed through to a CHECK constraint that
-        // would reject the item hours later at ingest.
+        // be more permissive than saying nothing. Refused down to `c1` and
+        // reported, rather than passed through to a CHECK constraint that would
+        // reject the item hours later at ingest.
         let feed_sources = file
             .feed_sources
             .unwrap_or_else(default_feed_sources)
@@ -453,10 +453,10 @@ impl Config {
                 if !content_item::valid(&source.data_class) {
                     eprintln!(
                         "comms: feed source '{}' declares an unknown data_class '{}'; \
-                         treating it as personal",
+                         treating it as c1",
                         source.id, source.data_class
                     );
-                    source.data_class = "personal".into();
+                    source.data_class = "c1".into();
                 }
                 source
             })
@@ -553,15 +553,15 @@ mod tests {
             "the error must name the missing field, got: {error}"
         );
 
-        let with = r#"{"id":"x","adapter":"arxiv","limit":5,"data_class":"public"}"#;
+        let with = r#"{"id":"x","adapter":"arxiv","limit":5,"data_class":"c0"}"#;
         let parsed: FeedSourceConfig =
             serde_json::from_str(with).expect("a declared source loads normally");
-        assert_eq!(parsed.data_class, "public");
+        assert_eq!(parsed.data_class, "c0");
         assert!(parsed.enabled, "the other per-field defaults still apply");
     }
 
     /// The shipped defaults are declarations, not omissions — if this ever
-    /// reads `personal` it means someone dropped the declaration and the
+    /// reads `c1` it means someone dropped the declaration and the
     /// general-awareness feed silently stopped being cloud-eligible.
     #[test]
     fn every_shipped_collector_declares_its_class() {
@@ -598,6 +598,12 @@ mod tests {
     /// file, because places joins mail against it.
     #[test]
     fn the_store_path_comes_from_the_deployment_not_from_comms_json() {
+        // Cleared first: with the host's overlay vars in scope, the path both
+        // sides resolve is the deployed axon.db. No test may name the live
+        // store, even to compare a `PathBuf`.
+        let _config = EnvGuard::take("AXON_COMMS_CONFIG");
+        let _overlay = EnvGuard::take("AXON_PERSONAL_ROOT");
+        let _explicit = EnvGuard::take("AXON_DB_PATH");
         assert_eq!(Config::load().database_path, axon_config::database_path());
     }
 

@@ -37,7 +37,14 @@
     importance: "low" | "medium" | "high";
     importance_rationale: string;
     evidence: string | null;
-    data_class: "public" | "personal" | "vault";
+    data_class: "c0" | "c1" | "c2" | "c3";
+  }
+
+  function dataClassLabel(dataClass: CommsProposalEvidence["data_class"]): string {
+    if (dataClass === "c3") return "Secret";
+    if (dataClass === "c2") return "Others";
+    if (dataClass === "c1") return "Mine";
+    return "Public";
   }
 
   function commsEvidence(entry: CalendarEntry): CommsProposalEvidence | null {
@@ -48,7 +55,7 @@
       value.schema_version !== "calendar-proposal-provenance-v1" ||
       !["low", "medium", "high"].includes(String(value.importance)) ||
       typeof value.importance_rationale !== "string" ||
-      !["public", "personal", "vault"].includes(String(value.data_class))
+      !["c0", "c1", "c2", "c3"].includes(String(value.data_class))
     ) return null;
     return {
       importance: value.importance as CommsProposalEvidence["importance"],
@@ -143,7 +150,7 @@
           <p>{when(entry)}{#if entry.location} · {entry.location}{/if}</p>
           <p class="source">Source: {entry.source}</p>
           {#if evidence}
-            <p class="analysis-meta {evidence.importance}">{evidence.importance} importance · {evidence.data_class === "vault" ? "Private" : evidence.data_class}</p>
+            <p class="analysis-meta {evidence.importance}">{evidence.importance} importance · {dataClassLabel(evidence.data_class)}</p>
             <p class="analysis-rationale">{evidence.importance_rationale}</p>
             {#if evidence.evidence}<p class="analysis-evidence">Evidence: {evidence.evidence}</p>{/if}
           {/if}

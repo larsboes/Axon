@@ -143,7 +143,7 @@ export function entryLink(entry: CalendarEntry): string {
 }
 
 /** The entry in the shared content reader — the same surface that renders a
- *  feed article or a mail, via `content-item-v1`. Distinct from `entryLink`,
+ *  feed article or a mail, via `content-item-v2`. Distinct from `entryLink`,
  *  which opens the editable form in the calendar grid: one is for reading what
  *  this is and where it came from, the other for changing when it happens. */
 export function entryReaderLink(entry: CalendarEntry): string {

@@ -900,8 +900,8 @@
                     {#if decision.item.internal_date}
                       · {relativeDate(decision.item.internal_date)}
                     {/if}
-                    {#if decision.item.data_class === "vault"}
-                      · <span class="private-mark">Private, redacted</span>
+                    {#if decision.item.data_class === "c2" || decision.item.data_class === "c3"}
+                      · <span class="private-mark">Redacted</span>
                     {/if}
                   </span>
                   <a class="decision-title" href={mailLink(decision.item)}>

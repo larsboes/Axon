@@ -31,9 +31,29 @@ fn main() {
         }
     }
     println!(
-        "\n{} fixture(s), {} marker(s) written, recall {}/{} = {:.1}%",
+        "\n{} fixture(s) measured, {} skipped, {} marker(s) written",
         report.fixtures,
-        report.markers_written,
+        report.skipped_fixtures(),
+        report.markers_written
+    );
+
+    // An empty measurement is a failure, not a perfect score. `prepare` refuses every class
+    // that is not c0 or c1, so a corpus written against an older vocabulary is skipped whole —
+    // and printing "recall 0/0 = 100%, PASS" over it is the gate reporting on a corpus it never
+    // read. The refused classes are named, because that is the fix.
+    if report.empty_measurement() {
+        println!("gate: FAIL — no label was measured");
+        if report.skipped.is_empty() {
+            println!("  the corpus declared no fixture to check");
+        }
+        for reason in report.skip_reasons() {
+            println!("  {reason}");
+        }
+        std::process::exit(1);
+    }
+
+    println!(
+        "recall {}/{} = {:.1}%",
         report.caught(),
         report.total(),
         report.recall_percent()

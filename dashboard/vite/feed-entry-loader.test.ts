@@ -28,7 +28,7 @@ describe("Feed entry loading", () => {
 
   test("the shared content reader normalizes additive metadata for mail too", () => {
     const entry = normalizeContentItemDetail({
-      schema_version: "content-item-v1",
+      schema_version: "content-item-v2",
       source: "mail",
       id: "thread:1",
     } as never);

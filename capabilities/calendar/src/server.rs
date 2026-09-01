@@ -74,7 +74,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "GET",
         "/api/content/:source/:id",
-        "The entry as content-item-v1. :source is always 'calendar'.",
+        "The entry as content-item-v2. :source is always 'calendar'.",
     ),
     r(
         "GET",
@@ -368,7 +368,7 @@ async fn upsert_external_entry(
     }
 }
 
-/// The same entry as `content-item-v1`, for the one dashboard reader that also
+/// The same entry as `content-item-v2`, for the one dashboard reader that also
 /// renders feed articles and mail. A projection, not a second copy: the store
 /// is not touched and nothing is written.
 ///

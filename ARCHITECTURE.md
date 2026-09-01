@@ -59,7 +59,7 @@ binaries at compile time. See [Three architectural nouns](README.md#three-archit
 | `axon-server` | The one way a capability server comes up: `resolve_port` (re-exported from `axon-config`: `AXON_PORT` from the runner first, capability escape hatch second, config third, shipped default last), a loopback-only bind, **the inbound authentication gate**, uniform startup logging, and a named single-line exit on bind failure instead of a panic backtrace. |
 | `axon-store` | One home for **how a capability opens the shared database, and when its migration runs**. |
 | `candidate-fingerprint` |  |
-| `content-item` | The `content-item-v1` reader contract in Rust. |
+| `content-item` | The `content-item-v2` reader contract in Rust. |
 | `inference` | One home for **which model answers which job on this machine**. |
 | `markdown-root` | A declared markdown root, and the only way to get a file out of it. |
 | `overlay` | Shared TypeScript resolution of Axon's selected deployment overlay. |

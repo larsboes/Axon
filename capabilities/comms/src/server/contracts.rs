@@ -380,12 +380,11 @@ impl ContentItemOut {
         origins: Vec<FeedOrigin>,
     ) -> Self {
         // The stored class, not a literal. This line used to call a constructor
-        // that stamped Public on every feed item on its way out of the store --
-        // and Public is precisely the value `cloud_derivative::tier_allows`
-        // admits for a verbatim document, so the
-        // entire feed was cloud-eligible verbatim without anyone having decided
-        // that about a single item. The row carries the answer now, and it
-        // defaults to Personal.
+        // that stamped c0 on every feed item on its way out of the store -- and
+        // c0 is precisely the value `cloud_derivative::tier_allows` admits for a
+        // verbatim document, so the entire feed was cloud-eligible verbatim
+        // without anyone having decided that about a single item. The row
+        // carries the answer now, and it defaults to c1.
         let classification = DataClass::stored(
             &item.data_class,
             &item.data_class_rationale,
@@ -400,7 +399,7 @@ impl ContentItemOut {
             _ => "Article content",
         };
         Self {
-            schema_version: "content-item-v1",
+            schema_version: "content-item-v2",
             source: "feed",
             id: item.id,
             kind: item.kind,
@@ -454,7 +453,7 @@ impl ContentItemOut {
         );
         let processing_policy = content_item::processing_policy(&classification.value);
         Self {
-            schema_version: "content-item-v1",
+            schema_version: "content-item-v2",
             source: "mail",
             url: format!("https://mail.google.com/mail/u/0/#all/{}", item.id),
             id: item.id,
@@ -525,8 +524,9 @@ impl ContentItemOut {
         mut self,
         store: &Store,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // A vault item has no derivative and never could have had one, so there
-        // is no state to read and the field keeps its `not_prepared` value. The
+        // A c2 or c3 item has no derivative and never could have had one, so
+        // there is no state to read and the field keeps its `not_prepared`
+        // value. The
         // reader sees what it saw before; what changed is that the document is
         // no longer assembled and hashed on the way to discovering that nobody
         // may use it.

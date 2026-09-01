@@ -64,7 +64,7 @@
     "sonstiges",
     "werbung",
   ] as const satisfies readonly MailCategory[];
-  const DATA_CLASSES = ["public", "personal", "vault"] as const satisfies readonly DataClass[];
+  const DATA_CLASSES = ["c0", "c1", "c2", "c3"] as const satisfies readonly DataClass[];
 
   let stream = $state<StreamFilter>("all");
   let days = $state(7);
@@ -89,7 +89,7 @@
   let mailActionError = $state<string | null>(null);
   let confirmingBulkAction = $state<GmailAction | null>(null);
   let bulkCategory = $state<MailCategory>("aktiv");
-  let bulkDataClass = $state<DataClass>("personal");
+  let bulkDataClass = $state<DataClass>("c1");
   let syncingMail = $state(false);
   let reconcilingMail = $state(false);
   let reconcileNotice = $state<string | null>(null);
@@ -478,8 +478,9 @@
   }
 
   function dataClassLabel(dataClass: DataClass): string {
-    if (dataClass === "vault") return "Private";
-    if (dataClass === "personal") return "Personal";
+    if (dataClass === "c3") return "Secret";
+    if (dataClass === "c2") return "Others";
+    if (dataClass === "c1") return "Mine";
     return "Public";
   }
 
@@ -809,7 +810,7 @@
           <div><dt>Never sent</dt><dd>Message bodies and attachments are not fetched. Mail scoring rejects non-loopback model endpoints.</dd></div>
           <div><dt>TELOS boundary</dt><dd>Scoring reads TELOS. Categories and bulk decisions never rewrite TELOS files.</dd></div>
           <div><dt>Corrections</dt><dd>A category you set here becomes a human override and survives later sweeps.</dd></div>
-          <div><dt>Data classes</dt><dd>Public may use approved cloud roles; Personal needs a reviewed pseudonymized derivative; Private source content stays local.</dd></div>
+          <div><dt>Data classes</dt><dd>Public may use approved cloud roles; Mine needs a reviewed pseudonymized derivative; Others and Secret never reach a cloud model, refused by the derivative builder, the tier check and the database constraint alike. Secret is additionally marked as blocked from local prompts — a declared rule today, not yet a gate.</dd></div>
         </dl>
       </aside>
     {/if}
@@ -1663,11 +1664,14 @@
     text-transform: uppercase;
   }
 
-  .mail-data-class[data-class="public"] {
+  .mail-data-class[data-class="c0"] {
     color: var(--success);
   }
 
-  .mail-data-class[data-class="vault"] {
+  /* c2 and c3 both carry the old vault tier's redact_before_persistence +
+     cloud=never restrictions (Q27); both keep its warning colour. */
+  .mail-data-class[data-class="c2"],
+  .mail-data-class[data-class="c3"] {
     color: var(--warning);
   }
 

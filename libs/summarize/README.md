@@ -17,7 +17,7 @@ Three capabilities want the same artifact, so it stopped being feed's private he
 
 ## A digest is not a summary
 
-Deliberately a different noun. `summary` on `content-item-v1` is what the *source* said it
+Deliberately a different noun. `summary` on `content-item-v2` is what the *source* said it
 is: calendar reads it from the entry's own description, and overwriting that with generated
 prose destroys the only verbatim text an entry has. A **digest** is what the local model wrote
 about the thing, carrying its own shape, directive and provenance.

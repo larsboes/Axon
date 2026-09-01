@@ -94,7 +94,7 @@ pub(super) async fn cloud_preview_handler(
     match result {
         Ok(Ok(Some(preview))) => (StatusCode::OK, Json(json!(preview))),
         Ok(Ok(None)) => error_response(StatusCode::NOT_FOUND, "not found"),
-        Ok(Err(error)) if error.starts_with("vault content") => {
+        Ok(Err(error)) if error == cloud_derivative::LOCAL_ONLY_REFUSAL => {
             error_response(StatusCode::BAD_REQUEST, error)
         }
         Ok(Err(error)) if error == "source must be 'feed' or 'mail'" => {
@@ -123,7 +123,7 @@ pub(super) async fn cloud_approval_handler(
             let Some(item) = load_content_item(&store, &source, &id)? else {
                 return Ok(None);
             };
-            // The vault check that used to sit below this line is gone: there
+            // The class check that used to sit below this line is gone: there
             // is no preview to compare a hash against in the first place, so
             // the refusal happens one step earlier and cannot be reached with a
             // stale hash instead.
@@ -158,7 +158,7 @@ pub(super) async fn cloud_approval_handler(
         Ok(Err(error)) if error.starts_with("preview is stale") => {
             (StatusCode::CONFLICT, Json(json!({ "error": error })))
         }
-        Ok(Err(error)) if error.starts_with("vault content") => {
+        Ok(Err(error)) if error == cloud_derivative::LOCAL_ONLY_REFUSAL => {
             error_response(StatusCode::BAD_REQUEST, error)
         }
         Ok(Err(error)) if error == "source must be 'feed' or 'mail'" => {
@@ -257,7 +257,7 @@ pub(super) async fn cloud_queue_handler(
         Ok(Err(error)) if error.contains("stale") || error.starts_with("approved derivative") => {
             (StatusCode::CONFLICT, Json(json!({ "error": error })))
         }
-        Ok(Err(error)) if error.starts_with("vault content") => {
+        Ok(Err(error)) if error == cloud_derivative::LOCAL_ONLY_REFUSAL => {
             error_response(StatusCode::BAD_REQUEST, error)
         }
         Ok(Err(error)) if error == "source must be 'feed' or 'mail'" => {

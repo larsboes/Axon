@@ -172,9 +172,7 @@ fn cmd_sweep(args: &[String], cfg: &Config) {
 
     println!("total: {total} threads across {} streams", grouped.len());
     if redacted > 0 {
-        println!(
-            "redacted: {redacted} Private thread(s) — subject and snippet stored with markers"
-        );
+        println!("redacted: {redacted} c2/c3 thread(s) — subject and snippet stored with markers");
     }
     if let Some(_st) = &store {
         println!("persisted: {persisted_new} new proposals (existing decisions preserved)");
@@ -397,7 +395,7 @@ fn keep_mail(store: &Store, cfg: &Config, id: &str, status: &str) {
 /// What is deliberately NOT in here is the mail. No snippet, no body, no re-fetch — the snippet
 /// is the first couple of hundred characters of the message, which is exactly the raw mail this
 /// lane exists to avoid keeping a copy of. Subject, sender and date are carried because they are
-/// what makes the note findable. Every one comes from the STORED row, so for a Private mail they are the
+/// what makes the note findable. Every one comes from the STORED row, so for a c2 or c3 mail they are the
 /// redacted form the intake gate produced, and nothing here can reconstruct what it removed.
 fn export_mail_keeper(
     item: &comms::store::TriageItem,
@@ -518,8 +516,8 @@ fn cmd_summarize(args: &[String], cfg: &Config) {
 /// source-declared rule landed; everything ingested before it is stamped `legacy`, which names
 /// *when* a row arrived and not *where it came from*. In this deployment that left 89 arXiv
 /// abstracts and 68 GitHub READMEs in the redaction lane, while the very same sources — declared
-/// `public` in `config::default_feed_sources`, with the reasons written there — were putting
-/// identical content in the `public` lane. Nothing was at risk. Quality and quota were: a
+/// `c0` in `config::default_feed_sources`, with the reasons written there — were putting
+/// identical content in the `c0` lane. Nothing was at risk. Quality and quota were: a
 /// published preprint reaching a provider with its authors stripped is a worse summary bought
 /// with a redaction nobody needed.
 ///

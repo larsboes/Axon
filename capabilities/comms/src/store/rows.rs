@@ -69,11 +69,11 @@ pub(super) fn row_to_feed_list(r: &Row) -> rusqlite::Result<FeedItem> {
         summary_provenance: None,
         // By name for the same reason as transcript_source, and NOT NULL in the
         // schema with a fail-closed DEFAULT -- so a read that somehow misses
-        // the column falls back to Personal rather than to the empty string,
-        // which no gate would recognise as a class at all.
+        // the column falls back to c1 rather than to the empty string, which no
+        // gate would recognise as a class at all.
         data_class: r
             .get::<_, Option<String>>("data_class")?
-            .unwrap_or_else(|| "personal".into()),
+            .unwrap_or_else(|| "c1".into()),
         data_class_rationale: r
             .get::<_, Option<String>>("data_class_rationale")?
             .unwrap_or_else(|| content_item::UNDECLARED_RATIONALE.into()),
@@ -119,11 +119,11 @@ pub(super) fn row_to_feed_full(r: &Row) -> rusqlite::Result<FeedItem> {
         summary_provenance: None,
         // By name for the same reason as transcript_source, and NOT NULL in the
         // schema with a fail-closed DEFAULT -- so a read that somehow misses
-        // the column falls back to Personal rather than to the empty string,
-        // which no gate would recognise as a class at all.
+        // the column falls back to c1 rather than to the empty string, which no
+        // gate would recognise as a class at all.
         data_class: r
             .get::<_, Option<String>>("data_class")?
-            .unwrap_or_else(|| "personal".into()),
+            .unwrap_or_else(|| "c1".into()),
         data_class_rationale: r
             .get::<_, Option<String>>("data_class_rationale")?
             .unwrap_or_else(|| content_item::UNDECLARED_RATIONALE.into()),

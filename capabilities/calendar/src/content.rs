@@ -1,4 +1,4 @@
-//! Phase G: calendar entries as `content-item-v1`.
+//! Phase G: calendar entries as `content-item-v2`.
 //!
 //! Pure over one `Entry`. Nothing here queries, and the store is untouched —
 //! this is a projection the reader asks for, not a second copy of the data.
@@ -224,7 +224,7 @@ mod tests {
     fn an_entry_projects_into_the_contract() {
         let item = from_entry(&entry());
         assert_eq!(item.source, "calendar");
-        assert_eq!(item.schema_version, "content-item-v1");
+        assert_eq!(item.schema_version, "content-item-v2");
         assert_eq!(
             item.kind, "event",
             "the kind is the discriminator, not 'calendar'"
@@ -361,13 +361,13 @@ mod tests {
         assert!(from_entry(&entry()).created_at.ends_with('Z'));
     }
 
-    /// The operator's schedule is personal whatever the event is, and that must
+    /// The operator's schedule is Mine whatever the event is, and that must
     /// never come back cloud-eligible.
     #[test]
-    fn a_calendar_item_is_personal_and_not_cloud_eligible() {
+    fn a_calendar_item_is_mine_and_not_cloud_eligible() {
         let item = from_entry(&entry());
-        assert_eq!(item.data_class.value, "personal");
-        assert_eq!(item.data_class.label, "Personal");
+        assert_eq!(item.data_class.value, "c1");
+        assert_eq!(item.data_class.label, "Mine");
         assert_eq!(
             item.processing_policy.cloud_handling,
             "pseudonymization_required"

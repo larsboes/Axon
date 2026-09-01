@@ -18,6 +18,12 @@ impl Store {
     /// Upsert a triage proposal observed in the Gmail Inbox. Human category
     /// decisions survive. A previously archived/trashed legacy row returns to
     /// the queue because the inbox observation is authoritative.
+    ///
+    /// One transaction, because two of the columns it writes are governed by a
+    /// third: the class decides whether `subject` and `snippet` may be stored
+    /// as they arrived, and that class is only known after the stored row has
+    /// been read. See `class_after_upsert` below for the split the two rules
+    /// make — redaction follows the winning class, freshness follows the thread.
     pub fn upsert_triage(&self, item: &TriageItem) -> Result<bool, Box<dyn std::error::Error>> {
         // Gmail internalDate is epoch-ms; convert to fractional epoch-seconds so
         // the bound param is a plain double for the `unixepoch` modifier below.
@@ -26,7 +32,7 @@ impl Store {
         // human set it, and also when the incoming one would be *less* strict.
         // A resweep re-runs the rules, so without the second half an edit that
         // made the classifier less suspicious would walk the whole inbox
-        // quietly downgrading rows it had previously called Private -- a rule
+        // quietly downgrading rows it had previously called Secret -- a rule
         // lowering a class, which is the one thing the escalation rule forbids.
         // `t.` was an INSERT alias (`INSERT INTO x AS t`), which SQLite has no
         // syntax for: inside DO UPDATE it refers to the existing row by the
@@ -34,23 +40,63 @@ impl Store {
         let table = format!("{}_triage_items", self.prefix);
         let preserve_class = format!(
             "{table}.data_classification_method = 'human' OR \
-             (CASE excluded.data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END) < \
-             (CASE {table}.data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)"
+             (CASE excluded.data_class WHEN 'c3' THEN 30 WHEN 'c2' THEN 20 WHEN 'c1' THEN 10 \
+              ELSE 0 END) < \
+             (CASE {table}.data_class WHEN 'c3' THEN 30 WHEN 'c2' THEN 20 WHEN 'c1' THEN 10 \
+              ELSE 0 END)"
         );
         // `?5` is Unix seconds; the column holds the canonical stamp, so the
         // conversion is SQL rather than Rust.
         let internal_date = format!("strftime('{}', ?5, 'unixepoch')", axon_store::STAMP_FORMAT);
-        let conn = self.conn()?;
-        let is_new = conn
+        let mut conn = self.conn()?;
+        // BEGIN IMMEDIATE, not the default deferred begin: this reads the stored
+        // class and then writes, and SQLite answers a failed upgrade to the
+        // writer lock with SQLITE_BUSY that `busy_timeout` deliberately does not
+        // retry (`axon_store::migrate_once`). Two sweeps and a dashboard write
+        // reach this at once.
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored: Option<(String, String)> = transaction
             .query_row(
-                &format!("SELECT id FROM {}_triage_items WHERE id = ?1", self.prefix),
+                &format!(
+                    "SELECT data_class, data_classification_method
+                       FROM {}_triage_items WHERE id = ?1",
+                    self.prefix
+                ),
                 params![&item.id],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
-            .optional()?
-            .is_none();
+            .optional()?;
+        let is_new = stored.is_none();
 
-        conn.execute(
+        // The class decides the review fields, one layer below the CASE above.
+        // `intake` redacts subject and snippet *before* it builds the row, so an
+        // incoming c0/c1 row carries verbatim Gmail text by construction, and
+        // writing that over a stored c2/c3 row would undo the redaction while
+        // the class column stays strict -- a row marked Redacted in the
+        // dashboard holding the text it says it removed. The live way in is
+        // ruling 3: the named-person escalation reads the people registry, so a
+        // sweep run with the overlay unmounted answers c1 for a thread the last
+        // refresh raised to c2 (`people_registry::State::Absent`).
+        //
+        // The answer is to redact the *incoming* text rather than keep the old,
+        // because the two properties belong to different things. Redaction
+        // follows the class that wins; freshness follows the thread. Freezing
+        // the stored pair bought the first at the cost of the second: from_addr,
+        // internal_date and stream keep advancing, so the row would show one
+        // message's date beside an older message's subject, for the life of the
+        // thread and with no path back short of a human de-escalation.
+        let winner = class_after_upsert(stored.as_ref(), &item.data_class);
+        let remediation =
+            crate::intake::remediate(winner, item.subject.as_deref(), item.snippet.as_deref());
+        let (subject, snippet) = match &remediation {
+            Some(remediation) => (
+                remediation.subject.as_deref(),
+                remediation.snippet.as_deref(),
+            ),
+            None => (item.subject.as_deref(), item.snippet.as_deref()),
+        };
+
+        transaction.execute(
             &format!(
                 "INSERT INTO {prefix}_triage_items
                     (id, from_addr, subject, snippet, internal_date, stream, rationale,
@@ -97,8 +143,8 @@ impl Store {
             ),
             params![&item.id,
                 &item.from_addr,
-                &item.subject,
-                &item.snippet,
+                &subject,
+                &snippet,
                 &internal_secs,
                 &item.stream,
                 &item.rationale,
@@ -110,6 +156,7 @@ impl Store {
                 &item.data_classification_version,
             ],
         )?;
+        transaction.commit()?;
         Ok(is_new)
     }
 
@@ -146,12 +193,22 @@ impl Store {
 
     /// Set a mail's class by hand. Same rule as [`Store::set_feed_data_class`],
     /// decided by the same function, on the other table.
+    ///
+    /// One transaction over both halves, for the reason the sweep redacts
+    /// before it writes and the refresh pass narrows in the same pass: an
+    /// operator selecting **Others** or **Secret** in the dashboard is saying
+    /// the stored subject is material this row may not hold. Writing only the
+    /// class would leave the row labelled Redacted -- which is what the
+    /// dashboard prints from the class alone -- while the one-time code the
+    /// rules never matched stays in `subject` until somebody remembers a second
+    /// endpoint. The receipt says whether it narrowed, so the operator sees
+    /// which of the two happened rather than assuming.
     pub fn set_triage_data_class(
         &self,
         id: &str,
         data_class: &str,
         rationale: Option<&str>,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<ClassWrite, Box<dyn std::error::Error>> {
         // Checked before the row is read, so an unknown class is a 400 whatever
         // id it was aimed at -- a caller with a typo learns it from the error
         // rather than from a 404 about the item.
@@ -162,23 +219,35 @@ impl Store {
             )
             .into());
         }
-        let conn = self.conn()?;
-        let Some((stored_class, stored_method)) = conn
+        let mut conn = self.conn()?;
+        // Immediate, for the reason `upsert_triage` states: read then write.
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some((stored_class, stored_method, subject, snippet)) = transaction
             .query_row(
                 &format!(
-                    "SELECT data_class, data_classification_method FROM {}_triage_items WHERE id = ?1",
+                    "SELECT data_class, data_classification_method, subject, snippet
+                       FROM {}_triage_items WHERE id = ?1",
                     self.prefix
                 ),
                 params![&id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
             )
             .optional()?
         else {
-            return Ok(false);
+            return Ok(ClassWrite::default());
         };
+        // A refused reclassification returns here, and the transaction rolls
+        // back with it: nothing was written, so there is nothing to undo.
         let classification =
             human_reclassification(&stored_class, &stored_method, data_class, rationale)?;
-        let affected = conn.execute(
+        let affected = transaction.execute(
             &format!(
                 "UPDATE {}_triage_items SET
                     data_class = ?1,
@@ -196,7 +265,19 @@ impl Store {
                 &id,
             ],
         )?;
-        Ok(affected > 0)
+        let narrowed = narrow_review_fields(
+            &transaction,
+            &self.prefix,
+            id,
+            &classification.value,
+            subject.as_deref(),
+            snippet.as_deref(),
+        )?;
+        transaction.commit()?;
+        Ok(ClassWrite {
+            changed: affected > 0,
+            narrowed,
+        })
     }
 
     /// Refresh a rule-produced data class while preserving an explicit human
@@ -206,7 +287,7 @@ impl Store {
     /// is here rather than only in the human path because this is the one that
     /// runs unattended: a rule edit that made the classifier *less* suspicious
     /// would otherwise walk the whole table quietly downgrading rows it had
-    /// previously called Private. It may raise a class, never lower one, and
+    /// previously called Secret. It may raise a class, never lower one, and
     /// the human override is preserved on top of that.
     pub fn refresh_triage_data_class(
         &self,
@@ -215,17 +296,7 @@ impl Store {
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         let affected = conn.execute(
-            &format!(
-                "UPDATE {}_triage_items SET
-                    data_class = ?1,
-                    data_class_rationale = ?2,
-                    data_classification_method = ?3,
-                    data_classification_version = ?4
-                 WHERE id = ?5 AND data_classification_method <> 'human'
-                   AND (CASE ?1 WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)
-                     >= (CASE data_class WHEN 'vault' THEN 20 WHEN 'personal' THEN 10 ELSE 0 END)",
-                self.prefix
-            ),
+            &self.refresh_data_class_sql(),
             params![
                 &classification.value,
                 &classification.rationale,
@@ -235,6 +306,91 @@ impl Store {
             ],
         )?;
         Ok(affected > 0)
+    }
+
+    /// [`Store::refresh_triage_data_class`] and the narrowing that class
+    /// demands, as one transaction.
+    ///
+    /// They are one decision, and the sweep already takes them as one: classify,
+    /// then redact before the row is written. Split across two connections a
+    /// crash between them leaves the row at the new `c2` holding the verbatim
+    /// subject `c2` exists to hide -- the exact state the pass set out to
+    /// remove, and invisible in the dashboard, which prints "Redacted" from the
+    /// class alone.
+    ///
+    /// The class the redaction is judged against is read back inside the
+    /// transaction rather than assumed from the argument: the escalation guard
+    /// can refuse the write (a stored `c3` against a re-derived `c2`), and what
+    /// the row *now holds* is what the row is.
+    pub fn refresh_triage_data_class_and_redact(
+        &self,
+        id: &str,
+        classification: &crate::content_item::DataClass,
+    ) -> Result<ClassWrite, Box<dyn std::error::Error>> {
+        let mut conn = self.conn()?;
+        // Immediate, for the reason `upsert_triage` states: this one writes then
+        // reads back and writes again, which is the same upgrade hazard.
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let affected = transaction.execute(
+            &self.refresh_data_class_sql(),
+            params![
+                &classification.value,
+                &classification.rationale,
+                &classification.method,
+                &classification.version,
+                &id,
+            ],
+        )?;
+        let Some((stored_class, subject, snippet)) = transaction
+            .query_row(
+                &format!(
+                    "SELECT data_class, subject, snippet FROM {}_triage_items WHERE id = ?1",
+                    self.prefix
+                ),
+                params![&id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            return Ok(ClassWrite::default());
+        };
+        let narrowed = narrow_review_fields(
+            &transaction,
+            &self.prefix,
+            id,
+            &stored_class,
+            subject.as_deref(),
+            snippet.as_deref(),
+        )?;
+        transaction.commit()?;
+        Ok(ClassWrite {
+            changed: affected > 0,
+            narrowed,
+        })
+    }
+
+    /// The escalation-guarded class UPDATE, written once because two callers
+    /// issue it. The rank comparison in the WHERE clause *is* the escalation
+    /// rule; a second copy is how one of them would come to be missing it.
+    fn refresh_data_class_sql(&self) -> String {
+        format!(
+            "UPDATE {}_triage_items SET
+                data_class = ?1,
+                data_class_rationale = ?2,
+                data_classification_method = ?3,
+                data_classification_version = ?4
+             WHERE id = ?5 AND data_classification_method <> 'human'
+               AND (CASE ?1 WHEN 'c3' THEN 30 WHEN 'c2' THEN 20 WHEN 'c1' THEN 10 ELSE 0 END)
+                 >= (CASE data_class
+                         WHEN 'c3' THEN 30 WHEN 'c2' THEN 20 WHEN 'c1' THEN 10 ELSE 0 END)",
+            self.prefix
+        )
     }
 
     /// Overwrite a stored row's review fields with their redacted form.
@@ -999,4 +1155,58 @@ impl Store {
             },
         )?)
     }
+}
+
+/// Which class the row holds once an upsert lands: the stored one, or the
+/// incoming one.
+///
+/// The Rust twin of the `preserve_class` predicate `upsert_triage` builds into
+/// its SQL -- the same two clauses in the same order. A human's decision stands,
+/// and a rule may never lower a class it once raised. It exists in Rust as well
+/// because the answer decides more than a column: the two review fields have to
+/// be redacted against the class that wins *before* the row is written, and SQL
+/// cannot run the redactor.
+///
+/// `class_rank` answers `None` for a value outside the vocabulary, and `None`
+/// sorts below every `Some` -- which is the `ELSE 0` arm of the SQL CASE, so an
+/// unknown class loses to a known one on either side, exactly as it does there.
+fn class_after_upsert<'a>(stored: Option<&'a (String, String)>, incoming: &'a str) -> &'a str {
+    match stored {
+        Some((stored_class, stored_method))
+            if stored_method == crate::content_item::METHOD_HUMAN
+                || crate::content_item::class_rank(incoming)
+                    < crate::content_item::class_rank(stored_class) =>
+        {
+            stored_class
+        }
+        _ => incoming,
+    }
+}
+
+/// Narrow one row's two review fields to what its class admits, on a connection
+/// the caller owns.
+///
+/// A connection rather than the pool, so the class write and this one commit
+/// together or not at all. Returns whether anything was removed -- false both
+/// for a class that governs nothing (`c0`, `c1`) and for a row already clean,
+/// which is what makes a second pass report zero.
+fn narrow_review_fields(
+    conn: &Connection,
+    prefix: &str,
+    id: &str,
+    data_class: &str,
+    subject: Option<&str>,
+    snippet: Option<&str>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(remediation) = crate::intake::remediate(data_class, subject, snippet) else {
+        return Ok(false);
+    };
+    if !remediation.changed {
+        return Ok(false);
+    }
+    conn.execute(
+        &format!("UPDATE {prefix}_triage_items SET subject = ?1, snippet = ?2 WHERE id = ?3"),
+        params![&remediation.subject, &remediation.snippet, &id],
+    )?;
+    Ok(true)
 }

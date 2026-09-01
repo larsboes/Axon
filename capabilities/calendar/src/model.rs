@@ -249,7 +249,7 @@ impl NewEntry {
                         == Some("calendar-proposal-provenance-v1")
                         && matches!(
                             payload.get("data_class").and_then(Value::as_str),
-                            Some("public" | "personal" | "vault")
+                            Some("c0" | "c1" | "c2" | "c3")
                         )
                         && matches!(
                             payload.get("importance").and_then(Value::as_str),
@@ -584,7 +584,7 @@ mod tests {
                 "field": "action_items",
                 "index": 0
             },
-            "data_class": "personal",
+            "data_class": "c1",
             "analysis_schema_version": "cloud-content-analysis-v1",
             "importance": "high",
             "importance_rationale": "A dated action needs review.",

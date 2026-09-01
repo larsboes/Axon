@@ -182,7 +182,7 @@ queues a cloud job that way, still refusing a hash no review approved.
 **A constraint name in an error.** Postgres named a CHECK and quoted the name back; SQLite
 quotes the CHECK *expression*. A test asserting on the refusal has to match what the database
 says now (`content_cloud_derivatives_original_data_class_check` became
-`original_data_class IN ('public','personal')`), which is the same claim about the same
+`original_data_class IN ('c0','c1')`), which is the same claim about the same
 constraint.
 
 Comparing a stored timestamp against `datetime('now', …)` is a text comparison between a

@@ -1,4 +1,4 @@
-//! `content-item-v1` — the canonical reader contract, in Rust.
+//! `content-item-v2` — the canonical reader contract, in Rust.
 //!
 //! One shape for every kind of observed thing: a feed article, a mail, a
 //! calendar entry. Source adapters own collection, storage and actions; the
@@ -31,7 +31,15 @@ use serde_json::Value;
 
 /// Bump only with the schema's `schema_version` const, and only for a change
 /// readers cannot absorb — adding an optional field is not one.
-pub const SCHEMA_VERSION: &str = "content-item-v1";
+///
+/// `v1` → `v2` on 2026-09-02, for PRD Q27: `data_class.value` moved from
+/// `[public, personal, vault]` to `[c0, c1, c2, c3]` and `label` from
+/// `[Public, Personal, Private]` to `[Public, Mine, Others, Secret]`. The new
+/// sets share no value with the old ones, so a reader that switches on
+/// `personal` cannot absorb it — and without the bump it would have had no way
+/// to tell the contract had moved. `local_processing` widened from a constant
+/// to `allowed | blocked` in the same change.
+pub const SCHEMA_VERSION: &str = "content-item-v2";
 
 /// One reader shape for every kind of observed content.
 ///
@@ -100,9 +108,9 @@ pub struct Digest {
     /// *why* a short item has no digest without re-deriving the length.
     pub source_chars: i64,
     /// How many entities the deterministic redactor removed before this text was
-    /// written. Non-zero only for Private content, where the metadata is the
-    /// payload and a digest could otherwise republish what the subject line was
-    /// redacted for.
+    /// written. Non-zero only for the classes that redact before persistence —
+    /// c2 and c3, where the metadata is the payload and a digest could otherwise
+    /// republish what the subject line was redacted for.
     pub redactions: i32,
     pub attempts: i32,
     pub last_error: Option<String>,
@@ -155,7 +163,7 @@ pub struct DataClass {
 }
 
 impl DataClass {
-    /// `vault` is stored, `Private` is what the product calls it.
+    /// `c0`–`c3` are stored; the label is what the product calls each one (Q27).
     pub fn new(
         value: impl Into<String>,
         rationale: impl Into<String>,
@@ -164,9 +172,14 @@ impl DataClass {
     ) -> Self {
         let value = value.into();
         let label = match value.as_str() {
-            "vault" => "Private",
-            "personal" => "Personal",
-            _ => "Public",
+            "c0" => "Public",
+            "c1" => "Mine",
+            "c2" => "Others",
+            "c3" => "Secret",
+            // Every class is spelled out above, so `_` is a value from outside
+            // the vocabulary. It reads back as the strictest label rather than
+            // the loosest: a stale literal must not render as Public.
+            _ => "Secret",
         };
         Self {
             value,
@@ -179,20 +192,20 @@ impl DataClass {
 
     /// Read a stored classification back out of a row.
     ///
-    /// The label is re-derived rather than stored, so a row written before the
-    /// product renamed `vault` to Private still reads back correctly.
+    /// The label is re-derived rather than stored, so a row written while the
+    /// product called the same class something else still reads back correctly.
     pub fn stored(value: &str, rationale: &str, method: &str, version: &str) -> Self {
         Self::new(value, rationale, method, version)
     }
 
-    /// What an item nobody classified is worth: Personal, decided by nobody.
+    /// What an item nobody classified is worth: Mine, decided by nobody.
     ///
     /// The fail-closed default, and the reason it is a real value rather than a
     /// NULL. `legacy` is rank 0, so any later decision — a collector's, a
     /// rule's, a human's — outranks it without a special case for "unset".
     pub fn undeclared() -> Self {
         Self::new(
-            "personal",
+            "c1",
             UNDECLARED_RATIONALE,
             METHOD_LEGACY,
             LEGACY_CLASSIFIER_VERSION,
@@ -201,9 +214,9 @@ impl DataClass {
 
     /// A class a collector positively declared for everything it fetches.
     ///
-    /// `public` is only reachable through here. A collector that declares
-    /// nothing gets [`DataClass::undeclared`], which is Personal — that is the
-    /// entire difference from the literal this replaced, which stamped `public`
+    /// `c0` is only reachable through here. A collector that declares nothing
+    /// gets [`DataClass::undeclared`], which is Mine — that is the entire
+    /// difference from the literal this replaced, which stamped the public class
     /// on every feed item whether or not anyone had ever looked at the source.
     pub fn declared_by_source(value: &str, rationale: &str) -> Self {
         Self::new(
@@ -214,12 +227,12 @@ impl DataClass {
         )
     }
 
-    /// The operator's own schedule. Where they are and when is personal by
+    /// The operator's own schedule. Where they are and when is theirs by
     /// construction, whatever the event itself is — a public concert still
     /// tells you the building is empty that evening.
     pub fn personal_source_default(rationale: impl Into<String>) -> Self {
         Self::new(
-            "personal",
+            "c1",
             rationale,
             METHOD_DETERMINISTIC,
             SOURCE_CLASSIFIER_VERSION,
@@ -237,34 +250,47 @@ impl DataClass {
     /// The body is deliberately not a parameter. Classification decides whether
     /// a body may be fetched at all, so it must not depend on having one.
     ///
-    /// Never returns `public`. A mailbox holds no public content — someone
-    /// chose to write to *this* operator, and that choice is itself personal.
+    /// Never returns `c0`. A mailbox holds no public content — someone chose to
+    /// write to *this* operator, and that choice is itself the operator's.
+    ///
+    /// Secret is asked first (Q27). A mail matching both rules carries a
+    /// credential, and a credential is c3 whatever else it is about.
     pub fn classify_mail(stream: &str, from: &str, subject: &str) -> Self {
         let text = format!("{from} {subject}").to_ascii_lowercase();
-        match mail_vault_reason(stream, &text) {
-            Some(rationale) => Self::new(
-                "vault",
+        if let Some(rationale) = mail_secret_reason(&text) {
+            return Self::new(
+                "c3",
                 rationale,
                 METHOD_DETERMINISTIC,
                 MAIL_CLASSIFIER_VERSION,
-            ),
-            None => Self::new(
-                "personal",
-                "Mail metadata is Personal by default.",
+            );
+        }
+        if let Some(rationale) = mail_others_reason(stream, &text) {
+            return Self::new(
+                "c2",
+                rationale,
                 METHOD_DETERMINISTIC,
                 MAIL_CLASSIFIER_VERSION,
-            ),
+            );
         }
+        Self::new(
+            "c1",
+            "Mail metadata is Mine by default.",
+            METHOD_DETERMINISTIC,
+            MAIL_CLASSIFIER_VERSION,
+        )
     }
 }
 
-/// The stored classes, in the order a reader should offer them. `vault` is the
-/// stored value; `Private` is the word the product uses (see [`DataClass::new`]).
-pub const DATA_CLASSES: [&str; 3] = ["public", "personal", "vault"];
+/// The stored classes, in the order a reader should offer them. The literal is
+/// what a row stores; the label is the word the product uses (see
+/// [`DataClass::new`]).
+pub const DATA_CLASSES: [&str; 4] = ["c0", "c1", "c2", "c3"];
 
 /// Stamped on every rules-produced classification, so a stored row records
-/// which rule set decided it. Bump with any change to [`mail_vault_reason`].
-pub const MAIL_CLASSIFIER_VERSION: &str = "data-class-rules-v1";
+/// which rule set decided it. Bump with any change to [`mail_secret_reason`] or
+/// [`mail_others_reason`].
+pub const MAIL_CLASSIFIER_VERSION: &str = "data-class-rules-v2";
 
 /// Stamped by a collector that declared a class for what it fetches.
 pub const SOURCE_CLASSIFIER_VERSION: &str = "data-class-source-v1";
@@ -276,11 +302,11 @@ pub const LEGACY_CLASSIFIER_VERSION: &str = "data-class-legacy-v1";
 /// Stamped when a human set the class by hand.
 pub const MANUAL_CLASSIFIER_VERSION: &str = "manual-v1";
 
-/// Why an undeclared item is Personal. Kept next to the DB DEFAULT that writes
-/// the same sentence, because the two have to agree for a backfilled row and a
+/// Why an undeclared item is Mine. Kept next to the DB DEFAULT that writes the
+/// same sentence, because the two have to agree for a backfilled row and a
 /// freshly ingested one to read alike.
 pub const UNDECLARED_RATIONALE: &str =
-    "No collector declared a class for this item; Personal by default.";
+    "No collector declared a class for this item; Mine by default.";
 
 pub const METHOD_LEGACY: &str = "legacy";
 pub const METHOD_DETERMINISTIC: &str = "deterministic";
@@ -311,15 +337,17 @@ pub fn method_rank(method: &str) -> Option<i16> {
     }
 }
 
-/// How exposed the content is, ascending: Public < Personal < Private.
+/// How exposed the content is, ascending: Public < Mine < Others < Secret.
 ///
 /// A higher rank is a stricter class, so "escalate" is "raise the rank" and the
 /// whole escalation-only rule is one comparison rather than a table of cases.
+/// The gaps of ten are the reason a fourth class cost no rule change (Q27).
 pub fn class_rank(data_class: &str) -> Option<i16> {
     match data_class {
-        "public" => Some(0),
-        "personal" => Some(10),
-        "vault" => Some(20),
+        "c0" => Some(0),
+        "c1" => Some(10),
+        "c2" => Some(20),
+        "c3" => Some(30),
         _ => None,
     }
 }
@@ -347,11 +375,11 @@ pub fn valid(data_class: &str) -> bool {
 /// rather than an implementation detail of whoever stored it. A write proposing
 /// the class already on the row changes no class, so both rules above wave it
 /// through — yet it still overwrites the method and the rationale. A machine
-/// re-ingest arriving at `personal` on a row a human had classified `personal`
-/// erased the human's record exactly that way: the class survived, the reason
-/// it was chosen did not. So at equal class a non-human write over a stored
-/// human decision writes nothing. There is no classification to make there,
-/// only a record to lose.
+/// re-ingest arriving at `c1` on a row a human had classified `c1` erased the
+/// human's record exactly that way: the class survived, the reason it was
+/// chosen did not. So at equal class a non-human write over a stored human
+/// decision writes nothing. There is no classification to make there, only a
+/// record to lose.
 ///
 /// Deliberately narrow: `human` is protected this way, method rank in general
 /// is not. A rules resweep re-deciding at the same class is the classifier
@@ -368,7 +396,7 @@ pub fn admit_reclassification(
         return Err("stored data class is not a known class");
     };
     let Some(proposed_rank) = class_rank(proposed_class) else {
-        return Err("data class must be one of: public, personal, vault");
+        return Err("data class must be one of: c0, c1, c2, c3");
     };
     if method_rank(stored_method).is_none() {
         return Err("stored classification method is not a known method");
@@ -397,27 +425,33 @@ pub fn admit_reclassification(
 /// Whether a stored *review representation* of this class must be redacted
 /// before it is persisted.
 ///
-/// The distinction that matters: for every other class the sensitive material
-/// is in the body, and keeping bodies transient is enough. For `vault` the
-/// metadata is the payload — a one-time code arrives in the subject line, and
-/// storing that subject verbatim puts it in a log, an API response and a
-/// dashboard at once.
+/// The distinction that matters: for c0 and c1 the sensitive material is in the
+/// body, and keeping bodies transient is enough. For c2 and c3 the metadata is
+/// the payload (Q27) — a one-time code arrives in the subject line, and storing
+/// that subject verbatim puts it in a log, an API response and a dashboard at
+/// once. A subject naming another person does the same for a fact that was
+/// never the operator's to republish.
+///
+/// Written as the complement of the two classes that may be stored verbatim,
+/// not as a list of the two that may not: an unrecognized value is redacted
+/// rather than published. That matches every other unknown-class answer in this
+/// module — `class_rank` returns `None`, `processing_policy` returns c3's
+/// policy, `DataClass::new` labels it Secret — and the value reaching here is a
+/// stored string, so the vocabulary it was written under is not guaranteed to
+/// be this one.
 pub fn redact_before_persistence(data_class: &str) -> bool {
-    data_class == "vault"
+    !matches!(data_class, "c0" | "c1")
 }
 
-/// Why a mail's metadata alone is enough to call it Private, or `None` for the
-/// personal default.
+/// Why a mail's metadata alone is enough to call it Secret, or `None`.
 ///
-/// Conservative on purpose: a false `vault` costs a redacted subject line in a
-/// review list, a false `personal` costs a leaked credential.
-fn mail_vault_reason(stream: &str, lowercased_text: &str) -> Option<&'static str> {
-    if stream == "steuern" {
-        return Some("Tax-related mail is Private by default.");
-    }
-    if stream == "belege" {
-        return Some("Receipts and invoices are Private by default.");
-    }
+/// Credentials only. A match here means the text carries or announces an
+/// authentication factor, and c3 never enters a prompt at all. The stream is not
+/// a parameter: no mail stream is a credential by itself.
+///
+/// Conservative on purpose: a false `c3` costs a redacted subject line in a
+/// review list, a false `c1` costs a leaked credential.
+fn mail_secret_reason(lowercased_text: &str) -> Option<&'static str> {
     const AUTHENTICATION: [&str; 22] = [
         "verification code",
         "security code",
@@ -442,6 +476,38 @@ fn mail_vault_reason(stream: &str, lowercased_text: &str) -> Option<&'static str
         "passwort",
         "password",
     ];
+
+    // `2fa` and `otp` are matched as whole words: `otp` alone also sits inside
+    // ordinary German words, and a substring match there classified unrelated
+    // mail as Secret.
+    let bounded_token = lowercased_text
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| word == "2fa" || word == "otp");
+
+    if bounded_token || contains_any(lowercased_text, &AUTHENTICATION) {
+        return Some("Authentication or account-recovery metadata is Secret.");
+    }
+    None
+}
+
+/// Why a mail's metadata alone is enough to call it Others, or `None` for the
+/// Mine default.
+///
+/// Facts that belong to somebody else. The `steuern` and `belege` streams land
+/// here rather than in [`mail_secret_reason`] because tax and receipt mail
+/// routinely names other people and carries their financial detail (Q27); it is
+/// not a credential.
+///
+/// Conservative on purpose: a false `c2` costs a redacted subject line in a
+/// review list, a false `c1` costs another person's money or health in a cloud
+/// prompt.
+fn mail_others_reason(stream: &str, lowercased_text: &str) -> Option<&'static str> {
+    if stream == "steuern" {
+        return Some("Tax-related mail is Others by default.");
+    }
+    if stream == "belege" {
+        return Some("Receipts and invoices are Others by default.");
+    }
     const FINANCIAL: [&str; 8] = [
         "bank statement",
         "kontoauszug",
@@ -462,21 +528,11 @@ fn mail_vault_reason(stream: &str, lowercased_text: &str) -> Option<&'static str
         "krankenversicherung",
     ];
 
-    // `2fa` and `otp` are matched as whole words: `otp` alone also sits inside
-    // ordinary German words, and a substring match there classified unrelated
-    // mail as Private.
-    let bounded_token = lowercased_text
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|word| word == "2fa" || word == "otp");
-
-    if bounded_token || contains_any(lowercased_text, &AUTHENTICATION) {
-        return Some("Authentication or account-recovery metadata is Private.");
-    }
     if contains_any(lowercased_text, &FINANCIAL) {
-        return Some("Financial or insurance metadata is Private.");
+        return Some("Financial or insurance metadata is Others.");
     }
     if contains_any(lowercased_text, &HEALTH) {
-        return Some("Health-related metadata is Private.");
+        return Some("Health-related metadata is Others.");
     }
     None
 }
@@ -496,25 +552,42 @@ pub struct ProcessingPolicy {
 }
 
 /// Policy follows from the stored class rather than being chosen per call.
+///
+/// Every class is an explicit arm so the catch-all means "outside the
+/// vocabulary" and nothing else. It answers with c3's policy, because a value
+/// nobody has classified must not be handled more freely than the strictest
+/// class that exists.
 pub fn processing_policy(data_class: &str) -> ProcessingPolicy {
     match data_class {
-        "public" => ProcessingPolicy {
+        "c0" => ProcessingPolicy {
             local_processing: "allowed",
             cloud_handling: "eligible",
             pseudonymization_required: false,
             rationale: "Public content may be processed locally or by an approved cloud role.",
         },
-        "personal" => ProcessingPolicy {
+        "c1" => ProcessingPolicy {
             local_processing: "allowed",
             cloud_handling: "pseudonymization_required",
             pseudonymization_required: true,
-            rationale: "Personal content stays local until an explicit pseudonymization step produces a reviewed derivative.",
+            rationale: "The operator's own material stays local until an explicit pseudonymization step produces a reviewed derivative.",
         },
-        _ => ProcessingPolicy {
+        "c2" => ProcessingPolicy {
             local_processing: "allowed",
             cloud_handling: "blocked",
             pseudonymization_required: true,
-            rationale: "Private source content is local-only; cloud use requires a separate reviewed derivative with a lower data class.",
+            rationale: "Facts about named people are local-only; no derivative carries them to a cloud role in any form.",
+        },
+        "c3" => ProcessingPolicy {
+            local_processing: "blocked",
+            cloud_handling: "blocked",
+            pseudonymization_required: true,
+            rationale: "A credential enters no prompt at all, local or cloud; there is no processing step it belongs in.",
+        },
+        _ => ProcessingPolicy {
+            local_processing: "blocked",
+            cloud_handling: "blocked",
+            pseudonymization_required: true,
+            rationale: "A class outside the vocabulary is handled as a secret until somebody classifies it.",
         },
     }
 }
@@ -665,8 +738,8 @@ mod tests {
             created_at: "2026-08-04T00:00:00Z".into(),
             status: "committed".into(),
             content_status: "none",
-            data_class: DataClass::declared_by_source("public", "Test fixture."),
-            processing_policy: processing_policy("public"),
+            data_class: DataClass::declared_by_source("c0", "Test fixture."),
+            processing_policy: processing_policy("c0"),
             cloud_processing: CloudProcessing::not_prepared(),
             relevance: Vec::new(),
             evaluation: None,
@@ -729,39 +802,89 @@ mod tests {
         );
     }
 
+    /// The four classes and what each one obliges, as one table: the word the
+    /// product shows, the rank the escalation rule compares, and whether the
+    /// stored review representation is redacted before it is written.
     #[test]
-    fn the_stored_vault_class_is_labelled_private() {
-        assert_eq!(DataClass::new("vault", "r", "human", "v1").label, "Private");
+    fn every_stored_class_carries_its_label_rank_and_redaction_duty() {
+        for (value, label, rank, redacts) in [
+            ("c0", "Public", 0, false),
+            ("c1", "Mine", 10, false),
+            ("c2", "Others", 20, true),
+            ("c3", "Secret", 30, true),
+        ] {
+            let stored = DataClass::stored(value, "r", METHOD_HUMAN, "v1");
+            assert_eq!(stored.label, label, "{value} is labelled {label}");
+            assert_eq!(class_rank(value), Some(rank));
+            assert_eq!(redact_before_persistence(value), redacts);
+        }
+        assert_eq!(DATA_CLASSES.len(), 4);
         assert_eq!(
-            DataClass::new("personal", "r", "deterministic", "v1").label,
-            "Personal"
-        );
-        assert_eq!(
-            DataClass::declared_by_source("public", "Declared.").label,
+            DataClass::declared_by_source("c0", "Declared.").label,
             "Public"
         );
+        // The old vocabulary is gone, not accepted alongside the new one.
+        assert!(!valid("personal"));
+        assert!(!valid("vault"));
+        // A value from outside the vocabulary reads back as the strictest
+        // label, never as Public.
+        assert_eq!(
+            DataClass::stored("personal", "r", METHOD_LEGACY, "v1").label,
+            "Secret"
+        );
+        // And it is redacted before it is stored, for the same reason. The
+        // argument is a string read back out of a row, so a class written under
+        // the previous vocabulary is a value this function really receives —
+        // and the answer that costs a redacted subject line is the safe one.
+        for unknown in ["personal", "vault", "private", "C0", "", "c4"] {
+            assert!(
+                redact_before_persistence(unknown),
+                "{unknown} would have been stored verbatim"
+            );
+        }
     }
 
-    /// Personal content must never come back cloud-eligible; that mapping is
-    /// the whole reason policy is derived rather than passed in.
+    /// A class must never come back more cloud-eligible than it is; that
+    /// mapping is the whole reason policy is derived rather than passed in.
     #[test]
     fn policy_is_derived_from_the_class_and_never_widens_it() {
-        assert_eq!(processing_policy("public").cloud_handling, "eligible");
+        assert_eq!(processing_policy("c0").cloud_handling, "eligible");
+        assert_eq!(processing_policy("c0").local_processing, "allowed");
+        assert!(!processing_policy("c0").pseudonymization_required);
         assert_eq!(
-            processing_policy("personal").cloud_handling,
+            processing_policy("c1").cloud_handling,
             "pseudonymization_required"
         );
-        assert_eq!(processing_policy("vault").cloud_handling, "blocked");
+        assert_eq!(processing_policy("c1").local_processing, "allowed");
+        assert_eq!(processing_policy("c2").cloud_handling, "blocked");
+        // Others is local-only, not local-forbidden: the operator still reads
+        // and summarizes their own mail about other people.
+        assert_eq!(processing_policy("c2").local_processing, "allowed");
+        // Secret is the one class no prompt may hold, local model included.
+        assert_eq!(processing_policy("c3").cloud_handling, "blocked");
+        assert_eq!(processing_policy("c3").local_processing, "blocked");
+        for class in DATA_CLASSES {
+            assert_eq!(
+                processing_policy(class).pseudonymization_required,
+                class != "c0",
+                "{class} must declare whether pseudonymization is owed"
+            );
+        }
         // An unknown class gets the strictest policy, not the loosest.
         assert_eq!(processing_policy("something-new").cloud_handling, "blocked");
+        assert_eq!(
+            processing_policy("something-new").local_processing,
+            "blocked"
+        );
         assert!(processing_policy("something-new").pseudonymization_required);
     }
 
     /// The escalation rule over its whole input space, not over the three pairs
-    /// someone thought of. Nine ordered class pairs times four stored methods
-    /// times four proposing methods, with and without a rationale: every one of
-    /// the 432 combinations is decided here, and the assertion is the rule
-    /// restated independently rather than the implementation called twice.
+    /// someone thought of. Sixteen ordered class pairs times four stored methods
+    /// times four proposing methods times three rationales: every one of the 768
+    /// combinations is decided here, and the assertion is the rule restated
+    /// independently rather than the implementation called twice. The fourth
+    /// class widened this from 432 without touching the rule (Q27).
     #[test]
     fn no_machine_lowers_a_class_or_overwrites_a_human_and_no_human_lowers_silently() {
         for stored_class in DATA_CLASSES {
@@ -806,37 +929,42 @@ mod tests {
     fn a_machine_may_raise_a_humans_class_but_not_restate_it() {
         for machine in [METHOD_LEGACY, METHOD_DETERMINISTIC, METHOD_MODEL] {
             assert!(
-                admit_reclassification("personal", METHOD_HUMAN, "personal", machine, "").is_err(),
+                admit_reclassification("c1", METHOD_HUMAN, "c1", machine, "").is_err(),
                 "{machine} restated a human's class and would have taken the record with it"
             );
             assert!(
-                admit_reclassification("personal", METHOD_HUMAN, "vault", machine, "").is_ok(),
+                admit_reclassification("c1", METHOD_HUMAN, "c3", machine, "").is_ok(),
                 "escalation is allowed to everyone, human-decided row or not"
             );
         }
         // A human revisiting their own decision is not a machine overwriting it.
-        assert!(
-            admit_reclassification("personal", METHOD_HUMAN, "personal", METHOD_HUMAN, "").is_ok()
-        );
+        assert!(admit_reclassification("c1", METHOD_HUMAN, "c1", METHOD_HUMAN, "").is_ok());
         // And nothing here loosened the rules-over-rules case: a resweep that
         // re-decides at the same class still lands.
-        assert!(admit_reclassification(
-            "personal",
-            METHOD_DETERMINISTIC,
-            "personal",
-            METHOD_DETERMINISTIC,
-            ""
-        )
-        .is_ok());
+        assert!(
+            admit_reclassification("c1", METHOD_DETERMINISTIC, "c1", METHOD_DETERMINISTIC, "")
+                .is_ok()
+        );
+        // The named-person escalation comms runs after `classify_mail` is one
+        // rank up, so a rule performs it without a human in the loop.
+        assert!(
+            admit_reclassification("c1", METHOD_DETERMINISTIC, "c2", METHOD_DETERMINISTIC, "")
+                .is_ok()
+        );
     }
 
     /// Rank is what the rule is written in terms of, so its order is part of
     /// the contract rather than an implementation detail of the match arm.
     #[test]
     fn a_stricter_class_and_a_more_authoritative_method_rank_higher() {
-        assert!(class_rank("public") < class_rank("personal"));
-        assert!(class_rank("personal") < class_rank("vault"));
+        assert!(class_rank("c0") < class_rank("c1"));
+        assert!(class_rank("c1") < class_rank("c2"));
+        assert!(class_rank("c2") < class_rank("c3"));
         assert_eq!(class_rank("something-new"), None);
+        // The retired vocabulary ranks nowhere, so a missed call site is
+        // refused rather than silently ranked at the bottom.
+        assert_eq!(class_rank("vault"), None);
+        assert_eq!(class_rank("personal"), None);
         assert!(method_rank(METHOD_LEGACY) < method_rank(METHOD_DETERMINISTIC));
         assert!(method_rank(METHOD_DETERMINISTIC) < method_rank(METHOD_MODEL));
         assert!(method_rank(METHOD_MODEL) < method_rank(METHOD_HUMAN));
@@ -849,42 +977,36 @@ mod tests {
     /// class would then be silently overwritable by anything.
     #[test]
     fn an_unknown_class_is_refused_rather_than_ranked() {
-        assert!(admit_reclassification(
-            "something-new",
-            METHOD_HUMAN,
-            "public",
-            METHOD_HUMAN,
-            "why"
-        )
-        .is_err());
-        assert!(admit_reclassification(
-            "vault",
-            METHOD_HUMAN,
-            "something-new",
-            METHOD_HUMAN,
-            "why"
-        )
-        .is_err());
         assert!(
-            admit_reclassification("vault", METHOD_HUMAN, "public", "source-default", "why")
+            admit_reclassification("something-new", METHOD_HUMAN, "c0", METHOD_HUMAN, "why")
                 .is_err()
         );
+        assert!(
+            admit_reclassification("c3", METHOD_HUMAN, "something-new", METHOD_HUMAN, "why")
+                .is_err()
+        );
+        assert!(admit_reclassification("c3", METHOD_HUMAN, "c0", "source-default", "why").is_err());
         // Same reasoning one column over: an unranked *stored* method would
         // make `None == Some(30)` false and quietly leave a human's record
         // overwritable at equal class.
-        assert!(
-            admit_reclassification("vault", "source-default", "public", METHOD_HUMAN, "why")
-                .is_err()
+        assert!(admit_reclassification("c3", "source-default", "c0", METHOD_HUMAN, "why").is_err());
+        // A row still holding a retired literal is refused in either position
+        // rather than mapped to something that looks close enough.
+        assert!(admit_reclassification("vault", METHOD_HUMAN, "c3", METHOD_HUMAN, "why").is_err());
+        assert_eq!(
+            admit_reclassification("c1", METHOD_HUMAN, "personal", METHOD_HUMAN, "why"),
+            Err("data class must be one of: c0, c1, c2, c3")
         );
     }
 
-    /// The fail-closed default is a value, not an absence: Personal, decided by
+    /// The fail-closed default is a value, not an absence: Mine, decided by
     /// nobody, and therefore replaceable by the first real decision of any kind
     /// without needing a special case for "unset".
     #[test]
-    fn an_undeclared_item_is_personal_and_outranked_by_every_real_decision() {
+    fn an_undeclared_item_is_mine_and_outranked_by_every_real_decision() {
         let undeclared = DataClass::undeclared();
-        assert_eq!(undeclared.value, "personal");
+        assert_eq!(undeclared.value, "c1");
+        assert_eq!(undeclared.label, "Mine");
         assert_eq!(undeclared.method, METHOD_LEGACY);
         assert_eq!(
             processing_policy(&undeclared.value).cloud_handling,
@@ -898,7 +1020,7 @@ mod tests {
         assert!(admit_reclassification(
             &undeclared.value,
             &undeclared.method,
-            "vault",
+            "c3",
             METHOD_DETERMINISTIC,
             ""
         )
@@ -906,7 +1028,7 @@ mod tests {
         assert!(admit_reclassification(
             &undeclared.value,
             &undeclared.method,
-            "public",
+            "c0",
             METHOD_DETERMINISTIC,
             ""
         )
@@ -914,10 +1036,12 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_mail_is_personal_and_never_public() {
-        let result = DataClass::classify_mail("aktiv", "friend@example.com", "Weekend plan");
-        assert_eq!(result.value, "personal");
+    fn ordinary_mail_is_mine_and_never_public() {
+        let result = DataClass::classify_mail("aktiv", "erika@example.com", "Weekend plan");
+        assert_eq!(result.value, "c1");
+        assert_eq!(result.rationale, "Mail metadata is Mine by default.");
         assert_eq!(result.method, METHOD_DETERMINISTIC);
+        assert_eq!(result.version, "data-class-rules-v2");
         assert_eq!(
             processing_policy(&result.value).cloud_handling,
             "pseudonymization_required"
@@ -925,49 +1049,87 @@ mod tests {
         assert!(!redact_before_persistence(&result.value));
     }
 
+    /// The authentication rule owns c3 alone (Q27). Its output is the one class
+    /// that reaches no prompt at all, so the policy assertion belongs here
+    /// rather than in a table two files away.
     #[test]
-    fn authentication_financial_and_health_mail_is_private() {
+    fn authentication_mail_is_secret() {
+        for (from, subject) in [
+            ("account@example.com", "Your verification code"),
+            ("account@example.com", "Security alert: new sign in"),
+            ("noreply@example.com", "Ihr Bestätigungscode"),
+            ("noreply@example.com", "Passwort zurücksetzen"),
+        ] {
+            let result = DataClass::classify_mail("aktiv", from, subject);
+            assert_eq!(result.value, "c3", "{subject} should be Secret");
+            assert_eq!(
+                result.rationale,
+                "Authentication or account-recovery metadata is Secret."
+            );
+            assert!(redact_before_persistence(&result.value));
+        }
+        assert_eq!(processing_policy("c3").local_processing, "blocked");
+        assert_eq!(processing_policy("c3").cloud_handling, "blocked");
+    }
+
+    /// Tax, receipts, money and health are somebody else's facts, not a
+    /// credential: c2, redacted before it is stored, and never cloud-eligible.
+    #[test]
+    fn tax_receipt_financial_and_health_mail_is_others() {
         for (stream, from, subject) in [
             ("belege", "shop@example.com", "Your order"),
             ("steuern", "amt@example.com", "Bescheid"),
-            ("aktiv", "account@example.com", "Your verification code"),
-            (
-                "aktiv",
-                "account@example.com",
-                "Security alert: new sign in",
-            ),
             ("aktiv", "bank@example.com", "Kontoauszug Juli"),
             ("aktiv", "praxis@example.com", "Ihr Befund"),
+            ("aktiv", "versicherung@example.com", "Ihre Versicherung"),
         ] {
             let result = DataClass::classify_mail(stream, from, subject);
-            assert_eq!(result.value, "vault", "{subject} should be Private");
+            assert_eq!(result.value, "c2", "{subject} should be Others");
             assert!(redact_before_persistence(&result.value));
         }
-        assert_eq!(processing_policy("vault").cloud_handling, "blocked");
+        assert_eq!(processing_policy("c2").cloud_handling, "blocked");
+    }
+
+    /// The split's whole ordering question, pinned: a receipt stream carrying a
+    /// one-time code matches both rules, and a credential outranks a fact about
+    /// somebody else (Q27).
+    #[test]
+    fn a_credential_in_a_receipt_stream_is_secret_not_others() {
+        let result = DataClass::classify_mail("belege", "shop@example.com", "Your one-time code");
+        assert_eq!(result.value, "c3");
+        assert_eq!(
+            result.rationale,
+            "Authentication or account-recovery metadata is Secret."
+        );
+        // And the stream alone, with no credential in it, still lands on c2.
+        assert_eq!(
+            DataClass::classify_mail("belege", "shop@example.com", "Your order").value,
+            "c2"
+        );
     }
 
     /// The previous rule matched `" otp "` with literal surrounding spaces, so
-    /// a subject that *began* with the code word slipped through as Personal —
-    /// exactly the shape a one-time-code mail actually has.
+    /// a subject that *began* with the code word slipped through as the default
+    /// class — exactly the shape a one-time-code mail actually has.
     #[test]
-    fn a_code_word_at_a_string_boundary_still_classifies_as_private() {
+    fn a_code_word_at_a_string_boundary_still_classifies_as_secret() {
         for subject in ["OTP for your login", "Login 2FA", "your otp"] {
             assert_eq!(
                 DataClass::classify_mail("aktiv", "noreply@example.com", subject).value,
-                "vault",
-                "{subject} should be Private"
+                "c3",
+                "{subject} should be Secret"
             );
         }
     }
 
     /// Whole-word matching has to cut both ways, or the conservative default
-    /// turns into "everything is Private" and the class stops carrying signal.
+    /// turns into "everything is Secret" and the class stops carrying signal.
     #[test]
     fn a_code_word_inside_an_unrelated_word_does_not_trigger() {
         assert_eq!(
-            DataClass::classify_mail("aktiv", "kollege@example.com", "Laptop-Adapter mitbringen?")
+            DataClass::classify_mail("aktiv", "erika@example.com", "Laptop-Adapter mitbringen?")
                 .value,
-            "personal"
+            "c1"
         );
     }
 

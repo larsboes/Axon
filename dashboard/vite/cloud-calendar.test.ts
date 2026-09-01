@@ -23,7 +23,7 @@ describe("cloud analysis Calendar proposals", () => {
       source: "mail",
       itemId: "thread-1",
       jobId: "job-1",
-      dataClass: "personal",
+      dataClass: "c1",
       result,
     });
 
@@ -40,8 +40,8 @@ describe("cloud analysis Calendar proposals", () => {
   });
 
   test("uses stable content identity rather than the provider job id", () => {
-    const first = cloudCalendarCandidates({ source: "mail", itemId: "thread-1", jobId: "job-1", dataClass: "personal", result });
-    const rerun = cloudCalendarCandidates({ source: "mail", itemId: "thread-1", jobId: "job-2", dataClass: "personal", result });
+    const first = cloudCalendarCandidates({ source: "mail", itemId: "thread-1", jobId: "job-1", dataClass: "c1", result });
+    const rerun = cloudCalendarCandidates({ source: "mail", itemId: "thread-1", jobId: "job-2", dataClass: "c1", result });
     expect(first.map((candidate) => candidate.entry.external_id)).toEqual(
       rerun.map((candidate) => candidate.entry.external_id),
     );
@@ -56,6 +56,6 @@ describe("cloud analysis Calendar proposals", () => {
       ],
       action_items: [],
     };
-    expect(cloudCalendarCandidates({ source: "feed", itemId: "item-1", jobId: "job-1", dataClass: "public", result: invalid })).toEqual([]);
+    expect(cloudCalendarCandidates({ source: "feed", itemId: "item-1", jobId: "job-1", dataClass: "c0", result: invalid })).toEqual([]);
   });
 });

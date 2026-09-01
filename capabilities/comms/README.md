@@ -43,17 +43,25 @@ proposal stores the rationale, method, and classifier revision. A category
 changed in the dashboard becomes a `human` override and later sweeps preserve
 it. Category ordering in the dashboard is an attention aid, not a hidden score.
 
-Every shared content item also carries one inspectable trust class. `public`
-(shown as **Public**) may use local processing and is eligible for configured
-cloud processing. `personal` (shown as **Personal**) stays local unless an
-explicitly reviewed, pseudonymized derivative is created. `vault` (shown as
-**Private**) keeps the original content local-only. Public Feed sources default
-to `public`; mail defaults to `personal`, while deterministic metadata rules
-elevate likely financial, health, authentication, or recovery mail to `vault`.
-The rules use sender, subject, and category only—never body or attachment
-content—and a dashboard override is stored as `human` and preserved by refreshes.
+Every shared content item also carries one inspectable trust class (Q27).
+`c0` (shown as **Public**) may use local processing and is eligible for
+configured cloud processing. `c1` (**Mine**) stays local unless an explicitly
+reviewed, pseudonymized derivative is created. `c2` (**Others**) holds another
+person's facts and never reaches a cloud provider at all. `c3` (**Secret**)
+holds credentials and is additionally declared blocked from local model
+processing — a **declared policy, not yet a mechanical gate**: no local call
+site reads `local_processing` today, so a `c3` row's stored text can still reach
+the loopback model through the digest path. The gate that will enforce it is the
+T3 refusing library in `libs/inference`, tracked as B2 (see the root
+[README](../../README.md#data-classes)). Public Feed
+sources default to `c0`; mail defaults to `c1`, while deterministic metadata
+rules raise likely tax, receipt, financial or health mail to `c2` and
+authentication or account-recovery mail to `c3`. A mail that names a person the
+vault knows is raised to `c2` as well. The rules use sender, subject, snippet
+and category only—never body or attachment content—and a dashboard override is
+stored as `human` and preserved by refreshes.
 
-For `vault` mail the metadata *is* the payload: a one-time code arrives in the
+For `c2` and `c3` mail the metadata *is* the payload: a one-time code arrives in the
 subject line, so storing that subject verbatim would publish it to a log, an API
 response and a dashboard at once. The sweep therefore redacts subject and
 snippet before the row is written, using the same local deterministic detector
@@ -67,6 +75,15 @@ the CLI and the HTTP API — go through one intake path, because a gate only one
 of them uses is a gate over half the traffic. `POST /triage/redact` applies the
 same pass to rows stored before this existed; it is idempotent and reports what
 kind of thing it removed, never the value.
+
+A later sweep cannot undo that. Classification runs the named-person rule
+against the people registry, so a pass with the overlay unmounted answers `c1`
+for a thread an earlier pass raised to `c2`; the class column keeps the strict
+value, and the upsert redacts the *incoming* subject and snippet against it
+before writing them. The row therefore keeps following its thread — a newer
+message's date, sender and text — while the redaction follows the class. Keeping
+the old text instead would leave one message's date beside an older message's
+subject for the life of the thread.
 
 ### Collecting on a schedule
 
@@ -113,7 +130,7 @@ decisions.
 
 The board is an index, not a second reader. Opening either a normal Feed entry
 or a mail proposal resolves the versioned
-[`content-item-v1`](../../schemas/content-item.schema.json) contract and uses
+[`content-item-v2`](../../schemas/content-item.schema.json) contract and uses
 the same dashboard reader. The contract owns canonical title, author, optional
 summary, source content, relevance, evaluation and provenance. Its nullable
 `mail` extension adds category and classification evidence; Gmail mutations
@@ -122,7 +139,7 @@ tables evolve independently without duplicating content presentation.
 
 ## Digests: what the local model wrote, sized to the source
 
-A **digest** is a different noun from a summary. `summary` on `content-item-v1` is what the
+A **digest** is a different noun from a summary. `summary` on `content-item-v2` is what the
 *source* said it is — calendar reads it from the entry's own description — so a generated
 paragraph written over it would destroy the only verbatim text an entry has. The digest is
 stored beside it in `content_digests`, one table for every source, because a digest has none
@@ -158,9 +175,9 @@ mail is distilled into an outcome, never retained as a local copy of the message
 Two gates follow the data class rather than the caller. Whether a digest may use a non-loopback
 target is decided by the same function the reviewed-derivative queue uses — `tier_allows` in
 `cloud_derivative.rs`, asked about the passthrough representation, because a digest sends the
-source text as it stands. Nothing but `public` survives that question, mail is never `public` by
+source text as it stands. Nothing but `c0` survives that question, mail is never `c0` by
 construction, and an endpoint carrying no reviewed cloud policy admits nothing at all. A cloud
-endpoint is refused outright rather than downgraded. For `vault` content the produced digest passes the same
+endpoint is refused outright rather than downgraded. For `c2` and `c3` content the produced digest passes the same
 deterministic detector the sweep runs on subject and snippet **before** it is stored, and the
 count is recorded: a model asked to summarize a one-time-code mail will quote the code, and the
 digest must not be where it gets published.
@@ -211,7 +228,7 @@ caption and a disclosure holding the extracted values, because an extracted numb
 about a source and the table is where you check it.
 
 Calendar entries are digested through the same routes. Comms reads one entry over Calendar's own
-`content-item-v1` contract — the bounded cross-capability read it already does against Trips —
+`content-item-v2` contract — the bounded cross-capability read it already does against Trips —
 rather than opening a second capability's database schema.
 
 ## Relationship to scouting
@@ -267,7 +284,7 @@ Obsidian has three bounded roles:
   Inbox except staying in it, so the Information lane was declared rather than real. The note
   carries subject, sender, date, a Gmail permalink, the stream and the data class. It never
   carries the snippet or the body, which are the raw mail this lane exists to avoid copying.
-  Every field comes from the stored row, so a Private mail exports the redacted form the intake
+  Every field comes from the stored row, so a c2 or c3 mail exports the redacted form the intake
   gate produced. No Gmail write happens: archiving is a mutation the doctrine permits only on
   explicit approval, and folding it in here would archive as a side effect of filing.
 
@@ -595,12 +612,12 @@ page as provenance. `arxiv` calls the official Atom query API with a configured
 
 Each source declares a `data_class`, and it is required with no default. That
 declaration is what every item the source stores is classified with, and the
-only way a feed item becomes `public` at all — an item that arrives through
-`/ingest` or a Vault link, where no collector declared anything, is stored
-`personal` with method `legacy` and stays local. A collector may raise an
-item's class on a later scan and may never lower one, so a `legacy` row has no
-machine route to `public`: only `POST /feed/:id/data-class`, with a written
-rationale, can lower a class, and it answers 400 without one.
+only way a feed item becomes `c0` at all — an item that arrives through
+`/ingest` or a Vault link, where no collector declared anything, is stored `c1`
+with method `legacy` and stays local. A collector may raise an item's class on
+a later scan and may never lower one, so a `legacy` row has no machine route to
+`c0`: only `POST /feed/:id/data-class`, with a written rationale, can lower a
+class, and it answers 400 without one.
 
 A scan upserts by the canonical target URL, preserving `keeper`/`dismissed`
 state, then records `feed_origins` and `source_state`. Re-seeing an existing item
@@ -647,16 +664,16 @@ Routes:
 - `POST /content/digests/refresh` `{"source":"mail"|"feed","limit":25}` → the bounded automatic
   pass over items with no digest, a stale producer, or a retryable failure with attempts left.
   It never touches a row an operator refined.
-- `POST /content/:source/:id/cloud-preview` → builds a bounded local preview. Public content
-  is copied as-is; Personal content receives local deterministic entity redaction for recognized
+- `POST /content/:source/:id/cloud-preview` → builds a bounded local preview. `c0` content
+  is copied as-is; `c1` content receives local deterministic entity redaction for recognized
   people — after a salutation or a self-introduction, named as being from an organisation, or
   carried as a login handle — plus addresses, links, phone/account numbers and token-like
   secrets. The
   response lists the recognized entity types, names the limitations, and always reports zero
-  provider calls. **Private content has no preview**: the request is refused with 400, because a
-  preview is a hashable, approvable object and producing one for content that may never leave the
-  machine means the refusal has to be remembered again at every later step. The store agrees —
-  `content_cloud_derivatives.original_data_class` accepts only `public` and `personal`.
+  provider calls. **`c2` and `c3` content has no preview**: the request is refused with 400,
+  because a preview is a hashable, approvable object and producing one for content that may never
+  leave the machine means the refusal has to be remembered again at every later step. The store
+  agrees — `content_cloud_derivatives.original_data_class` accepts only `c0` and `c1`.
 - `POST /content/:source/:id/cloud-approval` `{"preview_hash":"..."}` → regenerates the
   current preview, rejects a stale hash, and stages the exact reviewed derivative locally.
   It does not select or contact a cloud provider.
@@ -711,20 +728,34 @@ Routes:
   enriches only revision-stale items behind the response.
 - `GET /triage?status=proposed` → triage items
 - `POST /triage/sweep` `{"limit":100,"cursor":null}` → fetches one read-only inbox page,
-  stores new proposals, and returns the opaque cursor for the next page
+  stores new proposals, and returns the opaque cursor for the next page. The receipt reports the
+  people registry's state and name count, because this is the path that *persists* rows: a pass
+  run with the overlay unmounted raises nothing to `c2` and stores the verbatim metadata of mail
+  that names a vault-known person, and its counts look exactly like a pass that found nobody. The
+  unattended schedule logs the same line
 - `POST /triage/relevance/refresh` `{"limit":200}` → scores stored pending mail against
   TELOS through loopback-only local inference or the labelled lexical fallback; TELOS is read-only
 - `POST /triage/data-class/refresh` `{"limit":500}` → locally classifies stored pending mail
-  from sender, subject and category only; no provider is called and human overrides are preserved
+  from sender, subject, snippet and category only; no provider is called and human overrides are
+  preserved. A row this pass lands on `c2` or `c3` has its stored subject and snippet redacted in
+  the same pass, and the response counts them as `redacted` — class and redaction are one decision
+  in the sweep (`intake::from_thread`) and one decision here, so no row is left labelled Redacted
+  while still holding the text. The response also reports the people registry's state, because a
+  registry that did not load raises nothing to `c2` and would otherwise be indistinguishable from
+  one that found nobody
 - `POST /triage/bulk` applies one reviewed action to at most 100 stored proposals and reports
   per-item failures. `categorize` uses `stream`, `set-data-class` uses `data_class`, and
-  `dismiss`, `archive`, or `trash` need only the selected `ids`.
+  `dismiss`, `archive`, or `trash` need only the selected `ids`. `set-data-class` also reports
+  `narrowed`: how many of the rows it raised had stored text to remove.
 - `POST /triage/:id/status` `{"status":"proposed"|"approved"|"dismissed"}`
   → local proposal state only; Gmail lifecycle states cannot be forged through this route
 - `POST /triage/:id/stream` `{"stream":"aktiv"|"issue"|"feed"|"werbung"|"belege"|"steuern"|"sonstiges"}`
   → records a persistent human category override without resolving the proposal
-- `POST /triage/:id/data-class` `{"data_class":"public"|"personal"|"vault"}`
-  → records a persistent human trust-class override; the dashboard labels `vault` as **Private**
+- `POST /triage/:id/data-class` `{"data_class":"c0"|"c1"|"c2"|"c3"}`
+  → records a persistent human trust-class override; the dashboard labels these Public, Mine,
+  Others and Secret. Setting `c2` or `c3` redacts the row's stored subject and snippet in the
+  same transaction — the operator selecting Secret is saying that text may not stay — and the
+  response reports `narrowed` so a clean row is distinguishable from a skipped one
 - `POST /triage/:id/gmail` `{"action":"archive"|"trash"|"restore"}` → performs the
   explicit action through a durable local intent. Replays first check Gmail's metadata labels,
   so a process failure after Gmail success can finish locally without duplicating the mutation.

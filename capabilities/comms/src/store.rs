@@ -94,9 +94,9 @@ pub struct FeedItem {
     /// rule change re-run over stored content instead of re-fetching the web.
     pub raw_content: Option<String>,
     pub summary_provenance: Option<StageProvenance>,
-    /// What this item is worth protecting: `public`, `personal` or `vault`.
-    /// Never absent — an item nobody classified reads back Personal, decided by
-    /// `legacy`, which is the value the cloud gate is meant to see.
+    /// What this item is worth protecting: `c0`, `c1`, `c2` or `c3`. Never
+    /// absent — an item nobody classified reads back c1, decided by `legacy`,
+    /// which is the value the cloud gate is meant to see.
     pub data_class: String,
     pub data_class_rationale: String,
     pub data_classification_method: String,
@@ -105,11 +105,11 @@ pub struct FeedItem {
 
 impl FeedItem {
     /// Build a fresh item for ingest. DB-owned fields are left blank/defaulted,
-    /// and the class starts undeclared — Personal, method `legacy`.
+    /// and the class starts undeclared — c1, method `legacy`.
     ///
     /// Every ingest path goes through here, which is what makes the default
     /// actually default: a page pasted by hand, a link imported from the vault
-    /// and a URL captured from a logged-in session all arrive Personal unless
+    /// and a URL captured from a logged-in session all arrive c1 unless
     /// something positively declares otherwise. Only a collector that declares
     /// a class calls [`FeedItem::declare_class`] on top.
     pub fn new(url: &str, stream: &str, kind: &str) -> Self {
@@ -182,6 +182,23 @@ pub struct QualityReviewRow {
     pub derived_at: String,
 }
 
+/// What one class write did to a row.
+///
+/// Two fields because a class write is two decisions, not one: the class the
+/// row now carries, and whether the two review fields that class governs had to
+/// be narrowed to match it. They are reported together because they are written
+/// together — a caller that had to run a second query to learn the second half
+/// is a caller that can forget to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClassWrite {
+    /// The class columns were rewritten. False for a row that is not there, and
+    /// for a refresh the escalation guard refused.
+    pub changed: bool,
+    /// The same transaction removed material from `subject`/`snippet` because
+    /// the class the row now holds does not admit it.
+    pub narrowed: bool,
+}
+
 /// A triage proposal for one inbox thread. On write `status`/`first_seen`/
 /// `last_seen` are DB-owned and ignored; on read they are populated.
 #[derive(Debug, Clone)]
@@ -203,7 +220,8 @@ pub struct TriageItem {
     /// dashboard correction. Human corrections survive later sweeps.
     pub classification_method: String,
     pub classification_version: String,
-    /// Shared trust class. `vault` is presented as Private in the product.
+    /// Shared trust class, `c0`-`c3`. `libs/content-item` owns the label each
+    /// one is presented under.
     pub data_class: String,
     pub data_class_rationale: String,
     pub data_classification_method: String,
@@ -631,6 +649,25 @@ pub(crate) mod db_tests {
         );
     }
 
+    /// The rebuild opens a raw connection before the pool does, and
+    /// `Connection::open` creates a file but never a directory. Every existing
+    /// test mkdirs its own path first, so the one run that would have failed —
+    /// a genuine first deploy, where `~/.local/state/axon/` does not exist yet —
+    /// is exactly the one no test covered.
+    #[test]
+    fn a_first_run_creates_the_directory_its_database_lives_in() {
+        let directory = std::env::temp_dir()
+            .join(format!("comms-first-run-{}", std::process::id()))
+            .join("state")
+            .join("axon");
+        let _ = std::fs::remove_dir_all(&directory);
+        assert!(!directory.exists(), "the test starts with no directory");
+
+        let store = Store::open(&directory.join("axon.db"))
+            .expect("a first run creates the directory it was pointed at");
+        store.ping().expect("and the database in it is usable");
+    }
+
     /// Gmail's `internalDate` is epoch-ms and reached the column through
     /// `to_timestamp($5)`. Its replacement is `strftime(..., ?5, 'unixepoch')`,
     /// which has to land in the same canonical format every other stamp is in --
@@ -665,10 +702,10 @@ pub(crate) mod db_tests {
             rationale: "test".into(),
             classification_method: content_item::METHOD_DETERMINISTIC.into(),
             classification_version: "mail-rules-v1".into(),
-            data_class: "personal".into(),
-            data_class_rationale: "Mail metadata is Personal by default.".into(),
+            data_class: "c1".into(),
+            data_class_rationale: "Mail metadata is Mine by default.".into(),
             data_classification_method: content_item::METHOD_DETERMINISTIC.into(),
-            data_classification_version: "data-class-rules-v1".into(),
+            data_classification_version: content_item::MAIL_CLASSIFIER_VERSION.into(),
             status: "proposed".into(),
             gmail_action: None,
             gmail_action_at: None,
@@ -1026,9 +1063,12 @@ pub(crate) mod db_tests {
         store
             .upsert_triage(&mk_triage("thread:private", "aktiv"))
             .unwrap();
-        assert!(store
-            .set_triage_data_class("thread:private", "vault", None)
-            .unwrap());
+        assert!(
+            store
+                .set_triage_data_class("thread:private", "c3", None)
+                .unwrap()
+                .changed
+        );
 
         let rules =
             crate::content_item::DataClass::classify_mail("aktiv", "friend@example.com", "Hello");
@@ -1040,13 +1080,182 @@ pub(crate) mod db_tests {
             .unwrap();
 
         let row = store.get_triage("thread:private").unwrap().unwrap();
-        assert_eq!(row.data_class, "vault");
+        assert_eq!(row.data_class, "c3");
         assert_eq!(row.data_classification_method, "human");
         assert_eq!(row.data_classification_version, "manual-v1");
         assert_eq!(row.data_class_rationale, "Data class set manually in Axon.");
         assert!(store
             .set_triage_data_class("thread:private", "secret", Some("why"))
             .is_err());
+    }
+
+    /// The redaction a class demanded outlives a re-sweep that no longer sees
+    /// the reason for it. Ruling 3 made `classify_mail` depend on the people
+    /// registry, so a sweep with the overlay unmounted answers c1 for a thread
+    /// the refresh raised to c2 — and the upsert used to write that sweep's
+    /// verbatim subject over the redacted one while keeping the c2 label.
+    ///
+    /// What survives is the *rule*, not the old text: the row keeps following
+    /// its thread and the incoming message is redacted on the way in. Freezing
+    /// the stored pair instead would leave the row showing one message's date
+    /// and sender beside an older message's subject.
+    ///
+    /// The fixtures below are redactable without the people registry — a
+    /// salutation cue and a URL, both rung-1 shapes — because the machine's
+    /// registry is a process-wide `OnceLock` and a gate asserted against the
+    /// operator's contact list is a gate whose result changes when they meet
+    /// someone.
+    #[test]
+    fn a_weaker_resweep_cannot_unredact_an_escalated_row() {
+        let store = open_test_store("triage_resweep_unredact");
+        store
+            .upsert_triage(&mk_triage("thread:escalated", "aktiv"))
+            .unwrap();
+
+        // What `POST /triage/data-class/refresh` does with the registry loaded.
+        let escalated = content_item::DataClass::new(
+            "c2",
+            crate::intake::KNOWN_PERSON_RATIONALE,
+            content_item::METHOD_DETERMINISTIC,
+            content_item::MAIL_CLASSIFIER_VERSION,
+        );
+        assert!(store
+            .refresh_triage_data_class("thread:escalated", &escalated)
+            .unwrap());
+        assert!(store
+            .redact_triage_review_fields(
+                "thread:escalated",
+                Some("Re: [person], next week"),
+                Some("[person] asked about the schedule"),
+            )
+            .unwrap());
+
+        // The next sweep, registry absent: c1, and a *newer* message's raw
+        // Gmail metadata.
+        let mut blind = mk_triage("thread:escalated", "aktiv");
+        blind.subject = Some("Hallo Mustermann, der neue Termin".into());
+        blind.snippet = Some("Antwort bitte an https://example.com/t/AbCd1234567890Ef".into());
+        store.upsert_triage(&blind).unwrap();
+
+        let row = store.get_triage("thread:escalated").unwrap().unwrap();
+        assert_eq!(row.data_class, "c2", "the strict class survives");
+        let subject = row.subject.clone().unwrap();
+        let snippet = row.snippet.clone().unwrap();
+        assert!(
+            !subject.contains("Mustermann"),
+            "no verbatim name is stored on a c2 row: {subject}"
+        );
+        assert!(
+            !snippet.contains("AbCd1234567890Ef"),
+            "no verbatim link is stored on a c2 row: {snippet}"
+        );
+        assert!(subject.contains("[person]"), "redacted, not discarded");
+
+        // Freshness: the stored text is derived from the new message, not
+        // frozen at the old one. The `[link]` marker can only come from the new
+        // snippet — the redacted text it replaced held no link.
+        assert!(
+            snippet.contains("[link]"),
+            "the stored snippet follows the thread: {snippet}"
+        );
+        assert!(
+            !snippet.contains("asked about the schedule"),
+            "the previous message's text is not frozen in place: {snippet}"
+        );
+        assert!(
+            subject.contains("der neue Termin"),
+            "the new subject's readable half survives: {subject}"
+        );
+    }
+
+    /// The operator's own escalation narrows the row it lands on, in the same
+    /// transaction — both review fields, not whichever one the eye fell on.
+    /// Selecting Others or Secret on a mail the rules never matched must not
+    /// leave the row labelled Redacted in the dashboard while the material it
+    /// says it removed is still in `subject` and `snippet`.
+    #[test]
+    fn setting_a_strict_class_by_hand_redacts_the_row_it_lands_on() {
+        let store = open_test_store("triage_human_class_redacts");
+        let mut item = mk_triage("thread:invoice", "aktiv");
+        item.subject = Some("Rechnung 4482159900 faellig".into());
+        item.snippet = Some("Rueckfragen an buchhaltung@example.com".into());
+        store.upsert_triage(&item).unwrap();
+        // The state the operator is correcting: c1, stored verbatim.
+        let raw = store.get_triage("thread:invoice").unwrap().unwrap();
+        assert_eq!(raw.subject.as_deref(), Some("Rechnung 4482159900 faellig"));
+
+        let write = store
+            .set_triage_data_class("thread:invoice", "c2", None)
+            .unwrap();
+        assert!(write.changed);
+        assert!(write.narrowed, "the same call removed the material");
+
+        let row = store.get_triage("thread:invoice").unwrap().unwrap();
+        assert_eq!(row.data_class, "c2");
+        let subject = row.subject.clone().unwrap();
+        let snippet = row.snippet.clone().unwrap();
+        assert!(
+            !subject.contains("4482159900"),
+            "the number survived: {subject}"
+        );
+        assert!(subject.contains("[number]"));
+        assert!(
+            !snippet.contains("buchhaltung"),
+            "the address survived: {snippet}"
+        );
+        assert!(snippet.contains("[email]"), "both fields, not just one");
+
+        // Idempotent, and honest about it: a second pass finds nothing left.
+        let again = store
+            .set_triage_data_class("thread:invoice", "c2", None)
+            .unwrap();
+        assert!(again.changed);
+        assert!(!again.narrowed, "a clean row reports no narrowing");
+    }
+
+    /// Scoped by class, on this path too. Setting c1 rewrites the class columns
+    /// and leaves the review fields exactly as they were, or the review list
+    /// stops being reviewable.
+    #[test]
+    fn setting_an_ordinary_class_by_hand_leaves_the_text_alone() {
+        let store = open_test_store("triage_human_class_verbatim");
+        let mut item = mk_triage("thread:lunch", "aktiv");
+        item.subject = Some("Lunch on Tuesday?".into());
+        item.snippet = Some("Half twelve at the usual place".into());
+        store.upsert_triage(&item).unwrap();
+
+        let write = store
+            .set_triage_data_class("thread:lunch", "c1", None)
+            .unwrap();
+        assert!(write.changed);
+        assert!(!write.narrowed);
+
+        let row = store.get_triage("thread:lunch").unwrap().unwrap();
+        assert_eq!(row.subject.as_deref(), Some("Lunch on Tuesday?"));
+        assert_eq!(
+            row.snippet.as_deref(),
+            Some("Half twelve at the usual place")
+        );
+    }
+
+    /// The guard above is scoped to rows that were narrowed. A c1 row still
+    /// tracks its thread, or the review list stops matching the mailbox.
+    #[test]
+    fn an_ordinary_row_still_follows_its_thread() {
+        let store = open_test_store("triage_resweep_verbatim");
+        store
+            .upsert_triage(&mk_triage("thread:ordinary", "aktiv"))
+            .unwrap();
+        let mut resweep = mk_triage("thread:ordinary", "aktiv");
+        resweep.snippet = Some("a newer message in the thread".into());
+        store.upsert_triage(&resweep).unwrap();
+
+        let row = store.get_triage("thread:ordinary").unwrap().unwrap();
+        assert_eq!(row.data_class, "c1");
+        assert_eq!(
+            row.snippet.as_deref(),
+            Some("a newer message in the thread")
+        );
     }
 
     #[test]
@@ -1057,12 +1266,13 @@ pub(crate) mod db_tests {
             item_id: "thread:cloud".into(),
             source_revision: "source-v1".into(),
             preview_hash: "preview-v1".into(),
-            // Was 'vault' until the column stopped accepting it. Nothing else
-            // about this test is about the class — it is about staleness — and
-            // 'vault' had only ever reached this row through a `prepare()` that
-            // used to hand out a preview for Private content.
-            original_data_class: "personal".into(),
-            derivative_data_class: "personal".into(),
+            // Was the strictest class until the column stopped accepting it.
+            // Nothing else about this test is about the class — it is about
+            // staleness — and that value had only ever reached this row through
+            // a `prepare()` that used to hand out a preview for local-only
+            // content.
+            original_data_class: "c1".into(),
+            derivative_data_class: "c1".into(),
             transformation: "deterministic-entity-redaction-v2".into(),
             document: "Title\n[identity removed]".into(),
             redaction_count: 1,
@@ -1096,28 +1306,28 @@ pub(crate) mod db_tests {
     /// goes through, and the CHECK is what still holds if a future one does not
     /// — or if an older binary is pointed at this database.
     #[test]
-    fn a_vault_derivative_cannot_be_staged_at_all() {
-        let store = open_test_store("cloud_vault_refused");
+    fn a_local_only_derivative_cannot_be_staged_at_all() {
+        let store = open_test_store("cloud_local_only_refused");
         let error = store
             .stage_cloud_derivative(&CloudDerivativeApproval {
                 source: "mail".into(),
-                item_id: "thread:vault".into(),
+                item_id: "thread:secret".into(),
                 source_revision: "source-v1".into(),
                 preview_hash: "preview-v1".into(),
-                original_data_class: "vault".into(),
-                derivative_data_class: "personal".into(),
+                original_data_class: "c3".into(),
+                derivative_data_class: "c1".into(),
                 transformation: "deterministic-entity-redaction-v2".into(),
                 document: "Title\n[identity removed]".into(),
                 redaction_count: 1,
             })
-            .expect_err("vault must not be stageable");
+            .expect_err("c3 must not be stageable");
         // Matched on the column and its allowed set rather than on a constraint
         // *name*: Postgres named the constraint and quoted the name back; SQLite
         // quotes the CHECK expression itself. The claim is the same one -- the
         // refusal comes from the class constraint, not from Rust -- and this is
         // how the database states it now.
         assert!(
-            format!("{error:?}").contains("original_data_class IN ('public','personal')"),
+            format!("{error:?}").contains("original_data_class IN ('c0','c1')"),
             "the refusal must come from the class CHECK, got: {error:?}"
         );
     }
@@ -1131,8 +1341,8 @@ pub(crate) mod db_tests {
                 item_id: "thread:queue".into(),
                 source_revision: "source-v1".into(),
                 preview_hash: "preview-v1".into(),
-                original_data_class: "personal".into(),
-                derivative_data_class: "personal".into(),
+                original_data_class: "c1".into(),
+                derivative_data_class: "c1".into(),
                 transformation: "deterministic-entity-redaction-v2".into(),
                 document: "Title\n[person]".into(),
                 redaction_count: 1,
@@ -1174,8 +1384,8 @@ pub(crate) mod db_tests {
                 item_id: "thread:dispatch".into(),
                 source_revision: "source-v1".into(),
                 preview_hash: "preview-v1".into(),
-                original_data_class: "personal".into(),
-                derivative_data_class: "personal".into(),
+                original_data_class: "c1".into(),
+                derivative_data_class: "c1".into(),
                 transformation: "deterministic-entity-redaction-v2".into(),
                 document: "Title\n[person] visits on 2026-08-10".into(),
                 redaction_count: 1,
@@ -1194,8 +1404,8 @@ pub(crate) mod db_tests {
         let job_id = queued.job_id.unwrap();
         let job = store.cloud_job_for_dispatch(&job_id).unwrap().unwrap();
         assert_eq!(job.task, "content-analysis-v1");
-        assert_eq!(job.original_data_class, "personal");
-        assert_eq!(job.derivative_data_class, "personal");
+        assert_eq!(job.original_data_class, "c1");
+        assert_eq!(job.derivative_data_class, "c1");
         assert_eq!(job.transformation, "deterministic-entity-redaction-v2");
         assert_eq!(job.document, "Title\n[person] visits on 2026-08-10");
         assert_eq!(job.provider_calls, 0);
@@ -1280,8 +1490,8 @@ pub(crate) mod db_tests {
                     item_id: item.into(),
                     source_revision: "source-v1".into(),
                     preview_hash: "preview-v1".into(),
-                    original_data_class: "personal".into(),
-                    derivative_data_class: "personal".into(),
+                    original_data_class: "c1".into(),
+                    derivative_data_class: "c1".into(),
                     transformation: "deterministic-entity-redaction-v3".into(),
                     document: "Reviewed pseudonymized text".into(),
                     redaction_count: 1,
@@ -1371,8 +1581,8 @@ pub(crate) mod db_tests {
                 item_id: "thread:budget".into(),
                 source_revision: "source-v1".into(),
                 preview_hash: "preview-v1".into(),
-                original_data_class: "personal".into(),
-                derivative_data_class: "personal".into(),
+                original_data_class: "c1".into(),
+                derivative_data_class: "c1".into(),
                 transformation: "deterministic-entity-redaction-v2".into(),
                 document: "Reviewed pseudonymized text".into(),
                 redaction_count: 1,
@@ -1488,13 +1698,13 @@ pub(crate) mod db_tests {
     /// the constructor. A pasted URL is what an operator ingests from a page
     /// they were logged into, and it must not come back cloud-eligible.
     #[test]
-    fn an_ingested_item_nobody_declared_is_stored_personal_and_legacy() {
+    fn an_ingested_item_nobody_declared_is_stored_c1_and_legacy() {
         let store = open_test_store("feed_class_default");
         let item = mk_feed("https://example.com/undeclared", "article", "news");
         store.upsert_feed(&item).unwrap();
 
         let stored = store.get_feed(&item.id).unwrap().unwrap();
-        assert_eq!(stored.data_class, "personal");
+        assert_eq!(stored.data_class, "c1");
         assert_eq!(stored.data_classification_method, "legacy");
         assert_eq!(
             content_item::processing_policy(&stored.data_class).cloud_handling,
@@ -1509,27 +1719,27 @@ pub(crate) mod db_tests {
         let store = open_test_store("feed_class_declared");
         let mut item = mk_feed("https://example.com/declared", "arxiv", "news");
         item.declare_class(&content_item::DataClass::declared_by_source(
-            "public",
+            "c0",
             "Declared by feed source 'arxiv-ai-recent'.",
         ));
         store.upsert_feed(&item).unwrap();
 
         let stored = store.get_feed(&item.id).unwrap().unwrap();
-        assert_eq!(stored.data_class, "public");
+        assert_eq!(stored.data_class, "c0");
         assert_eq!(stored.data_classification_method, "deterministic");
         assert_eq!(
             content_item::processing_policy(&stored.data_class).cloud_handling,
             "eligible",
-            "a positively declared public item is the only kind that is"
+            "a positively declared c0 item is the only kind that is"
         );
     }
 
     /// Ingest is a machine path: it may raise a class and never lower one.
     ///
     /// The first assertion is the one the anti-claim rests on. A row stored
-    /// undeclared is Personal, and no collector can relabel it afterwards --
-    /// so a `legacy` item has no machine route to Public at all, and the 187
-    /// backfilled rows can only be lifted by a human who says why.
+    /// undeclared is c1, and no collector can relabel it afterwards -- so a
+    /// `legacy` item has no machine route to c0 at all, and the 187 backfilled
+    /// rows can only be lifted by a human who says why.
     #[test]
     fn a_re_ingest_can_raise_a_feed_class_but_never_lower_one() {
         let store = open_test_store("feed_class_escalation");
@@ -1537,36 +1747,33 @@ pub(crate) mod db_tests {
         store.upsert_feed(&item).unwrap();
 
         item.declare_class(&content_item::DataClass::declared_by_source(
-            "public",
+            "c0",
             "Declared by feed source 'test'.",
         ));
         store.upsert_feed(&item).unwrap();
         let stored = store.get_feed(&item.id).unwrap().unwrap();
         assert_eq!(
-            stored.data_class, "personal",
+            stored.data_class, "c1",
             "a collector cannot lift a row that was already stored undeclared"
         );
         assert_eq!(stored.data_classification_method, "legacy");
 
         // Escalation, on the other hand, needs nobody's permission.
         item.declare_class(&content_item::DataClass::declared_by_source(
-            "vault",
-            "Declared Private by its collector.",
+            "c3",
+            "Declared Secret by its collector.",
         ));
         store.upsert_feed(&item).unwrap();
-        assert_eq!(
-            store.get_feed(&item.id).unwrap().unwrap().data_class,
-            "vault"
-        );
+        assert_eq!(store.get_feed(&item.id).unwrap().unwrap().data_class, "c3");
 
         // A human lowers it, with a reason. The collector then re-scans and
-        // re-declares Private, which is an escalation, so that one lands.
+        // re-declares Secret, which is an escalation, so that one lands.
         store
-            .set_feed_data_class(&item.id, "public", Some("Published preprint."))
+            .set_feed_data_class(&item.id, "c0", Some("Published preprint."))
             .unwrap();
         store.upsert_feed(&item).unwrap();
         let stored = store.get_feed(&item.id).unwrap().unwrap();
-        assert_eq!(stored.data_class, "vault");
+        assert_eq!(stored.data_class, "c3");
         assert_eq!(stored.data_classification_method, "deterministic");
     }
 
@@ -1585,16 +1792,16 @@ pub(crate) mod db_tests {
         assert!(store
             .set_feed_data_class(
                 &item.id,
-                "personal",
+                "c1",
                 Some("Hand-ingested from a page I was reading; the capture is mine.")
             )
             .unwrap());
 
         // The probe: the same URL ingested again, declaring nothing, so the
-        // item arrives Personal/legacy -- equal class, machine method.
+        // item arrives c1/legacy -- equal class, machine method.
         store.upsert_feed(&item).unwrap();
         let stored = store.get_feed(&item.id).unwrap().unwrap();
-        assert_eq!(stored.data_class, "personal");
+        assert_eq!(stored.data_class, "c1");
         assert_eq!(
             stored.data_classification_method, "human",
             "the re-ingest reverted a human decision to a machine one"
@@ -1609,12 +1816,12 @@ pub(crate) mod db_tests {
         // Escalation is untouched by any of this: the collector may still raise
         // the class of a row a human classified, record and all.
         item.declare_class(&content_item::DataClass::declared_by_source(
-            "vault",
-            "Declared Private by its collector.",
+            "c3",
+            "Declared Secret by its collector.",
         ));
         store.upsert_feed(&item).unwrap();
         let stored = store.get_feed(&item.id).unwrap().unwrap();
-        assert_eq!(stored.data_class, "vault");
+        assert_eq!(stored.data_class, "c3");
         assert_eq!(stored.data_classification_method, "deterministic");
     }
 
@@ -1627,14 +1834,14 @@ pub(crate) mod db_tests {
         let store = open_test_store("feed_class_deescalation");
         let mut item = mk_feed("https://example.com/lower", "article", "news");
         item.declare_class(&content_item::DataClass::declared_by_source(
-            "vault",
-            "Declared Private by its collector.",
+            "c3",
+            "Declared Secret by its collector.",
         ));
         store.upsert_feed(&item).unwrap();
 
         for empty in [None, Some(""), Some("   ")] {
             let error = store
-                .set_feed_data_class(&item.id, "public", empty)
+                .set_feed_data_class(&item.id, "c0", empty)
                 .expect_err("a silent de-escalation must be refused");
             assert!(
                 error.to_string().contains("rationale"),
@@ -1643,24 +1850,22 @@ pub(crate) mod db_tests {
         }
         assert_eq!(
             store.get_feed(&item.id).unwrap().unwrap().data_class,
-            "vault",
+            "c3",
             "a refused request writes nothing"
         );
 
         assert!(store
-            .set_feed_data_class(&item.id, "public", Some("Published preprint, no session."))
+            .set_feed_data_class(&item.id, "c0", Some("Published preprint, no session."))
             .unwrap());
         let stored = store.get_feed(&item.id).unwrap().unwrap();
-        assert_eq!(stored.data_class, "public");
+        assert_eq!(stored.data_class, "c0");
         assert_eq!(
             stored.data_class_rationale, "Published preprint, no session.",
             "the operator's own words are what gets stored"
         );
 
         assert!(
-            !store
-                .set_feed_data_class("no-such-id", "vault", None)
-                .unwrap(),
+            !store.set_feed_data_class("no-such-id", "c3", None).unwrap(),
             "a missing item is false, not an error"
         );
         assert!(
@@ -1673,25 +1878,25 @@ pub(crate) mod db_tests {
 
     /// The mail sweep re-runs the rules on every pass. A rule edit that made
     /// the classifier less suspicious must not walk the inbox downgrading rows
-    /// it had already called Private.
+    /// it had already called Secret.
     #[test]
-    fn a_resweep_cannot_downgrade_a_mail_the_rules_once_called_private() {
+    fn a_resweep_cannot_downgrade_a_mail_the_rules_once_called_secret() {
         let store = open_test_store("triage_class_escalation");
         let mut item = mk_triage("thread:class", "aktiv");
-        item.data_class = "vault".into();
-        item.data_class_rationale = "Authentication metadata is Private.".into();
+        item.data_class = "c3".into();
+        item.data_class_rationale = "Authentication metadata is Secret.".into();
         item.data_classification_method = content_item::METHOD_DETERMINISTIC.into();
         store.upsert_triage(&item).unwrap();
 
-        item.data_class = "personal".into();
-        item.data_class_rationale = "Mail metadata is Personal by default.".into();
+        item.data_class = "c1".into();
+        item.data_class_rationale = "Mail metadata is Mine by default.".into();
         store.upsert_triage(&item).unwrap();
 
         let stored = store.list_triage(None).unwrap();
-        assert_eq!(stored[0].data_class, "vault");
+        assert_eq!(stored[0].data_class, "c3");
         assert_eq!(
             stored[0].data_class_rationale,
-            "Authentication metadata is Private."
+            "Authentication metadata is Secret."
         );
     }
 

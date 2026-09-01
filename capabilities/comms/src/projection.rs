@@ -324,7 +324,7 @@ mod tests {
             captured_via: None,
             raw_content: None,
             summary_provenance: None,
-            data_class: "personal".into(),
+            data_class: "c1".into(),
             data_class_rationale: "test".into(),
             data_classification_method: "legacy".into(),
             data_classification_version: "data-class-legacy-v1".into(),

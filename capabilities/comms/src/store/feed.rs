@@ -207,7 +207,7 @@ impl Store {
     /// The only path that can lower one, and only because a human is on the
     /// other end of it. `rationale` is optional for an escalation and required
     /// for a de-escalation — the refusal comes back as an `Err`, which the
-    /// server turns into a 400, so "I made it Public and cannot say why" never
+    /// server turns into a 400, so "I made it c0 and cannot say why" never
     /// reaches the database.
     ///
     /// `Ok(false)` is a missing item, never a refusal: a caller has to be able

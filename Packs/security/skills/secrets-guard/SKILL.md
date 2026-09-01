@@ -63,8 +63,14 @@ prints it.
 
 ## Data class
 
-Vault-class material is processed by **local models only** (README.md#data-classes) — if a task would put
-vault-class content in front of a cloud model, don't; route it locally or hand off.
+`c2` (Others) and `c3` (Secret) material never reaches a cloud model. That one is enforced in code
+(README.md#data-classes): the derivative builder refuses to produce a preview, the tier check
+refuses the dispatch, and the table's CHECK constraint refuses the row.
+
+`c3` must additionally stay out of **local** prompts. That rule is declared, not yet gated: no call
+site reads `local_processing` today, so nothing will stop you. Treat it as your rule to keep — if a
+task would put `c3` content in front of any model, local included, don't; route it around the model
+or hand off.
 
 ## When blocked
 

@@ -49,16 +49,16 @@ pub struct QueuedDigest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DigestNotQueued {
     /// No configured provider tier admits this item's stored class verbatim.
-    /// `personal`, `vault` and anything undeclared land here, and so does a
-    /// `public` item on a machine whose only cloud roles declare no tier.
+    /// `c1`, `c2`, `c3` and anything undeclared land here, and so does a `c0`
+    /// item on a machine whose only cloud roles declare no tier.
     ClassNotCleared {
         data_class: String,
     },
-    /// `vault` has no approvable representation at all, so there was nothing to
-    /// stage. Reached only when a class the tier check admitted is nevertheless
-    /// refused by `prepare` — which cannot happen today and is kept as the
-    /// second lock rather than as an `unreachable!`.
-    VaultRefused,
+    /// `c2` and `c3` have no approvable representation at all, so there was
+    /// nothing to stage. Reached only when a class the tier check admitted is
+    /// nevertheless refused by `prepare` — which cannot happen today and is
+    /// kept as the second lock rather than as an `unreachable!`.
+    LocalOnlyRefused,
     /// A tier-cleared provider exists but cannot be used right now: no
     /// credential, billing lapsed, the document is past its input ceiling, or
     /// the day's request budget is spent.
@@ -73,7 +73,7 @@ impl std::fmt::Display for DigestNotQueued {
                 f,
                 "no cloud provider tier admits a {data_class} item verbatim"
             ),
-            Self::VaultRefused => f.write_str("vault content has no cloud derivative"),
+            Self::LocalOnlyRefused => f.write_str("c2 and c3 content has no cloud derivative"),
             Self::NoProviderAvailable(detail) => {
                 write!(f, "no cloud provider is available: {detail}")
             }
@@ -93,7 +93,7 @@ pub fn enqueue_digest_job(
     item: &FeedItem,
 ) -> Result<QueuedDigest, DigestNotQueued> {
     let preview = cloud_derivative::prepare(&CloudDocumentInput::from_feed(item))
-        .map_err(|_| DigestNotQueued::VaultRefused)?;
+        .map_err(|_| DigestNotQueued::LocalOnlyRefused)?;
     let input_upper_bound = cloud_dispatch::input_token_upper_bound(&preview.document);
     let utc_date = store
         .utc_date()
@@ -473,16 +473,16 @@ mod tests {
     }
 
     /// C21's refusal, at the selection step that decides where a digest could go
-    /// at all. Only `public` is cleared, and it is cleared only by a tier that
+    /// at all. Only `c0` is cleared, and it is cleared only by a tier that
     /// declares itself.
     #[test]
-    fn only_a_public_item_finds_a_tier_cleared_provider() {
+    fn only_a_c0_item_finds_a_tier_cleared_provider() {
         let inference = inference(&[
             ("cloud_public", "public", 30),
             ("cloud_pseudonymized", "pseudonymized_personal", 10),
         ]);
         assert_eq!(
-            tier_cleared_roles(&inference, "public")
+            tier_cleared_roles(&inference, "c0")
                 .into_iter()
                 .map(|(name, _)| name)
                 .collect::<Vec<_>>(),
@@ -493,7 +493,7 @@ mod tests {
             "both tiers admit public verbatim; the one declared for public data \
              goes first, even though its failover_priority is worse"
         );
-        for class in ["personal", "vault", "something-new", ""] {
+        for class in ["c1", "c2", "c3", "something-new", ""] {
             assert!(
                 tier_cleared_roles(&inference, class).is_empty(),
                 "{class} found a cloud provider for a verbatim send"
@@ -502,48 +502,50 @@ mod tests {
     }
 
     /// The dispatch-time half of the same refusal. A digest job whose original
-    /// class is `personal` must find no candidate, even against the tier whose
-    /// entire purpose is pseudonymized personal content — because that tier
-    /// admits the *redacted* derivative a human approved, and this job's
-    /// document is a passthrough.
+    /// class is `c1` must find no candidate, even against the tier whose entire
+    /// purpose is pseudonymized personal content — because that tier admits the
+    /// *redacted* derivative a human approved, and this job's document is a
+    /// passthrough.
     #[test]
-    fn dispatch_refuses_a_personal_digest_that_a_reviewed_analysis_would_pass() {
+    fn dispatch_refuses_a_c1_digest_that_a_reviewed_analysis_would_pass() {
         let role = inference(&[("cloud_pseudonymized", "pseudonymized_personal", 10)])
             .role("cloud_pseudonymized")
             .expect("the probe role resolves");
 
         let analysis = job(
             cloud_dispatch::TASK_VERSION,
-            "personal",
-            "personal",
+            "c1",
+            "c1",
             cloud_derivative::REDACTION_VERSION,
         );
         assert!(
             admits(&role, &analysis),
-            "the reviewed analysis lane for personal content is unchanged"
+            "the reviewed analysis lane for c1 content is unchanged"
         );
 
         let digest = job(
             cloud_dispatch::DIGEST_TASK_VERSION,
-            "personal",
-            "personal",
+            "c1",
+            "c1",
             cloud_derivative::REDACTION_VERSION,
         );
         assert!(!admits(&role, &digest));
 
-        let vault = job(
-            cloud_dispatch::DIGEST_TASK_VERSION,
-            "vault",
-            "personal",
-            cloud_derivative::REDACTION_VERSION,
-        );
-        assert!(!admits(&role, &vault));
+        for local_only in ["c2", "c3"] {
+            let refused = job(
+                cloud_dispatch::DIGEST_TASK_VERSION,
+                local_only,
+                "c1",
+                cloud_derivative::REDACTION_VERSION,
+            );
+            assert!(!admits(&role, &refused));
+        }
     }
 
-    /// A public passthrough digest is the one shape that passes, and only
-    /// against a declared tier.
+    /// A c0 passthrough digest is the one shape that passes, and only against a
+    /// declared tier.
     #[test]
-    fn dispatch_admits_a_public_passthrough_digest() {
+    fn dispatch_admits_a_c0_passthrough_digest() {
         let role = inference(&[("cloud_public", "public", 30)])
             .role("cloud_public")
             .expect("the probe role resolves");
@@ -551,8 +553,8 @@ mod tests {
             &role,
             &job(
                 cloud_dispatch::DIGEST_TASK_VERSION,
-                "public",
-                "public",
+                "c0",
+                "c0",
                 cloud_derivative::PASSTHROUGH_VERSION,
             )
         ));
@@ -584,24 +586,30 @@ mod tests {
         /// "it returned an error" is not the claim — the claim is that no
         /// derivative was staged and no job exists for a non-`public` item.
         #[test]
-        fn a_personal_item_gets_no_cloud_digest_job() {
+        fn a_non_c0_item_gets_no_cloud_digest_job() {
             let store = crate::store::db_tests::open_test_store("cloud_digest_refusal");
             let cfg = Config::with_inference(inference(&[
                 ("cloud_public", "public", 30),
                 ("cloud_pseudonymized", "pseudonymized_personal", 10),
             ]));
 
-            for class in ["personal", "vault", "something-new"] {
+            for class in ["c1", "c2", "c3", "something-new"] {
                 let item = feed_item(class);
                 let refusal = enqueue_digest_job(&store, &cfg, &item)
-                    .expect_err("a non-public item must not reach a cloud provider verbatim");
-                let expected = if class == "vault" {
-                    // `prepare` refuses Private before the tier question is asked.
-                    DigestNotQueued::VaultRefused
-                } else {
+                    .expect_err("a non-c0 item must not reach a cloud provider verbatim");
+                let expected = if class == "c1" {
+                    // c1 has a derivative; what it lacks here is a cloud tier
+                    // configured to accept one, so the refusal is the tier's.
                     DigestNotQueued::ClassNotCleared {
                         data_class: class.into(),
                     }
+                } else {
+                    // `prepare` admits c0 and c1 and refuses everything else
+                    // before the tier question is asked — c2 and c3 because
+                    // Q27 gives them no cloud representation, `something-new`
+                    // because a gate over a stored string fails closed on a
+                    // vocabulary it does not recognize.
+                    DigestNotQueued::LocalOnlyRefused
                 };
                 assert_eq!(
                     refusal, expected,
@@ -618,24 +626,24 @@ mod tests {
             }
         }
 
-        /// The same call, same store, for an item that is positively `public`, has
-        /// to actually queue — otherwise the test above would pass on a machine
+        /// The same call, same store, for an item that is positively `c0`, has to
+        /// actually queue — otherwise the test above would pass on a machine
         /// where enqueueing never works at all.
         #[test]
-        fn a_public_item_does_get_a_cloud_digest_job() {
+        fn a_c0_item_does_get_a_cloud_digest_job() {
             let store = crate::store::db_tests::open_test_store("cloud_digest_enqueue");
             let cfg = Config::with_inference(inference(&[("cloud_public", "public", 30)]));
-            let item = feed_item("public");
+            let item = feed_item("c0");
 
             let queued = enqueue_digest_job(&store, &cfg, &item)
-                .expect("a public item finds the public-tier provider");
+                .expect("a c0 item finds the public-tier provider");
             assert_eq!(queued.provider_role, "cloud_public");
             let job = store
                 .cloud_job_for_dispatch(&queued.job_id)
                 .expect("the job query answers")
                 .expect("the queued job is dispatchable");
             assert_eq!(job.task, cloud_dispatch::DIGEST_TASK_VERSION);
-            assert_eq!(job.original_data_class, "public");
+            assert_eq!(job.original_data_class, "c0");
             assert_eq!(job.transformation, cloud_derivative::PASSTHROUGH_VERSION);
         }
     }

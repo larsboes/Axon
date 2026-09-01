@@ -316,9 +316,19 @@ fn spawn_inbox_sweep(
                                 outcome.new_count as i64,
                             )
                             .map_err(|error| error.to_string())?;
+                        // The registry state rides along because this pass
+                        // persists rows unattended: with it absent the
+                        // named-person rule escalates nothing, and the counts
+                        // alone cannot tell that run from a quiet one.
                         Ok(Some(format!(
-                            "{} considered, {} new, {} redacted, {} skipped",
-                            outcome.fetched, outcome.new_count, outcome.redacted, outcome.skipped
+                            "{} considered, {} new, {} redacted, {} skipped, \
+                             people registry {} ({} names)",
+                            outcome.fetched,
+                            outcome.new_count,
+                            outcome.redacted,
+                            outcome.skipped,
+                            outcome.people_registry,
+                            outcome.people_registry_names
                         )))
                     }
                     Err(error) => {

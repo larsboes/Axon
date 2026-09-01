@@ -374,7 +374,7 @@ capability.
 | GET | `/health` | |
 | GET | `/api/entries?from=&to=&kind=` | Window query, optional CSV kind filter |
 | GET | `/api/proposals?from=&to=` | External, non-Google `possible` entries waiting for a Calendar decision; manual soft blocks are excluded, and so is anything already adopted under another key (see Duplicate suppression) |
-| GET | `/api/content/calendar/:id` | The entry as [`content-item-v1`](../../schemas/content-item.schema.json), for the shared reader. Same path shape comms serves — see Content contract |
+| GET | `/api/content/calendar/:id` | The entry as [`content-item-v2`](../../schemas/content-item.schema.json), for the shared reader. Same path shape comms serves — see Content contract |
 | POST | `/api/entries` | Create entry |
 | GET | `/api/entries/:id` | |
 | PUT | `/api/entries/external` | Idempotent provider contribution; requires `source` + `external_id` |
@@ -413,7 +413,7 @@ the user must inspect the current version before Axon writes it.
 
 ## Content contract
 
-An entry also renders as [`content-item-v1`](../../schemas/content-item.schema.json)
+An entry also renders as [`content-item-v2`](../../schemas/content-item.schema.json)
 at `GET /api/content/calendar/:id`, built in `src/content.rs` — pure over one
 `Entry`, so the store is untouched and nothing is written. `libs/content-item`
 carries the argument for sharing the *reader* contract while the tables stay

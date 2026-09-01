@@ -14,26 +14,26 @@
 //! untouched and still reads
 //! `format=metadata` — reading a body is a separate, bounded, explicit act.
 //!
-//! ## Personal and Private content never leaves the machine
+//! ## c1, c2 and c3 content never leaves the machine
 //!
 //! The stored data class decides, and it decides through the same gate the
 //! reviewed-derivative queue uses: [`cloud_derivative::tier_allows`], asked
 //! about the passthrough representation, because a digest hands the model the
 //! source text as it stands. Anything it does not admit becomes
 //! `Reach::LoopbackOnly`, and `libs/summarize` refuses a non-loopback endpoint
-//! outright rather than downgrading it. Mail is never `public` by construction
+//! outright rather than downgrading it. Mail is never `c0` by construction
 //! (`content_item::DataClass::classify_mail`), so a mail digest is loopback-only
 //! by the same rule that already governs mail relevance.
 //!
-//! This used to be its own `data_class == "public"` expression here — a second
-//! copy of a policy that already had a home, and a laxer one: it admitted any
-//! non-loopback target for a public item, including an https endpoint with no
-//! reviewed cloud policy on it at all.
+//! This used to be its own class comparison here — a second copy of a policy
+//! that already had a home, and a laxer one: it admitted any non-loopback
+//! target for a c0 item, including an https endpoint with no reviewed cloud
+//! policy on it at all.
 //!
-//! ## A Private digest is redacted before it is stored
+//! ## A c2 or c3 digest is redacted before it is stored
 //!
-//! For `vault` content the metadata *is* the payload — a one-time code arrives
-//! in the subject line, and a model asked to summarize that mail will quote the
+//! For those classes the metadata *is* the payload — a one-time code arrives in
+//! the subject line, and a model asked to summarize that mail will quote the
 //! code back. The produced text therefore goes through the same deterministic
 //! detector the sweep uses on subject and snippet, and the count is recorded, so
 //! a digest cannot republish what the sweep redacted.
@@ -171,7 +171,7 @@ impl SourceText {
     /// A digest sends the source text as it stands — nothing is redacted on the
     /// way out — which is exactly what `verbatim_send_allowed` answers. Handing
     /// the question to the reviewed-derivative gate is the point: the answer
-    /// used to be an independent `data_class == "public"` here, which is a
+    /// used to be an independent class comparison here, which is a
     /// second copy of a policy that already had a home and, being a copy, was
     /// already laxer than it.
     ///
@@ -214,8 +214,8 @@ fn source_text(store: &Store, cfg: &Config, source: &str, id: &str) -> Result<Op
             .get_feed(id)
             .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?
             .map(|item| SourceText {
-                // The stored class, not a literal. `data_class: "public"` here
-                // meant every feed digest reported itself remotely eligible and
+                // The stored class, not a literal. A hardcoded c0 here meant
+                // every feed digest reported itself remotely eligible and
                 // skipped redaction, on an item nobody had classified.
                 data_class: item.data_class,
                 // The transcript is the source; the stored summary is a
@@ -258,7 +258,7 @@ fn source_text(store: &Store, cfg: &Config, source: &str, id: &str) -> Result<Op
 /// Comms already reads Trips this way for its evaluation context
 /// (`travel.rs`); one more bounded cross-capability read follows that precedent
 /// instead of opening a second capability's database schema. The entry's own
-/// description and notes are the source — a calendar entry is Personal by
+/// description and notes are the source — a calendar entry is c1 by
 /// construction, so this never reaches a remote target.
 fn calendar_entry_text(cfg: &Config, id: &str) -> Result<Option<SourceText>> {
     let base = cfg.calendar_context.base_url.trim_end_matches('/');
@@ -301,7 +301,7 @@ fn calendar_entry_text(cfg: &Config, id: &str) -> Result<Option<SourceText>> {
             .get("data_class")
             .and_then(|class| class.get("value"))
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("personal")
+            .unwrap_or("c1")
             .to_string(),
     }))
 }
@@ -742,7 +742,7 @@ fn over_window(
         // all, which will still be true in fifteen minutes. Record the skip.
         Err(
             crate::cloud_run::DigestNotQueued::ClassNotCleared { .. }
-            | crate::cloud_run::DigestNotQueued::VaultRefused,
+            | crate::cloud_run::DigestNotQueued::LocalOnlyRefused,
         ) => {
             skip_over_window(store, cfg, source, id, shape)?;
             Ok(Pass::OverWindow)
@@ -969,9 +969,7 @@ pub fn state_explanation(state: &str, shape: &str) -> &'static str {
             "Too short to be worth a digest — the source is already the summary."
         }
         "skipped_short" => "Nothing to digest.",
-        "remote_refused" => {
-            "This item is Personal or Private and the configured model is not local."
-        }
+        "remote_refused" => "This item is not public and the configured model is not local.",
         // Deliberately says what to do about it. This state is not a failure of
         // anything — it is the automatic pass declining to wake the big local
         // model, which is policy, and the reader is the one who can override it.
@@ -1020,13 +1018,13 @@ mod tests {
         }
     }
 
-    /// The one rule that keeps mail off a cloud endpoint: mail is never
-    /// `public`, and nothing but `public` may be sent verbatim. A digest sends
-    /// the source text verbatim, so this is the whole question.
+    /// The one rule that keeps mail off a cloud endpoint: mail is never `c0`,
+    /// and nothing but `c0` may be sent verbatim. A digest sends the source
+    /// text verbatim, so this is the whole question.
     #[test]
-    fn nothing_but_a_public_item_may_reach_a_cloud_tier() {
+    fn nothing_but_a_c0_item_may_reach_a_cloud_tier() {
         for tier in [None, Some("public"), Some("pseudonymized_personal")] {
-            for class in ["personal", "vault", "something-new"] {
+            for class in ["c1", "c2", "c3", "something-new"] {
                 assert_eq!(
                     gathered(class).reach(tier),
                     Reach::LoopbackOnly,
@@ -1034,23 +1032,20 @@ mod tests {
                 );
             }
         }
+        assert_eq!(gathered("c0").reach(Some("public")), Reach::CloudCleared);
         assert_eq!(
-            gathered("public").reach(Some("public")),
-            Reach::CloudCleared
-        );
-        assert_eq!(
-            gathered("public").reach(Some("pseudonymized_personal")),
+            gathered("c0").reach(Some("pseudonymized_personal")),
             Reach::CloudCleared
         );
     }
 
     /// A role with no reviewed cloud policy has no `cloud_data_tier`, and an
-    /// undeclared tier admits nothing — including public content. The previous
-    /// rule was laxer: it read the class alone and would have sent a public
-    /// item to any https endpoint somebody pointed the summarization role at.
+    /// undeclared tier admits nothing — including c0 content. The previous rule
+    /// was laxer: it read the class alone and would have sent a c0 item to any
+    /// https endpoint somebody pointed the summarization role at.
     #[test]
     fn an_endpoint_with_no_declared_tier_receives_nothing() {
-        for class in ["public", "personal", "vault"] {
+        for class in ["c0", "c1", "c2", "c3"] {
             assert_eq!(gathered(class).reach(None), Reach::LoopbackOnly);
         }
     }
@@ -1058,17 +1053,19 @@ mod tests {
     /// No role resolved means no request; the verdict still defaults closed.
     #[test]
     fn an_unresolved_role_is_loopback_only() {
-        assert_eq!(reach_for(&gathered("public"), None), Reach::LoopbackOnly);
+        assert_eq!(reach_for(&gathered("c0"), None), Reach::LoopbackOnly);
     }
 
     #[test]
-    fn only_private_content_is_redacted_before_the_digest_is_stored() {
-        let private = SourceText {
-            text: String::new(),
-            data_class: "vault".into(),
-        };
-        assert!(private.redact_before_persistence());
-        for class in ["personal", "public"] {
+    fn only_local_only_content_is_redacted_before_the_digest_is_stored() {
+        for class in ["c2", "c3"] {
+            assert!(SourceText {
+                text: String::new(),
+                data_class: class.into(),
+            }
+            .redact_before_persistence());
+        }
+        for class in ["c0", "c1"] {
             assert!(!SourceText {
                 text: String::new(),
                 data_class: class.into(),

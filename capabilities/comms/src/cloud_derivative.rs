@@ -5,8 +5,8 @@
 //! Two rules live here, and they are the same rule read from both ends:
 //! [`prepare`] decides what representation of an item may exist at all, and
 //! [`tier_allows`] decides which provider tier may receive that representation.
-//! `vault` gets `Err` from the first and `false` from the second — a value the
-//! store's own CHECK no longer accepts either.
+//! `c2` and `c3` get `Err` from the first and `false` from the second — values
+//! the derivative table's own CHECK no longer accepts either.
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -56,25 +56,34 @@ pub struct RedactionFinding {
     pub count: usize,
 }
 
-/// A `vault` document has no cloud preview.
+/// A local-only document has no cloud preview. `c2` and `c3` are both local-only
+/// (Q27): one holds other people's facts, the other holds credentials.
 ///
 /// Not a stricter preview, not a preview flagged ineligible: none at all. A
 /// preview is a hashable, approvable object — the whole point of it is that a
 /// human can sign the exact bytes and a queue can pin them. Producing one for
 /// content that may never leave the machine means the refusal has to be
-/// remembered again at every later step, and it was: staging checked for
-/// `vault`, queueing did not, and the preview handler happily returned the
-/// document itself.
+/// remembered again at every later step, and it was: staging checked the class,
+/// queueing did not, and the preview handler happily returned the document
+/// itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VaultRefused;
+pub struct LocalOnlyRefused;
 
-impl std::fmt::Display for VaultRefused {
+/// The refusal's exact wording, because three handlers in
+/// `capabilities/comms/src/server/cloud.rs` recognise it by string: the error
+/// crosses a `spawn_blocking` boundary as a `String` and the type does not
+/// survive. A constant rather than a literal in four places, since a reworded
+/// sentence would silently turn a 400 into a 500.
+pub const LOCAL_ONLY_REFUSAL: &str =
+    "c2 and c3 content has no cloud derivative and cannot be prepared for one";
+
+impl std::fmt::Display for LocalOnlyRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("vault content has no cloud derivative and cannot be prepared for one")
+        f.write_str(LOCAL_ONLY_REFUSAL)
     }
 }
 
-impl std::error::Error for VaultRefused {}
+impl std::error::Error for LocalOnlyRefused {}
 
 /// Whether a provider tier admits this exact original-plus-representation pair.
 ///
@@ -83,31 +92,32 @@ impl std::error::Error for VaultRefused {}
 /// `capabilities/comms/src/server/cloud.rs`, and the digest path in
 /// `capabilities/comms/src/digest.rs`, which sends the source text as it stands
 /// and so asks about the passthrough representation. The digest path used to
-/// answer the question itself with `data_class == "public"`, a second copy of a
-/// policy that already lived here and was free to drift from it.
+/// answer the question itself with a class comparison of its own, a second copy
+/// of a policy that already lived here and was free to drift from it.
 ///
 /// Every branch names the transformation as well as the classes: a tier that
-/// accepts pseudonymized Personal accepts the *redacted* derivative, and the
-/// same Personal document sent verbatim is a different question with a
-/// different answer.
+/// accepts pseudonymized personal content accepts the *redacted* derivative,
+/// and the same c1 document sent verbatim is a different question with a
+/// different answer. The tier names are `libs/inference`'s and stay as they are
+/// (Q26); they are not class names.
 pub fn tier_allows(
     tier: Option<&str>,
     original_data_class: &str,
     derivative_data_class: &str,
     transformation: &str,
 ) -> bool {
-    if original_data_class == "vault" {
+    if matches!(original_data_class, "c2" | "c3") {
         return false;
     }
-    let public_derivative = original_data_class == "public"
-        && derivative_data_class == "public"
+    let public_derivative = original_data_class == "c0"
+        && derivative_data_class == "c0"
         && transformation == PASSTHROUGH_VERSION;
     match tier {
         Some("public") => public_derivative,
         Some("pseudonymized_personal") => {
             public_derivative
-                || (original_data_class == "personal"
-                    && derivative_data_class == "personal"
+                || (original_data_class == "c1"
+                    && derivative_data_class == "c1"
                     && transformation == REDACTION_VERSION)
         }
         _ => false,
@@ -122,10 +132,9 @@ pub fn tier_allows(
 /// it once means neither of them spells out the passthrough argument itself, and
 /// there is one place to read to know what "verbatim" is allowed to mean.
 ///
-/// The answer is `public` on a declared tier and nothing else. `personal` has a
-/// cloud lane, but it runs through [`prepare`] and the redaction transformation;
-/// a personal item handed over unchanged is a different question with a
-/// different answer.
+/// The answer is `c0` on a declared tier and nothing else. `c1` has a cloud
+/// lane, but it runs through [`prepare`] and the redaction transformation; a c1
+/// item handed over unchanged is a different question with a different answer.
 pub fn verbatim_send_allowed(cloud_data_tier: Option<&str>, data_class: &str) -> bool {
     tier_allows(cloud_data_tier, data_class, data_class, PASSTHROUGH_VERSION)
 }
@@ -152,29 +161,33 @@ pub struct CloudDerivativePreview {
 
 /// Build the reviewable, hashable derivative for one stored item.
 ///
-/// `Err(VaultRefused)` for `vault`: there is no representation of Private
-/// content this module is willing to hand to an approval flow, so the refusal
-/// is the return type rather than a flag on an object that already exists. The
-/// redaction path below therefore only ever describes `personal` — `vault` used
-/// to fall through it and produce a fully approvable preview whose only
-/// protection was that three separate later call sites remembered to look at
-/// `original_data_class` again.
-pub fn prepare(input: &CloudDocumentInput) -> Result<CloudDerivativePreview, VaultRefused> {
-    if input.data_class == "vault" {
-        return Err(VaultRefused);
+/// `Err(LocalOnlyRefused)` for everything that is not `c0` or `c1`: there is no
+/// representation of `c2` or `c3` this module is willing to hand to an approval
+/// flow, so the refusal is the return type rather than a flag on an object that
+/// already exists. The redaction path below therefore only ever describes `c1`
+/// — the local-only classes used to fall through it and produce a fully
+/// approvable preview whose only protection was that three separate later call
+/// sites remembered to look at `original_data_class` again.
+///
+/// Stated as the complement of the two admitted classes rather than as a list
+/// of the two refused ones, so an unrecognized value is refused instead of
+/// admitted. Every other unknown-class decision in the contract already fails
+/// closed — `class_rank` answers `None`, `processing_policy` answers c3's
+/// policy, `DataClass::new` labels it Secret, `tier_allows` answers false — and
+/// a gate that fails open is the one that has to be right about a vocabulary
+/// that changed once already.
+pub fn prepare(input: &CloudDocumentInput) -> Result<CloudDerivativePreview, LocalOnlyRefused> {
+    if !matches!(input.data_class.as_str(), "c0" | "c1") {
+        return Err(LocalOnlyRefused);
     }
     let source_revision = source_revision(input);
-    let needs_redaction = input.data_class != "public";
+    let needs_redaction = input.data_class != "c0";
     let transformation = if needs_redaction {
         REDACTION_VERSION
     } else {
         PASSTHROUGH_VERSION
     };
-    let derivative_data_class = if needs_redaction {
-        "personal"
-    } else {
-        "public"
-    };
+    let derivative_data_class = if needs_redaction { "c1" } else { "c0" };
 
     let mut redactions = Vec::new();
     let mut sections = Vec::new();
@@ -556,9 +569,9 @@ mod tests {
     }
 
     #[test]
-    fn personal_preview_redacts_obvious_identifiers_without_provider_calls() {
-        let preview = prepare(&input("personal")).unwrap();
-        assert_eq!(preview.derivative_data_class, "personal");
+    fn a_c1_preview_redacts_obvious_identifiers_without_provider_calls() {
+        let preview = prepare(&input("c1")).unwrap();
+        assert_eq!(preview.derivative_data_class, "c1");
         assert_eq!(preview.transformation, REDACTION_VERSION);
         assert!(preview.document.contains("[identity removed]"));
         assert!(preview.document.contains("[number]"));
@@ -574,9 +587,9 @@ mod tests {
     }
 
     #[test]
-    fn public_preview_is_bounded_but_not_pseudonymized() {
-        let preview = prepare(&input("public")).unwrap();
-        assert_eq!(preview.derivative_data_class, "public");
+    fn a_c0_preview_is_bounded_but_not_pseudonymized() {
+        let preview = prepare(&input("c0")).unwrap();
+        assert_eq!(preview.derivative_data_class, "c0");
         assert_eq!(preview.transformation, PASSTHROUGH_VERSION);
         assert!(preview.document.contains("alice@example.com"));
         assert_eq!(preview.redaction_count, 0);
@@ -586,8 +599,8 @@ mod tests {
 
     #[test]
     fn preview_hash_changes_with_the_source() {
-        let first = prepare(&input("personal")).unwrap();
-        let mut changed = input("personal");
+        let first = prepare(&input("c1")).unwrap();
+        let mut changed = input("c1");
         changed.content = Some("different".into());
         let second = prepare(&changed).unwrap();
         assert_ne!(first.source_revision, second.source_revision);
@@ -596,7 +609,7 @@ mod tests {
 
     #[test]
     fn local_entity_detection_reports_people_phone_and_financial_identifiers() {
-        let mut value = input("personal");
+        let mut value = input("c1");
         value.content =
             Some("Hello Alice Example, call +49-170-1234567 or use DE89370400440532013000.".into());
 
@@ -625,7 +638,7 @@ mod tests {
             "Thanks for signing up. My name is Josh, one of the co-founders.",
             "Thanks for signing up. This is Josh, one of the co-founders.",
         ] {
-            let mut value = input("personal");
+            let mut value = input("c1");
             value.content = Some(phrasing.into());
             let preview = prepare(&value).unwrap();
             assert!(
@@ -642,7 +655,7 @@ mod tests {
     /// higher of the two; this rule must not spend that.
     #[test]
     fn the_german_preposition_im_is_not_a_self_introduction() {
-        let mut value = input("personal");
+        let mut value = input("c1");
         value.content = Some("Die Unterlagen finden Sie im Anhang dieser Nachricht.".into());
 
         let preview = prepare(&value).unwrap();
@@ -655,7 +668,7 @@ mod tests {
     /// its owner as surely as the name on the account.
     #[test]
     fn a_login_handle_after_a_salutation_is_a_person() {
-        let mut value = input("personal");
+        let mut value = input("c1");
         value.content = Some("Hallo labo2764, wir haben eine neue Login-Aktivitaet.".into());
 
         let preview = prepare(&value).unwrap();
@@ -671,7 +684,7 @@ mod tests {
     /// Presidio trial rejected a whole Python runtime for.
     #[test]
     fn a_handle_shaped_word_with_no_cue_before_it_stays() {
-        let mut value = input("personal");
+        let mut value = input("c1");
         value.content = Some("Your order for the iPhone15 ships on Tuesday.".into());
 
         let preview = prepare(&value).unwrap();
@@ -682,7 +695,7 @@ mod tests {
     /// organisation they are from, mid-sentence, with no cue in front.
     #[test]
     fn a_person_named_as_being_from_an_organisation_is_redacted() {
-        let mut value = input("personal");
+        let mut value = input("c1");
         value.content = Some("A workshop co-hosted by Rayn from Scriptbee this Thursday.".into());
 
         let preview = prepare(&value).unwrap();
@@ -694,7 +707,7 @@ mod tests {
     /// lowercase word is the ordinary preposition and must cost nothing.
     #[test]
     fn from_followed_by_a_common_noun_is_not_an_apposition() {
-        let mut value = input("personal");
+        let mut value = input("c1");
         value.content = Some("Download the report from our website before Friday.".into());
 
         let preview = prepare(&value).unwrap();
@@ -703,92 +716,97 @@ mod tests {
             .contains("Download the report from our website"));
     }
 
-    /// This test used to prepare a `vault` document and assert on the redacted
-    /// preview it got back. That preview was a real, hashable, approvable
-    /// object carrying the document itself; only the fact that three later call
-    /// sites re-checked `original_data_class` kept it out of a cloud request.
-    /// The refusal is the return type now, so there is nothing to approve.
+    /// This test used to prepare a local-only document and assert on the
+    /// redacted preview it got back. That preview was a real, hashable,
+    /// approvable object carrying the document itself; only the fact that three
+    /// later call sites re-checked `original_data_class` kept it out of a cloud
+    /// request. The refusal is the return type now, so there is nothing to
+    /// approve — for c3, and for c2 as well since Q27 split them.
     #[test]
-    fn vault_content_has_no_approvable_preview_at_all() {
-        assert_eq!(prepare(&input("vault")), Err(VaultRefused));
+    fn local_only_content_has_no_approvable_preview_at_all() {
+        for class in ["c2", "c3"] {
+            assert_eq!(prepare(&input(class)), Err(LocalOnlyRefused));
+        }
 
-        let mut with_secrets = input("vault");
+        let mut with_secrets = input("c3");
         with_secrets.content =
             Some("Hello Alice Example, call +49-170-1234567 or use DE89370400440532013000.".into());
-        assert_eq!(prepare(&with_secrets), Err(VaultRefused));
+        assert_eq!(prepare(&with_secrets), Err(LocalOnlyRefused));
+    }
+
+    /// The gate is stated as "c0 or c1, else refuse", so a value from outside
+    /// the vocabulary is refused too. This is the case a positive `c2 | c3`
+    /// match got wrong: the class arrives as a stored string, and the previous
+    /// vocabulary is still readable in backups, in a stale queued job and in
+    /// any caller written against it.
+    #[test]
+    fn a_class_from_outside_the_vocabulary_is_refused_rather_than_prepared() {
+        for unknown in ["vault", "personal", "private", "C1", "", "c4"] {
+            assert_eq!(
+                prepare(&input(unknown)),
+                Err(LocalOnlyRefused),
+                "{unknown} produced an approvable preview"
+            );
+        }
     }
 
     #[test]
     fn cloud_tiers_accept_only_the_exact_reviewed_representation() {
-        assert!(tier_allows(
-            Some("public"),
-            "public",
-            "public",
-            PASSTHROUGH_VERSION,
-        ));
-        assert!(!tier_allows(
-            Some("public"),
-            "personal",
-            "personal",
-            REDACTION_VERSION,
-        ));
+        assert!(tier_allows(Some("public"), "c0", "c0", PASSTHROUGH_VERSION));
+        assert!(!tier_allows(Some("public"), "c1", "c1", REDACTION_VERSION));
         assert!(tier_allows(
             Some("pseudonymized_personal"),
-            "personal",
-            "personal",
+            "c1",
+            "c1",
             REDACTION_VERSION,
         ));
         assert!(!tier_allows(
             Some("pseudonymized_personal"),
-            "personal",
-            "personal",
+            "c1",
+            "c1",
             PASSTHROUGH_VERSION,
         ));
-        assert!(!tier_allows(
-            Some("pseudonymized_personal"),
-            "vault",
-            "personal",
-            REDACTION_VERSION,
-        ));
+        for local_only in ["c2", "c3"] {
+            assert!(!tier_allows(
+                Some("pseudonymized_personal"),
+                local_only,
+                "c1",
+                REDACTION_VERSION,
+            ));
+        }
     }
 
     /// The property both prefill paths depend on — `digest.rs` and the feed
     /// summary drain in `media.rs` — because both hand the model the item's own
     /// text with nothing removed. No configured tier admits that for anything
-    /// but `public`, and a role with no declared tier admits nothing at all:
-    /// that covers every local role, and every https endpoint somebody points a
+    /// but `c0`, and a role with no declared tier admits nothing at all: that
+    /// covers every local role, and every https endpoint somebody points a
     /// summarization role at without a reviewed cloud policy on it.
     #[test]
-    fn nothing_but_public_may_be_sent_verbatim_and_an_undeclared_tier_sends_nothing() {
+    fn nothing_but_c0_may_be_sent_verbatim_and_an_undeclared_tier_sends_nothing() {
         for tier in [None, Some("public"), Some("pseudonymized_personal")] {
-            for class in ["personal", "vault", "something-new"] {
+            for class in ["c1", "c2", "c3", "something-new"] {
                 assert!(
                     !verbatim_send_allowed(tier, class),
                     "{tier:?} admitted {class} verbatim"
                 );
             }
         }
-        assert!(!verbatim_send_allowed(None, "public"));
-        assert!(verbatim_send_allowed(Some("public"), "public"));
-        assert!(verbatim_send_allowed(
-            Some("pseudonymized_personal"),
-            "public"
-        ));
+        assert!(!verbatim_send_allowed(None, "c0"));
+        assert!(verbatim_send_allowed(Some("public"), "c0"));
+        assert!(verbatim_send_allowed(Some("pseudonymized_personal"), "c0"));
     }
 
-    /// A personal item has a cloud lane, and it is not this one. Worth its own
+    /// A c1 item has a cloud lane, and it is not this one. Worth its own
     /// assertion because the pseudonymized tier's whole purpose is personal
     /// content, and reading the tier name alone would suggest it applies here.
     #[test]
-    fn a_personal_item_reaches_cloud_only_as_a_redacted_derivative() {
-        assert!(!verbatim_send_allowed(
-            Some("pseudonymized_personal"),
-            "personal"
-        ));
+    fn a_c1_item_reaches_cloud_only_as_a_redacted_derivative() {
+        assert!(!verbatim_send_allowed(Some("pseudonymized_personal"), "c1"));
         assert!(tier_allows(
             Some("pseudonymized_personal"),
-            "personal",
-            "personal",
+            "c1",
+            "c1",
             REDACTION_VERSION
         ));
     }

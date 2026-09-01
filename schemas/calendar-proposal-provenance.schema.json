@@ -20,7 +20,7 @@
       },
       "additionalProperties": false
     },
-    "data_class": { "enum": ["public", "personal", "vault"] },
+    "data_class": { "enum": ["c0", "c1", "c2", "c3"] },
     "analysis_schema_version": { "const": "cloud-content-analysis-v1" },
     "importance": { "enum": ["low", "medium", "high"] },
     "importance_rationale": { "type": "string", "minLength": 1, "maxLength": 600 },

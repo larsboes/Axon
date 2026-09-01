@@ -95,7 +95,7 @@ fn luma_event_id(opportunity_id: &str) -> Option<&str> {
 /// anything. Copying the score across produced entries stamped `score: 0.0,
 /// matched_focus: "Scholarship Profile"` — a verdict on an event the operator
 /// had already accepted, rendered from a profile label that turned out to carry
-/// no signal at all. `content-item-v1` now forbids it for `source = calendar`;
+/// no signal at all. `content-item-v2` now forbids it for `source = calendar`;
 /// this is the write side of the same rule. The opportunity id stays, so the
 /// score is one lookup away for anything that genuinely wants it.
 fn evidence_payload(row: &RankedRow, tz: &HomeTimezone, event_route: &EventRoute) -> Value {
@@ -427,7 +427,7 @@ mod tests {
     /// The regression: entries used to arrive stamped `score: 0.0` and
     /// `matched_focus: "Scholarship Profile"` — a judgement of an event the
     /// operator had already put on their calendar, from a profile label that
-    /// carried no signal. `content-item-v1` forbids ranking on a calendar item;
+    /// carried no signal. `content-item-v2` forbids ranking on a calendar item;
     /// this is the write side of the same rule. `row()` deliberately sets all
     /// three fields, so a future re-add fails here.
     #[test]

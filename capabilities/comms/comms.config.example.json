@@ -73,7 +73,7 @@
   ],
 
   "_comment_feed_sources": "General Feed collectors. Omit this field to use the public GitHub Trending daily and recent arXiv AI defaults; set [] to disable all. arxiv.query uses the official arXiv search_query grammar. limit is bounded by each adapter. Personal saved queries belong only in axon-overlay.",
-  "_comment_feed_sources_data_class": "data_class is REQUIRED on every source and has no default: public, personal or vault. It is the declaration every item this collector stores is classified with, and the only way an item becomes public at all. A source you are not sure about is personal — an item nobody declared stays personal and never reaches a cloud provider, which is the intended answer, not a gap.",
+  "_comment_feed_sources_data_class": "data_class is REQUIRED on every source and has no default: c0 (Public), c1 (Mine), c2 (Others) or c3 (Secret). It is the declaration every item this collector stores is classified with, and the only way an item becomes c0 at all. A source you are not sure about is c1 — an item nobody declared stays c1 and never reaches a cloud provider verbatim, which is the intended answer, not a gap.",
   "feed_sources": [
     {
       "id": "github-trending-daily",
@@ -82,7 +82,7 @@
       "language": null,
       "since": "daily",
       "limit": 12,
-      "data_class": "public"
+      "data_class": "c0"
     },
     {
       "id": "arxiv-ai-recent",
@@ -90,7 +90,7 @@
       "enabled": true,
       "query": "cat:cs.AI OR cat:cs.LG OR cat:cs.CL",
       "limit": 12,
-      "data_class": "public"
+      "data_class": "c0"
     }
   ],
 

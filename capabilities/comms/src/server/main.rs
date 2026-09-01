@@ -30,13 +30,14 @@ use comms::evaluation::{self, EvaluationFactor, FeedEvaluation};
 use comms::google::{self, ThreadAction, ThreadLocation};
 use comms::intake;
 use comms::media;
+use comms::people_registry;
 use comms::provenance::StageProvenance;
 use comms::quality;
 use comms::relevance::{self, RelevanceMatch};
 use comms::sources;
 use comms::store::{
-    CloudDerivativeApproval, CloudDerivativeState, CloudQueueRequest, FeedItem, FeedOrigin,
-    FeedRun, GmailActionJob, OriginSummary, Store, TriageItem,
+    ClassWrite, CloudDerivativeApproval, CloudDerivativeState, CloudQueueRequest, FeedItem,
+    FeedOrigin, FeedRun, GmailActionJob, OriginSummary, Store, TriageItem,
 };
 use comms::travel;
 use comms::vault_links;
@@ -76,7 +77,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "GET",
         "/content/:source/:id",
-        "An item as content-item-v1. :source is feed or mail.",
+        "An item as content-item-v2. :source is feed or mail.",
     ),
     r(
         "POST",
@@ -227,7 +228,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "POST",
         "/triage/redact",
-        "Redact stored review fields of Private mail already persisted.",
+        "Redact stored review fields of c2 and c3 mail already persisted.",
     ),
     r(
         "POST",
@@ -574,7 +575,7 @@ mod tests {
             ("/triage/reconcile", json!({})),
             (
                 "/triage/18f17d0a9bc123ef/data-class",
-                json!({ "data_class": "vault" }),
+                json!({ "data_class": "c3" }),
             ),
             (
                 "/triage/bulk",
@@ -582,7 +583,7 @@ mod tests {
             ),
             (
                 "/feed/0123456789abcdef/data-class",
-                json!({ "data_class": "public" }),
+                json!({ "data_class": "c0" }),
             ),
         ] {
             let response = client
@@ -615,7 +616,7 @@ mod tests {
             body["error"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("public, personal, vault"),
+                .contains("c0, c1, c2, c3"),
             "the refusal names the vocabulary, got: {body}"
         );
     }
@@ -661,10 +662,10 @@ mod tests {
             rationale: "Safe fallback.".into(),
             classification_method: content_item::METHOD_DETERMINISTIC.into(),
             classification_version: "mail-rules-v1".into(),
-            data_class: "personal".into(),
-            data_class_rationale: "Mail metadata is Personal by default.".into(),
+            data_class: "c1".into(),
+            data_class_rationale: "Mail metadata is Mine by default.".into(),
             data_classification_method: content_item::METHOD_DETERMINISTIC.into(),
-            data_classification_version: "data-class-rules-v1".into(),
+            data_classification_version: content_item::MAIL_CLASSIFIER_VERSION.into(),
             status: "proposed".into(),
             gmail_action: None,
             gmail_action_at: None,
@@ -681,12 +682,12 @@ mod tests {
         };
 
         let value = serde_json::to_value(ContentItemOut::from_mail(item, Vec::new())).unwrap();
-        assert_eq!(value["schema_version"], "content-item-v1");
+        assert_eq!(value["schema_version"], "content-item-v2");
         assert_eq!(value["source"], "mail");
         assert_eq!(value["kind"], "mail");
         assert_eq!(value["content_label"], "Message preview");
         assert_eq!(value["content_status"], "thin");
-        assert_eq!(value["data_class"]["value"], "personal");
+        assert_eq!(value["data_class"]["value"], "c1");
         assert_eq!(
             value["processing_policy"]["cloud_handling"],
             "pseudonymization_required"

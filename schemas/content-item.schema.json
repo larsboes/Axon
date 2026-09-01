@@ -32,7 +32,7 @@
     "calendar"
   ],
   "properties": {
-    "schema_version": { "const": "content-item-v1" },
+    "schema_version": { "const": "content-item-v2" },
     "source": { "enum": ["feed", "mail", "calendar"] },
     "id": { "type": "string", "minLength": 1 },
     "kind": { "type": "string", "minLength": 1 },
@@ -98,11 +98,11 @@
   "$defs": {
     "dataClass": {
       "type": "object",
-      "description": "Stored trust classification. The vault value is labelled Private in the product. An item that never had a class declared for it reads back as personal/legacy — the fail-closed default, not an absent field.",
+      "description": "Stored trust classification, ranked by how exposed the content is: c0 Public (published work) < c1 Mine (the operator's own notes, plans, drafts) < c2 Others (facts about named people — health, money, relationships, addresses) < c3 Secret (credentials, tokens, keys, recovery codes). The literal is what a row stores; the label is the word the product uses. An item that never had a class declared for it reads back as c1/legacy — the fail-closed default, not an absent field.",
       "required": ["value", "label", "rationale", "method", "version"],
       "properties": {
-        "value": { "enum": ["public", "personal", "vault"] },
-        "label": { "enum": ["Public", "Personal", "Private"] },
+        "value": { "enum": ["c0", "c1", "c2", "c3"] },
+        "label": { "enum": ["Public", "Mine", "Others", "Secret"] },
         "rationale": { "type": "string", "minLength": 1 },
         "method": { "$ref": "#/$defs/classificationMethod" },
         "version": { "type": "string", "minLength": 1 }
@@ -118,7 +118,7 @@
       "description": "Derived permission boundary; it records eligibility and never proves that pseudonymization occurred.",
       "required": ["local_processing", "cloud_handling", "pseudonymization_required", "rationale"],
       "properties": {
-        "local_processing": { "const": "allowed" },
+        "local_processing": { "enum": ["allowed", "blocked"] },
         "cloud_handling": { "enum": ["eligible", "pseudonymization_required", "blocked"] },
         "pseudonymization_required": { "type": "boolean" },
         "rationale": { "type": "string", "minLength": 1 }
@@ -269,7 +269,7 @@
         "redactions": {
           "type": "integer",
           "minimum": 0,
-          "description": "Entities the deterministic redactor removed before this text was written. Non-zero only for Private content, where a digest could otherwise republish what the subject line was redacted for."
+          "description": "Entities the deterministic redactor removed before this text was written. Non-zero only for c2 and c3 content, where a digest could otherwise republish what the subject line was redacted for."
         },
         "attempts": { "type": "integer", "minimum": 0 },
         "last_error": { "type": ["string", "null"] },

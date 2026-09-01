@@ -29,11 +29,8 @@ impl Store {
         if !crate::content_item::valid(&approval.original_data_class) {
             return Err("cloud derivative has an invalid original data class".into());
         }
-        if !matches!(
-            approval.derivative_data_class.as_str(),
-            "public" | "personal"
-        ) {
-            return Err("cloud derivative must be Public or Personal".into());
+        if !matches!(approval.derivative_data_class.as_str(), "c0" | "c1") {
+            return Err("derivative data class must be one of: c0, c1".into());
         }
 
         let conn = self.conn()?;

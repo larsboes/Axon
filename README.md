@@ -351,9 +351,23 @@ none exists today.
 
 ### Data classes
 
-The data classes are `public`, `personal` and `vault`. Vault-class content is processed only by
-local models, enforced by the inference router. Data may select an allow-listed behavior but may
-not become executable code.
+The data classes are `c0` Public, `c1` Mine, `c2` Others, `c3` Secret, ranked in that order. `c0`
+and `c1` may reach a cloud model (`c1` only as a redacted derivative); `c2` and `c3` redact before
+persistence and never reach a cloud model.
+
+Enforced today, mechanically, on three independent gates: `cloud_derivative::prepare` builds no
+approvable preview for anything that is not `c0` or `c1`, `cloud_derivative::tier_allows` refuses
+the dispatch, and the `comms_content_cloud_derivatives` CHECK constraint refuses the row. A class
+outside the vocabulary is refused by all three.
+
+`c3` is additionally declared blocked from every local prompt — `processing_policy("c3")` returns
+`local_processing: "blocked"` and the dashboard shows it. That is a **declared policy, not yet a
+mechanical gate**: no local call site reads the field, so today a `c3` row's stored text can still
+reach the loopback model through the digest path. The gate that will enforce it is the T3 refusing
+library in `libs/inference`, tracked as B2. Do not describe the inference router as enforcing this
+until that lands.
+
+Data may select an allow-listed behavior but may not become executable code.
 
 ### Backups before migrations
 

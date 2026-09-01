@@ -63,7 +63,7 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
   let mailCategory = $state<MailCategory>("aktiv");
-  let selectedDataClass = $state<DataClass>("personal");
+  let selectedDataClass = $state<DataClass>("c1");
   let confirmingGmailAction = $state<GmailAction | null>(null);
   let cloudPreview = $state<CloudDerivativePreview | null>(null);
   let preparingCloudPreview = $state(false);
@@ -166,7 +166,7 @@
       case "skipped_short":
         return "Too short to be worth a digest — the source is already the summary. Press More detail to force one.";
       case "remote_refused":
-        return "This item is Personal or Private and the configured model is not local, so nothing was sent.";
+        return "This item is not Public and the configured model is not local, so nothing was sent.";
       case "unconfigured":
         return "No summarization model is configured on this machine.";
       case "timeout":
@@ -633,9 +633,11 @@
     }
   }
 
-  function dataClassLabel(value: DataClass | "personal" | "public"): string {
-    if (value === "vault") return "Private";
-    return value === "personal" ? "Personal" : "Public";
+  function dataClassLabel(value: DataClass): string {
+    if (value === "c3") return "Secret";
+    if (value === "c2") return "Others";
+    if (value === "c1") return "Mine";
+    return "Public";
   }
 
   function lifecycleDate(value: string | null): string {
@@ -1098,8 +1100,8 @@
             <p class="digest-redactions">
               {entry.digest.redactions}
               {entry.digest.redactions === 1 ? "entity was" : "entities were"} redacted before this
-              was stored — this item is Private, and a digest must not republish what the sweep
-              removed.
+              was stored — this item's class requires redaction, and a digest must not republish
+              what the sweep removed.
             </p>
           {/if}
 
@@ -1301,9 +1303,10 @@
                 disabled={busy}
                 onchange={() => void setDataClass(selectedDataClass)}
               >
-                <option value="public">Public</option>
-                <option value="personal">Personal</option>
-                <option value="vault">Private</option>
+                <option value="c0">Public</option>
+                <option value="c1">Mine</option>
+                <option value="c2">Others</option>
+                <option value="c3">Secret</option>
               </select>
             </label>
           {:else}
@@ -1341,7 +1344,7 @@
             </span>
           </div>
           <p class="cloud-explanation">
-            {entry.data_class.value === "public"
+            {entry.data_class.value === "c0"
               ? "Build a bounded copy and inspect it before a cloud task can use it."
               : "Redact obvious identifiers locally, then inspect the exact derivative before approval."}
           </p>

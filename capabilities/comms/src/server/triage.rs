@@ -36,6 +36,19 @@ pub(super) struct TriageSweepBody {
     cursor: Option<String>,
 }
 
+/// The people registry's state, as a receipt reports it.
+///
+/// One function because two receipts state it — the manual refresh and the
+/// sweep — and a reader comparing the two must not have to work out whether
+/// "absent" and "not loaded" are the same word for the same thing.
+fn people_registry_receipt() -> (&'static str, usize) {
+    match people_registry::state() {
+        people_registry::State::Loaded(names) => ("loaded", names),
+        people_registry::State::Absent => ("absent", 0),
+        people_registry::State::Unreadable => ("unreadable", 0),
+    }
+}
+
 /// Counts from one sweep pass. No field here can carry mail content — this is
 /// what both the HTTP response and the unattended schedule's log are built
 /// from, and the schedule writes to a log nobody is watching at the time.
@@ -45,6 +58,15 @@ pub(super) struct SweepOutcome {
     pub(super) new_count: usize,
     pub(super) skipped: usize,
     pub(super) redacted: usize,
+    /// Whether the named-person rule could run at all, and against how many
+    /// names. This is the path that *persists* rows, so a pass run with the
+    /// overlay unmounted stores the verbatim subject of every mail that names a
+    /// vault-known person and reports the same counts as a pass that simply
+    /// found nobody (Q27 ruling 3, `people_registry::State::Absent`). Stated
+    /// here, in the same words the refresh receipt uses, so the two runs are
+    /// distinguishable afterwards rather than only while somebody is watching.
+    pub(super) people_registry: &'static str,
+    pub(super) people_registry_names: usize,
     next_cursor: Option<String>,
 }
 
@@ -61,11 +83,14 @@ pub(super) fn run_inbox_sweep(
     let token = google::access_token(&cfg.google_env_path).map_err(|error| error.to_string())?;
     let page = google::list_inbox_threads_page(&token, limit, cursor)
         .map_err(|error| error.to_string())?;
+    let (people_registry, people_registry_names) = people_registry_receipt();
     let mut outcome = SweepOutcome {
         fetched: 0,
         new_count: 0,
         skipped: 0,
         redacted: 0,
+        people_registry,
+        people_registry_names,
         next_cursor: page.next_page_token.clone(),
     };
     for stub in &page.threads {
@@ -125,6 +150,12 @@ pub(super) async fn triage_sweep_handler(Json(body): Json<TriageSweepBody>) -> H
             "skipped": outcome.skipped,
             "redacted": outcome.redacted,
             "total_stored": total_stored,
+            // Same shape and same words as the refresh receipt's, because the
+            // question is the same one: did the c2 escalation run blind?
+            "people_registry": {
+                "state": outcome.people_registry,
+                "names": outcome.people_registry_names,
+            },
             "next_cursor": outcome.next_cursor,
             "exhausted": outcome.next_cursor.is_none(),
         }))
@@ -442,7 +473,12 @@ pub(super) async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> Htt
     {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "set-data-class requires public, personal, or vault" })),
+            Json(json!({
+                "error": format!(
+                    "set-data-class requires one of: {}",
+                    content_item::DATA_CLASSES.join(", ")
+                )
+            })),
         );
     }
 
@@ -462,6 +498,10 @@ pub(super) async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> Htt
         };
         let mut succeeded = Vec::new();
         let mut failures = Vec::new();
+        // Rows whose stored subject and snippet this batch narrowed, because
+        // the class it set on them does not admit what they held. Zero for
+        // every other action.
+        let mut narrowed = 0usize;
         for id in ids {
             let known = store
                 .get_triage_status(&id)
@@ -486,7 +526,12 @@ pub(super) async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> Htt
                         rationale.as_deref(),
                     )
                     .map_err(|error| error.to_string())
-                    .map(|updated| updated.then_some(())),
+                    .map(|write| {
+                        if write.narrowed {
+                            narrowed += 1;
+                        }
+                        write.changed.then_some(())
+                    }),
                 // Not queued the way archive and trash are, deliberately.
                 // The queue exists for a mutation with a restore path and a
                 // reconcile story; applying a label has neither. It is
@@ -543,6 +588,7 @@ pub(super) async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> Htt
             "succeeded": succeeded,
             "failures": failures,
             "gmail_changed": gmail_action.is_some(),
+            "narrowed": narrowed,
         }))
     })
     .await;
@@ -631,7 +677,7 @@ pub(super) async fn triage_data_class_handler(
     Path(id): Path<String>,
     Json(body): Json<TriageDataClassBody>,
 ) -> HttpResponse {
-    let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+    let result = tokio::task::spawn_blocking(move || -> Result<ClassWrite, String> {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         store
@@ -641,8 +687,16 @@ pub(super) async fn triage_data_class_handler(
     .await;
 
     match result {
-        Ok(Ok(true)) => (StatusCode::OK, Json(json!({ "ok": true }))),
-        Ok(Ok(false)) => error_response(StatusCode::NOT_FOUND, "not found"),
+        // `narrowed` rather than an assumption either way: selecting Others or
+        // Secret remediates the stored subject and snippet in the same
+        // transaction, and the caller is told whether this row had anything
+        // left to remove. A row swept after the intake gate existed answers
+        // false, and that is a clean row, not a skipped one.
+        Ok(Ok(write)) if write.changed => (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "narrowed": write.narrowed })),
+        ),
+        Ok(Ok(_)) => error_response(StatusCode::NOT_FOUND, "not found"),
         Ok(Err(error)) => error_response(StatusCode::BAD_REQUEST, error),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -785,6 +839,31 @@ pub(super) struct TriageDataClassRefreshBody {
     limit: Option<usize>,
 }
 
+/// Re-derive one row's class and leave the row in the state that class
+/// demands. Returns `(class was rewritten, review fields were narrowed)`.
+///
+/// Both halves, because they are one decision — and one transaction, because
+/// the store owns that. The sweep decides them together in
+/// `intake::from_thread`: classify, then redact before the row is written.
+/// Splitting them here would mean every row this pass raises to `c2` keeps the
+/// verbatim subject `c2` exists to hide until an operator remembers a second
+/// endpoint — and the dashboard prints "Redacted" from the class alone, so the
+/// gap is invisible in the one place a human would look.
+fn refresh_one_triage_class(store: &Store, item: &TriageItem) -> Result<(bool, bool), String> {
+    // The sweep's rule set, registry pass included (Q27), so a row re-derived
+    // here and a row freshly swept land on the same class.
+    let classification = intake::classify_mail(
+        &item.stream,
+        item.from_addr.as_deref().unwrap_or_default(),
+        item.subject.as_deref().unwrap_or_default(),
+        item.snippet.as_deref().unwrap_or_default(),
+    );
+    let write = store
+        .refresh_triage_data_class_and_redact(&item.id, &classification)
+        .map_err(|error| error.to_string())?;
+    Ok((write.changed, write.narrowed))
+}
+
 pub(super) async fn triage_data_class_refresh_handler(
     Json(body): Json<TriageDataClassRefreshBody>,
 ) -> HttpResponse {
@@ -800,30 +879,39 @@ pub(super) async fn triage_data_class_refresh_handler(
             .collect::<Vec<_>>();
         let reviewed = items.len();
         let mut updated = 0usize;
+        let mut redacted = 0usize;
         let mut preserved_human = 0usize;
         for item in items {
             if item.data_classification_method == "human" {
                 preserved_human += 1;
                 continue;
             }
-            let classification = DataClass::classify_mail(
-                &item.stream,
-                item.from_addr.as_deref().unwrap_or_default(),
-                item.subject.as_deref().unwrap_or_default(),
-            );
-            if store
-                .refresh_triage_data_class(&item.id, &classification)
-                .map_err(|error| error.to_string())?
-            {
+            let (reclassified, narrowed) = refresh_one_triage_class(&store, &item)?;
+            if reclassified {
                 updated += 1;
             }
+            if narrowed {
+                redacted += 1;
+            }
         }
+        let (registry_state, registry_names) = people_registry_receipt();
         Ok(json!({
             "reviewed": reviewed,
             "updated": updated,
+            // Rows whose stored subject/snippet this pass narrowed, because the
+            // class they now carry requires it. Reported beside `updated`: the
+            // two counts differ when a row was already strict but never
+            // remediated, and an operator reading only `updated` would see a
+            // quiet run and conclude nothing was exposed.
+            "redacted": redacted,
             "preserved_human": preserved_human,
+            "transformation": cloud_derivative::REDACTION_VERSION,
             "classifier_version": content_item::MAIL_CLASSIFIER_VERSION,
-            "content_inputs": ["sender", "subject", "category"],
+            "content_inputs": ["sender", "subject", "snippet", "category"],
+            "people_registry": {
+                "state": registry_state,
+                "names": registry_names,
+            },
             "provider_calls": 0,
         }))
     })
@@ -1008,5 +1096,130 @@ pub(super) async fn triage_reconcile_handler() -> HttpResponse {
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "task failed" })),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A temp file this test owns. The live store is never opened here: the
+    /// rows below are fixtures, and `refresh_one_triage_class` writes.
+    fn test_store(name: &str) -> Store {
+        let directory =
+            std::env::temp_dir().join(format!("comms-server-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a writable temp directory");
+        let path = directory.join(format!("{name}.db"));
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
+        }
+        Store::open(&path).expect("a store on a path this test owns")
+    }
+
+    fn stored_row(id: &str, subject: &str, snippet: &str) -> TriageItem {
+        TriageItem {
+            id: id.into(),
+            from_addr: Some("security@example.com".into()),
+            subject: Some(subject.into()),
+            snippet: Some(snippet.into()),
+            internal_date_ms: Some(1_754_000_000_000),
+            internal_date_text: None,
+            stream: "aktiv".into(),
+            rationale: "test".into(),
+            classification_method: content_item::METHOD_DETERMINISTIC.into(),
+            classification_version: "mail-rules-v1".into(),
+            // The state this endpoint has to repair: a row stored before the
+            // intake gate existed, holding its subject verbatim.
+            data_class: "c1".into(),
+            data_class_rationale: "Mail metadata is Mine by default.".into(),
+            data_classification_method: content_item::METHOD_DETERMINISTIC.into(),
+            data_classification_version: "data-class-rules-v1".into(),
+            status: "proposed".into(),
+            gmail_action: None,
+            gmail_action_at: None,
+            purge_after: None,
+            gmail_location: None,
+            gmail_observed_at: None,
+            gmail_sync_status: None,
+            gmail_sync_action: None,
+            gmail_sync_error: None,
+            waiting: false,
+            waiting_since: None,
+            first_seen: String::new(),
+            last_seen: String::new(),
+        }
+    }
+
+    /// The receipt's `redacted` count is not decoration: a class raised to c3
+    /// and the narrowing that class demands happen in the same pass, so no
+    /// stored row is left labelled Redacted while still holding the code.
+    ///
+    /// The one-time-code rule is used rather than the named-person rule
+    /// deliberately — it reads no registry, so the outcome is a property of the
+    /// classifier and not of the machine's contact list.
+    #[test]
+    fn a_refresh_that_raises_a_class_redacts_in_the_same_pass() {
+        let store = test_store("data_class_refresh_redacts");
+        let item = stored_row(
+            "thread:code",
+            "Your verification code is 448215",
+            "Use 448215 to sign in",
+        );
+        store.upsert_triage(&item).expect("the fixture row stores");
+
+        let (reclassified, narrowed) =
+            refresh_one_triage_class(&store, &item).expect("the pass completes");
+        assert!(reclassified, "the code rule raises this row");
+        assert!(narrowed, "and the same pass narrows it");
+
+        let row = store
+            .get_triage("thread:code")
+            .expect("readable")
+            .expect("still there");
+        assert_eq!(row.data_class, "c3");
+        let subject = row.subject.clone().unwrap();
+        let snippet = row.snippet.clone().unwrap();
+        assert!(!subject.contains("448215"), "the code survived: {subject}");
+        assert!(!snippet.contains("448215"), "the code survived: {snippet}");
+        assert!(subject.contains("[number]"));
+    }
+
+    /// Running it twice reports zero narrowed rows the second time, which is
+    /// how an operator knows the first pass finished rather than half-ran.
+    #[test]
+    fn a_second_refresh_pass_has_nothing_left_to_narrow() {
+        let store = test_store("data_class_refresh_idempotent");
+        let item = stored_row(
+            "thread:code",
+            "Your verification code is 448215",
+            "Use 448215 to sign in",
+        );
+        store.upsert_triage(&item).expect("the fixture row stores");
+        refresh_one_triage_class(&store, &item).expect("the first pass completes");
+
+        let stored = store
+            .get_triage("thread:code")
+            .expect("readable")
+            .expect("still there");
+        let (_, narrowed) =
+            refresh_one_triage_class(&store, &stored).expect("the second pass completes");
+        assert!(!narrowed, "a second pass must find nothing to remove");
+    }
+
+    /// Redaction stays scoped by class. A c1 row keeps its readable subject, or
+    /// the review list stops being reviewable — which is its own safety failure.
+    #[test]
+    fn a_refresh_leaves_an_ordinary_row_readable() {
+        let store = test_store("data_class_refresh_verbatim");
+        let item = stored_row("thread:lunch", "Lunch on Tuesday?", "Half twelve as usual");
+        store.upsert_triage(&item).expect("the fixture row stores");
+
+        let (_, narrowed) = refresh_one_triage_class(&store, &item).expect("the pass completes");
+        assert!(!narrowed);
+        let row = store
+            .get_triage("thread:lunch")
+            .expect("readable")
+            .expect("still there");
+        assert_eq!(row.subject.as_deref(), Some("Lunch on Tuesday?"));
     }
 }

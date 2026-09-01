@@ -1558,7 +1558,7 @@ export function contentItem(source: ContentSource, id: string, signal?: AbortSig
     signal ? { signal } : undefined,
   );
 }
-export type DataClass = 'public' | 'personal' | 'vault';
+export type DataClass = 'c0' | 'c1' | 'c2' | 'c3';
 
 /** Who decided, ascending. `legacy` means nobody did — a row from before its
  * table had a class, or an item no collector declared anything about. */
@@ -1566,14 +1566,14 @@ export type ClassificationMethod = 'legacy' | 'deterministic' | 'model' | 'human
 
 export interface ContentDataClass {
   value: DataClass;
-  label: 'Public' | 'Personal' | 'Private';
+  label: 'Public' | 'Mine' | 'Others' | 'Secret';
   rationale: string;
   method: ClassificationMethod;
   version: string;
 }
 
 export interface ContentProcessingPolicy {
-  local_processing: 'allowed';
+  local_processing: 'allowed' | 'blocked';
   cloud_handling: 'eligible' | 'pseudonymization_required' | 'blocked';
   pseudonymization_required: boolean;
   rationale: string;
@@ -1651,7 +1651,7 @@ export interface CloudDerivativePreview {
   source_revision: string;
   preview_hash: string;
   original_data_class: DataClass;
-  derivative_data_class: 'public' | 'personal';
+  derivative_data_class: 'c0' | 'c1';
   transformation: 'bounded-public-v1' | 'deterministic-entity-redaction-v3';
   document: string;
   redaction_count: number;
@@ -1685,7 +1685,7 @@ export interface MailContentExtension {
 
 /** Versioned reader contract shared by Feed sources and mail proposals. */
 export interface ContentItemDetail {
-  schema_version: 'content-item-v1';
+  schema_version: 'content-item-v2';
   source: ContentSource;
   id: string;
   /** The source's own type discriminator, not a shared enum — a feed article is
