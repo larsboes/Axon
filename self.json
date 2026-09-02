@@ -30,8 +30,8 @@
       "name": "axon",
       "kind": "pack",
       "code": {
-        "files": 16,
-        "nodes": 66
+        "files": 13,
+        "nodes": 46
       }
     },
     {
@@ -122,7 +122,7 @@
       },
       "code": {
         "files": 75,
-        "nodes": 1191
+        "nodes": 1268
       }
     },
     {
@@ -130,7 +130,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 54
+        "nodes": 69
       }
     },
     {
@@ -153,7 +153,7 @@
       },
       "code": {
         "files": 103,
-        "nodes": 600
+        "nodes": 627
       }
     },
     {
@@ -230,6 +230,14 @@
       }
     },
     {
+      "name": "host-net",
+      "kind": "capability",
+      "code": {
+        "files": 10,
+        "nodes": 108
+      }
+    },
+    {
       "name": "host-watch",
       "kind": "capability",
       "service": {
@@ -256,6 +264,10 @@
         "kind": "process",
         "requires": [],
         "port": "8092"
+      },
+      "code": {
+        "files": 31,
+        "nodes": 536
       }
     },
     {
@@ -355,7 +367,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 211
+        "nodes": 223
       }
     },
     {
@@ -384,7 +396,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 22
+        "nodes": 24
       }
     },
     {
@@ -392,7 +404,7 @@
       "kind": "spine",
       "code": {
         "files": 5,
-        "nodes": 1032
+        "nodes": 1040
       }
     },
     {
@@ -405,7 +417,7 @@
       },
       "code": {
         "files": 30,
-        "nodes": 525
+        "nodes": 526
       }
     },
     {
@@ -481,7 +493,7 @@
       "kind": "spine",
       "code": {
         "files": 134,
-        "nodes": 1115
+        "nodes": 1119
       }
     },
     {
@@ -810,6 +822,16 @@
       ],
       "evidence": [
         "capabilities/finance/Cargo.toml"
+      ]
+    },
+    {
+      "from": "host-net",
+      "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/host-net/Cargo.toml"
       ]
     },
     {
@@ -1627,8 +1649,8 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 10583,
-    "external": 10,
+    "nodes": 11571,
+    "external": 73,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
