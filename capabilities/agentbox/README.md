@@ -34,7 +34,7 @@ process can touch, and whether you can show it.
   VM: that VM is the boundary between a container and macOS, and namespaces plus cgroups are the
   boundary between one container and the next. This capability was adopted for a stronger
   sentence — `apple/container` gave each container its own VM — and that sentence stopped being
-  true here on 2026-09-02 (Q_CONTAINER). It is written this way rather than dropped, because a
+  true here on 2026-09-02 (Q75). It is written this way rather than dropped, because a
   claim that quietly weakens is worse than one that says what it is worth.
 - **`--network none` is the whole egress control, and it takes the model with it.** Docker offers
   no state between "no interface" and "the default bridge, which reaches the internet and the
@@ -112,7 +112,7 @@ box. What changed on 2026-09-02 is only how the box reaches across it.
   sandbox needs a running gateway: a second service to operate and audit for a box that a
   closed network and two mounts already contain.
 - **`apple/container`** — what this capability was built on until 2026-09-02, and the reason its
-  first security sentence was *each container is its own VM*. Retired by Q_CONTAINER: one
+  first security sentence was *each container is its own VM*. Retired by Q75: one
   container runtime on this machine instead of two, on a machine where no enabled capability was
   container-backed at all. What the retirement costs is stated in "The pieces" and in the Verdict
   above, not buried here. `upstreams.toml [apple-container]` holds the dated verdict and the pin
@@ -218,7 +218,7 @@ What it enforces:
 | published GHSAs against the version | **not checked — yours to do** | see below |
 
 There was a separate `agentbox gate` verb, and a cooldown on how old the release was, until
-2026-09-02. Q_AUDIT removed the adoption hold (README.md#patch-first), and with it gone the verb
+2026-09-02. Q74 removed the adoption hold (README.md#patch-first), and with it gone the verb
 refused nothing at all — it resolved a repository, printed two lines and returned 0. It is
 deleted rather than kept, because a step that cannot say no is how a green line comes to read as
 a passed check. What remains is the sha256, which was never in the gate, and the printed
@@ -260,7 +260,7 @@ nothing was serving the model on this machine that day.
 **`--internal` is in the table to close the obvious question.** It is the shape that looks like
 apple-container's host-only network and is not one: it blocks egress *and* the host, so column
 two buys nothing over column one except a NIC and a resolver the box can talk to. Docker has
-nothing between column one and column three, and that gap is the whole of what Q_CONTAINER traded
+nothing between column one and column three, and that gap is the whole of what Q75 traded
 away.
 
 Two smaller findings from the same afternoon. The fast DNS failures are a property of the image,

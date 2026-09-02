@@ -6,7 +6,7 @@
 # reason only: service-runner.sh's apple-container branch prefixed `docker.io/`
 # unconditionally, so a ghcr reference became docker.io/ghcr.io/… and the field could not name
 # any other registry. That branch was made conditional on 2026-07-26 and deleted outright on
-# 2026-09-02 with apple-container itself (Q_CONTAINER) — service-runner.sh now passes the
+# 2026-09-02 with apple-container itself (Q75) — service-runner.sh now passes the
 # reference through as written. The pin below is unaffected either way: it names the artifact
 # that actually runs rather than a mirror of it.
 name         = "homeassistant"

@@ -1967,7 +1967,7 @@ const CHECKS: Check[] = [
 
   // There was an "Accepted-finding policies" check here until 2026-09-02. It delegated to
   // `tools/audit --expiry`, which read osv-scanner.toml's ignoreUntil dates and warned before
-  // one lapsed. Q_AUDIT deleted the flag and the clock behind it: osv-scanner enforces those
+  // one lapsed. Q74 deleted the flag and the clock behind it: osv-scanner enforces those
   // dates itself and names a lapsed entry under "unused ignores", so the pre-warning was the
   // only thing Axon added and the only thing lost. The notice now arrives on the day, from
   // the scanner, on the next push or the next weekly security.yml run.

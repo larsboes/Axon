@@ -235,7 +235,7 @@ seen="$(inference_backend_seen)"
 [ "$seen" = "<unset>" ] \
   || fail "a machine declaring no [inference] backend still exported one (saw '$seen')"
 
-# The runtime gate that stood here until 2026-09-02 (Q_CONTAINER) guarded #125: a dead
+# The runtime gate that stood here until 2026-09-02 (Q75) guarded #125: a dead
 # apple-container apiserver aborted start_service before ensure_runtime could revive it, so a
 # Mac whose apiserver went down never came back on its own. Both the gate and the runtime are
 # gone, and the failure has no mechanism left -- docker and podman daemons own their own

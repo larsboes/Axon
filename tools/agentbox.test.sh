@@ -1,6 +1,6 @@
 #!/bin/bash
 # Tests for capabilities/agentbox/agentbox — the runtime gate, and the two network modes it
-# ships since Q_CONTAINER (2026-09-02).
+# ships since Q75 (2026-09-02).
 #
 # The capability had no test file at all until then. It was defended by a table in its README,
 # which is a record of one afternoon and not a check: the isolation claim moved from

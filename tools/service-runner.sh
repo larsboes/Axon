@@ -302,7 +302,7 @@ else
   for p in ${PORTS[@]+"${PORTS[@]}"}; do CONTAINER_ARGS+=(-p "$p"); done
 fi
 # The `managed_volume = "true"` field and the runtime volume it created stood here until
-# 2026-09-02 (Q_CONTAINER). It existed for exactly one runtime property — apple-container's
+# 2026-09-02 (Q75). It existed for exactly one runtime property — apple-container's
 # virtiofs bind mounts refused guest-side chown/chmod — and docker and podman share the host
 # filesystem with real Unix ownership, so with apple-container gone the field had nothing
 # left to do. Its only consumer, postgres, retired on 2026-08-27 (PRD Q45). The PARSE is
@@ -694,7 +694,7 @@ status_process() {
   printf '  %-14s %-9s %-22s %s\n' "$CAP" "process" "$state" "$health"
 }
 
-# ensure_runtime() and qualified_image() stood here until 2026-09-02 (Q_CONTAINER). Both
+# ensure_runtime() and qualified_image() stood here until 2026-09-02 (Q75). Both
 # existed for apple-container alone. ensure_runtime revived its apiserver, a launchd XPC
 # service that a reboot left neither running nor registered; docker and podman daemons own
 # their own lifecycle (OrbStack, Docker Desktop, systemd) and are deliberately not managed
@@ -713,7 +713,7 @@ status_process() {
 # There was a third step here, ensure_runtime, ordered between these two because
 # container_init issued the process's first runtime CLI call and a dead apple-container
 # apiserver killed the run before the recovery could fire (#125). It retired with that
-# runtime on 2026-09-02 (Q_CONTAINER); container_init now issues no runtime call at all.
+# runtime on 2026-09-02 (Q75); container_init now issues no runtime call at all.
 CONTAINER_READY=0
 container_prepare() {
   if [ "$CONTAINER_READY" -eq 1 ]; then return 0; fi
@@ -913,7 +913,7 @@ persistence_applicable() {
       # A container capability never gets a supervisor unit: both remaining runtimes restart
       # it themselves (`--restart unless-stopped`, start_service above), and a unit calling
       # `start` every 30s would fight the runtime. This branched on the runtime until
-      # 2026-09-02 (Q_CONTAINER), because apple-container had no restart policy and was the
+      # 2026-09-02 (Q75), because apple-container had no restart policy and was the
       # one case where a container did need a watchdog.
       if [ "$KIND" = container ]; then
         echo "$AXON_CONTAINER_RUNTIME restarts it natively (--restart unless-stopped) — no watchdog needed"

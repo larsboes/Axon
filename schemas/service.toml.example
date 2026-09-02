@@ -83,7 +83,7 @@ env_file = "config/example.env"           # relative to the selected overlay; re
 # inline comment (toml_array contract).
 # cap_add = ["NET_ADMIN"]
 
-# `managed_volume = "true"` stood here until 2026-09-02, when Q_CONTAINER retired it with
+# `managed_volume = "true"` stood here until 2026-09-02, when Q75 retired it with
 # apple-container. It existed for exactly one runtime property — apple-container's virtiofs
 # bind mounts refused guest-side chown/chmod — and docker and podman share the host filesystem
 # with real Unix ownership, so the field had nothing left to do. No manifest had declared it

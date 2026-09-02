@@ -56,7 +56,7 @@ tracker holds nothing, and no automation creates entries in it.
   the running one (`docker ps --format '{{.Names}} {{.Image}}'`, or `docker inspect <name>
   --format '{{.Config.Image}}'` for a stopped one). Only the second answers what is actually
   running — `report_arg_drift` compares ports, mounts, caps and network, never the image.
-  Was `container list` until Q_CONTAINER retired apple-container on 2026-09-02.
+  Was `container list` until Q75 retired apple-container on 2026-09-02.
 
 ## Goal
 
@@ -122,7 +122,7 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
   and named `renovate.json5` its replacement; the Renovate GitHub App was never installed, so
   the claim then ran for five days with no instrument at all — measured 2026-09-02, the
   repository has zero Renovate pull requests and zero Renovate issues over its whole life.
-  2026-09-02, Q_AUDIT: `renovate.json5` is deleted and `.github/dependabot.yml` replaces it.
+  2026-09-02, Q74: `renovate.json5` is deleted and `.github/dependabot.yml` replaces it.
   Dependabot needs no App, so the claim has an instrument for the first time — and the hold
   half is gone with the cooldown, so "held with a reason" now means a deliberate refusal,
   never a timer.)

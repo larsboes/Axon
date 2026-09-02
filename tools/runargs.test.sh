@@ -8,7 +8,7 @@
 # values must never be rendered.
 #
 # There was a second fixture here, apple-container's inventory JSON, until 2026-09-02
-# (Q_CONTAINER). It went with runspec_from_apple and env_from_apple.
+# (Q75). It went with runspec_from_apple and env_from_apple.
 set -uo pipefail
 
 _dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"

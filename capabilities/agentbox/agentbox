@@ -24,7 +24,7 @@ Usage:
 Without --project the current directory is mounted. That is the only host path the
 box can see.
 
-Two network modes, and there is no third one on docker (Q_CONTAINER):
+Two network modes, and there is no third one on docker (Q75):
   default    --network none: loopback and nothing else. No DNS, no route, and NO
              model endpoint either — the agent cannot answer in this mode.
   --online   the default bridge: the internet, and the model server on the host
@@ -83,7 +83,7 @@ require_config() {
 # does not.
 require_runtime() {
   [ "$AXON_CONTAINER_RUNTIME" = "docker" ] \
-    || die "container_runtime is '$AXON_CONTAINER_RUNTIME'; agentbox needs docker (Q_CONTAINER retired apple-container on 2026-09-02; podman's network semantics are unmeasured here)"
+    || die "container_runtime is '$AXON_CONTAINER_RUNTIME'; agentbox needs docker (Q75 retired apple-container on 2026-09-02; podman's network semantics are unmeasured here)"
   command -v docker >/dev/null 2>&1 \
     || die "'docker' not found on PATH — OrbStack installs it at ~/.orbstack/bin/docker, which a non-login environment does not have (PATH=$PATH)"
   docker info >/dev/null 2>&1 || die "the docker daemon is not answering — start it ('open -a OrbStack' for OrbStack)"
@@ -120,7 +120,7 @@ read_api_key() {
 # There is nothing between them. `docker network create --internal` blocks egress and the
 # host alike: no default route, no host.docker.internal, host-gateway unreachable. That is
 # what apple-container's host-only network did give — its gateway WAS the Mac — and it is
-# the property Q_CONTAINER traded away. See capabilities/agentbox/README.md.
+# the property Q75 traded away. See capabilities/agentbox/README.md.
 #
 # `--add-host host.docker.internal:host-gateway` is redundant on OrbStack, which publishes
 # the name itself, and is what makes the same launcher work on a plain Linux daemon, which
@@ -137,7 +137,7 @@ OFFLINE_NET_ARGS="--network none"
 # up, which is a different thing and passes when the server is bound to loopback only.
 # Empty output means no answer.
 #
-# Stated because it changed on 2026-09-02 (Q_CONTAINER): this probe now runs on the OPEN
+# Stated because it changed on 2026-09-02 (Q75): this probe now runs on the OPEN
 # network. Under apple-container it ran on the host-only one and could not leave the Mac; the
 # bridge has full egress, so a `model_base_url` override naming an off-machine endpoint makes
 # `agentbox doctor` send one request there. The probe must share the box's network to answer
@@ -288,7 +288,7 @@ cmd_run() {
     # is still the closed one: the safe mode losing a capability is not a reason to make
     # the open mode the one you get by not thinking about it.
     [ "$entry_shell" -eq 1 ] \
-      || echo "agentbox: offline box — the model at $(model_base_url) is NOT reachable from it. Use 'agentbox run --online' for a working agent (Q_CONTAINER)." >&2
+      || echo "agentbox: offline box — the model at $(model_base_url) is NOT reachable from it. Use 'agentbox run --online' for a working agent (Q75)." >&2
   fi
 
   render_config_dir "$statement"
@@ -352,7 +352,7 @@ cmd_run() {
 #
 # There was a separate `agentbox gate` verb here until 2026-09-02. It held two checks: a
 # published-GHSA lookup, retired on 2026-08-28 with tools/lib/advisories.sh (PRD Q41), and a
-# cooldown on the release's age, retired by Q_AUDIT. With both gone it refused nothing — it
+# cooldown on the release's age, retired by Q74. With both gone it refused nothing — it
 # resolved a repository, printed two lines and returned 0 — and a verb that cannot say no is
 # how a green step comes to read as a passed check. What still refuses is the sha256 in
 # fetch_archive above, on the install path, unchanged.
@@ -396,7 +396,7 @@ cmd_host_install() {
   # PRD Q41 retired tools/lib/advisories.sh on 2026-08-28 and nothing standard replaces it for
   # THIS dependency: the agent arrives as a pinned release tarball, so no ecosystem lockfile
   # names it and neither Dependabot alerts nor osv-scanner will ever see it. The cooldown half
-  # of this check went on 2026-09-02 (Q_AUDIT) — it asked how OLD the bytes were; the sha256 in
+  # of this check went on 2026-09-02 (Q74) — it asked how OLD the bytes were; the sha256 in
   # fetch_archive asks WHAT they are, and that one still refuses.
   repo="$(upstream_repo)" || die "profile $PROFILE declares no 'upstream' — cannot name the advisory list (Axon#126)"
   echo "agentbox: advisories are NOT checked here — open the list before you accept:"
@@ -476,7 +476,7 @@ cmd_doctor() {
   # missing binary.
   runtime_ok=0
   if [ "$AXON_CONTAINER_RUNTIME" != "docker" ]; then
-    bad "runtime: machine.toml declares container_runtime = '$AXON_CONTAINER_RUNTIME'; agentbox needs docker (Q_CONTAINER; podman's network semantics are unmeasured here)"
+    bad "runtime: machine.toml declares container_runtime = '$AXON_CONTAINER_RUNTIME'; agentbox needs docker (Q75; podman's network semantics are unmeasured here)"
   elif ! command -v docker >/dev/null 2>&1; then
     bad "runtime: 'docker' not on PATH — OrbStack installs it at ~/.orbstack/bin/docker, which a non-login environment does not have"
   elif ! docker info >/dev/null 2>&1; then
@@ -526,7 +526,7 @@ cmd_doctor() {
       bad "model: silence at $url from inside an --online box.
       A container cannot reach the host's 127.0.0.1 — the server has to bind 0.0.0.0, and
       $host has to be among the Host headers it accepts. Only 'agentbox run --online'
-      reaches it at all; the default box has no network (Q_CONTAINER)."
+      reaches it at all; the default box has no network (Q75)."
     fi
   fi
 

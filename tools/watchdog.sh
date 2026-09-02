@@ -5,7 +5,7 @@
 # it themselves (`--restart unless-stopped`) and service-runner.sh's
 # persistence_applicable says so rather than installing a unit that would fight
 # the runtime. apple-container had no restart policy and was the one runtime that
-# made this file apply to a container; it retired 2026-09-02 (Q_CONTAINER).
+# made this file apply to a container; it retired 2026-09-02 (Q75).
 set -euo pipefail
 CAP="${1:?usage: watchdog.sh <capability>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

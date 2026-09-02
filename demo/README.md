@@ -37,7 +37,7 @@ What gets recorded is their output, not the origin's input.
 
 Comms' half of that needs one written permission. `POST /ingest` refuses a URL that resolves to
 an address inside this machine, because an ingested link would otherwise drive any
-loopback-bound Axon API (`capabilities/comms/src/media.rs`, `check_destination`, Q_AUDIT) — and
+loopback-bound Axon API (`capabilities/comms/src/media.rs`, `check_destination`, Q74) — and
 every URL this demo seeds is exactly such an address, deliberately, so the published corpus
 depends on no host anybody else owns. So `tools/demo-up` writes the manifest's `[demo] origin`
 into `demo/overlay/config/comms.json` as the single entry of `ingest_allowed_origins`. The demo

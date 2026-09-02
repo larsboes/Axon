@@ -400,7 +400,7 @@ pub(crate) fn normalize_origin(raw: &str) -> Option<String> {
 }
 
 /// Origins `POST /ingest` may fetch even though they resolve to an address
-/// inside this machine or this network (Q_AUDIT).
+/// inside this machine or this network (Q74).
 ///
 /// **Empty by default, and that is the shipped value.** No real machine needs
 /// an entry: the guard exists because an ingested link could otherwise drive a

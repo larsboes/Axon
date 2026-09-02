@@ -33,7 +33,7 @@
 # The two fields are independent and neither is inferred from the other; platform.sh reads each
 # separately. Which daemon supplies the docker CLI is a further machine fact this file does not
 # record — OrbStack, Docker Desktop, colima and a Linux daemon all answer to `docker`.
-# `apple-container` was a third legal value until 2026-09-02, when Q_CONTAINER retired it;
+# `apple-container` was a third legal value until 2026-09-02, when Q75 retired it;
 # upstreams.toml [apple-container] holds the dated verdict.
 os = "linux"                       # "macos" | "linux" | "windows"
 container_runtime = "docker"       # "docker" | "podman"

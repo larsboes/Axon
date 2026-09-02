@@ -185,7 +185,7 @@ install_linux = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
 
 # ---- container runtimes (the checker validates only this machine's chosen one) ---------
 
-# [apple-container] stood here until 2026-09-02, when Q_CONTAINER retired it. This machine
+# [apple-container] stood here until 2026-09-02, when Q75 retired it. This machine
 # declares container_runtime = "docker" and capabilities/agentbox invokes docker, so no machine
 # needs Apple's `container` executable to run Axon. Deleted rather than kept: toolchain.toml
 # declares what a machine must have, and a host tool nothing calls is a check that can only be
@@ -210,7 +210,7 @@ install_linux = "apt-get install -y podman"
 
 # ---- audit scanners (absence warns). Two run in tools/audit since 2026-09-02 -----------
 
-# [semgrep] stood here until 2026-09-02, when Q_AUDIT retired it. CodeQL already runs rust,
+# [semgrep] stood here until 2026-09-02, when Q74 retired it. CodeQL already runs rust,
 # javascript-typescript, python and actions with the security-extended suite
 # (.github/workflows/codeql.yml), which is total overlap -- and semgrep's `--config auto`
 # downloaded its rules at scan time, so the pinned version described nothing that ran.

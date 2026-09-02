@@ -1,6 +1,6 @@
 # host-patch — the daily upgrade of this machine's tools, and the audit that follows it.
 #
-# Q_AUDIT (2026-09-02) deleted the seven-to-fourteen-day adoption hold. This is what replaces
+# Q74 (2026-09-02) deleted the seven-to-fourteen-day adoption hold. This is what replaces
 # it: nothing waits, so something has to move. tools/host-patch.sh runs brew, uv and rustup,
 # then tools/audit over the machine it just patched, and writes a receipt tools/doctor reads.
 #

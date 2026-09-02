@@ -137,7 +137,7 @@ runspec_from_docker() {
   ' 2>/dev/null | sort
 }
 
-# runspec_from_apple() and env_from_apple() stood here until 2026-09-02 (Q_CONTAINER). They read
+# runspec_from_apple() and env_from_apple() stood here until 2026-09-02 (Q75). They read
 # apple-container's own inventory JSON, which reported every container at once and carried a
 # mount's kind as the single key of a `type` object. No machine runs that runtime now, and a
 # reader for a JSON shape nothing produces is a second answer waiting to diverge from the first.

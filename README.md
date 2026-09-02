@@ -286,7 +286,7 @@ argues for it — and that rule is unchanged. The consuming README also records 
 and what Axon adopted: runtime, idea, architecture, algorithm, code or asset. A local clone or
 archive path is never durable provenance.
 
-What changed on 2026-09-02 (Q_AUDIT) is who checks what, and how fast a fix lands. What is
+What changed on 2026-09-02 (Q74) is who checks what, and how fast a fix lands. What is
 required is unchanged.
 
 | Question | Answered by |
@@ -323,7 +323,7 @@ This section was **Pins and cooldown** until 2026-09-02, and an `upstreams.toml`
 before then was decided under the hold it described. Those entries still point here; their text is
 left as written, because rewriting a decision's reasoning to match a later rule falsifies it.
 
-Take the patch. There is no adoption cooldown, on the host or in this repository. Q_AUDIT
+Take the patch. There is no adoption cooldown, on the host or in this repository. Q74
 removed it.
 
 The hold asked a release to age seven to fourteen days before adoption, on the argument that the

@@ -536,7 +536,7 @@ HTTP and its input is a URL a stranger chose:
   spellings as well as the plain ones. Every Axon service binds `127.0.0.1`, so
   without this an ingested link reaches them all: `http://127.0.0.1:8086/api/plans`
   is still http. `http_client`'s redirect policy re-runs both checks on each of
-  at most three hops, so a `302` is not the way around them. Q_AUDIT.
+  at most three hops, so a `302` is not the way around them. Q74.
 
 **The operator-visible cost: a LAN or loopback URL can no longer be ingested.**
 A link to a NAS, a router page or a home dashboard pasted into `/ingest` or
@@ -804,7 +804,7 @@ Routes:
 Binds `127.0.0.1`, not `0.0.0.0`: `/ingest` makes the server fetch a URL on
 request, so anything that can reach the port can use it to reach whatever the
 host can. Remote access belongs in front of the process (Tailscale), not in an
-open bind. Since Q_AUDIT the second half of that sentence is narrower than it
+open bind. Since Q74 the second half of that sentence is narrower than it
 was — the destination check under "Extractors" refuses a fetch to this machine
 or this network — but it is still the right bind, because the guard bounds
 where a request can go and not who may make one.
