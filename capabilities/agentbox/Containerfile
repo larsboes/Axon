@@ -2,14 +2,19 @@
 # reaches for, a non-root user, nothing else.
 #
 # Agent-neutral by construction — which agent, which version, which archive all
-# arrive as build args from profiles/<agent>/profile.toml. Nothing in here names pi.
+# arrive as build args from `agentbox build`. Nothing in here names pi.
 #
 # No network operation happens during this build except apt. The agent archive is
-# fetched and sha256-verified on the HOST by `agentbox build`, then handed in as the
-# build context, so the only thing that enters the image is a file whose checksum was
-# checked where you can see it.
+# fetched on the HOST by `agentbox build` and verified there against the release's own
+# published SHA256SUMS, then handed in as the build context — so the only thing that enters
+# the image is a file whose checksum was checked where you can see it, and checked again
+# below.
 
-ARG BASE_IMAGE=docker.io/library/debian:trixie-20260713-slim
+# Rolling, not a dated tag (Q_DEPIN, 2026-09-02). `trixie-slim` is Debian's own channel for
+# the current stable slim image: `agentbox build` takes each rebuild the day it is published,
+# which is where the base layer's CVE fixes arrive. It named trixie-20260713-slim until then,
+# and that literal went stale the first time Debian rebuilt under it.
+ARG BASE_IMAGE=docker.io/library/debian:trixie-slim
 
 FROM ${BASE_IMAGE}
 
@@ -31,6 +36,7 @@ RUN if ! getent group "${AGENT_GID}" >/dev/null; then groupadd --gid "${AGENT_GI
  && useradd --uid "${AGENT_UID}" --gid "${AGENT_GID}" --create-home --shell /bin/bash agent
 
 ARG AGENT_NAME
+ARG AGENT_VERSION
 ARG ARCHIVE
 ARG ARCHIVE_ROOT
 ARG BIN_PATH
@@ -45,6 +51,9 @@ RUN echo "${ARCHIVE_SHA256}  /tmp/agent.tar.gz" | sha256sum -c - \
 
 LABEL org.opencontainers.image.title="agentbox/${AGENT_NAME}"
 LABEL dev.axon.agent="${AGENT_NAME}"
+# Which release these bytes are. The profile records no version since Q_DEPIN (2026-09-02),
+# so the image carries it and `agentbox doctor` reads it back from here.
+LABEL dev.axon.agent-version="${AGENT_VERSION}"
 LABEL dev.axon.archive-sha256="${ARCHIVE_SHA256}"
 
 USER agent

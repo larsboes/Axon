@@ -19,7 +19,7 @@ Usage:
   agentbox build [--no-cache]        # fetch + verify the agent archive, build the image
   agentbox doctor                    # runtime, network, image, config, model endpoint
   agentbox shell [--project <dir>]   # a bash prompt in the same box, no agent
-  agentbox host-install [--force]    # install the pinned agent on the HOST, checksummed
+  agentbox host-install [--force]    # install the latest agent release on the HOST, checksummed
 
 Without --project the current directory is mounted. That is the only host path the
 box can see.
@@ -30,9 +30,9 @@ Two network modes, and there is no third one on docker (Q75):
   --online   the default bridge: the internet, and the model server on the host
              at host.docker.internal. This is the only mode the agent works in.
 
-host-install places the same pinned, checksummed release the box runs, plus a shim that
-refuses the agent's own self-update verbs — that path is how this machine once moved past
-a pin unnoticed (upstreams.toml, Axon#126).
+host-install places the same checksummed release the box runs. Both resolve the LATEST
+release at the moment they run (Q_DEPIN, 2026-09-02) and verify the download against that
+release's own published SHA256SUMS.
 EOF
 }
 
@@ -48,8 +48,12 @@ require_config() {
   PROFILE="$PROFILE_DIR/profile.toml"
   [ -f "$PROFILE" ] || die "unknown agent '$AGENT' — no $PROFILE"
 
-  VERSION="$(toml_get version "$PROFILE")"
-  IMAGE="agentbox-$AGENT:$VERSION"
+  # A local channel tag, not a version. `build` moves it and also writes the resolved
+  # version as a second tag, so `run`, `shell` and `doctor` need no network to find the image
+  # while what was built stays recoverable from `docker image ls` and the image's own label.
+  # It named the profile's version literal until 2026-09-02 (Q_DEPIN), which is why every one
+  # of those verbs used to depend on a version this file no longer holds.
+  IMAGE="agentbox-$AGENT:latest"
   AGENT_DIR="$DATA/$AGENT"
   CACHE="$DATA/cache"
 
@@ -63,13 +67,40 @@ require_config() {
   # is also installed on the host, where the target is darwin — one profile, one pin,
   # two targets. Callers that want the host build set OS before calling.
   OS="${OS:-linux}"
-  ARCHIVE_SHA="$(toml_get "archive_sha256_${OS}_${ARCH}" "$PROFILE")"
-  [ -n "$ARCHIVE_SHA" ] || die "$PROFILE has no archive_sha256_${OS}_${ARCH} — add the checksum for this os/arch from the release's SHA256SUMS"
+}
+
+# --- the release ------------------------------------------------------------
+#
+# Resolve which release to consume, and expand every URL that depends on it. Called ONLY by
+# the two verbs that fetch (`build`, `host-install`), never by `run`, `shell` or `doctor`:
+# this is a network call, and a launcher that dialled GitHub before starting a container
+# would make an offline box need the internet to open.
+resolve_release() {
+  local api tag
+  api="$(toml_get release_latest_api "$PROFILE")"
+  [ -n "$api" ] || die "$PROFILE declares no release_latest_api — nothing says which release to take"
+  command -v jq >/dev/null 2>&1 || die "'jq' not found on PATH (toolchain.toml [jq], required)"
+
+  tag="$(curl -fsSL --proto '=https' --tlsv1.2 \
+          -H 'Accept: application/vnd.github+json' "$api" 2>/dev/null | jq -r '.tag_name // empty')" \
+    || die "could not reach $api to resolve the latest release"
+  [ -n "$tag" ] || die "$api returned no tag_name — GitHub rate limit, or the repository publishes no release"
+  # Exactly one leading v, the same rule tools/lib/version.sh's norm_ver applies.
+  VERSION="${tag#v}"
+
   ARCHIVE_URL="$(toml_get archive_url "$PROFILE")"
   ARCHIVE_URL="${ARCHIVE_URL//\{version\}/$VERSION}"
   ARCHIVE_URL="${ARCHIVE_URL//\{os\}/$OS}"
   ARCHIVE_URL="${ARCHIVE_URL//\{arch\}/$ARCH}"
+  # The name SHA256SUMS lists this asset under. Taken from the URL rather than composed, so
+  # the line looked up and the file downloaded can never be two different assets.
+  ASSET_NAME="${ARCHIVE_URL##*/}"
+  CHECKSUMS_URL="$(toml_get checksums_url "$PROFILE")"
+  [ -n "$CHECKSUMS_URL" ] || die "$PROFILE declares no checksums_url — refusing to install an unverified archive"
+  CHECKSUMS_URL="${CHECKSUMS_URL//\{version\}/$VERSION}"
+  # Cached per version, so a rebuild after a release does not silently reuse the old bytes.
   ARCHIVE_NAME="$AGENT-$VERSION-$OS-$ARCH.tar.gz"
+  echo "agentbox: latest $AGENT release is $VERSION ($tag)"
 }
 
 # docker only, and podman is refused by name rather than accepted untested. The two CLIs
@@ -167,9 +198,21 @@ model_base_url() {
 
 # --- build -----------------------------------------------------------------
 
+# The expected checksum comes from the release, not from this repository. Fetched fresh every
+# time rather than cached beside the archive: a cached SHA256SUMS would let a re-cut release
+# be verified against the manifest of the release it replaced, which is the one failure a
+# checksum exists to catch.
 fetch_archive() {
   mkdir -p "$CACHE"
   archive="$CACHE/$ARCHIVE_NAME"
+
+  echo "agentbox: fetching $CHECKSUMS_URL"
+  ARCHIVE_SHA="$(curl -fsSL --proto '=https' --tlsv1.2 "$CHECKSUMS_URL" 2>/dev/null \
+                 | awk -v want="$ASSET_NAME" '$2 == want { print $1; exit }')" \
+    || die "could not fetch $CHECKSUMS_URL"
+  [ -n "$ARCHIVE_SHA" ] \
+    || die "$CHECKSUMS_URL lists no line for '$ASSET_NAME' — the release publishes no checksum for this os/arch, and an unverified archive is not installed"
+
   if [ ! -f "$archive" ]; then
     echo "agentbox: fetching $ARCHIVE_URL"
     curl -fsSL --proto '=https' --tlsv1.2 -o "$archive.part" "$ARCHIVE_URL" || die "download failed"
@@ -179,11 +222,11 @@ fetch_archive() {
   if [ "$actual" != "$ARCHIVE_SHA" ]; then
     rm -f "$archive"
     die "checksum mismatch for $ARCHIVE_NAME
-  expected $ARCHIVE_SHA (profiles/$AGENT/profile.toml)
+  expected $ARCHIVE_SHA ($CHECKSUMS_URL)
   got      $actual
 The cached copy was deleted. If this repeats, the release was re-cut or the download is not what upstream published."
   fi
-  echo "agentbox: sha256 ok — $ARCHIVE_NAME"
+  echo "agentbox: sha256 ok — $ARCHIVE_NAME ($ARCHIVE_SHA)"
 }
 
 cmd_build() {
@@ -195,14 +238,22 @@ cmd_build() {
       *) die "unknown option $1" ;;
     esac
   done
+  resolve_release
   fetch_archive
   # The build context is the archive cache, so the 100 MB agent tarball is the only
   # thing shipped to the builder — not the whole repo.
+  #
+  # Two tags. `:latest` is what every other verb opens, so a rebuild moves the box without
+  # anything else learning a version. `:$VERSION` is the record — which release these bytes
+  # are is then one `docker image ls` away instead of a guess, which is the fact the deleted
+  # profile literal used to carry.
   # shellcheck disable=SC2086
   docker build $no_cache \
     --tag "$IMAGE" \
+    --tag "agentbox-$AGENT:$VERSION" \
     --file "$_dir/Containerfile" \
     --build-arg "AGENT_NAME=$AGENT" \
+    --build-arg "AGENT_VERSION=$VERSION" \
     --build-arg "ARCHIVE=$ARCHIVE_NAME" \
     --build-arg "ARCHIVE_ROOT=$(toml_get archive_root "$PROFILE")" \
     --build-arg "BIN_PATH=$(toml_get bin_path "$PROFILE")" \
@@ -210,7 +261,7 @@ cmd_build() {
     --build-arg "AGENT_UID=$(id -u)" \
     --build-arg "AGENT_GID=$(id -g)" \
     "$CACHE"
-  echo "agentbox: built $IMAGE"
+  echo "agentbox: built $IMAGE (= agentbox-$AGENT:$VERSION)"
 }
 
 # --- config rendering ------------------------------------------------------
@@ -341,21 +392,27 @@ cmd_run() {
     "$IMAGE" ${1+"$@"}
 }
 
-# --- what host-install refuses ---------------------------------------------
+# --- what host-install refuses, and what it stopped refusing ----------------
 #
-# Axon#126. Every other check in this repo describes a version the manifest names. A
-# self-updating binary replaces the thing on disk without consulting any of them, so the pin
-# and the checksum end up describing software the machine stopped running. That is not
-# hypothetical here: upstreams.toml's pi-coding-agent entry records the host self-updating via
-# `pi update` about 15h after a release, and the pin was written afterwards to describe an
-# adoption that had already happened.
+# It refuses an archive whose sha256 does not match the release's own SHA256SUMS. That check
+# is in fetch_archive above and is the only one left.
+#
+# It no longer writes a self-update shim. That shim intercepted `pi update|upgrade|self-update`
+# and refused them, because a self-updating binary replaced the thing on disk and left the
+# profile's version literal and checksum describing software the machine had stopped running
+# (Axon#126 — upstreams.toml's pi-coding-agent entry records exactly that happening, `pi update`
+# about 15h after a release). Q_DEPIN (2026-09-02) deleted the literal and the pin it protected.
+# With this launcher resolving the LATEST release on every build and install, a self-update
+# moves the binary to the same place the next `host-install` would, so the shim would be
+# refusing the outcome the ruling asks for. What it cost is stated rather than dropped: a
+# self-update fetches its own bytes and this launcher never sees them, so the sha256 above
+# covers what `agentbox host-install` puts on disk and nothing else.
 #
 # There was a separate `agentbox gate` verb here until 2026-09-02. It held two checks: a
 # published-GHSA lookup, retired on 2026-08-28 with tools/lib/advisories.sh (PRD Q41), and a
 # cooldown on the release's age, retired by Q74. With both gone it refused nothing — it
 # resolved a repository, printed two lines and returned 0 — and a verb that cannot say no is
-# how a green step comes to read as a passed check. What still refuses is the sha256 in
-# fetch_archive above, on the install path, unchanged.
+# how a green step comes to read as a passed check.
 
 # Resolve the upstream repo this profile's agent comes from, via profile.toml's declared
 # upstreams.toml section. Empty output means the profile did not declare one.
@@ -382,8 +439,8 @@ cmd_host_install() {
   done
 
   # The host is whatever this machine is, unlike the box, which is Linux by construction.
-  # Set before require_config, which reads archive_sha256_${OS}_${ARCH} and defaults OS to
-  # the box's target — the one place where "the same pin, two targets" has to be told apart.
+  # Set before require_config, which defaults OS to the box's target — the one place where
+  # "one profile, two targets" has to be told apart.
   case "$(uname -s)" in
     Darwin) OS="darwin" ;;
     Linux)  OS="linux" ;;
@@ -394,18 +451,20 @@ cmd_host_install() {
 
   # Advisories are a human's, and this says so at the moment of use rather than going quiet.
   # PRD Q41 retired tools/lib/advisories.sh on 2026-08-28 and nothing standard replaces it for
-  # THIS dependency: the agent arrives as a pinned release tarball, so no ecosystem lockfile
-  # names it and neither Dependabot alerts nor osv-scanner will ever see it. The cooldown half
-  # of this check went on 2026-09-02 (Q74) — it asked how OLD the bytes were; the sha256 in
+  # THIS dependency: the agent arrives as a release tarball, so no ecosystem lockfile names it
+  # and neither Dependabot alerts nor osv-scanner will ever see it. The cooldown half of this
+  # check went on 2026-09-02 (Q74) — it asked how OLD the bytes were; the sha256 in
   # fetch_archive asks WHAT they are, and that one still refuses.
   repo="$(upstream_repo)" || die "profile $PROFILE declares no 'upstream' — cannot name the advisory list (Axon#126)"
   echo "agentbox: advisories are NOT checked here — open the list before you accept:"
   echo "    https://github.com/$repo/security/advisories"
   echo "  (capabilities/agentbox/README.md#what-host-install-refuses explains why this is manual)"
 
+  resolve_release
+
   host_root="$(HOST_ROOT_DEFAULT)"
   versioned="$host_root/versions/$AGENT-$VERSION"
-  shim="$host_root/bin/$AGENT"
+  launcher="$host_root/bin/$AGENT"
 
   if [ -x "$versioned/$(toml_get bin_path "$PROFILE")" ] && [ "$force" -eq 0 ]; then
     echo "agentbox: $AGENT $VERSION already installed at $versioned (--force to redo)"
@@ -418,46 +477,30 @@ cmd_host_install() {
     echo "agentbox: installed $AGENT $VERSION → $versioned"
   fi
 
-  # `current` is a symlink so the shim never has to be rewritten to move versions, and so
-  # what is running is one readlink away rather than a guess.
+  # `current` is a symlink so the launcher never has to be rewritten to move versions, and so
+  # what is installed is one readlink away rather than a guess.
   mkdir -p "$host_root/bin"
   rm -f "$host_root/current"
   ln -s "$versioned" "$host_root/current"
 
-  write_shim "$shim"
-  echo "agentbox: shim → $shim"
+  # A plain symlink through `current`, where a generated shim used to sit. The shim's whole
+  # job was refusing the agent's self-update verbs to protect a version literal that no longer
+  # exists; see "what host-install refuses" above.
+  rm -f "$launcher"
+  ln -s "$host_root/current/$(toml_get bin_path "$PROFILE")" "$launcher"
+  echo "agentbox: $AGENT → $launcher"
+
+  # The receipt. Which release is on this host, verified against which digest, on what day —
+  # the fact the deleted profile literal used to carry, recorded where it describes THIS
+  # machine instead of the repository.
+  printf '{"at":"%s","agent":"%s","version":"%s","os":"%s","arch":"%s","sha256":"%s","url":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$AGENT" "$VERSION" "$OS" "$ARCH" "$ARCHIVE_SHA" "$ARCHIVE_URL" \
+    > "$host_root/installed.json"
+
   echo
-  echo "Add it to PATH ahead of any other $AGENT, then the self-update path is gated:"
+  echo "Add it to PATH ahead of any other $AGENT:"
   echo "  export PATH=\"$host_root/bin:\$PATH\""
   echo "Axon does not edit your shell config; that is a machine fact and belongs to you."
-}
-
-# The shim: upstream semantics preserved for every verb except the ones that replace the
-# binary in place. Those are declared in profile.toml, not hardcoded here — a different agent
-# spells them differently, and an unlisted verb must reach upstream unchanged.
-write_shim() {
-  local out="$1" verbs
-  # toml_array is one element per line; the shim wants a case-pattern alternation.
-  verbs="$(toml_array self_update_verbs "$PROFILE" | tr '\n' '|' | sed 's/|$//')"
-  [ -n "$verbs" ] || die "$PROFILE declares no self_update_verbs — refusing to write a shim that gates nothing"
-  mkdir -p "$(dirname "$out")"
-  {
-    printf '#!/bin/bash\n'
-    printf '# Generated by `agentbox host-install` — do not edit; re-run host-install instead.\n'
-    printf '# Axon#126: the agent may do anything except replace itself behind the gate.\n'
-    printf 'set -euo pipefail\n'
-    printf 'REAL="%s/current/%s"\n' "$(HOST_ROOT_DEFAULT)" "$(toml_get bin_path "$PROFILE")"
-    printf 'case "${1:-}" in\n'
-    printf '  %s)\n' "$verbs"
-    printf '    echo "%s: self-update is gated by Axon (upstreams.toml pins this version)." >&2\n' "$AGENT"
-    printf '    echo "  Use: agentbox host-install   — after bumping version + archive_sha256_* in" >&2\n'
-    printf '    echo "       capabilities/agentbox/profiles/%s/profile.toml and upstreams.toml." >&2\n' "$AGENT"
-    printf '    echo "  That path verifies the pinned archive'"'"'s sha256; this one does not." >&2\n'
-    printf '    exit 1 ;;\n'
-    printf 'esac\n'
-    printf 'exec "$REAL" "$@"\n'
-  } > "$out"
-  chmod 755 "$out"
 }
 
 # --- doctor ----------------------------------------------------------------
@@ -469,10 +512,7 @@ cmd_doctor() {
   DOCTOR_FAILED=0
   echo "agentbox"
 
-  # The runtime verdict comes first because it needs nothing from the profile. require_config
-  # dies when the profile has no checksum for this host's arch (x86_64 CI runners, since the
-  # pinned pi release is arm64-only), and a doctor that has to fetch a checksum before it can
-  # say "wrong runtime" answers the cheap question last.
+  # The runtime verdict comes first because it needs nothing from the profile.
   # Three separate causes, three separate lines. Reporting them as one ("not available")
   # was the old shape, and it sends a machine that declares the wrong runtime looking for a
   # missing binary.
@@ -488,7 +528,7 @@ cmd_doctor() {
     ok "runtime: docker $(docker version --format '{{.Server.Version}}' 2>/dev/null) on $(docker info --format '{{.OperatingSystem}}' 2>/dev/null)"
   fi
   require_config
-  ok "agent: $AGENT $VERSION (profiles/$AGENT/profile.toml)"
+  ok "agent: $AGENT (profiles/$AGENT/profile.toml — no version here; 'build' takes the latest release)"
 
   # Everything below asks the runtime a question, so a machine without one gets "not checked"
   # rather than an answer obtained from a daemon it does not declare.
@@ -497,7 +537,11 @@ cmd_doctor() {
     bad "image: not checked — no usable runtime to ask"
   elif docker image inspect "$IMAGE" >/dev/null 2>&1; then
     have_image=1
-    ok "image: $IMAGE"
+    # The version is read off the image's own label, which is the only place it exists now:
+    # the profile holds none, and asking GitHub for the latest would answer a different
+    # question (what could be built) than the one doctor asks (what was).
+    built="$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "dev.axon.agent-version"}}' 2>/dev/null)"
+    ok "image: $IMAGE${built:+ — built from $AGENT $built}"
   else
     bad "image: $IMAGE missing — 'agentbox build'"
   fi

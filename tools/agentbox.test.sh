@@ -58,20 +58,33 @@ for runtime in podman apple-container ""; do
   esac
   # A doctor that cannot use the declared runtime must not then answer runtime questions from
   # whatever daemon happens to be installed. Every such line reads "not checked".
-  # The profile pins an arm64-only release, so on any other arch require_config dies right
-  # after the runtime line and the "not checked" lines are never reached. The gate itself was
-  # already asserted above; only this half is arch-bound.
-  case "$(uname -m)" in
-    arm64|aarch64)
-      case "$runtime" in
-        podman|apple-container)
-          case "$out" in
-            *"image: not checked"*) ;;
-            *) fail "container_runtime = '$runtime' still had doctor query a runtime it does not declare: $out" ;;
-          esac ;;
+  #
+  # Asserted on every arch since Q_DEPIN (2026-09-02). profile.toml carried a per-os/arch
+  # checksum literal until then, and require_config died right after the runtime line on any
+  # arch the profile had no line for — so this half went unasserted on an x86_64 runner. The
+  # profile holds no checksum now (the release's own SHA256SUMS is read at build time), so
+  # nothing here is arch-bound.
+  case "$runtime" in
+    podman|apple-container)
+      case "$out" in
+        *"image: not checked"*) ;;
+        *) fail "container_runtime = '$runtime' still had doctor query a runtime it does not declare: $out" ;;
       esac ;;
-    *) [ -n "${_arch_note:-}" ] || { echo "  ⊘ $(uname -m) host — profile.toml has no linux checksum for it, so the 'not checked' lines are not asserted"; _arch_note=1; } ;;
   esac
+done
+
+# --- 1b. the profile declares a channel, never a version -------------------
+# The launcher resolves the latest release at build time (Q_DEPIN). A version or checksum
+# literal reappearing in the profile would silently restore the freeze the ruling removed,
+# and nothing else in this file would notice.
+PROFILE="$SRC_ROOT/capabilities/agentbox/profiles/pi/profile.toml"
+for forbidden in '^version *=' '^archive_sha256'; do
+  if grep -Eq "$forbidden" "$PROFILE"; then
+    fail "profile.toml declares '$forbidden' — the release is resolved at build time, not recorded here"
+  fi
+done
+for required in '^release_latest_api *=' '^checksums_url *='; do
+  grep -Eq "$required" "$PROFILE" || fail "profile.toml is missing '$required' — nothing would say which release to take, or how to verify it"
 done
 
 # --- 2. the two network modes ----------------------------------------------
@@ -82,11 +95,11 @@ if [ "$HAVE_DOCKER" -eq 0 ]; then
   echo "  ⊘ no answering docker daemon — the network-mode checks are skipped"
 else
   # A stand-in for the agentbox image: this asserts what the FLAGS do, and building the real
-  # image needs a 100 MB pinned tarball off the network. The base image is READ from the
-  # Containerfile rather than named here — upstreams.toml [debian] pins a dated tag and says
-  # a rebuild is a decision, so writing `debian:trixie-slim` in a test would be a second,
-  # rolling reference to the same dependency. It also has to be glibc: resolver behaviour on
-  # `--network none` differs (glibc fails in ~2 ms, musl burns a 10 s timeout).
+  # image needs a 100 MB agent tarball off the network. The base image is READ from the
+  # Containerfile rather than named here: one reference to the dependency, so a base change is
+  # a one-line edit that this test follows instead of contradicting. It also has to be glibc:
+  # resolver behaviour on `--network none` differs (glibc fails in ~2 ms, musl burns a 10 s
+  # timeout).
   PROBE_IMAGE="$(sed -n 's/^ARG BASE_IMAGE=//p' "$SRC_ROOT/capabilities/agentbox/Containerfile" | head -n1)"
   [ -n "$PROBE_IMAGE" ] || fail "could not read ARG BASE_IMAGE from the agentbox Containerfile"
   if ! docker image inspect "$PROBE_IMAGE" >/dev/null 2>&1; then
@@ -110,7 +123,7 @@ else
   if [ -n "$PROBE_IMAGE" ]; then
     # Every run is named, so the leftover check below can filter on containers THIS file
     # created. An `ancestor=` filter would also catch a container the operator happens to have
-    # built from the same pinned base image.
+    # built from the same base image.
     NAME_PREFIX="agentbox-test-$$"
     run_probe() {  # <suffix> <net args> <bash -c script>
       # shellcheck disable=SC2086  # $2 is a flag list and has to split
