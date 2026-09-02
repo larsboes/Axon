@@ -1,308 +1,107 @@
 #!/bin/bash
-# tools/audit — the repeatable content-scanning gate (README.md#dependency-verdicts-and-provenance: "run
-# it through the audit tooling first" before adding any new dependency,
-# package, or MCP server). Runs the adopted scanner set (upstreams.toml:
-# semgrep, gitleaks, osv-scanner, trivy) with pinned versions over Axon +
-# the private overlay, human report + optional SARIF, real exit codes.
+# tools/audit — the one command, and the only two scanners Axon still runs itself.
 #
-#   tools/audit                  # full sweep, human report
-#   tools/audit --expiry         # accepted-finding policy dates only; runs no scanner
-#   tools/audit --sarif <dir>    # also write one SARIF file per scanner to <dir>
-#   tools/audit --skip <name>    # skip a scanner (gitleaks/semgrep/osv/trivy); repeatable
-#   tools/audit -h                # this help
+#   tools/audit        # no arguments, no flags
 #
-# gitleaks output is redacted by default (routine/gate usage, not triage) --
-# for full secret detail on a real finding, run gitleaks directly yourself.
+#   gitleaks     secret scan over this repository's git history AND the private overlay's.
+#                GitHub secret scanning with push protection already covers the public repo;
+#                the overlay is a private repository, where that is a paid feature, so the
+#                overlay half is the one scan nothing else does.
+#   osv-scanner  dependency CVEs over every lockfile here, reading osv-scanner.toml's dated
+#                exceptions. Dependabot alerts watch the same lockfiles continuously; this is
+#                the answer before a push rather than after it.
 #
-# Every accepted-finding policy here is dated (osv-scanner.toml `ignoreUntil`). This
-# reports each policy's nearest expiry with the days left, warns once that date falls
-# inside axon.toml [audit] expiry_warn_days, and FAILS once it has passed. The scanner
-# enforces its own dates silently at scan time, so without this nothing ever says a date
-# is coming -- the first notice is the red build afterwards.
+# NOT here: container images (.github/workflows/security.yml runs `grype registry:` against
+# every image a service.toml declares, weekly and on push, whether or not this Mac is awake)
+# and Axon's own source (.github/workflows/codeql.yml).
 #
-# Exit 0 = clean, 1 = finding(s), 2 = usage/setup error. bash 3.2-safe.
+# Exit 0 clean · 1 a finding · 2 a scanner is not installed. A missing binary is a setup
+# error, never a finding: it must not read as clean and must not read as a leak. A finding
+# outranks a missing scanner, so a run with both exits 1. bash 3.2-safe.
 set -u
 
 _here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tools/lib/paths.sh
-. "$_here/lib/paths.sh"   # AXON_ROOT, AXON_PERSONAL_ROOT, toml_*
+. "$_here/lib/paths.sh"   # AXON_ROOT, AXON_PERSONAL_ROOT
 
-SARIF_DIR=""
-SKIP=""
-EXPIRY_ONLY=0
-_want=""
-for a in "$@"; do
-  case "$_want" in
-    sarif) SARIF_DIR="$a"; _want=""; continue ;;
-    skip)  SKIP="$SKIP $a"; _want=""; continue ;;
-  esac
-  case "$a" in
-    --sarif)   _want=sarif ;;
-    --skip)    _want=skip ;;
-    --expiry)  EXPIRY_ONLY=1 ;;
-    # 2,21 rather than 2,13: the old range stopped on the first line of the two-line
-    # gitleaks note, so --help ended mid-sentence.
-    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
-    *) echo "audit: unknown arg '$a'" >&2; exit 2 ;;
-  esac
-done
-if [ -n "$SARIF_DIR" ]; then mkdir -p "$SARIF_DIR" || { echo "audit: cannot create $SARIF_DIR" >&2; exit 2; }; fi
+case "${1:-}" in
+  "")        ;;
+  -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+  *)         echo "audit: takes no arguments (got '$1')" >&2; exit 2 ;;
+esac
 
-skip_has() { case " $SKIP " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
-sarif_path() { [ -n "$SARIF_DIR" ] && printf '%s/%s.sarif' "$SARIF_DIR" "$1"; }
+fail=0    # a scanner reported something
+setup=0   # a scanner is not installed
 
-# The expiry clock's reading and classification live in lib/expiry.sh; this file owns only
-# the configuration and what each status costs.
-# shellcheck source=tools/lib/expiry.sh
-. "$_here/lib/expiry.sh"
-
-# Read once, on first use rather than at the top: the gitleaks-only path in
-# tools/audit.test.sh plants a stub paths.sh with no toml_get_in, and a top-level read
-# would break that path over a value it never uses.
-_EXPIRY_WARN_DAYS=""
-expiry_warn_days() {
-  if [ -z "$_EXPIRY_WARN_DAYS" ]; then
-    _EXPIRY_WARN_DAYS="$(toml_get_in audit expiry_warn_days "$AXON_ROOT/axon.toml")"
-    [ -n "$_EXPIRY_WARN_DAYS" ] || {
-      echo "audit: axon.toml has no [audit] expiry_warn_days" >&2; exit 2; }
-  fi
-  printf '%s' "$_EXPIRY_WARN_DAYS"
-}
-
-fail=0
-EXPIRY_WARNED=""
-EXPIRY_LAPSED=""
-
-# --expiry: the policy clock on its own, with no scanner run at all.
-#
-# Reading a date out of a file needs neither a container runtime, a pulled image nor a
-# network, so asking "when do the accepted findings lapse" should not cost a full sweep.
-# This is what tools/doctor delegates to, rather than reimplementing it: the script owns
-# the rule, doctor reports. It is the last of those delegations to survive PRD Q41, which
-# retired tools/upstream-checker on 2026-08-28.
-#
-# It exists because the answer used to live in three GitHub issues whose entire content was
-# "re-scan when the upstream digest changes" -- a tracked ticket standing in for a date the
-# files already carried. The files are the record; this reads them out loud.
-sweep_expiry() {
-  local policy count note rc found=0
-
-  # trivy-ignore/*.txt was the other dated policy format until 52aa8c5 (2026-08-28) retired
-  # the postgres capability and deleted the last file in that directory. The reading code
-  # went with it rather than waiting for a policy that may never be written again: an
-  # untested branch over a format nothing produces is not coverage, it is a claim.
-
-  policy="$AXON_ROOT/osv-scanner.toml"
-  if [ -f "$policy" ]; then
-    count="$(osv_ignored_count "$policy")"
-    if [ "${count:-0}" -gt 0 ]; then
-      found=1
-      # shellcheck disable=SC2046
-      note="$(expiry_note "osv-scanner.toml" "$count" "$(expiry_warn_days)" $(expiry_dates_osv "$policy"))"
-      rc=$?
-      echo "  $note"
-      case "$rc" in
-        1) EXPIRY_WARNED="$EXPIRY_WARNED osv-scanner.toml" ;;
-        2) EXPIRY_LAPSED="$EXPIRY_LAPSED osv-scanner.toml"; fail=1 ;;
-      esac
-    fi
-  fi
-
-  [ "$found" -eq 0 ] && echo "  · no accepted-finding policy declares an expiry"
-  return 0
-}
-
-if [ "$EXPIRY_ONLY" -eq 1 ]; then
-  echo "Axon accepted-finding policies · $(date -u +%Y-%m-%d 2>/dev/null || date -u)"
-  echo
-  sweep_expiry
-  echo
-  if [ -n "$EXPIRY_LAPSED" ]; then
-    echo "── past their date:$EXPIRY_LAPSED"
-    echo "   The scanner no longer honours them, so these findings are live again. Re-decide"
-    echo "   with fresh evidence or delete the entries — an expired policy is not a policy."
-  fi
-  if [ -n "$EXPIRY_WARNED" ]; then
-    echo "── needing a re-decision inside $(expiry_warn_days)d:$EXPIRY_WARNED"
-  fi
-  [ -z "$EXPIRY_LAPSED" ] && [ -z "$EXPIRY_WARNED" ] && echo "── every accepted-finding policy is current ──"
-  exit "$fail"
-fi
 echo "Axon audit · $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u)"
 
 # ---- gitleaks: secret scan over Axon + the private overlay's git history ----
-if skip_has gitleaks; then
-  echo; echo "▸ gitleaks — skipped"
+echo
+echo "▸ gitleaks · secret scan (git history)"
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "  ⚠ gitleaks not installed — install: brew install gitleaks"
+  setup=1
 else
-  echo; echo "▸ gitleaks · secret scan (git history)"
+  # The overlay's path is never printed. A label is enough to act on, and this output reaches
+  # terminals, transcripts and CI logs that the overlay's coordinate must not.
   scan_git_history() {
-    label="$1"
-    report_name="$2"
-    repo="$3"
-
-    if [ -z "$repo" ]; then
-      echo "  · $label — not configured"
-      return
-    fi
-    if [ ! -e "$repo" ]; then
-      echo "  ✗ $label — not reachable"
-      fail=1
-      return
-    fi
+    label="$1"; repo="$2"
+    if [ -z "$repo" ]; then echo "  · $label — not configured"; return; fi
+    if [ ! -e "$repo" ]; then echo "  ✗ $label — not reachable"; fail=1; return; fi
+    # A linked worktree has a .git FILE, not a directory, so ask git rather than test a path.
     if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      echo "  ✗ $label — not a Git repository"
-      fail=1
-      return
+      echo "  ✗ $label — not a Git repository"; fail=1; return
     fi
-
-    out="$(sarif_path "gitleaks-$report_name")"
-    args=(detect -s "$repo" --redact --no-banner --exit-code 1)
-    [ -n "$out" ] && args+=(--report-format sarif --report-path "$out")
-    if gitleaks "${args[@]}" >/tmp/axon-audit-gitleaks.$$ 2>&1; then
+    if gitleaks detect -s "$repo" --redact --no-banner --exit-code 1 >/dev/null 2>&1; then
       echo "  ✓ $label — clean"
     else
       rc=$?
       if [ "$rc" -eq 1 ]; then
-        echo "  ✗ $label — leak(s) found (details withheld; run gitleaks locally for redacted triage)"
-        fail=1
+        echo "  ✗ $label — leak(s) found (details withheld; run gitleaks there yourself for redacted triage)"
       else
         echo "  ? $label — gitleaks errored (exit $rc; details withheld)"
-        fail=1
       fi
+      fail=1
     fi
-    rm -f /tmp/axon-audit-gitleaks.$$
   }
-
-  scan_git_history "Axon" "axon" "$AXON_ROOT"
-  scan_git_history "private overlay" "overlay" "${AXON_PERSONAL_ROOT:-}"
-fi
-
-# Build-artifact dirs to keep out of source scanners -- they're generated,
-# not code, and capabilities/*/target/ alone runs to thousands of files
-# (verified: 6879 in scouting/target). Same set .gitignore now excludes.
-# to-integrate/ joins the list for the same reason .gitignore excludes it
-# (README.md#scratch-is-not-documentation): pre-git scratch holding whole vendored projects
-# (verified: LifeOS-mono alone is 9.7G), not Axon's own code -- scanning it is
-# both wasted time and noise from findings Axon has no business fixing.
-# bazel-* stays listed after PRD Q44 retired Bazel (2026-08-25): the symlinks it
-# left behind still point at multi-gigabyte output trees on existing checkouts.
-EXCLUDE_DIRS="target bazel-bin bazel-out bazel-testlogs node_modules to-integrate"
-
-# ---- semgrep: SAST over Axon's own code (bash/TS/Rust/Python) ----
-if skip_has semgrep; then
-  echo; echo "▸ semgrep — skipped"
-else
-  echo; echo "▸ semgrep · SAST ($AXON_ROOT)"
-  out="$(sarif_path semgrep)"
-  args="scan --config auto --error $AXON_ROOT"
-  for d in $EXCLUDE_DIRS; do args="$args --exclude $d"; done
-  [ -n "$out" ] && args="$args --sarif --output $out"
-  if semgrep $args; then
-    echo "  ✓ clean"
-  else
-    echo "  ✗ finding(s) above$( [ -n "$out" ] && echo " (also written to $out)")"
-    fail=1
-  fi
+  scan_git_history "Axon" "$AXON_ROOT"
+  scan_git_history "private overlay" "${AXON_PERSONAL_ROOT:-}"
 fi
 
 # ---- osv-scanner: dependency CVEs over every lockfile in the repo ----
-if skip_has osv; then
-  echo; echo "▸ osv-scanner — skipped"
+echo
+echo "▸ osv-scanner · dependency CVEs"
+if ! command -v osv-scanner >/dev/null 2>&1; then
+  echo "  ⚠ osv-scanner not installed — install: brew install osv-scanner"
+  setup=1
 else
-  echo; echo "▸ osv-scanner · dependency CVEs ($AXON_ROOT)"
-  # The advisory exceptions get the same clock as the image policies. Reported before the
-  # scan rather than after it, so the line survives however much table osv-scanner prints.
-  osv_policy="$AXON_ROOT/osv-scanner.toml"
-  if [ -f "$osv_policy" ]; then
-    osv_count="$(osv_ignored_count "$osv_policy")"
-    if [ "${osv_count:-0}" -gt 0 ]; then
-      # shellcheck disable=SC2046
-      exp_note="$(expiry_note "policy: osv-scanner.toml" "$osv_count" "$(expiry_warn_days)" $(expiry_dates_osv "$osv_policy"))"
-      exp_rc=$?
-      echo "  $exp_note"
-      case "$exp_rc" in
-        1) EXPIRY_WARNED="$EXPIRY_WARNED osv-scanner.toml" ;;
-        2) EXPIRY_LAPSED="$EXPIRY_LAPSED osv-scanner.toml"; fail=1 ;;
-      esac
-    fi
-  fi
-  out="$(sarif_path osv-scanner)"
-  base="scan source -r --config $AXON_ROOT/osv-scanner.toml"
-  for d in $EXCLUDE_DIRS; do base="$base --experimental-exclude $d"; done
-  # osv-scanner's --format is single-value (table XOR sarif, never both), so
-  # the SARIF file needs a second pass -- otherwise --format sarif silently
-  # drops the human-readable table this "human report" promises.
-  if osv-scanner $base "$AXON_ROOT"; then
-    rc=0
-  else
-    rc=1
-  fi
-  if [ -n "$out" ]; then
-    osv-scanner $base --format sarif --output-file "$out" "$AXON_ROOT" >/dev/null 2>&1
-  fi
-  if [ "$rc" -eq 0 ]; then
-    echo "  ✓ clean"
-  else
-    echo "  ✗ vulnerabilities found above$( [ -n "$out" ] && echo " (also written to $out)")"
-    fail=1
-  fi
-fi
-
-# ---- trivy: OS and bundled-package CVEs for every pinned capability image ----
-if skip_has trivy; then
-  echo; echo "▸ trivy — skipped"
-else
-  echo; echo "▸ trivy · container image CVEs"
-  any=0
-  for svc in "$AXON_ROOT"/capabilities/*/service.toml; do
-    [ -f "$svc" ] || continue
-    image="$(toml_get image "$svc")"
-    tag="$(toml_get tag "$svc")"
-    [ -z "$image" ] && continue
-    any=1
-    cap="$(basename "$(dirname "$svc")")"
-    ref="$image:${tag:-latest}"
-    echo "  · $cap — $ref"
-    out="$(sarif_path "trivy-$cap")"
-    # No --ignorefile: trivy-ignore/ emptied on 2026-08-28 (52aa8c5) and the per-capability
-    # policy plumbing went with it. trivy runs against its own defaults now, which is what
-    # "the scanners' native configs" means here — if an accepted finding is needed again,
-    # it is written in the format trivy already reads, and this reads the date back.
-    if trivy image --scanners vuln --list-all-pkgs=false --table-mode detailed --exit-code 1 --severity CRITICAL,HIGH "$ref"; then
-      rc=0
-    else
-      rc=1
-    fi
-    # same single-value --format limitation as osv-scanner above: a second
-    # pass for the SARIF file, so the console table isn't silently dropped.
-    if [ -n "$out" ]; then
-      trivy image --scanners vuln --list-all-pkgs=false --exit-code 1 --severity CRITICAL,HIGH --format sarif --output "$out" "$ref" >/dev/null 2>&1
-    fi
-    if [ "$rc" -eq 0 ]; then
-      echo "    ✓ clean (CRITICAL/HIGH)"
-    else
-      echo "    ✗ CRITICAL/HIGH finding(s) above$( [ -n "$out" ] && echo " (also written to $out)")"
-      fail=1
-    fi
+  # Build-artifact dirs stay out: generated, not code, and capabilities/*/target alone runs to
+  # thousands of files (6879 measured in scouting/target). Same set .gitignore excludes.
+  # to-integrate/ joins them for the reason .gitignore excludes it
+  # (README.md#scratch-is-not-documentation): pre-git scratch holding whole vendored projects,
+  # not Axon's code. bazel-* stays listed after PRD Q44 retired Bazel — the symlinks it left
+  # still point at multi-gigabyte trees on existing checkouts.
+  args="scan source -r --config $AXON_ROOT/osv-scanner.toml"
+  for d in target bazel-bin bazel-out bazel-testlogs node_modules to-integrate; do
+    args="$args --experimental-exclude $d"
   done
-  [ "$any" -eq 0 ] && echo "  · no capability declares an image in service.toml"
+  # osv-scanner enforces osv-scanner.toml's ignoreUntil dates itself and names a lapsed entry
+  # under "unused ignores", which is why Axon carries no clock of its own any more.
+  osv-scanner $args "$AXON_ROOT"
+  rc=$?
+  case "$rc" in
+    0) echo "  ✓ clean" ;;
+    1) echo "  ✗ vulnerabilities found above"; fail=1 ;;
+    *) echo "  ? osv-scanner errored (exit $rc)"; fail=1 ;;
+  esac
 fi
 
 echo
-# Repeated at the bottom because the per-policy line is one row inside whatever table the
-# scanner printed above it, and a date ten days out is the thing most worth not scrolling
-# back for.
-if [ -n "$EXPIRY_LAPSED" ]; then
-  echo "── exception policies past their date:$EXPIRY_LAPSED"
-  echo "   The scanner no longer honours them, so these findings are live again. Re-decide"
-  echo "   with fresh evidence or delete the entries — an expired policy is not a policy."
-fi
-if [ -n "$EXPIRY_WARNED" ]; then
-  echo "── exception policies needing a re-decision inside $(expiry_warn_days)d:$EXPIRY_WARNED"
-fi
-if [ "$fail" -eq 0 ]; then
-  echo "── audit: clean ──"
-else
+[ "$setup" -eq 1 ] && echo "── a scanner is not installed; its surface was not scanned ──"
+if [ "$fail" -ne 0 ]; then
   echo "── audit: finding(s) — see above ──"
+  exit 1
 fi
-exit "$fail"
+[ "$setup" -ne 0 ] && exit 2
+echo "── audit: clean ──"
+exit 0

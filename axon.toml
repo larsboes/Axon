@@ -27,37 +27,17 @@ name = "axon"
 # this default instead.
 overlay = "~/.axon-overlay"
 
-[upstream]
-# Cooldown hold before adopting/bumping an upstream release. Single source for these
-# numbers — capabilities/agentbox reads them here for its host-install gate and nothing
-# hardcodes 7/14. (Quoted per toml.sh's scalar contract.)
+# [upstream] cooldown_min_days / cooldown_max_days stood here until 2026-09-02, when Q_AUDIT
+# deleted the adoption hold. All three readers went with it in the same change:
+# capabilities/agentbox's host-install gate, renovate.json5's minimumReleaseAge restatement, and
+# this file's own claim to be their one home. There is no replacement value, because there is
+# nothing to wait out (README.md#patch-first).
 #
-# One unavoidable second copy: renovate.json5 restates cooldown_min_days as
-# minimumReleaseAge, because Renovate runs as a GitHub App and cannot read this file.
-# The two must move together; that config says so at the setting. Renovate applies it as a
-# hard hold rather than the recommendation tools/upstream-checker used to report before
-# PRD Q41 deleted it on 2026-08-28.
-cooldown_min_days = "7"
-cooldown_max_days = "14"
-
-[audit]
-# How far ahead tools/audit warns that a security exception is about to lapse. Same
-# contract as the cooldown window above: one home for the number, nothing hardcodes it.
-#
-# It is a re-decision window, not a deadline. trivy and osv-scanner each enforce their own
-# expiry dates silently at scan time — neither says a date is coming, and neither explains
-# why a finding reappeared once it passed. This is the only value that turns those dates
-# into notice rather than a red build nobody scheduled.
-#
-# 14, matching cooldown_max_days above — the same order of magnitude for "a window in
-# which a human is expected to act". 30 was tried first and warned on all three image
-# policies at once, including one 27 days out: two of them are written with a 14-day life,
-# so a 30-day window fires on the day the policy is authored and carries no information.
-# This repo already knows where that ends up — a gate that warns permanently about entries
-# where nothing is wrong "is one people learn to skim" (tools/upstream-checker, retired
-# 2026-08-28 — the lesson outlived the script).
-# (Quoted per toml.sh's scalar contract.)
-expiry_warn_days = "14"
+# [audit] expiry_warn_days stood here too, and had one reader: tools/audit's expiry clock, which
+# warned before an osv-scanner.toml ignoreUntil lapsed. osv-scanner enforces those dates itself
+# and names a lapsed entry under `unused ignores`, so the pre-warning was the only thing Axon
+# added and the only thing given up. A manifest key with no reader is the decay this file's own
+# header argues against, which is why both blocks are deleted rather than left as history.
 
 [release]
 # Which tags are release tags (README.md#the-release-line). Six call sites across bash and

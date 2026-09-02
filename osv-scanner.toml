@@ -1,7 +1,7 @@
 # Temporary informational-advisory exceptions. Both carry an expiry; known vulnerabilities
-# remain blocking regardless. `tools/audit --expiry` reports the date and tools/doctor
-# surfaces it, so the re-decision is prompted before osv-scanner starts reporting these
-# again rather than after.
+# remain blocking regardless. osv-scanner enforces these dates itself, and names an entry it
+# no longer honours under `unused ignores` — which is why Axon stopped carrying a clock of its
+# own on 2026-09-02 (Q_AUDIT).
 #
 # Neither replacement is tracked in an issue. retired-tracker#182 used to hold both, and what
 # it actually said was "review upstream-supported migration paths" with no consumer, no
