@@ -44,18 +44,18 @@ CMD="${1:-}"; CAP="${2:-}"; FLAG="${3:-}"
 case "$FLAG" in ''|--no-hold) ;; *) echo "service-runner.sh: unknown flag '$FLAG'" >&2; usage ;; esac
 [ -n "$CMD" ] || usage
 
-# AXON_CONTAINER_RUNTIME is manifest vocabulary, not always the command name
-# (apple-container's CLI is `container`). Resolve the binary lazily, on the first
-# container operation, so a machine running only process capabilities never needs a
-# container runtime installed at all -- and an unresolvable runtime still says so by
-# name. It used to surface as bash's `command not found` from inside start_service --
-# which is how the launchd-PATH defect stayed invisible for two weeks (see
-# install_persistence).
+# AXON_CONTAINER_RUNTIME is manifest vocabulary that happens to be the command name for
+# both runtimes left. Resolve the binary lazily, on the first container operation, so a
+# machine running only process capabilities never needs a container runtime installed at
+# all -- and an unresolvable runtime still says so by name. It used to surface as bash's
+# `command not found` from inside start_service -- which is how the launchd-PATH defect
+# stayed invisible for two weeks (see install_persistence). That defect is why the lookup
+# still runs: on macOS the docker CLI is OrbStack's, at ~/.orbstack/bin/docker, which a
+# login shell has on PATH and a bare launchd or cron environment does not.
 RUNTIME_BIN=""; RUNTIME_PATH=""
 resolve_runtime() {
   [ -z "$RUNTIME_PATH" ] || return 0
   case "$AXON_CONTAINER_RUNTIME" in
-    apple-container) RUNTIME_BIN="container" ;;
     docker|podman)   RUNTIME_BIN="$AXON_CONTAINER_RUNTIME" ;;
     *)
       echo "service-runner.sh: unsupported container_runtime '$AXON_CONTAINER_RUNTIME' (axon-overlay/config/machine.toml)" >&2
@@ -255,7 +255,6 @@ IMAGE="$(toml_get image "$MANIFEST")"
 TAG="$(toml_get tag "$MANIFEST")"
 ENV_FILE_REL="$(toml_get env_file "$MANIFEST")"
 ENV_FILE="$AXON_PERSONAL_ROOT/$ENV_FILE_REL"
-MANAGED_VOLUME="$(toml_get managed_volume "$MANIFEST")"
 NETWORK_MODE="$(toml_get network_mode "$MANIFEST")"
 
 PORTS=()
@@ -292,8 +291,7 @@ CONTAINER_ARGS=(--name "$NAME")
 #
 # cap_add: Linux capabilities the image needs beyond the runtime's default set — pihole's
 # NET_ADMIN, and nothing else so far. Bare names, no CAP_ prefix: docker's canonical form,
-# and apple-container accepts it too (verified 2026-07-28 by watching the CapEff bit move,
-# not by reading --help).
+# which podman takes too.
 for c in ${CAP_ADD[@]+"${CAP_ADD[@]}"}; do CONTAINER_ARGS+=(--cap-add "$c"); done
 if [ -n "$NETWORK_MODE" ]; then
   # host (or other) networking: join the host network namespace. `ports` are NOT
@@ -303,23 +301,17 @@ if [ -n "$NETWORK_MODE" ]; then
 else
   for p in ${PORTS[@]+"${PORTS[@]}"}; do CONTAINER_ARGS+=(-p "$p"); done
 fi
-# One managed volume per capability, named "axon-$CAP-data" — the shape its only consumer
-# ever needed (postgres, one volume entry, retired 2026-08-27). NO manifest declares
-# managed_volume today; the branch is kept because the constraint that forced it has not
-# changed — apple-container's virtiofs bind mounts still refuse guest-side chown/chmod — and
-# the next image whose entrypoint chowns its data dir will need it on the first try.
-# tools/service-runner.test.sh keeps it exercised. Extend with a per-entry name if a
-# capability ever needs more than one managed volume.
+# The `managed_volume = "true"` field and the runtime volume it created stood here until
+# 2026-09-02 (Q_CONTAINER). It existed for exactly one runtime property — apple-container's
+# virtiofs bind mounts refused guest-side chown/chmod — and docker and podman share the host
+# filesystem with real Unix ownership, so with apple-container gone the field had nothing
+# left to do. Its only consumer, postgres, retired on 2026-08-27 (PRD Q45). The PARSE is
+# deleted along with the branch, deliberately: a field still read and then ignored would put
+# a capability's data somewhere other than where its manifest says, with nothing reporting it.
 for v in ${VOLUMES[@]+"${VOLUMES[@]}"}; do
   host_path="${v%%:*}"
   container_path="${v#*:}"
-  if [ "$MANAGED_VOLUME" = "true" ] && [ "$AXON_CONTAINER_RUNTIME" = "apple-container" ]; then
-    # See schemas/service.toml.example — works around virtiofs bind mounts not
-    # supporting guest-side chown/chmod (confirmed on the postgres image, 2026-08).
-    vol_name="axon-$CAP-data"
-    container volume inspect "$vol_name" >/dev/null 2>&1 || container volume create "$vol_name" >/dev/null
-    CONTAINER_ARGS+=(-v "$vol_name:$container_path")
-  elif [ "${host_path#/}" != "$host_path" ]; then
+  if [ "${host_path#/}" != "$host_path" ]; then
     # An absolute host path is a system path the container needs from the machine
     # itself, not data the overlay owns: /run/dbus so home-assistant can reach the
     # host's message bus for Bluetooth, /etc/localtime so its clock matches. Used
@@ -702,45 +694,14 @@ status_process() {
   printf '  %-14s %-9s %-22s %s\n' "$CAP" "process" "$state" "$health"
 }
 
-# apple-container's apiserver is its own launchd XPC service, separate from the
-# containers it hosts. After a reboot it is neither running nor registered, and every
-# `container` call dies with "XPC connection error: Connection invalid" -- nothing else
-# brings it back, so starting it is part of starting a capability. docker/podman daemons
-# own their lifecycle (Docker Desktop, systemd) and are deliberately not managed here.
-ensure_runtime() {
-  [ "$AXON_CONTAINER_RUNTIME" = "apple-container" ] || return 0
-  # Match on the status field, not the exit code: `container system status` exits 0 in
-  # both states and only differs in what it prints.
-  "$RUNTIME_BIN" system status 2>/dev/null | stream_matches -E '^status[[:space:]]+running' && return 0
-  "$RUNTIME_BIN" system start
-}
-
-# Fully-qualified image reference for whichever runtime we're on.
-#
-# apple-container needs an explicit registry, docker/podman default to Docker Hub. Until
-# 2026-07-26 the apple-container branch just prefixed "docker.io/" unconditionally, which
-# silently made the `image` field unable to name any other registry: a capability pinned to
-# ghcr.io/... became docker.io/ghcr.io/... on macOS. That is why the home-assistant
-# capability pointed at the Docker Hub mirror rather than the ghcr image the family node
-# actually runs — a pin to a different artifact than the live one.
-#
-# The registry test is Docker's own: a reference has a registry when its first path segment
-# contains a dot or a colon, or is exactly "localhost". Anything else is a Docker Hub short
-# name and keeps the exact docker.io/<name> form this script already used — postgres and
-# vaultwarden run on macOS through that form today, so the working path is left alone and
-# only the broken one (an already-qualified reference getting prefixed anyway) changes.
-qualified_image() {
-  local ref="$IMAGE:$TAG" first="${IMAGE%%/*}"
-  case "$AXON_CONTAINER_RUNTIME" in
-    apple-container)
-      case "$first" in
-        *.*|*:*|localhost) echo "$ref" ;;          # already registry-qualified — pass through
-        *)                 echo "docker.io/$ref" ;; # Docker Hub short name — unchanged behaviour
-      esac
-      ;;
-    *) echo "$ref" ;;                              # docker/podman resolve short names themselves
-  esac
-}
+# ensure_runtime() and qualified_image() stood here until 2026-09-02 (Q_CONTAINER). Both
+# existed for apple-container alone. ensure_runtime revived its apiserver, a launchd XPC
+# service that a reboot left neither running nor registered; docker and podman daemons own
+# their own lifecycle (OrbStack, Docker Desktop, systemd) and are deliberately not managed
+# from here. qualified_image prefixed a Docker Hub short name with `docker.io/` because
+# apple-container demanded an explicit registry; docker and podman resolve short names
+# themselves, so start_service below passes `$IMAGE:$TAG` — the reference the manifest
+# declares — through as written.
 
 # Three states, not two. The old existence-only check re-issued `start` against an
 # already-running container on every 30s watchdog cycle, and the resulting error is why
@@ -749,18 +710,14 @@ qualified_image() {
 # Idempotent: resume_service reaches start_service, and container_init appends to
 # arrays, so calling it twice would build a doubled argv.
 #
-# ensure_runtime belongs here, not at each verb, and specifically between resolve_runtime
-# and container_init. It needs $RUNTIME_BIN, which resolve_runtime sets; and container_init
-# issues the first runtime CLI call of the process -- `container volume create` for a
-# managed_volume capability. With `set -e`, that call failing against a dead apiserver
-# aborted start_service before the ensure_runtime that would have revived it, so a Mac whose
-# apiserver went down never recovered on its own (#125). One gate in front of every caller
-# is what makes that ordering impossible to get wrong again.
+# There was a third step here, ensure_runtime, ordered between these two because
+# container_init issued the process's first runtime CLI call and a dead apple-container
+# apiserver killed the run before the recovery could fire (#125). It retired with that
+# runtime on 2026-09-02 (Q_CONTAINER); container_init now issues no runtime call at all.
 CONTAINER_READY=0
 container_prepare() {
   if [ "$CONTAINER_READY" -eq 1 ]; then return 0; fi
   resolve_runtime
-  ensure_runtime
   container_init
   CONTAINER_READY=1
 }
@@ -771,28 +728,14 @@ start_service() {
     echo "service-runner.sh: '$CAP' is held for maintenance, not starting ($MAINT_LOCK)"
     return 0
   fi
-  case "$AXON_CONTAINER_RUNTIME" in
-    apple-container)
-      if "$RUNTIME_BIN" list --format json 2>/dev/null | stream_matches "\"id\":\"$NAME\""; then
-        :  # already running
-      elif "$RUNTIME_BIN" list -a --format json 2>/dev/null | stream_matches "\"id\":\"$NAME\""; then
-        report_arg_drift >&2 || true
-        "$RUNTIME_BIN" start "$NAME"
-      else
-        "$RUNTIME_BIN" run -d "${CONTAINER_ARGS[@]}" "$(qualified_image)"
-      fi
-      ;;
-    docker|podman)
-      if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | stream_matches -x "$NAME"; then
-        :  # already running
-      elif "$RUNTIME_BIN" ps -a --format '{{.Names}}' 2>/dev/null | stream_matches -x "$NAME"; then
-        report_arg_drift >&2 || true
-        "$RUNTIME_BIN" start "$NAME"
-      else
-        "$RUNTIME_BIN" run -d --restart unless-stopped "${CONTAINER_ARGS[@]}" "$(qualified_image)"
-      fi
-      ;;
-  esac
+  if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | stream_matches -x "$NAME"; then
+    :  # already running
+  elif "$RUNTIME_BIN" ps -a --format '{{.Names}}' 2>/dev/null | stream_matches -x "$NAME"; then
+    report_arg_drift >&2 || true
+    "$RUNTIME_BIN" start "$NAME"
+  else
+    "$RUNTIME_BIN" run -d --restart unless-stopped "${CONTAINER_ARGS[@]}" "$IMAGE:$TAG"
+  fi
 }
 
 # recreate — apply the current declaration to an existing container.
@@ -836,11 +779,7 @@ resume_service() {
 # capability holds on disk. One call per drift report, reused across all five classes.
 inspect_json() {
   container_prepare
-  case "$AXON_CONTAINER_RUNTIME" in
-    apple-container) "$RUNTIME_BIN" list -a --format json 2>/dev/null ;;
-    docker|podman)   "$RUNTIME_BIN" inspect "$NAME" --format '{{json .}}' 2>/dev/null ;;
-    *) return 1 ;;
-  esac
+  "$RUNTIME_BIN" inspect "$NAME" --format '{{json .}}' 2>/dev/null
 }
 
 # The classes report_arg_drift walks, in the order an operator would act on them. Each one is an
@@ -869,10 +808,7 @@ report_arg_drift() {
 
   d="$(mktemp)"; r="$(mktemp)"
   declared_runspec ${CONTAINER_ARGS[@]+"${CONTAINER_ARGS[@]}"} | sort > "$d"
-  case "$AXON_CONTAINER_RUNTIME" in
-    apple-container) printf '%s\n' "$json" | runspec_from_apple "$NAME" > "$r" ;;
-    docker|podman)   printf '%s\n' "$json" | runspec_from_docker      > "$r" ;;
-  esac
+  printf '%s\n' "$json" | runspec_from_docker > "$r"
 
   for class in $RUNARG_CLASSES; do
     if ! out="$(runspec_diff "$d" "$r" "$class")"; then
@@ -886,10 +822,7 @@ report_arg_drift() {
   envfile="$(grep '^envfile ' "$d" | head -1 | sed 's/^envfile //')"
   rm -f "$d" "$r"
   if [ -n "$envfile" ]; then
-    case "$AXON_CONTAINER_RUNTIME" in
-      apple-container) out="$(printf '%s\n' "$json" | env_from_apple "$NAME" | env_diff "$envfile")" || rc=1 ;;
-      docker|podman)   out="$(printf '%s\n' "$json" | env_from_docker        | env_diff "$envfile")" || rc=1 ;;
-    esac
+    out="$(printf '%s\n' "$json" | env_from_docker | env_diff "$envfile")" || rc=1
     [ -n "$out" ] && printf '  env-file:\n%s\n' "$out"
   fi
 
@@ -900,8 +833,7 @@ report_arg_drift() {
 status_service() {
   container_prepare
   local state="stopped" report="" classes=""
-  if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | stream_matches -x "$NAME" \
-     || "$RUNTIME_BIN" list --format json 2>/dev/null | stream_matches "\"id\":\"$NAME\""; then
+  if "$RUNTIME_BIN" ps --format '{{.Names}}' 2>/dev/null | stream_matches -x "$NAME"; then
     state="running"
   fi
   if maintenance_hold_active 2>/dev/null; then state="$state, held"; fi
@@ -978,13 +910,14 @@ persistence_applicable() {
       return 0
       ;;
     watchdog)
+      # A container capability never gets a supervisor unit: both remaining runtimes restart
+      # it themselves (`--restart unless-stopped`, start_service above), and a unit calling
+      # `start` every 30s would fight the runtime. This branched on the runtime until
+      # 2026-09-02 (Q_CONTAINER), because apple-container had no restart policy and was the
+      # one case where a container did need a watchdog.
       if [ "$KIND" = container ]; then
-        case "$AXON_CONTAINER_RUNTIME" in
-          docker|podman)
-            echo "$AXON_CONTAINER_RUNTIME restarts it natively (--restart unless-stopped) — no watchdog needed"
-            return 1
-            ;;
-        esac
+        echo "$AXON_CONTAINER_RUNTIME restarts it natively (--restart unless-stopped) — no watchdog needed"
+        return 1
       fi
       echo "autostart declared"
       return 0

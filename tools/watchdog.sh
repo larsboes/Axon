@@ -1,8 +1,11 @@
 #!/bin/bash
 # Generic watchdog: `watchdog.sh <capability>` keeps calling
-# `service-runner.sh start <capability>`. Only meaningful for runtimes with
-# no native restart policy (apple-container) — service-runner.sh skips
-# installing this on docker/podman since they already have one.
+# `service-runner.sh start <capability>`. It exists for kind = "process"
+# capabilities. A container capability never gets one: docker and podman restart
+# it themselves (`--restart unless-stopped`) and service-runner.sh's
+# persistence_applicable says so rather than installing a unit that would fight
+# the runtime. apple-container had no restart policy and was the one runtime that
+# made this file apply to a container; it retired 2026-09-02 (Q_CONTAINER).
 set -euo pipefail
 CAP="${1:?usage: watchdog.sh <capability>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

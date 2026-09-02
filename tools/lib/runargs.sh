@@ -72,8 +72,8 @@ normalize_cap() {
 # normalize_network <name> — the network a container is on.
 # Absent, "default" and "bridge" are one state: the runtime's own default network. Axon manifests
 # only ever declare `host` or nothing (schemas/service.toml.example), so collapsing them cannot
-# hide a declared change — it only stops docker's "default"/"bridge" and apple-container's
-# "default" from reading as a difference between two identically configured containers.
+# hide a declared change — it only stops docker's two spellings of its own bridge from reading as
+# a difference between two identically configured containers.
 normalize_network() {
   case "${1:-}" in
     ""|default|bridge) printf 'default\n' ;;
@@ -137,32 +137,16 @@ runspec_from_docker() {
   ' 2>/dev/null | sort
 }
 
-# runspec_from_apple <name> <stdin: `container list -a --format json`>
-#
-# apple-container reports the whole inventory, so the container is selected here rather than by
-# the caller: filtering on the name is part of reading its answer, not a separate concern. Its
-# mount shape carries the kind as the single key of a `type` object — `volume` (name under
-# type.volume.name) or `virtiofs` (a bind, whose source is the host path).
-runspec_from_apple() {
-  jq -r --arg n "${1:?runspec_from_apple needs a container name}" '
-    .[]? | select(.configuration.id == $n) | .configuration
-    | (.publishedPorts[]? | "port \(.hostAddress // "0.0.0.0"):\(.hostPort):\(.containerPort)/\(.proto // "tcp")"),
-      (.mounts[]? | (.type | keys[0]) as $k | select($k != "tmpfs")
-        | "mount \(if $k == "volume" then .type.volume.name else .source end):\(.destination)"),
-      (.capAdd[]? | "cap \(ascii_upcase | sub("^CAP_"; ""))"),
-      ("network \(([.networks[]?.network] | first) // "" | if . == "" or . == "bridge" or . == "default" then "default" else . end)")
-  ' 2>/dev/null | sort
-}
+# runspec_from_apple() and env_from_apple() stood here until 2026-09-02 (Q_CONTAINER). They read
+# apple-container's own inventory JSON, which reported every container at once and carried a
+# mount's kind as the single key of a `type` object. No machine runs that runtime now, and a
+# reader for a JSON shape nothing produces is a second answer waiting to diverge from the first.
 
-# env_from_docker / env_from_apple <stdin: the same JSON as above> — KEY=VALUE, one per line.
+# env_from_docker <stdin: the same JSON as above> — KEY=VALUE, one per line.
 #
 # These carry secret VALUES. Nothing may print, log or redirect their output to a file; it exists
 # only to be piped into env_diff(), which compares in memory and reports key names.
 env_from_docker() { jq -r '.Config.Env[]?' 2>/dev/null; }
-env_from_apple() {
-  jq -r --arg n "${1:?env_from_apple needs a container name}" \
-    '.[]? | select(.configuration.id == $n) | .configuration.initProcess.environment[]?' 2>/dev/null
-}
 
 # --- comparison ------------------------------------------------------------------------
 

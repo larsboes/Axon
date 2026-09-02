@@ -18,10 +18,10 @@ set -uo pipefail
 fails=0
 fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 
-# bun is what holds a real port, so the stop/start half of this file needs it and the
-# apple-container half does not. Skipped rather than fatal, matching protection-zones.test.sh:
-# on a host with no bun, refusing to run at all would mean the runtime-gate regression below
-# never executes (#127). The skip is printed, never silent.
+# bun is what holds a real port, so the stop/start half of this file needs it and the rest of
+# the file does not. Skipped rather than fatal, matching protection-zones.test.sh: on a host
+# with no bun, refusing to run at all would mean every check below never executes (#127). The
+# skip is printed, never silent.
 HAVE_BUN=1
 command -v bun >/dev/null 2>&1 || HAVE_BUN=0
 
@@ -234,94 +234,12 @@ seen="$(inference_backend_seen)"
 [ "$seen" = "<unset>" ] \
   || fail "a machine declaring no [inference] backend still exported one (saw '$seen')"
 
-# --- the runtime gate must precede every runtime call (#125) ----------------
-# apple-container's apiserver is a separate launchd XPC service. When it is down, every
-# `container` call fails with "XPC connection error", and ensure_runtime exists to revive it.
-# It used to run inside start_service, after container_prepare had already reached
-# container_init -- which issues `container volume create` for a managed_volume capability.
-# Under `set -e` that call aborted the run before the recovery it was supposed to trigger, so a
-# Mac whose apiserver went down never came back on its own. Observed 2026-08-07: postgres stayed
-# down for 90 watchdog cycles, and punctuality crash-looped against it the whole time.
-#
-# Asserted as an ordering over the runtime's own call log rather than as an exit code, because
-# `start` can exit 0 for reasons that have nothing to do with the fix.
-AC_ROOT="$SCRATCH/ac"
-AC_OVERLAY="$SCRATCH/ac-overlay"
-AC_BIN="$SCRATCH/ac-bin"
-CALL_LOG="$SCRATCH/container-calls.log"
-RUNTIME_STATE="$SCRATCH/apiserver-state"
-
-mkdir -p "$AC_ROOT/tools/lib" "$AC_OVERLAY/config" "$AC_BIN" "$AC_ROOT/capabilities/volhog"
-cp "$SRC_TOOLS/service-runner.sh" "$SRC_TOOLS/capability.sh" "$AC_ROOT/tools/"
-cp "$SRC_TOOLS"/lib/*.sh "$AC_ROOT/tools/lib/"
-printf 'overlay = "%s"\n' "$AC_OVERLAY" > "$AC_ROOT/axon.toml"
-printf 'os = "darwin"\ncontainer_runtime = "apple-container"\ncapabilities = ["volhog"]\n' \
-  > "$AC_OVERLAY/config/machine.toml"
-
-# managed_volume is what makes container_init call the runtime at all. postgres was the only
-# capability that declared it, and the only one that got stuck; it was retired on 2026-08-27,
-# so this fixture is the whole of that coverage now — the image name below is the one the
-# behaviour was observed against, not a manifest that still exists.
-cat > "$AC_ROOT/capabilities/volhog/service.toml" <<'TOML'
-name = "volhog"
-image = "postgres"
-tag = "16-alpine"
-volumes = ["data/volhog/data:/var/lib/postgresql/data"]
-managed_volume = "true"
-TOML
-
-# The stand-in apiserver. It starts down, records every call, and refuses everything except
-# `system start`/`system status` until it is revived — which is exactly what the real one does.
-echo stopped > "$RUNTIME_STATE"
-cat > "$AC_BIN/container" <<SHIM
-#!/bin/bash
-echo "\$*" >> "$CALL_LOG"
-case "\$1 \${2:-}" in
-  "system status")
-    if [ "\$(cat "$RUNTIME_STATE")" = running ]; then echo "status             running"
-    else echo "apiserver is not running and not registered with launchd"; fi
-    exit 0 ;;                       # exits 0 in both states, like the real CLI
-  "system start")
-    echo running > "$RUNTIME_STATE"; exit 0 ;;
-esac
-if [ "\$(cat "$RUNTIME_STATE")" != running ]; then
-  echo 'Error: interrupted: "XPC connection error: Connection invalid"' >&2
-  echo "Ensure container system service has been started with \\\`container system start\\\`." >&2
-  exit 1
-fi
-case "\$1 \${2:-}" in
-  "volume inspect") exit 1 ;;       # absent, so the create path runs
-  "volume create")  exit 0 ;;
-  "list "*|list)    echo '[]'; exit 0 ;;
-  "run "*|run)      exit 0 ;;
-esac
-exit 0
-SHIM
-chmod +x "$AC_BIN/container"
-
-PATH="$AC_BIN:$PATH" "$AC_ROOT/tools/service-runner.sh" start volhog >/dev/null 2>&1
-ac_rc=$?
-
-[ -f "$CALL_LOG" ] || fail "the runtime was never called at all — this run proved nothing"
-first_volume="$(grep -n '^volume ' "$CALL_LOG" | head -1 | cut -d: -f1)"
-first_start="$(grep -n '^system start' "$CALL_LOG" | head -1 | cut -d: -f1)"
-
-# The falsifier. Before the fix, `volume create` ran first and `set -e` killed the run there,
-# so `system start` never appeared in this log at all.
-if [ -z "$first_start" ]; then
-  fail "the apiserver was never started; calls were: $(tr '\n' '|' < "$CALL_LOG")"
-elif [ -n "$first_volume" ] && [ "$first_volume" -lt "$first_start" ]; then
-  fail "a volume call preceded the runtime gate (volume at line $first_volume, start at $first_start)"
-fi
-[ "$ac_rc" -eq 0 ] || fail "start failed against a recoverable apiserver; rc=$ac_rc"
-
-# The control: with the apiserver already up, the gate must not restart it.
-: > "$CALL_LOG"
-echo running > "$RUNTIME_STATE"
-PATH="$AC_BIN:$PATH" "$AC_ROOT/tools/service-runner.sh" start volhog >/dev/null 2>&1
-if grep -q '^system start' "$CALL_LOG"; then
-  fail "the gate restarted an apiserver that was already running"
-fi
+# The runtime gate that stood here until 2026-09-02 (Q_CONTAINER) guarded #125: a dead
+# apple-container apiserver aborted start_service before ensure_runtime could revive it, so a
+# Mac whose apiserver went down never came back on its own. Both the gate and the runtime are
+# gone, and the failure has no mechanism left -- docker and podman daemons own their own
+# lifecycle. The fixture went with it: a synthetic `volhog` capability declaring
+# managed_volume = "true", whose only real consumer (postgres) retired 2026-08-27 under PRD Q45.
 
 # --- kind = "data": a file, not a process (PRD Q45) -----------------------------------------
 # capabilities/store declares the shared SQLite database so ONE manifest owns its backup

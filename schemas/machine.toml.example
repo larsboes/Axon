@@ -27,15 +27,16 @@
 # tools/lib/platform.sh reads these so capability scripts branch on them instead of
 # assuming macOS.
 #
-#   macOS workstation:  os = "macos"    container_runtime = "apple-container"
-#   macOS on Docker:    os = "macos"    container_runtime = "docker"
+#   macOS workstation:  os = "macos"    container_runtime = "docker"
 #   Linux server:       os = "linux"    container_runtime = "docker"
 #
-# The two macOS rows are both real: the fields are independent and neither is inferred from
-# the other. A Mac running Docker Desktop or colima is a deployment this repo supports, not a
-# mistyped `apple-container`, and tools/lib/platform.sh branches on each field separately.
+# The two fields are independent and neither is inferred from the other; platform.sh reads each
+# separately. Which daemon supplies the docker CLI is a further machine fact this file does not
+# record — OrbStack, Docker Desktop, colima and a Linux daemon all answer to `docker`.
+# `apple-container` was a third legal value until 2026-09-02, when Q_CONTAINER retired it;
+# upstreams.toml [apple-container] holds the dated verdict.
 os = "linux"                       # "macos" | "linux" | "windows"
-container_runtime = "docker"       # "apple-container" | "docker" | "podman"
+container_runtime = "docker"       # "docker" | "podman"
 
 # --- enabled capabilities (required, may be empty) -----------------------
 # Managed by tools/capability.sh enable/disable, which resolve each capability's

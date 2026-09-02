@@ -5,9 +5,10 @@
 # been running all along. This pointed at the Docker Hub mirror until 2026-07-26 for one
 # reason only: service-runner.sh's apple-container branch prefixed `docker.io/`
 # unconditionally, so a ghcr reference became docker.io/ghcr.io/… and the field could not name
-# any other registry. That prefix is conditional now (qualified_image), so the capability pins
-# the artifact that actually runs instead of a mirror of it — and taking this capability over
-# from the old compose stack becomes a restart, not a re-pull of a different image.
+# any other registry. That branch was made conditional on 2026-07-26 and deleted outright on
+# 2026-09-02 with apple-container itself (Q_CONTAINER) — service-runner.sh now passes the
+# reference through as written. The pin below is unaffected either way: it names the artifact
+# that actually runs rather than a mirror of it.
 name         = "homeassistant"
 image        = "ghcr.io/home-assistant/home-assistant"
 tag          = "2026.7.4"   # newest stable reviewed 2026-08-01; manifest digest sha256:5a531753.

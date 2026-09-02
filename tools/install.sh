@@ -174,14 +174,14 @@ if [ -f "$MACHINE_TOML" ]; then
 else
   DEFAULT_RUNTIME=""
   case "$DETECTED_OS" in
-    macos) DEFAULT_RUNTIME="apple-container" ;;
+    macos) DEFAULT_RUNTIME="docker" ;;
     linux) DEFAULT_RUNTIME="docker" ;;
   esac
   if [ -n "$DEFAULT_RUNTIME" ]; then
-    read -r -p "Container runtime [apple-container/docker/podman] [$DEFAULT_RUNTIME]: " RUNTIME_INPUT
+    read -r -p "Container runtime [docker/podman] [$DEFAULT_RUNTIME]: " RUNTIME_INPUT
     CONTAINER_RUNTIME="${RUNTIME_INPUT:-$DEFAULT_RUNTIME}"
   else
-    read -r -p "Container runtime [apple-container/docker/podman]: " CONTAINER_RUNTIME
+    read -r -p "Container runtime [docker/podman]: " CONTAINER_RUNTIME
   fi
   cat > "$MACHINE_TOML" <<EOF
 # This machine's identity — every fact that is true of THIS deployment instance and

@@ -2,15 +2,13 @@
 # Tests for tools/lib/runargs.sh — the canonical form that lets a declared run-time argument set be
 # compared with a running container's.
 #
-# Synthetic on purpose: the runtime JSON fixtures below are the real shapes (captured from
-# `container list -a --format json` and `docker inspect --format '{{json .}}'`), so the cases run
-# without a container runtime and cover every class the issue names — ports, mounts, capabilities,
-# network, and the env file whose values must never be rendered.
+# Synthetic on purpose: the runtime JSON fixture below is the real shape (captured from
+# `docker inspect --format '{{json .}}'`), so the cases run without a container runtime and cover
+# every class the issue names — ports, mounts, capabilities, network, and the env file whose
+# values must never be rendered.
 #
-# One deliberate departure from what the runtime prints: apple-container writes a volume's `source`
-# under the operator's home. It is genericized here because this file is tracked and public
-# (tools/check-publication-hygiene.sh), and nothing reads that field for a volume mount anyway —
-# the name comes from `type.volume.name`. Do not "restore" it.
+# There was a second fixture here, apple-container's inventory JSON, until 2026-09-02
+# (Q_CONTAINER). It went with runspec_from_apple and env_from_apple.
 set -uo pipefail
 
 _dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -83,7 +81,7 @@ eq "declared: host network, no ports" \
 network host" \
   "$(declared_runspec --name ha --network host --env-file /overlay/env/ha.env | sort)"
 
-# --- the running side, in each runtime's own shape ------------------------
+# --- the running side, in the runtime's own shape --------------------------
 docker_json='{
   "Config": {"Env": ["PATH=/usr/bin", "POSTGRES_PASSWORD=secret-value", "POSTGRES_DB=axon"]},
   "Mounts": [
@@ -110,30 +108,6 @@ port 127.0.0.1:5432:5432/tcp" \
 # default` would look like an addition on every single container.
 eq "docker: bare container still has a network" "network default" \
   "$(printf '{"HostConfig":{}}' | runspec_from_docker)"
-
-apple_json='[
- {"configuration":{"id":"other","publishedPorts":[{"containerPort":1,"hostAddress":"0.0.0.0","hostPort":1,"proto":"tcp"}],"networks":[{"network":"default"}]}},
- {"configuration":{
-   "id":"mine",
-   "publishedPorts":[{"containerPort":5432,"hostAddress":"0.0.0.0","hostPort":5432,"proto":"tcp"}],
-   "capAdd":["CAP_NET_ADMIN"],
-   "networks":[{"network":"default"}],
-   "mounts":[
-     {"destination":"/var/lib/postgresql/data","source":"/var/volumes/axon-postgres-data/volume.img","type":{"volume":{"name":"axon-postgres-data"}}},
-     {"destination":"/data","source":"/overlay/data/vaultwarden","type":{"virtiofs":{}}},
-     {"destination":"/run","source":"","type":{"tmpfs":{}}}
-   ],
-   "initProcess":{"environment":["PATH=/usr/bin","POSTGRES_PASSWORD=secret-value","POSTGRES_DB=axon"]}
- }}
-]'
-eq "apple: selects the named container, every class" \
-"cap NET_ADMIN
-mount /overlay/data/vaultwarden:/data
-mount axon-postgres-data:/var/lib/postgresql/data
-network default
-port 0.0.0.0:5432:5432/tcp" \
-  "$(printf '%s' "$apple_json" | runspec_from_apple mine)"
-eq "apple: a name that is not there" "" "$(printf '%s' "$apple_json" | runspec_from_apple absent)"
 
 # --- the comparison, per class --------------------------------------------
 S="$(mktemp -d)"; trap 'rm -rf "$S"' EXIT
