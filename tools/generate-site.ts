@@ -16,7 +16,7 @@
 //   units[].code   same reason: per-unit file and node counts come from that graph.
 //
 // Everything that remains traces to a tracked manifest: service.toml for kind/port/requires,
-// upstreams.toml for verdict/pin, and tools/self.ts's own coupling scan over Cargo.toml and
+// upstreams.toml for the verdict, and tools/self.ts's own coupling scan over Cargo.toml and
 // source imports.
 //
 // Self-contained by requirement (#14) and by house rule: inline CSS, no script, no font, no image,
@@ -46,7 +46,7 @@ interface Unit {
   service?: { kind: string; requires: string[]; port?: string; image?: string };
 }
 interface Coupling { from: string; to: string; kinds: string[]; evidence: string[] }
-interface Upstream { name: string; verdict: string; pin: string }
+interface Upstream { name: string; verdict: string }
 interface SelfModel { schema: number; generator: string; units: Unit[]; coupling: Coupling[]; upstreams: Upstream[] }
 
 
@@ -123,13 +123,13 @@ function renderUpstreams(upstreams: Upstream[]): string {
     .filter(([, list]) => list.length > 0);
   const body = groups.map(([verdict, list]) => `
     <h3>${esc(verdict)} <span class="count">${list.length}</span></h3>
-    <ul class="pins">
-${list.map((u) => `      <li><span>${esc(u.name)}</span>${u.pin ? `<code>${esc(u.pin)}</code>` : `<em>unpinned</em>`}</li>`).join("\n")}
+    <ul class="upstream-list">
+${list.map((u) => `      <li><span>${esc(u.name)}</span></li>`).join("\n")}
     </ul>`).join("\n");
   return `
 <section id="upstreams">
   <h2>Upstreams <span class="count">${upstreams.length}</span></h2>
-  <p class="blurb">Every external project Axon touches, with the verdict it was given and the exact ref consumed. No entry, no entry.</p>
+  <p class="blurb">Every external project Axon touches, with the verdict it was given. No entry, no entry. Each one tracks its upstream\u2019s latest release; the register records no version.</p>
 ${body}
 </section>`;
 }

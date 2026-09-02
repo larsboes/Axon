@@ -49,7 +49,7 @@ pub(crate) async fn repos_handler() -> Result<Json<Value>, (StatusCode, Json<Val
 // plumbing the item exists to delete.
 //
 // The doctrine half of that page did not need this endpoint and still does not: `self.json`
-// carries `{name, verdict, pin}` for every entry in `upstreams.toml`, read straight from the
+// carries `{name, verdict}` for every entry in `upstreams.toml`, read straight from the
 // manifest by `tools/self generate`, and `/self` below already serves it. What is gone is
 // the enforcement verdict, which Dependabot's pull requests and alerts now report on GitHub.
 

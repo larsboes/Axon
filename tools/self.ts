@@ -71,7 +71,8 @@ interface SelfModel {
   }>;
   /** Compile-time coupling: what is pulled into what. Distinct from service `requires`. */
   coupling: Array<{ from: string; to: string; kinds: string[]; evidence: string[] }>;
-  upstreams: Array<{ name: string; verdict: string; pin: string }>;
+  /** url/verdict/license/why is the whole register; `pin` was deleted 2026-09-02 (Q_DEPIN). */
+  upstreams: Array<{ name: string; verdict: string }>;
   /** Honest accounting of what the code graph could not attribute. */
   graph: { present: boolean; nodes: number; external: number; stale: string[]; unmatched: string[] };
 }
@@ -148,9 +149,9 @@ function readDeclaredServices(trackedPaths: Set<string>): Map<string, DeclaredSe
 function readUpstreams(): SelfModel["upstreams"] {
   const text = readText(`${AXON_ROOT}/upstreams.toml`);
   if (!text) return [];
-  const parsed = Bun.TOML.parse(text) as Record<string, { verdict?: string; pin?: string }>;
+  const parsed = Bun.TOML.parse(text) as Record<string, { verdict?: string }>;
   return Object.entries(parsed)
-    .map(([name, v]) => ({ name, verdict: v?.verdict ?? "", pin: v?.pin ?? "" }))
+    .map(([name, v]) => ({ name, verdict: v?.verdict ?? "" }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 

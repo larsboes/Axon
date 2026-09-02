@@ -116,7 +116,10 @@ whose error was silenced.
 
 ### F2 · Upstream drift
 
-Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
+Why: an upstream that moves and a deployment that does not is the drift worth watching. Q_DEPIN
+(2026-09-02) reversed the answer rather than the question: nothing is held at a version any more,
+so the risk is no longer "the bump is late" but "the bump landed and broke something", and what
+has to be visible is the pull request, the alert and the receipt.
 
 - [ ] ISC-8 — every entry a Dependabot pull request or alert names as behind or vulnerable
   is either merged or has a written reason it is held. Falsifier: an open Dependabot pull
@@ -129,13 +132,16 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
   2026-09-02, Q74: `renovate.json5` is deleted and `.github/dependabot.yml` replaces it.
   Dependabot needs no App, so the claim has an instrument for the first time — and the hold
   half is gone with the cooldown, so "held with a reason" now means a deliberate refusal,
-  never a timer.)
+  never a timer. 2026-09-02, Q_DEPIN: Dependabot pull requests carry `--auto --squash`
+  (`.github/workflows/dependabot-automerge.yml`), so the ordinary bump merges itself once the
+  required checks pass and this claim is about the exceptions only.)
 - [x] ISC-9 — the postgres 17.9 → 17.10 image decision is made on its own, not ridden
   along with another change. Falsifier: the bump appears in a commit about something else.
   Closed 2026-08-27 by PRD Q45, which retired the image rather than bumping it: the running
   17.9 instance is read once by `tools/migrate-pg-to-sqlite` and then stopped, so a 17.10
   decision has no subject. The constraint held either way — the retirement is its own
-  commit, and `upstreams.toml` `[postgres]` records the last pin that ran.
+  commit, and the version that ran is in `upstreams.toml`'s git history at that date (Q_DEPIN
+  deleted the field on 2026-09-02).
 
 ## Not yet specified
 

@@ -36,7 +36,7 @@ which its own header records as ported near-verbatim (MIT source), and no code v
 where noted below.
 Licenses vary by source, not "MIT throughout" — see each bullet and the linked `upstreams.toml`
 entry (`[academic-researcher]`, `[academic-writing-agents]`, `[research-paper-writing-skills]`,
-`[pengsida-research-notes]`) for the verdict/pin/license of record; the "unknown license"
+`[pengsida-research-notes]`) for the verdict and license of record; the "unknown license"
 placeholders from this pack's initial 2026-07-11 build were resolved 2026-07-14.
 - Citation-workflow content (`references/citation-workflows.md`'s bibliography/claim-evidence-map
   sections) and the three citation scripts (`scripts/resolve-papers.js`, `validate-bib.js`,

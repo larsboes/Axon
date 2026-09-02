@@ -1961,9 +1961,9 @@ const CHECKS: Check[] = [
   // "Is a dependency behind" needs the network and a registry per ecosystem — it was
   // always the check here that could not answer offline, and it spent most of its life
   // printing a manifest-format result under a supply-chain heading. What it did answer
-  // without the network — that every entry has a verdict and a pin — is doctrine about a
-  // documentation file, and README.md#dependency-verdicts-and-provenance now says plainly
-  // that a human owns it.
+  // without the network — that every entry has a verdict — is doctrine about a documentation
+  // file, and README.md#dependency-verdicts-and-provenance now says plainly that a human
+  // owns it.
 
   // There was an "Accepted-finding policies" check here until 2026-09-02. It delegated to
   // `tools/audit --expiry`, which read osv-scanner.toml's ignoreUntil dates and warned before

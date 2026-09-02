@@ -56,14 +56,13 @@ export const SITE_CSS = `
     padding: .1rem .35rem; border-radius: 4px; background: var(--code-bg);
     font: .85em ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere;
   }
-  .pins { margin: 0; padding: 0; list-style: none; display: grid; gap: .3rem;
+  .upstream-list { margin: 0; padding: 0; list-style: none; display: grid; gap: .3rem;
           grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr)); }
-  .pins li {
+  .upstream-list li {
     display: flex; align-items: baseline; justify-content: space-between; gap: .6rem;
     padding: .4rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card);
     font-size: .85rem;
   }
-  .pins em { color: var(--dim); font-size: .8rem; }
   footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--dim); font-size: .82rem; }
   footer code { background: none; padding: 0; }
   a { color: var(--accent); }

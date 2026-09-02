@@ -1,12 +1,12 @@
 # Every host binary Axon assumes is already installed on the machine. No entry, no check.
 #
 # WHY THIS IS NOT upstreams.toml. upstreams.toml is "external CODE Axon builds or consumes,"
-# with an audit verdict + pin + license (README.md#dependency-verdicts-and-provenance). This file is a different concern: "what
+# with an audit verdict + license (README.md#dependency-verdicts-and-provenance). This file is a different concern: "what
 # host tool must be on PATH for Axon's own scripts to run, and how do you install it." Most
 # entries here (git, jq, uv, gh, restic, docker, cargo) are host infrastructure with no
 # upstreams.toml entry at all — Axon doesn't build them, it just calls them. The few that are
 # ALSO adopted code (bun, bitwarden-cli, apfel, macmon, the scanners) carry `upstream = <id>`
-# pointing at their upstreams.toml section; the pin/license/why live THERE, never restated here
+# pointing at their upstreams.toml section; the license/why live THERE, never restated here
 # (README.md#schemas-and-dependency-direction "import, never redefine"; README.md#one-manifest-per-concern no duplication).
 #
 # Read by tools/toolchain-check (the only parser), surfaced by tools/install.sh (bootstrap)
@@ -23,8 +23,12 @@
 #   bin          = the executable name IF it differs from the section name (e.g. bitwarden-cli → bw).
 #   os           = "macos" | "linux" — scope the entry to one OS; the checker skips it elsewhere.
 #   upstream     = the upstreams.toml section id, when this tool is also audited code.
-#   min_version / version_cmd = optional floor; checked only when BOTH are present. version_cmd's
-#                  output is scanned for the first dotted-number token, compared via version.sh.
+#   min_version / version_cmd = optional FLOOR -- the oldest release Axon's use of the tool is
+#                  known to work on, never a version to install. Nothing holds a host at it:
+#                  capabilities/host-patch upgrades every package manager nightly (Q_DEPIN), so a
+#                  healthy machine sits above every floor here. Checked only when BOTH are
+#                  present. version_cmd's output is scanned for the first dotted-number token,
+#                  compared via version.sh.
 #   needed_by    = WHERE this tool applies, as a bare single-line array. Absent = core: needed on
 #                  every machine, always checked. Otherwise one or more of:
 #                    "workflow:<name>"          only when that workflow is invoked
@@ -92,7 +96,7 @@ bin = "bw"
 upstream = "bitwarden-cli"
 why = "the canonical secret store CLI (README.md#secrets): setup-secret.sh, bw-unlock, backup restore"
 install_macos = "brew install bitwarden-cli"
-install_linux = "npm i -g @bitwarden/cli   # or the pinned release in upstreams.toml"
+install_linux = "npm i -g @bitwarden/cli   # or the latest GitHub release"
 
 # ---- optional (feature/gate-scoped; absence warns, never fails) ------------------------
 
@@ -140,7 +144,7 @@ upstream = "macmon"
 version_cmd = "macmon --version"
 min_version = "0.7.0"
 why = "capabilities/macmon execs it as `macmon serve` for the dashboard's Systems page; tools/sysmon power execs the same binary as a TUI. Absent for weeks while the capability was enabled, because a capability's own command was not a declared tool here and nothing else looked."
-install_macos = "cargo install macmon --version 0.7.0 --locked"
+install_macos = "cargo install macmon --locked"   # latest; min_version above is a floor, not a target (Q_DEPIN)
 
 [yt-dlp]
 required = "optional"
@@ -175,7 +179,7 @@ install_linux = "curl -fsSL https://ollama.com/install.sh | sh"
 required = "optional"
 version_cmd = "tailscale version"
 min_version = "1.98.9"
-why = "capabilities/host-net execs `tailscale status --json`, `tailscale debug prefs` and `tailscale lock status` for its `tailnet` verb; a host without it degrades to a named error rather than an empty posture. Undeclared until 2026-09-02, which is the same silence the macmon and yt-dlp entries above record. It is a host daemon Axon calls and builds nothing from, so no `upstream` id, the reasoning [ollama] states. The floor is upstreams.toml [tailscale] `pin`, not the build host's incidental 1.102.3: the three subcommands are all long-standing, so the functional floor is far lower and unmeasured, and pinning the build host's own version would report every slightly older but working install as `outdated`. Below the reviewed pin is the one statement this can make with a source."
+why = "capabilities/host-net execs `tailscale status --json`, `tailscale debug prefs` and `tailscale lock status` for its `tailnet` verb; a host without it degrades to a named error rather than an empty posture. Undeclared until 2026-09-02, which is the same silence the macmon and yt-dlp entries above record. It is a host daemon Axon calls and builds nothing from, so no `upstream` id, the reasoning [ollama] states. The floor is the release this entry was reviewed against, not the build host's incidental 1.102.3: the three subcommands are all long-standing, so the functional floor is far lower and unmeasured, and writing the build host's own version here would report every slightly older but working install as `outdated`. Below the reviewed release is the one statement this can make with a source."
 # NO needed_by, and that is the decision rather than an omission. `capability:host-net` cannot
 # fire: toolchain-check resolves a capability scope against machine.toml's `capabilities` array
 # (tools/toolchain-check:133-137), and by convention every capability without a service.toml —
@@ -200,7 +204,7 @@ install_linux = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
 # declares container_runtime = "docker" and capabilities/agentbox invokes docker, so no machine
 # needs Apple's `container` executable to run Axon. Deleted rather than kept: toolchain.toml
 # declares what a machine must have, and a host tool nothing calls is a check that can only be
-# noise. upstreams.toml [apple-container] holds the dated verdict and the last pin.
+# noise. upstreams.toml [apple-container] holds the dated verdict.
 #
 # WHICH DAEMON supplies the docker CLI is a machine fact, not a second entry here. OrbStack does
 # on this Mac; Docker Desktop, colima or a Linux daemon do elsewhere. [docker] below is the whole
@@ -224,7 +228,7 @@ install_linux = "apt-get install -y podman"
 # [semgrep] stood here until 2026-09-02, when Q74 retired it. CodeQL already runs rust,
 # javascript-typescript, python and actions with the security-extended suite
 # (.github/workflows/codeql.yml), which is total overlap -- and semgrep's `--config auto`
-# downloaded its rules at scan time, so the pinned version described nothing that ran.
+# downloaded its rules at scan time, so the version recorded for it described nothing that ran.
 #
 # [trivy] stood here until the same date and ruling. .github/workflows/security.yml scans every
 # declared image with `grype registry:`, which needs no container runtime, and tools/audit no
@@ -237,7 +241,7 @@ needed_by = ["workflow:audit"]
 upstream = "gitleaks"
 why = "secret scan over git history — tools/audit"
 install_macos = "brew install gitleaks"
-install_linux = "apt-get install -y gitleaks   # or the pinned release in upstreams.toml"
+install_linux = "apt-get install -y gitleaks   # or the latest GitHub release"
 
 [osv-scanner]
 required = "optional"
@@ -246,20 +250,20 @@ bin = "osv-scanner"
 upstream = "osv-scanner"
 why = "dependency-CVE scan over every lockfile — tools/audit"
 install_macos = "brew install osv-scanner"
-install_linux = "go install github.com/google/osv-scanner/cmd/osv-scanner@<pin>   # see upstreams.toml"
+install_linux = "go install github.com/google/osv-scanner/cmd/osv-scanner@latest"
 
 [grype]
 required = "optional"
 needed_by = ["workflow:audit"]
 upstream = "grype"
 # Scoped to the audit workflow so a machine that runs the audit by hand is told it can also
-# scan an image before pinning one. tools/audit does NOT call it: the automated image scan is
+# scan an image before declaring one. tools/audit does NOT call it: the automated image scan is
 # .github/workflows/security.yml, which installs its own copy and runs whether or not this
 # machine is awake. This row is the local copy, for triaging an image a service.toml is about
-# to pin, and its absence is a warning by design rather than a failure.
+# to adopt, and its absence is a warning by design rather than a failure.
 why = "container-image CVE scan by hand — `grype registry:<image>:<tag>`, no container runtime"
 install_macos = "brew install grype"
-install_linux = "apt-get install -y grype   # or the pinned release in upstreams.toml"
+install_linux = "apt-get install -y grype   # or the latest GitHub release"
 
 [rsync]
 required = "optional"

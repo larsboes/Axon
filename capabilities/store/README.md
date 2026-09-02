@@ -7,8 +7,9 @@ capability talks to it is `libs/axon-store/README.md`.
 
 ## Verdict
 
-**Adopt, one file, `rusqlite` with the `bundled` feature.** The pin, the licence and the
-measurements behind the choice are `upstreams.toml` `[rusqlite]`. Bundled rather than the host's
+**Adopt, one file, `rusqlite` with the `bundled` feature.** The licence and the measurements
+behind the choice are `upstreams.toml` `[rusqlite]`; the version requirement is `Cargo.toml`'s,
+and Dependabot moves it. Bundled rather than the host's
 libsqlite3, so the deployment does not depend on whichever SQLite macOS or an Alpine image happens
 to ship — the failure that avoids is a build that works on the developer's machine and silently
 loses a function on the host.

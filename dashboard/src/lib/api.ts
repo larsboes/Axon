@@ -1122,7 +1122,7 @@ export interface SelfModel {
   generator: string;
   units: SelfUnit[];
   coupling: SelfCoupling[];
-  upstreams: Array<{ name: string; verdict: string; pin: string }>;
+  upstreams: Array<{ name: string; verdict: string }>;
   graph: { present: boolean; nodes: number; external: number; stale: string[]; unmatched: string[] };
 }
 
@@ -1177,8 +1177,8 @@ export interface RepoStatus {
 // and that route: their `status` field ('ok' | 'na' | 'warn' | 'fail') was
 // `tools/upstream-checker`'s verdict, and PRD Q41 retired the checker.
 //
-// The verdict/pin half is not lost and never came from here: `SelfModel.upstreams` below
-// carries `{name, verdict, pin}` for all 80 manifest entries, read from `upstreams.toml`
+// The verdict half is not lost and never came from here: `SelfModel.upstreams` below
+// carries `{name, verdict}` for every manifest entry, read from `upstreams.toml`
 // by `tools/self generate`, and `/self` renders it.
 
 /** How a capability's last backup stands against its own declared thresholds. */

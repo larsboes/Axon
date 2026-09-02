@@ -45,8 +45,8 @@ Metal/Apple-Silicon constraint.
 
 It is not an Axon capability. There is no `service.toml` for it and Axon neither installs
 nor supervises it: it is a `systems.toml` entry (`[omlx]`, host-native because Metal is
-unavailable inside the Linux runtime), and `upstreams.toml` pins the models it serves
-(`multilingual-e5-base-mlx`, `bge-reranker-v2-m3-mlx`) rather than the server. A machine
+unavailable inside the Linux runtime), and `upstreams.toml` carries the verdicts for the models it serves
+(`multilingual-e5-base-mlx`, `bge-reranker-v2-m3-mlx`) rather than for the server. A machine
 either has it running or configures roles that do not name it.
 
 Recorded here on 2026-08-25 because `capabilities/learning` was deleted (PRD D6). That
@@ -91,8 +91,8 @@ the same as a machine with no light role at all.
 
 ## Requirements
 
-macOS 26+, Apple Silicon, Apple Intelligence enabled. `brew install apfel`; the pin and the
-verdict live in `upstreams.toml [apfel]`, and `toolchain.toml` declares the binary under
+macOS 26+, Apple Silicon, Apple Intelligence enabled. `brew install apfel`; the verdict lives in
+`upstreams.toml [apfel]`, and `toolchain.toml` declares the binary under
 `needed_by = ["capability:foundation-models"]`, so an enabled capability with it missing is
 reported rather than found later in a watchdog log.
 
