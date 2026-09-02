@@ -8,16 +8,16 @@ name: Security
 #             the private overlay — the surface with no free scanning — is unreachable from
 #             this repository's CI. tools/audit is where the overlay gets scanned.
 #   SARIF     nothing uploads here, so no job needs `security-events: write` and a fork pull
-#             request cannot fail on a permission it never gets. A finding turns the job red
-#             and is read in its log. Adding the code-scanning tab back is a later decision
-#             with a stated cost, not an omission.
+#             request cannot fail on a permission it never gets. A source finding turns the
+#             `deps` job red and is read in its log; an IMAGE finding is report-only since
+#             Q_DEPIN and is read in the run summary (see the `images` job). Adding the
+#             code-scanning tab back is a later decision with a stated cost, not an omission.
 #
-# Both scanners install the LATEST release rather than the upstreams.toml pin. That is the one
-# place patch-first cuts the other way from pinning and it is on purpose: a scanner is judged
-# by whether its matcher and its database are current, so holding one at a pin makes the check
-# weaker, not safer. upstreams.toml records the version each verdict was written against.
-# Neither install pipes a script into a shell, and neither writes outside the runner's own
-# temporary directory.
+# Both scanners install the LATEST release, which since Q_DEPIN (2026-09-02) is what every
+# dependency here does — this workflow simply got there first, because a scanner is judged by
+# whether its matcher and its database are current. upstreams.toml records verdicts and no
+# versions at all now. Neither install pipes a script into a shell, and neither writes outside
+# the runner's own temporary directory.
 
 on:
   push:
@@ -61,9 +61,17 @@ jobs:
             --experimental-exclude node_modules \
             --experimental-exclude to-integrate .
 
+  # REPORT-ONLY, and that is the whole point of the job (Q_DEPIN, 2026-09-02). Every declared
+  # image tracks a rolling tag now, so a CVE published against an upstream base layer turns this
+  # red through no change of Axon's. Dependabot's pull requests auto-merge on the required checks
+  # (.github/workflows/dependabot-automerge.yml), and a dependency bump held back by somebody
+  # else's image is the exact failure the ruling was made to remove. `continue-on-error` keeps
+  # the conclusion green; the counts land in the run summary, where they are read on every run
+  # instead of only when something goes red.
   images:
     name: grype (every declared image)
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - name: Check out Axon
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -83,17 +91,67 @@ jobs:
         run: |
           set -uo pipefail
           rc=0; found=0
+          {
+            echo "## Image CVE scan"
+            echo
+            echo "Report-only: these counts never hold a merge (Q_DEPIN). The tag is a channel, so"
+            echo "what was scanned is whatever the registry serves for it right now."
+            echo
+            echo "| Image | Critical | High | Result |"
+            echo "|---|---:|---:|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
           for m in capabilities/*/service.toml; do
             image=$(sed -n 's/^image *= *"\([^"]*\)".*/\1/p' "$m" | head -1)
             [ -n "$image" ] || continue
             tag=$(sed -n 's/^tag *= *"\([^"]*\)".*/\1/p' "$m" | head -1)
+            ref="$image:${tag:-latest}"
             found=1
-            echo "::group::$image:${tag:-latest}"
+            echo "::group::$ref"
             # registry: pulls straight from the registry — no container runtime and no daemon
             # (grype's own help says so). Discovered from the manifests, never named here, so
             # a capability added tomorrow is covered without an edit.
-            grype "registry:$image:${tag:-latest}" --fail-on high || rc=1
+            #
+            # --fail-on high AND -o json, because the exit code carries the one distinction a
+            # count cannot make: grype exits 2 when it FOUND something at or above the
+            # threshold and 1 when it could not scan at all. Collapsing those into "non-zero"
+            # is how an unreachable registry reads as a clean image, or as a critical one.
+            grype "registry:$ref" --fail-on high -o json > "$RUNNER_TEMP/grype.json" 2> "$RUNNER_TEMP/grype.err"
+            grc=$?
+            case "$grc" in
+              0|2)
+                # `|| echo ?` on both: an exit code of 0 or 2 says grype ran, not that it
+                # wrote parseable JSON, and a jq failure must not print an empty cell that
+                # reads as zero.
+                crit=$(jq '[.matches[] | select(.vulnerability.severity == "Critical")] | length' "$RUNNER_TEMP/grype.json" 2>/dev/null || echo '?')
+                high=$(jq '[.matches[] | select(.vulnerability.severity == "High")] | length' "$RUNNER_TEMP/grype.json" 2>/dev/null || echo '?')
+                if [ "$grc" -eq 0 ]; then
+                  verdict="clean at or above high"
+                else
+                  verdict="findings at or above high"
+                  rc=1
+                fi
+                jq -r '.matches[] | select(.vulnerability.severity == "Critical" or .vulnerability.severity == "High")
+                       | "\(.vulnerability.severity)\t\(.vulnerability.id)\t\(.artifact.name) \(.artifact.version)"' \
+                  "$RUNNER_TEMP/grype.json" | sort -u
+                ;;
+              *)
+                # Not a verdict about the image. An unreachable registry, a rate limit, a
+                # manifest grype cannot read — say so instead of printing a zero.
+                crit="?"; high="?"
+                verdict="COULD NOT SCAN (grype exit $grc)"
+                rc=1
+                cat "$RUNNER_TEMP/grype.err" >&2
+                ;;
+            esac
+            printf '| `%s` | %s | %s | %s |\n' "$ref" "$crit" "$high" "$verdict" >> "$GITHUB_STEP_SUMMARY"
             echo "::endgroup::"
           done
-          [ "$found" -eq 1 ] || { echo "no capability declares an image" >&2; exit 1; }
+          if [ "$found" -ne 1 ]; then
+            # A real defect in this job, not a finding about an image: the discovery loop
+            # matched nothing, so the scan covered nothing while reporting success.
+            echo "no capability declares an image" >&2
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**No capability declares an image — this scan covered nothing.**" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           exit "$rc"
