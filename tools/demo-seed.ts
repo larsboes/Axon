@@ -175,6 +175,8 @@ const SEEDERS: Record<string, (ctx: Ctx) => Promise<string>> = {
       // No `content`, deliberately. Passing the body would make this a fixture with extra
       // steps; omitting it makes the server fetch and extract the page itself, which is the
       // behaviour worth demonstrating and the one that breaks loudly when extraction does.
+      // It is also why demo-up has to name this origin in `ingest_allowed_origins`: Comms
+      // refuses to fetch a loopback address unless the deployment wrote that permission down.
       const item = await post<{ item?: { id: string } ; id?: string }>(ingest, {
         url: `${ctx.manifest.origin}/articles/${article.slug}`,
         client: "demo-seed",

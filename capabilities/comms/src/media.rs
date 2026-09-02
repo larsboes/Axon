@@ -10,7 +10,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::config::Config;
+use crate::config::{self, Config};
 // `cap` is the extraction stage's cap, so it lives there; the alias keeps the
 // name every fetch_* arm already reads by.
 use crate::extraction::{
@@ -1033,12 +1033,26 @@ const MAX_REDIRECTS: usize = 3;
 /// `server/source_handlers.rs` fetches URLs that an external feed produced.
 /// CodeQL rust/request-forgery reported it against `extract_article`.
 ///
-/// Residual, deliberately not closed here: DNS rebinding. The name is resolved
-/// once for this check and again by the connector, so a record with a one-second
-/// TTL can answer public here and private there. Closing that needs the checked
-/// address to be the address the socket gets — a pinned `ClientBuilder::resolve`
-/// or a custom connector — which is a larger change than this guard, and one no
-/// unit test in this file could observe.
+/// One escape, and it is written down rather than inferred: an origin listed in
+/// the config's `ingest_allowed_origins` passes even when it resolves inside
+/// this machine. It exists for `tools/demo-up`, which stands a synthetic origin
+/// up on loopback and seeds Comms by asking it to fetch from there — the one
+/// caller that legitimately points ingest at this machine. Empty everywhere
+/// else; see [`crate::config::ingest_allowed_origins`].
+///
+/// Two residuals, both deliberate and neither closed here:
+///
+/// 1. **DNS rebinding.** The name is resolved once for this check and again by
+///    the connector, so a record with a one-second TTL can answer public here
+///    and private there. Closing it needs the checked address to be the address
+///    the socket gets — a pinned `ClientBuilder::resolve` or a custom connector
+///    — which is a larger change than this guard, and one no unit test in this
+///    file could observe.
+/// 2. **A blocking resolve on a redirect hop.** `to_socket_addrs` is
+///    synchronous, and `http_client`'s redirect policy calls this function from
+///    inside reqwest's own runtime thread, so a slow resolver on a hop can push
+///    a request past the 30 s timeout set beside that policy. One client per
+///    fetch bounds the damage to that fetch.
 fn check_destination(url: &str) -> Result<()> {
     let parsed = reqwest::Url::parse(url.trim())
         .map_err(|e| CommsError::Other(format!("refused: unparsable URL ({e})")))?;
@@ -1058,14 +1072,31 @@ fn check_destination(url: &str) -> Result<()> {
             "refused: {host} resolves to no address"
         )));
     }
-    // ANY, not ALL. A name that answers with one public address and one private
+    // ALL, not ANY. A name that answers with one public address and one private
     // address is the ordinary way this check is bypassed.
-    if addrs.iter().any(|a| !is_public(a.ip())) {
-        return Err(CommsError::Other(format!(
-            "refused: {host} resolves to a non-public address"
-        )));
+    if addrs.iter().all(|a| is_public(a.ip())) {
+        return Ok(());
     }
-    Ok(())
+    if origin_is_allowed(&parsed, &config::ingest_allowed_origins()) {
+        return Ok(());
+    }
+    Err(CommsError::Other(format!(
+        "refused: {host} resolves to a non-public address"
+    )))
+}
+
+/// Whether a URL's own origin — the scheme, host and port as written, never the
+/// address it resolved to — is one the operator listed.
+///
+/// Matching the written host is the point. An attacker who publishes a name
+/// that resolves to 127.0.0.1 still does not match `http://127.0.0.1:8099`, so
+/// the entry clears exactly the origin it names and nothing that merely lands
+/// in the same place.
+fn origin_is_allowed(url: &reqwest::Url, allowed: &[String]) -> bool {
+    match config::normalize_origin(url.as_str()) {
+        Some(origin) => allowed.contains(&origin),
+        None => false,
+    }
 }
 
 /// Whether an address is routable on the public internet. Stricter than "not
@@ -1893,6 +1924,38 @@ mod tests {
         assert!(!is_public("::ffff:192.168.1.1".parse().unwrap()));
         assert!(is_public("::ffff:93.184.216.34".parse().unwrap()));
         assert!(is_public("2606:2800:220:1::1".parse().unwrap()));
+    }
+
+    /// The allowlist is matched against the URL as written, so it clears the
+    /// origin the operator named and nothing else that happens to resolve to
+    /// the same machine. `tools/demo-up` is the one caller that sets it.
+    #[test]
+    fn origin_is_allowed_matches_the_written_origin_only() {
+        let allowed = vec!["http://127.0.0.1:8099".to_string()];
+        let url = |u: &str| reqwest::Url::parse(u).unwrap();
+
+        assert!(origin_is_allowed(
+            &url("http://127.0.0.1:8099/articles/a-slug"),
+            &allowed
+        ));
+        // A different port on the same host is a different Axon service. This
+        // is the whole reason the entry is an origin and not a host.
+        assert!(!origin_is_allowed(
+            &url("http://127.0.0.1:8086/api/plans"),
+            &allowed
+        ));
+        // A name that resolves to loopback is still not the listed origin.
+        assert!(!origin_is_allowed(
+            &url("http://localhost:8099/articles/a-slug"),
+            &allowed
+        ));
+        assert!(!origin_is_allowed(
+            &url("https://127.0.0.1:8099/x"),
+            &allowed
+        ));
+        // Nothing is allowed by default, which is what every non-demo machine
+        // runs with.
+        assert!(!origin_is_allowed(&url("http://127.0.0.1:8099/x"), &[]));
     }
 
     #[test]
