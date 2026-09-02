@@ -1029,7 +1029,7 @@ dependencies = [
  "axon-store",
  "axon-summarize",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "content-item",
  "markdown-root",
  "reqwest",
