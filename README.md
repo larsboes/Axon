@@ -355,17 +355,27 @@ The data classes are `c0` Public, `c1` Mine, `c2` Others, `c3` Secret, ranked in
 and `c1` may reach a cloud model (`c1` only as a redacted derivative); `c2` and `c3` redact before
 persistence and never reach a cloud model.
 
-Enforced today, mechanically, on three independent gates: `cloud_derivative::prepare` builds no
-approvable preview for anything that is not `c0` or `c1`, `cloud_derivative::tier_allows` refuses
-the dispatch, and the `comms_content_cloud_derivatives` CHECK constraint refuses the row. A class
-outside the vocabulary is refused by all three.
+The policy is one function: `content_item::cloud_admission` in `libs/content-item`, a leaf crate
+every capability already depends on. It admits two representations — `c0` unchanged to any declared
+tier, and `c1` as a reviewed `c1` derivative to the `pseudonymized_personal` tier — and refuses
+everything else, including every class outside the vocabulary. The `processing_policy` a reader is
+shown is *derived* from it, so the label and the gate cannot disagree; they used to be two
+expressions and did.
 
-`c3` is additionally declared blocked from every local prompt — `processing_policy("c3")` returns
-`local_processing: "blocked"` and the dashboard shows it. That is a **declared policy, not yet a
-mechanical gate**: no local call site reads the field, so today a `c3` row's stored text can still
-reach the loopback model through the digest path. The gate that will enforce it is the T3 refusing
-library in `libs/inference`, tracked as B2. Do not describe the inference router as enforcing this
-until that lands.
+Enforced today, mechanically, on four independent gates: `cloud_derivative::prepare` builds no
+approvable preview for anything that is not `c0` or `c1`, `cloud_derivative::tier_allows` (a thin
+wrapper over `cloud_admission` that adds the transformation-version pin) refuses the dispatch,
+dispatch re-reads the source row's **current** class so a derivative approved at `c1` stops
+dispatching once the row becomes `c2`, and the `comms_content_cloud_derivatives` CHECK constraint
+refuses the row.
+
+`c3` is refused every local prompt too, and that is now a gate rather than a declaration:
+`content_item::local_prompt_allowed` answers `false` for `c3` and for any unrecognized value, both
+prompt-builders that read stored text ask it before they build a prompt —
+`capabilities/comms/src/digest.rs` (digest, diagram and chart) and `capabilities/comms/src/media.rs`
+(`summarize`) — and `processing_policy(..).local_processing` is derived from the same function. A
+refused item gets a `local_refused` row that says so, not a missing one. Embed and rerank
+(`libs/inference`) stay class-blind and loopback-or-nothing.
 
 Data may select an allow-listed behavior but may not become executable code.
 

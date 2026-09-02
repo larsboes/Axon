@@ -167,6 +167,10 @@
         return "Too short to be worth a digest — the source is already the summary. Press More detail to force one.";
       case "remote_refused":
         return "This item is not Public and the configured model is not local, so nothing was sent.";
+      // Not "could not be reached": no model was asked. Reclassifying the item
+      // is the only thing that changes this answer.
+      case "local_refused":
+        return "Secret content enters no prompt, so nothing was sent to any model.";
       case "unconfigured":
         return "No summarization model is configured on this machine.";
       case "timeout":

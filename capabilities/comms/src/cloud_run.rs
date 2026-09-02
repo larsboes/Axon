@@ -2,7 +2,7 @@
 //!
 //! Two callers, one path. The dashboard queues an analysis of a document a human
 //! previewed and approved, then presses run. The digest drain queues a digest of
-//! a long `public` feed item that no local rung on this machine can hold, and
+//! a long `c0` feed item that no local rung on this machine can hold, and
 //! runs it on the same pass. Both go through [`run_job`], so the budget counter,
 //! the attempts ledger, the five-call cap, provider failover and the
 //! `preview_hash` pin are one implementation rather than two.
@@ -14,14 +14,18 @@
 //!
 //! - At **enqueue**, [`enqueue_digest_job`] asks `verbatim_send_allowed` — may
 //!   this item's stored class go to this provider's tier *as it stands*. Only
-//!   `public` may. A `personal` item has a cloud lane, and it is the redacted
+//!   `c0` may. A `c1` item has a cloud lane, and it is the redacted
 //!   derivative behind human approval, not an unattended drain.
 //! - At **dispatch**, [`run_job`] asks `tier_allows` about the exact staged
 //!   representation, again per failover candidate, because the roster and the
-//!   role's policy can both have changed since the job was queued.
+//!   role's policy can both have changed since the job was queued. It also asks
+//!   [`source_class_still_admits`] whether the **source row** has been
+//!   reclassified since, because nothing invalidates a staged derivative when it
+//!   is. That one is a rank comparison, not a second admission: an escalation
+//!   revokes the approval, a downgrade widens what the row may do and must not.
 //!
 //! A digest job is asked both questions at dispatch. The narrow one is not
-//! redundant there: `tier_allows` alone would admit a *redacted personal*
+//! redundant there: `tier_allows` alone would admit a *redacted c1*
 //! derivative to the pseudonymized tier, which is correct for the analysis task
 //! a human approved and wrong for a job a timer created.
 
@@ -205,7 +209,7 @@ fn provider_is_cooling(store: &Store, provider_role: &str) -> bool {
 /// The narrow question, deliberately: an unattended digest hands the provider
 /// the item's own text with nothing removed, which is precisely what
 /// `verbatim_send_allowed` answers and precisely what `tier_allows` on its own
-/// would not — that one also admits a redacted `personal` derivative, which
+/// would not — that one also admits a redacted `c1` derivative, which
 /// belongs to the reviewed queue and not to a timer.
 fn tier_cleared_roles(
     inference: &axon_inference::InferenceConfig,
@@ -266,6 +270,11 @@ pub fn run_job(store: &Store, cfg: &Config, job_id: &str) -> Result<CloudDerivat
     ) {
         return Err("cloud job task is unsupported".into());
     }
+    // Asked before any role is looked at, and reported on its own, because it is
+    // not a fact about a provider: the row moved, and a caller told "the
+    // provider role no longer allows the staged derivative" would go looking at
+    // the roster for a cause that is not there.
+    source_class_still_admits(&job)?;
     let selected_role = cfg
         .inference
         .role(&job.provider_role)
@@ -360,21 +369,65 @@ pub fn run_job(store: &Store, cfg: &Config, job_id: &str) -> Result<CloudDerivat
     }
 }
 
+/// Whether the source row still carries a class the staged derivative was
+/// approved under (T3, review finding R3).
+///
+/// A job carries two classes. `original_data_class` is frozen at staging and
+/// describes the document that was reviewed; the source row's class describes
+/// what the row means now, and only that one moves. So a derivative approved
+/// while a mail was `c1` would still dispatch after the escalation sweep made
+/// the mail `c2` — an escalation that now happens without a human.
+///
+/// **Ranked, not re-admitted.** Only an escalation invalidates an approval;
+/// widening does not. Re-running the full admission against the current class
+/// would refuse a *downgrade* too — `admit_reclassification` lets a human move
+/// c1 to c0 with a rationale, and c0's lane pins the passthrough transformation,
+/// so the approved redacted derivative would stop clearing and its job would sit
+/// queued forever with the Run button erroring. `class_rank` states the one
+/// thing this check is about.
+///
+/// Both unranked cases refuse. An absent current class means the source row is
+/// gone and there is nothing to re-check against; a current class from outside
+/// the vocabulary has no rank to compare, and a gate that fails open is the one
+/// that has to be right about a vocabulary that changed once already.
+fn source_class_still_admits(job: &CloudDispatchJob) -> Result<(), String> {
+    let Some(current) = job.current_source_class.as_deref() else {
+        return Err("the source row is gone, so its class cannot be re-checked".into());
+    };
+    let staged = crate::content_item::class_rank(&job.original_data_class);
+    let now = crate::content_item::class_rank(current);
+    match (staged, now) {
+        (Some(staged), Some(now)) if now <= staged => Ok(()),
+        _ => Err(format!(
+            "source row's class changed to {current} after staging"
+        )),
+    }
+}
+
 /// Whether this role's tier admits this job's staged derivative.
 ///
 /// The digest task additionally has to clear the verbatim question: its document
-/// is a passthrough of a `public` item and must stay one, whatever a tier would
+/// is a passthrough of a `c0` item and must stay one, whatever a tier would
 /// accept in redacted form for the reviewed analysis queue.
+///
+/// Asked about the frozen `original_data_class`, because that is the class of
+/// the document this job actually carries. Whether the row still means what it
+/// meant is [`source_class_still_admits`]'s question, folded in here so the
+/// failover loop gets the same answer the selected role got.
 fn admits(role: &ResolvedRole, job: &CloudDispatchJob) -> bool {
+    if source_class_still_admits(job).is_err() {
+        return false;
+    }
     let tier = role.cloud_data_tier.map(|tier| tier.as_str());
+    let original = job.original_data_class.as_str();
     if job.task == cloud_dispatch::DIGEST_TASK_VERSION
-        && !cloud_derivative::verbatim_send_allowed(tier, &job.original_data_class)
+        && !cloud_derivative::verbatim_send_allowed(tier, original)
     {
         return false;
     }
     cloud_derivative::tier_allows(
         tier,
-        &job.original_data_class,
+        original,
         &job.derivative_data_class,
         &job.transformation,
     )
@@ -455,6 +508,9 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
+    /// A job whose source row still carries the class it was staged under —
+    /// the unchanged case, so every pre-existing assertion below is about the
+    /// tier and the representation and not about a stale row.
     fn job(task: &str, original: &str, derivative: &str, transformation: &str) -> CloudDispatchJob {
         CloudDispatchJob {
             job_id: "cloud-job-probe".into(),
@@ -469,6 +525,7 @@ mod tests {
             transformation: transformation.into(),
             document: "document".into(),
             provider_calls: 0,
+            current_source_class: Some(original.into()),
         }
     }
 
@@ -560,6 +617,95 @@ mod tests {
         ));
     }
 
+    /// The staged class describes the document; the current class describes what
+    /// the row means now. Only the second one moves, and an escalation is what
+    /// invalidates the approval behind the first.
+    #[test]
+    fn a_reclassified_source_row_refuses_its_own_staged_derivative() {
+        let role = inference(&[("cloud_pseudonymized", "pseudonymized_personal", 10)])
+            .role("cloud_pseudonymized")
+            .expect("the probe role resolves");
+        let staged = job(
+            cloud_dispatch::TASK_VERSION,
+            "c1",
+            "c1",
+            cloud_derivative::REDACTION_VERSION,
+        );
+        assert!(admits(&role, &staged), "the unchanged row still dispatches");
+
+        for raised in ["c2", "c3"] {
+            let mut escalated = staged.clone();
+            escalated.current_source_class = Some(raised.into());
+            assert!(
+                !admits(&role, &escalated),
+                "a derivative approved at c1 dispatched after the row became {raised}"
+            );
+        }
+
+        // A job whose source row was purged has nothing to re-check against, and
+        // an absent class is the one case a rank comparison cannot refuse on its
+        // own. A current class from outside the vocabulary has no rank either.
+        let mut orphaned = staged.clone();
+        orphaned.current_source_class = None;
+        assert!(!admits(&role, &orphaned));
+        let mut unknown = staged;
+        unknown.current_source_class = Some("vault".into());
+        assert!(!admits(&role, &unknown));
+    }
+
+    /// A human lowering a class widens what the row may do, so it must not
+    /// invalidate an approval already granted at the stricter class.
+    ///
+    /// The rule that makes this reachable is `content_item::
+    /// admit_reclassification`, which accepts `proposed_rank < stored_rank` from
+    /// `METHOD_HUMAN` with a rationale. Re-admitting the *current* class instead
+    /// of ranking it refuses here: c0's lane pins the passthrough
+    /// transformation, this job carries the redaction one, so an approved
+    /// reviewed derivative would sit queued forever with the Run button
+    /// erroring — a c0/c1 behaviour change T3 was not allowed to make.
+    #[test]
+    fn a_downgraded_source_row_still_dispatches_its_approved_derivative() {
+        let role = inference(&[("cloud_pseudonymized", "pseudonymized_personal", 10)])
+            .role("cloud_pseudonymized")
+            .expect("the probe role resolves");
+        let mut downgraded = job(
+            cloud_dispatch::TASK_VERSION,
+            "c1",
+            "c1",
+            cloud_derivative::REDACTION_VERSION,
+        );
+        downgraded.current_source_class = Some("c0".into());
+        assert!(
+            admits(&role, &downgraded),
+            "a human downgrade blocked an approved redacted derivative"
+        );
+        assert!(source_class_still_admits(&downgraded).is_ok());
+    }
+
+    /// The refusal a caller reads has to name the row, not the roster. The
+    /// message this replaces sent a reader to the provider config for a cause
+    /// that was never there.
+    #[test]
+    fn a_moved_class_is_reported_as_a_moved_class() {
+        let mut escalated = job(
+            cloud_dispatch::TASK_VERSION,
+            "c1",
+            "c1",
+            cloud_derivative::REDACTION_VERSION,
+        );
+        escalated.current_source_class = Some("c2".into());
+        let detail = source_class_still_admits(&escalated)
+            .expect_err("an escalated row refuses its staged derivative");
+        assert!(
+            detail.contains("class changed to c2"),
+            "the refusal does not name the class the row moved to: {detail}"
+        );
+        assert!(
+            !detail.contains("provider role"),
+            "the refusal still blames the provider: {detail}"
+        );
+    }
+
     /// The two tests that need a real Postgres. Their own module because the module
     /// name is what CI splits on: the hermetic job runs `--skip db_tests::`
     /// and the store job runs `db_tests::` — see
@@ -584,7 +730,7 @@ mod tests {
         /// C21's enqueue refusal, against a live store that would have written the
         /// row. Asserted on the typed reason *and* on the store being untouched:
         /// "it returned an error" is not the claim — the claim is that no
-        /// derivative was staged and no job exists for a non-`public` item.
+        /// derivative was staged and no job exists for a non-`c0` item.
         #[test]
         fn a_non_c0_item_gets_no_cloud_digest_job() {
             let store = crate::store::db_tests::open_test_store("cloud_digest_refusal");
@@ -645,6 +791,153 @@ mod tests {
             assert_eq!(job.task, cloud_dispatch::DIGEST_TASK_VERSION);
             assert_eq!(job.original_data_class, "c0");
             assert_eq!(job.transformation, cloud_derivative::PASSTHROUGH_VERSION);
+        }
+
+        /// Stage the reviewed c1 derivative a human approved for one source, and
+        /// queue it, the way `server/cloud.rs` does.
+        fn stage_and_queue(store: &Store, input: &CloudDocumentInput) -> String {
+            let preview =
+                cloud_derivative::prepare(input).expect("a c1 item has an approvable preview");
+            store
+                .stage_cloud_derivative(&CloudDerivativeApproval {
+                    source: input.source.clone(),
+                    item_id: input.id.clone(),
+                    source_revision: preview.source_revision.clone(),
+                    preview_hash: preview.preview_hash.clone(),
+                    original_data_class: preview.original_data_class.clone(),
+                    derivative_data_class: preview.derivative_data_class.clone(),
+                    transformation: preview.transformation.into(),
+                    document: preview.document.clone(),
+                    redaction_count: preview.redaction_count as i32,
+                })
+                .expect("the approved derivative stages");
+            store
+                .queue_cloud_derivative(&CloudQueueRequest {
+                    source: input.source.clone(),
+                    item_id: input.id.clone(),
+                    source_revision: preview.source_revision,
+                    preview_hash: preview.preview_hash,
+                    provider_role: "cloud_pseudonymized".into(),
+                    task: cloud_dispatch::TASK_VERSION.into(),
+                })
+                .expect("the staged derivative queues")
+                .job_id
+                .expect("queueing produced a job")
+        }
+
+        /// The document the dashboard's approval lane builds for a mail thread —
+        /// `server/contracts.rs::cloud_input`, with the four fields a triage row
+        /// actually fills.
+        fn mail_input(item: &crate::store::TriageItem) -> CloudDocumentInput {
+            CloudDocumentInput {
+                source: "mail".into(),
+                id: item.id.clone(),
+                title: item.subject.clone(),
+                author: item.from_addr.clone(),
+                summary: item.snippet.clone(),
+                content: None,
+                data_class: item.data_class.clone(),
+            }
+        }
+
+        /// Review finding R3, end to end against a store that would have
+        /// dispatched it, on the mail lane where the escalation is automatic.
+        /// The class on the job is frozen at approval and no reclassification
+        /// path rewrites it or deletes the job, so the only thing standing
+        /// between a `c1 → c2` escalation and a provider request is this
+        /// re-check.
+        #[test]
+        fn a_derivative_approved_at_c1_stops_dispatching_when_the_mail_becomes_c2() {
+            let store = crate::store::db_tests::open_test_store("cloud_stale_derivative");
+            let cfg = Config::with_inference(inference(&[(
+                "cloud_pseudonymized",
+                "pseudonymized_personal",
+                10,
+            )]));
+            let role = cfg
+                .inference
+                .role("cloud_pseudonymized")
+                .expect("the probe role resolves");
+            let item = crate::store::db_tests::mk_triage("thread:stale-derivative", "aktiv");
+            store.upsert_triage(&item).expect("the mail row is stored");
+            let job_id = stage_and_queue(&store, &mail_input(&item));
+
+            let queued = store
+                .cloud_job_for_dispatch(&job_id)
+                .expect("the job query answers")
+                .expect("the queued job is dispatchable");
+            assert_eq!(queued.current_source_class.as_deref(), Some("c1"));
+            assert!(
+                admits(&role, &queued),
+                "the reviewed c1 lane must work before the escalation, or this test proves nothing"
+            );
+
+            store
+                .set_triage_data_class(&item.id, "c2", Some("The thread names another person."))
+                .expect("an escalation is admitted");
+
+            let stale = store
+                .cloud_job_for_dispatch(&job_id)
+                .expect("the job query answers")
+                .expect("the job is still queued -- nothing invalidates it");
+            assert_eq!(
+                stale.original_data_class, "c1",
+                "the staged class is frozen; that is the whole seam"
+            );
+            assert_eq!(stale.current_source_class.as_deref(), Some("c2"));
+            assert!(!admits(&role, &stale));
+            assert_eq!(
+                run_job(&store, &cfg, &job_id),
+                Err("source row's class changed to c2 after staging".into()),
+                "dispatch reached a provider with a c2 row's derivative"
+            );
+        }
+
+        /// T3's bar for the whole c2 lane, in the three places a c2 item could
+        /// have entered one: no preview to approve, no digest job at enqueue,
+        /// and no dispatch for a job staged before the row was c2.
+        #[test]
+        fn a_c2_item_has_no_preview_no_job_and_no_dispatch() {
+            let store = crate::store::db_tests::open_test_store("cloud_c2_end_to_end");
+            let cfg = Config::with_inference(inference(&[
+                ("cloud_public", "public", 30),
+                ("cloud_pseudonymized", "pseudonymized_personal", 10),
+            ]));
+            let role = cfg
+                .inference
+                .role("cloud_pseudonymized")
+                .expect("the probe role resolves");
+
+            let mut item = feed_item("c1");
+            item.transcript = Some("A paragraph worth reviewing.".into());
+            store.upsert_feed(&item).expect("the source row is stored");
+            let job_id = stage_and_queue(&store, &CloudDocumentInput::from_feed(&item));
+            store
+                .set_feed_data_class(&item.id, "c2", Some("The item names another person."))
+                .expect("an escalation is admitted");
+
+            let c2_item = store
+                .get_feed(&item.id)
+                .expect("the row reads back")
+                .expect("the row exists");
+            assert_eq!(c2_item.data_class, "c2");
+
+            assert_eq!(
+                cloud_derivative::prepare(&CloudDocumentInput::from_feed(&c2_item)),
+                Err(cloud_derivative::LocalOnlyRefused),
+                "a c2 item produced a preview a human could approve"
+            );
+            assert_eq!(
+                enqueue_digest_job(&store, &cfg, &c2_item),
+                Err(DigestNotQueued::LocalOnlyRefused),
+                "a c2 item was queued for a cloud digest"
+            );
+            let staged_before = store
+                .cloud_job_for_dispatch(&job_id)
+                .expect("the job query answers")
+                .expect("the pre-staged job is still queued");
+            assert!(!admits(&role, &staged_before));
+            assert!(run_job(&store, &cfg, &job_id).is_err());
         }
     }
 }

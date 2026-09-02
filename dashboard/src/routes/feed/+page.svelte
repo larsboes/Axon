@@ -810,7 +810,7 @@
           <div><dt>Never sent</dt><dd>Message bodies and attachments are not fetched. Mail scoring rejects non-loopback model endpoints.</dd></div>
           <div><dt>TELOS boundary</dt><dd>Scoring reads TELOS. Categories and bulk decisions never rewrite TELOS files.</dd></div>
           <div><dt>Corrections</dt><dd>A category you set here becomes a human override and survives later sweeps.</dd></div>
-          <div><dt>Data classes</dt><dd>Public may use approved cloud roles; Mine needs a reviewed pseudonymized derivative; Others and Secret never reach a cloud model, refused by the derivative builder, the tier check and the database constraint alike. Secret is additionally marked as blocked from local prompts — a declared rule today, not yet a gate.</dd></div>
+          <div><dt>Data classes</dt><dd>Public may use approved cloud roles; Mine needs a reviewed pseudonymized derivative; Others and Secret never reach a cloud model, refused by the derivative builder, the tier check, the dispatch re-check against the row's current class, and the database constraint alike. Secret is refused local prompts too, by the same gate the labels are derived from — nothing summarizes, diagrams or charts it.</dd></div>
         </dl>
       </aside>
     {/if}

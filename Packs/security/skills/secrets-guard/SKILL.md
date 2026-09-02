@@ -65,12 +65,14 @@ prints it.
 
 `c2` (Others) and `c3` (Secret) material never reaches a cloud model. That one is enforced in code
 (README.md#data-classes): the derivative builder refuses to produce a preview, the tier check
-refuses the dispatch, and the table's CHECK constraint refuses the row.
+refuses the dispatch, dispatch re-reads the row's current class, and the table's CHECK constraint
+refuses the row.
 
-`c3` must additionally stay out of **local** prompts. That rule is declared, not yet gated: no call
-site reads `local_processing` today, so nothing will stop you. Treat it as your rule to keep — if a
-task would put `c3` content in front of any model, local included, don't; route it around the model
-or hand off.
+`c3` stays out of **local** prompts too, and that is gated now:
+`content_item::local_prompt_allowed` answers `false` for `c3` and for any class it does not
+recognize, and both of Axon's prompt-builders over stored text ask it first (`digest.rs`,
+`media.rs`). Axon's own paths will stop you. Yours will not — if a task would put `c3` content in
+front of any model, local included, don't; route it around the model or hand off.
 
 ## When blocked
 

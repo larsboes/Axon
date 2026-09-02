@@ -532,6 +532,17 @@ impl Store {
         })
     }
 
+    /// The job a dispatch is about to run, with **both** classes: the one frozen
+    /// into the staged derivative and the one its source row carries now.
+    ///
+    /// The source row is joined for that second value alone (T3, review finding
+    /// R3). Nothing invalidates a staged derivative or its queued job when the
+    /// row behind it is reclassified — no reclassification path touches
+    /// `_content_cloud_derivatives` or `_cloud_jobs` — so before this join a
+    /// derivative approved while a mail was `c1` stayed dispatchable after the
+    /// mail became `c2`. `LEFT JOIN` per source rather than a join that could
+    /// drop the row: a job whose item was purged must be *refused* by the class
+    /// check, not silently reported as "no such job", which reads as done.
     pub fn cloud_job_for_dispatch(
         &self,
         job_id: &str,
@@ -543,12 +554,17 @@ impl Store {
                     "SELECT j.job_id, j.source, j.item_id, j.source_revision,
                         j.preview_hash, j.provider_role, j.task,
                         d.original_data_class, d.derivative_data_class,
-                        d.transformation, d.document, j.provider_calls
+                        d.transformation, d.document, j.provider_calls,
+                        COALESCE(f.data_class, t.data_class)
                  FROM {prefix}_content_cloud_jobs j
                  JOIN {prefix}_content_cloud_derivatives d
                    ON d.source = j.source AND d.item_id = j.item_id
                   AND d.source_revision = j.source_revision
                   AND d.preview_hash = j.preview_hash
+                 LEFT JOIN {prefix}_feed_items f
+                   ON j.source = 'feed' AND f.id = j.item_id
+                 LEFT JOIN {prefix}_triage_items t
+                   ON j.source = 'mail' AND t.id = j.item_id
                  WHERE j.job_id = ?1
                    AND (j.status IN ('queued','failed')
                      OR (j.status = 'running' AND j.started_at < {stale}))
@@ -571,6 +587,7 @@ impl Store {
                         transformation: row.get(9)?,
                         document: row.get(10)?,
                         provider_calls: row.get(11)?,
+                        current_source_class: row.get(12)?,
                     })
                 },
             )

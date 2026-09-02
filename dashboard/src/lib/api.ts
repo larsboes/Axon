@@ -1729,6 +1729,10 @@ export type DigestState =
   | 'generated'
   | 'skipped_short'
   | 'remote_refused'
+  /** The class enters no prompt at all — `c3`, or a class outside the
+   *  vocabulary. Stricter than `remote_refused`, which is about where the
+   *  endpoint is: no model was asked, local included. */
+  | 'local_refused'
   | 'unconfigured'
   | 'http_error'
   | 'model_error'

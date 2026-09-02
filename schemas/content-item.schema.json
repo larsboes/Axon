@@ -243,6 +243,7 @@
             "generated",
             "skipped_short",
             "remote_refused",
+            "local_refused",
             "unconfigured",
             "http_error",
             "model_error",

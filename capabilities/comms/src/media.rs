@@ -53,6 +53,13 @@ pub enum SummarizeOutcome {
     /// spelling as `summarize::Outcome::RemoteRefused`, because it is the same
     /// refusal about the same item.
     RemoteRefused,
+    /// The item's stored class enters no prompt at all — `c3`, and any value
+    /// from outside the vocabulary (T3). One step stricter than
+    /// [`SummarizeOutcome::RemoteRefused`]: that one asks where the endpoint is,
+    /// this one does not care, because there is no model this text may be shown
+    /// to. Same spelling as `digest::LOCAL_REFUSED`, the same refusal on the
+    /// other prefill path.
+    LocalRefused,
     /// The source does not fit the light local rung, and an unattended pass may
     /// not reach past it (`crate::quiet`). Not a failure and not an attempt:
     /// nothing was sent anywhere, so nothing is counted against the row's retry
@@ -72,6 +79,7 @@ impl SummarizeOutcome {
             SummarizeOutcome::EmptyResponse => "empty_response",
             SummarizeOutcome::Timeout => "timeout",
             SummarizeOutcome::RemoteRefused => "remote_refused",
+            SummarizeOutcome::LocalRefused => crate::digest::LOCAL_REFUSED,
             SummarizeOutcome::OverWindow => "over_window",
         }
     }
@@ -1203,7 +1211,18 @@ pub fn summary_producer_revision(cfg: &Config) -> Option<String> {
 /// `cloud_derivative::tier_allows` asked about the passthrough representation —
 /// the same question the digest path asks, because this sends the same text in
 /// the same unredacted form.
+///
+/// ## And why the class is asked twice
+///
+/// [`SummarizeOutcome::LocalRefused`] is asked first and about the class alone,
+/// before a rung is even resolved: `c3` enters no prompt on this machine either
+/// (T3), and the loopback POST below is a prompt. `content_item::
+/// local_prompt_allowed` is the gate, the same one `digest.rs` asks and the same
+/// one `processing_policy(..).local_processing` is derived from.
 pub fn summarize(text: &str, cfg: &Config, data_class: &str) -> SummarizeOutcome {
+    if !crate::content_item::local_prompt_allowed(data_class) {
+        return SummarizeOutcome::LocalRefused;
+    }
     // The quiet lane, and only the quiet lane. Every caller of this function is
     // an unattended pass — the enrichment drain, the prefill behind
     // `POST /ingest`, `comms summarize --pending` — and none of them is an
@@ -1347,11 +1366,18 @@ pub fn summarize_item(store: &Store, cfg: &Config, id: &str) -> Result<bool> {
                 .map_err(|e| CommsError::Other(e.to_string()))?;
             Ok(true)
         }
-        // Neither is an attempt: one says this machine has no unattended rung
-        // at all, the other says this source is past it. Writing either to the
-        // retry ledger would burn the row's three attempts on a decision no
-        // retry can change.
-        SummarizeOutcome::Unconfigured | SummarizeOutcome::OverWindow => Ok(false),
+        // None of these is an attempt. One says this machine has no unattended
+        // rung at all, one says this source is past it, and the third says this
+        // class enters no prompt on this machine — a verdict, not a failure.
+        // Writing any of them to the retry ledger would burn the row's three
+        // attempts on a decision no retry can change, and for `LocalRefused`
+        // that is worse than useless: after three drain ticks the row is parked
+        // until the producer revision moves, so a c3 item later downgraded to c1
+        // would stay un-summarized. `digest.rs` decides the identical refusal
+        // the same way — `write_digest` forces `attempts` to 0 for it.
+        SummarizeOutcome::Unconfigured
+        | SummarizeOutcome::OverWindow
+        | SummarizeOutcome::LocalRefused => Ok(false),
         outcome => {
             let _ = store.record_summary_attempt(id, outcome.error_class(), &producer_revision);
             Ok(false)
@@ -1410,6 +1436,12 @@ pub fn summarize_pending(store: &Store, cfg: &Config) -> Result<EnrichmentPass> 
                 // and not against the capacity streak, which exists to say the
                 // local server is failing requests it accepted.
                 SummarizeOutcome::OverWindow => pass.over_window += 1,
+                // The same no-attempt arm, and not counted as over-window: the
+                // source fits the rung, the class is what refuses. A verdict is
+                // not a failed attempt, so the retry ledger must not move —
+                // `summarize_item` and `digest::write_digest` decide this
+                // refusal the same way.
+                SummarizeOutcome::LocalRefused => {}
                 SummarizeOutcome::Unconfigured => break, // no point continuing
                 outcome => {
                     // Same streak the digest drain counts, because it is the
@@ -1479,6 +1511,55 @@ pub struct RenormalizeReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T3, on the second prefill path. This function speaks HTTP itself, so the
+    /// class question has to be asked here or not at all — and the role is
+    /// pointed at a port nothing listens on, so a prompt that got through would
+    /// come back `http_error`. `local_refused` therefore says no request was
+    /// attempted, with no network mock to be wrong about.
+    /// A light rung pointed at a port nothing listens on.
+    ///
+    /// The window is wide enough that a probe text is `Rung::Light`, so an
+    /// `over_window` verdict cannot be mistaken for a refusal, and the closed
+    /// port means anything that does reach the model comes back `http_error`.
+    fn unreachable_light_role() -> axon_inference::InferenceConfig {
+        serde_json::from_value(serde_json::json!({
+            "backends": {
+                "foundation-models": { "api": "openai", "base_url": "http://127.0.0.1:9/v1" },
+            },
+            "roles": {
+                "summarization_light": {
+                    "backend": "foundation-models",
+                    "model": "a-local-model",
+                    "max_input_tokens": 4096,
+                },
+            },
+        }))
+        .expect("the probe config is well formed")
+    }
+
+    #[test]
+    fn media_summarize_refuses_a_c3_item_before_any_request() {
+        let cfg = Config::with_inference(unreachable_light_role());
+        let text = "paragraph ".repeat(100);
+
+        for refused in ["c3", "vault", "personal", "c4", ""] {
+            assert_eq!(
+                summarize(&text, &cfg, refused).error_class(),
+                crate::digest::LOCAL_REFUSED,
+                "{refused} was carried into a prompt"
+            );
+        }
+        // The control: c2 is local-only, not local-forbidden, so it reaches the
+        // closed port instead of being refused for its class.
+        for allowed in ["c0", "c1", "c2"] {
+            assert_ne!(
+                summarize(&text, &cfg, allowed).error_class(),
+                crate::digest::LOCAL_REFUSED,
+                "{allowed} lost its local processing"
+            );
+        }
+    }
 
     #[test]
     fn detect_kinds() {
@@ -1856,5 +1937,75 @@ mod tests {
             item.raw_content.is_some(),
             "raw is kept even when all of it is dropped"
         );
+    }
+
+    /// The tests that need a real store. Own module because the module name is
+    /// what CI splits on — see `cloud_run`'s and `digest`'s.
+    #[cfg(test)]
+    mod db_tests {
+        use super::*;
+
+        fn stored_feed(store: &crate::store::Store, data_class: &str) -> String {
+            let mut item = FeedItem::new(
+                &format!("https://example.com/axon-t3-summary-{data_class}"),
+                "news",
+                "article",
+            );
+            item.transcript = Some("paragraph ".repeat(100));
+            item.data_class = data_class.into();
+            store.upsert_feed(&item).expect("the source row is stored");
+            item.id
+        }
+
+        /// A class verdict is not a failed attempt, and the enrichment drain has
+        /// to say so on the row itself.
+        ///
+        /// `summary_attempts` is what `feed_pending_summaries` filters on: three
+        /// drain ticks against a `< 3` bound park the row until the producer
+        /// revision moves, so counting a refusal here would leave a `c3` item
+        /// later downgraded to `c1` permanently un-summarized. The count is also
+        /// printed to the operator as "Summary retries", for a request that was
+        /// never made.
+        ///
+        /// The `c2` control is what makes the assertion mean something: it takes
+        /// the same path, reaches the closed port and *does* move the ledger, so
+        /// this cannot pass on a drain that stopped recording attempts at all.
+        #[test]
+        fn a_refused_class_moves_no_retry_ledger_through_the_drain() {
+            let store = crate::store::db_tests::open_test_store("media_c3_no_retry");
+            let mut cfg = Config::with_inference(unreachable_light_role());
+            cfg.database_path = crate::store::db_tests::test_database("media_c3_no_retry_gate");
+            let text = "paragraph ".repeat(100);
+            assert_eq!(
+                summarize(&text, &cfg, "c3").error_class(),
+                crate::digest::LOCAL_REFUSED,
+                "the outcome under test is not the refusal"
+            );
+
+            let refused = stored_feed(&store, "c3");
+            assert!(
+                !summarize_item(&store, &cfg, &refused).expect("the drain answers"),
+                "a refused item reported a summary"
+            );
+            let row = store
+                .get_feed(&refused)
+                .expect("the row reads back")
+                .expect("the row exists");
+            assert_eq!(row.summary, None, "a refused class produced a summary");
+            assert_eq!(row.summary_attempts, 0, "a verdict is not a failed attempt");
+            assert_eq!(row.summary_last_error, None);
+            assert_eq!(row.summary_next_attempt, None, "a verdict has no backoff");
+
+            let attempted = stored_feed(&store, "c2");
+            assert!(!summarize_item(&store, &cfg, &attempted).expect("the drain answers"));
+            let control = store
+                .get_feed(&attempted)
+                .expect("the row reads back")
+                .expect("the row exists");
+            assert_eq!(
+                control.summary_attempts, 1,
+                "c2 reached the closed port, so the ledger must have moved"
+            );
+        }
     }
 }

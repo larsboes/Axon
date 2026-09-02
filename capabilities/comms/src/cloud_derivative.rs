@@ -7,6 +7,15 @@
 //! [`tier_allows`] decides which provider tier may receive that representation.
 //! `c2` and `c3` get `Err` from the first and `false` from the second — values
 //! the derivative table's own CHECK no longer accepts either.
+//!
+//! Neither of them is the *class* policy any more, and neither of them keeps a
+//! copy of it. That policy is `content_item::cloud_admission`: [`prepare`] asks
+//! it through `content_item::has_cloud_lane` — is there any tier and any
+//! representation for this class at all — and [`tier_allows`] asks it about the
+//! one tier and representation in hand. The wire label the dashboard prints is
+//! derived from the same function, so the contract a reader is shown and the
+//! answer a dispatch gets can no longer disagree (T3). What is still comms' own
+//! is the redaction transformation and its version pin.
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -87,41 +96,35 @@ impl std::error::Error for LocalOnlyRefused {}
 
 /// Whether a provider tier admits this exact original-plus-representation pair.
 ///
-/// The home of the rule, rather than the cloud handlers that first needed it.
-/// It is consulted from two directions now — the reviewed-derivative queue in
-/// `capabilities/comms/src/server/cloud.rs`, and the digest path in
-/// `capabilities/comms/src/digest.rs`, which sends the source text as it stands
-/// and so asks about the passthrough representation. The digest path used to
-/// answer the question itself with a class comparison of its own, a second copy
-/// of a policy that already lived here and was free to drift from it.
+/// **A thin wrapper over `content_item::cloud_admission` (T3).** The class-level
+/// policy is not comms' any more: `libs/content-item` is a leaf crate every
+/// capability already depends on, and holding the rule here meant an advisory
+/// label in the contract and a real gate in this file, free to disagree — which
+/// they did, about what an unrecognized class meant.
 ///
-/// Every branch names the transformation as well as the classes: a tier that
-/// accepts pseudonymized personal content accepts the *redacted* derivative,
-/// and the same c1 document sent verbatim is a different question with a
-/// different answer. The tier names are `libs/inference`'s and stay as they are
-/// (Q26); they are not class names.
+/// What stays comms-owned is the one thing content-item cannot know: the
+/// *transformation version*. Those revisions belong to the redactor below, so
+/// the version pin is asked here and the class question is asked there. A tier
+/// that accepts pseudonymized personal content accepts the redacted derivative
+/// at [`REDACTION_VERSION`]; the same c1 document sent verbatim is a different
+/// question with a different answer.
 pub fn tier_allows(
     tier: Option<&str>,
     original_data_class: &str,
     derivative_data_class: &str,
     transformation: &str,
 ) -> bool {
-    if matches!(original_data_class, "c2" | "c3") {
-        return false;
-    }
-    let public_derivative = original_data_class == "c0"
-        && derivative_data_class == "c0"
-        && transformation == PASSTHROUGH_VERSION;
-    match tier {
-        Some("public") => public_derivative,
-        Some("pseudonymized_personal") => {
-            public_derivative
-                || (original_data_class == "c1"
-                    && derivative_data_class == "c1"
-                    && transformation == REDACTION_VERSION)
-        }
+    let representation_pinned = match original_data_class {
+        "c0" => transformation == PASSTHROUGH_VERSION,
+        "c1" => transformation == REDACTION_VERSION,
+        // Unreachable behind the admission check below, which refuses every
+        // other class outright. Written as a refusal anyway: this is the arm a
+        // vocabulary change lands in, and it has landed in one already.
         _ => false,
-    }
+    };
+    representation_pinned
+        && crate::content_item::cloud_admission(original_data_class, derivative_data_class, tier)
+            .is_ok()
 }
 
 /// Whether an item of this stored class may be sent to a provider tier **as it
@@ -132,11 +135,13 @@ pub fn tier_allows(
 /// it once means neither of them spells out the passthrough argument itself, and
 /// there is one place to read to know what "verbatim" is allowed to mean.
 ///
-/// The answer is `c0` on a declared tier and nothing else. `c1` has a cloud
-/// lane, but it runs through [`prepare`] and the redaction transformation; a c1
-/// item handed over unchanged is a different question with a different answer.
+/// Two questions, both delegated: which classes may travel unchanged at all
+/// (`content_item::verbatim_cloud_allowed` — `c0` and nothing else), and whether
+/// this tier admits that class (`content_item::cloud_admission`). `c1` has a
+/// cloud lane, but it runs through [`prepare`] and the redaction transformation.
 pub fn verbatim_send_allowed(cloud_data_tier: Option<&str>, data_class: &str) -> bool {
-    tier_allows(cloud_data_tier, data_class, data_class, PASSTHROUGH_VERSION)
+    crate::content_item::verbatim_cloud_allowed(data_class)
+        && crate::content_item::cloud_admission(data_class, data_class, cloud_data_tier).is_ok()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -169,15 +174,22 @@ pub struct CloudDerivativePreview {
 /// approvable preview whose only protection was that three separate later call
 /// sites remembered to look at `original_data_class` again.
 ///
-/// Stated as the complement of the two admitted classes rather than as a list
-/// of the two refused ones, so an unrecognized value is refused instead of
-/// admitted. Every other unknown-class decision in the contract already fails
-/// closed — `class_rank` answers `None`, `processing_policy` answers c3's
-/// policy, `DataClass::new` labels it Secret, `tier_allows` answers false — and
-/// a gate that fails open is the one that has to be right about a vocabulary
-/// that changed once already.
+/// The class question is `content_item::has_cloud_lane`, not a list written out
+/// here. It used to be `matches!(.., "c0" | "c1")`, which is the admission
+/// policy restated in a second place — and this is the *first* gate every cloud
+/// lane passes (stage, queue, enqueue all reach it before any tier is chosen),
+/// so a copy that narrowed later than the policy would keep building an
+/// approvable, hashable, stageable preview of a document with no lane left. The
+/// answer is the same for every value live today; what changes is that there is
+/// now one function to change.
+///
+/// It still fails closed on an unrecognized class, because `has_cloud_lane`
+/// does: it finds no admitted `(derivative, tier)` pair for a value outside the
+/// vocabulary, exactly as every other unknown-class decision in the contract
+/// refuses — `class_rank` answers `None`, `processing_policy` answers c3's
+/// policy, `DataClass::new` labels it Secret.
 pub fn prepare(input: &CloudDocumentInput) -> Result<CloudDerivativePreview, LocalOnlyRefused> {
-    if !matches!(input.data_class.as_str(), "c0" | "c1") {
+    if !crate::content_item::has_cloud_lane(&input.data_class) {
         return Err(LocalOnlyRefused);
     }
     let source_revision = source_revision(input);
@@ -282,7 +294,7 @@ pub fn prepare(input: &CloudDocumentInput) -> Result<CloudDerivativePreview, Loc
 /// deterministic entity detection the cloud preview uses.
 ///
 /// Exposed separately because the cloud boundary is not the first boundary.
-/// A `vault` mail's subject line can itself be the secret, so this also runs
+/// A `c3` mail's subject line can itself be the secret, so this also runs
 /// before the row is written (see `intake`), and again when an already-stored
 /// row is remediated. Same detector, same version string, three call sites —
 /// a second implementation is how the two drift apart.
@@ -734,11 +746,12 @@ mod tests {
         assert_eq!(prepare(&with_secrets), Err(LocalOnlyRefused));
     }
 
-    /// The gate is stated as "c0 or c1, else refuse", so a value from outside
-    /// the vocabulary is refused too. This is the case a positive `c2 | c3`
-    /// match got wrong: the class arrives as a stored string, and the previous
-    /// vocabulary is still readable in backups, in a stale queued job and in
-    /// any caller written against it.
+    /// The gate is "does this class have any cloud lane", so a value from
+    /// outside the vocabulary is refused too — `has_cloud_lane` finds no
+    /// admitted pair for it. This is the case a positive `c2 | c3` match got
+    /// wrong: the class arrives as a stored string, and the previous vocabulary
+    /// is still readable in backups, in a stale queued job and in any caller
+    /// written against it.
     #[test]
     fn a_class_from_outside_the_vocabulary_is_refused_rather_than_prepared() {
         for unknown in ["vault", "personal", "private", "C1", "", "c4"] {
@@ -748,6 +761,59 @@ mod tests {
                 "{unknown} produced an approvable preview"
             );
         }
+    }
+
+    /// `prepare` refuses exactly the classes the policy gives no lane, because
+    /// it is now the same question. Derived from `has_cloud_lane` rather than
+    /// listed, so this is a statement about delegation and not a second copy of
+    /// the answer it delegates.
+    #[test]
+    fn prepare_refuses_exactly_the_classes_with_no_cloud_lane() {
+        for class in ["c0", "c1", "c2", "c3", "vault", "personal", "c4", ""] {
+            assert_eq!(
+                prepare(&input(class)).is_ok(),
+                crate::content_item::has_cloud_lane(class),
+                "{class}: prepare and the admission policy disagree about a lane"
+            );
+        }
+    }
+
+    /// `libs/inference` owns the tier vocabulary (Q26): a tier is what an
+    /// operator reviewed one provider to receive, and a role is where that
+    /// declaration lives, so `axon_inference::CloudDataTier` is the original and
+    /// its serde form is the config spelling.
+    ///
+    /// `libs/content-item` carries a copy in `CLOUD_DATA_TIERS` because it is
+    /// the leaf crate every capability already depends on, and the admission
+    /// policy that lives there cannot name the tiers it admits without them —
+    /// depending back on inference would invert that. `comms` depends on both
+    /// crates, so `comms` is the only place the copy can be pinned to the
+    /// original.
+    ///
+    /// What this catches: rename a tier in `libs/inference` and
+    /// `cloud_admission` goes on matching a string no role can declare. Every
+    /// c1 dispatch stops, while `processing_policy` keeps printing
+    /// `pseudonymization_required` to the dashboard — the label says a lane
+    /// exists and the gate says none, which is the split T3 exists to end, one
+    /// level up at the tier instead of the class.
+    #[test]
+    fn the_tier_vocabulary_is_spelled_the_same_way_in_both_crates() {
+        use axon_inference::CloudDataTier;
+        let declared = [CloudDataTier::Public, CloudDataTier::PseudonymizedPersonal];
+        // Exhaustive and armless on purpose: a variant added to
+        // `libs/inference` stops this matching, which is the only signal a
+        // leaf-crate copy can be given that the vocabulary grew. The array
+        // above and `CLOUD_DATA_TIERS` then have to grow with it.
+        for tier in declared {
+            match tier {
+                CloudDataTier::Public | CloudDataTier::PseudonymizedPersonal => {}
+            }
+        }
+        assert_eq!(
+            declared.map(CloudDataTier::as_str).as_slice(),
+            crate::content_item::CLOUD_DATA_TIERS.as_slice(),
+            "content-item's tier copy drifted from the vocabulary libs/inference owns"
+        );
     }
 
     #[test]

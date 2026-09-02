@@ -83,7 +83,7 @@ pub fn role_for(
 ///
 /// A list rather than one string because the role is chosen per item: a short
 /// source may be digested by the light model, a long one by the strong model on
-/// the same pass, and a long `public` one by a cloud provider, and all three are
+/// the same pass, and a long `c0` one by a cloud provider, and all three are
 /// current. Checking staleness against a single producer would mark the other
 /// two stale on the next sweep and re-digest them forever, which is worse than
 /// the gap it was meant to close — and for the cloud rung it would mean paying
@@ -184,6 +184,22 @@ impl SourceText {
         } else {
             Reach::LoopbackOnly
         }
+    }
+
+    /// Whether this text may enter a prompt on this machine at all.
+    ///
+    /// `false` for c3 and for any value outside the vocabulary (T3). The whole
+    /// gate is `content_item::local_prompt_allowed`, which is also where
+    /// `processing_policy(..).local_processing` comes from — so the field the
+    /// dashboard prints and the answer this path gets are one function. They
+    /// were two: the field said `blocked` for c3 and no call site read it, so a
+    /// credential mail reached the loopback model through here.
+    ///
+    /// Refusing is not a downgrade to a smaller model. There is no prompt a
+    /// credential belongs in, and a local model is still a log, a context
+    /// window and a cache.
+    fn local_prompt_allowed(&self) -> bool {
+        content_item::local_prompt_allowed(&self.data_class)
     }
 
     fn redact_before_persistence(&self) -> bool {
@@ -358,36 +374,59 @@ fn write_digest(
         .map(|role| summarize::producer(&role.cache_key(), summarize::DIGEST_PROMPT_REVISION))
         .unwrap_or_else(|| "unconfigured".into());
 
-    let outcome = summarize::digest(
-        role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
-        &gathered.text,
-        directive,
-        reach_for(gathered, role.as_ref()),
-    );
+    // `None` is the class refusal, and it is checked before the target is
+    // built: no prompt is assembled, no local model is woken, no request is
+    // made. `libs/summarize`'s own `Reach` cannot express this — it decides how
+    // far a payload may travel, and the answer here is "nowhere at all".
+    let outcome = gathered.local_prompt_allowed().then(|| {
+        summarize::digest(
+            role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
+            &gathered.text,
+            directive,
+            reach_for(gathered, role.as_ref()),
+        )
+    });
 
     let mut redactions: Vec<RedactionFinding> = Vec::new();
     let text = match &outcome {
-        Outcome::Ok(text) if gathered.redact_before_persistence() => {
+        Some(Outcome::Ok(text)) if gathered.redact_before_persistence() => {
             redact_review_field(Some(text), &mut redactions)
         }
-        Outcome::Ok(text) => Some(text.clone()),
+        Some(Outcome::Ok(text)) => Some(text.clone()),
         _ => None,
     };
 
     // A retryable failure accumulates; anything else starts the count over,
     // because a success or a verdict says the previous failures are no longer
-    // the state of this row.
+    // the state of this row. A class refusal is a verdict: waiting changes
+    // nothing about it.
     let attempts = match (&outcome, &previous) {
-        (outcome, Some(previous)) if outcome.retryable() => previous.attempts.saturating_add(1),
-        (outcome, None) if outcome.retryable() => 1,
+        (Some(outcome), Some(previous)) if outcome.retryable() => {
+            previous.attempts.saturating_add(1)
+        }
+        (Some(outcome), None) if outcome.retryable() => 1,
         _ => 0,
+    };
+
+    // The diagram and the chart are separate presses and survive a regenerated
+    // digest — but not a class refusal. `clear_derived_output` below is what
+    // actually clears them, because `upsert_content_digest` writes neither
+    // column. These four fields are therefore ignored on write; they are set to
+    // the same answer so the struct handed to the store does not describe a row
+    // the store is about to contradict.
+    let carried = match &outcome {
+        Some(_) => previous.as_ref(),
+        None => None,
     };
 
     let stored = StoredDigest {
         source: source.to_string(),
         item_id: id.to_string(),
         text,
-        state: outcome.state().to_string(),
+        state: outcome
+            .as_ref()
+            .map_or(LOCAL_REFUSED, Outcome::state)
+            .to_string(),
         shape: shape.as_str().to_string(),
         depth: directive.depth.as_str().to_string(),
         focus: directive.focus_text(),
@@ -398,20 +437,64 @@ fn write_digest(
             .map(|finding| finding.count)
             .sum::<usize>() as i32,
         attempts,
-        last_error: outcome.error_detail().map(str::to_string),
-        // The diagram is a separate press and survives a regenerated digest.
-        diagram: previous.as_ref().and_then(|row| row.diagram.clone()),
-        diagram_state: previous.as_ref().and_then(|row| row.diagram_state.clone()),
-        diagram_error: previous.as_ref().and_then(|row| row.diagram_error.clone()),
-        chart: previous.as_ref().and_then(|row| row.chart.clone()),
-        chart_state: previous.as_ref().and_then(|row| row.chart_state.clone()),
-        chart_error: previous.as_ref().and_then(|row| row.chart_error.clone()),
+        last_error: outcome
+            .as_ref()
+            .and_then(Outcome::error_detail)
+            .map(str::to_string),
+        diagram: carried.and_then(|row| row.diagram.clone()),
+        diagram_state: carried.and_then(|row| row.diagram_state.clone()),
+        diagram_error: carried.and_then(|row| row.diagram_error.clone()),
+        chart: carried.and_then(|row| row.chart.clone()),
+        chart_state: carried.and_then(|row| row.chart_state.clone()),
+        chart_error: carried.and_then(|row| row.chart_error.clone()),
         generated_at: String::new(),
     };
     store
         .upsert_content_digest(&stored)
         .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
+    if outcome.is_none() {
+        clear_derived_output(store, cfg, source, id)?;
+    }
     read_back(store, source, id)
+}
+
+/// Drop the diagram and the chart beside a digest that was refused for its
+/// class.
+///
+/// A separate pair of statements because [`Store::upsert_content_digest`] does
+/// not write those columns at all — that is how a diagram survives a
+/// regenerated digest, and it is why the fields on [`StoredDigest`] cannot
+/// clear them. Both were written by a model from this item's own text, so an
+/// item escalated to `c3` after it was diagrammed must not keep a Mermaid
+/// diagram and an extracted table on its page under a digest row that says
+/// nothing was sent to any model.
+///
+/// Writes exactly what [`generate_diagram`] and [`generate_chart`] write when
+/// they refuse: the field cleared, the state `local_refused`, no error. They
+/// already got this right for their own press; this is the path an escalation
+/// actually travels.
+fn clear_derived_output(store: &Store, cfg: &Config, source: &str, id: &str) -> Result<()> {
+    store
+        .update_content_diagram(
+            source,
+            id,
+            None,
+            LOCAL_REFUSED,
+            None,
+            &diagram_producer_revision(cfg).unwrap_or_else(|| "unconfigured".into()),
+        )
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
+    store
+        .update_content_chart(
+            source,
+            id,
+            None,
+            LOCAL_REFUSED,
+            None,
+            &chart_producer_revision(cfg).unwrap_or_else(|| "unconfigured".into()),
+        )
+        .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
+    Ok(())
 }
 
 /// The row that was just written, read back so the caller sees the stored
@@ -455,11 +538,17 @@ pub fn generate_diagram(
     // lookups is how a gate ends up answering about a different endpoint than
     // the one the payload goes to.
     let role = cfg.summarization_role();
-    let outcome = summarize::diagram(
-        role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
-        &input,
-        reach_for(&gathered, role.as_ref()),
-    );
+    // Same refusal as `write_digest`, because this is the same stored text
+    // asked of the same model (T3). The input is the digest when one exists,
+    // and for a refused class there is none — so this would send the c3 source
+    // itself.
+    let outcome = gathered.local_prompt_allowed().then(|| {
+        summarize::diagram(
+            role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
+            &input,
+            reach_for(&gathered, role.as_ref()),
+        )
+    });
     let producer = diagram_producer_revision(cfg).unwrap_or_else(|| "unconfigured".into());
 
     // A diagram hangs off a digest row, so an item digested for the first time
@@ -470,11 +559,19 @@ pub fn generate_diagram(
     }
 
     let (diagram, error) = match &outcome {
-        Outcome::Ok(diagram) => (Some(diagram.as_str()), None),
-        other => (None, other.error_detail()),
+        Some(Outcome::Ok(diagram)) => (Some(diagram.as_str()), None),
+        Some(other) => (None, other.error_detail()),
+        None => (None, None),
     };
     let updated = store
-        .update_content_diagram(source, id, diagram, outcome.state(), error, &producer)
+        .update_content_diagram(
+            source,
+            id,
+            diagram,
+            outcome.as_ref().map_or(LOCAL_REFUSED, Outcome::state),
+            error,
+            &producer,
+        )
         .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
     if updated == 0 {
         return Ok(None);
@@ -504,11 +601,15 @@ pub fn generate_chart(
         .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
 
     let role = cfg.summarization_role();
-    let outcome = summarize::chart::chart(
-        role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
-        &gathered.text,
-        reach_for(&gathered, role.as_ref()),
-    );
+    // The source text is this path's input by design, so a refused class is
+    // refused here most plainly of all (T3).
+    let outcome = gathered.local_prompt_allowed().then(|| {
+        summarize::chart::chart(
+            role.as_ref().map(|role| to_target(cfg, role)).as_ref(),
+            &gathered.text,
+            reach_for(&gathered, role.as_ref()),
+        )
+    });
     let producer = chart_producer_revision(cfg).unwrap_or_else(|| "unconfigured".into());
 
     // A chart hangs off a digest row, so an item charted before it was digested
@@ -518,11 +619,19 @@ pub fn generate_chart(
     }
 
     let (chart, error) = match &outcome {
-        Outcome::Ok(chart) => (Some(chart.as_str()), None),
-        other => (None, other.error_detail()),
+        Some(Outcome::Ok(chart)) => (Some(chart.as_str()), None),
+        Some(other) => (None, other.error_detail()),
+        None => (None, None),
     };
     let updated = store
-        .update_content_chart(source, id, chart, outcome.state(), error, &producer)
+        .update_content_chart(
+            source,
+            id,
+            chart,
+            outcome.as_ref().map_or(LOCAL_REFUSED, Outcome::state),
+            error,
+            &producer,
+        )
         .map_err(|error| crate::CommsError::Other(detail(error.as_ref())))?;
     if updated == 0 {
         return Ok(None);
@@ -630,9 +739,9 @@ pub struct DrainReport {
     pub written: usize,
     /// Items too long for it, recorded as such and left for a press.
     pub over_window: usize,
-    /// Long `public` items digested by a cloud provider on this pass.
+    /// Long `c0` items digested by a cloud provider on this pass.
     pub cloud_digested: usize,
-    /// Long `public` items whose cloud attempt failed. The honest count, kept
+    /// Long `c0` items whose cloud attempt failed. The honest count, kept
     /// separate from `over_window` so a provider outage is not read as a
     /// windowing decision.
     pub cloud_failed: usize,
@@ -656,7 +765,7 @@ enum Pass {
 ///
 /// The whole of C20 and C21 as a single decision, in the one place that makes
 /// it: the light rung when the source fits it, the cloud door when it does not
-/// and the item is positively `public`, and a recorded skip otherwise. Nothing
+/// and the item is positively `c0`, and a recorded skip otherwise. Nothing
 /// here can reach the strong local model — `crate::quiet::rung` has no branch
 /// that returns it.
 fn refresh_one(
@@ -677,16 +786,44 @@ fn refresh_one(
             let row = write_digest(store, cfg, source, id, directive, &gathered, Some(*role))?;
             Ok(Pass::Written(row.state))
         }
+        // A class verdict outranks a window verdict, so it is asked first.
+        // `over_window` below writes `skipped_over_window` for every source that
+        // is not the feed — every mail thread, which is where `c3` almost
+        // entirely lives — and that state's dashboard text tells the reader the
+        // skip is theirs to override by pressing for more detail. The press
+        // lands in `generate`, which refuses: nothing leaks, but the stored
+        // reason names the wrong cause and the button cannot work. `write_digest`
+        // records the refusal the item actually got (T3).
+        crate::quiet::Rung::OverWindow if !gathered.local_prompt_allowed() => {
+            // The light rung's role, the same one `skip_over_window` names, so
+            // the row counts as current and the queue stops returning it. No
+            // prompt is built from it: `write_digest` asks the class before it
+            // resolves anything.
+            let row = write_digest(
+                store,
+                cfg,
+                source,
+                id,
+                directive,
+                &gathered,
+                cfg.light_summarization_role(),
+            )?;
+            Ok(Pass::Written(row.state))
+        }
         crate::quiet::Rung::OverWindow => over_window(store, cfg, source, id, shape),
     }
 }
 
 /// A source no unattended local rung can hold.
 ///
-/// For a `public` feed item this is the cloud door: one job on the existing
+/// For a `c0` feed item this is the cloud door: one job on the existing
 /// ledger, dispatched immediately, budget and retry cap unchanged. For anything
-/// else — every `personal` item, every `vault` item, every source that is not
-/// the feed — it is a recorded verdict and nothing else.
+/// else — every `c1` and `c2` item, every source that is not the feed — it is a
+/// recorded verdict and nothing else.
+///
+/// `c3` and every class from outside the vocabulary never arrive here:
+/// [`refresh_one`] answers them with the class refusal first, because "no local
+/// rung is big enough" is not why that item got no digest.
 ///
 /// The verdict is written down rather than left implicit because the queue is
 /// `ORDER BY created_at DESC LIMIT 25`: on this machine 120 of 190 items with a
@@ -807,6 +944,17 @@ pub const SKIPPED_OVER_WINDOW: &str = "skipped_over_window";
 /// Retryable — see `store::RETRYABLE_DIGEST_STATES` — so the existing backoff
 /// and three-attempt cap apply without a second ledger.
 pub const CLOUD_ERROR: &str = "cloud_error";
+
+/// The class refuses every prompt, local model included: `c3`, and any value
+/// from outside the vocabulary (T3). The row exists and says why, rather than
+/// being absent — an item with no digest row reads as "not digested yet", and
+/// this one never will be.
+///
+/// Terminal, and deliberately not in `store::RETRYABLE_DIGEST_STATES`: it is a
+/// verdict about the item, the same way `remote_refused` is, and no later pass
+/// reaches a different answer. Named as the local counterpart of that state,
+/// because it is the same refusal one step closer in.
+pub const LOCAL_REFUSED: &str = "local_refused";
 
 /// The producer string a cloud-written digest carries.
 ///
@@ -970,6 +1118,10 @@ pub fn state_explanation(state: &str, shape: &str) -> &'static str {
         }
         "skipped_short" => "Nothing to digest.",
         "remote_refused" => "This item is not public and the configured model is not local.",
+        // Not "the model failed" and not "try again": no model was asked. A
+        // Secret item enters no prompt at all, and the reader has no override
+        // for it short of reclassifying the item.
+        LOCAL_REFUSED => "Secret content enters no prompt, so nothing was sent to any model.",
         // Deliberately says what to do about it. This state is not a failure of
         // anything — it is the automatic pass declining to wake the big local
         // model, which is policy, and the reader is the one who can override it.
@@ -1095,6 +1247,37 @@ mod tests {
         assert!(state_explanation("generated", "brief").is_empty());
     }
 
+    /// T3, at the class level: `c3` and every unrecognized value are refused a
+    /// prompt, and `c0`, `c1`, `c2` still get one. c2 matters as much as c3
+    /// here — Others is local-only, not local-forbidden, and a gate that
+    /// refused it would take the operator's own mail away from them.
+    #[test]
+    fn only_secret_and_unknown_classes_are_refused_a_local_prompt() {
+        for refused in ["c3", "vault", "personal", "private", "c4", ""] {
+            assert!(
+                !gathered(refused).local_prompt_allowed(),
+                "{refused} was admitted to a local prompt"
+            );
+        }
+        for allowed in ["c0", "c1", "c2"] {
+            assert!(
+                gathered(allowed).local_prompt_allowed(),
+                "{allowed} lost its local processing"
+            );
+        }
+    }
+
+    /// The refusal has to be readable, or the row is a digest that failed for
+    /// no stated reason.
+    #[test]
+    fn the_local_refusal_explains_itself_and_is_not_retried() {
+        assert!(!state_explanation(LOCAL_REFUSED, "none").is_empty());
+        assert!(
+            !crate::store::RETRYABLE_DIGEST_STATES.contains(&LOCAL_REFUSED),
+            "a class verdict must not be queued for another attempt"
+        );
+    }
+
     /// The redactor the digest path reuses is the sweep's own. This is the
     /// property that matters: a model asked to summarize a one-time-code mail
     /// will quote the code, and the digest must not be where it gets published.
@@ -1108,5 +1291,271 @@ mod tests {
             findings.iter().map(|finding| finding.count).sum::<usize>() > 0,
             "a redaction that removes something must be counted"
         );
+    }
+
+    /// The tests that need a real store. Own module because the module name is
+    /// what CI splits on — see `cloud_run`'s.
+    #[cfg(test)]
+    mod db_tests {
+        use super::*;
+
+        /// A local role pointed at a port nothing listens on.
+        ///
+        /// The refusal has to be told apart from a failure, and this is what
+        /// tells them apart: if the gate let a prompt through, the request would
+        /// reach a closed port and the row would read `http_error`. Asserting
+        /// `local_refused` therefore asserts that no request was attempted, with
+        /// no network mock to be wrong about.
+        fn unreachable_local_role() -> axon_inference::InferenceConfig {
+            serde_json::from_value(serde_json::json!({
+                "backends": {
+                    "omlx": { "api": "openai", "base_url": "http://127.0.0.1:9/v1" },
+                },
+                "roles": {
+                    "summarization": { "backend": "omlx", "model": "a-local-model" },
+                },
+            }))
+            .expect("the probe config is well formed")
+        }
+
+        fn stored_feed(store: &Store, data_class: &str) -> String {
+            let mut item = crate::store::FeedItem::new(
+                &format!("https://example.com/axon-t3-{data_class}"),
+                "news",
+                "article",
+            );
+            item.title = Some("A stored item".into());
+            // Over the ladder's floor, so a `skipped_short` verdict cannot be
+            // mistaken for the refusal or for the request the control expects.
+            item.transcript = Some("paragraph ".repeat(400));
+            item.data_class = data_class.into();
+            store.upsert_feed(&item).expect("the source row is stored");
+            item.id
+        }
+
+        /// T3's exit test on the local side: a `c3` source produces a digest row
+        /// that says it was refused, with no text, no attempt on the ledger and
+        /// no request made.
+        #[test]
+        fn a_c3_source_produces_no_local_digest_call() {
+            let store = crate::store::db_tests::open_test_store("digest_c3_refusal");
+            let cfg = Config::with_inference(unreachable_local_role());
+            let id = stored_feed(&store, "c3");
+
+            let row = generate(&store, &cfg, "feed", &id, &Directive::default())
+                .expect("the digest path answers")
+                .expect("the row exists, so a digest row is written");
+            assert_eq!(row.state, LOCAL_REFUSED);
+            assert_eq!(row.text, None);
+            assert_eq!(row.attempts, 0, "a verdict is not a failed attempt");
+            assert_eq!(row.redactions, 0, "nothing was produced to redact");
+        }
+
+        /// The same call on a `c2` item, which is the control: it must reach the
+        /// model and fail against the closed port. Without this the test above
+        /// would pass on a gate that refused everything.
+        #[test]
+        fn a_c2_source_still_reaches_the_local_model() {
+            let store = crate::store::db_tests::open_test_store("digest_c2_local");
+            let cfg = Config::with_inference(unreachable_local_role());
+            let id = stored_feed(&store, "c2");
+
+            let row = generate(&store, &cfg, "feed", &id, &Directive::default())
+                .expect("the digest path answers")
+                .expect("the row exists, so a digest row is written");
+            assert_ne!(
+                row.state, LOCAL_REFUSED,
+                "c2 is local-only, not local-forbidden"
+            );
+            assert!(
+                crate::store::RETRYABLE_DIGEST_STATES.contains(&row.state.as_str()),
+                "a request was made and the closed port answered: got {}",
+                row.state
+            );
+        }
+
+        /// A light rung too small to hold anything, so every source is
+        /// `Rung::OverWindow` and the drain's over-window branch is the one
+        /// under test.
+        fn over_window_light_role() -> axon_inference::InferenceConfig {
+            serde_json::from_value(serde_json::json!({
+                "backends": {
+                    "omlx": { "api": "openai", "base_url": "http://127.0.0.1:9/v1" },
+                },
+                "roles": {
+                    "summarization_light": {
+                        "backend": "omlx",
+                        "model": "a-small-local-model",
+                        "max_input_tokens": 256,
+                    },
+                },
+            }))
+            .expect("the probe config is well formed")
+        }
+
+        /// One stored mail thread, with no Gmail credentials to read.
+        ///
+        /// `source_text`'s mail branch tries a token first and falls back to the
+        /// stored snippet when it cannot get one, so pointing `google_env_path`
+        /// at a file that does not exist is what keeps this test off the network
+        /// and out of a mailbox. `database_path` is redirected for the same
+        /// reason: it is only ever read to site the local gate's lock file, and
+        /// a test must not put one beside the deployed store.
+        fn stored_mail(store: &Store, id: &str, data_class: &str) -> (Config, String) {
+            let mut cfg = Config::with_inference(over_window_light_role());
+            cfg.google_env_path =
+                std::env::temp_dir().join(format!("axon-absent-google-env-{}", std::process::id()));
+            cfg.database_path = crate::store::db_tests::test_database("digest_mail_drain_gate");
+            let mut item = crate::store::db_tests::mk_triage(id, "aktiv");
+            item.snippet = Some("paragraph ".repeat(400));
+            item.data_class = data_class.into();
+            store.upsert_triage(&item).expect("the mail row is stored");
+            (cfg, item.id)
+        }
+
+        /// The class verdict outranks the window verdict on the drain's own
+        /// path, which is where `c3` actually lives: almost all of it is mail,
+        /// and every mail thread takes `over_window`'s non-feed branch.
+        ///
+        /// `skipped_over_window` is not a harmless stand-in here. Its dashboard
+        /// text tells the reader the skip is theirs to override by pressing for
+        /// more detail, and that press refuses — so the row would invite an
+        /// action that cannot work and name the wrong reason while doing it.
+        #[test]
+        fn an_over_window_c3_mail_thread_records_the_refusal_not_the_window() {
+            let store = crate::store::db_tests::open_test_store("digest_c3_mail_drain");
+            let (cfg, id) = stored_mail(&store, "thread:t3-drain-c3", "c3");
+
+            refresh_one(&store, &cfg, "mail", &id, &Directive::default())
+                .expect("the drain answers");
+            let row = store
+                .content_digest("mail", &id)
+                .expect("the digest row reads back")
+                .expect("the drain wrote a row");
+            assert_eq!(
+                row.state, LOCAL_REFUSED,
+                "an over-window c3 thread was recorded as a window skip"
+            );
+            assert_eq!(row.text, None);
+            assert_eq!(row.attempts, 0, "a verdict is not a failed attempt");
+        }
+
+        /// The control, and the reason the test above says something: the same
+        /// thread at `c2` is genuinely over the window, and the window verdict
+        /// is still what gets stored. Without this, a drain that answered
+        /// `local_refused` for everything would pass.
+        #[test]
+        fn an_over_window_c2_mail_thread_still_records_the_window() {
+            let store = crate::store::db_tests::open_test_store("digest_c2_mail_drain");
+            let (cfg, id) = stored_mail(&store, "thread:t3-drain-c2", "c2");
+
+            refresh_one(&store, &cfg, "mail", &id, &Directive::default())
+                .expect("the drain answers");
+            let row = store
+                .content_digest("mail", &id)
+                .expect("the digest row reads back")
+                .expect("the drain wrote a row");
+            assert_eq!(row.state, SKIPPED_OVER_WINDOW);
+        }
+
+        const A_DIAGRAM: &str = "graph TD; A-->B;";
+        const A_CHART: &str = "| year | value |\n| 2026 | 1 |";
+
+        /// The row a reader would be looking at: a digest, plus the two derived
+        /// fields, each written through its own press's statement — which is the
+        /// only way they reach those columns, since `upsert_content_digest` does
+        /// not write them.
+        fn digested_and_diagrammed(store: &Store, id: &str) {
+            store
+                .upsert_content_digest(&StoredDigest {
+                    source: "feed".into(),
+                    item_id: id.into(),
+                    text: Some("- The item said something worth keeping.".into()),
+                    state: "ok".into(),
+                    shape: "brief".into(),
+                    depth: Depth::Standard.as_str().into(),
+                    focus: String::new(),
+                    producer: "a-model:a-revision".into(),
+                    source_chars: 4_000,
+                    redactions: 0,
+                    attempts: 0,
+                    last_error: None,
+                    diagram: None,
+                    diagram_state: None,
+                    diagram_error: None,
+                    chart: None,
+                    chart_state: None,
+                    chart_error: None,
+                    generated_at: String::new(),
+                })
+                .expect("the digest row is stored");
+            store
+                .update_content_diagram("feed", id, Some(A_DIAGRAM), "ok", None, "a-model:diagram")
+                .expect("the diagram is attached");
+            store
+                .update_content_chart("feed", id, Some(A_CHART), "ok", None, "a-model:chart")
+                .expect("the chart is attached");
+            let row = store
+                .content_digest("feed", id)
+                .expect("the row reads back")
+                .expect("the row exists");
+            assert_eq!(row.diagram.as_deref(), Some(A_DIAGRAM));
+            assert_eq!(row.chart.as_deref(), Some(A_CHART));
+        }
+
+        /// A class refusal takes the model output with it.
+        ///
+        /// The diagram and the chart survive a *regenerated* digest on purpose —
+        /// they are separate presses, and the digest upsert does not touch their
+        /// columns. They must not survive a *refused* one: both were written by
+        /// a model from this item's text, so a row escalated to `c3` after it
+        /// was diagrammed would otherwise keep a Mermaid diagram and an
+        /// extracted table on the item page under a digest that says nothing was
+        /// sent to any model.
+        #[test]
+        fn an_escalation_clears_the_digest_the_diagram_and_the_chart_together() {
+            let store = crate::store::db_tests::open_test_store("digest_escalation_clears");
+            let cfg = Config::with_inference(unreachable_local_role());
+            let id = stored_feed(&store, "c1");
+            digested_and_diagrammed(&store, &id);
+
+            store
+                .set_feed_data_class(&id, "c3", Some("The item carries a credential."))
+                .expect("an escalation is admitted");
+
+            let row = generate(&store, &cfg, "feed", &id, &Directive::default())
+                .expect("the digest path answers")
+                .expect("the row exists, so a digest row is written");
+            assert_eq!(row.state, LOCAL_REFUSED);
+            assert_eq!(row.text, None, "the digest survived the escalation");
+            assert_eq!(row.diagram, None, "the diagram survived the escalation");
+            assert_eq!(row.chart, None, "the chart survived the escalation");
+            // The same verdict `generate_diagram` and `generate_chart` write on
+            // their own refusal, so the fields say why they are empty rather
+            // than reading as never generated.
+            assert_eq!(row.diagram_state.as_deref(), Some(LOCAL_REFUSED));
+            assert_eq!(row.chart_state.as_deref(), Some(LOCAL_REFUSED));
+        }
+
+        /// The other half: an ordinary regeneration still keeps both. Without
+        /// this, clearing them unconditionally would pass the test above and
+        /// throw away a figure the operator asked for every time the drain ran.
+        #[test]
+        fn an_ordinary_regeneration_still_keeps_the_diagram_and_the_chart() {
+            let store = crate::store::db_tests::open_test_store("digest_regeneration_keeps");
+            let mut cfg = Config::with_inference(unreachable_local_role());
+            // This one reaches the model, so it sites a local-gate lock file.
+            // Kept in the temp directory rather than beside the deployed store.
+            cfg.database_path = crate::store::db_tests::test_database("digest_regeneration_gate");
+            let id = stored_feed(&store, "c2");
+            digested_and_diagrammed(&store, &id);
+
+            let row = generate(&store, &cfg, "feed", &id, &Directive::default())
+                .expect("the digest path answers")
+                .expect("the row exists, so a digest row is written");
+            assert_ne!(row.state, LOCAL_REFUSED, "c2 is local-only, not forbidden");
+            assert_eq!(row.diagram.as_deref(), Some(A_DIAGRAM));
+            assert_eq!(row.chart.as_deref(), Some(A_CHART));
+        }
     }
 }

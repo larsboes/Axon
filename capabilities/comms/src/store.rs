@@ -306,11 +306,20 @@ pub struct CloudDispatchJob {
     pub preview_hash: String,
     pub provider_role: String,
     pub task: String,
+    /// The class the source row carried when the derivative was staged and a
+    /// human approved it. Frozen: it describes the document beside it.
     pub original_data_class: String,
     pub derivative_data_class: String,
     pub transformation: String,
     pub document: String,
     pub provider_calls: i32,
+    /// The class the source row carries **now**, or `None` when the row is
+    /// gone. Read at dispatch rather than at staging, because nothing
+    /// invalidates a staged derivative when its source is reclassified: a
+    /// derivative approved while a mail was `c1` stayed dispatchable after the
+    /// mail became `c2`, and the c1 → c2 escalation happens without a human.
+    /// `None` refuses, like every other unknown class here.
+    pub current_source_class: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -690,7 +699,10 @@ pub(crate) mod db_tests {
         assert!(stored.starts_with("2023-11-14 22:13:20"), "got {stored}");
     }
 
-    fn mk_triage(id: &str, stream: &str) -> TriageItem {
+    /// `pub(crate)` for the same reason [`open_test_store`] is: `cloud_run`'s
+    /// dispatch tests need a real mail row, because the stale-derivative seam
+    /// they pin is the mail one.
+    pub(crate) fn mk_triage(id: &str, stream: &str) -> TriageItem {
         TriageItem {
             id: id.into(),
             from_addr: Some("news@shop.example".into()),

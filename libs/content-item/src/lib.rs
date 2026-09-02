@@ -89,9 +89,14 @@ pub struct ContentItem {
 #[derive(Debug, Clone, Serialize)]
 pub struct Digest {
     pub text: Option<String>,
-    /// `generated` · `skipped_short` · `remote_refused` · `unconfigured` ·
-    /// `http_error` · `model_error` · `capacity_aborted` · `empty_response` ·
-    /// `timeout`.
+    /// `generated` · `skipped_short` · `remote_refused` · `local_refused` ·
+    /// `unconfigured` · `http_error` · `model_error` · `capacity_aborted` ·
+    /// `empty_response` · `timeout`.
+    ///
+    /// `local_refused` is the class verdict (T3): the item enters no prompt at
+    /// all, so no model was asked and none will be. Producers may add a state a
+    /// reader has no case for — a reader that switches on this needs a default
+    /// arm, which is why a new state is not a [`SCHEMA_VERSION`] bump.
     pub state: String,
     /// The rung the ladder landed on: `none` · `brief` · `standard` · `sectioned`.
     pub shape: String,
@@ -541,6 +546,175 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| text.contains(needle))
 }
 
+/// The provider tiers a reviewed cloud role can declare, narrowest first.
+///
+/// `libs/inference` owns these names (Q26) and they are not class names — a
+/// tier says what an operator reviewed one provider to receive. They are spelled
+/// here because [`cloud_admission`] is the policy and a policy that cannot name
+/// the tier it admits is not one. The lib stays a leaf crate: naming two strings
+/// costs nothing, and depending on `libs/inference` for them would invert the
+/// dependency every capability already has on this crate.
+pub const CLOUD_DATA_TIERS: [&str; 2] = ["public", "pseudonymized_personal"];
+
+/// Why no cloud role may receive this representation of this class.
+///
+/// Carries the class, the tier and the reason, and never the content: this is
+/// formatted into logs, HTTP bodies and a dashboard, which is exactly where a
+/// refusal that quoted the document it refused would republish it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudRefusal {
+    pub original_data_class: String,
+    pub derivative_data_class: String,
+    pub tier: Option<String>,
+    pub reason: &'static str,
+}
+
+/// The class has no cloud representation at all — c2, c3, and every value from
+/// outside the vocabulary.
+pub const NO_CLOUD_REPRESENTATION: &str = "this class reaches no cloud role in any representation";
+
+/// The endpoint carries no reviewed cloud tier, so there is nothing to admit
+/// against. Every loopback role lands here, and so does an https endpoint
+/// nobody gave a cloud policy.
+pub const NO_DECLARED_TIER: &str = "the endpoint declares no reviewed cloud tier";
+
+/// The class has a cloud lane, and this is not it: the wrong derivative class,
+/// or a tier narrower than the lane needs.
+pub const REPRESENTATION_NOT_REVIEWED: &str =
+    "this tier admits a different representation of this class";
+
+impl std::fmt::Display for CloudRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} as {} to tier {}: {}",
+            self.original_data_class,
+            self.derivative_data_class,
+            self.tier.as_deref().unwrap_or("none"),
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for CloudRefusal {}
+
+/// Whether a cloud role at `tier` may receive `derivative_class` derived from
+/// `original_class`.
+///
+/// **The admission policy, and the only expression of it.** It used to have two:
+/// a real gate inside comms and an advisory label here, free to disagree and
+/// already disagreeing about what an unrecognized class meant. Everything else
+/// in this file — [`processing_policy`]'s `cloud_handling`, its
+/// `pseudonymization_required` — is now derived from this function rather than
+/// written beside it.
+///
+/// Class-level only. The transformation *version* that produced the derivative
+/// is comms' to pin, because comms owns the redactor whose revisions those are;
+/// this answers which classes may travel where, which is the part every
+/// capability needs and none of them should re-derive.
+///
+/// Two lanes exist and nothing else does:
+/// - `c0` unchanged, to any declared tier. A tier reviewed for pseudonymized
+///   personal content admits public content too — breadth, not equality, the
+///   containment `axon_inference::CloudDataTier::admits_at_least` states.
+/// - `c1` as a `c1` derivative, to `pseudonymized_personal` only.
+///
+/// Everything else is refused, `c2` and `c3` first (Q27: one holds other
+/// people's facts, the other holds credentials) and any unknown value with them.
+/// Stated as an allow-list of admitted pairs rather than a deny-list of refused
+/// classes, because the class arrives as a stored string and the previous
+/// vocabulary is still readable in a backup and in a stale queued job.
+pub fn cloud_admission(
+    original_class: &str,
+    derivative_class: &str,
+    tier: Option<&str>,
+) -> Result<(), CloudRefusal> {
+    let refuse = |reason| {
+        Err(CloudRefusal {
+            original_data_class: original_class.to_string(),
+            derivative_data_class: derivative_class.to_string(),
+            tier: tier.map(str::to_string),
+            reason,
+        })
+    };
+    if !matches!(original_class, "c0" | "c1") {
+        return refuse(NO_CLOUD_REPRESENTATION);
+    }
+    let Some(tier) = tier else {
+        return refuse(NO_DECLARED_TIER);
+    };
+    match (original_class, derivative_class, tier) {
+        ("c0", "c0", "public" | "pseudonymized_personal") => Ok(()),
+        ("c1", "c1", "pseudonymized_personal") => Ok(()),
+        _ => refuse(REPRESENTATION_NOT_REVIEWED),
+    }
+}
+
+/// Whether this class may be sent to a cloud role **as it stands** — no
+/// derivative, no redaction, the stored text itself.
+///
+/// `c0` and nothing else. `c1` has a cloud lane and it is the reviewed redacted
+/// derivative; the same document handed over unchanged is a different question
+/// with a different answer.
+pub fn verbatim_cloud_allowed(data_class: &str) -> bool {
+    data_class == "c0"
+}
+
+/// Whether this class may enter a prompt on this machine at all.
+///
+/// `false` for `c3` and for every value outside the vocabulary; `true` for c0,
+/// c1 and c2. A credential belongs in no processing step, local or cloud (Q27),
+/// and a local model is still a log, a context window and a cache.
+///
+/// This is what makes `processing_policy(..).local_processing` mechanical rather
+/// than declared: `capabilities/comms`'s digest and media prompt-builders ask
+/// this function before they build a prompt (T3).
+pub fn local_prompt_allowed(data_class: &str) -> bool {
+    matches!(data_class, "c0" | "c1" | "c2")
+}
+
+/// Whether any representation of this class reaches any reviewed cloud tier.
+///
+/// The first question in every cloud lane, and the coarsest: not *which* tier
+/// and *which* transformation, but whether a cloud representation of this class
+/// may be built at all. `c0` and `c1` have one; `c2`, `c3` and every value from
+/// outside the vocabulary have none.
+///
+/// Searched, not tabulated — true iff some `(derivative, tier)` pair over
+/// [`DATA_CLASSES`] × [`CLOUD_DATA_TIERS`] clears [`cloud_admission`]. That is
+/// the whole point of exporting it: a caller who only needs this coarse answer
+/// would otherwise write the two admitted class names out again beside the
+/// policy, free to disagree with it. `capabilities/comms`'s
+/// `cloud_derivative::prepare` did exactly that, and it is the *first* gate a
+/// cloud lane passes, so its copy narrowing later than this one would build an
+/// approvable preview of a document with no lane (T3).
+///
+/// Eight combinations; it is not a hot path.
+pub fn has_cloud_lane(data_class: &str) -> bool {
+    DATA_CLASSES.iter().any(|derivative| {
+        CLOUD_DATA_TIERS
+            .iter()
+            .any(|tier| cloud_admission(data_class, derivative, Some(tier)).is_ok())
+    })
+}
+
+/// The label for the cloud lane this class has, derived by asking
+/// [`cloud_admission`] about every representation and tier that exist.
+///
+/// Searched rather than tabulated so the wire label cannot say `eligible` while
+/// the gate refuses — which is the condition this whole module change exists to
+/// end.
+fn cloud_handling(data_class: &str) -> &'static str {
+    if verbatim_cloud_allowed(data_class) {
+        return "eligible";
+    }
+    if has_cloud_lane(data_class) {
+        "pseudonymization_required"
+    } else {
+        "blocked"
+    }
+}
+
 /// Derived permission boundary. Records eligibility; never evidence that a
 /// pseudonymization step actually ran.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -553,41 +727,32 @@ pub struct ProcessingPolicy {
 
 /// Policy follows from the stored class rather than being chosen per call.
 ///
-/// Every class is an explicit arm so the catch-all means "outside the
-/// vocabulary" and nothing else. It answers with c3's policy, because a value
-/// nobody has classified must not be handled more freely than the strictest
-/// class that exists.
+/// Every field but the rationale is *derived from the gates themselves* —
+/// [`local_prompt_allowed`], [`cloud_admission`], [`verbatim_cloud_allowed`] —
+/// so the label a reader is shown and the answer a call site gets are one
+/// expression. They were two, and two expressions of one policy are free to
+/// disagree: this crate labelled `local_processing: "blocked"` for c3 while the
+/// digest path, reading no field, prompted the local model with it anyway.
+///
+/// Only the rationale is a table, because it is prose. Every class is an
+/// explicit arm so the catch-all means "outside the vocabulary" and nothing
+/// else — and the derived fields answer for an unknown class exactly as they do
+/// for c3, since each gate refuses it on its own.
 pub fn processing_policy(data_class: &str) -> ProcessingPolicy {
-    match data_class {
-        "c0" => ProcessingPolicy {
-            local_processing: "allowed",
-            cloud_handling: "eligible",
-            pseudonymization_required: false,
-            rationale: "Public content may be processed locally or by an approved cloud role.",
+    ProcessingPolicy {
+        local_processing: if local_prompt_allowed(data_class) {
+            "allowed"
+        } else {
+            "blocked"
         },
-        "c1" => ProcessingPolicy {
-            local_processing: "allowed",
-            cloud_handling: "pseudonymization_required",
-            pseudonymization_required: true,
-            rationale: "The operator's own material stays local until an explicit pseudonymization step produces a reviewed derivative.",
-        },
-        "c2" => ProcessingPolicy {
-            local_processing: "allowed",
-            cloud_handling: "blocked",
-            pseudonymization_required: true,
-            rationale: "Facts about named people are local-only; no derivative carries them to a cloud role in any form.",
-        },
-        "c3" => ProcessingPolicy {
-            local_processing: "blocked",
-            cloud_handling: "blocked",
-            pseudonymization_required: true,
-            rationale: "A credential enters no prompt at all, local or cloud; there is no processing step it belongs in.",
-        },
-        _ => ProcessingPolicy {
-            local_processing: "blocked",
-            cloud_handling: "blocked",
-            pseudonymization_required: true,
-            rationale: "A class outside the vocabulary is handled as a secret until somebody classifies it.",
+        cloud_handling: cloud_handling(data_class),
+        pseudonymization_required: !verbatim_cloud_allowed(data_class),
+        rationale: match data_class {
+            "c0" => "Public content may be processed locally or by an approved cloud role.",
+            "c1" => "The operator's own material stays local until an explicit pseudonymization step produces a reviewed derivative.",
+            "c2" => "Facts about named people are local-only; no derivative carries them to a cloud role in any form.",
+            "c3" => "A credential enters no prompt at all, local or cloud; there is no processing step it belongs in.",
+            _ => "A class outside the vocabulary is handled as a secret until somebody classifies it.",
         },
     }
 }
@@ -877,6 +1042,172 @@ mod tests {
             "blocked"
         );
         assert!(processing_policy("something-new").pseudonymization_required);
+    }
+
+    /// Six values from outside the vocabulary, chosen for the ways one actually
+    /// arrives: the retired three-class names still readable in a backup and in
+    /// a stale queued job, a plausible neighbour, a case error, and the empty
+    /// string a missing column reads as.
+    const OUTSIDE_THE_VOCABULARY: [&str; 6] = ["public", "personal", "vault", "c4", "C2", ""];
+
+    /// T3's bar, stated over the whole input space rather than over the pairs
+    /// someone thought of: no representation of a local-only class clears any
+    /// tier. Eight originals — `c2`, `c3` and six unknowns — times ten
+    /// derivative values times four tier values, and every one of the 320
+    /// combinations must be an `Err`.
+    ///
+    /// The tier list includes a name no role declares today, because a tier
+    /// arrives here as a string too and a fourth tier is a configuration change
+    /// rather than a code change.
+    #[test]
+    fn no_representation_of_a_local_only_class_clears_any_tier() {
+        let derivatives: Vec<&str> = DATA_CLASSES
+            .iter()
+            .chain(OUTSIDE_THE_VOCABULARY.iter())
+            .copied()
+            .collect();
+        let tiers: Vec<Option<&str>> = std::iter::once(None)
+            .chain(CLOUD_DATA_TIERS.iter().map(|tier| Some(*tier)))
+            .chain(std::iter::once(Some("trusted_peer")))
+            .collect();
+
+        for original in ["c2", "c3"].iter().chain(OUTSIDE_THE_VOCABULARY.iter()) {
+            assert!(
+                !verbatim_cloud_allowed(original),
+                "{original} was cleared to travel verbatim"
+            );
+            assert_eq!(
+                processing_policy(original).cloud_handling,
+                "blocked",
+                "{original} is labelled with a cloud lane it does not have"
+            );
+            for derivative in &derivatives {
+                for tier in &tiers {
+                    let refusal = cloud_admission(original, derivative, *tier).expect_err(
+                        &format!("{original} as {derivative} was admitted to tier {tier:?}"),
+                    );
+                    assert_eq!(refusal.reason, NO_CLOUD_REPRESENTATION);
+                    assert_eq!(refusal.original_data_class, *original);
+                }
+            }
+        }
+    }
+
+    /// The other half of the same property: the two lanes that do exist, and
+    /// nothing beside them. Without this the test above passes on a function
+    /// that refuses everything.
+    #[test]
+    fn the_two_cloud_lanes_are_the_only_ones() {
+        assert!(cloud_admission("c0", "c0", Some("public")).is_ok());
+        // Breadth, not equality: a tier reviewed for pseudonymized personal
+        // content admits public content too.
+        assert!(cloud_admission("c0", "c0", Some("pseudonymized_personal")).is_ok());
+        assert!(cloud_admission("c1", "c1", Some("pseudonymized_personal")).is_ok());
+
+        // The narrower tier does not reach up to the c1 lane.
+        assert_eq!(
+            cloud_admission("c1", "c1", Some("public"))
+                .unwrap_err()
+                .reason,
+            REPRESENTATION_NOT_REVIEWED
+        );
+        // A c1 original may only become a c1 derivative; "redact it into a
+        // public document" is not a step this policy knows.
+        assert_eq!(
+            cloud_admission("c1", "c0", Some("pseudonymized_personal"))
+                .unwrap_err()
+                .reason,
+            REPRESENTATION_NOT_REVIEWED
+        );
+        // Every loopback role and every https endpoint with no reviewed policy.
+        for class in ["c0", "c1"] {
+            assert_eq!(
+                cloud_admission(class, class, None).unwrap_err().reason,
+                NO_DECLARED_TIER
+            );
+        }
+    }
+
+    /// The label is the gate. Both fields of the policy that used to be written
+    /// by hand are re-derived here from the functions the call sites ask, so a
+    /// class whose label and gate disagree fails this test rather than shipping.
+    #[test]
+    fn the_wire_label_says_exactly_what_the_gates_answer() {
+        for class in DATA_CLASSES.iter().chain(OUTSIDE_THE_VOCABULARY.iter()) {
+            let policy = processing_policy(class);
+            assert_eq!(
+                policy.local_processing == "allowed",
+                local_prompt_allowed(class),
+                "{class}: local_processing disagrees with local_prompt_allowed"
+            );
+            assert_eq!(
+                policy.cloud_handling == "eligible",
+                verbatim_cloud_allowed(class),
+                "{class}: cloud_handling disagrees with verbatim_cloud_allowed"
+            );
+            assert_eq!(
+                policy.cloud_handling == "blocked",
+                CLOUD_DATA_TIERS.iter().all(|tier| DATA_CLASSES
+                    .iter()
+                    .all(|derivative| cloud_admission(class, derivative, Some(tier)).is_err())),
+                "{class}: cloud_handling disagrees with cloud_admission"
+            );
+        }
+        // c3 is the one class no prompt may hold, local model included.
+        assert!(!local_prompt_allowed("c3"));
+        for class in ["c0", "c1", "c2"] {
+            assert!(local_prompt_allowed(class));
+        }
+    }
+
+    /// `has_cloud_lane` is exported so a caller does not have to write the
+    /// admitted class names out again, which only helps if it cannot drift from
+    /// the function it summarizes.
+    ///
+    /// Derived rather than tabulated: the expectation is the
+    /// `(derivative, tier)` search itself, run here over the same input space
+    /// the predicate covers, so this fails if either side changes alone. The
+    /// four anchors below stop it passing on a policy that had begun refusing
+    /// everything, or admitting everything.
+    #[test]
+    fn the_cloud_lane_predicate_is_the_admission_search_itself() {
+        for class in DATA_CLASSES.iter().chain(OUTSIDE_THE_VOCABULARY.iter()) {
+            let searched = DATA_CLASSES.iter().any(|derivative| {
+                CLOUD_DATA_TIERS
+                    .iter()
+                    .any(|tier| cloud_admission(class, derivative, Some(tier)).is_ok())
+            });
+            assert_eq!(
+                has_cloud_lane(class),
+                searched,
+                "{class}: has_cloud_lane disagrees with cloud_admission"
+            );
+        }
+        assert!(has_cloud_lane("c0"), "c0 lost its passthrough lane");
+        assert!(has_cloud_lane("c1"), "c1 lost its reviewed redacted lane");
+        for local_only in ["c2", "c3"] {
+            assert!(
+                !has_cloud_lane(local_only),
+                "{local_only} was given a cloud lane"
+            );
+        }
+    }
+
+    /// A refusal is formatted into logs, HTTP bodies and a dashboard. It carries
+    /// the class, the tier and the reason, and it must not be a place a document
+    /// leaks — which is why `cloud_admission` never receives one.
+    #[test]
+    fn a_refusal_names_the_class_and_the_tier_and_nothing_else() {
+        let refusal = cloud_admission("c3", "c1", Some("pseudonymized_personal")).unwrap_err();
+        let rendered = refusal.to_string();
+        assert!(rendered.contains("c3"), "{rendered}");
+        assert!(rendered.contains("pseudonymized_personal"), "{rendered}");
+        assert!(rendered.contains(NO_CLOUD_REPRESENTATION), "{rendered}");
+        assert_eq!(
+            cloud_admission("c2", "c1", None).unwrap_err().tier,
+            None,
+            "an undeclared tier is reported as absent, not as a name"
+        );
     }
 
     /// The escalation rule over its whole input space, not over the three pairs

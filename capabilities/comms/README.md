@@ -48,11 +48,13 @@ Every shared content item also carries one inspectable trust class (Q27).
 configured cloud processing. `c1` (**Mine**) stays local unless an explicitly
 reviewed, pseudonymized derivative is created. `c2` (**Others**) holds another
 person's facts and never reaches a cloud provider at all. `c3` (**Secret**)
-holds credentials and is additionally declared blocked from local model
-processing — a **declared policy, not yet a mechanical gate**: no local call
-site reads `local_processing` today, so a `c3` row's stored text can still reach
-the loopback model through the digest path. The gate that will enforce it is the
-T3 refusing library in `libs/inference`, tracked as B2 (see the root
+holds credentials and is refused local model processing too — mechanically, not
+by declaration: `content_item::local_prompt_allowed` is the gate, and both
+prompt-builders here ask it before they build a prompt (`digest.rs` for the
+digest, diagram and chart rungs, `media.rs` for the feed-summary drain). A
+refused item stores a `local_refused` row saying so. The cloud side is the same
+shape: `content_item::cloud_admission` is the policy and `tier_allows` here is a
+thin wrapper that adds the transformation-version pin (see the root
 [README](../../README.md#data-classes)). Public Feed
 sources default to `c0`; mail defaults to `c1`, while deterministic metadata
 rules raise likely tax, receipt, financial or health mail to `c2` and
