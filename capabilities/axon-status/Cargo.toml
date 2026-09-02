@@ -29,4 +29,4 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 # ServiceExt::oneshot to hand a request to them from inside a fallback handler rather than
 # mounting them as the fallback outright -- the proxy has to get first refusal on the path.
 tower = { version = "0.4", features = ["util"] }   # ServiceExt::oneshot
-tower-http = { version = "0.5", features = ["fs"] }
+tower-http = { version = "0.6", features = ["fs"] }

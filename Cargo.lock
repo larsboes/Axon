@@ -577,7 +577,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower 0.4.13",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -855,7 +855,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -1040,7 +1040,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -1462,7 +1462,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1574,7 +1574,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -3621,7 +3621,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -3993,7 +3993,7 @@ dependencies = [
  "tokio-native-tls",
  "tokio-util",
  "tower 0.5.3",
- "tower-http 0.6.11",
+ "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -4106,7 +4106,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4220,7 +4220,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
  "transit",
 ]
 
@@ -4524,7 +4524,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -4739,7 +4739,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5063,31 +5063,6 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
-dependencies = [
- "bitflags 2.13.1",
- "bytes",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "http-range-header",
- "httpdate",
- "mime",
- "mime_guess",
- "percent-encoding",
- "pin-project-lite",
- "tokio",
- "tokio-util",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tower-http"
 version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
@@ -5100,6 +5075,11 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "http-range-header",
+ "httpdate",
+ "mime",
+ "mime_guess",
+ "percent-encoding",
  "pin-project-lite",
  "tokio",
  "tokio-util",
@@ -5174,7 +5154,7 @@ dependencies = [
  "station-time",
  "thiserror 1.0.69",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -5195,7 +5175,7 @@ dependencies = [
  "station-time",
  "thiserror 1.0.69",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -5395,7 +5375,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]

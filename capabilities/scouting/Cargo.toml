@@ -47,4 +47,4 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 transit = { version = "0.1.0", path = "../transit" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors"] }

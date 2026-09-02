@@ -50,4 +50,4 @@ thiserror = "1.0"
 # punctuality-server only. Same versions capabilities/transit pins for transit-server.
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors"] }
