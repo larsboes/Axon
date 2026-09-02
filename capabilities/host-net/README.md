@@ -101,14 +101,14 @@ nothing and says so once on stderr.
 **No `service.toml`, and the schema proves it is the right answer rather than a shortcut.**
 `tools/check-service-tomls.sh` requires a `port` for `kind = "process"` without a `schedule`,
 and refuses a `port` alongside one. "A process, no schedule, run on demand" is not expressible,
-because it is not a service. Six capabilities already live with no manifest at all —
-`capabilities/host-audit`, `capabilities/host-firewall`, `capabilities/cv`,
-`capabilities/agentbox`, `capabilities/printing`, `capabilities/shell` — and the shell sweep
-puts their CLI on PATH with nothing registered.
+because it is not a service. Five capabilities already live with no manifest at all —
+`capabilities/host-firewall`, `capabilities/cv`, `capabilities/agentbox`,
+`capabilities/printing`, `capabilities/shell` — and the shell sweep puts their CLI on PATH with
+nothing registered.
 
-**Rust, not the shell that `host-audit` uses.** That sibling's own verdict is the test:
-Bash is right there because the job is "run a package manager and set-diff the output". This
-job is four undocumented text formats — netstat's column layout, `socketfilterfw --listapps`,
+**Rust, not the shell its siblings use.** `capabilities/host-firewall` is Bash because its job
+is "render one ruleset and hand it to `nft`", and that verdict is the test. This job is four
+undocumented text formats — netstat's column layout, `socketfilterfw --listapps`,
 `ps`, `ifconfig` — parsed into one typed record that a second program reads as JSON. The
 parsers carry the argument, and they carry it in tests: `src/listen.rs` alone has nine, seven of
 them over captured-output fixtures, including the two netstat process-field shapes that break
