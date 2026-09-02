@@ -21,7 +21,7 @@ process can touch, and whether you can show it.
  │                            │  ONLY       │  /home/agent/config      │
  └────────────────────────────┘             └──────────────────────────┘
 
-  Without --online the box runs on `--network none`: loopback and no interface at all.
+  Without --online the box runs on `--network none`: loopback and no other interface.
   No route, no resolver — and no model endpoint either.
 ```
 
@@ -110,7 +110,7 @@ box. What changed on 2026-09-02 is only how the box reaches across it.
 - **NVIDIA OpenShell** — policy-controlled sandbox with filesystem, process, credential and
   inference controls, the richest of the three upstream patterns. Rejected for now because every
   sandbox needs a running gateway: a second service to operate and audit for a box that a
-  network and two mounts already contain.
+  closed network and two mounts already contain.
 - **`apple/container`** — what this capability was built on until 2026-09-02, and the reason its
   first security sentence was *each container is its own VM*. Retired by Q_CONTAINER: one
   container runtime on this machine instead of two, on a machine where no enabled capability was
@@ -242,26 +242,32 @@ be silent about it, because a step that prints nothing reads as a step that pass
 ## The boundary, and how it was checked
 
 **Current, 2026-09-02.** M4 Pro / macOS 26.5.2 / docker 29.4.0 on OrbStack 2.2.3, from the
-`debian:trixie-slim` agentbox image. Same probe, three networks, so the controls show what each
-mode actually buys:
+`debian:trixie-20260713-slim` base the agentbox image is built on. Same probe, three networks, so
+the controls show what each mode actually buys:
 
 | Probe from inside the box | `--network none` (default) | `--internal` | default bridge (`--online`) |
 |---|---|---|---|
-| interfaces | `lo` only, no route table | `eth0`, on-link /24, no default route | `eth0` + default route |
-| TCP 1.1.1.1:443 | fails in <1 ms, ENETUNREACH | unreachable | reachable |
-| DNS lookup | fails in ~2 ms | 10 s timeout, no answer | resolves in ~22 ms |
+| interfaces | `lo` only, no route table at all | `eth0`, one on-link /24, no default route | `eth0` + default route |
+| TCP 1.1.1.1:443 | fails in ~1 ms | fails in ~1 ms | reachable in ~9 ms |
+| DNS lookup | fails in ~2 ms | fails in ~1 ms | resolves in ~22 ms |
 | `host.docker.internal` | does not resolve | does not resolve | `0.250.250.254` |
-| model endpoint on the host | unreachable | unreachable | `HTTP/1.1 401` |
+| the model on the host, `:8000` | unreachable | unreachable | `HTTP/1.1 401` |
 
 A 401 is the pass condition on the last row: it proves the endpoint answered. It was taken
-against a throwaway listener bound to `0.0.0.0:8000` on the Mac and torn down afterwards,
-because nothing was serving the model on this machine that day.
+against a throwaway listener bound to `0.0.0.0:8000` on the Mac and torn down afterwards, because
+nothing was serving the model on this machine that day.
 
 **`--internal` is in the table to close the obvious question.** It is the shape that looks like
-apple-container's host-only network and is not one: it blocks egress *and* the host. Docker has
-nothing between column one and column three, which is the whole of what Q_CONTAINER traded away.
-DNS on `--network none` is fast because the image is glibc; the same probe on musl burns the full
-10 s. `--dns 127.0.0.1` changes neither, and was dropped rather than carried over.
+apple-container's host-only network and is not one: it blocks egress *and* the host, so column
+two buys nothing over column one except a NIC and a resolver the box can talk to. Docker has
+nothing between column one and column three, and that gap is the whole of what Q_CONTAINER traded
+away.
+
+Two smaller findings from the same afternoon. The fast DNS failures are a property of the image,
+not of docker: the same `--network none` probe on Alpine takes 10.03 s, because musl retries the
+unreachable nameserver until both timeouts expire. And `--dns 127.0.0.1` changes none of these
+numbers — docker applies it as an upstream forwarder rather than as the resolver — so the flag
+was dropped rather than carried over from the apple-container launcher.
 
 **Historical, 2026-07-28**, M4 Pro / macOS 26.5.2 / `container` 1.0.0 — kept because it is the
 record of the stronger claim this capability used to make, and the thing the table above should
