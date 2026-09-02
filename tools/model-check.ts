@@ -1,6 +1,6 @@
 // Is every model this machine names still real, still served, and still the newest of its line?
 //
-// Renovate watches package registries; a model id is not a package, so nothing watched these.
+// Dependabot watches package registries; a model id is not a package, so nothing watched these.
 // The cost of that was measured on 2026-08-30: `summarization_light` named `apple-on-device`
 // months after apfel replaced the server that answered to it, and every unattended request 404'd
 // with `model_not_found` — at request time, so it read as "the light rung never summarizes

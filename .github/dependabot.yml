@@ -1,0 +1,76 @@
+# Dependabot — freshness pull requests, replacing renovate.json5 (Q_AUDIT, 2026-09-02).
+# Renovate needed a GitHub App that was never installed: measured 2026-09-02, the repository has
+# zero Renovate pull requests and zero Renovate issues over its whole life. Dependabot needs no
+# App.
+#
+# `cooldown: default-days: 0` is written out in EVERY block, and that is the ruling rather than
+# noise. Dependabot has held new releases for three days by default since 2026-07-14, so omitting
+# the key does not mean "no hold" — it silently reinstates the one this change deleted. Patch
+# first (README.md#patch-first): a hold that needs a human to end it is a hold that ends late.
+#
+# Daily, not weekly, for the same reason. A week-long batch is a week of unapplied security
+# fixes, and the grouping below is what keeps that from being one pull request per crate.
+#
+# This file opens VERSION pull requests only. SECURITY updates are a repository setting, not a
+# file setting: `gh api --method PUT repos/larsboes/Axon/automated-security-fixes`. That was run
+# on 2026-09-02 and `security_and_analysis.dependabot_security_updates` now reads "enabled";
+# this file alone would have left the reactive half switched off.
+#
+# `bun` is a first-class ecosystem, read from dependabot/dependabot-core upstream: a top-level
+# bun/ directory, and bun/lib/dependabot/bun/package_manager.rb declaring ECOSYSTEM = "bun". It
+# reads bun.lock directly, so the npm ecosystem is not needed. Both trees are verified present
+# beside their package.json: dashboard/bun.lock and capabilities/soundscape/ui/bun.lock.
+#
+# capabilities/agentbox/Containerfile is deliberately NOT watched. Its only FROM is
+# `FROM ${BASE_IMAGE}` over an ARG default, and whether Dependabot resolves that shape is
+# unverified — an ecosystem block that may watch nothing is exactly the rot this change removes.
+# That base image is a dated Debian snapshot tag, bumped by hand.
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 0
+    open-pull-requests-limit: 5
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "bun"
+    directory: "/dashboard"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 0
+    open-pull-requests-limit: 3
+    groups:
+      dashboard:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "bun"
+    directory: "/capabilities/soundscape/ui"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 0
+    open-pull-requests-limit: 3
+    groups:
+      soundscape-ui:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 0
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

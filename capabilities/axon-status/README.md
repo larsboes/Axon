@@ -53,8 +53,8 @@ capability that refused this process would otherwise be reported as not running.
 There was a `GET /api/axon-status/upstreams` here until 2026-08-28. It shelled out to
 `tools/upstream-checker --json --offline` and served a per-entry `ok`/`na`/`warn`/`fail`
 status. PRD Q41 retired that script; the status field *was* its verdict, so recomputing it
-in this process would rebuild the plumbing the item deleted. Renovate reports drift on
-GitHub now, and the verdict/pin half of that feed was never the checker's anyway —
+in this process would rebuild the plumbing the item deleted. Dependabot
+(`.github/dependabot.yml`) reports drift on GitHub now, and the verdict/pin half of that feed was never the checker's anyway —
 `/self` already carries it, straight from `upstreams.toml` via `tools/self generate`.
 - `POST /api/axon-status/capabilities/:name/start` — bring one up (via
   `service-runner.sh resume`, which also lifts a maintenance hold)

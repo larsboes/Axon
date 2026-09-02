@@ -1,0 +1,99 @@
+name: Security
+
+# The scanners that run whether or not the operator's machine is awake. tools/audit is the
+# local command over the two surfaces CI cannot reach cheaply; this is the other half.
+#
+# What is NOT here, deliberately:
+#   gitleaks  GitHub secret scanning with push protection already covers this public repo, and
+#             the private overlay — the surface with no free scanning — is unreachable from
+#             this repository's CI. tools/audit is where the overlay gets scanned.
+#   SARIF     nothing uploads here, so no job needs `security-events: write` and a fork pull
+#             request cannot fail on a permission it never gets. A finding turns the job red
+#             and is read in its log. Adding the code-scanning tab back is a later decision
+#             with a stated cost, not an omission.
+#
+# Both scanners install the LATEST release rather than the upstreams.toml pin. That is the one
+# place patch-first cuts the other way from pinning and it is on purpose: a scanner is judged
+# by whether its matcher and its database are current, so holding one at a pin makes the check
+# weaker, not safer. upstreams.toml records the version each verdict was written against.
+# Neither install pipes a script into a shell, and neither writes outside the runner's own
+# temporary directory.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Monday 05:41 UTC, deliberately clear of codeql.yml's "17 4 * * 1" — two scanners
+    # starting in the same minute makes one queue behind the other for nothing.
+    - cron: "41 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deps:
+    name: osv-scanner (every lockfile)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Axon
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install osv-scanner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          gh release download --repo google/osv-scanner \
+            --pattern 'osv-scanner_linux_amd64' --output "$RUNNER_TEMP/bin/osv-scanner"
+          chmod +x "$RUNNER_TEMP/bin/osv-scanner"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/osv-scanner" --version
+      - name: Scan
+        run: |
+          set -uo pipefail
+          osv-scanner scan source -r --config osv-scanner.toml \
+            --experimental-exclude target \
+            --experimental-exclude node_modules \
+            --experimental-exclude to-integrate .
+
+  images:
+    name: grype (every declared image)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Axon
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install grype
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          gh release download --repo anchore/grype \
+            --pattern 'grype_*_linux_amd64.tar.gz' --output "$RUNNER_TEMP/grype.tgz"
+          tar xzf "$RUNNER_TEMP/grype.tgz" -C "$RUNNER_TEMP/bin" grype
+          chmod +x "$RUNNER_TEMP/bin/grype"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/grype" version
+      - name: Scan
+        run: |
+          set -uo pipefail
+          rc=0; found=0
+          for m in capabilities/*/service.toml; do
+            image=$(sed -n 's/^image *= *"\([^"]*\)".*/\1/p' "$m" | head -1)
+            [ -n "$image" ] || continue
+            tag=$(sed -n 's/^tag *= *"\([^"]*\)".*/\1/p' "$m" | head -1)
+            found=1
+            echo "::group::$image:${tag:-latest}"
+            # registry: pulls straight from the registry — no container runtime and no daemon
+            # (grype's own help says so). Discovered from the manifests, never named here, so
+            # a capability added tomorrow is covered without an edit.
+            grype "registry:$image:${tag:-latest}" --fail-on high || rc=1
+            echo "::endgroup::"
+          done
+          [ "$found" -eq 1 ] || { echo "no capability declares an image" >&2; exit 1; }
+          exit "$rc"
