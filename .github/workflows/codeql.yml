@@ -87,7 +87,7 @@ jobs:
 
     steps:
       - name: Check out Axon
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Pinned by commit sha like every other action here, and the comment names the release the
       # sha belongs to so a bump is reviewable as a version change rather than as a hash swap.
