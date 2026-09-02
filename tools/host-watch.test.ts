@@ -13,6 +13,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type Finding,
   type FindingRow,
+  type NetReport,
   type Proc,
   type WatchPolicy,
   classifyProcesses,
@@ -20,6 +21,7 @@ import {
   decideResolutions,
   parseCpuTime,
   parseElapsed,
+  netFinding,
   parsePsOutput,
   storageFinding,
 } from "./host-watch.ts";
@@ -267,5 +269,62 @@ describe("decideResolutions — a run closes what it no longer sees", () => {
   test("an already-resolved row is not resolved twice", () => {
     const existing = [{ ...open("cpu:Foo~1", "cpu:Foo"), status: "resolved" }];
     expect(decideResolutions([], existing)).toEqual([]);
+  });
+});
+
+// The third condition, delegated whole to `host-net check --json`. These fixtures are the
+// payload shape that command emits, with the process names replaced: this file is public and
+// which daemons a given machine runs is an overlay fact.
+describe("netFinding — one finding for the whole condition", () => {
+  const report = (unexpected: NetReport["unexpected"]): NetReport => ({
+    listeners: 46,
+    wildcard: 24,
+    policy: "<overlay>/config/host-net-policy.toml",
+    unexpected,
+  });
+
+  test("a host whose wildcard listeners are all declared files nothing", () => {
+    expect(netFinding(report([]))).toBeNull();
+  });
+
+  test("host-net could not run: no finding, no throw", () => {
+    expect(netFinding(null)).toBeNull();
+  });
+
+  // Three listeners are one condition. The key carries no port because a mesh VPN's wildcard
+  // ports change on every restart, and a key that moves mints a new generation every hour.
+  test("three unexpected listeners are one finding with a port-free key", () => {
+    const three = netFinding(
+      report([
+        { process: "example-daemon", port: "19222", protos: "tcp46", pid: 22458 },
+        { process: "example-vpn-extension", port: "443", protos: "tcp4+tcp6", pid: 11481 },
+        { process: "example-vpn-extension", port: "41641", protos: "udp4+udp6", pid: 11481 },
+      ]),
+    );
+    expect(three).not.toBeNull();
+    expect(three!.key).toBe("net:unexpected-exposure");
+    expect(three!.note).toContain("example-daemon on *:19222");
+    expect(three!.note).toContain("*:443");
+    expect(three!.note).toContain("*:41641");
+
+    // The same three listeners after a restart, on different ephemeral ports: the same key.
+    const later = netFinding(
+      report([
+        { process: "example-daemon", port: "19222", protos: "tcp46", pid: 31002 },
+        { process: "example-vpn-extension", port: "443", protos: "tcp4+tcp6", pid: 31111 },
+        { process: "example-vpn-extension", port: "50007", protos: "udp4+udp6", pid: 31111 },
+      ]),
+    );
+    expect(later!.key).toBe(three!.key);
+  });
+
+  test("the title names the distinct processes, not one line per port", () => {
+    const finding = netFinding(
+      report([
+        { process: "example-vpn-extension", port: "443", protos: "tcp4", pid: 1 },
+        { process: "example-vpn-extension", port: "41641", protos: "udp4", pid: 1 },
+      ]),
+    );
+    expect(finding!.title).toBe("2 wildcard listener(s) not in the host-net policy (example-vpn-extension)");
   });
 });
