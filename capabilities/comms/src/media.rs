@@ -4,6 +4,7 @@
 //! shell string. Subtitles download into a temp dir that is always removed (via
 //! `TmpDir`'s Drop). No raw audio/video is ever written.
 
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -479,11 +480,27 @@ fn strip_tags(s: &str) -> String {
 
 /// The one HTTP client every extractor uses. A descriptive user agent is not
 /// politeness here — Reddit and the GitHub API both reject the default one.
+///
+/// The redirect policy is the second half of `check_destination`: checking only
+/// the URL the caller handed over leaves `302 -> http://169.254.169.254/` as a
+/// complete bypass, so every hop is re-checked and the chain is capped at three.
 fn http_client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .user_agent("AxonComms/0.1")
         .gzip(true)
         .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= MAX_REDIRECTS {
+                return attempt.error(CommsError::Other(format!(
+                    "refused: more than {MAX_REDIRECTS} redirects"
+                )));
+            }
+            let next = attempt.url().as_str().to_string();
+            match check_scheme(&next).and_then(|()| check_destination(&next)) {
+                Ok(()) => attempt.follow(),
+                Err(e) => attempt.error(e),
+            }
+        }))
         .build()?)
 }
 
@@ -996,6 +1013,91 @@ fn check_scheme(url: &str) -> Result<()> {
     }
 }
 
+/// How many hops `http_client`'s redirect policy will follow. Three is enough
+/// for the shorteners and the http->https->canonical-host chains real articles
+/// use, and short enough that a redirect loop fails fast.
+const MAX_REDIRECTS: usize = 3;
+
+/// Refuse a URL that resolves to an address inside this machine or this network.
+///
+/// `check_scheme` above closes `file://`; this closes the other half of the same
+/// hole, because `http://127.0.0.1:8086/api/plans` is still http. Every Axon
+/// service binds loopback (see `libs/axon-server`), so without this an ingested
+/// link drives an internal API from the outside: `POST /ingest`
+/// (`server/feed.rs`) takes the URL from the request body, and
+/// `server/source_handlers.rs` fetches URLs that an external feed produced.
+/// CodeQL rust/request-forgery reported it against `extract_article`.
+///
+/// Residual, deliberately not closed here: DNS rebinding. The name is resolved
+/// once for this check and again by the connector, so a record with a one-second
+/// TTL can answer public here and private there. Closing that needs the checked
+/// address to be the address the socket gets — a pinned `ClientBuilder::resolve`
+/// or a custom connector — which is a larger change than this guard, and one no
+/// unit test in this file could observe.
+fn check_destination(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url.trim())
+        .map_err(|e| CommsError::Other(format!("refused: unparsable URL ({e})")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| CommsError::Other("refused: URL names no host".into()))?;
+    // `host_str` keeps the brackets on an IPv6 literal; `to_socket_addrs` parses
+    // an address literal before it resolves, and it cannot parse the brackets.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<_> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| CommsError::Other(format!("refused: cannot resolve {host} ({e})")))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(CommsError::Other(format!(
+            "refused: {host} resolves to no address"
+        )));
+    }
+    // ANY, not ALL. A name that answers with one public address and one private
+    // address is the ordinary way this check is bypassed.
+    if addrs.iter().any(|a| !is_public(a.ip())) {
+        return Err(CommsError::Other(format!(
+            "refused: {host} resolves to a non-public address"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether an address is routable on the public internet. Stricter than "not
+/// loopback" on purpose: link-local carries the cloud metadata service at
+/// 169.254.169.254, and the CGNAT range carries this machine's VPN peers.
+fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            // RFC 6598 carrier-grade NAT, 100.64.0.0/10. Written out because
+            // `Ipv4Addr::is_shared` is still behind feature `ip` on the pinned
+            // 1.96.0 toolchain (rust-toolchain.toml); every other test here is
+            // stable std, so do not hand-roll those.
+            let o = v4.octets();
+            let cgnat = o[0] == 100 && (64..128).contains(&o[1]);
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_unspecified()
+                || cgnat)
+        }
+        IpAddr::V6(v6) => {
+            // An IPv4-mapped address is an IPv4 destination wearing a v6 name;
+            // ::ffff:127.0.0.1 has to fail for the reason 127.0.0.1 fails.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public(IpAddr::V4(v4));
+            }
+            !(v6.is_loopback()
+                || v6.is_multicast()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local())
+        }
+    }
+}
+
 /// Build a `FeedItem` for a URL: metadata + transcript, no summary. Does NOT
 /// persist -- the caller upserts. Never leaves temp files behind.
 ///
@@ -1005,6 +1107,14 @@ fn check_scheme(url: &str) -> Result<()> {
 /// prints the summary, calls `ingest` and waits for both.
 pub fn fetch(url: &str) -> Result<FeedItem> {
     check_scheme(url)?;
+    // The one place the guard is needed, because this is the one function that
+    // makes a request. Every arm below goes out through it, including yt-dlp,
+    // which fetches in a subprocess the redirect policy never sees.
+    // `extract_article` -- the line CodeQL anchored on -- is private and reached
+    // only from here and from the GitHub and HuggingFace arms below, so it is
+    // covered by domination; checking it again would mean a second DNS
+    // resolution, which widens the rebinding window rather than narrowing it.
+    check_destination(url)?;
     let (kind, stream) = detect(url);
     let mut item = FeedItem::new(url, stream, kind);
 
@@ -1086,6 +1196,12 @@ pub fn fetch_with_content(
         return fetch(url);
     }
     check_scheme(url)?;
+    // No `check_destination` here, unlike `fetch`. Past this point the arm makes
+    // no request -- the client already handed the document over, which is the
+    // whole reason this function exists -- so resolving the host would add a DNS
+    // dependency to the one path that is meant to work without the network, and
+    // refuse a hand-over made offline. The no-content fall-through above returns
+    // through `fetch`, which is guarded.
     let (kind, stream) = detect(url);
     let mut item = FeedItem::new(url, stream, kind);
 
@@ -1667,6 +1783,54 @@ mod tests {
         assert!(check_scheme("file:///etc/passwd").is_err());
         assert!(check_scheme("ftp://example.com/x").is_err());
         assert!(check_scheme("example.com").is_err());
+    }
+
+    /// Every case is an IP literal, so the test asserts the address policy and
+    /// never touches a resolver. The redirect policy in `http_client` calls this
+    /// same function on each hop, but `reqwest::redirect::Attempt` cannot be
+    /// constructed outside reqwest, so that wiring is only exercised by an
+    /// end-to-end ingest of a public URL that redirects to a private one.
+    #[test]
+    fn check_destination_refuses_non_public_addresses() {
+        for url in [
+            "http://127.0.0.1:8086/api/plans",
+            "http://[::1]/x",
+            "http://[::ffff:127.0.0.1]/x",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/",
+            "http://172.16.0.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[fe80::1]/",
+            "http://[fd00::1]/",
+            "http://100.64.0.1/",
+            "http://0.0.0.0/",
+            "http://255.255.255.255/",
+            "http://[ff02::1]/",
+        ] {
+            let err = check_destination(url).expect_err(url);
+            assert!(err.to_string().starts_with("refused: "), "{url}: {err}");
+        }
+    }
+
+    #[test]
+    fn check_destination_allows_a_public_address() {
+        assert!(check_destination("http://93.184.216.34/index.html").is_ok());
+        assert!(check_destination("https://[2606:2800:220:1::1]/").is_ok());
+    }
+
+    #[test]
+    fn check_destination_refuses_a_url_without_a_host() {
+        assert!(check_destination("http:///nowhere").is_err());
+    }
+
+    #[test]
+    fn is_public_maps_the_boundaries_of_the_hand_written_cgnat_range() {
+        // 100.64.0.0/10 is written out because Ipv4Addr::is_shared is unstable;
+        // the neighbours on each side prove the mask, not just the middle.
+        assert!(!is_public("100.64.0.0".parse().unwrap()));
+        assert!(!is_public("100.127.255.255".parse().unwrap()));
+        assert!(is_public("100.63.255.255".parse().unwrap()));
+        assert!(is_public("100.128.0.0".parse().unwrap()));
     }
 
     #[test]
