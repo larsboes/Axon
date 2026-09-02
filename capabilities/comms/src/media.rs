@@ -490,7 +490,12 @@ fn http_client() -> Result<reqwest::blocking::Client> {
         .gzip(true)
         .timeout(std::time::Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= MAX_REDIRECTS {
+            // `>`, not `>=`: reqwest's `previous()` starts with the initial
+            // URL, which is not a redirection (reqwest-0.12.28
+            // src/redirect.rs:135 says so, and its own `Policy::limited`
+            // compares the same way). With `>=` the error said three and
+            // followed two.
+            if attempt.previous().len() > MAX_REDIRECTS {
                 return attempt.error(CommsError::Other(format!(
                     "refused: more than {MAX_REDIRECTS} redirects"
                 )));
@@ -1069,31 +1074,53 @@ fn check_destination(url: &str) -> Result<()> {
 fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            // RFC 6598 carrier-grade NAT, 100.64.0.0/10. Written out because
-            // `Ipv4Addr::is_shared` is still behind feature `ip` on the pinned
-            // 1.96.0 toolchain (rust-toolchain.toml); every other test here is
-            // stable std, so do not hand-roll those.
+            // Four ranges written out by hand. Three of them have a std
+            // predicate that is still behind feature `ip` on the pinned 1.96.0
+            // toolchain (rust-toolchain.toml) -- `is_shared`, `is_reserved`,
+            // `is_benchmarking` -- and 0.0.0.0/8 has none at all. Every other
+            // test below is stable std, so do not hand-roll those.
             let o = v4.octets();
+            // RFC 6598 carrier-grade NAT, 100.64.0.0/10: this machine's VPN peers.
             let cgnat = o[0] == 100 && (64..128).contains(&o[1]);
+            // RFC 1122 "this network", 0.0.0.0/8. Some stacks route 0.x.y.z to
+            // localhost, and no destination on it is legitimate.
+            let this_network = o[0] == 0;
+            // RFC 1112 reserved, 240.0.0.0/4, and RFC 2544 benchmarking,
+            // 198.18.0.0/15. Neither is routable, so neither is a public host.
+            let reserved = o[0] >= 240;
+            let benchmarking = o[0] == 198 && (18..20).contains(&o[1]);
             !(v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_broadcast()
                 || v4.is_multicast()
                 || v4.is_unspecified()
-                || cgnat)
+                || cgnat
+                || this_network
+                || reserved
+                || benchmarking)
         }
         IpAddr::V6(v6) => {
-            // An IPv4-mapped address is an IPv4 destination wearing a v6 name;
-            // ::ffff:127.0.0.1 has to fail for the reason 127.0.0.1 fails.
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_public(IpAddr::V4(v4));
-            }
-            !(v6.is_loopback()
+            // The v6 tests run FIRST. `::1` is an IPv4-compatible address as
+            // well as the loopback one, and unwrapping it before testing it
+            // yields 0.0.0.1 -- which the v4 arm would have to special-case to
+            // avoid calling loopback public.
+            if v6.is_loopback()
                 || v6.is_multicast()
                 || v6.is_unspecified()
                 || v6.is_unique_local()
-                || v6.is_unicast_link_local())
+                || v6.is_unicast_link_local()
+            {
+                return false;
+            }
+            // `::ffff:a.b.c.d` (mapped) and the deprecated `::a.b.c.d`
+            // (compatible) are both an IPv4 destination wearing a v6 name;
+            // `::ffff:127.0.0.1` has to fail for the reason 127.0.0.1 fails,
+            // and so does `::7f00:1`.
+            match v6.to_ipv4() {
+                Some(v4) => is_public(IpAddr::V4(v4)),
+                None => true,
+            }
         }
     }
 }
@@ -1806,6 +1833,13 @@ mod tests {
             "http://0.0.0.0/",
             "http://255.255.255.255/",
             "http://[ff02::1]/",
+            // The deprecated IPv4-compatible spelling of 127.0.0.1. Modern
+            // stacks do not route it, but the guard must not be the thing that
+            // depends on that.
+            "http://[::7f00:1]/",
+            "http://240.0.0.1/",
+            "http://198.18.0.1/",
+            "http://0.1.2.3/",
         ] {
             let err = check_destination(url).expect_err(url);
             assert!(err.to_string().starts_with("refused: "), "{url}: {err}");
@@ -1824,13 +1858,41 @@ mod tests {
     }
 
     #[test]
-    fn is_public_maps_the_boundaries_of_the_hand_written_cgnat_range() {
-        // 100.64.0.0/10 is written out because Ipv4Addr::is_shared is unstable;
-        // the neighbours on each side prove the mask, not just the middle.
+    fn is_public_maps_the_boundaries_of_the_hand_written_ranges() {
+        // Every range below is written out because its std predicate is behind
+        // feature `ip`. The neighbours on each side prove the mask, not just
+        // the middle.
+        // 100.64.0.0/10, carrier-grade NAT.
         assert!(!is_public("100.64.0.0".parse().unwrap()));
         assert!(!is_public("100.127.255.255".parse().unwrap()));
         assert!(is_public("100.63.255.255".parse().unwrap()));
         assert!(is_public("100.128.0.0".parse().unwrap()));
+        // 0.0.0.0/8, "this network".
+        assert!(!is_public("0.255.255.255".parse().unwrap()));
+        assert!(is_public("1.0.0.0".parse().unwrap()));
+        // 198.18.0.0/15, benchmarking. 198.20.0.0 is an ordinary public host.
+        assert!(!is_public("198.18.0.0".parse().unwrap()));
+        assert!(!is_public("198.19.255.255".parse().unwrap()));
+        assert!(is_public("198.17.255.255".parse().unwrap()));
+        assert!(is_public("198.20.0.0".parse().unwrap()));
+        // 240.0.0.0/4, reserved. Its lower neighbour is inside multicast
+        // (224.0.0.0/4), so the last public IPv4 address is 223.255.255.255.
+        assert!(!is_public("240.0.0.0".parse().unwrap()));
+        assert!(!is_public("239.255.255.254".parse().unwrap()));
+        assert!(is_public("223.255.255.255".parse().unwrap()));
+    }
+
+    /// `::1` is IPv4-compatible as well as loopback, so it is the case that
+    /// decides the order of the two tests in the v6 arm: unwrapped first it
+    /// becomes 0.0.0.1, which no v4 predicate calls loopback.
+    #[test]
+    fn is_public_unwraps_both_v4_in_v6_forms_without_laundering_v6_loopback() {
+        assert!(!is_public("::1".parse().unwrap()));
+        assert!(!is_public("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!is_public("::7f00:1".parse().unwrap()));
+        assert!(!is_public("::ffff:192.168.1.1".parse().unwrap()));
+        assert!(is_public("::ffff:93.184.216.34".parse().unwrap()));
+        assert!(is_public("2606:2800:220:1::1".parse().unwrap()));
     }
 
     #[test]
