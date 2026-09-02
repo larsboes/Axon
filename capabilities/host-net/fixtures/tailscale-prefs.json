@@ -1,0 +1,15 @@
+{
+  "ControlURL": "https://controlplane.example.com",
+  "RouteAll": true,
+  "ExitNodeID": "",
+  "ExitNodeAllowLANAccess": false,
+  "CorpDNS": true,
+  "RunSSH": false,
+  "WantRunning": false,
+  "LoggedOut": false,
+  "ShieldsUp": false,
+  "AdvertiseRoutes": null,
+  "NoSNAT": false,
+  "NetfilterMode": 2,
+  "PostureChecking": false
+}

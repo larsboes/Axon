@@ -1,0 +1,46 @@
+{
+  "Version": "1.0.0-texample",
+  "TUN": true,
+  "BackendState": "Running",
+  "HaveNodeKey": true,
+  "MagicDNSSuffix": "example.ts.net",
+  "CurrentTailnet": { "Name": "example.ts.net", "MagicDNSSuffix": "example.ts.net", "MagicDNSEnabled": true },
+  "TailscaleIPs": ["100.101.102.103"],
+  "Self": {
+    "ID": "1",
+    "HostName": "example-self",
+    "DNSName": "example-self.example.ts.net",
+    "OS": "macOS",
+    "TailscaleIPs": ["100.101.102.103"],
+    "Online": true,
+    "KeyExpiry": "2027-01-22T13:35:51Z"
+  },
+  "Peer": {
+    "nodekey:0000000000000000000000000000000000000000000000000000000000000001": {
+      "ID": "2",
+      "HostName": "example-node-a",
+      "DNSName": "example-node-a.example.ts.net",
+      "OS": "iOS",
+      "TailscaleIPs": ["100.101.102.104"],
+      "Online": true,
+      "KeyExpiry": "2027-02-14T09:00:00Z"
+    },
+    "nodekey:0000000000000000000000000000000000000000000000000000000000000002": {
+      "ID": "3",
+      "HostName": "example-node-b",
+      "DNSName": "example-node-b.example.ts.net",
+      "OS": "linux",
+      "TailscaleIPs": ["100.101.102.105"],
+      "Online": true
+    },
+    "nodekey:0000000000000000000000000000000000000000000000000000000000000003": {
+      "ID": "4",
+      "HostName": "example-node-c",
+      "DNSName": "example-node-c.example.ts.net",
+      "OS": "macOS",
+      "TailscaleIPs": ["100.101.102.106"],
+      "Online": false,
+      "KeyExpiry": "2027-03-01T09:00:00Z"
+    }
+  }
+}

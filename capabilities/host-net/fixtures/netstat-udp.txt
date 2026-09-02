@@ -1,0 +1,10 @@
+Active Internet connections (including servers)
+Proto Recv-Q Send-Q  Local Address                                 Foreign Address                               (state)          rxbytes      txbytes  rhiwat  shiwat          process:pid    state  options           gencnt    flags   flags1 usecnt rtncnt fltrs
+udp4       0      0  *.*                    *.*                                            0            0  786896    9216 example-session:9005  00080 00000000 00000000002db0b9 00000000 00000800      1      0 000000
+udp4       0      0  *.*                    *.*                                            0            0  786896    9216  example-wifid:9006  00080 00000000 0000000000291e6e 00000000 00002800      1      0 000000
+udp6       0      0  *.*                    *.*                                            0            0  786896    9216 Example Helper :9007  00080 00000000 0000000000291e7f 00000000 00002800      1      0 000000
+udp4       0      0  *.5353                 *.*                                            0            0  786896    9216   mDNSResponder:451  00100 00000000 00000000002cc8e2 00000000 00000800      1      0 000002
+udp6       0      0  *.5353                 *.*                                            0            0  786896    9216   mDNSResponder:451  00100 00000000 00000000002cc8e3 00000000 00000800      1      0 000002
+udp4       0      0  *.3722                 *.*                                            0          736  786896    9216        rapportd:622  00100 00010200 00000000002befc0 00000001 00000800      1      0 000002
+udp4       0      0  127.0.0.1.49185        *.*                                            0            0  786896    9216   example-agent:9008  00100 00000000 00000000002befc1 00000001 00000800      1      0 000000
+udp6       0      0  2001:db8:1722:b10.51526 2001:db8:4844:4.443                        15936         7941 1048576   29040 example-stream:9009  00102 00000000 00000000002dd8cc 00000001 00200900      1      0 000002

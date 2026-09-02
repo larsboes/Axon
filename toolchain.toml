@@ -160,6 +160,22 @@ why = "serves the `embedding` and `summarization` inference roles: capabilities/
 install_macos = "brew install --cask ollama"
 install_linux = "curl -fsSL https://ollama.com/install.sh | sh"
 
+[tailscale]
+required = "optional"
+version_cmd = "tailscale version"
+min_version = "1.98.9"
+why = "capabilities/host-net execs `tailscale status --json`, `tailscale debug prefs` and `tailscale lock status` for its `tailnet` verb; a host without it degrades to a named error rather than an empty posture. Undeclared until 2026-09-02, which is the same silence the macmon and yt-dlp entries above record. It is a host daemon Axon calls and builds nothing from, so no `upstream` id, the reasoning [ollama] states. The floor is upstreams.toml [tailscale] `pin`, not the build host's incidental 1.102.3: the three subcommands are all long-standing, so the functional floor is far lower and unmeasured, and pinning the build host's own version would report every slightly older but working install as `outdated`. Below the reviewed pin is the one statement this can make with a source."
+# NO needed_by, and that is the decision rather than an omission. `capability:host-net` cannot
+# fire: toolchain-check resolves a capability scope against machine.toml's `capabilities` array
+# (tools/toolchain-check:133-137), and by convention every capability without a service.toml —
+# host-audit, host-firewall, cv, host-net — is absent from that array, so the entry would report
+# `n/a (capability:host-net)` on every run forever. That is exactly the silent gap this entry
+# exists to close. `workflow:host-net` would be no better: nothing invokes toolchain-check with
+# that workflow. Core scope with required = "optional" is the shape that actually runs: checked
+# on every machine, absence is a warning with an install hint, never a failure.
+install_macos = "brew install --cask tailscale"
+install_linux = "curl -fsSL https://tailscale.com/install.sh | sh"
+
 [cargo]
 required = "optional"
 needed_by = ["workflow:build"]

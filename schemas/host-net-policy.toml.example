@@ -1,0 +1,49 @@
+# host-net-policy.toml — which wildcard listeners are expected on THIS machine.
+#
+# The overlay half of `capabilities/host-net`. Core Axon owns the parsing, the scope
+# classification and the exit codes, and knows no process name; every name below is
+# machine-specific and therefore lives in the active overlay
+# (README.md#public-core-and-private-overlays).
+#
+# Copy to <overlay>/config/host-net-policy.toml and fill in.
+#
+# Only WILDCARD binds are ever a finding. A loopback listener is not reachable from anywhere
+# else, and a listener bound to one interface is a decision somebody already made on purpose.
+# `host-net listen` shows all four scopes; this file is only about the widest one.
+
+# ── Expected wildcard listeners ────────────────────────────────────────────────
+#
+# `process` is the executable's BASENAME, exactly as `host-net listen` prints it in the
+# PROCESS column.
+#
+# Two things it is deliberately NOT. It is not netstat's process field, which macOS truncates
+# to sixteen characters, so a name copied out of `netstat -anv` may silently match nothing.
+# And it is not a port: a VPN or mesh daemon is assigned fresh wildcard ports on every start,
+# so a policy keyed on a port number needs editing after each reboot, and a check nobody can
+# keep current is a check that gets deleted.
+#
+# `reason` is required, because the reason is exactly what a scanner cannot infer — the same
+# contract `schemas/host-watch-policy.toml.example` states for its allowlist.
+#
+# Keep this list SHORT. Every name here is a listener this check can never warn about again,
+# so a list grown to silence noise is how the check quietly stops working. Prefer binding the
+# service to loopback over adding it here.
+
+[[expect_wildcard]]
+process = "rapportd"
+reason = "Stock macOS Continuity/Handoff. Shipped enabled; removing it means turning Continuity off in System Settings, not editing this file."
+
+[[expect_wildcard]]
+process = "ControlCenter"
+reason = "Stock macOS AirPlay receiver. Binds two wildcard ports whenever the receiver is enabled."
+
+# A third kind of entry, and the one worth writing out: software YOU installed that binds a
+# wildcard port on purpose. An automation daemon listening on a fixed port for local clients,
+# for example, would be declared as:
+#
+#   [[expect_wildcard]]
+#   process = "interceptor-daemon"
+#   reason = "Local automation daemon on a fixed port; accepted 2026-09-02 because <what reaches it>."
+#
+# The date and the "what reaches it" clause are the point. An entry with a reason that only
+# says "mine" is one nobody can re-judge in six months.

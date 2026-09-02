@@ -32,6 +32,10 @@
 //
 // Exit 0 = checked (findings or not). 1 = could not check. 2 = no policy.
 //
+// A third condition joined the two in 2026-09: an unexpected wildcard listener, delegated
+// whole to `host-net check --json` the same way free space is delegated to `tools/storage`.
+// This file owns no port number, no process name and no scope rule for it.
+//
 // Knows no fact about this machine. Every budget, threshold and allowlisted process
 // comes from the overlay's config/host-watch-policy.toml, the same split
 // tools/storage.ts already uses (README.md#generic-in-axon-specific-in-the-overlay).
@@ -219,6 +223,37 @@ export function storageFinding(report: StorageReport): Finding | null {
   };
 }
 
+export type NetExposure = { process: string; port: string; protos: string; pid: number };
+export type NetReport = { listeners?: number; wildcard?: number; policy?: string; unexpected?: NetExposure[] };
+
+/**
+ * One finding for the whole condition, never one per port.
+ *
+ * The same rule `cpu:<comm>` follows, for the same reason and one sharper case. The partial
+ * unique index allows one open row per key, and a mesh VPN's wildcard ports are assigned per
+ * start — `*:41641` today, a different number after the next restart — so a per-port key would
+ * mint a fresh generation every hour and the ladder would fill with the same fact.
+ *
+ * host-net owns the scope rule, the policy file and the parsing. This reads its verdict and
+ * adds nothing: the note lists what came back, in the order host-net sorted it.
+ */
+export function netFinding(report: NetReport | null): Finding | null {
+  const unexpected = report?.unexpected ?? [];
+  if (!report || unexpected.length === 0) return null;
+  const names = [...new Set(unexpected.map((e) => e.process))];
+  return {
+    key: "net:unexpected-exposure",
+    title:
+      `${unexpected.length} wildcard listener(s) not in the host-net policy` +
+      ` (${names.slice(0, 3).join(", ")}${names.length > 3 ? ", …" : ""})`,
+    note:
+      unexpected.map((e) => `${e.process} on *:${e.port} (${e.protos}) · pid ${e.pid}`).join("\n") +
+      `\n\nEvery interface this host has, now or later, reaches these.\n` +
+      `Inspect: host-net listen\n` +
+      `Accept one by adding an [[expect_wildcard]] entry to ${report.policy ?? "the host-net policy"}`,
+  };
+}
+
 /**
  * One row per RUN of a condition, not one per check and not one forever.
  *
@@ -290,6 +325,43 @@ async function runStorage(): Promise<StorageReport | null> {
   } catch {
     const err = (await new Response(proc.stderr).text()).trim().slice(0, 200);
     console.error(`host-watch: storage --json unreadable (exit ${proc.exitCode}) ${err}`);
+    return null;
+  }
+}
+
+/**
+ * host-net is invoked rather than reimplemented, the same call storage.ts gets above: it owns
+ * the netstat parsing, the scope rule and the overlay policy, and re-deriving any of that here
+ * would be the second source of truth its own README argues against.
+ *
+ * A non-zero exit is NOT a failure — exit 1 is how host-net reports an unexpected listener,
+ * which is the loudest thing it can say. Exit 2 means it could not check at all (no policy,
+ * a missing command), and that is data too: one stderr line, no finding, no throw.
+ *
+ * The built BINARY, never `capabilities/host-net/host-net`. That launcher builds on first use,
+ * and an hourly scheduled job with the ability to start a cargo build is a surprise nobody
+ * asked for. A host that has never built it files nothing and says so once.
+ */
+async function runHostNet(): Promise<NetReport | null> {
+  const bin = join(axonRoot(), "target", "release", "host-net-cli");
+  if (!existsSync(bin)) {
+    console.error(`host-watch: ${bin} not built — network exposure not checked`);
+    return null;
+  }
+  const proc = Bun.spawn([bin, "check", "--json"], { stdout: "pipe", stderr: "pipe" });
+  // Both pipes are drained together, before awaiting exit. Reading one and leaving the other
+  // buffered deadlocks the moment the child writes more than a pipe buffer to the one nobody
+  // is reading, and the child that talks most on stderr is exactly the failing one.
+  const [text, err] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  await proc.exited;
+  try {
+    return JSON.parse(text) as NetReport;
+  } catch {
+    const tail = err.trim().slice(0, 200);
+    console.error(`host-watch: host-net check --json unreadable (exit ${proc.exitCode}) ${tail}`);
     return null;
   }
 }
@@ -413,10 +485,11 @@ export async function main() {
   }
   const policy = Bun.TOML.parse(await Bun.file(policyPath).text()) as WatchPolicy;
 
-  const [procs, storage] = await Promise.all([runPs(), runStorage()]);
+  const [procs, storage, net] = await Promise.all([runPs(), runStorage(), runHostNet()]);
   const findings: Finding[] = [
     ...classifyProcesses(procs, policy),
     ...(storage ? [storageFinding(storage)].filter((f): f is Finding => f !== null) : []),
+    ...[netFinding(net)].filter((f): f is Finding => f !== null),
   ];
 
   if (asJson) {

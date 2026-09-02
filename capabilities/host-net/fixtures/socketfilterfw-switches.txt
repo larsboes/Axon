@@ -1,0 +1,5 @@
+Firewall is enabled. (State = 1)
+Firewall stealth mode is on
+Automatically allow built-in signed software ENABLED.
+Automatically allow downloaded signed software ENABLED.
+Firewall has block all state set to disabled.

@@ -1,0 +1,19 @@
+Total number of apps = 9
+1 : /Applications/Example.app
+	 (Allow incoming connections)
+2 : /Applications/Example Blocked.app
+	 (Block incoming connections)
+3 : /Applications/Problem%20Reporter.app/Contents/MacOS/Problem%20Reporter
+	 (Allow incoming connections)
+4 : /opt/homebrew/Cellar/node/26.7.0/bin/node
+	 (Allow incoming connections)
+5 : /opt/homebrew/Cellar/node/26.5.0/bin/node
+	 (Allow incoming connections)
+6 : /Library/SystemExtensions/00000000-0000-0000-0000-000000000000/com.example.network-extension.systemextension
+	 (Allow incoming connections)
+7 : /private/var/folders/ab/0000000000000000000000000/d/AppTranslocation/00000000-0000-0000-0000-000000000000/d/Example Translocated.app
+	 (Allow incoming connections)
+8 : /Volumes/ExampleDrive/Games/Example Helper.app
+	 (Allow incoming connections)
+9 : /Applications/Example Deleted.app
+	 (Allow incoming connections)
