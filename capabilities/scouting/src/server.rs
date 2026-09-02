@@ -86,7 +86,13 @@ struct DiscoverParams {
     location: Option<String>,
     query: Option<String>,
     limit: Option<usize>,
-    opp_embeddings: Option<String>,
+    // Deliberately no `opp_embeddings`. It used to name a file this handler
+    // read, which made `GET /discover` a file-existence oracle reachable from
+    // any page in the operator's browser (the bind is loopback but the CORS
+    // layer below is permissive) -- CodeQL rust/path-injection reported it
+    // against score.rs `load_opp_embeddings`. The path is the CLI flag's and
+    // the config file's to state (config.rs `opp_embeddings_path`, README
+    // "CLI-arg-only still"), so the sink was removed rather than validated.
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -134,7 +140,6 @@ async fn discover_handler(Query(params): Query<DiscoverParams>) -> Json<Value> {
     let location = params.location.clone();
     let query_text = params.query.clone().unwrap_or_default();
     let limit = params.limit.unwrap_or(20);
-    let opp_emb_path = params.opp_embeddings.clone();
 
     let result = tokio::task::spawn_blocking(move || -> Option<DiscoverResponse> {
         // Config::load() and the adapter/store construction below all do
@@ -179,13 +184,10 @@ async fn discover_handler(Query(params): Query<DiscoverParams>) -> Json<Value> {
         let telos = load_telos_profiles(&cfg.interest_profile_dir.to_string_lossy(), &cfg.sources);
         let events_dir = cfg.events_dir.as_deref();
 
-        let opp_embeddings = opp_emb_path
-            .or_else(|| {
-                cfg.opp_embeddings_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned())
-            })
-            .map(|p| load_opp_embeddings(&p));
+        let opp_embeddings = cfg
+            .opp_embeddings_path
+            .as_ref()
+            .map(|p| load_opp_embeddings(&p.to_string_lossy()));
 
         let mut store = Store::open(&cfg.database_path).ok();
 
