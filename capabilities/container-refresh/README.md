@@ -40,8 +40,9 @@ receipt as `<cap>:held` or `<cap>:not-running`. The new image applies at the nex
 a scheduled job overturn an operator's decision at 03:00.
 
 **No scanning here.** `grype` reads every declared image from the registry in
-`.github/workflows/security.yml`, which runs whether or not this host is awake. Since Q_DEPIN that
-job is report-only, so a red upstream image is visible on every run without holding a merge.
+`.github/workflows/security.yml`, which runs whether or not this host is awake. Since Q_DEPIN its
+findings are report-only, so a red upstream image is visible on every run without holding a merge.
+The job itself still goes red for one thing: a discovery loop that found no image to scan.
 
 ## What it does on a machine with no containers
 

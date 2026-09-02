@@ -61,17 +61,21 @@ jobs:
             --experimental-exclude node_modules \
             --experimental-exclude to-integrate .
 
-  # REPORT-ONLY, and that is the whole point of the job (Q_DEPIN, 2026-09-02). Every declared
-  # image tracks a rolling tag now, so a CVE published against an upstream base layer turns this
-  # red through no change of Axon's. Dependabot's pull requests auto-merge on the required checks
-  # (.github/workflows/dependabot-automerge.yml), and a dependency bump held back by somebody
-  # else's image is the exact failure the ruling was made to remove. `continue-on-error` keeps
-  # the conclusion green; the counts land in the run summary, where they are read on every run
-  # instead of only when something goes red.
+  # REPORT-ONLY about IMAGES, and that is the whole point of the job (Q_DEPIN, 2026-09-02).
+  # Every declared image tracks a rolling tag now, so a CVE published against an upstream base
+  # layer turns this red through no change of Axon's. Dependabot's pull requests auto-merge on
+  # the required checks (.github/workflows/dependabot-automerge.yml), and a dependency bump held
+  # back by somebody else's image is the exact failure the ruling was made to remove. The counts
+  # land in the run summary instead, where they are read on every run rather than only when
+  # something goes red.
+  #
+  # `continue-on-error` sits on the SCAN STEP and not on the job, because exactly one failure
+  # here is still Axon's own and still has to be fatal: a discovery loop that matched no image
+  # scanned nothing while reporting success. That check is the last step, it has no
+  # continue-on-error, and it is why this job can still go red.
   images:
     name: grype (every declared image)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Check out Axon
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -88,9 +92,14 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/bin/grype" version
       - name: Scan
+        # Ignored on purpose: a finding about somebody else's base layer is reported, never
+        # enforced. The step still exits non-zero so its own log reads honestly, and the run
+        # summary carries the counts.
+        continue-on-error: true
         run: |
           set -uo pipefail
-          rc=0; found=0
+          rc=0
+          : > "$RUNNER_TEMP/scanned.txt"
           {
             echo "## Image CVE scan"
             echo
@@ -105,7 +114,9 @@ jobs:
             [ -n "$image" ] || continue
             tag=$(sed -n 's/^tag *= *"\([^"]*\)".*/\1/p' "$m" | head -1)
             ref="$image:${tag:-latest}"
-            found=1
+            # The discovery record the guard step reads. Written before the scan runs: the
+            # question that step asks is "did this loop find images", not "did they scan".
+            printf '%s\n' "$ref" >> "$RUNNER_TEMP/scanned.txt"
             echo "::group::$ref"
             # registry: pulls straight from the registry — no container runtime and no daemon
             # (grype's own help says so). Discovered from the manifests, never named here, so
@@ -146,12 +157,22 @@ jobs:
             printf '| `%s` | %s | %s | %s |\n' "$ref" "$crit" "$high" "$verdict" >> "$GITHUB_STEP_SUMMARY"
             echo "::endgroup::"
           done
-          if [ "$found" -ne 1 ]; then
-            # A real defect in this job, not a finding about an image: the discovery loop
-            # matched nothing, so the scan covered nothing while reporting success.
-            echo "no capability declares an image" >&2
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**No capability declares an image — this scan covered nothing.**" >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - name: The scan covered something
+        # A real defect in this job, not a finding about an image: the discovery loop matched
+        # nothing, so the scan covered nothing while reporting success. Its own step, with no
+        # continue-on-error, because the step above deliberately cannot fail the job and this
+        # must. It reads the file rather than a variable — a step boundary is what separates
+        # the two failure kinds, and nothing crosses it in memory.
+        run: |
+          set -euo pipefail
+          if [ ! -s "$RUNNER_TEMP/scanned.txt" ]; then
+            echo "no capability declares an image, or the scan step died before finding one" >&2
+            {
+              echo ""
+              echo "**No image was scanned — this run covered nothing.**"
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          exit "$rc"
+          echo "scanned $(wc -l < "$RUNNER_TEMP/scanned.txt" | tr -d ' ') image(s):"
+          cat "$RUNNER_TEMP/scanned.txt"
