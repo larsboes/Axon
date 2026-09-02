@@ -262,13 +262,13 @@ fi
 # after Packs and the Claude Code baseline — and because the alternative is what actually
 # happened before: you run an upstream's own installer by hand, from whatever directory
 # you were standing in, and it writes a project-local integration somewhere it can never
-# fire from. Driving it from the pin, from a scratch cwd, is the fix.
+# fire from. Driving it through this script, from a scratch cwd, is the fix.
 #
 # Detection-driven and non-interactive-safe: with no harness config dir present it prints
 # a line and moves on. Never installs without being asked — `read` is skipped on non-TTY
 # the same way the capability prompt below is.
 echo
-echo "Agent-harness integrations (from upstreams.toml pins):"
+echo "Agent-harness integrations (each upstream's own installer, at its latest release):"
 AI_STATE="$("$TOOLS_DIR/agent-integrations.sh" status --machine)"
 echo "$AI_STATE" | sed 's/^/  /'
 

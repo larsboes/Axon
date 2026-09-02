@@ -279,8 +279,8 @@ under git, still diffable, and still opens in hledger on any machine that has it
 an operator's choice rather than a requirement. `schemas/finance-journal.example`
 is the published contract (Principle 8). This is why the swap changed no journal
 byte and no `source-id`, which `tests/live_journal.rs` and the fixture-parity test
-in `src/journal.rs` both hold to. `upstreams.toml [hledger]` keeps the pin and the
-dated verdict.
+in `src/journal.rs` both hold to. `upstreams.toml [hledger]` keeps the dated
+verdict.
 
 ## Related tools and why this is not them
 

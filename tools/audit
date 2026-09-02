@@ -12,8 +12,9 @@
 #                the answer before a push rather than after it.
 #
 # NOT here: container images (.github/workflows/security.yml runs `grype registry:` against
-# every image a service.toml declares, weekly and on push, whether or not this Mac is awake)
-# and Axon's own source (.github/workflows/codeql.yml).
+# every image a service.toml declares, weekly and on push, whether or not this Mac is awake --
+# report-only since Q_DEPIN, with the Critical/High counts in that run's summary) and Axon's own
+# source (.github/workflows/codeql.yml).
 #
 # Exit 0 clean · 1 a finding · 2 a scanner is not installed. A missing binary is a setup
 # error, never a finding: it must not read as clean and must not read as a leak. A finding

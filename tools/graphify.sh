@@ -218,13 +218,13 @@ if [ "$_use_backend" = "1" ]; then
     omlx|mlx|ollama) _tuning_args=(--max-concurrency 1) ;;
   esac
   [ -n "${GRAPHIFY_TOKEN_BUDGET:-}" ] && _tuning_args+=(--token-budget "$GRAPHIFY_TOKEN_BUDGET")
-  uv tool run --from "graphifyy[openai]==0.9.31" graphify extract . --backend "$_real_backend" "${_model_args[@]}" "${_tuning_args[@]}"
+  uv tool run --from "graphifyy[openai]" graphify extract . --backend "$_real_backend" "${_model_args[@]}" "${_tuning_args[@]}"
 else
   # `update`, not `extract --code-only`: the latter has a confirmed-broken --code-only
   # flag on every graphifyy release through 0.9.10 (silently demands an LLM key for doc
   # files anyway); `update` is the older, established command and has always been
   # code-only by design.
-  uv tool run --from graphifyy==0.9.31 graphify update .
+  uv tool run --from graphifyy graphify update .
 fi
 # What actually came out, read off the artifact rather than scraped from graphify's log.
 # graphify preserves a usable AST graph and exits 0 even when semantic extraction fails, so

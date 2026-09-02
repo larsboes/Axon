@@ -26,7 +26,7 @@ capability boundaries.
 ## External trust
 
 - Record an external dependency and verdict in `upstreams.toml` before consuming it.
-- Preserve its exact pin, license, provenance, and adopted influence.
+- Preserve its license, provenance, and adopted influence. The register records no version.
 - Run the manifest gate and content audit through the repository tools rather than invoking
   scanners ad hoc.
 - An installed connector or plugin is not proof of authentication or private-repository access.

@@ -1,13 +1,15 @@
 #!/bin/bash
 # check-service-tomls.sh — the service.toml schema gate (CI: repo gates).
-# Asserts every service.toml declares the load-bearing fields its kind needs, and that a
-# container's tag is a real pin: present, non-empty, and never "latest" (an unpinned tag
-# makes a deploy non-reproducible; see README.md#patch-first, which removed the waiting and
-# kept the pinning — "patch first" is never a licence to consume ":latest"). Pure file-based:
-# it reads the tracked manifests and nothing else — no git, no network, no live service.
+# Asserts every service.toml declares the load-bearing fields its kind needs. A container's
+# `tag` must be present and non-empty, and it may be a rolling channel: "latest" and "stable"
+# were refused until 2026-09-02 and are now the preferred form (Q_DEPIN,
+# README.md#patch-first). The gate that refused them was defending reproducibility a tag never
+# provided — publishers rebuild under the same literal — so what it actually bought was delay.
+# The digest of the running container is the version fact (ISA.md C4). Pure file-based: it
+# reads the tracked manifests and nothing else — no git, no network, no live service.
 #
 # Three kinds, three field sets (schemas/service.toml.example):
-#   container (the default when `kind` is absent) -> name, image, tag; tag pinned
+#   container (the default when `kind` is absent) -> name, image, tag
 #   process                                       -> name, command, port; no image/tag
 #   data                                          -> name + a backup contract; nothing runnable
 # A manifest carrying fields from more than one kind is rejected rather than resolved by
@@ -46,11 +48,6 @@ for svc in "$AXON_ROOT"/capabilities/*/service.toml "$AXON_ROOT"/*/service.toml;
         fi
       done
 
-      tag="$(toml_get tag "$svc")"
-      if [ "$tag" = "latest" ]; then
-        echo "FAIL [$cap]: tag must be a pinned version, never 'latest' — $svc" >&2
-        fail=1
-      fi
       ;;
     process)
       if [ -z "$(toml_get name "$svc")" ]; then
@@ -179,4 +176,4 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-echo "service.toml schema check passed ($(basename "$AXON_ROOT"): containers pinned with name/image/tag, services with name/command/port, data units with a backup contract and nothing runnable, scheduled jobs with no port, no container fields, host ports unique)."
+echo "service.toml schema check passed ($(basename "$AXON_ROOT"): containers declaring name/image/tag, services with name/command/port, data units with a backup contract and nothing runnable, scheduled jobs with no port, no container fields, host ports unique)."

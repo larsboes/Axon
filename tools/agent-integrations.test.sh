@@ -38,9 +38,13 @@ fi
 STUB
 chmod +x "$tmp/bin/opencode"
 
-source "$TOOLS_DIR/lib/toml.sh"
-pin="$(toml_get_in graphify pin "$AXON_ROOT/upstreams.toml")"
-test -n "$pin"
+# No version is read from anywhere, and that is the assertion: upstreams.toml carries no
+# `pin` since Q_DEPIN (2026-09-02), so the installer is driven at whatever `uv tool run
+# --from graphifyy` resolves today.
+if grep -q '^pin = ' "$AXON_ROOT/upstreams.toml"; then
+  echo "upstreams.toml still declares a pin — this script must not resolve one" >&2
+  exit 1
+fi
 
 list_output="$($SCRIPT list)"
 case "$list_output" in
@@ -58,7 +62,7 @@ $SCRIPT install opencode
 plugin="$HOME/.config/opencode/plugins/graphify.js"
 test -s "$plugin"
 grep -q 'graphify' "$plugin"
-grep -Fq "tool run --from graphifyy==$pin graphify install --platform opencode" "$AXON_TEST_UV_LOG"
+grep -Fq "tool run --from graphifyy graphify install --platform opencode" "$AXON_TEST_UV_LOG"
 
 scratch="$(head -n 1 "$AXON_TEST_UV_LOG" | cut -d '|' -f 1)"
 test "$scratch" != "$AXON_ROOT"
@@ -74,10 +78,20 @@ echo "$machine_output" | grep -q '^opencode|integrated|' || {
   exit 1
 }
 
-printf '0.0.0' > "$HOME/.config/opencode/.graphify-upstream-pin"
+# The marker records the DATE the files were taken from upstream, so it must be one.
+marker="$HOME/.config/opencode/.graphify-upstream-installed"
+grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' "$marker" || {
+  echo "the install marker does not carry an install date: $(cat "$marker")" >&2
+  exit 1
+}
+
+# Installed files with no marker are of unknown provenance — an older mechanism, a hand copy,
+# or an install that died before writing it — and re-running the installer is the answer to
+# all three. That is what 'stale' means since Q_DEPIN; it compared against a pin before.
+rm -f "$marker"
 machine_output="$($SCRIPT status --machine)"
 echo "$machine_output" | grep -q '^opencode|stale|' || {
-  echo "status --machine did not report stale pin state" >&2
+  echo "status --machine did not report unmarked integration files as stale" >&2
   exit 1
 }
 

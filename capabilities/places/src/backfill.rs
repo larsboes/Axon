@@ -101,7 +101,7 @@ pub fn parse_amount_cents(value: &str, decimal_separator: char) -> Option<i64> {
     }
     let (whole, fraction) = unsigned
         .split_once(decimal_separator)
-        .map_or((unsigned, ""), |parts| parts);
+        .unwrap_or((unsigned, ""));
     if fraction.len() > 2 {
         return None;
     }

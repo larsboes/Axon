@@ -69,7 +69,7 @@ format = "1"
 capability = "vaultwarden"
 created_at = "2026-01-02T030405Z"
 image = "vaultwarden/server"
-tag = "1.37.0-alpine"
+tag = "alpine"
 sqlite = "data/vaultwarden/data/db.sqlite3"
 sqlite_online = ""
 backup_paths = ["data/vaultwarden/data", "data/vaultwarden/tls"]
@@ -92,6 +92,27 @@ cat > "$SCRATCH/vaultwarden-receipt.json" <<RECEIPT
 RECEIPT
 expect_pass "cold path and SQLite restore" "$RESTORE" vaultwarden "$SCRATCH/vaultwarden.tar.gz" \
   --receipt "$SCRATCH/vaultwarden-receipt.json" --destination "$SCRATCH/vault-out"
+
+# Which build wrote these bytes. `tag` stopped answering that on 2026-09-02 (Q_DEPIN): the
+# fixture above declares "alpine", which is a channel and reads the same for every archive the
+# capability will ever produce. tools/backup.sh records the running container's digest instead,
+# and restore prints it — a fact about the archive, never a gate, because the image moves daily
+# and a restore refused for that would be refused exactly when it is wanted.
+printf '%s' "$output" | grep -qF "image channel: vaultwarden/server:alpine" \
+  || { echo "FAIL: restore did not name the image channel the archive was taken from"; echo "$output"; fails=$((fails + 1)); }
+printf '%s' "$output" | grep -qF "running digest at backup: unrecorded" \
+  || { echo "FAIL: an archive with no image_digest must say the digest is unrecorded, not omit the question"; echo "$output"; fails=$((fails + 1)); }
+
+digest_stage="$SCRATCH/digest-stage"
+mkdir -p "$digest_stage"
+make_vault_tree "$digest_stage" VALID
+DIGEST_REF="vaultwarden/server@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+printf 'image_digest = "%s"\n' "$DIGEST_REF" >> "$digest_stage/axon-backup.toml"
+tar czf "$SCRATCH/vault-digest.tar.gz" -C "$digest_stage" .
+expect_pass "archive carrying a running digest" "$RESTORE" vaultwarden "$SCRATCH/vault-digest.tar.gz" \
+  --destination "$SCRATCH/vault-digest-out"
+printf '%s' "$output" | grep -qF "running digest at backup: $DIGEST_REF" \
+  || { echo "FAIL: restore did not print the digest the archive recorded"; echo "$output"; fails=$((fails + 1)); }
 
 cat > "$SCRATCH/wrong-digest.json" <<RECEIPT
 {"capability":"vaultwarden","tarball":"vaultwarden.tar.gz","bytes":$vault_bytes,"sha256":"0000000000000000000000000000000000000000000000000000000000000000"}
@@ -137,7 +158,7 @@ format = "1"
 capability = "home-assistant"
 created_at = "2026-01-02T030405Z"
 image = "ghcr.io/home-assistant/home-assistant"
-tag = "2026.7.4"
+tag = "stable"
 sqlite = ""
 sqlite_online = ""
 backup_paths = []

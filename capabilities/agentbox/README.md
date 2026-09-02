@@ -47,8 +47,9 @@ process can touch, and whether you can show it.
   exposes neither. That constraint is not a nuisance to work around; it is what produces the
   split above.
 
-Verdicts, pins and licences for pi and for the retired `apple/container` live in
-`upstreams.toml`, not here. Docker has none: `toolchain.toml [docker]` records that Axon assumes
+Verdicts and licences for pi and for the retired `apple/container` live in
+`upstreams.toml`, not here. No version does: `agentbox build` and `agentbox host-install`
+resolve the latest release themselves (Q_DEPIN, 2026-09-02). Docker has none: `toolchain.toml [docker]` records that Axon assumes
 the `docker` CLI, and *which* daemon provides it — OrbStack here, Docker Desktop or colima
 elsewhere — is a machine fact, not adopted code.
 
@@ -82,7 +83,9 @@ the whole design:
 
 1. **The agent binary lives only in an image.** Consumed as the release tarball, sha256-verified
    on the host before the build and again inside it, so the image needs no Node and no npm and
-   README.md#language-tooling is satisfied rather than excepted.
+   README.md#language-tooling is satisfied rather than excepted. Which release is decided at
+   build time — GitHub's `/releases/latest` — and the checksum comes from that release's own
+   published `SHA256SUMS`, never from a literal in this repository.
 2. **The box is disposable, and its default network is nothing.** `--rm` discards the container
    and its writable layer on exit; `--network none` gives it loopback and no interface. Under
    `apple/container` this bullet also said "and it still reaches the model," because that
@@ -115,14 +118,14 @@ box. What changed on 2026-09-02 is only how the box reaches across it.
   first security sentence was *each container is its own VM*. Retired by Q75: one
   container runtime on this machine instead of two, on a machine where no enabled capability was
   container-backed at all. What the retirement costs is stated in "The pieces" and in the Verdict
-  above, not buried here. `upstreams.toml [apple-container]` holds the dated verdict and the pin
+  above, not buried here. `upstreams.toml [apple-container]` holds the dated verdict
   of what ran.
 - **A relay container forwarding one port**, to keep the model reachable from an otherwise-closed
   box: a second container attached to both an `--internal` network and the default bridge,
   forwarding `model_port` to the host. Measured working end to end on 2026-09-02, so this is a
   declined option and not an untried one. Declined on cost: the agentbox base image has no
   `socat`, `nc`, `busybox` or `python3` (only perl), so it needs a *new* external image with an
-  `upstreams.toml` verdict and pin, for external code holding a live route from an isolated
+  `upstreams.toml` verdict, for external code holding a live route from an isolated
   network to the Mac. It also has a lifecycle `agentbox run` cannot supervise — the launcher
   `exec`s the box, so no exit trap survives to tear the relay down — and a leaked relay is
   exactly the open path the box exists to prevent. A closed box that says it has no model beats a
@@ -148,15 +151,16 @@ Containerfile                  agent-neutral: base image, git + ripgrep, non-roo
 agentbox                       build / run / shell / doctor
 agentbox.toml.example          the shape of <overlay>/config/agentbox.toml
 profiles/pi/
-  profile.toml                 version, archive url + sha256, config-dir contract, default model args
+  profile.toml                 release + checksum URLs, config-dir contract, default model args
   AGENTS.md.tmpl               the operating contract, rendered into every session
   models.json.tmpl             provider definition, rendered with the endpoint and key
   extensions/protected-paths/  the seatbelt for the day a mount gets widened
 ```
 
-Nothing under `profiles/` names a machine, and nothing in the overlay names a version. Bumping
-the agent is `version` + `archive_sha256_*` in `profile.toml` and a rebuild; changing the model
-or the endpoint is the overlay's `agentbox.toml` and nothing else.
+Nothing under `profiles/` names a machine, and nothing anywhere names a version. Bumping the
+agent is `agentbox build` — it resolves the latest release, verifies it against that release's
+`SHA256SUMS`, and tags the image both `:latest` and `:<version>` so what was built stays
+readable. Changing the model or the endpoint is the overlay's `agentbox.toml` and nothing else.
 
 ## Setup
 
@@ -207,15 +211,35 @@ gid, which is why they do not land as a foreign uid 1000.
 
 ## What host-install refuses
 
-`agentbox host-install` puts the pinned agent on the host itself, outside the box, plus a shim
-that refuses the agent's own `update` verbs.
+`agentbox host-install` puts the latest agent release on the host itself, outside the box, and
+writes `<overlay>/data/agentbox/host/installed.json` recording which version landed, verified
+against which sha256, on what day.
+
+The receipt's `verified` field says which run did the hashing, because a `host-install` whose
+resolved version is already on disk installs nothing and therefore hashes nothing. It reads
+`this-run` after an install or a `--force`, `earlier-run` when the digest was carried over from
+the previous receipt for the same release, and `unknown` — with an empty `sha256` — when there
+was no such receipt to carry it from.
 
 What it enforces:
 
 | Check | Kind | Source of the rule |
 |---|---|---|
-| sha256 of the release archive | hard refusal, in `fetch_archive` on the install path | `archive_sha256_${OS}_${ARCH}` in the overlay's `agentbox.toml` |
+| sha256 of the release archive | hard refusal, in `fetch_archive` on the install path | the release's own published `SHA256SUMS` |
 | published GHSAs against the version | **not checked — yours to do** | see below |
+
+**The self-update shim is gone (Q_DEPIN, 2026-09-02).** `host-install` used to write a wrapper
+that intercepted `pi update|upgrade|self-update` and refused them. It existed to protect a
+version literal: a self-updating binary replaced the file on disk and left `profile.toml`'s
+`version` and `archive_sha256_*` describing software the machine had stopped running — which
+happened here, `pi update` about 15h after a release, with the pin written afterwards to
+describe an adoption that had already occurred (Axon#126). Those literals are deleted, and this
+launcher now resolves the latest release on every build and install. The shim would be refusing
+the outcome the ruling asks for, so it is removed rather than left as a rule with nothing behind
+it. `<host-root>/bin/<agent>` is a plain symlink through `current` now.
+
+The cost, stated: a self-update fetches its own bytes, and this launcher never sees them. The
+sha256 above covers what `agentbox host-install` puts on disk and nothing else.
 
 There was a separate `agentbox gate` verb, and a cooldown on how old the release was, until
 2026-09-02. Q74 removed the adoption hold (README.md#patch-first), and with it gone the verb
@@ -228,7 +252,7 @@ advisory reminder, which `host-install` now prints itself.
 fetched published advisories and refused an install whose target sat inside an affected range.
 PRD Q41 retired the script behind that (`tools/lib/advisories.sh`) with the rest of Axon's
 homegrown supply-chain plumbing, and no standard tool replaces it *for this dependency*: the
-agent arrives as a pinned release tarball, so it appears in no lockfile, which is exactly what
+agent arrives as a release tarball, so it appears in no lockfile, which is exactly what
 GitHub's Dependabot alerts and `osv-scanner` both read. Dependabot does not watch release
 tarballs either, so the tool swap changes nothing here — and a new tag is freshness, not
 exposure.
@@ -242,7 +266,8 @@ be silent about it, because a step that prints nothing reads as a step that pass
 ## The boundary, and how it was checked
 
 **Current, 2026-09-02.** M4 Pro / macOS 26.5.2 / docker 29.4.0 on OrbStack 2.2.3, from the
-`debian:trixie-20260713-slim` base the agentbox image is built on. Same probe, three networks, so
+`debian:trixie-slim` base the agentbox image is built on (a dated `trixie-20260713-slim` tag
+until Q_DEPIN; the measurement was taken on that day's build of it). Same probe, three networks, so
 the controls show what each mode actually buys:
 
 | Probe from inside the box | `--network none` (default) | `--internal` | default bridge (`--online`) |

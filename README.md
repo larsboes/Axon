@@ -144,11 +144,11 @@ cleanup step before release.
 
 "Private" is not only about values. A set of entries can identify a place or a person while
 every single one of them is harmless on its own: which third-party integrations a deployment
-pins, which automations it has, which services it runs. Each pin points at a public
+consumes, which automations it has, which services it runs. Each one points at a public
 repository and each template holds nothing but placeholders, and the list still describes the
 hardware in one building. Filenames do it too, with no value in them at all. So a capability
 here keeps the mechanism — how a service runs, how templates are filled, how upstreams are
-pinned and audited — while the selected overlay keeps the inventory of what a particular
+audited — while the selected overlay keeps the inventory of what a particular
 installation actually has. `tools/check-publication-hygiene.sh` catches repository names and
 workstation paths; it cannot see aggregation, which is why this is a rule rather than a gate.
 
@@ -246,7 +246,7 @@ Configuration has one owner per concern:
 | --- | --- |
 | `axon.toml` | Shared platform defaults and the shipped overlay fallback; never machine-specific state |
 | `axon.local.toml` | This checkout's active overlay location; gitignored and written by the installer |
-| `upstreams.toml` | External code and adopted influence: verdict, pin, license and why |
+| `upstreams.toml` | External code and adopted influence: url, verdict, license and why. No version — every entry tracks its upstream's latest |
 | `toolchain.toml` | Host executables Axon commands assume, with requiredness, scope and install hints |
 | `systems.toml` | Systems, services and projects that have a role in the setup |
 | `<overlay>/config/machine.toml` | OS, container runtime, enabled capabilities and state mounts for this machine. An overlay owning several machines uses `<overlay>/config/machines/<name>.toml` instead, selected by `axon.local.toml` or the hostname |
@@ -281,36 +281,46 @@ special cases.
 ### Dependency verdicts and provenance
 
 Every consumed external dependency gets a verdict in `upstreams.toml` first. **No entry, no
-entry.** The manifest records, per upstream, the verdict, the pin, the licence and the `why` that
-argues for it — and that rule is unchanged. The consuming README also records the canonical URL
-and what Axon adopted: runtime, idea, architecture, algorithm, code or asset. A local clone or
-archive path is never durable provenance.
+entry.** The manifest records, per upstream, the URL, the verdict, the licence and the `why` that
+argues for it — four fields and nothing else. The consuming README also records what Axon
+adopted: runtime, idea, architecture, algorithm, code or asset. A local clone or archive path is
+never durable provenance.
 
-What changed on 2026-09-02 (Q74) is who checks what, and how fast a fix lands. What is
-required is unchanged.
+**The register records no version.** `pin` stood on 86 rows until 2026-09-02, when Q_DEPIN
+deleted it. Every dependency here tracks its upstream's latest release, and the field had stopped
+describing anything a machine was running: `capabilities/host-patch` moves brew, uv and rustup
+nightly, `capabilities/container-refresh` moves the images daily, Dependabot moves the Cargo and
+Bun manifests, and both workflows install `latest`. What it actually recorded was the date an
+audit was written, which is a fact that belongs in the `why` where it cannot be mistaken for a
+claim about a host. Deleted lines stay in the manifest's git history.
+
+What changed on 2026-09-02 (Q74, then Q_DEPIN) is who checks what, and how fast a fix lands. What
+is required — a verdict, a licence and an argument, before consumption — is unchanged.
 
 | Question | Answered by |
 |---|---|
-| Is there a verdict, a pin, a licence and a reason? | `upstreams.toml` itself, read by a human at review time |
+| Is there a verdict, a licence and a reason? | `upstreams.toml` itself, read by a human at review time |
 | Is a newer release out? | Dependabot version updates — `.github/dependabot.yml`, one grouped pull request per ecosystem per day, with no cooldown |
 | Is a locked dependency known-vulnerable? | Dependabot alerts and security updates, and `osv-scanner` in `.github/workflows/security.yml` and in `tools/audit` |
-| Is there a CVE in a pinned capability image? | `grype registry:<image>:<tag>` in `security.yml`, weekly. No container runtime and no local pull |
+| Is there a CVE in a declared capability image? | `grype registry:<image>:<tag>` in `security.yml`, weekly. Findings are report-only and land in the run summary; the job goes red only if it discovered no image to scan. No container runtime and no local pull |
 | Is there a secret in this repository? | GitHub secret scanning, with push protection — and `gitleaks` in `tools/audit`, which reads history the push protection never saw |
 | Is there a secret in the private overlay? | `tools/audit` alone. GitHub charges for secret scanning on a private repository, and this repository's CI cannot reach the overlay, so this is the one scan that has to be local |
 | Is there a flaw in the code as written? | CodeQL — `.github/workflows/codeql.yml`, `security-extended` over rust, javascript-typescript, python and actions |
 | Is a host package behind? | Nothing asks. `capabilities/host-patch` upgrades this machine every day |
+| Is a running container behind its channel? | Nothing asks. `capabilities/container-refresh` pulls every declared image every day and recreates what moved |
 
-`upstreams.toml` is documentation, and only documentation. Nothing enforces its fields. A human
-reads a verdict before adopting a dependency, which was always the actual rule. One script still
-reads a `pin` — `tools/agent-integrations.sh` drives an upstream's own installer at its pinned
-version — and `tools/self.ts` publishes verdict and pin into `self.json`. Neither enforces
-anything.
+`upstreams.toml` is documentation, and only documentation. Nothing enforces its fields, and since
+Q_DEPIN no script reads one: `tools/agent-integrations.sh` drove an upstream's own installer at a
+recorded version and now takes its latest, `tools/sysmon` printed a recorded version in its
+install advice and now names none, and `tools/self.ts` publishes name and verdict into
+`self.json`. A human reads a verdict before adopting a dependency, which was always the actual
+rule.
 
-`pin_kind`, `tracked_by` and `installed_probe` were deleted on 2026-09-02. Each existed to
-describe an opt-out from `renovate.json5`'s release watch, and that file went with the cooldown.
-`installed_probe` named how to ask *this* machine what it really has, and under patch-first the
-answer is "whatever brew installed last night" — the question stops being askable rather than
-stopping being asked. What each deleted line said is still in the manifest's git history.
+`pin_kind`, `tracked_by` and `installed_probe` were deleted on 2026-09-02 under Q74. Each existed
+to describe an opt-out from `renovate.json5`'s release watch, and that file went with the
+cooldown. `installed_probe` named how to ask *this* machine what it really has, and under
+patch-first the answer is "whatever brew installed last night" — the question stops being askable
+rather than stopping being asked.
 
 **Two gaps, named rather than left to be inferred from a green check.** Shell is scanned by
 nothing: CodeQL has no shell extractor, `semgrep` was retired with the rest of the set, and
@@ -323,8 +333,11 @@ This section was **Pins and cooldown** until 2026-09-02, and an `upstreams.toml`
 before then was decided under the hold it described. Those entries still point here; their text is
 left as written, because rewriting a decision's reasoning to match a later rule falsifies it.
 
-Take the patch. There is no adoption cooldown, on the host or in this repository. Q74
-removed it.
+Take the patch. There is no adoption cooldown, on the host or in this repository, and nothing is
+held at a version anywhere. Q74 removed the cooldown on 2026-09-02; Q_DEPIN, the same day,
+removed what was left — `upstreams.toml`'s 86 `pin` lines, the Rust toolchain literal, the three
+container image versions, and `capabilities/agentbox`'s pinned release and checksums. Every
+dependency here tracks its upstream's latest, and an update lands the day it exists.
 
 The hold asked a release to age seven to fourteen days before adoption, on the argument that the
 ecosystem finds a compromised publish in days and reading the dependency tree yourself cannot.
@@ -336,14 +349,26 @@ with no updater configured at all, `openssl@3`, `gnupg`, `libgcrypt`, `nss` and 
 them, while the bot that was to enforce the hold had never been installed. The hold was guarding a
 door that was already open.
 
-**What replaces it is speed and reporting, not silence.** `capabilities/host-patch` runs
-`tools/host-patch.sh` every 24 hours — `brew update`, `brew upgrade`, `brew cleanup`,
-`uv tool upgrade --all`, `rustup update`, then `tools/audit` — and writes a receipt the next
-`tools/doctor` reads out, because a scheduled job's real failure is that it quietly stops running.
-`.github/dependabot.yml` opens the repository half daily, with `cooldown: default-days: 0` written
-out in every block so the three-day default cannot creep the hold back in.
-`.github/workflows/security.yml`, CodeQL and GitHub's advisory alerts are what now stand between
-a bad publish and this machine.
+**What replaces it is speed and reporting, not silence.** Four things move on their own, and each
+one leaves something a check can read:
+
+- `capabilities/host-patch` runs `tools/host-patch.sh` every 24 hours — `brew update`, `brew
+  upgrade --formula`, `brew upgrade --cask --greedy`, `brew cleanup`, one `uv tool upgrade` per
+  installed tool, `rustup update`, then `tools/audit`.
+- `capabilities/container-refresh` runs `tools/container-refresh.sh` every 24 hours on a host
+  that runs containers: it pulls every image a `service.toml` declares and recreates the ones
+  whose digest moved.
+- `.github/dependabot.yml` opens the repository half daily, with `cooldown: default-days: 0`
+  written out in every block so the three-day default cannot creep the hold back in, and
+  `.github/workflows/dependabot-automerge.yml` arms `gh pr merge --auto --squash` on each pull
+  request — so the ordinary bump merges itself once the required checks pass, and no bump waits
+  for somebody to look.
+- `rust-toolchain.toml` names the `stable` channel rather than a release, which is the toolchain
+  `rustup update` above already installs.
+
+Both scheduled jobs write a receipt the next `tools/doctor` reads out, because a scheduled job's
+real failure is that it quietly stops running. `.github/workflows/security.yml`, CodeQL and
+GitHub's advisory alerts are what now stand between a bad publish and this machine.
 
 **The named cost.** A compromised publish now reaches this host within a day instead of after a
 seven-day hold. Nothing here detects that class: a scanner reads advisories, and the advisory for
@@ -351,31 +376,49 @@ a malicious release is written after somebody finds it. What stands against it i
 reading — every entry in `upstreams.toml` carries a human verdict, and `bun install` never runs a
 lifecycle hook (`tools/check-bun-install-policy.sh`), which is the path ChainDrop took.
 
+**The second cost, from dropping the versions.** A merely BAD release now lands too. A broken
+`graphify` breaks `tools/graphify.sh` the day it ships, a bad Home Assistant `:stable` is what
+the house runs by the next morning, and CI can go red for a Bun release nobody here chose. That
+is the trade, not an oversight: a version literal bought a delay and, on this deployment, delay
+was measured to be the more expensive failure. It also never bought reproducibility — a container
+tag is rebuilt under the same name, and `upstreams.toml`'s `pin` recorded an audit date while
+`host-patch` moved the installed version past it every night.
+
+**Where the version actually lives now.** Not in a manifest. The digest of a running container
+(`docker inspect <name> --format '{{.Image}}'`, ISA.md C4), the label on a built agentbox image,
+`Cargo.lock` and `bun.lock` for what is compiled, and `<overlay>/data/*/last.json` for what the
+last scheduled run did. Every one of those describes a machine rather than an intention.
+`toolchain.toml`'s `min_version` rows are the exception that proves the rule: they are FLOORS —
+the oldest release Axon's use of a tool is known to work on — and never a version to install.
+
 **One binary, one owner.** On macOS `brew` owns `bun`, `uv`, `gitleaks` and `osv-scanner`, so
 `host-patch.sh` never calls `bun upgrade` or `uv self update`. A second updater for one file is
 how a `~/.local/bin` copy comes to shadow the `brew` one and answer differently — the PRD records
 that happening to `yt-dlp`, which returned HTTP 403 on every media URL while `--dump-json` kept
 working.
 
-**Never consume `:latest`, and pin anyway.** `tools/check-service-tomls.sh` still refuses a
-floating image tag, because a deploy that cannot be reproduced cannot be diagnosed. What changed is
-the waiting, not the pinning. For a host tool a package manager owns, the `pin` records the version
-its `why` was written against, not the version installed today — `host-patch` moves the installed
-one nightly and nothing here objects. Audit the delta rather than the world. Not every correct pin
-is a release: a commit sha is right for a repository that cuts no releases, and an image tag is
-right for what it names.
+**Container images track a channel.** A `service.toml` `tag` names the publisher's rolling tag —
+`:stable` for Home Assistant, `:latest` for Pi-hole, `:alpine` for Vaultwarden — and
+`capabilities/container-refresh` pulls every declared image every 24 hours, recreating the
+container when the digest moves. `tools/check-service-tomls.sh` refused `latest` until 2026-09-02;
+it was defending a reproducibility a tag never gave, since publishers rebuild under the same
+literal. The digest is what identifies a running image (ISA.md C4).
 
 **The Bun the workflows install is `latest`.** `oven-sh/setup-bun` is asked for `bun-version:
 latest` in both workflows, so CI runs the runtime a contributor's package manager just gave them.
 It was three pinned literals and `tools/check-bun-pin.sh` keeping them equal until 2026-09-02; with
-no literal left there is nothing to diverge, and the class that gate caught is impossible rather
-than watched. `upstreams.toml [bun]` keeps a `pin` as the record of what its verdict was written
-against. The cost is stated rather than hidden: a bad Bun release can turn CI red for a reason
+no literal left anywhere — not in a workflow, and since Q_DEPIN not in `upstreams.toml` either —
+there is nothing to diverge, and the class that gate caught is impossible rather than watched. The
+cost is stated rather than hidden: a bad Bun release can turn CI red for a reason
 unrelated to the code, which is the same trade `security.yml` makes for its scanners.
 
-`capabilities/agentbox`'s host-install keeps the sha256 verification of the release archive and the
-printed advisory reminder. The cooldown half, and the separate `gate` verb that was left holding
-only it, are gone.
+**`capabilities/agentbox` builds from the latest release.** `agentbox build` and `agentbox
+host-install` resolve GitHub's `/releases/latest` and verify the tarball against THAT release's
+own published `SHA256SUMS` — so the sha256 refusal survives, and the version and checksum
+literals it used to compare against are gone. The self-update shim went with them: it refused
+`pi update` to protect a pin, and with no pin it would refuse the outcome this section asks for.
+The cooldown half, and the separate `gate` verb that was left holding only it, are gone. The
+printed advisory reminder stays, because nothing automated reads advisories for a release tarball.
 
 ### Secrets
 
@@ -606,7 +649,7 @@ source.
 ### Pack documentation and attribution
 
 Every Pack has a README and SPDX license field. Adapted material names its canonical upstream,
-exact pin, license and adopted influence. Preserve required notices and nearby lineage comments
+license and adopted influence. Preserve required notices and nearby lineage comments
 where Axon's changes would otherwise obscure origin.
 
 ## Documentation
@@ -715,7 +758,7 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 | `<overlay>/config/machine.toml` | this machine's identity: os, container runtime, enabled capabilities, state-mount registry. One file per machine once an overlay holds more than one, under `config/machines/` |
 | `<overlay>/config/deployment.env` | this deployment's shared facts, resolved by `libs/axon-config` and `libs/axon-server` for every capability that needs one. A capability may still override, but may not silently disagree |
 | `profiles.toml` | named Pack sets (`tools/packs-codex use <profile>`). Tracked and shared: a profile says which Packs belong together, while which machine deploys them stays in the overlay |
-| `upstreams.toml` | every external project: verdict, pin, license, why |
+| `upstreams.toml` | every external project: url, verdict, license, why |
 | `README.md` | human-facing architecture and durable repository doctrine |
 | `AGENTS.md` | minimal cross-harness bootstrap that routes assistants into the `axon` skill |
 | `CLAUDE.md` | Claude Code adapter; imports `AGENTS.md` and adds no second doctrine |
@@ -724,10 +767,10 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 | `dashboard/` | the spine's shell — discovers installed capabilities via their manifests and mounts their panels (installer, doctor UI, service dashboards); owns no domain, no data |
 | `libs/<name>/` | spine-owned shared code with no domain of its own — statically linked into capability binaries at compile time, own crate in the Cargo workspace from day one |
 | `schemas/` | shared contracts; import, never redefine |
-| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks + osv-scanner behind one verb), host-patch (the daily upgrade job), generate-architecture, graphify, agent-integrations (harness integrations from upstream pins), mini-tools |
+| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks + osv-scanner behind one verb), host-patch (the daily host upgrade job), container-refresh (the daily image pull + recreate), generate-architecture, graphify, agent-integrations (each upstream's own harness integration, at its latest release), mini-tools |
 
 `ARCHITECTURE.md`'s tables and its Mermaid dependency graph (Packs → capabilities they drive →
-the upstream image each is pinned to) are derived straight from
+the upstream image each declares) are derived straight from
 `axon.toml`/`upstreams.toml`/`systems.toml`/`Packs/*/pack.toml` — that's the live, generated
 view. Don't hand-edit it, and don't hand-maintain a second diagram somewhere else that it could
 drift from. `tools/check-architecture-fresh.sh` catches drift (fails if a manifest changed and

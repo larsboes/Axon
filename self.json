@@ -126,6 +126,18 @@
       }
     },
     {
+      "name": "container-refresh",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 7
+      }
+    },
+    {
       "name": "content-item",
       "kind": "lib",
       "code": {
@@ -152,8 +164,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 104,
-        "nodes": 628
+        "files": 103,
+        "nodes": 627
       }
     },
     {
@@ -504,8 +516,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 136,
-        "nodes": 1105
+        "files": 138,
+        "nodes": 1118
       }
     },
     {
@@ -1260,444 +1272,357 @@
   "upstreams": [
     {
       "name": "academic-researcher",
-      "verdict": "overlay",
-      "pin": "e75d70d"
+      "verdict": "overlay"
     },
     {
       "name": "academic-writing-agents",
-      "verdict": "quarry",
-      "pin": ""
+      "verdict": "quarry"
     },
     {
       "name": "apfel",
-      "verdict": "adopt",
-      "pin": "1.9.1"
+      "verdict": "adopt"
     },
     {
       "name": "apple-container",
-      "verdict": "reject",
-      "pin": "1.2.2"
+      "verdict": "reject"
     },
     {
       "name": "ar5iv",
-      "verdict": "adopt",
-      "pin": "hosted-html-render"
+      "verdict": "adopt"
     },
     {
       "name": "arrow-rs",
-      "verdict": "adopt",
-      "pin": "59.2.0"
+      "verdict": "adopt"
     },
     {
       "name": "auge",
-      "verdict": "reject",
-      "pin": ""
+      "verdict": "reject"
     },
     {
       "name": "awesome-selfhosted",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "besser-bahn",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "betterbahn",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "bge-reranker-v2-m3-mlx",
-      "verdict": "adopt",
-      "pin": "b4577f49e18adb53ed9e557192094f69f3dc2c1c"
+      "verdict": "adopt"
     },
     {
       "name": "bitwarden-cli",
-      "verdict": "adopt",
-      "pin": "cli-v2026.7.0"
+      "verdict": "adopt"
     },
     {
       "name": "bottom",
-      "verdict": "adopt",
-      "pin": "0.14.7"
+      "verdict": "adopt"
     },
     {
       "name": "bun",
-      "verdict": "adopt",
-      "pin": "1.3.14"
+      "verdict": "adopt"
     },
     {
       "name": "colibri",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "debian",
-      "verdict": "adopt",
-      "pin": "trixie-20260713-slim"
+      "verdict": "adopt"
     },
     {
       "name": "deutsche-bahn-data",
-      "verdict": "adopt",
-      "pin": "monthly_processed_data/data-2025-11 .. data-2026-06"
+      "verdict": "adopt"
     },
     {
       "name": "docling",
-      "verdict": "reject",
-      "pin": ""
+      "verdict": "reject"
     },
     {
       "name": "dolphin",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "esphome",
-      "verdict": "reject",
-      "pin": "2026.5.3"
+      "verdict": "reject"
     },
     {
       "name": "event-horizon",
-      "verdict": "quarry",
-      "pin": ""
+      "verdict": "quarry"
     },
     {
       "name": "exo",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "gitleaks",
-      "verdict": "adopt",
-      "pin": "v8.30.1"
+      "verdict": "adopt"
     },
     {
       "name": "graphify",
-      "verdict": "adopt",
-      "pin": "0.9.31"
+      "verdict": "adopt"
     },
     {
       "name": "grype",
-      "verdict": "adopt",
-      "pin": "v0.118.0"
+      "verdict": "adopt"
     },
     {
       "name": "hledger",
-      "verdict": "reject",
-      "pin": "1.52.1"
+      "verdict": "reject"
     },
     {
       "name": "home-assistant",
-      "verdict": "adopt",
-      "pin": "2026.7.4"
+      "verdict": "adopt"
     },
     {
       "name": "human-voice",
-      "verdict": "adopt",
-      "pin": "9bcba2f"
+      "verdict": "adopt"
     },
     {
       "name": "iai-personal-memory-engine",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "lifeos",
-      "verdict": "inspiration",
-      "pin": "v7.1.1"
+      "verdict": "inspiration"
     },
     {
       "name": "llama-cpp-rpc",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "local-llm",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "macmon",
-      "verdict": "adopt",
-      "pin": "0.7.0"
+      "verdict": "adopt"
     },
     {
       "name": "maplibre-gl-js",
-      "verdict": "adopt",
-      "pin": "v6.4.1"
+      "verdict": "adopt"
     },
     {
       "name": "mcp-audit",
-      "verdict": "adopt",
-      "pin": "v1.0.0"
+      "verdict": "adopt"
     },
     {
       "name": "mcpserver-audit",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "mermaid",
-      "verdict": "adopt",
-      "pin": "11.16.1"
+      "verdict": "adopt"
     },
     {
       "name": "mlx",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "mosquitto",
-      "verdict": "reject",
-      "pin": "2.1.2-alpine"
+      "verdict": "reject"
     },
     {
       "name": "multilingual-e5-base-mlx",
-      "verdict": "adopt",
-      "pin": "576fdf3eab52a419f6d126a0c4d7c59b3882ffde"
+      "verdict": "adopt"
     },
     {
       "name": "multilingual-e5-small-mlx",
-      "verdict": "reject",
-      "pin": "5030c7625865046d350eeea28f427d80353d0ac0"
+      "verdict": "reject"
     },
     {
       "name": "netbird",
-      "verdict": "reject",
-      "pin": ""
+      "verdict": "reject"
     },
     {
       "name": "nominatim-api",
-      "verdict": "adopt",
-      "pin": "search-and-reverse-api-v1"
+      "verdict": "adopt"
     },
     {
       "name": "nvidia-skills",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "oberskills",
-      "verdict": "quarry",
-      "pin": "5050537"
+      "verdict": "quarry"
     },
     {
       "name": "ocrs",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "openfreemap",
-      "verdict": "adopt",
-      "pin": "hosted-style-api"
+      "verdict": "adopt"
     },
     {
       "name": "osv-scanner",
-      "verdict": "adopt",
-      "pin": "v2.4.0"
+      "verdict": "adopt"
     },
     {
       "name": "paperless-ngx",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "pascal-editor",
-      "verdict": "inspiration",
-      "pin": "0.3.2"
+      "verdict": "inspiration"
     },
     {
       "name": "pengsida-research-notes",
-      "verdict": "quarry",
-      "pin": ""
+      "verdict": "quarry"
     },
     {
       "name": "pi-coding-agent",
-      "verdict": "adopt",
-      "pin": "v0.83.0"
+      "verdict": "adopt"
     },
     {
       "name": "pihole",
-      "verdict": "adopt",
-      "pin": "2026.07.2"
+      "verdict": "adopt"
     },
     {
       "name": "plan-bahn",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "platforms",
-      "verdict": "reject",
-      "pin": "1.1.0"
+      "verdict": "reject"
     },
     {
       "name": "postgres",
-      "verdict": "reject",
-      "pin": "17.10-alpine"
+      "verdict": "reject"
     },
     {
       "name": "presidio",
-      "verdict": "reject",
-      "pin": ""
+      "verdict": "reject"
     },
     {
       "name": "r2d2",
-      "verdict": "adopt",
-      "pin": "0.8.10"
+      "verdict": "adopt"
     },
     {
       "name": "r2d2_postgres",
-      "verdict": "reject",
-      "pin": "0.18.2"
+      "verdict": "reject"
     },
     {
       "name": "r2d2_sqlite",
-      "verdict": "adopt",
-      "pin": "0.35.0"
+      "verdict": "adopt"
     },
     {
       "name": "research-paper-writing-skills",
-      "verdict": "quarry",
-      "pin": ""
+      "verdict": "quarry"
     },
     {
       "name": "rules_rust",
-      "verdict": "reject",
-      "pin": "0.71.1"
+      "verdict": "reject"
     },
     {
       "name": "rules_shell",
-      "verdict": "reject",
-      "pin": "0.8.0"
+      "verdict": "reject"
     },
     {
       "name": "rusqlite",
-      "verdict": "adopt",
-      "pin": "0.40.2"
+      "verdict": "adopt"
     },
     {
       "name": "scout",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "semgrep",
-      "verdict": "reject",
-      "pin": "1.168.0"
+      "verdict": "reject"
     },
     {
       "name": "skills-best-practices",
-      "verdict": "reject",
-      "pin": "675ee84"
+      "verdict": "reject"
     },
     {
       "name": "slm-finetuning-talk",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "stevenblack-hosts",
-      "verdict": "adopt",
-      "pin": "master"
+      "verdict": "adopt"
     },
     {
       "name": "stop-slop",
-      "verdict": "reject",
-      "pin": "8da1f03"
+      "verdict": "reject"
     },
     {
       "name": "svelte-ai-tools",
-      "verdict": "adopt",
-      "pin": "6468954"
+      "verdict": "adopt"
     },
     {
       "name": "svelte-language-server",
-      "verdict": "adopt",
-      "pin": "0.18.3"
+      "verdict": "adopt"
     },
     {
       "name": "sveltejs-mcp",
-      "verdict": "adopt",
-      "pin": "0.1.25"
+      "verdict": "adopt"
     },
     {
       "name": "tailscale",
-      "verdict": "adopt",
-      "pin": "1.98.9"
+      "verdict": "adopt"
     },
     {
       "name": "telekom-mcp-security",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "trek-travel",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "tripit",
-      "verdict": "inspiration",
-      "pin": ""
+      "verdict": "inspiration"
     },
     {
       "name": "trivy",
-      "verdict": "reject",
-      "pin": "v0.72.0"
+      "verdict": "reject"
     },
     {
       "name": "typst",
-      "verdict": "adopt",
-      "pin": "0.15.1"
+      "verdict": "adopt"
     },
     {
       "name": "vaultwarden",
-      "verdict": "adopt",
-      "pin": "1.37.0-alpine"
+      "verdict": "adopt"
     },
     {
       "name": "vega",
-      "verdict": "adopt",
-      "pin": "6.2.0"
+      "verdict": "adopt"
     },
     {
       "name": "vega-embed",
-      "verdict": "adopt",
-      "pin": "7.1.0"
+      "verdict": "adopt"
     },
     {
       "name": "vega-lite",
-      "verdict": "adopt",
-      "pin": "6.4.3"
+      "verdict": "adopt"
     },
     {
       "name": "vibecoded-design-tells",
-      "verdict": "adopt",
-      "pin": "f7c4aef"
+      "verdict": "adopt"
     },
     {
       "name": "wikimedia-api",
-      "verdict": "adopt",
-      "pin": "action-api-pageimages"
+      "verdict": "adopt"
     },
     {
       "name": "xberg",
-      "verdict": "adopt",
-      "pin": "1.0.5"
+      "verdict": "adopt"
     },
     {
       "name": "yq",
-      "verdict": "adopt",
-      "pin": "4.53.3"
+      "verdict": "adopt"
     }
   ],
   "graph": {
     "present": true,
-    "nodes": 11680,
-    "external": 10,
+    "nodes": 11762,
+    "external": 73,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",

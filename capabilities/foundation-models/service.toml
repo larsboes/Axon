@@ -21,7 +21,7 @@
 kind        = "process"
 name        = "foundation-models"
 
-# apfel, not a server Axon writes. `upstreams.toml [apfel]` carries the verdict and the pin;
+# apfel, not a server Axon writes. `upstreams.toml [apfel]` carries the verdict;
 # toolchain.toml declares the binary under `needed_by = ["capability:foundation-models"]`, so an
 # enabled capability with the binary missing is reported rather than discovered in a watchdog log.
 #

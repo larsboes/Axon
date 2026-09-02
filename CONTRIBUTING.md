@@ -14,9 +14,10 @@ must outlive the change itself: a defect being left unfixed, or a decision that 
 Write it as a claim with the probe that would falsify it, not as a description. The issue tracker
 takes reports from outside the project; it is not where this project's work is planned.
 
-Before external code or adopted design influence enters the tree, record its canonical source and
-exact pin in `upstreams.toml`. Record the license and verdict there too, then state precisely what
-Axon adopts.
+Before external code or adopted design influence enters the tree, record its canonical source in
+`upstreams.toml`. Record the license and verdict there too, then state precisely what Axon
+adopts. No version: the register holds none since 2026-09-02, because every dependency tracks its
+upstream's latest release (README.md#patch-first).
 
 ## Work on one change
 
@@ -55,8 +56,9 @@ cargo check --workspace --locked
 cargo test --workspace --locked
 ~~~
 
-Run the format and Clippy commands from the repository root. They use the exact
-toolchain and components pinned in `rust-toolchain.toml`; do not replace a finding
+Run the format and Clippy commands from the repository root. They use the channel and
+components `rust-toolchain.toml` names -- `stable`, so the release rustup last fetched;
+CI resolves the same file, not a literal held somewhere else. Do not replace a finding
 with a workspace-wide allowance. A narrow allowance belongs beside the affected
 item and must explain the invariant that makes the lint inapplicable.
 

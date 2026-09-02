@@ -24,7 +24,8 @@ Keep unrelated failures in their own paragraph.
 
 - [ ] No secret value, private overlay content, workstation path, personal data, or private log is
       present in the diff or pull-request text.
-- [ ] New external code or adopted influence has canonical provenance, pin, license, and verdict.
+- [ ] New external code or adopted influence has canonical provenance, license, and verdict.
+      No version: the register records none (Q_DEPIN).
 - [ ] Generated artifacts were regenerated and checked when their inputs changed.
 
 ## Known limits and follow-ups

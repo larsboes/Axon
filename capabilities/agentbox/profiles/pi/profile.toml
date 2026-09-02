@@ -2,40 +2,41 @@
 # Public, tracked, instance-free — the box's shape. What varies per machine (model,
 # endpoint, key, resource limits) lives in <overlay>/config/agentbox.toml instead.
 #
-# Bumping the agent = change `version` + every `archive_sha256_*` here, re-run
-# `agentbox build`. The checksum is verified twice: on the host before the build,
-# and again inside it.
+# NO VERSION, and no checksum literal (Q_DEPIN, 2026-09-02). `agentbox build` and
+# `agentbox host-install` resolve the LATEST release from `release_latest_api` and take the
+# checksum from THAT release's own published SHA256SUMS. Bumping the agent is re-running
+# either command; there is nothing here to edit.
+#
+# Losing the literals loses nothing that was checked. A checksum copied into this file
+# answered "are these the bytes somebody once read", and it was copied FROM the same
+# SHA256SUMS the build now reads directly. What it actually bought was a version freeze, and
+# the freeze is what the ruling removed. The archive is still verified twice: on the host
+# before the build, and again inside it (Containerfile's `sha256sum -c`).
 
 name    = "pi"
-version = "0.83.0"
 
-# The upstreams.toml section that owns the verdict and the pin for this agent.
-# Declared rather than derived from `name`: the section is named for the package
-# (pi-coding-agent), the profile for the command (pi), and guessing across that gap is how a
-# gate ends up asking GitHub about the wrong repository. `agentbox host-install` reads it to
-# know which repo to check advisories against (Axon#126).
+# The upstreams.toml section that owns the verdict for this agent. Declared rather than
+# derived from `name`: the section is named for the package (pi-coding-agent), the profile
+# for the command (pi), and guessing across that gap is how a check ends up asking GitHub
+# about the wrong repository. `agentbox host-install` reads it to name the advisory list.
 upstream = "pi-coding-agent"
 
-# The upstream verbs that replace the binary in place. Intercepted by the host shim, because
-# a self-update is the one command that walks past every gate in this repo: the pin, the
-# checksum and the advisory check both describe a version the machine is no
-# longer running. Declared per profile rather than hardcoded — a different agent spells it
-# differently, and an unlisted verb must reach upstream unchanged (Axon#126).
-self_update_verbs = ["update", "upgrade", "self-update"]
+# Where the version comes from. GitHub's /releases/latest is the most recently published
+# NON-prerelease, which is the channel this deployment wants; `tag_name` is `v<version>`,
+# and the launcher strips exactly one leading v.
+release_latest_api = "https://api.github.com/repos/earendil-works/pi/releases/latest"
 
 # {version}, {os} and {arch} are substituted by the launcher. arch comes from the
 # host (arm64 | x64), so the same profile serves an Intel Mac unchanged. os is the
 # TARGET's, not the host's: the box is a Linux container whatever it is built on,
-# while a host install of the same pinned release is darwin.
+# while a host install of the same release is darwin.
 archive_url    = "https://github.com/earendil-works/pi/releases/download/v{version}/pi-{os}-{arch}.tar.gz"
 archive_root   = "pi"     # top-level directory inside the tarball
 bin_path       = "pi"     # the executable, relative to archive_root
 
-# sha256 per os/arch, copied from the release's published SHA256SUMS and re-verified
-# by downloading each asset. darwin exists here because the host install consumes the
-# same pin as the box (see upstreams.toml), so one version field serves both targets.
-archive_sha256_linux_arm64  = "b84f9016610c738dd9440df62f649880dbe9951db97a7ae936cbf292850e9802"
-archive_sha256_darwin_arm64 = "147fc3c451ec543a15102af251ce316079c8fcadfe8ae4d3ffee202346e9bed9"
+# The release's own checksum manifest, `<sha256>  <asset-name>` per line. Verified against
+# the asset basename taken from archive_url above, so the two cannot name different files.
+checksums_url  = "https://github.com/earendil-works/pi/releases/download/v{version}/SHA256SUMS"
 
 # Where the agent's config directory is mounted, and the env var that points it there.
 config_dir     = "/home/agent/config"

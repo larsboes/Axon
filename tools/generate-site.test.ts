@@ -24,9 +24,9 @@ const MODEL = {
   ],
   coupling: [{ from: "axon-status", to: "axon-config", kinds: ["cargo-dep"], evidence: ["capabilities/axon-status/Cargo.toml"] }],
   upstreams: [
-    { name: "bun", verdict: "adopt", pin: "1.3.14" },
-    { name: "stop-slop", verdict: "reject", pin: "8da1f03" },
-    { name: "unpinned-thing", verdict: "inspiration", pin: "" },
+    { name: "bun", verdict: "adopt" },
+    { name: "stop-slop", verdict: "reject" },
+    { name: "pascal-editor", verdict: "inspiration" },
   ],
 };
 
@@ -44,11 +44,12 @@ describe("renderSite", () => {
     expect(html).toContain("container");
   });
 
-  test("groups upstreams by verdict and shows the pin", () => {
-    expect(html).toContain("adopt");
-    expect(html).toContain("1.3.14");
-    // An entry with no pin says so rather than rendering an empty cell that reads as a value.
-    expect(html).toContain("unpinned");
+  // The register records no version since Q_DEPIN (2026-09-02), so the page groups names under
+  // their verdict and renders nothing that could read as "the version this deployment runs".
+  test("groups upstreams by verdict, and publishes no version", () => {
+    for (const verdict of ["adopt", "reject", "inspiration"]) expect(html).toContain(verdict);
+    for (const u of MODEL.upstreams) expect(html).toContain(u.name);
+    expect(html).not.toContain("unpinned");
   });
 
   // #14: "Self-contained: no external CSS, JS, font or CDN request."

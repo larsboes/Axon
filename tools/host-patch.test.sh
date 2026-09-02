@@ -93,6 +93,11 @@ case "$(receipt_field failed)" in
   *"brew upgrade formula"*) ;;
   *) cat "$RECEIPT"; echo "FAIL: the receipt did not name the failed step" >&2; exit 1 ;;
 esac
+# --greedy is the whole cask step: without it brew skips every cask marked auto_updates or
+# version :latest and still reports success, which is a patch run that patches nothing and
+# says it did.
+grep -F 'brew upgrade --cask --greedy' "$CALLS" >/dev/null || {
+  cat "$CALLS"; echo "FAIL: the cask upgrade did not pass --greedy" >&2; exit 1; }
 
 # 3. The audit's verdict is reported, not decided: a finding is exit 1 and is named in the
 #    receipt, which is the field tools/doctor reads.

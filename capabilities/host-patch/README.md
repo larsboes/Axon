@@ -16,6 +16,12 @@ and what it holds is the order of the steps, the guard in front of each one, and
 
 ## What it does not upgrade, and why
 
+Casks that ship their own updater ARE upgraded, since 2026-09-02: `brew upgrade --cask
+--greedy` (Q_DEPIN). Without `--greedy` brew skips every cask marked `auto_updates` or
+`version :latest` and reports success over them, which is a patch run that patches nothing and
+says it did. A cask that must stay put is a `brew pin` — one owner, one mechanism, the same
+rule the paragraph below states.
+
 `bun` and `uv` both have self-update verbs, and neither is called. Both are Homebrew formulae on
 this host (`toolchain.toml` `[bun]`, `[uv]`), so `brew upgrade --formula` already moves them, and
 two owners of one binary is a failure this deployment has already paid for: a `~/.local/bin`
@@ -23,8 +29,10 @@ two owners of one binary is a failure this deployment has already paid for: a `~
 `--dump-json` kept working (PRD §13). If `bun` should stay put on this machine, that is a
 `brew pin`, not a special case in the script — one owner, one mechanism.
 
-Container images are not scanned here either. `grype` runs in `.github/workflows/security.yml`,
-which installs it itself and runs whether or not this Mac is awake.
+Container images are neither pulled nor scanned here. `capabilities/container-refresh` is the
+pull, on the hosts that run containers; `grype` is the scan, in
+`.github/workflows/security.yml`, which installs it itself and runs whether or not this Mac is
+awake.
 
 ## The cadence, honestly
 

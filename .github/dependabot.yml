@@ -9,14 +9,18 @@
 # hold", it silently reinstates the one this change deleted. Patch first
 # (README.md#patch-first): a hold that needs a human to end it is a hold that ends late.
 #
-# ONE THING NOT VERIFIED, stated rather than left to be discovered. dependabot-core treats 0 as
-# "no cooldown" (Package::ReleaseCooldownOptions defaults every window to 0, and
-# Job::CooldownDefinition passes an explicit 0 straight through), but the community JSON schema
-# at json.schemastore.org/dependabot-2.0.json declares `default-days` minimum 1 while giving
-# `semver-patch-days` minimum 0. GitHub's config validator is closed, so whether it accepts 0 is
-# only answerable from the first run. CHECK IT: Insights -> Dependency graph -> Dependabot, on
-# the first run after this lands. A rejected config opens no pull requests at all, which is a
-# worse outcome than the three-day hold — if it is rejected, `default-days: 1` is the fallback.
+# `default-days: 0` IS accepted, verified 2026-09-02 on this repository: the config validates and
+# Dependabot opened pull requests under it. That was the one open question when this file landed
+# — dependabot-core treats 0 as "no cooldown" (Package::ReleaseCooldownOptions defaults every
+# window to 0, and Job::CooldownDefinition passes an explicit 0 straight through), while the
+# community JSON schema at json.schemastore.org/dependabot-2.0.json declares `default-days`
+# minimum 1, and GitHub's own validator is closed. The validator sided with dependabot-core, so
+# the `default-days: 1` fallback is not needed.
+#
+# The pull requests these open MERGE THEMSELVES once the required checks pass:
+# .github/workflows/dependabot-automerge.yml arms `gh pr merge --auto --squash` on each one
+# (Q_DEPIN). Opening them daily and leaving them for a human to notice would have re-created the
+# hold this file exists to remove.
 #
 # Daily, not weekly, for the same reason. A week-long batch is a week of unapplied security
 # fixes, and the grouping below is what keeps that from being one pull request per crate.

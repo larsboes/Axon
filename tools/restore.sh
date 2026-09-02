@@ -184,6 +184,8 @@ if [ -n "$META_MEMBER" ]; then
   CREATED_AT="$(toml_get created_at "$WORK/axon-backup.toml")"
   IMAGE="$(toml_get image "$WORK/axon-backup.toml")"
   TAG="$(toml_get tag "$WORK/axon-backup.toml")"
+  # Optional: written since Q_DEPIN (2026-09-02), absent from every archive taken before it.
+  IMAGE_DIGEST="$(toml_get image_digest "$WORK/axon-backup.toml")"
   SQLITE_REL="$(toml_get sqlite "$WORK/axon-backup.toml")"
   SQLITE_ONLINE_REL="$(toml_get sqlite_online "$WORK/axon-backup.toml")"
   # Optional: an archive taken before the field existed does not carry it, and is checked
@@ -199,8 +201,19 @@ if [ -n "$META_MEMBER" ]; then
   CURRENT_TAG="$(toml_get tag "$MANIFEST")"
   CURRENT_SQLITE="$(toml_get backup_sqlite "$MANIFEST")"
   CURRENT_SQLITE_ONLINE="$(toml_get backup_sqlite_online "$MANIFEST")"
+  # A CHANNEL check, and only that, since Q_DEPIN (2026-09-02). Both sides were version
+  # literals until then, so this refused a vaultwarden archive taken at 1.36.0-alpine from
+  # being read back against a manifest declaring 1.37.0-alpine. Every declared tag is now a
+  # rolling channel, so both sides are the same constant string for the life of the channel and
+  # what survives is the narrower question: was this archive taken from the same image and the
+  # same stream this manifest names.
+  #
+  # Not widened to the digest on purpose. The archive records the digest it was taken at
+  # (image_digest, printed below), the running image moves daily by design, and a restore
+  # refused for that reason would be refused precisely when it is needed. The version question
+  # is answered by reading the two digests, which is a human's call and not a gate.
   [ "$IMAGE:$TAG" = "$CURRENT_IMAGE:$CURRENT_TAG" ] \
-    || fail "archive image identity differs from the current tracked manifest; use the matching Axon revision"
+    || fail "archive was taken from '$IMAGE:$TAG'; this manifest declares '$CURRENT_IMAGE:$CURRENT_TAG' — use the matching Axon revision"
   [ "$SQLITE_REL:$SQLITE_ONLINE_REL" = "$CURRENT_SQLITE:$CURRENT_SQLITE_ONLINE" ] \
     || fail "archive database contract differs from the current tracked manifest; use the matching Axon revision"
   [ "$(toml_array backup_paths "$WORK/axon-backup.toml")" = "$(toml_array backup_paths "$MANIFEST")" ] \
@@ -221,6 +234,7 @@ else
   SQLITE_ONLINE_REL="$(toml_get backup_sqlite_online "$MANIFEST")"
   EXPECT_TABLES=""
   EXPECT_ROWS=""
+  IMAGE_DIGEST=""
   PATHS=()
   while IFS= read -r line; do [ -n "$line" ] && PATHS+=("$line"); done < <(toml_array backup_paths "$MANIFEST")
   CPATHS=()
@@ -233,6 +247,16 @@ fi
 echo "→ archive: $(basename "$ARCHIVE")"
 echo "  bytes: $ARCHIVE_BYTES · sha256: $ARCHIVE_SHA256"
 echo "  format: $FORMAT · capability: $CAP · created: $CREATED_AT"
+# The image line is what the tag above stopped answering. `image:tag` names the channel the
+# archive was taken from; the digest names the build. Printed rather than compared — see the
+# identity check above for why a moved digest is not an error.
+if [ -n "$IMAGE" ]; then
+  if [ -n "$IMAGE_DIGEST" ]; then
+    echo "  image channel: $IMAGE:$TAG · running digest at backup: $IMAGE_DIGEST"
+  else
+    echo "  image channel: $IMAGE:$TAG · running digest at backup: unrecorded (archive predates the field, or no container answered)"
+  fi
+fi
 echo "→ extract outer archive → $DEST"
 tar -xzpf "$ARCHIVE" -C "$DEST"
 

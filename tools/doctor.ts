@@ -1961,9 +1961,9 @@ const CHECKS: Check[] = [
   // "Is a dependency behind" needs the network and a registry per ecosystem — it was
   // always the check here that could not answer offline, and it spent most of its life
   // printing a manifest-format result under a supply-chain heading. What it did answer
-  // without the network — that every entry has a verdict and a pin — is doctrine about a
-  // documentation file, and README.md#dependency-verdicts-and-provenance now says plainly
-  // that a human owns it.
+  // without the network — that every entry has a verdict — is doctrine about a documentation
+  // file, and README.md#dependency-verdicts-and-provenance now says plainly that a human
+  // owns it.
 
   // There was an "Accepted-finding policies" check here until 2026-09-02. It delegated to
   // `tools/audit --expiry`, which read osv-scanner.toml's ignoreUntil dates and warned before
@@ -2006,6 +2006,48 @@ const CHECKS: Check[] = [
       if (r.audit === "finding") ctx.bad("the last patch run's audit found something — run tools/audit");
       else if (r.audit === "scanner-missing") ctx.warn("the last patch run's audit could not run a scanner");
       else if (ageH <= 48 && !r.failed) ctx.ok(`patched ${Math.round(ageH)}h ago, audit clean`);
+    },
+  },
+
+  // Container refresh — the same question as the host patch above, asked of the images. Q_DEPIN
+  // (2026-09-02) made every service.toml tag a rolling channel, and a channel that nothing pulls
+  // is a version literal with extra steps. tools/container-refresh.sh writes the receipt; doctor
+  // reports it. Gated on the capability being enabled, because a workstation runs no containers
+  // and a warning there would teach people to skim past this line.
+  {
+    name: "Container refresh (capabilities/container-refresh)",
+    run(ctx) {
+      const enabled: string[] = Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : [];
+      if (!enabled.includes("container-refresh")) {
+        ctx.ok("container-refresh not enabled on this machine — nothing to report");
+        return;
+      }
+      const receipt = join(ctx.overlayPath, "data", "container-refresh", "last.json");
+      if (!existsSync(receipt)) {
+        ctx.warn("container-refresh is enabled but has never written a receipt — it has not run");
+        return;
+      }
+      let r: any;
+      try {
+        r = JSON.parse(readFileSync(receipt, "utf8"));
+      } catch {
+        ctx.bad("<overlay>/data/container-refresh/last.json is not valid JSON — the last run could not record what it did");
+        return;
+      }
+      const ageH = (Date.now() - Date.parse(r.at)) / 3_600_000;
+      if (!Number.isFinite(ageH)) {
+        ctx.bad("the container-refresh receipt carries no readable timestamp");
+        return;
+      }
+      if (ageH > 48) ctx.warn(`last image refresh was ${Math.round(ageH)}h ago — a 24h job that has not run in two days is not running`);
+      if (r.failed) ctx.warn(`last image refresh had failed steps:${r.failed}`);
+      // "Nothing to refresh" is a legitimate outcome and reads as one, so a host that enables the
+      // capability and declares no image is not reported as healthy-by-accident.
+      else if (ageH <= 48 && String(r.skipped ?? "").includes("no-container-capabilities")) {
+        ctx.ok(`checked ${Math.round(ageH)}h ago — no enabled capability declares an image`);
+      } else if (ageH <= 48) {
+        ctx.ok(`images refreshed ${Math.round(ageH)}h ago${r.ran ? ` (recreated:${r.ran})` : ", none moved"}`);
+      }
     },
   },
 

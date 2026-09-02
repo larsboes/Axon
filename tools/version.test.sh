@@ -29,8 +29,12 @@ check "equal is not greater"             no  ver_gt 1.2.3 1.2.3
 check "patch bump"                       yes ver_gt 1.2.4 1.2.3
 check "differing depth: 2.0 vs 2.0.1"    no  ver_gt 2.0 2.0.1
 
-# What must NOT be ordered. Every one of these is a real pin in upstreams.toml, and
-# ver_numeric is what stops the checker inventing a comparison for them.
+# What must NOT be ordered. These are the shapes a version string actually takes in the
+# wild -- a git sha, a tool-prefixed tag, a dated image tag, a base-suffixed image tag --
+# and ver_numeric is what stops a caller inventing a comparison for them. They were real
+# upstreams.toml pins until 2026-09-02 (Q_DEPIN deleted that field); they are kept here
+# because toolchain.toml `min_version` floors still flow through this comparator, and a
+# floor read off `apfel --version` or `tailscale version` meets the same shapes.
 check "plain version is orderable"       yes ver_numeric 59.1.0
 check "single component is orderable"    yes ver_numeric 17
 check "git sha is not"                   no  ver_numeric f7c4aef

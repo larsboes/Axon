@@ -503,12 +503,45 @@ write_toml_array() { # <key> [values...]
 
 IMAGE="$(toml_get image "$MANIFEST")"
 TAG="$(toml_get tag "$MANIFEST")"
+
+# What the container was ACTUALLY running when this archive was taken.
+#
+# `tag` above stopped identifying a build on 2026-09-02 (Q_DEPIN): every declared tag is now a
+# rolling channel ("stable", "latest", "alpine"), so `image:tag` names a stream that moves under
+# the same string. The digest is the only version fact left (ISA.md C4), and an archive that
+# does not carry it can never say which build wrote the bytes inside it.
+#
+# Recorded, never enforced — tools/restore.sh prints it and compares nothing. Images roll daily
+# by design, so a restore refused because the running digest moved would refuse exactly the
+# restore an operator reaches for.
+#
+# RepoDigests[0] first: that is the registry-side identity and means the same thing on another
+# machine. The local image id is the fallback for an image the daemon holds no registry digest
+# for. Empty stays empty and the field is then omitted — no container, no runtime CLI on PATH,
+# or an inspect that failed are all "unknown", and writing an empty string would make the
+# archive claim the answer is known to be nothing.
+IMAGE_DIGEST=""
+if [ -n "$IMAGE" ] && command -v "$AXON_CONTAINER_RUNTIME" >/dev/null 2>&1; then
+  _image_id="$("$AXON_CONTAINER_RUNTIME" inspect "$NAME" --format '{{.Image}}' 2>/dev/null || true)"
+  if [ -n "$_image_id" ]; then
+    IMAGE_DIGEST="$("$AXON_CONTAINER_RUNTIME" image inspect "$_image_id" \
+      --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' 2>/dev/null || true)"
+    [ -n "$IMAGE_DIGEST" ] || IMAGE_DIGEST="$_image_id"
+  fi
+  unset _image_id
+fi
+
 {
   printf 'format = "1"\n'
   printf 'capability = "%s"\n' "$CAP"
   printf 'created_at = "%s"\n' "$TS"
   printf 'image = "%s"\n' "$IMAGE"
   printf 'tag = "%s"\n' "$TAG"
+  # Optional and additive, like sqlite_tables below: the format stays "1" and an archive taken
+  # before the field existed simply does not carry it.
+  if [ -n "$IMAGE_DIGEST" ]; then
+    printf 'image_digest = "%s"\n' "$IMAGE_DIGEST"
+  fi
   printf 'sqlite = "%s"\n' "$SQLITE_REL"
   printf 'sqlite_online = "%s"\n' "$SQLITE_ONLINE_REL"
   # Optional and additive, which is why the format stays "1": an archive taken before the
