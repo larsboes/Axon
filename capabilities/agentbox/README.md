@@ -49,7 +49,7 @@ process can touch, and whether you can show it.
 
 Verdicts and licences for pi and for the retired `apple/container` live in
 `upstreams.toml`, not here. No version does: `agentbox build` and `agentbox host-install`
-resolve the latest release themselves (Q_DEPIN, 2026-09-02). Docker has none: `toolchain.toml [docker]` records that Axon assumes
+resolve the latest release themselves (Q77, 2026-09-02). Docker has none: `toolchain.toml [docker]` records that Axon assumes
 the `docker` CLI, and *which* daemon provides it — OrbStack here, Docker Desktop or colima
 elsewhere — is a machine fact, not adopted code.
 
@@ -228,7 +228,7 @@ What it enforces:
 | sha256 of the release archive | hard refusal, in `fetch_archive` on the install path | the release's own published `SHA256SUMS` |
 | published GHSAs against the version | **not checked — yours to do** | see below |
 
-**The self-update shim is gone (Q_DEPIN, 2026-09-02).** `host-install` used to write a wrapper
+**The self-update shim is gone (Q77, 2026-09-02).** `host-install` used to write a wrapper
 that intercepted `pi update|upgrade|self-update` and refused them. It existed to protect a
 version literal: a self-updating binary replaced the file on disk and left `profile.toml`'s
 `version` and `archive_sha256_*` describing software the machine had stopped running — which
@@ -267,7 +267,7 @@ be silent about it, because a step that prints nothing reads as a step that pass
 
 **Current, 2026-09-02.** M4 Pro / macOS 26.5.2 / docker 29.4.0 on OrbStack 2.2.3, from the
 `debian:trixie-slim` base the agentbox image is built on (a dated `trixie-20260713-slim` tag
-until Q_DEPIN; the measurement was taken on that day's build of it). Same probe, three networks, so
+until Q77; the measurement was taken on that day's build of it). Same probe, three networks, so
 the controls show what each mode actually buys:
 
 | Probe from inside the box | `--network none` (default) | `--internal` | default bridge (`--online`) |

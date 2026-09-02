@@ -25,7 +25,7 @@
 #   upstream     = the upstreams.toml section id, when this tool is also audited code.
 #   min_version / version_cmd = optional FLOOR -- the oldest release Axon's use of the tool is
 #                  known to work on, never a version to install. Nothing holds a host at it:
-#                  capabilities/host-patch upgrades every package manager nightly (Q_DEPIN), so a
+#                  capabilities/host-patch upgrades every package manager nightly (Q77), so a
 #                  healthy machine sits above every floor here. Checked only when BOTH are
 #                  present. version_cmd's output is scanned for the first dotted-number token,
 #                  compared via version.sh.
@@ -144,7 +144,7 @@ upstream = "macmon"
 version_cmd = "macmon --version"
 min_version = "0.7.0"
 why = "capabilities/macmon execs it as `macmon serve` for the dashboard's Systems page; tools/sysmon power execs the same binary as a TUI. Absent for weeks while the capability was enabled, because a capability's own command was not a declared tool here and nothing else looked."
-install_macos = "cargo install macmon --locked"   # latest; min_version above is a floor, not a target (Q_DEPIN)
+install_macos = "cargo install macmon --locked"   # latest; min_version above is a floor, not a target (Q77)
 
 [yt-dlp]
 required = "optional"

@@ -19,7 +19,7 @@
 #
 # The pull requests these open MERGE THEMSELVES once the required checks pass:
 # .github/workflows/dependabot-automerge.yml arms `gh pr merge --auto --squash` on each one
-# (Q_DEPIN). Opening them daily and leaving them for a human to notice would have re-created the
+# (Q77). Opening them daily and leaving them for a human to notice would have re-created the
 # hold this file exists to remove.
 #
 # Daily, not weekly, for the same reason. A week-long batch is a week of unapplied security

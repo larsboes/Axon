@@ -71,7 +71,7 @@ echo "Axon host-patch · $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u)"
 
 step brew   "brew update"           brew update
 step brew   "brew upgrade formula"  brew upgrade --formula
-# --greedy, so a cask that ships its own updater is upgraded too (Q_DEPIN, 2026-09-02).
+# --greedy, so a cask that ships its own updater is upgraded too (Q77, 2026-09-02).
 # Without it `brew upgrade --cask` skips every cask marked auto_updates or version :latest --
 # which is most of the ones worth patching -- and brew reports success over them. The cost is
 # real and taken: brew may replace an app the vendor's own updater already moved, so a cask

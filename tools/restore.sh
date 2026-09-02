@@ -184,7 +184,7 @@ if [ -n "$META_MEMBER" ]; then
   CREATED_AT="$(toml_get created_at "$WORK/axon-backup.toml")"
   IMAGE="$(toml_get image "$WORK/axon-backup.toml")"
   TAG="$(toml_get tag "$WORK/axon-backup.toml")"
-  # Optional: written since Q_DEPIN (2026-09-02), absent from every archive taken before it.
+  # Optional: written since Q77 (2026-09-02), absent from every archive taken before it.
   IMAGE_DIGEST="$(toml_get image_digest "$WORK/axon-backup.toml")"
   SQLITE_REL="$(toml_get sqlite "$WORK/axon-backup.toml")"
   SQLITE_ONLINE_REL="$(toml_get sqlite_online "$WORK/axon-backup.toml")"
@@ -201,7 +201,7 @@ if [ -n "$META_MEMBER" ]; then
   CURRENT_TAG="$(toml_get tag "$MANIFEST")"
   CURRENT_SQLITE="$(toml_get backup_sqlite "$MANIFEST")"
   CURRENT_SQLITE_ONLINE="$(toml_get backup_sqlite_online "$MANIFEST")"
-  # A CHANNEL check, and only that, since Q_DEPIN (2026-09-02). Both sides were version
+  # A CHANNEL check, and only that, since Q77 (2026-09-02). Both sides were version
   # literals until then, so this refused a vaultwarden archive taken at 1.36.0-alpine from
   # being read back against a manifest declaring 1.37.0-alpine. Every declared tag is now a
   # rolling channel, so both sides are the same constant string for the life of the channel and

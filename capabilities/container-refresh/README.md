@@ -1,7 +1,7 @@
 # container-refresh
 
 The daily pull of every image this machine declares, and the recreate for the ones whose digest
-moved. `Q_DEPIN` (2026-09-02) turned every `service.toml` `tag` into a rolling channel —
+moved. `Q77` (2026-09-02) turned every `service.toml` `tag` into a rolling channel —
 `:stable` for Home Assistant, `:latest` for Pi-hole, `:alpine` for Vaultwarden. A channel moves in
 the registry and nothing on the host notices, because `docker run` resolved the digest once, at
 creation. This capability is what makes the channel real.
@@ -40,7 +40,7 @@ receipt as `<cap>:held` or `<cap>:not-running`. The new image applies at the nex
 a scheduled job overturn an operator's decision at 03:00.
 
 **No scanning here.** `grype` reads every declared image from the registry in
-`.github/workflows/security.yml`, which runs whether or not this host is awake. Since Q_DEPIN its
+`.github/workflows/security.yml`, which runs whether or not this host is awake. Since Q77 its
 findings are report-only, so a red upstream image is visible on every run without holding a merge.
 The job itself still goes red for one thing: a discovery loop that found no image to scan.
 

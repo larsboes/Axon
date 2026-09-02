@@ -10,10 +10,10 @@ name: Security
 #   SARIF     nothing uploads here, so no job needs `security-events: write` and a fork pull
 #             request cannot fail on a permission it never gets. A source finding turns the
 #             `deps` job red and is read in its log; an IMAGE finding is report-only since
-#             Q_DEPIN and is read in the run summary (see the `images` job). Adding the
+#             Q77 and is read in the run summary (see the `images` job). Adding the
 #             code-scanning tab back is a later decision with a stated cost, not an omission.
 #
-# Both scanners install the LATEST release, which since Q_DEPIN (2026-09-02) is what every
+# Both scanners install the LATEST release, which since Q77 (2026-09-02) is what every
 # dependency here does — this workflow simply got there first, because a scanner is judged by
 # whether its matcher and its database are current. upstreams.toml records verdicts and no
 # versions at all now. Neither install pipes a script into a shell, and neither writes outside
@@ -61,7 +61,7 @@ jobs:
             --experimental-exclude node_modules \
             --experimental-exclude to-integrate .
 
-  # REPORT-ONLY about IMAGES, and that is the whole point of the job (Q_DEPIN, 2026-09-02).
+  # REPORT-ONLY about IMAGES, and that is the whole point of the job (Q77, 2026-09-02).
   # Every declared image tracks a rolling tag now, so a CVE published against an upstream base
   # layer turns this red through no change of Axon's. Dependabot's pull requests auto-merge on
   # the required checks (.github/workflows/dependabot-automerge.yml), and a dependency bump held
@@ -103,7 +103,7 @@ jobs:
           {
             echo "## Image CVE scan"
             echo
-            echo "Report-only: these counts never hold a merge (Q_DEPIN). The tag is a channel, so"
+            echo "Report-only: these counts never hold a merge (Q77). The tag is a channel, so"
             echo "what was scanned is whatever the registry serves for it right now."
             echo
             echo "| Image | Critical | High | Result |"

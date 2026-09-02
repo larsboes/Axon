@@ -29,14 +29,14 @@ image    = "someorg/example"              # image repo, no tag. A registry prefi
                                           # ghcr reference silently became docker.io/ghcr.io/…;
                                           # see service-runner.sh's qualified_image.)
 tag      = "stable"                       # REQUIRED, and it names a CHANNEL, not a version
-                                          # (Q_DEPIN, 2026-09-02). Prefer the publisher's own
+                                          # (Q77, 2026-09-02). Prefer the publisher's own
                                           # rolling tag — "stable", "latest", "alpine" — so the
                                           # capability takes each upstream release the day it
                                           # exists. capabilities/container-refresh pulls every
                                           # declared image daily and recreates the container when
                                           # the digest moves.
                                           #
-                                          # A version literal was the rule until Q_DEPIN and was
+                                          # A version literal was the rule until Q77 and was
                                           # never a byte pin either: publishers rebuild under the
                                           # same tag. So the declared tag has never answered "what
                                           # is running" — ask the runtime for the digest instead

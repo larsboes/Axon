@@ -2,7 +2,7 @@
 # Public, tracked, instance-free — the box's shape. What varies per machine (model,
 # endpoint, key, resource limits) lives in <overlay>/config/agentbox.toml instead.
 #
-# NO VERSION, and no checksum literal (Q_DEPIN, 2026-09-02). `agentbox build` and
+# NO VERSION, and no checksum literal (Q77, 2026-09-02). `agentbox build` and
 # `agentbox host-install` resolve the LATEST release from `release_latest_api` and take the
 # checksum from THAT release's own published SHA256SUMS. Bumping the agent is re-running
 # either command; there is nothing here to edit.

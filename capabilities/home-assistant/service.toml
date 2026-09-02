@@ -11,7 +11,7 @@
 # that actually runs rather than a mirror of it.
 name         = "homeassistant"
 image        = "ghcr.io/home-assistant/home-assistant"
-tag          = "stable"     # ROLLING, not a pin (Q_DEPIN, 2026-09-02). `stable` is Home
+tag          = "stable"     # ROLLING, not a pin (Q77, 2026-09-02). `stable` is Home
                             # Assistant's own release channel: it moves to each new stable
                             # release, and capabilities/container-refresh pulls it daily and
                             # recreates this container when the digest moves. The declared tag

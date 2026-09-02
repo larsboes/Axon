@@ -31,7 +31,7 @@ Two network modes, and there is no third one on docker (Q75):
              at host.docker.internal. This is the only mode the agent works in.
 
 host-install places the same checksummed release the box runs. Both resolve the LATEST
-release at the moment they run (Q_DEPIN, 2026-09-02) and verify the download against that
+release at the moment they run (Q77, 2026-09-02) and verify the download against that
 release's own published SHA256SUMS.
 EOF
 }
@@ -51,7 +51,7 @@ require_config() {
   # A local channel tag, not a version. `build` moves it and also writes the resolved
   # version as a second tag, so `run`, `shell` and `doctor` need no network to find the image
   # while what was built stays recoverable from `docker image ls` and the image's own label.
-  # It named the profile's version literal until 2026-09-02 (Q_DEPIN), which is why every one
+  # It named the profile's version literal until 2026-09-02 (Q77), which is why every one
   # of those verbs used to depend on a version this file no longer holds.
   IMAGE="agentbox-$AGENT:latest"
   AGENT_DIR="$DATA/$AGENT"
@@ -401,7 +401,7 @@ cmd_run() {
 # and refused them, because a self-updating binary replaced the thing on disk and left the
 # profile's version literal and checksum describing software the machine had stopped running
 # (Axon#126 — upstreams.toml's pi-coding-agent entry records exactly that happening, `pi update`
-# about 15h after a release). Q_DEPIN (2026-09-02) deleted the literal and the pin it protected.
+# about 15h after a release). Q77 (2026-09-02) deleted the literal and the pin it protected.
 # With this launcher resolving the LATEST release on every build and install, a self-update
 # moves the binary to the same place the next `host-install` would, so the shim would be
 # refusing the outcome the ruling asks for. What it cost is stated rather than dropped: a
@@ -511,7 +511,7 @@ cmd_host_install() {
   # hashes the archive here and now. The already-installed path hashes nothing, and ARCHIVE_SHA
   # is set only inside fetch_archive — printing a digest anyway would claim a check that did
   # not run, and reading the unset variable under `set -u` killed this script after it had
-  # already relinked `current` and `bin/<agent>` (found 2026-09-02, Q_DEPIN). The digest is
+  # already relinked `current` and `bin/<agent>` (found 2026-09-02, Q77). The digest is
   # carried over from the previous receipt for the same release instead, and stays empty when
   # there is none: an empty sha256 with verified="unknown" reads as unknown, which it is.
   verified="this-run"

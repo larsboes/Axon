@@ -2009,7 +2009,7 @@ const CHECKS: Check[] = [
     },
   },
 
-  // Container refresh — the same question as the host patch above, asked of the images. Q_DEPIN
+  // Container refresh — the same question as the host patch above, asked of the images. Q77
   // (2026-09-02) made every service.toml tag a rolling channel, and a channel that nothing pulls
   // is a version literal with extra steps. tools/container-refresh.sh writes the receipt; doctor
   // reports it. Gated on the capability being enabled, because a workstation runs no containers

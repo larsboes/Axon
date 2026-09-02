@@ -93,7 +93,7 @@ RECEIPT
 expect_pass "cold path and SQLite restore" "$RESTORE" vaultwarden "$SCRATCH/vaultwarden.tar.gz" \
   --receipt "$SCRATCH/vaultwarden-receipt.json" --destination "$SCRATCH/vault-out"
 
-# Which build wrote these bytes. `tag` stopped answering that on 2026-09-02 (Q_DEPIN): the
+# Which build wrote these bytes. `tag` stopped answering that on 2026-09-02 (Q77): the
 # fixture above declares "alpine", which is a channel and reads the same for every archive the
 # capability will ever produce. tools/backup.sh records the running container's digest instead,
 # and restore prints it — a fact about the archive, never a gate, because the image moves daily

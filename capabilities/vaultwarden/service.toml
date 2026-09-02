@@ -1,7 +1,7 @@
 # See schemas/service.toml.example for the field reference.
 name     = "vaultwarden"
 image    = "vaultwarden/server"
-# ROLLING, not a pin (Q_DEPIN, 2026-09-02). `alpine` is Vaultwarden's rolling alpine-base
+# ROLLING, not a pin (Q77, 2026-09-02). `alpine` is Vaultwarden's rolling alpine-base
 # channel, which is the base F6 chose on 2026-07-10 and this keeps. capabilities/container-refresh
 # pulls it daily and recreates the container when the digest moves. The declared tag names a
 # channel; the running digest is the version fact (`docker inspect vaultwarden --format '{{.Image}}'`).

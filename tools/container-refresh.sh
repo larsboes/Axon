@@ -2,7 +2,7 @@
 # tools/container-refresh.sh — pull every declared image, every day, and recreate what moved.
 #
 # The job capabilities/container-refresh runs (kind = "process", schedule = "24h"). It is the
-# container half of capabilities/host-patch: Q_DEPIN (2026-09-02) made every service.toml `tag`
+# container half of capabilities/host-patch: Q77 (2026-09-02) made every service.toml `tag`
 # a rolling channel, and a channel only moves a running house when something pulls it.
 #
 # Contract, in this order and no other:

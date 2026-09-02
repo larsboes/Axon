@@ -270,7 +270,7 @@ tar -tzf "$stream_archive" | grep -q './axon-backup.toml' \
 grep -q 'stream vaultwarden archive' "$stream_log" \
   || fail "stream diagnostics were not written to stderr"
 
-# Which build wrote these bytes. `tag` stopped answering that on 2026-09-02 (Q_DEPIN) — the
+# Which build wrote these bytes. `tag` stopped answering that on 2026-09-02 (Q77) — the
 # manifest declares "alpine", a rolling channel that reads the same for every archive this
 # capability will ever produce — so backup.sh records the running container's digest beside it.
 stream_meta="$(tar -xOzf "$stream_archive" ./axon-backup.toml)"

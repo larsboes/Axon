@@ -7,7 +7,7 @@
 # harnesses. This script drives those installers instead of Axon keeping a copy of what
 # they emit.
 #
-# It resolved a version from upstreams.toml `pin` until 2026-09-02 (Q_DEPIN). That field is
+# It resolved a version from upstreams.toml `pin` until 2026-09-02 (Q77). That field is
 # deleted and the register records url/verdict/license/why only, so `uv tool run --from
 # graphifyy` resolves whatever PyPI has today (README.md#patch-first). The cost is named
 # rather than hidden: a broken graphify release reaches this machine on the day it ships.
@@ -38,7 +38,7 @@
 #
 # Add a row to INTEGRATIONS below. Never write a version here, and never write one into
 # upstreams.toml either: an upstream's integration is consumed at its latest release
-# (Q_DEPIN, README.md#patch-first).
+# (Q77, README.md#patch-first).
 #
 # Usage:
 #   tools/agent-integrations.sh list                 what is available, and where
@@ -58,7 +58,7 @@ set -euo pipefail
 _ai_lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
 source "$_ai_lib/paths.sh"
 # toml.sh is no longer sourced here. It existed to read `pin` out of upstreams.toml, and that
-# field is deleted (Q_DEPIN, 2026-09-02) -- this script reads no manifest at all now.
+# field is deleted (Q77, 2026-09-02) -- this script reads no manifest at all now.
 
 # Harnesses Axon knows how to detect, and where each keeps its global config.
 # graphify's --platform vocabulary is much longer; these are the ones Axon has an
@@ -84,7 +84,7 @@ harness_config_dir() {
   esac
 }
 HARNESSES="claude opencode codex pi"
-# What this file records changed with the pin it used to hold (Q_DEPIN, 2026-09-02): it is
+# What this file records changed with the pin it used to hold (Q77, 2026-09-02): it is
 # the DATE the integration was last re-derived from upstream, not a version to compare
 # against. Under rolling versions "does the installed copy match the pin" has no answer --
 # there is no pin, and upstream may have moved this morning. "When was this last taken from
@@ -371,7 +371,7 @@ cmd_list() {
   echo
   printf '  %-10s harnesses: %s\n' "graphify" "$HARNESSES"
   echo
-  echo "Installed at upstream's latest, never a recorded version (Q_DEPIN)."
+  echo "Installed at upstream's latest, never a recorded version (Q77)."
   echo "Configured on this machine: $(configured_harnesses | tr '\n' ' ')"
 }
 

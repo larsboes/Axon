@@ -15,7 +15,7 @@
 #                               this answers "what is filling me".
 #   tools/sysmon -h            this help
 #
-# Neither binary is installed by this script. Install the latest release (Q_DEPIN, 2026-09-02 --
+# Neither binary is installed by this script. Install the latest release (Q77, 2026-09-02 --
 # upstreams.toml records no version, and toolchain.toml's min_version is a floor, not a target):
 #   cargo install bottom --locked
 #   cargo install macmon --locked
@@ -35,7 +35,7 @@ HELP="tools/sysmon — system resource overview.
   tools/sysmon -h            this help
 "
 
-# The advice names no version. It read upstreams.toml `pin` until 2026-09-02 (Q_DEPIN), which
+# The advice names no version. It read upstreams.toml `pin` until 2026-09-02 (Q77), which
 # told an operator to install a release older than the one cargo would have given them.
 need_bin() {  # need_bin <bin-on-PATH> <crate-name>
   if ! command -v "$1" >/dev/null 2>&1; then

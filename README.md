@@ -286,7 +286,7 @@ argues for it — four fields and nothing else. The consuming README also record
 adopted: runtime, idea, architecture, algorithm, code or asset. A local clone or archive path is
 never durable provenance.
 
-**The register records no version.** `pin` stood on 86 rows until 2026-09-02, when Q_DEPIN
+**The register records no version.** `pin` stood on 86 rows until 2026-09-02, when Q77
 deleted it. Every dependency here tracks its upstream's latest release, and the field had stopped
 describing anything a machine was running: `capabilities/host-patch` moves brew, uv and rustup
 nightly, `capabilities/container-refresh` moves the images daily, Dependabot moves the Cargo and
@@ -294,7 +294,7 @@ Bun manifests, and both workflows install `latest`. What it actually recorded wa
 audit was written, which is a fact that belongs in the `why` where it cannot be mistaken for a
 claim about a host. Deleted lines stay in the manifest's git history.
 
-What changed on 2026-09-02 (Q74, then Q_DEPIN) is who checks what, and how fast a fix lands. What
+What changed on 2026-09-02 (Q74, then Q77) is who checks what, and how fast a fix lands. What
 is required — a verdict, a licence and an argument, before consumption — is unchanged.
 
 | Question | Answered by |
@@ -310,7 +310,7 @@ is required — a verdict, a licence and an argument, before consumption — is 
 | Is a running container behind its channel? | Nothing asks. `capabilities/container-refresh` pulls every declared image every day and recreates what moved |
 
 `upstreams.toml` is documentation, and only documentation. Nothing enforces its fields, and since
-Q_DEPIN no script reads one: `tools/agent-integrations.sh` drove an upstream's own installer at a
+Q77 no script reads one: `tools/agent-integrations.sh` drove an upstream's own installer at a
 recorded version and now takes its latest, `tools/sysmon` printed a recorded version in its
 install advice and now names none, and `tools/self.ts` publishes name and verdict into
 `self.json`. A human reads a verdict before adopting a dependency, which was always the actual
@@ -334,7 +334,7 @@ before then was decided under the hold it described. Those entries still point h
 left as written, because rewriting a decision's reasoning to match a later rule falsifies it.
 
 Take the patch. There is no adoption cooldown, on the host or in this repository, and nothing is
-held at a version anywhere. Q74 removed the cooldown on 2026-09-02; Q_DEPIN, the same day,
+held at a version anywhere. Q74 removed the cooldown on 2026-09-02; Q77, the same day,
 removed what was left — `upstreams.toml`'s 86 `pin` lines, the Rust toolchain literal, the three
 container image versions, and `capabilities/agentbox`'s pinned release and checksums. Every
 dependency here tracks its upstream's latest, and an update lands the day it exists.
@@ -407,7 +407,7 @@ literal. The digest is what identifies a running image (ISA.md C4).
 **The Bun the workflows install is `latest`.** `oven-sh/setup-bun` is asked for `bun-version:
 latest` in both workflows, so CI runs the runtime a contributor's package manager just gave them.
 It was three pinned literals and `tools/check-bun-pin.sh` keeping them equal until 2026-09-02; with
-no literal left anywhere — not in a workflow, and since Q_DEPIN not in `upstreams.toml` either —
+no literal left anywhere — not in a workflow, and since Q77 not in `upstreams.toml` either —
 there is nothing to diverge, and the class that gate caught is impossible rather than watched. The
 cost is stated rather than hidden: a bad Bun release can turn CI red for a reason
 unrelated to the code, which is the same trade `security.yml` makes for its scanners.

@@ -1,7 +1,7 @@
 # container-refresh — the daily pull of every image this machine declares, and the recreate
 # for the ones whose digest moved.
 #
-# Q_DEPIN (2026-09-02) made every service.toml `tag` a rolling channel — `:stable`, `:latest`,
+# Q77 (2026-09-02) made every service.toml `tag` a rolling channel — `:stable`, `:latest`,
 # `:alpine`. A channel moves in the registry and nothing on the host notices: `docker run`
 # resolved the digest once, at creation. This is what makes the channel real.
 #

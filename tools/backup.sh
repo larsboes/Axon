@@ -506,7 +506,7 @@ TAG="$(toml_get tag "$MANIFEST")"
 
 # What the container was ACTUALLY running when this archive was taken.
 #
-# `tag` above stopped identifying a build on 2026-09-02 (Q_DEPIN): every declared tag is now a
+# `tag` above stopped identifying a build on 2026-09-02 (Q77): every declared tag is now a
 # rolling channel ("stable", "latest", "alpine"), so `image:tag` names a stream that moves under
 # the same string. The digest is the only version fact left (ISA.md C4), and an archive that
 # does not carry it can never say which build wrote the bytes inside it.

@@ -44,7 +44,7 @@ describe("renderSite", () => {
     expect(html).toContain("container");
   });
 
-  // The register records no version since Q_DEPIN (2026-09-02), so the page groups names under
+  // The register records no version since Q77 (2026-09-02), so the page groups names under
   // their verdict and renders nothing that could read as "the version this deployment runs".
   test("groups upstreams by verdict, and publishes no version", () => {
     for (const verdict of ["adopt", "reject", "inspiration"]) expect(html).toContain(verdict);

@@ -23,7 +23,7 @@
       "kind": "capability",
       "code": {
         "files": 3,
-        "nodes": 39
+        "nodes": 40
       }
     },
     {
@@ -164,8 +164,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 103,
-        "nodes": 627
+        "files": 104,
+        "nodes": 628
       }
     },
     {
@@ -517,7 +517,7 @@
       "kind": "spine",
       "code": {
         "files": 138,
-        "nodes": 1118
+        "nodes": 1119
       }
     },
     {
@@ -1621,8 +1621,8 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 11762,
-    "external": 73,
+    "nodes": 11702,
+    "external": 10,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",

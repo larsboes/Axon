@@ -59,7 +59,7 @@ for runtime in podman apple-container ""; do
   # A doctor that cannot use the declared runtime must not then answer runtime questions from
   # whatever daemon happens to be installed. Every such line reads "not checked".
   #
-  # Asserted on every arch since Q_DEPIN (2026-09-02). profile.toml carried a per-os/arch
+  # Asserted on every arch since Q77 (2026-09-02). profile.toml carried a per-os/arch
   # checksum literal until then, and require_config died right after the runtime line on any
   # arch the profile had no line for — so this half went unasserted on an x86_64 runner. The
   # profile holds no checksum now (the release's own SHA256SUMS is read at build time), so
@@ -74,7 +74,7 @@ for runtime in podman apple-container ""; do
 done
 
 # --- 1b. the profile declares a channel, never a version -------------------
-# The launcher resolves the latest release at build time (Q_DEPIN). A version or checksum
+# The launcher resolves the latest release at build time (Q77). A version or checksum
 # literal reappearing in the profile would silently restore the freeze the ruling removed,
 # and nothing else in this file would notice.
 PROFILE="$SRC_ROOT/capabilities/agentbox/profiles/pi/profile.toml"
@@ -90,7 +90,7 @@ done
 # --- 1c. host-install, end to end against a planted release ----------------
 #
 # The release-resolution path (resolve_release -> fetch_archive -> cmd_host_install) was
-# rewritten on 2026-09-02 (Q_DEPIN) to take the LATEST release and its published SHA256SUMS
+# rewritten on 2026-09-02 (Q77) to take the LATEST release and its published SHA256SUMS
 # instead of two literals in profile.toml, and nothing here drove any of it. What that cost:
 # the ordinary second `host-install` — the one where the resolved version is already on disk —
 # died on `ARCHIVE_SHA: unbound variable` AFTER relinking `current` and `bin/pi`, so the verb
@@ -166,7 +166,7 @@ case "$out" in
 esac
 [ -x "$HOST_ROOT/versions/pi-9.9.9/pi" ] || fail "host-install left no executable at versions/pi-9.9.9/pi"
 [ "$(readlink "$HOST_ROOT/bin/pi")" = "$HOST_ROOT/current/pi" ] \
-  || fail "bin/pi is not a plain symlink through current (the self-update shim is gone since Q_DEPIN)"
+  || fail "bin/pi is not a plain symlink through current (the self-update shim is gone since Q77)"
 [ "$(receipt_field version)" = "9.9.9" ] || fail "receipt records version '$(receipt_field version)', not the resolved 9.9.9"
 [ "$(receipt_field sha256)" = "$GOOD_SHA" ] || fail "receipt records sha256 '$(receipt_field sha256)', not the archive's $GOOD_SHA"
 [ "$(receipt_field verified)" = "this-run" ] || fail "the install path recorded verified='$(receipt_field verified)', not this-run"

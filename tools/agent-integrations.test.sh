@@ -39,7 +39,7 @@ STUB
 chmod +x "$tmp/bin/opencode"
 
 # No version is read from anywhere, and that is the assertion: upstreams.toml carries no
-# `pin` since Q_DEPIN (2026-09-02), so the installer is driven at whatever `uv tool run
+# `pin` since Q77 (2026-09-02), so the installer is driven at whatever `uv tool run
 # --from graphifyy` resolves today.
 if grep -q '^pin = ' "$AXON_ROOT/upstreams.toml"; then
   echo "upstreams.toml still declares a pin — this script must not resolve one" >&2
@@ -87,7 +87,7 @@ grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' "$marker" || {
 
 # Installed files with no marker are of unknown provenance — an older mechanism, a hand copy,
 # or an install that died before writing it — and re-running the installer is the answer to
-# all three. That is what 'stale' means since Q_DEPIN; it compared against a pin before.
+# all three. That is what 'stale' means since Q77; it compared against a pin before.
 rm -f "$marker"
 machine_output="$($SCRIPT status --machine)"
 echo "$machine_output" | grep -q '^opencode|stale|' || {

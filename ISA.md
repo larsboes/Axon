@@ -53,7 +53,7 @@ tracker holds nothing, and no automation creates entries in it.
 - **C3** — sweeps run `rg --no-ignore --hidden --follow`; plain `rg` honours `.gitignore`
   and hides most of the private overlay's `config/`.
 - **C4** — `service-runner.sh status` prints the DECLARED image reference, and since
-  Q_DEPIN (2026-09-02) that reference is a CHANNEL — `:stable`, `:latest`, `:alpine`. It
+  Q77 (2026-09-02) that reference is a CHANNEL — `:stable`, `:latest`, `:alpine`. It
   names what the capability tracks, never what it is running. The digest is the only version
   fact: `docker image inspect <image>:<tag> --format '{{index .RepoDigests 0}}'`, or
   `docker inspect <name> --format '{{.Image}}'` for the container itself
@@ -119,7 +119,7 @@ whose error was silenced.
 
 ### F2 · Upstream drift
 
-Why: an upstream that moves and a deployment that does not is the drift worth watching. Q_DEPIN
+Why: an upstream that moves and a deployment that does not is the drift worth watching. Q77
 (2026-09-02) reversed the answer rather than the question: nothing is held at a version any more,
 so the risk is no longer "the bump is late" but "the bump landed and broke something", and what
 has to be visible is the pull request, the alert and the receipt.
@@ -135,7 +135,7 @@ has to be visible is the pull request, the alert and the receipt.
   2026-09-02, Q74: `renovate.json5` is deleted and `.github/dependabot.yml` replaces it.
   Dependabot needs no App, so the claim has an instrument for the first time — and the hold
   half is gone with the cooldown, so "held with a reason" now means a deliberate refusal,
-  never a timer. 2026-09-02, Q_DEPIN: Dependabot pull requests carry `--auto --squash`
+  never a timer. 2026-09-02, Q77: Dependabot pull requests carry `--auto --squash`
   (`.github/workflows/dependabot-automerge.yml`), so the ordinary bump merges itself once the
   required checks pass and this claim is about the exceptions only.)
 - [x] ISC-9 — the postgres 17.9 → 17.10 image decision is made on its own, not ridden
@@ -143,7 +143,7 @@ has to be visible is the pull request, the alert and the receipt.
   Closed 2026-08-27 by PRD Q45, which retired the image rather than bumping it: the running
   17.9 instance is read once by `tools/migrate-pg-to-sqlite` and then stopped, so a 17.10
   decision has no subject. The constraint held either way — the retirement is its own
-  commit, and the version that ran is in `upstreams.toml`'s git history at that date (Q_DEPIN
+  commit, and the version that ran is in `upstreams.toml`'s git history at that date (Q77
   deleted the field on 2026-09-02).
 
 ## Not yet specified

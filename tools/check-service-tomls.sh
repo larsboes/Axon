@@ -2,7 +2,7 @@
 # check-service-tomls.sh — the service.toml schema gate (CI: repo gates).
 # Asserts every service.toml declares the load-bearing fields its kind needs. A container's
 # `tag` must be present and non-empty, and it may be a rolling channel: "latest" and "stable"
-# were refused until 2026-09-02 and are now the preferred form (Q_DEPIN,
+# were refused until 2026-09-02 and are now the preferred form (Q77,
 # README.md#patch-first). The gate that refused them was defending reproducibility a tag never
 # provided — publishers rebuild under the same literal — so what it actually bought was delay.
 # The digest of the running container is the version fact (ISA.md C4). Pure file-based: it

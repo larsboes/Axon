@@ -10,7 +10,7 @@
 # the image is a file whose checksum was checked where you can see it, and checked again
 # below.
 
-# Rolling, not a dated tag (Q_DEPIN, 2026-09-02). `trixie-slim` is Debian's own channel for
+# Rolling, not a dated tag (Q77, 2026-09-02). `trixie-slim` is Debian's own channel for
 # the current stable slim image: `agentbox build` takes each rebuild the day it is published,
 # which is where the base layer's CVE fixes arrive. It named trixie-20260713-slim until then,
 # and that literal went stale the first time Debian rebuilt under it.
@@ -51,7 +51,7 @@ RUN echo "${ARCHIVE_SHA256}  /tmp/agent.tar.gz" | sha256sum -c - \
 
 LABEL org.opencontainers.image.title="agentbox/${AGENT_NAME}"
 LABEL dev.axon.agent="${AGENT_NAME}"
-# Which release these bytes are. The profile records no version since Q_DEPIN (2026-09-02),
+# Which release these bytes are. The profile records no version since Q77 (2026-09-02),
 # so the image carries it and `agentbox doctor` reads it back from here.
 LABEL dev.axon.agent-version="${AGENT_VERSION}"
 LABEL dev.axon.archive-sha256="${ARCHIVE_SHA256}"
