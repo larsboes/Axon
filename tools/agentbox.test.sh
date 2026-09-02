@@ -87,30 +87,48 @@ else
       || { echo "  ⊘ cannot obtain $PROBE_IMAGE — the network-mode checks are skipped"; PROBE_IMAGE=""; }
   fi
 
+  # The flags come out of the launcher, not out of this file. Both modes are single
+  # assignments there for exactly this reason, so an edit to either one is an edit to what
+  # these checks prove; a copy here would go on passing after the box changed modes.
+  # Extraction failing is a failure, never a silent skip.
+  MODEL_HOST="$(sed -n 's/^MODEL_HOST="\(.*\)"$/\1/p' "$BOX" | head -n1)"
+  OFFLINE_NET_ARGS="$(sed -n 's/^OFFLINE_NET_ARGS="\(.*\)"$/\1/p' "$BOX" | head -n1)"
+  ONLINE_NET_ARGS="$(sed -n 's/^ONLINE_NET_ARGS="\(.*\)"$/\1/p' "$BOX" | head -n1)"
+  ONLINE_NET_ARGS="${ONLINE_NET_ARGS//\$MODEL_HOST/$MODEL_HOST}"
+  if [ -z "$MODEL_HOST" ] || [ -z "$OFFLINE_NET_ARGS" ] || [ -z "$ONLINE_NET_ARGS" ]; then
+    fail "could not read MODEL_HOST / OFFLINE_NET_ARGS / ONLINE_NET_ARGS from $BOX — the network checks below would assert a copy"
+    PROBE_IMAGE=""
+  fi
+
   if [ -n "$PROBE_IMAGE" ]; then
+    # Every run is named, so the leftover check below can filter on containers THIS file
+    # created. An `ancestor=` filter would also catch a container the operator happens to have
+    # built from the same pinned base image.
+    NAME_PREFIX="agentbox-test-$$"
+    run_probe() {  # <suffix> <net args> <bash -c script>
+      # shellcheck disable=SC2086  # $2 is a flag list and has to split
+      docker run --rm --name "$NAME_PREFIX-$1" $2 --entrypoint /bin/bash "$PROBE_IMAGE" -c "$3"
+    }
+
     # The offline mode is the whole security claim. Each of these three is a way it could be
     # false while the box still looked closed.
-    out="$(docker run --rm --network none "$PROBE_IMAGE" cat /proc/net/route 2>&1 | tail -n +2)"
-    [ -z "$out" ] || fail "--network none left a route in the box: $out"
+    out="$(run_probe route "$OFFLINE_NET_ARGS" 'cat /proc/net/route' 2>&1 | tail -n +2)"
+    [ -z "$out" ] || fail "'$OFFLINE_NET_ARGS' left a route in the box: $out"
 
-    docker run --rm --network none --entrypoint /bin/bash "$PROBE_IMAGE" \
-      -c 'exec 3<>/dev/tcp/1.1.1.1/443' >/dev/null 2>&1 \
-      && fail "--network none reached 1.1.1.1:443"
+    run_probe tcp "$OFFLINE_NET_ARGS" 'exec 3<>/dev/tcp/1.1.1.1/443' >/dev/null 2>&1 \
+      && fail "'$OFFLINE_NET_ARGS' reached 1.1.1.1:443"
 
-    docker run --rm --network none --entrypoint /bin/bash "$PROBE_IMAGE" \
-      -c 'getent hosts host.docker.internal' >/dev/null 2>&1 \
-      && fail "--network none resolved host.docker.internal — the host is supposed to be gone too"
+    run_probe dns "$OFFLINE_NET_ARGS" "getent hosts $MODEL_HOST" >/dev/null 2>&1 \
+      && fail "'$OFFLINE_NET_ARGS' resolved $MODEL_HOST — the host is supposed to be gone too"
 
     # The control. Without it, an image too broken to open any socket would pass every check
     # above and the block would read as isolation when it is a bug.
-    docker run --rm --network bridge --add-host host.docker.internal:host-gateway \
-      --entrypoint /bin/bash "$PROBE_IMAGE" \
-      -c 'getent hosts host.docker.internal' >/dev/null 2>&1 \
-      || fail "the --online control could not resolve host.docker.internal — the probe proves nothing"
+    run_probe control "$ONLINE_NET_ARGS" "getent hosts $MODEL_HOST" >/dev/null 2>&1 \
+      || fail "the --online control could not resolve $MODEL_HOST — the probe proves nothing"
 
-    # `--rm` on every run is what keeps the box disposable. A named leftover would be a
-    # writable layer surviving a session, which is the property `--rm` is there for.
-    leftover="$(docker ps -a --filter "ancestor=$PROBE_IMAGE" --format '{{.Names}}')"
+    # `--rm` on every run is what keeps the box disposable. A leftover would be a writable
+    # layer surviving a session, which is the property `--rm` is there for.
+    leftover="$(docker ps -a --filter "name=^$NAME_PREFIX-" --format '{{.Names}}')"
     [ -z "$leftover" ] || fail "a probe container outlived its run: $leftover"
   fi
 fi

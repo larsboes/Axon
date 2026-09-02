@@ -35,6 +35,7 @@ cleanup() {
   rm -f /tmp/axon-porthog.pid /tmp/axon-porthog.maintenance
   rm -f /tmp/axon-inferhog.pid /tmp/axon-inferhog.maintenance
   rm -f /tmp/axon-inferhog.log /tmp/axon-inferhog.err
+  rm -f /tmp/axon-dockhog.maintenance
 }
 trap cleanup EXIT
 
@@ -240,6 +241,89 @@ seen="$(inference_backend_seen)"
 # gone, and the failure has no mechanism left -- docker and podman daemons own their own
 # lifecycle. The fixture went with it: a synthetic `volhog` capability declaring
 # managed_volume = "true", whose only real consumer (postgres) retired 2026-08-27 under PRD Q45.
+
+# --- start_service branches on three container states, not two -----------------------------
+# The gate above was the only case that ever drove start_service for a kind = "container"
+# capability, so retiring it left the running/stopped/absent branch with no falsifier on any
+# runtime. This replaces the coverage rather than the gate: the mechanism #125 guarded is gone,
+# the three states are not.
+#
+# What each state must NOT do is the point. Re-issuing `run` against a running container is the
+# error watchdog.sh discarded its own output over (30s cycles, forever); issuing `run` instead of
+# `start` for a stopped one builds a second container over the same declared mounts. Asserted
+# over the runtime's own call log, because `start` exits 0 in all three.
+DK_ROOT="$SCRATCH/dk"
+DK_OVERLAY="$SCRATCH/dk-overlay"
+DK_BIN="$SCRATCH/dk-bin"
+DK_LOG="$SCRATCH/docker-calls.log"
+DK_STATE="$SCRATCH/docker-state"        # absent | stopped | running
+
+mkdir -p "$DK_ROOT/tools/lib" "$DK_OVERLAY/config" "$DK_BIN" "$DK_ROOT/capabilities/dockhog"
+cp "$SRC_TOOLS/service-runner.sh" "$SRC_TOOLS/capability.sh" "$DK_ROOT/tools/"
+cp "$SRC_TOOLS"/lib/*.sh "$DK_ROOT/tools/lib/"
+printf 'overlay = "%s"\n' "$DK_OVERLAY" > "$DK_ROOT/axon.toml"
+printf 'os = "darwin"\ncontainer_runtime = "docker"\ncapabilities = ["dockhog"]\n' \
+  > "$DK_OVERLAY/config/machine.toml"
+: > "$DK_OVERLAY/config/dockhog.env"
+
+# The image reference carries a registry that is NOT Docker Hub, which is the second thing this
+# fixture falsifies: qualified_image prefixed every short name with `docker.io/` for
+# apple-container, and a ghcr reference came out as docker.io/ghcr.io/… (capabilities/home-assistant/service.toml).
+# The prefix is gone; this asserts the reference reaches the runtime as the manifest wrote it.
+cat > "$DK_ROOT/capabilities/dockhog/service.toml" <<'TOML'
+name = "dockhog"
+image = "ghcr.io/example/dockhog"
+tag = "1.2.3"
+ports = ["127.0.0.1:8899:8899"]
+volumes = ["data/dockhog:/data"]
+env_file = "config/dockhog.env"
+TOML
+
+# The stand-in runtime. It answers only the two questions start_service asks — is it running,
+# does it exist — from a state file the test sets, and records every call it is given.
+cat > "$DK_BIN/docker" <<SHIM
+#!/bin/bash
+echo "\$*" >> "$DK_LOG"
+_state="\$(cat "$DK_STATE")"
+case "\$1 \${2:-}" in
+  "ps --format") [ "\$_state" = running ] && echo dockhog ;;      # \`ps\` lists RUNNING only
+  "ps -a")       [ "\$_state" = absent ]  || echo dockhog ;;      # \`ps -a\` lists existing
+esac
+exit 0
+SHIM
+chmod +x "$DK_BIN/docker"
+
+dk_start() {  # <state> — run \`start dockhog\` against a runtime in that state
+  : > "$DK_LOG"
+  echo "$1" > "$DK_STATE"
+  PATH="$DK_BIN:$PATH" "$DK_ROOT/tools/service-runner.sh" start dockhog >/dev/null 2>&1
+}
+dk_calls() { tr '\n' '|' < "$DK_LOG"; }
+
+dk_start running
+grep -q '^run ' "$DK_LOG"   && fail "start re-ran an already-running container: $(dk_calls)"
+grep -q '^start ' "$DK_LOG" && fail "start re-started an already-running container: $(dk_calls)"
+
+dk_start stopped
+grep -qx 'start dockhog' "$DK_LOG" \
+  || fail "an existing stopped container was not started by name: $(dk_calls)"
+grep -q '^run ' "$DK_LOG" \
+  && fail "start built a second container over an existing one: $(dk_calls)"
+
+dk_start absent
+dk_run_line="$(grep '^run ' "$DK_LOG" | head -1)"
+[ -n "$dk_run_line" ] || fail "an absent container was never created: $(dk_calls)"
+case "$dk_run_line" in
+  *"--restart unless-stopped"*) : ;;
+  *) fail "the created container carries no restart policy, which is what watchdog.sh now leans on: $dk_run_line" ;;
+esac
+case "$dk_run_line" in
+  *"ghcr.io/example/dockhog:1.2.3") : ;;
+  *) fail "the run did not end with the declared image reference: $dk_run_line" ;;
+esac
+case "$dk_run_line" in
+  *docker.io/*) fail "a registry prefix was added to a reference that already names one: $dk_run_line" ;;
+esac
 
 # --- kind = "data": a file, not a process (PRD Q45) -----------------------------------------
 # capabilities/store declares the shared SQLite database so ONE manifest owns its backup

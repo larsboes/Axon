@@ -127,12 +127,21 @@ read_api_key() {
 # does not. Cheap, and it keeps one spelling of the host in this file.
 MODEL_HOST="host.docker.internal"
 ONLINE_NET_ARGS="--network bridge --add-host $MODEL_HOST:host-gateway"
+# One spelling per mode, because `doctor` proves the closed mode by RUNNING this string. A
+# second literal there would let the check stay green while cmd_run handed the box a network.
+OFFLINE_NET_ARGS="--network none"
 
 # Ask the endpoint for a status line from inside a throwaway box, on the same network an
 # --online box gets. From inside and not with a curl from the host, because the question is
 # whether a CONTAINER can reach the server — a host-side curl answers whether the server is
 # up, which is a different thing and passes when the server is bound to loopback only.
 # Empty output means no answer.
+#
+# Stated because it changed on 2026-09-02 (Q_CONTAINER): this probe now runs on the OPEN
+# network. Under apple-container it ran on the host-only one and could not leave the Mac; the
+# bridge has full egress, so a `model_base_url` override naming an off-machine endpoint makes
+# `agentbox doctor` send one request there. The probe must share the box's network to answer
+# the question at all, and there is no closed docker network that still reaches the host.
 probe_model() {
   url="$1"
   hostport="${url#http://}"; hostport="${hostport%%/*}"
@@ -273,7 +282,7 @@ cmd_run() {
     net_args="$ONLINE_NET_ARGS"
     statement="this box has internet access (--online), and it is also the only mode in which the model endpoint on the host answers. Treat every outbound call as something you must be able to justify."
   else
-    net_args="--network none"
+    net_args="$OFFLINE_NET_ARGS"
     statement="none at all. This box has no network interface but loopback: no DNS, no route off the machine, and no model endpoint either. git push, package installs, web fetches AND model calls all fail. That is intended; --online is the mode that has a model."
     # Said out loud rather than discovered when the agent's first turn errors. The default
     # is still the closed one: the safe mode losing a capability is not a reason to make
@@ -495,11 +504,12 @@ cmd_doctor() {
   # kind of check worth printing.
   if [ "$have_image" -eq 0 ]; then
     bad "network: not checked — needs the image to check from"
-  elif docker run --rm --network none --entrypoint /bin/bash "$IMAGE" \
+  # shellcheck disable=SC2086
+  elif docker run --rm $OFFLINE_NET_ARGS --entrypoint /bin/bash "$IMAGE" \
          -c 'exec 3<>/dev/tcp/1.1.1.1/443' >/dev/null 2>&1; then
-    bad "network: a --network none box reached 1.1.1.1:443 — the offline mode is not isolating"
+    bad "network: a box on '$OFFLINE_NET_ARGS' reached 1.1.1.1:443 — the offline mode is not isolating"
   else
-    ok "network: offline mode is --network none (loopback only: no route, no resolver, no host)"
+    ok "network: offline mode is '$OFFLINE_NET_ARGS' (loopback only: no route, no resolver, no host)"
   fi
 
   url="$(model_base_url 2>/dev/null || true)"
