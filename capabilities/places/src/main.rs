@@ -6,7 +6,9 @@
 mod server;
 
 fn usage() -> ! {
-    eprintln!("usage: places-server [server | backfill <amex|cities|stations|travelers|vault>]");
+    eprintln!(
+        "usage: places-server [server | backfill <amex|cities|stations|takeout|travelers|vault>]"
+    );
     std::process::exit(2);
 }
 
@@ -32,6 +34,7 @@ fn main() {
                 Some("amex") => places::backfill::amex(&store, &today),
                 Some("cities") => places::backfill::cities(&store, &today),
                 Some("stations") => places::backfill::stations(&store, &today),
+                Some("takeout") => places::backfill::takeout(&store, &today),
                 Some("travelers") => places::backfill::travelers(&store, &today),
                 Some("vault") => places::backfill::vault(&store, &today),
                 _ => usage(),

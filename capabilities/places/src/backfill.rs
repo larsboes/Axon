@@ -1364,6 +1364,245 @@ pub fn vault(store: &PlacesStore, today: &str) -> Fallible<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// backfill takeout
+// ---------------------------------------------------------------------------
+
+/// Google Takeout exports staged in the overlay, one directory per export:
+/// `data/places/import/raw/takeout-<yyyymmdd>/` — the same staging convention
+/// finance uses for its raw card exports. Two files are read: `Labelled
+/// places.json` and `Reviews.json`, both GeoJSON FeatureCollections.
+/// `Commute routes.json` is deliberately NOT read: raw route traces sit
+/// against this README's "No GPS trace" ruling, so the file is counted and
+/// reported as held rather than silently skipped.
+#[derive(Debug, Default)]
+pub struct TakeoutReport {
+    pub dirs: usize,
+    pub labelled: usize,
+    pub reviews: usize,
+    pub places_created: usize,
+    pub places_existing: usize,
+    pub proposals_written: usize,
+    pub proposals_existing: usize,
+    pub commute_files_held: usize,
+    pub features_skipped: usize,
+}
+
+/// The person a Maps label names, or `None` for the user's own anchors. Google
+/// fixes the literal labels `Home` and `Work`; every other label is one the
+/// user typed, and in this corpus those name other people's addresses
+/// ("Marinas Home", "Bryan"). A trailing ` Home`/` Work` qualifier is
+/// dropped; the remainder stays VERBATIM — no possessive stripping, because
+/// "Lars Home" must not become "Lar". A wrong person string costs a dismissed
+/// proposal at review (PRD §8.2); a silently mangled name would cost a wrong
+/// register row.
+pub fn takeout_person_label(label: &str) -> Option<String> {
+    let trimmed = label.trim();
+    if trimmed.eq_ignore_ascii_case("home") || trimmed.eq_ignore_ascii_case("work") {
+        return None;
+    }
+    let person = trimmed
+        .strip_suffix(" Home")
+        .or_else(|| trimmed.strip_suffix(" Work"))
+        .unwrap_or(trimmed)
+        .trim();
+    (!person.is_empty()).then(|| person.to_string())
+}
+
+/// `[lon, lat]` per the GeoJSON spec — the reverse of `Place`'s field order.
+fn geojson_point(feature: &Value) -> Option<(f64, f64)> {
+    let coordinates = feature.get("geometry")?.get("coordinates")?.as_array()?;
+    let longitude = coordinates.first()?.as_f64()?;
+    let latitude = coordinates.get(1)?.as_f64()?;
+    Some((latitude, longitude))
+}
+
+fn geojson_features(body: &str) -> Fallible<Vec<Value>> {
+    let value: Value = serde_json::from_str(body)?;
+    Ok(value
+        .get("features")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default())
+}
+
+fn takeout_labelled(
+    store: &PlacesStore,
+    body: &str,
+    today: &str,
+    report: &mut TakeoutReport,
+) -> Fallible<()> {
+    for feature in geojson_features(body)? {
+        let properties = feature.get("properties").cloned().unwrap_or(Value::Null);
+        let Some(name) = properties.get("name").and_then(Value::as_str) else {
+            report.features_skipped += 1;
+            continue;
+        };
+        let Some((latitude, longitude)) = geojson_point(&feature) else {
+            report.features_skipped += 1;
+            continue;
+        };
+        report.labelled += 1;
+        let external_ref = format!("takeout:labelled:{name}");
+        let place = Place {
+            id: stable_id("place", &external_ref),
+            name: name.to_string(),
+            kind: "address".into(),
+            address: properties
+                .get("address")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            city: None,
+            country_code: None,
+            latitude: Some(latitude),
+            longitude: Some(longitude),
+            source: "takeout".into(),
+            external_ref: Some(external_ref.clone()),
+        };
+        if store.upsert_place(&place, today)? {
+            report.places_created += 1;
+        } else {
+            report.places_existing += 1;
+        }
+        if let Some(person) = takeout_person_label(name) {
+            // 9000 bp: the user typed this label into Maps themselves — it is
+            // curation, not derivation — but confirmation stays with the human
+            // (PLC-7), so the row still enters as `proposed`.
+            let id = stable_id("pp", &format!("takeout-labelled:{person}:{name}"));
+            if store.propose_person_place(
+                &id, &person, &place.id, None, None, 9000, "takeout", today,
+            )? {
+                report.proposals_written += 1;
+            } else {
+                report.proposals_existing += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn takeout_reviews(
+    store: &PlacesStore,
+    body: &str,
+    today: &str,
+    report: &mut TakeoutReport,
+) -> Fallible<()> {
+    for feature in geojson_features(body)? {
+        let properties = feature.get("properties").cloned().unwrap_or(Value::Null);
+        let location = properties.get("location").cloned().unwrap_or(Value::Null);
+        let Some(name) = location.get("name").and_then(Value::as_str) else {
+            report.features_skipped += 1;
+            continue;
+        };
+        let Some((latitude, longitude)) = geojson_point(&feature) else {
+            report.features_skipped += 1;
+            continue;
+        };
+        report.reviews += 1;
+        // The maps URL carries Google's stable place id and is the one
+        // identity two exports of the same review agree on. The review text
+        // and rating stay in the export — they are not place attributes.
+        let external_ref = properties
+            .get("google_maps_url")
+            .and_then(Value::as_str)
+            .map(|url| format!("takeout:review:{url}"))
+            .unwrap_or_else(|| format!("takeout:review:{name}:{latitude:.4},{longitude:.4}"));
+        let place = Place {
+            id: stable_id("place", &external_ref),
+            name: name.to_string(),
+            kind: "venue".into(),
+            address: location
+                .get("address")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            city: None,
+            country_code: location
+                .get("country_code")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            latitude: Some(latitude),
+            longitude: Some(longitude),
+            source: "takeout".into(),
+            external_ref: Some(external_ref),
+        };
+        if store.upsert_place(&place, today)? {
+            report.places_created += 1;
+        } else {
+            report.places_existing += 1;
+        }
+    }
+    Ok(())
+}
+
+pub fn takeout_from(store: &PlacesStore, dir: &Path, today: &str) -> Fallible<TakeoutReport> {
+    let mut report = TakeoutReport::default();
+    report.dirs = 1;
+    let labelled = dir.join("Labelled places.json");
+    if labelled.is_file() {
+        takeout_labelled(store, &std::fs::read_to_string(&labelled)?, today, &mut report)?;
+    }
+    let reviews = dir.join("Reviews.json");
+    if reviews.is_file() {
+        takeout_reviews(store, &std::fs::read_to_string(&reviews)?, today, &mut report)?;
+    }
+    if dir.join("Commute routes.json").is_file() {
+        report.commute_files_held += 1;
+    }
+    Ok(report)
+}
+
+pub fn takeout(store: &PlacesStore, today: &str) -> Fallible<()> {
+    let root = axon_config::overlay_root()
+        .ok_or("AXON_PERSONAL_ROOT is not set; Takeout exports live in the private overlay")?
+        .join("data/places/import/raw");
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+        .map_err(|_| format!("raw import directory {} does not exist", root.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("takeout-"))
+        })
+        .collect();
+    if dirs.is_empty() {
+        return Err(format!("no takeout-* directory under {}", root.display()).into());
+    }
+    dirs.sort();
+    let mut total = TakeoutReport::default();
+    for dir in &dirs {
+        let report = takeout_from(store, dir, today)?;
+        total.dirs += report.dirs;
+        total.labelled += report.labelled;
+        total.reviews += report.reviews;
+        total.places_created += report.places_created;
+        total.places_existing += report.places_existing;
+        total.proposals_written += report.proposals_written;
+        total.proposals_existing += report.proposals_existing;
+        total.commute_files_held += report.commute_files_held;
+        total.features_skipped += report.features_skipped;
+    }
+    println!(
+        "backfill takeout: {} export dir(s), {} labelled places, {} reviews, \
+         {} places created, {} already present, {} register proposals written, \
+         {} already present, {} feature(s) without name or point (skipped), \
+         {} commute-route file(s) HELD — raw route traces sit against the \
+         README's \"No GPS trace\" ruling and are not imported",
+        total.dirs,
+        total.labelled,
+        total.reviews,
+        total.places_created,
+        total.places_existing,
+        total.proposals_written,
+        total.proposals_existing,
+        total.features_skipped,
+        total.commute_files_held,
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1550,6 +1789,36 @@ mod tests {
         // Vienna to Darmstadt: several hundred kilometres, never "nearby".
         let far = haversine_km((48.1849, 16.3673), (49.8920, 8.6480));
         assert!(far > 500.0, "got {far}");
+    }
+
+    #[test]
+    fn google_fixed_labels_are_the_users_own_anchors() {
+        assert_eq!(takeout_person_label("Home"), None);
+        assert_eq!(takeout_person_label("Work"), None);
+        assert_eq!(takeout_person_label("home"), None);
+    }
+
+    #[test]
+    fn a_typed_label_names_a_person_verbatim() {
+        // The qualifier drops; the name is NOT de-possessivized — "Marinas"
+        // stays "Marinas" (review fixes identity), "Lars Home" must not
+        // become "Lar".
+        assert_eq!(
+            takeout_person_label("Marinas Home"),
+            Some("Marinas".into())
+        );
+        assert_eq!(takeout_person_label("Bryan Work"), Some("Bryan".into()));
+        assert_eq!(takeout_person_label("Bryan"), Some("Bryan".into()));
+        assert_eq!(takeout_person_label("Lars Home"), Some("Lars".into()));
+    }
+
+    #[test]
+    fn geojson_points_arrive_lon_lat_and_leave_lat_lon() {
+        let feature = json!({
+            "geometry": { "coordinates": [16.3673, 48.1849], "type": "Point" }
+        });
+        assert_eq!(geojson_point(&feature), Some((48.1849, 16.3673)));
+        assert_eq!(geojson_point(&json!({"geometry": {}})), None);
     }
 }
 
@@ -1870,5 +2139,61 @@ mod db_tests {
         let place = store.place(&place_id).unwrap().unwrap();
         assert_eq!(place.name, "10.9876,9.8765");
         assert_eq!(place.kind, "address");
+    }
+
+    #[test]
+    fn takeout_labels_become_places_and_person_labels_only_propose() {
+        let (store, path) = open_test_store("takeout");
+        let dir = path.parent().unwrap().join("takeout-19700101");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Labelled places.json"),
+            r#"{"type":"FeatureCollection","features":[
+                {"geometry":{"coordinates":[7.0,50.0],"type":"Point"},
+                 "properties":{"address":"Musterweg 1, Musterstadt","name":"Home"}},
+                {"geometry":{"coordinates":[7.1,50.1],"type":"Point"},
+                 "properties":{"address":"Beispielgasse 2, Musterstadt","name":"Maxims Home"}}
+            ]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("Reviews.json"),
+            r#"{"type":"FeatureCollection","features":[
+                {"geometry":{"coordinates":[7.2,50.2],"type":"Point"},
+                 "properties":{"google_maps_url":"http://maps.example/?cid=42",
+                     "location":{"address":"Marktplatz 3","country_code":"DE","name":"Synthetic Market"},
+                     "date":"2025-10-31T19:02:16Z","five_star_rating_published":5}}
+            ]}"#,
+        )
+        .unwrap();
+        // A commute file is counted as held, never parsed.
+        std::fs::write(dir.join("Commute routes.json"), "{}").unwrap();
+
+        let report = takeout_from(&store, &dir, "2026-09-02").unwrap();
+        assert_eq!(report.labelled, 2);
+        assert_eq!(report.reviews, 1);
+        assert_eq!(report.places_created, 3);
+        assert_eq!(report.proposals_written, 1);
+        assert_eq!(report.commute_files_held, 1);
+
+        // PLC-7: the person label produced a `proposed` row for the person
+        // verbatim; nothing entered `confirmed`.
+        let proposed = store.person_places_in_state("proposed").unwrap();
+        assert_eq!(proposed.len(), 1);
+        assert_eq!(proposed[0].person, "Maxims");
+        assert!(store.person_places_in_state("confirmed").unwrap().is_empty());
+        let venue = store
+            .place_by_external_ref("takeout:review:http://maps.example/?cid=42")
+            .unwrap()
+            .unwrap();
+        assert_eq!(venue.kind, "venue");
+        assert_eq!(venue.country_code.as_deref(), Some("DE"));
+
+        // Second run: same stable ids, nothing duplicated.
+        let again = takeout_from(&store, &dir, "2026-09-02").unwrap();
+        assert_eq!(again.places_created, 0);
+        assert_eq!(again.places_existing, 3);
+        assert_eq!(again.proposals_written, 0);
+        assert_eq!(again.proposals_existing, 1);
     }
 }

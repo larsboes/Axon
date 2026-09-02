@@ -138,6 +138,14 @@ and reports counts.
   descriptions, geocode city names, write city links.
 - `backfill stations` — resolve coordinates for the EVA codes present in
   `transit.trips`/`transit.trip_legs` through transit's HAFAS suggest surface.
+- `backfill takeout` — import the Google Takeout exports staged in the
+  overlay (`data/places/import/raw/takeout-<yyyymmdd>/`, the finance raw-export
+  convention): labelled places become `address` rows, own reviews become
+  `venue` rows keyed on the maps URL, and person-labelled addresses ("Marinas
+  Home") additionally write `proposed` register rows — proposals only, the
+  human confirms every row per D4. A `Commute routes.json` in the export is
+  counted and reported as held, never parsed: raw route traces sit against
+  "No GPS trace" below.
 - `backfill travelers` — write `proposed` register rows from the travelers
   named on non-archived `trips.plans`, one per traveler × plan (PRD §8.2;
   proposals only, the human confirms every row per D4).
