@@ -566,7 +566,9 @@ start_process() {
         [ -n "$_dep_health" ] && _want="healthy"
         _waited=0
         while [ "$_waited" -lt 30 ]; do
-          "$0" status "$dep" 2>/dev/null | head -1 | grep -q "$_want" && break
+          # `case` over the captured line, not `grep -q`: under `set -o pipefail` -q exits the
+          # moment it matches, and a producer still writing then fails the pipeline (tools/pipe.test.sh).
+          case "$("$0" status "$dep" 2>/dev/null | head -1)" in *"$_want"*) break ;; esac
           sleep 1
           _waited=$((_waited + 1))
         done
