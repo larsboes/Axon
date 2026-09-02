@@ -52,8 +52,11 @@ tracker holds nothing, and no automation creates entries in it.
   Verify in a `git worktree` of origin/main, not in place.
 - **C3** — sweeps run `rg --no-ignore --hidden --follow`; plain `rg` honours `.gitignore`
   and hides most of the private overlay's `config/`.
-- **C4** — `service-runner.sh status` prints the DECLARED image tag; `container list`
-  prints the running one. Only the second answers what is actually running.
+- **C4** — `service-runner.sh status` prints the DECLARED image tag; the runtime prints
+  the running one (`docker ps --format '{{.Names}} {{.Image}}'`, or `docker inspect <name>
+  --format '{{.Config.Image}}'` for a stopped one). Only the second answers what is actually
+  running — `report_arg_drift` compares ports, mounts, caps and network, never the image.
+  Was `container list` until Q_CONTAINER retired apple-container on 2026-09-02.
 
 ## Goal
 
