@@ -28,8 +28,10 @@ It is one of four values of `event_route.route` on an opportunity (`local`,
 `travel_candidate`, `online`, `unresolved`), produced by `classify_opportunity` /
 `classify_ranked` in `capabilities/scouting/src/event_route.rs`. There is no
 `/travel_candidate` path, and no query parameter narrows to it: scouting's `DiscoverParams`
-accepts `adapter`, `location`, `query`, `limit` and `opp_embeddings`, and nothing else
-(`capabilities/scouting/src/server.rs`).
+accepts `adapter`, `location`, `query` and `limit`, and nothing else
+(`capabilities/scouting/src/server.rs`). `opp_embeddings` was a fifth parameter until it was
+removed as a path-injection sink; the embedding file is named by the config key
+`opp_embeddings_path` or the `--opp-embeddings` CLI flag, never by a request.
 
 Narrow client-side, or let `bun tools/travel.ts candidates` do it: the narrowing happens inside
 `assessTravelCandidates`, which is the one implementation.
