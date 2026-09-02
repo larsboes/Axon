@@ -31,4 +31,4 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
-reqwest = { version = "0.12", features = ["json", "gzip", "blocking"] }
+reqwest = { version = "0.13", features = ["json", "gzip", "blocking"] }
