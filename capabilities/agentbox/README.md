@@ -215,6 +215,12 @@ gid, which is why they do not land as a foreign uid 1000.
 writes `<overlay>/data/agentbox/host/installed.json` recording which version landed, verified
 against which sha256, on what day.
 
+The receipt's `verified` field says which run did the hashing, because a `host-install` whose
+resolved version is already on disk installs nothing and therefore hashes nothing. It reads
+`this-run` after an install or a `--force`, `earlier-run` when the digest was carried over from
+the previous receipt for the same release, and `unknown` — with an empty `sha256` — when there
+was no such receipt to carry it from.
+
 What it enforces:
 
 | Check | Kind | Source of the rule |

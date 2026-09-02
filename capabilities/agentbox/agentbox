@@ -429,6 +429,19 @@ upstream_repo() {
 
 HOST_ROOT_DEFAULT() { printf '%s' "$DATA/host"; }
 
+# The sha256 the previous receipt recorded, but only when it names the release this run
+# resolved — same agent, version, os and arch. Empty for anything else, including no receipt
+# at all and a receipt written before `verified` existed. Never fails: an unreadable or
+# non-JSON receipt is the same answer as no receipt, and neither is a reason to refuse an
+# install that already succeeded.
+prior_receipt_sha() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  jq -r --arg a "$AGENT" --arg v "$VERSION" --arg o "$OS" --arg r "$ARCH" \
+    'select(.agent == $a and .version == $v and .os == $o and .arch == $r) | .sha256 // empty' \
+    "$f" 2>/dev/null || true
+}
+
 cmd_host_install() {
   force=0
   while [ $# -gt 0 ]; do
@@ -493,8 +506,22 @@ cmd_host_install() {
   # The receipt. Which release is on this host, verified against which digest, on what day —
   # the fact the deleted profile literal used to carry, recorded where it describes THIS
   # machine instead of the repository.
-  printf '{"at":"%s","agent":"%s","version":"%s","os":"%s","arch":"%s","sha256":"%s","url":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$AGENT" "$VERSION" "$OS" "$ARCH" "$ARCHIVE_SHA" "$ARCHIVE_URL" \
+  #
+  # `verified` names WHICH RUN did the hashing, because the two paths above differ. An install
+  # hashes the archive here and now. The already-installed path hashes nothing, and ARCHIVE_SHA
+  # is set only inside fetch_archive — printing a digest anyway would claim a check that did
+  # not run, and reading the unset variable under `set -u` killed this script after it had
+  # already relinked `current` and `bin/<agent>` (found 2026-09-02, Q_DEPIN). The digest is
+  # carried over from the previous receipt for the same release instead, and stays empty when
+  # there is none: an empty sha256 with verified="unknown" reads as unknown, which it is.
+  verified="this-run"
+  if [ -z "${ARCHIVE_SHA:-}" ]; then
+    verified="earlier-run"
+    ARCHIVE_SHA="$(prior_receipt_sha "$host_root/installed.json")"
+    [ -n "$ARCHIVE_SHA" ] || verified="unknown"
+  fi
+  printf '{"at":"%s","agent":"%s","version":"%s","os":"%s","arch":"%s","sha256":"%s","verified":"%s","url":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$AGENT" "$VERSION" "$OS" "$ARCH" "$ARCHIVE_SHA" "$verified" "$ARCHIVE_URL" \
     > "$host_root/installed.json"
 
   echo
