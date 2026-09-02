@@ -21,6 +21,42 @@ const FIND_URL: &str = "https://www.meetup.com/find/";
 // than disguised as a normal identifying UA.
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
+/// A cache file name component that cannot leave the cache directory.
+///
+/// `city` and `keyword` arrive from the HTTP `location` and `query` parameters
+/// (`server.rs` builds `SearchQuery` from them), and `fetch_page` used to
+/// interpolate them straight into a file name -- so `../../etc/passwd` chose
+/// the file that was read and the file that was written. CodeQL
+/// rust/path-injection reported all three sites. Private to this adapter
+/// because it is the only one that names a cache file from a variable: the
+/// others use a constant (`conferences.yml`, `upcoming.json`) or resolve the
+/// key to an id first (`luma.rs` `resolve_city_id`, which errors on an
+/// unknown city rather than echoing it).
+fn cache_slug(s: &str) -> String {
+    let mut out = String::with_capacity(s.len().min(64));
+    for c in s.chars().flat_map(|c| c.to_lowercase()) {
+        if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            // A run of rejected characters collapses to one '-'; a leading run
+            // is dropped. `/` never survives, so the result is one component.
+            out.push('-');
+        }
+        if out.len() >= 64 {
+            break;
+        }
+    }
+    // Dots are trimmed at the ends as well as separators: `.` and `..` are legal
+    // file names by the rule above and are exactly the two that mean "somewhere
+    // else", and a leading dot would otherwise hide the cache file.
+    let trimmed = out.trim_matches(|c| c == '-' || c == '.');
+    if trimmed.is_empty() {
+        "_".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 pub struct MeetupAdapter {
     pub cache_dir: Option<PathBuf>,
 }
@@ -46,7 +82,11 @@ impl MeetupAdapter {
         let url = format!("{FIND_URL}?source=EVENTS&keywords={query}&location={loc}");
 
         if let Some(ref dir) = self.cache_dir {
-            let cache_path = dir.join(format!("meetup_{city}_{query}.json"));
+            let cache_path = dir.join(format!(
+                "meetup_{}_{}.json",
+                cache_slug(city),
+                cache_slug(&query)
+            ));
             if cache_path.exists() {
                 return std::fs::read_to_string(&cache_path)
                     .map_err(|e| SourceError::Fetch(format!("cache read: {e}")));
@@ -69,7 +109,13 @@ impl MeetupAdapter {
 
         if let Some(ref dir) = self.cache_dir {
             std::fs::create_dir_all(dir).ok();
-            let cache_path = dir.join(format!("meetup_{city}_{query}.json"));
+            // Slugged the same way as the read above, or the two disagree about
+            // which file this page is.
+            let cache_path = dir.join(format!(
+                "meetup_{}_{}.json",
+                cache_slug(city),
+                cache_slug(&query)
+            ));
             std::fs::write(&cache_path, &body).ok();
         }
 
@@ -271,6 +317,32 @@ fn chrono_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_slug_keeps_the_name_inside_one_directory() {
+        assert_eq!(cache_slug("Berlin"), "berlin");
+        assert_eq!(cache_slug("San Francisco"), "san-francisco");
+        // The three shapes the alert was about.
+        for hostile in ["../../etc/passwd", "/etc/passwd", "..\\..\\windows"] {
+            let slug = cache_slug(hostile);
+            assert!(!slug.contains('/'), "{hostile} -> {slug}");
+            assert!(!slug.contains('\\'), "{hostile} -> {slug}");
+            assert!(!slug.starts_with('.'), "{hostile} -> {slug}");
+        }
+        assert_eq!(cache_slug(".."), "_");
+        assert_eq!(cache_slug("."), "_");
+        assert_eq!(cache_slug("///"), "_");
+        assert_eq!(cache_slug(""), "_");
+        assert!(cache_slug(&"a".repeat(200)).len() <= 64);
+    }
+
+    #[test]
+    fn cache_slug_agrees_between_the_read_and_the_write() {
+        // fetch_page slugs twice, once per site. Idempotence is what makes the
+        // two calls name the same file.
+        let once = cache_slug("Berlin / Mitte");
+        assert_eq!(cache_slug(&once), once);
+    }
 
     #[test]
     fn extract_json_finds_blob() {
