@@ -47,8 +47,9 @@ config_dir_env = "PI_CODING_AGENT_DIR"
 # decisions). An `extensions/` directory here, if present, is copied alongside them.
 render = ["AGENTS.md", "models.json"]
 
-# Startup network operations (model-catalog refresh, telemetry, update check) would
-# hang for their full timeout on a host-only network. Off by default, both ways.
+# Startup network operations (model-catalog refresh, telemetry, update check) have
+# nothing to reach in the default `--network none` box, and are calls nobody asked for
+# in an --online one. Off by default, both ways.
 env_offline   = "PI_OFFLINE=1"
 env_telemetry = "PI_TELEMETRY=0"
 

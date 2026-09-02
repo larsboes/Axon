@@ -50,6 +50,6 @@ LABEL dev.axon.archive-sha256="${ARCHIVE_SHA256}"
 USER agent
 WORKDIR /workspace
 
-# The container IS the agent: everything appended to `container run` becomes its
+# The container IS the agent: everything appended to `docker run` becomes its
 # arguments. The config directory arrives as a mount, never baked in.
 ENTRYPOINT ["/usr/local/bin/agent"]
