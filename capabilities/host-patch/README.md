@@ -16,6 +16,12 @@ and what it holds is the order of the steps, the guard in front of each one, and
 
 ## What it does not upgrade, and why
 
+Casks that ship their own updater ARE upgraded, since 2026-09-02: `brew upgrade --cask
+--greedy` (Q_DEPIN). Without `--greedy` brew skips every cask marked `auto_updates` or
+`version :latest` and reports success over them, which is a patch run that patches nothing and
+says it did. A cask that must stay put is a `brew pin` — one owner, one mechanism, the same
+rule the paragraph below states.
+
 `bun` and `uv` both have self-update verbs, and neither is called. Both are Homebrew formulae on
 this host (`toolchain.toml` `[bun]`, `[uv]`), so `brew upgrade --formula` already moves them, and
 two owners of one binary is a failure this deployment has already paid for: a `~/.local/bin`
