@@ -31,7 +31,7 @@ serde_json = "1.0"
 rusqlite = { version = "0.40", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors"] }
 schemars = "1.2.2"
 # Was loopback-only with no TLS backend; the Kiwi flight adapter (kiwi.rs)
 # speaks HTTPS to mcp.kiwi.com, so the default TLS stack is back in. Version
