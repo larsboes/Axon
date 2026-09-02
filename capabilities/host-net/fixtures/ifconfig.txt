@@ -16,5 +16,5 @@ utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280
 	nd6 options=201<PERFORMNUD,DAD>
 bridge100: flags=8a63<UP,BROADCAST,SMART,RUNNING,ALLMULTI,SIMPLEX,MULTICAST> mtu 1500
 	ether 02:00:5e:00:53:02
-	inet 198.51.100.1 netmask 0xfffffe00 broadcast 198.51.101.255
+	inet 198.51.100.1 netmask 0xffffff00 broadcast 198.51.100.255
 	nd6 options=201<PERFORMNUD,DAD>

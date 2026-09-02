@@ -4,7 +4,7 @@
 //! go wrong are "the command is not here" and "the command refused". Both must be named rather
 //! than turned into an empty result: an exposure report that says nothing because a tool was
 //! missing reads exactly like a host with nothing exposed
-//! (Packs/axon/shared-failure-policy.md).
+//! (Packs/axon/skills/axon/references/shared-failure-policy.md).
 
 use std::process::Command;
 

@@ -71,7 +71,7 @@ about; a read command that might write is not a read command.
 ## Machine facts live in the overlay
 
 Every process name is in `<overlay>/config/host-net-policy.toml`; this capability's code
-contains none (README.md#generic-in-axon-specific-in-the-overlay). Shape:
+contains none (README.md#public-core-and-private-overlays). Shape:
 `schemas/host-net-policy.toml.example`.
 
 Entries match on the executable's basename, never on a port. A mesh VPN is assigned fresh
@@ -110,9 +110,9 @@ puts their CLI on PATH with nothing registered.
 Bash is right there because the job is "run a package manager and set-diff the output". This
 job is four undocumented text formats — netstat's column layout, `socketfilterfw --listapps`,
 `ps`, `ifconfig` — parsed into one typed record that a second program reads as JSON. The
-parsers carry the argument, and they carry it in tests: `src/listen.rs` alone has eight over
-captured-output fixtures, including the two netstat process-field shapes that break every
-naive pattern. Awk would have to be right about the same things with no way to say so.
+parsers carry the argument, and they carry it in tests: `src/listen.rs` alone has nine, seven of
+them over captured-output fixtures, including the two netstat process-field shapes that break
+every naive pattern. Awk would have to be right about the same things with no way to say so.
 
 **A separate capability, not a verb on `host-watch`.** `capabilities/host-watch` is a
 scheduled job with no port whose README declines both a panel and a server; three interactive
