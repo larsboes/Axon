@@ -23,31 +23,31 @@
       "kind": "capability",
       "code": {
         "files": 3,
-        "nodes": 44
+        "nodes": 41
       }
     },
     {
       "name": "axon",
       "kind": "pack",
       "code": {
-        "files": 16,
-        "nodes": 66
+        "files": 13,
+        "nodes": 46
       }
     },
     {
       "name": "axon-config",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 30
+        "files": 2,
+        "nodes": 29
       }
     },
     {
       "name": "axon-server",
       "kind": "lib",
       "code": {
-        "files": 4,
-        "nodes": 51
+        "files": 3,
+        "nodes": 50
       }
     },
     {
@@ -59,16 +59,16 @@
         "port": "8082"
       },
       "code": {
-        "files": 12,
-        "nodes": 124
+        "files": 11,
+        "nodes": 123
       }
     },
     {
       "name": "axon-store",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 39
+        "files": 2,
+        "nodes": 38
       }
     },
     {
@@ -92,16 +92,16 @@
         "port": "8087"
       },
       "code": {
-        "files": 25,
-        "nodes": 568
+        "files": 24,
+        "nodes": 567
       }
     },
     {
       "name": "candidate-fingerprint",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 13
+        "files": 1,
+        "nodes": 12
       }
     },
     {
@@ -121,16 +121,16 @@
         "port": "8083"
       },
       "code": {
-        "files": 75,
-        "nodes": 1191
+        "files": 74,
+        "nodes": 1267
       }
     },
     {
       "name": "content-item",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 54
+        "files": 2,
+        "nodes": 68
       }
     },
     {
@@ -153,7 +153,7 @@
       },
       "code": {
         "files": 103,
-        "nodes": 600
+        "nodes": 626
       }
     },
     {
@@ -175,8 +175,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 18,
-        "nodes": 570
+        "files": 17,
+        "nodes": 569
       }
     },
     {
@@ -214,19 +214,23 @@
       }
     },
     {
-      "name": "host-audit",
-      "kind": "capability",
-      "code": {
-        "files": 2,
-        "nodes": 21
-      }
-    },
-    {
       "name": "host-firewall",
       "kind": "capability",
       "code": {
         "files": 2,
         "nodes": 19
+      }
+    },
+    {
+      "name": "host-patch",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 9
       }
     },
     {
@@ -245,8 +249,8 @@
       "name": "inference",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 89
+        "files": 2,
+        "nodes": 88
       }
     },
     {
@@ -256,6 +260,10 @@
         "kind": "process",
         "requires": [],
         "port": "8092"
+      },
+      "code": {
+        "files": 30,
+        "nodes": 535
       }
     },
     {
@@ -263,7 +271,7 @@
       "kind": "pack",
       "code": {
         "files": 11,
-        "nodes": 169
+        "nodes": 162
       }
     },
     {
@@ -308,8 +316,8 @@
       "name": "markdown-root",
       "kind": "lib",
       "code": {
-        "files": 5,
-        "nodes": 107
+        "files": 4,
+        "nodes": 106
       }
     },
     {
@@ -354,8 +362,8 @@
         "port": "8093"
       },
       "code": {
-        "files": 12,
-        "nodes": 211
+        "files": 11,
+        "nodes": 222
       }
     },
     {
@@ -375,16 +383,16 @@
         "port": "8085"
       },
       "code": {
-        "files": 12,
-        "nodes": 152
+        "files": 11,
+        "nodes": 151
       }
     },
     {
       "name": "route-manifest",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 22
+        "files": 2,
+        "nodes": 23
       }
     },
     {
@@ -392,7 +400,7 @@
       "kind": "spine",
       "code": {
         "files": 5,
-        "nodes": 1032
+        "nodes": 1040
       }
     },
     {
@@ -404,7 +412,7 @@
         "port": "8084"
       },
       "code": {
-        "files": 30,
+        "files": 29,
         "nodes": 525
       }
     },
@@ -433,8 +441,8 @@
         "port": "8088"
       },
       "code": {
-        "files": 19,
-        "nodes": 277
+        "files": 18,
+        "nodes": 276
       }
     },
     {
@@ -452,8 +460,8 @@
       "name": "station-time",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 16
+        "files": 2,
+        "nodes": 15
       }
     },
     {
@@ -472,16 +480,16 @@
       "name": "summarize",
       "kind": "lib",
       "code": {
-        "files": 4,
-        "nodes": 107
+        "files": 3,
+        "nodes": 106
       }
     },
     {
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 134,
-        "nodes": 1115
+        "files": 132,
+        "nodes": 1091
       }
     },
     {
@@ -493,8 +501,8 @@
         "port": "3000"
       },
       "code": {
-        "files": 12,
-        "nodes": 299
+        "files": 11,
+        "nodes": 298
       }
     },
     {
@@ -514,8 +522,8 @@
         "port": "8086"
       },
       "code": {
-        "files": 13,
-        "nodes": 241
+        "files": 12,
+        "nodes": 240
       }
     },
     {
@@ -535,8 +543,8 @@
         "port": "8094"
       },
       "code": {
-        "files": 10,
-        "nodes": 90
+        "files": 9,
+        "nodes": 89
       }
     },
     {
@@ -1315,6 +1323,11 @@
       "pin": "0.9.31"
     },
     {
+      "name": "grype",
+      "verdict": "adopt",
+      "pin": "v0.118.0"
+    },
+    {
       "name": "hledger",
       "verdict": "reject",
       "pin": "1.52.1"
@@ -1516,7 +1529,7 @@
     },
     {
       "name": "semgrep",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "1.168.0"
     },
     {
@@ -1576,7 +1589,7 @@
     },
     {
       "name": "trivy",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "v0.72.0"
     },
     {
@@ -1627,8 +1640,8 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 10583,
-    "external": 10,
+    "nodes": 11358,
+    "external": 71,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
