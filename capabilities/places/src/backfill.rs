@@ -1469,9 +1469,9 @@ fn takeout_labelled(
             // curation, not derivation — but confirmation stays with the human
             // (PLC-7), so the row still enters as `proposed`.
             let id = stable_id("pp", &format!("takeout-labelled:{person}:{name}"));
-            if store.propose_person_place(
-                &id, &person, &place.id, None, None, 9000, "takeout", today,
-            )? {
+            if store
+                .propose_person_place(&id, &person, &place.id, None, None, 9000, "takeout", today)?
+            {
                 report.proposals_written += 1;
             } else {
                 report.proposals_existing += 1;
@@ -1539,11 +1539,21 @@ pub fn takeout_from(store: &PlacesStore, dir: &Path, today: &str) -> Fallible<Ta
     report.dirs = 1;
     let labelled = dir.join("Labelled places.json");
     if labelled.is_file() {
-        takeout_labelled(store, &std::fs::read_to_string(&labelled)?, today, &mut report)?;
+        takeout_labelled(
+            store,
+            &std::fs::read_to_string(&labelled)?,
+            today,
+            &mut report,
+        )?;
     }
     let reviews = dir.join("Reviews.json");
     if reviews.is_file() {
-        takeout_reviews(store, &std::fs::read_to_string(&reviews)?, today, &mut report)?;
+        takeout_reviews(
+            store,
+            &std::fs::read_to_string(&reviews)?,
+            today,
+            &mut report,
+        )?;
     }
     if dir.join("Commute routes.json").is_file() {
         report.commute_files_held += 1;
@@ -1803,10 +1813,7 @@ mod tests {
         // The qualifier drops; the name is NOT de-possessivized — "Marinas"
         // stays "Marinas" (review fixes identity), "Lars Home" must not
         // become "Lar".
-        assert_eq!(
-            takeout_person_label("Marinas Home"),
-            Some("Marinas".into())
-        );
+        assert_eq!(takeout_person_label("Marinas Home"), Some("Marinas".into()));
         assert_eq!(takeout_person_label("Bryan Work"), Some("Bryan".into()));
         assert_eq!(takeout_person_label("Bryan"), Some("Bryan".into()));
         assert_eq!(takeout_person_label("Lars Home"), Some("Lars".into()));
@@ -2181,7 +2188,10 @@ mod db_tests {
         let proposed = store.person_places_in_state("proposed").unwrap();
         assert_eq!(proposed.len(), 1);
         assert_eq!(proposed[0].person, "Maxims");
-        assert!(store.person_places_in_state("confirmed").unwrap().is_empty());
+        assert!(store
+            .person_places_in_state("confirmed")
+            .unwrap()
+            .is_empty());
         let venue = store
             .place_by_external_ref("takeout:review:http://maps.example/?cid=42")
             .unwrap()
