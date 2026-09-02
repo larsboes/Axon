@@ -4,9 +4,19 @@
 # App.
 #
 # `cooldown: default-days: 0` is written out in EVERY block, and that is the ruling rather than
-# noise. Dependabot has held new releases for three days by default since 2026-07-14, so omitting
-# the key does not mean "no hold" — it silently reinstates the one this change deleted. Patch
-# first (README.md#patch-first): a hold that needs a human to end it is a hold that ends late.
+# noise. Dependabot applies a three-day cooldown to version updates even when `cooldown` is not
+# configured — GitHub's own options reference states it — so omitting the key does not mean "no
+# hold", it silently reinstates the one this change deleted. Patch first
+# (README.md#patch-first): a hold that needs a human to end it is a hold that ends late.
+#
+# ONE THING NOT VERIFIED, stated rather than left to be discovered. dependabot-core treats 0 as
+# "no cooldown" (Package::ReleaseCooldownOptions defaults every window to 0, and
+# Job::CooldownDefinition passes an explicit 0 straight through), but the community JSON schema
+# at json.schemastore.org/dependabot-2.0.json declares `default-days` minimum 1 while giving
+# `semver-patch-days` minimum 0. GitHub's config validator is closed, so whether it accepts 0 is
+# only answerable from the first run. CHECK IT: Insights -> Dependency graph -> Dependabot, on
+# the first run after this lands. A rejected config opens no pull requests at all, which is a
+# worse outcome than the three-day hold — if it is rejected, `default-days: 1` is the fallback.
 #
 # Daily, not weekly, for the same reason. A week-long batch is a week of unapplied security
 # fixes, and the grouping below is what keeps that from being one pull request per crate.
