@@ -121,8 +121,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 76,
-        "nodes": 1284
+        "files": 75,
+        "nodes": 1238
       }
     },
     {
@@ -152,8 +152,16 @@
         "port": "47117"
       },
       "code": {
-        "files": 103,
-        "nodes": 627
+        "files": 104,
+        "nodes": 628
+      }
+    },
+    {
+      "name": "extraction",
+      "kind": "lib",
+      "code": {
+        "files": 14,
+        "nodes": 195
       }
     },
     {
@@ -258,7 +266,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 89
+        "nodes": 90
       }
     },
     {
@@ -496,8 +504,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 134,
-        "nodes": 1098
+        "files": 136,
+        "nodes": 1105
       }
     },
     {
@@ -510,7 +518,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 299
+        "nodes": 298
       }
     },
     {
@@ -730,6 +738,16 @@
     },
     {
       "from": "comms",
+      "to": "extraction",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/comms/Cargo.toml"
+      ]
+    },
+    {
+      "from": "comms",
       "to": "inference",
       "kinds": [
         "cargo-dep"
@@ -766,6 +784,16 @@
       ],
       "evidence": [
         "capabilities/comms/Cargo.toml"
+      ]
+    },
+    {
+      "from": "extraction",
+      "to": "inference",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "libs/extraction/Cargo.toml"
       ]
     },
     {
@@ -1091,6 +1119,16 @@
     {
       "from": "transit",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/transit/Cargo.toml"
+      ]
+    },
+    {
+      "from": "transit",
+      "to": "extraction",
       "kinds": [
         "cargo-dep"
       ],
@@ -1658,8 +1696,8 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 11559,
-    "external": 73,
+    "nodes": 11680,
+    "external": 10,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
