@@ -160,7 +160,7 @@ pub fn extract_with_config(
     // so `unwrap_or` is the whole compatibility story.
     let source = document.markdown.as_deref().unwrap_or(&document.text);
     let mut ticket = parse_ticket_text(source, file_name);
-    ticket.backend = document.backend;
+    ticket.backend = document.producer;
     Ok(ticket)
 }
 

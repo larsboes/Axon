@@ -30,6 +30,17 @@ path = "src/server.rs"
 
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
+# The shared shape of "what a reader got out of a file"
+# (README.md#schemas-and-dependency-direction). This capability is the second
+# consumer that earned the promotion; before it, `document.rs` carried its own
+# `Document` struct saying the same thing under other names.
+#
+# `default-features = false` is deliberate and load-bearing: the default `xberg`
+# feature links the crate, and the whole reason `document.rs` drives the xberg
+# CLI as a subprocess is to keep a bundled Tesseract and an ONNX runtime out of
+# this capability's build. Taking that dependency by promotion would reverse a
+# decision made on purpose. See `src/document.rs`, "Shells out to the xberg CLI".
+axon-extraction = { path = "../../libs/extraction", default-features = false }
 axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }
 route-manifest = { path = "../../libs/route-manifest" }

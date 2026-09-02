@@ -28,9 +28,16 @@ Two levels. Callers only ever touch the second.
 
 - A **backend** is a server: an API shape (`openai` or `ollama`), a base URL, optionally a
   file to read a bearer key out of. Declared once.
-- A **role** is a job: `embedding`, `reranking`, `summarization`, or an explicitly named
+- A **role** is a job: `embedding`, `reranking`, `summarization`, `ocr`, or an explicitly named
   `cloud_*` task. It names a backend, the model on it, that model's input conventions, and
   optionally what the same job is called on another local runtime (`on_backend`).
+
+`ocr` is named above and declared nowhere. It is rung 3 of the extraction ladder
+(PRD Q63 → B30), `libs/extraction/src/ocr_role.rs` is its only caller, and no engine has
+cleared the frozen DE/EN corpus at `libs/extraction/eval/` — the same gate that admitted
+`multilingual-e5-base-mlx` and `bge-reranker-v2-m3-mlx` and rejected
+`multilingual-e5-small-mlx`. Declaring it early would point a real dispatch at an unmeasured
+model.
 
 ```rust
 let role = InferenceConfig::load(overlay_config).role("embedding");

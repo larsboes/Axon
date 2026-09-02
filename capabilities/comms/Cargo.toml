@@ -33,6 +33,11 @@ path = "src/redaction_eval_main.rs"
 
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
+# The readers this capability used to own, promoted at the second consumer
+# (README.md#schemas-and-dependency-direction). Default features on: this is the
+# consumer that wants the whole ladder, including the PDF rung, so the `xberg`
+# dependency moved with the code rather than staying here.
+axon-extraction = { path = "../../libs/extraction" }
 axon-inference = { path = "../../libs/inference" }
 axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }
@@ -66,4 +71,3 @@ base64 = "0.22"
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
-xberg = { version = "=1.0.5", features = ["html", "pdf"] }

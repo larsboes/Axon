@@ -17,6 +17,7 @@ members = [
     "libs/axon-store",
     "libs/candidate-fingerprint",
     "libs/content-item",
+    "libs/extraction",
     "libs/inference",
     "libs/markdown-root",
     "libs/route-manifest",

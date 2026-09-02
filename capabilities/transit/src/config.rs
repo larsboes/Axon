@@ -68,6 +68,12 @@ pub struct Config {
 }
 
 /// The readers a ticket file can go through.
+///
+/// These names are also what `document::read` reports back as
+/// `axon_extraction::Extraction::producer`, so a reply and this setting cannot
+/// disagree about which reader ran. Neither is registered in that crate's
+/// class registry: `for_class` answers "who reads a PDF", and this answers
+/// "which reader did the operator install", which is a different question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DocumentBackend {
     /// pdf_extract for PDFs, mailparse for .eml, raw bytes otherwise. No

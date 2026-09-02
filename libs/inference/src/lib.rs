@@ -15,9 +15,16 @@
 //!
 //! * A **backend** is a server: an API shape, a base URL, optionally a file to
 //!   read a bearer key out of. Declared once.
-//! * A **role** is a job: `embedding`, `reranking`, `summarization`, or an explicitly reviewed
-//!   `cloud_*` task. It names a backend, the
+//! * A **role** is a job: `embedding`, `reranking`, `summarization`, `ocr`, or an explicitly
+//!   reviewed `cloud_*` task. It names a backend, the
 //!   model on it, and that model's input conventions.
+//!
+//! `ocr` is named here and **declared nowhere**, on purpose. It is rung 3 of the extraction
+//! ladder (PRD Q63 -> B30) and `libs/extraction/src/ocr_role.rs` is its only caller. No engine
+//! has cleared the frozen DE/EN corpus at `libs/extraction/eval/`, which is the same gate
+//! `multilingual-e5-base-mlx` and `bge-reranker-v2-m3-mlx` cleared and
+//! `multilingual-e5-small-mlx` did not. Declaring the role before an engine clears it would
+//! point a real dispatch at an unmeasured model.
 //!
 //! A capability asks for a role. It never learns whether it just talked to
 //! oMLX or Ollama, which is the whole point: oMLX needs Metal and cannot exist
@@ -1038,6 +1045,16 @@ mod tests {
     #[test]
     fn an_undeclared_role_is_none_not_a_panic() {
         assert!(config().role("summarization").is_none());
+    }
+
+    #[test]
+    fn an_undeclared_ocr_role_resolves_to_nothing() {
+        // Rung 3 of the extraction ladder, absent BY CONTRACT rather than by
+        // accident. `libs/extraction/src/ocr_role.rs` degrades from this `None`;
+        // an engine may only be declared here after it clears the frozen corpus
+        // at libs/extraction/eval/, which is how the embedding and reranking
+        // models entered.
+        assert!(config().role("ocr").is_none());
     }
 
     #[test]

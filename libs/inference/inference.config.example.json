@@ -37,6 +37,7 @@
       "backend": "omlx",
       "model": "bge-reranker-v2-m3-mlx"
     },
+    "_comment_ocr": "The `ocr` role EXISTS as a name and is deliberately not declared below. It is rung 3 of the extraction ladder (PRD Q63 -> B30), reached only when rung 2's output trips libs/extraction/src/math.rs, and libs/extraction/src/ocr_role.rs refuses today with or without a declared role. The only way in is a passing record against the frozen DE/EN corpus at libs/extraction/eval/, on unchanged acceptance, reported on the notation verdict line -- the same gate multilingual-e5-base-mlx and bge-reranker-v2-m3-mlx cleared. Apple Vision's baseline there scores 100.0% prose and 58.8% notation, which is why rung 3 is a slot and not a model.",
     "summarization": {
       "backend": "omlx",
       "model": "mlx-community/gemma-4-26b-a4b-it-4bit",

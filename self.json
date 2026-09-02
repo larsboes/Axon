@@ -30,8 +30,8 @@
       "name": "axon",
       "kind": "pack",
       "code": {
-        "files": 16,
-        "nodes": 66
+        "files": 13,
+        "nodes": 46
       }
     },
     {
@@ -121,8 +121,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 75,
-        "nodes": 1191
+        "files": 74,
+        "nodes": 1222
       }
     },
     {
@@ -130,7 +130,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 54
+        "nodes": 69
       }
     },
     {
@@ -152,8 +152,16 @@
         "port": "47117"
       },
       "code": {
-        "files": 103,
-        "nodes": 600
+        "files": 104,
+        "nodes": 628
+      }
+    },
+    {
+      "name": "extraction",
+      "kind": "lib",
+      "code": {
+        "files": 14,
+        "nodes": 180
       }
     },
     {
@@ -246,7 +254,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 89
+        "nodes": 90
       }
     },
     {
@@ -256,6 +264,10 @@
         "kind": "process",
         "requires": [],
         "port": "8092"
+      },
+      "code": {
+        "files": 31,
+        "nodes": 536
       }
     },
     {
@@ -355,7 +367,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 211
+        "nodes": 223
       }
     },
     {
@@ -384,7 +396,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 22
+        "nodes": 24
       }
     },
     {
@@ -392,7 +404,7 @@
       "kind": "spine",
       "code": {
         "files": 5,
-        "nodes": 1032
+        "nodes": 1040
       }
     },
     {
@@ -405,7 +417,7 @@
       },
       "code": {
         "files": 30,
-        "nodes": 525
+        "nodes": 526
       }
     },
     {
@@ -480,8 +492,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 134,
-        "nodes": 1115
+        "files": 136,
+        "nodes": 1122
       }
     },
     {
@@ -494,7 +506,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 299
+        "nodes": 298
       }
     },
     {
@@ -714,6 +726,16 @@
     },
     {
       "from": "comms",
+      "to": "extraction",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/comms/Cargo.toml"
+      ]
+    },
+    {
+      "from": "comms",
       "to": "inference",
       "kinds": [
         "cargo-dep"
@@ -750,6 +772,16 @@
       ],
       "evidence": [
         "capabilities/comms/Cargo.toml"
+      ]
+    },
+    {
+      "from": "extraction",
+      "to": "inference",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "libs/extraction/Cargo.toml"
       ]
     },
     {
@@ -1065,6 +1097,16 @@
     {
       "from": "transit",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/transit/Cargo.toml"
+      ]
+    },
+    {
+      "from": "transit",
+      "to": "extraction",
       "kinds": [
         "cargo-dep"
       ],
@@ -1627,7 +1669,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 10583,
+    "nodes": 11533,
     "external": 10,
     "stale": [],
     "unmatched": [

@@ -13,31 +13,28 @@
 //! original path, kept because it needs no external binary.
 //!
 //! The two are not interchangeable and this deliberately does not pretend they
-//! are. `Document` carries `markdown` as an `Option`, because only a
+//! are. [`Extraction`] carries `markdown` as an `Option`, because only a
 //! layout-aware backend can produce one, and a caller that needs structure has
 //! to see its absence rather than be handed a flattened substitute.
+//!
+//! The RESULT type is `libs/extraction`'s, not this module's. It used to be a
+//! local `Document` struct saying the same three things — text, optional
+//! markdown, which reader produced it — under a second set of names, which is
+//! what made this capability the second consumer that promoted that crate out
+//! of `capabilities/comms` (README.md#schemas-and-dependency-direction). The
+//! two readers below stay here: they are this capability's, they key off a
+//! ticket's file extension, and which one runs is an operator setting rather
+//! than a property of the input class.
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
+use axon_extraction::Extraction;
+
 use crate::config::{Config, DocumentBackend};
 
-/// What a reader got out of a file.
-#[derive(Debug)]
-pub struct Document {
-    /// Plain text, always present.
-    pub text: String,
-    /// The same content with layout preserved, when the backend can do that.
-    /// `None` is a real answer: it means no structure was recovered, and a
-    /// caller must not treat `text` as though rows survived in it.
-    pub markdown: Option<String>,
-    /// Which reader produced this, so a reply can say so rather than leaving
-    /// the caller to guess why a table did or did not survive.
-    pub backend: &'static str,
-}
-
-pub fn read(bytes: &[u8], file_name: &str, config: &Config) -> Result<Document, String> {
+pub fn read(bytes: &[u8], file_name: &str, config: &Config) -> Result<Extraction, String> {
     match config.document_backend {
         DocumentBackend::Builtin => builtin(bytes, file_name),
         DocumentBackend::Xberg => xberg(bytes, file_name, &config.xberg_bin, &config.ocr_language),
@@ -53,7 +50,7 @@ fn extension_of(file_name: &str) -> String {
 }
 
 /// The original reader. No external dependency, no images, no layout.
-fn builtin(bytes: &[u8], file_name: &str) -> Result<Document, String> {
+fn builtin(bytes: &[u8], file_name: &str) -> Result<Extraction, String> {
     let text = match extension_of(file_name).as_str() {
         "pdf" => crate::extractor::extract_pdf_text(bytes)
             .map_err(|e| format!("PDF extraction failed: {e}"))?,
@@ -68,10 +65,13 @@ fn builtin(bytes: &[u8], file_name: &str) -> Result<Document, String> {
         }
         _ => String::from_utf8_lossy(bytes).to_string(),
     };
-    Ok(Document {
+    Ok(Extraction {
+        // A ticket file has no title of its own, and the confirmation's own
+        // subject line is the caller's to keep, not this reader's to invent.
+        title: None,
         text,
         markdown: None,
-        backend: "builtin",
+        producer: "builtin",
     })
 }
 
@@ -124,7 +124,7 @@ fn xberg(
     file_name: &str,
     binary: &str,
     ocr_language: &str,
-) -> Result<Document, String> {
+) -> Result<Extraction, String> {
     let temp = TempFile::write(bytes, &extension_of(file_name))?;
 
     let markdown = run_xberg(binary, &temp.0, "markdown", ocr_language)?;
@@ -134,10 +134,11 @@ fn xberg(
     let text =
         run_xberg(binary, &temp.0, "plain", ocr_language).unwrap_or_else(|_| markdown.clone());
 
-    Ok(Document {
+    Ok(Extraction {
+        title: None,
         text,
         markdown: Some(markdown),
-        backend: "xberg",
+        producer: "xberg",
     })
 }
 
@@ -221,7 +222,10 @@ mod tests {
         assert!(doc.text.contains("Bonn Hbf"));
         // No layout was recovered, and the absence is the honest answer.
         assert!(doc.markdown.is_none());
-        assert_eq!(doc.backend, "builtin");
+        // The producer name is the same string the overlay's
+        // `document_backend` setting uses, so a reply and a config file cannot
+        // disagree about which reader ran.
+        assert_eq!(doc.producer, "builtin");
     }
 
     #[test]

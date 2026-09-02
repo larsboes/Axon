@@ -532,6 +532,18 @@ name = "axon-config"
 version = "0.1.0"
 
 [[package]]
+name = "axon-extraction"
+version = "0.1.0"
+dependencies = [
+ "axon-inference",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "xberg",
+]
+
+[[package]]
 name = "axon-inference"
 version = "0.1.0"
 dependencies = [
@@ -1011,6 +1023,7 @@ name = "comms"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-extraction",
  "axon-inference",
  "axon-server",
  "axon-store",
@@ -1028,7 +1041,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tower-http 0.5.2",
- "xberg",
 ]
 
 [[package]]
@@ -5136,6 +5148,7 @@ name = "transit"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-extraction",
  "axon-server",
  "axon-store",
  "axum",

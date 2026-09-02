@@ -58,9 +58,46 @@ pub fn ranking_tier(mode: &str) -> &'static str {
     }
 }
 
+/// What the stored text is, relative to the document it came from.
+///
+/// Not a length judgement — `content_status` already answers that, and the two
+/// are independent: a long abstract is `full`/`Abstract`, a one-line article is
+/// `thin`/`FullText`.
+///
+/// Two variants, because two have producers. A third for "the source offered a
+/// card instead of the thing" would be inventing a taxonomy ahead of a caller
+/// that sets it.
+///
+/// It lives here rather than with the readers in `libs/extraction`, and the
+/// distinction is the point: this says whether the SOURCE offered the document
+/// or a stand-in. That is a fetch-policy judgement about the source, and no
+/// extractor can make it — the bytes look identical either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptSource {
+    /// The document itself: the article body, the README, the paper.
+    FullText,
+    /// A stand-in the source offered in place of the document.
+    Abstract,
+}
+
+impl TranscriptSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TranscriptSource::FullText => "full-text",
+            TranscriptSource::Abstract => "abstract",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transcript_source_names_what_was_read_not_how_long_it_was() {
+        assert_eq!(TranscriptSource::FullText.as_str(), "full-text");
+        assert_eq!(TranscriptSource::Abstract.as_str(), "abstract");
+    }
 
     #[test]
     fn tiers_have_one_explicit_order() {

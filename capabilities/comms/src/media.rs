@@ -14,10 +14,9 @@ use crate::config::Config;
 // name every fetch_* arm already reads by.
 use crate::extraction::{
     self, cap as cap_text, collapse_ws, decode_basic_entities, Document, InputClass,
-    TranscriptSource,
 };
 use crate::normalize;
-use crate::provenance::StageProvenance;
+use crate::provenance::{StageProvenance, TranscriptSource};
 use crate::store::{FeedItem, Store};
 use crate::{CommsError, Result};
 

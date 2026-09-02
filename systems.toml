@@ -134,6 +134,12 @@ kind  = "platform"
 local = "yes"
 why   = "OS-managed native embedding comparator for Comms, not the production relevance backend. Both revision-1 APIs are much lighter but failed the frozen DE/EN corpus: language-specific NLEmbedding scored 3/6 useful top-1, 0.500 pairwise and 0.699 mean nDCG at about 73 MiB runner RSS; mean-pooled shared Latin NLContextualEmbedding scored 4/6, 0.618 and 0.776 at about 85 MiB. Keep the harnesses for future macOS model revisions; E5-base through oMLX remains selected."
 
+[apple-vision]
+url   = "https://developer.apple.com/documentation/vision/vnrecognizetextrequest"
+kind  = "platform"
+local = "yes"
+why   = "the OS framework rung 2 of the extraction ladder stands on (PRD Q63 -> B30), reached through Axon's own tools/visocr (built by tools/visocr/build.sh; no toolchain.toml entry until a capability execs it). Measured against the frozen DE/EN corpus on 2026-09-02: 100.0% prose recall across four German and English pages at 0.14 s per page with zero model bytes, and 58.8% notation recall, because it does not corrupt a printed formula -- it deletes it and returns the surrounding prose as though the page had none. That split is why the ladder has a third rung; the record is libs/extraction/eval/results/2026-09-02-apple-vision-baseline.md. macOS-only, so on a Linux host this rung is absent and says so rather than being compiled away."
+
 [opencode-zen-go]
 url   = "https://opencode.ai/zen/go/v1"
 kind  = "service"

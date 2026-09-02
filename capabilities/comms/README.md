@@ -548,6 +548,17 @@ Routing and protocol live in `media.rs`; turning bytes into text lives behind
 `text`). The two were the same function until #77, which is how the same HTML
 stripper ended up written twice with two different bugs.
 
+The readers themselves moved out on 2026-09-02 (PRD Q63 → B30): they are
+`libs/extraction` now, promoted at the second real consumer
+(`capabilities/transit` reads ticket files through the same shape). `crate::extraction`
+is a re-export of that crate, so every call site here still reads the same, and
+the PDF rung arrives through its `xberg` feature, which this capability enables.
+What stayed: `normalize` (extraction produces raw, this produces clean, #86),
+`extraction_eval` (it scores the extractor→normalizer seam, which is a comms
+judgement), and `provenance::TranscriptSource`, which says whether the SOURCE
+offered the document or a stand-in — no reader can tell, since the bytes look
+identical either way.
+
 **An arXiv item stores the paper, not its abstract.** arXiv renders LaTeX
 submissions to HTML at `/html/<id>`, backfilled classics included, so
 `fetch_arxiv` reads the paper through the HTML implementation already here —

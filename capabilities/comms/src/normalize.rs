@@ -381,6 +381,45 @@ mod tests {
     }
 
     #[test]
+    fn html_extraction_hands_the_normalizer_line_structure() {
+        // The one test that crosses the extraction/normalize seam, so it stays
+        // on this side of it after the readers moved to `libs/extraction`:
+        // what it asserts is that this module's input still arrives shaped the
+        // way its rules need.
+        //
+        // The normalizer is a line predicate table, so extraction owes it
+        // lines. Collapsing a page to one paragraph made every rule
+        // unreachable and shipped LinkedIn's cookie banner as article text.
+        use crate::extraction::{Builtin, Document, Extractor};
+
+        let html = "<html><head><title>T</title></head><body>\
+            <nav><a href=\"/a\">Home</a><a href=\"/b\">Jobs</a></nav>\
+            <div id=\"consent\"><p>Accept all cookies</p>\
+            <p>Reject non-essential cookies</p></div>\
+            <article><p>Transit data should remain inspectable, which is the \
+            single claim this article exists to make.</p></article>\
+            </body></html>";
+
+        let out = Builtin.extract(&Document::html(html.as_bytes())).unwrap();
+        let clean = normalize(&out.text);
+
+        assert!(
+            !clean.text.contains("Accept all cookies"),
+            "consent banner survived normalization: {}",
+            clean.text
+        );
+        assert!(
+            clean
+                .text
+                .contains("Transit data should remain inspectable"),
+            "the article body must survive: {}",
+            clean.text
+        );
+        assert_eq!(out.title.as_deref(), Some("T"));
+        assert_eq!(out.producer, "builtin");
+    }
+
+    #[test]
     fn cookie_notice_goes_and_prose_about_cookies_stays() {
         let out = normalize(
             "We use cookies to improve your experience. Accept all\n\

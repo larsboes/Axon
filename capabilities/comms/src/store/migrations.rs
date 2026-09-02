@@ -429,7 +429,7 @@ fn feed_items_ddl(table: &str) -> String {
                 captured_via TEXT,
                 -- #78: what the stored text IS, as against how much of it there is.
                 -- Constrained, unlike captured_via, because this set is closed by
-                -- the enum that writes it (extraction::TranscriptSource).
+                -- the enum that writes it (provenance::TranscriptSource).
                 transcript_source TEXT NOT NULL DEFAULT 'unknown'
                     CHECK (transcript_source IN ('full-text','abstract','unknown')),
                 -- #77: producer provenance lives beside each stage value.

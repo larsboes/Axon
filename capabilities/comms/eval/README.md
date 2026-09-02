@@ -1,5 +1,15 @@
 # Comms quality evaluation
 
+## Not here: the OCR engine gate
+
+`libs/extraction/eval/` holds the frozen DE/EN corpus that decides which OCR engine may join the
+extraction ladder. It judges an **engine** — can this reader read a page at all — and both
+consumers of `libs/extraction` have to be able to cite it, so it lives beside the trait.
+
+This corpus stays here because it judges something else: the text passed from an extractor into
+`normalize`, which is a comms decision about comms text. The two are not substitutes and neither
+subsumes the other.
+
 ## Extraction and normalization
 
 `extraction-corpus.json` is the frozen, offline gate for the text passed from each

@@ -1,0 +1,57 @@
+[package]
+name = "axon-extraction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "One home for turning a fetched document into the text a consumer stores: an input class, an Extractor trait, and a cost-ordered registry."
+publish = false
+
+[lib]
+name = "axon_extraction"
+path = "src/lib.rs"
+
+# The frozen DE/EN corpus gate. Run by hand, never by `cargo test`: scoring is
+# hermetic and lives in `src/gate.rs`, while this half needs an OCR engine and a
+# host that has one. Same split as `comms-extraction-eval`.
+[[bin]]
+name = "extraction-gate"
+path = "src/gate_main.rs"
+
+[features]
+# The PDF rung is a feature, not a fact about this crate.
+#
+# Enabling it links the `xberg` crate, whose surface `upstreams.toml [xberg]`
+# measures at 320 unique crates with html+pdf on. `capabilities/transit` pays a
+# subprocess boundary specifically to keep that out of its build
+# (capabilities/transit/src/document.rs, "Shells out to the xberg CLI"), and it
+# is a consumer of this crate now. A dependency that arrived by promotion would
+# override a decision that capability made deliberately, so the consumer says
+# whether it wants the rung.
+#
+# On by default because a consumer that says nothing wants the whole ladder;
+# `capabilities/transit` is the one that opts out.
+default = ["xberg"]
+xberg = ["dep:xberg", "dep:tokio"]
+
+[dependencies]
+thiserror = "1.0"
+# Rung 3 asks for the `ocr` role. Every candidate for that rung is a model behind
+# a server, and "which model answers this job on this machine" already has one
+# home; a second answer is the defect that library exists to end. Not optional
+# and not feature-gated, unlike `xberg` below: this adds no crate to either
+# consumer's build that it did not already have (`axon-inference` links serde,
+# serde_json and reqwest, and `capabilities/comms` and `capabilities/transit`
+# each declare all three directly).
+axon-inference = { path = "../inference" }
+# The corpus gate reads its judgements from `eval/ocr-corpus.json` and writes a
+# recording back. Both are `serde`'s job, and both are already in every
+# consumer's tree.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+xberg = { version = "=1.0.5", features = ["html", "pdf"], optional = true }
+# `full` because that is what `capabilities/comms` carried when this code lived
+# there: `extract_blocking` calls `enable_all()`, which enables whichever
+# drivers are compiled in, so trimming the feature set here would silently give
+# xberg a runtime with fewer drivers than the one it was measured on.
+tokio = { version = "1", features = ["full"], optional = true }

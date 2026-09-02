@@ -147,9 +147,20 @@ required = "optional"
 needed_by = ["capability:comms"]
 version_cmd = "yt-dlp --version"
 min_version = "2026.08.19"
-why = "capabilities/comms/src/media.rs and extraction.rs exec it for share-link metadata and subtitles, always with --skip-download. Undeclared until 2026-08-29, so a host without it degraded silently — the same gap the macmon entry above records. Scoped to comms alone on purpose: this file is public, and a capability that keeps itself out of the public repo does not get its name and its intent published here by its dependency. Such a capability declares its own tools in its own preflight."
+why = "capabilities/comms/src/media.rs execs it for share-link metadata and subtitles, always with --skip-download. Undeclared until 2026-08-29, so a host without it degraded silently — the same gap the macmon entry above records. Scoped to comms alone on purpose: this file is public, and a capability that keeps itself out of the public repo does not get its name and its intent published here by its dependency. Such a capability declares its own tools in its own preflight."
 install_macos = "brew install yt-dlp"
 install_linux = "apt-get install -y yt-dlp   # or: uv tool install yt-dlp"
+
+# [visocr] is deliberately NOT declared here yet, and the two entries above are why. macmon and
+# yt-dlp are `capability:` entries because a capability execs those binaries; nothing in
+# capabilities/ reaches rung 2 of the extraction ladder today. libs/extraction/src/vision.rs execs
+# visocr and reports Unavailable when it is missing, naming tools/visocr/build.sh in the error, and
+# the only caller that gets that far is the corpus gate an operator runs by hand
+# (libs/extraction/eval/README.md). A `capability:comms` entry would put a standing
+# "visocr absent (optional)" on every macOS host with comms enabled, telling an operator to install
+# a binary no code path calls -- which is how a warning channel stops being read, the same reason
+# [hledger] and [bazel] were deleted above rather than kept. It gets an entry on the day a
+# capability execs it.
 
 [ollama]
 required = "optional"

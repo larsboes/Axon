@@ -1,0 +1,142 @@
+{
+  "_note": "Judgements were written from the .typ sources in fixtures/, before any engine was run against the rendered pages. Revise a judgement from what the page SAYS, never to turn a failing engine green (capabilities/comms/eval/README.md, 'Why this shape: judgements before scores').",
+  "_matching": "Every string below is matched after collapsing each run of whitespace to one space, on both sides. An OCR engine's line breaks are a fact about the renderer's line width, not about the characters it read, and this corpus judges the characters.",
+  "acceptance": {
+    "minimum_must_survive_percent": 100.0,
+    "maximum_must_not_survive": 0,
+    "maximum_forbidden_confusions": 0,
+    "require_detector_agreement": true
+  },
+  "fixtures": [
+    {
+      "id": "de-prose",
+      "language": "de",
+      "page_kind": "prose",
+      "source": "fixtures/de-prose.png",
+      "must_survive": [
+        "Fahrplanänderung im Fernverkehr",
+        "Köln Hbf",
+        "München Hbf",
+        "geänderte Streckenführung",
+        "Ausweichgleis entfällt",
+        "die Buchung selbst bleibt gültig",
+        "zweisprachig ausgegeben"
+      ],
+      "must_not_survive": [],
+      "forbidden_confusions": [],
+      "detector_rule": "must_not_fire"
+    },
+    {
+      "id": "en-prose",
+      "language": "en",
+      "page_kind": "prose",
+      "source": "fixtures/en-prose.png",
+      "must_survive": [
+        "Reading a document is not cleaning it",
+        "An extractor answers one question",
+        "belongs to a later stage",
+        "A cleaner that keeps a navigation bar has kept noise",
+        "invisible once the text has been stored"
+      ],
+      "must_not_survive": [],
+      "forbidden_confusions": [],
+      "detector_rule": "must_not_fire"
+    },
+    {
+      "id": "de-en-mixed",
+      "language": "de+en",
+      "page_kind": "mixed",
+      "source": "fixtures/de-en-mixed.png",
+      "must_survive": [
+        "Hinweis für Reisende",
+        "Notice to passengers",
+        "wegen Wartungsarbeiten bis Freitag gesperrt",
+        "Rampe am nördlichen Ende der Halle",
+        "closed for maintenance until Friday",
+        "ramp at the northern end of the hall"
+      ],
+      "must_not_survive": [],
+      "forbidden_confusions": [],
+      "detector_rule": "must_not_fire"
+    },
+    {
+      "id": "de-table",
+      "language": "de",
+      "page_kind": "table",
+      "source": "fixtures/de-table.png",
+      "_judgement": "Cells only. upstreams.toml [auge] already records that Vision returns text observations and hands a table back column-major, so ROW RECONSTRUCTION is a known loss and no threshold here pretends to score it. What this page asks is narrower and still decides adoption: does every cell survive as characters.",
+      "must_survive": [
+        "Ihre Verbindung",
+        "Datum",
+        "Bahnhof",
+        "29.08.",
+        "08:14",
+        "Köln Hbf",
+        "11:05",
+        "Frankfurt(M) Hbf",
+        "ICE 622",
+        "14:47",
+        "München Hbf",
+        "ICE 519"
+      ],
+      "must_not_survive": [],
+      "forbidden_confusions": [],
+      "detector_rule": "must_not_fire"
+    },
+    {
+      "id": "de-math",
+      "language": "de",
+      "page_kind": "math",
+      "source": "fixtures/de-math.png",
+      "_judgement": "The recorded failure, reconstructed. upstreams.toml [auge], 2026-08-31: Apple Vision read `=` as `-` on exactly this shape and expressed no fraction at all. The two strings under must_not_survive are that engine's literal wrong output, so this fixture fails on the signature that decided the ladder rather than on an aggregate that could hide it.",
+      "must_survive": [
+        "Elektrisches Feld einer Punktladung",
+        "q = 10 nC",
+        "d = 2 cm",
+        "Die Feldstärke im Abstand",
+        "und mit dem Coulombgesetz",
+        "Die Arbeit längs eines Weges ist",
+        "π",
+        "∫",
+        "∑"
+      ],
+      "_judgement_revision": "REVISED 2026-09-02, after the first run and recorded as a revision rather than made quietly: the judgements above name only inline text, so they could not see that the DISPLAYED equations were absent from the output altogether. Reading a formula sheet means returning its operators; the three below are on the page per fixtures/de-math.typ and are judged from it. Acceptance thresholds were not touched, and this revision makes the corpus stricter, never a failing engine greener.",
+      "must_not_survive": ["q- 10nC", "d-2am"],
+      "forbidden_confusions": [
+        {
+          "expected": "=",
+          "read_as": "-",
+          "why": "a relation read as a hyphen turns an equation into a subtraction that parses, so the page is stored as plausible-looking wrong text rather than as a failure"
+        }
+      ],
+      "detector_rule": "must_fire_when_notation_failed"
+    },
+    {
+      "id": "en-math",
+      "language": "en",
+      "page_kind": "math",
+      "source": "fixtures/en-math.png",
+      "_judgement": "The same notation on the language Vision was NOT weak on, so a miss here cannot be attributed to German.",
+      "must_survive": [
+        "Sample statistics",
+        "n = 12",
+        "s = 4 mm",
+        "The mean of the sample is",
+        "standard error of that mean",
+        "∑",
+        "√",
+        "±"
+      ],
+      "_judgement_revision": "REVISED 2026-09-02, after the first run and recorded as a revision rather than made quietly: the judgements above name only inline text, so they could not see that the DISPLAYED equations were absent from the output altogether. Reading a formula sheet means returning its operators; the three below are on the page per fixtures/en-math.typ and are judged from it. Acceptance thresholds were not touched, and this revision makes the corpus stricter, never a failing engine greener.",
+      "must_not_survive": [],
+      "forbidden_confusions": [
+        {
+          "expected": "=",
+          "read_as": "-",
+          "why": "same relation-as-hyphen confusion, checked against this page's own judged strings"
+        }
+      ],
+      "detector_rule": "must_fire_when_notation_failed"
+    }
+  ]
+}
