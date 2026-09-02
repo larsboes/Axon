@@ -23,7 +23,7 @@
       "kind": "capability",
       "code": {
         "files": 3,
-        "nodes": 44
+        "nodes": 39
       }
     },
     {
@@ -121,8 +121,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 74,
-        "nodes": 1222
+        "files": 76,
+        "nodes": 1284
       }
     },
     {
@@ -152,16 +152,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 104,
-        "nodes": 628
-      }
-    },
-    {
-      "name": "extraction",
-      "kind": "lib",
-      "code": {
-        "files": 14,
-        "nodes": 180
+        "files": 103,
+        "nodes": 627
       }
     },
     {
@@ -222,19 +214,31 @@
       }
     },
     {
-      "name": "host-audit",
-      "kind": "capability",
-      "code": {
-        "files": 2,
-        "nodes": 21
-      }
-    },
-    {
       "name": "host-firewall",
       "kind": "capability",
       "code": {
         "files": 2,
         "nodes": 19
+      }
+    },
+    {
+      "name": "host-net",
+      "kind": "capability",
+      "code": {
+        "files": 10,
+        "nodes": 112
+      }
+    },
+    {
+      "name": "host-patch",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 9
       }
     },
     {
@@ -254,7 +258,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 90
+        "nodes": 89
       }
     },
     {
@@ -417,7 +421,7 @@
       },
       "code": {
         "files": 30,
-        "nodes": 526
+        "nodes": 530
       }
     },
     {
@@ -492,8 +496,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 136,
-        "nodes": 1122
+        "files": 134,
+        "nodes": 1098
       }
     },
     {
@@ -506,7 +510,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 298
+        "nodes": 299
       }
     },
     {
@@ -726,16 +730,6 @@
     },
     {
       "from": "comms",
-      "to": "extraction",
-      "kinds": [
-        "cargo-dep"
-      ],
-      "evidence": [
-        "capabilities/comms/Cargo.toml"
-      ]
-    },
-    {
-      "from": "comms",
       "to": "inference",
       "kinds": [
         "cargo-dep"
@@ -772,16 +766,6 @@
       ],
       "evidence": [
         "capabilities/comms/Cargo.toml"
-      ]
-    },
-    {
-      "from": "extraction",
-      "to": "inference",
-      "kinds": [
-        "cargo-dep"
-      ],
-      "evidence": [
-        "libs/extraction/Cargo.toml"
       ]
     },
     {
@@ -842,6 +826,16 @@
       ],
       "evidence": [
         "capabilities/finance/Cargo.toml"
+      ]
+    },
+    {
+      "from": "host-net",
+      "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/host-net/Cargo.toml"
       ]
     },
     {
@@ -1106,16 +1100,6 @@
     },
     {
       "from": "transit",
-      "to": "extraction",
-      "kinds": [
-        "cargo-dep"
-      ],
-      "evidence": [
-        "capabilities/transit/Cargo.toml"
-      ]
-    },
-    {
-      "from": "transit",
       "to": "route-manifest",
       "kinds": [
         "cargo-dep"
@@ -1253,7 +1237,7 @@
     },
     {
       "name": "apple-container",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "1.2.2"
     },
     {
@@ -1355,6 +1339,11 @@
       "name": "graphify",
       "verdict": "adopt",
       "pin": "0.9.31"
+    },
+    {
+      "name": "grype",
+      "verdict": "adopt",
+      "pin": "v0.118.0"
     },
     {
       "name": "hledger",
@@ -1558,7 +1547,7 @@
     },
     {
       "name": "semgrep",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "1.168.0"
     },
     {
@@ -1618,7 +1607,7 @@
     },
     {
       "name": "trivy",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "v0.72.0"
     },
     {
@@ -1669,8 +1658,8 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 11533,
-    "external": 10,
+    "nodes": 11559,
+    "external": 73,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",

@@ -18,10 +18,10 @@ set -uo pipefail
 fails=0
 fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 
-# bun is what holds a real port, so the stop/start half of this file needs it and the
-# apple-container half does not. Skipped rather than fatal, matching protection-zones.test.sh:
-# on a host with no bun, refusing to run at all would mean the runtime-gate regression below
-# never executes (#127). The skip is printed, never silent.
+# bun is what holds a real port, so the stop/start half of this file needs it and the rest of
+# the file does not. Skipped rather than fatal, matching protection-zones.test.sh: on a host
+# with no bun, refusing to run at all would mean every check below never executes (#127). The
+# skip is printed, never silent.
 HAVE_BUN=1
 command -v bun >/dev/null 2>&1 || HAVE_BUN=0
 
@@ -35,6 +35,7 @@ cleanup() {
   rm -f /tmp/axon-porthog.pid /tmp/axon-porthog.maintenance
   rm -f /tmp/axon-inferhog.pid /tmp/axon-inferhog.maintenance
   rm -f /tmp/axon-inferhog.log /tmp/axon-inferhog.err
+  rm -f /tmp/axon-dockhog.maintenance
 }
 trap cleanup EXIT
 
@@ -234,94 +235,95 @@ seen="$(inference_backend_seen)"
 [ "$seen" = "<unset>" ] \
   || fail "a machine declaring no [inference] backend still exported one (saw '$seen')"
 
-# --- the runtime gate must precede every runtime call (#125) ----------------
-# apple-container's apiserver is a separate launchd XPC service. When it is down, every
-# `container` call fails with "XPC connection error", and ensure_runtime exists to revive it.
-# It used to run inside start_service, after container_prepare had already reached
-# container_init -- which issues `container volume create` for a managed_volume capability.
-# Under `set -e` that call aborted the run before the recovery it was supposed to trigger, so a
-# Mac whose apiserver went down never came back on its own. Observed 2026-08-07: postgres stayed
-# down for 90 watchdog cycles, and punctuality crash-looped against it the whole time.
+# The runtime gate that stood here until 2026-09-02 (Q75) guarded #125: a dead
+# apple-container apiserver aborted start_service before ensure_runtime could revive it, so a
+# Mac whose apiserver went down never came back on its own. Both the gate and the runtime are
+# gone, and the failure has no mechanism left -- docker and podman daemons own their own
+# lifecycle. The fixture went with it: a synthetic `volhog` capability declaring
+# managed_volume = "true", whose only real consumer (postgres) retired 2026-08-27 under PRD Q45.
+
+# --- start_service branches on three container states, not two -----------------------------
+# The gate above was the only case that ever drove start_service for a kind = "container"
+# capability, so retiring it left the running/stopped/absent branch with no falsifier on any
+# runtime. This replaces the coverage rather than the gate: the mechanism #125 guarded is gone,
+# the three states are not.
 #
-# Asserted as an ordering over the runtime's own call log rather than as an exit code, because
-# `start` can exit 0 for reasons that have nothing to do with the fix.
-AC_ROOT="$SCRATCH/ac"
-AC_OVERLAY="$SCRATCH/ac-overlay"
-AC_BIN="$SCRATCH/ac-bin"
-CALL_LOG="$SCRATCH/container-calls.log"
-RUNTIME_STATE="$SCRATCH/apiserver-state"
+# What each state must NOT do is the point. Re-issuing `run` against a running container is the
+# error watchdog.sh discarded its own output over (30s cycles, forever); issuing `run` instead of
+# `start` for a stopped one builds a second container over the same declared mounts. Asserted
+# over the runtime's own call log, because `start` exits 0 in all three.
+DK_ROOT="$SCRATCH/dk"
+DK_OVERLAY="$SCRATCH/dk-overlay"
+DK_BIN="$SCRATCH/dk-bin"
+DK_LOG="$SCRATCH/docker-calls.log"
+DK_STATE="$SCRATCH/docker-state"        # absent | stopped | running
 
-mkdir -p "$AC_ROOT/tools/lib" "$AC_OVERLAY/config" "$AC_BIN" "$AC_ROOT/capabilities/volhog"
-cp "$SRC_TOOLS/service-runner.sh" "$SRC_TOOLS/capability.sh" "$AC_ROOT/tools/"
-cp "$SRC_TOOLS"/lib/*.sh "$AC_ROOT/tools/lib/"
-printf 'overlay = "%s"\n' "$AC_OVERLAY" > "$AC_ROOT/axon.toml"
-printf 'os = "darwin"\ncontainer_runtime = "apple-container"\ncapabilities = ["volhog"]\n' \
-  > "$AC_OVERLAY/config/machine.toml"
+mkdir -p "$DK_ROOT/tools/lib" "$DK_OVERLAY/config" "$DK_BIN" "$DK_ROOT/capabilities/dockhog"
+cp "$SRC_TOOLS/service-runner.sh" "$SRC_TOOLS/capability.sh" "$DK_ROOT/tools/"
+cp "$SRC_TOOLS"/lib/*.sh "$DK_ROOT/tools/lib/"
+printf 'overlay = "%s"\n' "$DK_OVERLAY" > "$DK_ROOT/axon.toml"
+printf 'os = "darwin"\ncontainer_runtime = "docker"\ncapabilities = ["dockhog"]\n' \
+  > "$DK_OVERLAY/config/machine.toml"
+: > "$DK_OVERLAY/config/dockhog.env"
 
-# managed_volume is what makes container_init call the runtime at all. postgres was the only
-# capability that declared it, and the only one that got stuck; it was retired on 2026-08-27,
-# so this fixture is the whole of that coverage now — the image name below is the one the
-# behaviour was observed against, not a manifest that still exists.
-cat > "$AC_ROOT/capabilities/volhog/service.toml" <<'TOML'
-name = "volhog"
-image = "postgres"
-tag = "16-alpine"
-volumes = ["data/volhog/data:/var/lib/postgresql/data"]
-managed_volume = "true"
+# The image reference carries a registry that is NOT Docker Hub, which is the second thing this
+# fixture falsifies: qualified_image prefixed every short name with `docker.io/` for
+# apple-container, and a ghcr reference came out as docker.io/ghcr.io/… (capabilities/home-assistant/service.toml).
+# The prefix is gone; this asserts the reference reaches the runtime as the manifest wrote it.
+cat > "$DK_ROOT/capabilities/dockhog/service.toml" <<'TOML'
+name = "dockhog"
+image = "ghcr.io/example/dockhog"
+tag = "1.2.3"
+ports = ["127.0.0.1:8899:8899"]
+volumes = ["data/dockhog:/data"]
+env_file = "config/dockhog.env"
 TOML
 
-# The stand-in apiserver. It starts down, records every call, and refuses everything except
-# `system start`/`system status` until it is revived — which is exactly what the real one does.
-echo stopped > "$RUNTIME_STATE"
-cat > "$AC_BIN/container" <<SHIM
+# The stand-in runtime. It answers only the two questions start_service asks — is it running,
+# does it exist — from a state file the test sets, and records every call it is given.
+cat > "$DK_BIN/docker" <<SHIM
 #!/bin/bash
-echo "\$*" >> "$CALL_LOG"
+echo "\$*" >> "$DK_LOG"
+_state="\$(cat "$DK_STATE")"
 case "\$1 \${2:-}" in
-  "system status")
-    if [ "\$(cat "$RUNTIME_STATE")" = running ]; then echo "status             running"
-    else echo "apiserver is not running and not registered with launchd"; fi
-    exit 0 ;;                       # exits 0 in both states, like the real CLI
-  "system start")
-    echo running > "$RUNTIME_STATE"; exit 0 ;;
-esac
-if [ "\$(cat "$RUNTIME_STATE")" != running ]; then
-  echo 'Error: interrupted: "XPC connection error: Connection invalid"' >&2
-  echo "Ensure container system service has been started with \\\`container system start\\\`." >&2
-  exit 1
-fi
-case "\$1 \${2:-}" in
-  "volume inspect") exit 1 ;;       # absent, so the create path runs
-  "volume create")  exit 0 ;;
-  "list "*|list)    echo '[]'; exit 0 ;;
-  "run "*|run)      exit 0 ;;
+  "ps --format") [ "\$_state" = running ] && echo dockhog ;;      # \`ps\` lists RUNNING only
+  "ps -a")       [ "\$_state" = absent ]  || echo dockhog ;;      # \`ps -a\` lists existing
 esac
 exit 0
 SHIM
-chmod +x "$AC_BIN/container"
+chmod +x "$DK_BIN/docker"
 
-PATH="$AC_BIN:$PATH" "$AC_ROOT/tools/service-runner.sh" start volhog >/dev/null 2>&1
-ac_rc=$?
+dk_start() {  # <state> — run \`start dockhog\` against a runtime in that state
+  : > "$DK_LOG"
+  echo "$1" > "$DK_STATE"
+  PATH="$DK_BIN:$PATH" "$DK_ROOT/tools/service-runner.sh" start dockhog >/dev/null 2>&1
+}
+dk_calls() { tr '\n' '|' < "$DK_LOG"; }
 
-[ -f "$CALL_LOG" ] || fail "the runtime was never called at all — this run proved nothing"
-first_volume="$(grep -n '^volume ' "$CALL_LOG" | head -1 | cut -d: -f1)"
-first_start="$(grep -n '^system start' "$CALL_LOG" | head -1 | cut -d: -f1)"
+dk_start running
+grep -q '^run ' "$DK_LOG"   && fail "start re-ran an already-running container: $(dk_calls)"
+grep -q '^start ' "$DK_LOG" && fail "start re-started an already-running container: $(dk_calls)"
 
-# The falsifier. Before the fix, `volume create` ran first and `set -e` killed the run there,
-# so `system start` never appeared in this log at all.
-if [ -z "$first_start" ]; then
-  fail "the apiserver was never started; calls were: $(tr '\n' '|' < "$CALL_LOG")"
-elif [ -n "$first_volume" ] && [ "$first_volume" -lt "$first_start" ]; then
-  fail "a volume call preceded the runtime gate (volume at line $first_volume, start at $first_start)"
-fi
-[ "$ac_rc" -eq 0 ] || fail "start failed against a recoverable apiserver; rc=$ac_rc"
+dk_start stopped
+grep -qx 'start dockhog' "$DK_LOG" \
+  || fail "an existing stopped container was not started by name: $(dk_calls)"
+grep -q '^run ' "$DK_LOG" \
+  && fail "start built a second container over an existing one: $(dk_calls)"
 
-# The control: with the apiserver already up, the gate must not restart it.
-: > "$CALL_LOG"
-echo running > "$RUNTIME_STATE"
-PATH="$AC_BIN:$PATH" "$AC_ROOT/tools/service-runner.sh" start volhog >/dev/null 2>&1
-if grep -q '^system start' "$CALL_LOG"; then
-  fail "the gate restarted an apiserver that was already running"
-fi
+dk_start absent
+dk_run_line="$(grep '^run ' "$DK_LOG" | head -1)"
+[ -n "$dk_run_line" ] || fail "an absent container was never created: $(dk_calls)"
+case "$dk_run_line" in
+  *"--restart unless-stopped"*) : ;;
+  *) fail "the created container carries no restart policy, which is what watchdog.sh now leans on: $dk_run_line" ;;
+esac
+case "$dk_run_line" in
+  *"ghcr.io/example/dockhog:1.2.3") : ;;
+  *) fail "the run did not end with the declared image reference: $dk_run_line" ;;
+esac
+case "$dk_run_line" in
+  *docker.io/*) fail "a registry prefix was added to a reference that already names one: $dk_run_line" ;;
+esac
 
 # --- kind = "data": a file, not a process (PRD Q45) -----------------------------------------
 # capabilities/store declares the shared SQLite database so ONE manifest owns its backup

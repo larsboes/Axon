@@ -1,0 +1,6 @@
+Netid  State   Recv-Q  Send-Q   Local Address:Port    Peer Address:Port  Process
+tcp    LISTEN  0       4096     0.0.0.0:22            0.0.0.0:*          users:(("sshd",pid=812,fd=3))
+tcp    LISTEN  0       4096     127.0.0.1:8021        0.0.0.0:*          users:(("example-agent",pid=901,fd=7))
+tcp6   LISTEN  0       4096     [::]:22               [::]:*             users:(("sshd",pid=812,fd=4))
+tcp    LISTEN  0       244      192.0.2.10:5432       0.0.0.0:*
+udp    UNCONN  0       0        0.0.0.0:5353          0.0.0.0:*          users:(("avahi-daemon",pid=451,fd=12))

@@ -9,7 +9,7 @@
 name    = "pi"
 version = "0.83.0"
 
-# The upstreams.toml section that owns the verdict, the pin and the cooldown for this agent.
+# The upstreams.toml section that owns the verdict and the pin for this agent.
 # Declared rather than derived from `name`: the section is named for the package
 # (pi-coding-agent), the profile for the command (pi), and guessing across that gap is how a
 # gate ends up asking GitHub about the wrong repository. `agentbox host-install` reads it to
@@ -18,7 +18,7 @@ upstream = "pi-coding-agent"
 
 # The upstream verbs that replace the binary in place. Intercepted by the host shim, because
 # a self-update is the one command that walks past every gate in this repo: the pin, the
-# checksum, the advisory check and the cooldown all describe a version the machine is no
+# checksum and the advisory check both describe a version the machine is no
 # longer running. Declared per profile rather than hardcoded — a different agent spells it
 # differently, and an unlisted verb must reach upstream unchanged (Axon#126).
 self_update_verbs = ["update", "upgrade", "self-update"]
@@ -47,8 +47,9 @@ config_dir_env = "PI_CODING_AGENT_DIR"
 # decisions). An `extensions/` directory here, if present, is copied alongside them.
 render = ["AGENTS.md", "models.json"]
 
-# Startup network operations (model-catalog refresh, telemetry, update check) would
-# hang for their full timeout on a host-only network. Off by default, both ways.
+# Startup network operations (model-catalog refresh, telemetry, update check) have
+# nothing to reach in the default `--network none` box, and are calls nobody asked for
+# in an --online one. Off by default, both ways.
 env_offline   = "PI_OFFLINE=1"
 env_telemetry = "PI_TELEMETRY=0"
 

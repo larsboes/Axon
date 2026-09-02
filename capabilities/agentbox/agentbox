@@ -1,5 +1,5 @@
 #!/bin/bash
-# capabilities/agentbox/agentbox — run a coding agent inside a disposable micro-VM.
+# capabilities/agentbox/agentbox — run a coding agent inside a disposable container.
 # Portable shell only (README.md#portable-shell) — no bash-4-only syntax.
 set -euo pipefail
 
@@ -19,11 +19,16 @@ Usage:
   agentbox build [--no-cache]        # fetch + verify the agent archive, build the image
   agentbox doctor                    # runtime, network, image, config, model endpoint
   agentbox shell [--project <dir>]   # a bash prompt in the same box, no agent
-  agentbox host-install [--force]    # install the pinned agent on the HOST, through the gate
-  agentbox gate [<version>]          # the gate alone: cooldown, no install
+  agentbox host-install [--force]    # install the pinned agent on the HOST, checksummed
 
 Without --project the current directory is mounted. That is the only host path the
-box can see; --online swaps the host-only network for one with internet.
+box can see.
+
+Two network modes, and there is no third one on docker (Q75):
+  default    --network none: loopback and nothing else. No DNS, no route, and NO
+             model endpoint either — the agent cannot answer in this mode.
+  --online   the default bridge: the internet, and the model server on the host
+             at host.docker.internal. This is the only mode the agent works in.
 
 host-install places the same pinned, checksummed release the box runs, plus a shim that
 refuses the agent's own self-update verbs — that path is how this machine once moved past
@@ -45,7 +50,6 @@ require_config() {
 
   VERSION="$(toml_get version "$PROFILE")"
   IMAGE="agentbox-$AGENT:$VERSION"
-  NETWORK="$(toml_get network "$CONFIG")"; NETWORK="${NETWORK:-agentbox}"
   AGENT_DIR="$DATA/$AGENT"
   CACHE="$DATA/cache"
 
@@ -68,11 +72,21 @@ require_config() {
   ARCHIVE_NAME="$AGENT-$VERSION-$OS-$ARCH.tar.gz"
 }
 
+# docker only, and podman is refused by name rather than accepted untested. The two CLIs
+# agree on `run`, `build` and `image inspect`, but this capability's claim is isolation and
+# nothing here has measured podman's. It also spells the host `host.containers.internal`,
+# which model_base_url below would have to branch on. tools/service-runner.sh still takes
+# podman, where the claim is only that a container runs.
+#
+# `command -v docker` earns its line on macOS: OrbStack installs the CLI at
+# ~/.orbstack/bin/docker, which a login shell has on PATH and a launchd or cron environment
+# does not.
 require_runtime() {
-  [ "$AXON_CONTAINER_RUNTIME" = "apple-container" ] \
-    || die "container_runtime is '$AXON_CONTAINER_RUNTIME'; agentbox needs apple-container (its host-only network and per-container VM are the boundary)"
-  command -v container >/dev/null 2>&1 || die "'container' not found — install the signed .pkg from github.com/apple/container/releases"
-  container system status >/dev/null 2>&1 || die "container runtime is not running — 'container system start'"
+  [ "$AXON_CONTAINER_RUNTIME" = "docker" ] \
+    || die "container_runtime is '$AXON_CONTAINER_RUNTIME'; agentbox needs docker (Q75 retired apple-container on 2026-09-02; podman's network semantics are unmeasured here)"
+  command -v docker >/dev/null 2>&1 \
+    || die "'docker' not found on PATH — OrbStack installs it at ~/.orbstack/bin/docker, which a non-login environment does not have (PATH=$PATH)"
+  docker info >/dev/null 2>&1 || die "the docker daemon is not answering — start it ('open -a OrbStack' for OrbStack)"
 }
 
 # The model API key never reaches a command line or this script's environment as a
@@ -92,28 +106,48 @@ read_api_key() {
 }
 
 # --- network ---------------------------------------------------------------
+#
+# Two modes and no third one. Measured 2026-09-02 on this Mac, docker 29.4.0 / OrbStack
+# 2.2.3, from the debian-trixie agentbox image:
+#
+#   --network none      only `lo`, no route table at all. TCP to 1.1.1.1:443 fails in
+#                       under 1 ms with ENETUNREACH; a DNS lookup fails in ~2 ms rather
+#                       than burning a timeout, so no --dns flag is needed. The host is
+#                       unreachable too, and that is the cost.
+#   default bridge      192.168.215.0/24 with a default route: the whole internet, plus
+#                       the Mac at host.docker.internal (0.250.250.254 here).
+#
+# There is nothing between them. `docker network create --internal` blocks egress and the
+# host alike: no default route, no host.docker.internal, host-gateway unreachable. That is
+# what apple-container's host-only network did give — its gateway WAS the Mac — and it is
+# the property Q75 traded away. See capabilities/agentbox/README.md.
+#
+# `--add-host host.docker.internal:host-gateway` is redundant on OrbStack, which publishes
+# the name itself, and is what makes the same launcher work on a plain Linux daemon, which
+# does not. Cheap, and it keeps one spelling of the host in this file.
+MODEL_HOST="host.docker.internal"
+ONLINE_NET_ARGS="--network bridge --add-host $MODEL_HOST:host-gateway"
+# One spelling per mode, because `doctor` proves the closed mode by RUNNING this string. A
+# second literal there would let the check stay green while cmd_run handed the box a network.
+OFFLINE_NET_ARGS="--network none"
 
-ensure_network() {
-  if ! container network ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$NETWORK"; then
-    echo "agentbox: creating host-only network '$NETWORK'"
-    container network create --internal "$NETWORK" >/dev/null
-  fi
-}
-
-gateway_ip() {  # the host, as seen from inside that network
-  container network inspect "$NETWORK" 2>/dev/null \
-    | sed -n 's/.*"ipv4Gateway"[^"]*"\([^"]*\)".*/\1/p' | head -n1
-}
-
-# Ask the endpoint for a status line from inside a throwaway box. Done this way, and
-# not with a curl from the host, because a host-only network's bridge interface only
-# exists while a container is attached to it: the host cannot reach that gateway when
-# nothing is running, however healthy the server is. Empty output means no answer.
+# Ask the endpoint for a status line from inside a throwaway box, on the same network an
+# --online box gets. From inside and not with a curl from the host, because the question is
+# whether a CONTAINER can reach the server — a host-side curl answers whether the server is
+# up, which is a different thing and passes when the server is bound to loopback only.
+# Empty output means no answer.
+#
+# Stated because it changed on 2026-09-02 (Q75): this probe now runs on the OPEN
+# network. Under apple-container it ran on the host-only one and could not leave the Mac; the
+# bridge has full egress, so a `model_base_url` override naming an off-machine endpoint makes
+# `agentbox doctor` send one request there. The probe must share the box's network to answer
+# the question at all, and there is no closed docker network that still reaches the host.
 probe_model() {
   url="$1"
   hostport="${url#http://}"; hostport="${hostport%%/*}"
   host="${hostport%%:*}"; port="${hostport##*:}"
-  container run --rm --network "$NETWORK" --dns 127.0.0.1 \
+  # shellcheck disable=SC2086
+  docker run --rm $ONLINE_NET_ARGS \
     --entrypoint /bin/bash "$IMAGE" -c "
       exec 3<>/dev/tcp/$host/$port 2>/dev/null || exit 1
       printf 'GET /v1/models HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n' '$hostport' >&3
@@ -121,13 +155,14 @@ probe_model() {
     " 2>/dev/null | tr -d '\r' | grep '^HTTP/' | head -n1
 }
 
+# One endpoint, rendered the same way in both modes. The offline box gets a URL it cannot
+# reach, and its rendered network statement says exactly that — which is honest, where a
+# second URL per mode would only move the surprise later.
 model_base_url() {
   override="$(toml_get model_base_url "$CONFIG")"
   if [ -n "$override" ]; then echo "$override"; return; fi
   port="$(toml_get model_port "$CONFIG")"; port="${port:-8000}"
-  gw="$(gateway_ip)"
-  [ -n "$gw" ] || die "could not read the gateway of network '$NETWORK'"
-  echo "http://$gw:$port/v1"
+  echo "http://$MODEL_HOST:$port/v1"
 }
 
 # --- build -----------------------------------------------------------------
@@ -161,11 +196,10 @@ cmd_build() {
     esac
   done
   fetch_archive
-  ensure_network
   # The build context is the archive cache, so the 100 MB agent tarball is the only
   # thing shipped to the builder — not the whole repo.
   # shellcheck disable=SC2086
-  container build $no_cache \
+  docker build $no_cache \
     --tag "$IMAGE" \
     --file "$_dir/Containerfile" \
     --build-arg "AGENT_NAME=$AGENT" \
@@ -242,23 +276,29 @@ cmd_run() {
     "$HOME"|/) die "refusing to mount '$project' — point --project at one project, not your home" ;;
   esac
 
-  container image inspect "$IMAGE" >/dev/null 2>&1 || die "no image $IMAGE — run 'agentbox build'"
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || die "no image $IMAGE — run 'agentbox build'"
 
   if [ "$online" -eq 1 ]; then
-    net_args="--network default"
-    statement="this box has internet access (--online). Treat every outbound call as something you must be able to justify."
+    net_args="$ONLINE_NET_ARGS"
+    statement="this box has internet access (--online), and it is also the only mode in which the model endpoint on the host answers. Treat every outbound call as something you must be able to justify."
   else
-    ensure_network
-    # Not --no-dns: that makes the runtime fall back to its built-in 1.1.1.1, which is
-    # unreachable here, so every lookup burns its full timeout. Pointing the resolver at
-    # the box's own loopback fails in ~1 ms instead (measured 2026-07-28).
-    net_args="--network $NETWORK --dns 127.0.0.1"
-    statement="none, except the model endpoint on the host. There is no DNS and no route off this machine — git push, package installs and web fetches will fail, and that is intended."
+    net_args="$OFFLINE_NET_ARGS"
+    statement="none at all. This box has no network interface but loopback: no DNS, no route off the machine, and no model endpoint either. git push, package installs, web fetches AND model calls all fail. That is intended; --online is the mode that has a model."
+    # Said out loud rather than discovered when the agent's first turn errors. The default
+    # is still the closed one: the safe mode losing a capability is not a reason to make
+    # the open mode the one you get by not thinking about it.
+    [ "$entry_shell" -eq 1 ] \
+      || echo "agentbox: offline box — the model at $(model_base_url) is NOT reachable from it. Use 'agentbox run --online' for a working agent (Q75)." >&2
   fi
 
   render_config_dir "$statement"
 
   config_dir="$(toml_get config_dir "$PROFILE")"
+  # --memory is a hard cgroup limit and the box sees it. --cpus is a CFS quota and the box
+  # does NOT: measured 2026-09-02, `--cpus 4` leaves `nproc` reporting all 12 host cores
+  # while cpu.max says 400000/100000. Anything inside that sizes its own parallelism off
+  # nproc will over-subscribe and get throttled rather than refused. apple-container gave
+  # the box a VM with the declared vCPU count, so this is a behaviour change, not a bug.
   cpus="$(toml_get cpus "$CONFIG")"; cpus="${cpus:-4}"
   memory="$(toml_get memory "$CONFIG")"; memory="${memory:-4G}"
 
@@ -285,8 +325,11 @@ cmd_run() {
   tty_args="--interactive"
   [ -t 0 ] && tty_args="--interactive --tty"
 
+  # `exec` on purpose: the box IS this process from here on, so signals, the exit code and
+  # the tty pass through unmediated. Nothing needs tearing down after it — `--rm` covers the
+  # container, and neither mode creates a network, a volume or a second container.
   # shellcheck disable=SC2086
-  exec container run --rm $tty_args \
+  exec docker run --rm $tty_args \
     $net_args $entrypoint_args \
     --cpus "$cpus" --memory "$memory" \
     --volume "$AGENT_DIR:$config_dir" \
@@ -298,22 +341,21 @@ cmd_run() {
     "$IMAGE" ${1+"$@"}
 }
 
-# --- the gate --------------------------------------------------------------
+# --- what host-install refuses ---------------------------------------------
 #
 # Axon#126. Every other check in this repo describes a version the manifest names. A
-# self-updating binary replaces the thing on disk without consulting any of them, so the pin,
-# the checksum and the cooldown all end up describing software the machine
-# stopped running. That is not hypothetical here: upstreams.toml's pi-coding-agent entry
-# records the host self-updating via `pi update` about 15h after a release, and the pin was
-# written afterwards to describe an adoption that had already happened.
+# self-updating binary replaces the thing on disk without consulting any of them, so the pin
+# and the checksum end up describing software the machine stopped running. That is not
+# hypothetical here: upstreams.toml's pi-coding-agent entry records the host self-updating via
+# `pi update` about 15h after a release, and the pin was written afterwards to describe an
+# adoption that had already happened.
 #
-# The gate answers one question — may this version be placed on this machine? — and is a
-# separate command so it can be run, and tested, without installing anything.
-#
-# It answered a second question until 2026-08-28: whether a published GHSA covered the
-# target version. PRD Q41 retired tools/lib/advisories.sh, and that half of the gate is a
-# human's now. What remains is still the check that catches the failure above, because
-# what moved the machine past the pin was time, not a vulnerability.
+# There was a separate `agentbox gate` verb here until 2026-09-02. It held two checks: a
+# published-GHSA lookup, retired on 2026-08-28 with tools/lib/advisories.sh (PRD Q41), and a
+# cooldown on the release's age, retired by Q74. With both gone it refused nothing — it
+# resolved a repository, printed two lines and returned 0 — and a verb that cannot say no is
+# how a green step comes to read as a passed check. What still refuses is the sha256 in
+# fetch_archive above, on the install path, unchanged.
 
 # Resolve the upstream repo this profile's agent comes from, via profile.toml's declared
 # upstreams.toml section. Empty output means the profile did not declare one.
@@ -324,90 +366,6 @@ upstream_repo() {
   url="$(toml_get_in "$section" url "$AXON_ROOT/upstreams.toml")"
   [ -n "$url" ] || return 1
   printf '%s' "$url" | sed -E 's#.*github.com/([^/]+/[^/]+).*#\1#; s#\.git$##'
-}
-
-# Days since <repo>'s <tag> was published; empty if GitHub cannot answer. Deliberately not
-# lifted into tools/lib/: it has exactly one consumer, and this repo lifts a helper only on
-# the second one. It had a near-twin in tools/upstream-checker (gh_latest) that would have
-# gone with it; that script retired on 2026-08-28, so this is now the only release-date
-# reader in the repo and there is nothing left to share it with.
-release_age_days() {
-  local repo="$1" tag="$2" pub now then
-  command -v gh >/dev/null 2>&1 || return 1
-  pub="$(gh api "repos/$repo/releases/tags/$tag" --jq '.published_at' 2>/dev/null)" || return 1
-  [ -n "$pub" ] && [ "$pub" != "null" ] || return 1
-  if date --version >/dev/null 2>&1; then
-    then="$(date -u -d "$pub" +%s 2>/dev/null)"
-  else
-    then="$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$pub" +%s 2>/dev/null)"
-  fi
-  [ -n "$then" ] || return 1
-  now="$(date -u +%s)"
-  echo $(( (now - then) / 86400 ))
-}
-
-# cmd_gate [version] — 0 = may install, non-zero = refused.
-cmd_gate() {
-  require_config
-  target="${1:-$VERSION}"
-  repo="$(upstream_repo)" || die "profile $PROFILE declares no 'upstream' — the gate cannot know which repository to check (Axon#126)"
-
-  echo "agentbox gate: $AGENT $target ($repo)"
-
-  # 1. Advisories — NOT checked here, and printed rather than omitted.
-  #
-  #    This step used to call advisory_scan (tools/lib/advisories.sh), which fetched
-  #    published GHSAs and refused an install whose target sat inside an affected range.
-  #    PRD Q41 retired that library on 2026-08-28 with the rest of the homegrown
-  #    supply-chain plumbing, and nothing standard replaces it for THIS dependency: the
-  #    agent arrives as a pinned release tarball, so no ecosystem lockfile names it and
-  #    neither GitHub's Dependabot alerts nor osv-scanner will ever see it. Renovate
-  #    (renovate.json5) watches earendil-works/pi for new release TAGS, which is freshness,
-  #    not exposure.
-  #
-  #    So the check is a human's now, and the gate says so at the moment of use instead of
-  #    going quiet. A silent step reads as a passed step — that is precisely the failure
-  #    this gate was built for (Axon#126), where a self-update moved the machine past the
-  #    pin and nothing said anything. Weaker and audible beats stronger and stale.
-  echo "  ○ advisories NOT checked by this gate — open the list before you accept:"
-  echo "      https://github.com/$repo/security/advisories"
-  echo "    (capabilities/agentbox/README.md#the-host-install-gate explains why this is manual)"
-
-  # 2. Cooldown — a confirmation, never a hard refusal, because the manifest says so:
-  #    "the cooldown is a recommendation" (172d81a, README.md#pins-and-cooldown). What it
-  #    must not do is pass silently, which is exactly what happened the last time.
-  cd_min="$(toml_get_in upstream cooldown_min_days "$AXON_ROOT/axon.toml")"
-  if [ -z "$cd_min" ]; then
-    echo "  ⚠ cooldown window missing from axon.toml [upstream] — not checked"
-  else
-    age="$(release_age_days "$repo" "v$target" || true)"
-    if [ -z "$age" ]; then
-      echo "  ⚠ release date for v$target not resolvable — cooldown unchecked"
-    elif [ "$age" -lt "$cd_min" ]; then
-      confirm_or_deny "v$target is ${age}d old, inside the ${cd_min}d cooldown"
-    else
-      echo "  ✓ v$target is ${age}d old, past the ${cd_min}d cooldown"
-    fi
-  fi
-
-  echo "agentbox gate: $target may be installed"
-}
-
-# A finding that warrants a human, not a stop. Fails closed when there is no human to ask:
-# a script, a cron job or a pipe gets a refusal, never a default yes.
-confirm_or_deny() {
-  local reason="$1" reply
-  if [ ! -t 0 ]; then
-    die "refused: $reason.
-  This needs a human decision and stdin is not a terminal, so it fails closed.
-  Re-run it interactively if you mean to accept it."
-  fi
-  printf 'agentbox: %s.\n  Install anyway? [y/N] ' "$reason" >&2
-  read -r reply
-  case "$reply" in
-    y|Y|yes|YES) echo "  → accepted interactively" ;;
-    *) die "refused by operator: $reason" ;;
-  esac
 }
 
 # --- host install ----------------------------------------------------------
@@ -434,7 +392,16 @@ cmd_host_install() {
   export OS
   require_config
 
-  cmd_gate "$VERSION"
+  # Advisories are a human's, and this says so at the moment of use rather than going quiet.
+  # PRD Q41 retired tools/lib/advisories.sh on 2026-08-28 and nothing standard replaces it for
+  # THIS dependency: the agent arrives as a pinned release tarball, so no ecosystem lockfile
+  # names it and neither Dependabot alerts nor osv-scanner will ever see it. The cooldown half
+  # of this check went on 2026-09-02 (Q74) — it asked how OLD the bytes were; the sha256 in
+  # fetch_archive asks WHAT they are, and that one still refuses.
+  repo="$(upstream_repo)" || die "profile $PROFILE declares no 'upstream' — cannot name the advisory list (Axon#126)"
+  echo "agentbox: advisories are NOT checked here — open the list before you accept:"
+  echo "    https://github.com/$repo/security/advisories"
+  echo "  (capabilities/agentbox/README.md#what-host-install-refuses explains why this is manual)"
 
   host_root="$(HOST_ROOT_DEFAULT)"
   versioned="$host_root/versions/$AGENT-$VERSION"
@@ -485,7 +452,7 @@ write_shim() {
     printf '    echo "%s: self-update is gated by Axon (upstreams.toml pins this version)." >&2\n' "$AGENT"
     printf '    echo "  Use: agentbox host-install   — after bumping version + archive_sha256_* in" >&2\n'
     printf '    echo "       capabilities/agentbox/profiles/%s/profile.toml and upstreams.toml." >&2\n' "$AGENT"
-    printf '    echo "  That path checks published advisories and the cooldown; this one does not." >&2\n'
+    printf '    echo "  That path verifies the pinned archive'"'"'s sha256; this one does not." >&2\n'
     printf '    exit 1 ;;\n'
     printf 'esac\n'
     printf 'exec "$REAL" "$@"\n'
@@ -501,38 +468,56 @@ bad()  { echo "  ✗ $*"; DOCTOR_FAILED=1; }
 cmd_doctor() {
   DOCTOR_FAILED=0
   echo "agentbox"
+
+  # The runtime verdict comes first because it needs nothing from the profile. require_config
+  # dies when the profile has no checksum for this host's arch (x86_64 CI runners, since the
+  # pinned pi release is arm64-only), and a doctor that has to fetch a checksum before it can
+  # say "wrong runtime" answers the cheap question last.
+  # Three separate causes, three separate lines. Reporting them as one ("not available")
+  # was the old shape, and it sends a machine that declares the wrong runtime looking for a
+  # missing binary.
+  runtime_ok=0
+  if [ "$AXON_CONTAINER_RUNTIME" != "docker" ]; then
+    bad "runtime: machine.toml declares container_runtime = '$AXON_CONTAINER_RUNTIME'; agentbox needs docker (Q75; podman's network semantics are unmeasured here)"
+  elif ! command -v docker >/dev/null 2>&1; then
+    bad "runtime: 'docker' not on PATH — OrbStack installs it at ~/.orbstack/bin/docker, which a non-login environment does not have"
+  elif ! docker info >/dev/null 2>&1; then
+    bad "runtime: the docker daemon is not answering — start it ('open -a OrbStack' for OrbStack)"
+  else
+    runtime_ok=1
+    ok "runtime: docker $(docker version --format '{{.Server.Version}}' 2>/dev/null) on $(docker info --format '{{.OperatingSystem}}' 2>/dev/null)"
+  fi
   require_config
   ok "agent: $AGENT $VERSION (profiles/$AGENT/profile.toml)"
 
-  if [ "$AXON_CONTAINER_RUNTIME" = "apple-container" ] && command -v container >/dev/null 2>&1 \
-     && container system status >/dev/null 2>&1; then
-    ok "runtime: apple-container $(container --version 2>/dev/null | sed -n 's/.*version \([^ ]*\).*/\1/p') running"
-  else
-    bad "runtime: apple-container not available or not started"
-  fi
-
-  if container network ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$NETWORK"; then
-    gw="$(gateway_ip)"
-    mode="$(container network inspect "$NETWORK" | sed -n 's/.*"mode"[^"]*"\([^"]*\)".*/\1/p' | head -n1)"
-    if [ "$mode" = "hostOnly" ]; then
-      ok "network: $NETWORK ($mode, gateway $gw)"
-    else
-      bad "network: $NETWORK is '$mode', expected hostOnly — delete it and let agentbox recreate it"
-    fi
-  else
-    bad "network: $NETWORK missing — created on the next build/run"
-  fi
-
-  if container image inspect "$IMAGE" >/dev/null 2>&1; then
+  # Everything below asks the runtime a question, so a machine without one gets "not checked"
+  # rather than an answer obtained from a daemon it does not declare.
+  have_image=0
+  if [ "$runtime_ok" -eq 0 ]; then
+    bad "image: not checked — no usable runtime to ask"
+  elif docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    have_image=1
     ok "image: $IMAGE"
   else
     bad "image: $IMAGE missing — 'agentbox build'"
   fi
 
+  # The isolation claim, checked rather than asserted. There is no persistent network to
+  # inspect any more, so what doctor can report is the property itself: a --network none box
+  # built from THIS image reaches nothing. Falsifiable in about a second, which is the only
+  # kind of check worth printing.
+  if [ "$have_image" -eq 0 ]; then
+    bad "network: not checked — needs the image to check from"
+  # shellcheck disable=SC2086
+  elif docker run --rm $OFFLINE_NET_ARGS --entrypoint /bin/bash "$IMAGE" \
+         -c 'exec 3<>/dev/tcp/1.1.1.1/443' >/dev/null 2>&1; then
+    bad "network: a box on '$OFFLINE_NET_ARGS' reached 1.1.1.1:443 — the offline mode is not isolating"
+  else
+    ok "network: offline mode is '$OFFLINE_NET_ARGS' (loopback only: no route, no resolver, no host)"
+  fi
+
   url="$(model_base_url 2>/dev/null || true)"
-  if [ -z "$url" ]; then
-    bad "model: cannot derive a base URL (no gateway, no model_base_url override)"
-  elif ! container image inspect "$IMAGE" >/dev/null 2>&1; then
+  if [ "$have_image" -eq 0 ]; then
     bad "model: not probed — needs the image to probe from"
   else
     status="$(probe_model "$url" || true)"
@@ -540,11 +525,12 @@ cmd_doctor() {
     if [ -n "$status" ]; then
       # Any status line is a pass: doctor asks whether the endpoint is reachable, and
       # a 401 answers that as well as a 200 does.
-      ok "model: $url answers from inside the box ($status)"
+      ok "model: $url answers from an --online box ($status)"
     else
-      bad "model: silence at $url from inside the box.
-      A separate VM cannot reach the host's 127.0.0.1 — the server has to bind 0.0.0.0,
-      and $host has to be among the Host headers it accepts."
+      bad "model: silence at $url from inside an --online box.
+      A container cannot reach the host's 127.0.0.1 — the server has to bind 0.0.0.0, and
+      $host has to be among the Host headers it accepts. Only 'agentbox run --online'
+      reaches it at all; the default box has no network (Q75)."
     fi
   fi
 
@@ -568,7 +554,6 @@ case "$cmd" in
   shell)        cmd_run --shell "$@" ;;
   doctor)       cmd_doctor ;;
   host-install) cmd_host_install "$@" ;;
-  gate)         cmd_gate "$@" ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command '$cmd'" ;;
 esac

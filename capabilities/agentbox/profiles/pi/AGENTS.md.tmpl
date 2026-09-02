@@ -6,10 +6,10 @@ the copy is overwritten on the next run.
 
 ## Where you are
 
-You run inside an Apple `container` micro-VM, not on the host. The host's filesystem,
-credentials, SSH agent and browser profiles are not mounted and cannot be reached.
-`/workspace` is a single project directory bind-mounted from the host: writes there
-land on real files the user keeps, everything else in this VM is discarded on exit.
+You run inside a container, not on the host. The host's filesystem, credentials, SSH
+agent and browser profiles are not mounted and cannot be reached. `/workspace` is a
+single project directory bind-mounted from the host: writes there land on real files
+the user keeps, everything else in this container is discarded on exit.
 
 Network: {{NETWORK_STATEMENT}}
 

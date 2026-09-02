@@ -40,6 +40,24 @@ the watcher's first ever run produced a finding nobody needed, which is how a wa
 muted. The class breakdown stays what it already was — what `sysmon storage` tells you
 once you are already looking.
 
+**Unexpected network exposure.** Delegated whole to `host-net check --json`, the same shape
+the disk half already has: `capabilities/host-net` owns the scope rule, the netstat parsing and
+the overlay policy of expected wildcard listeners, and this reads its verdict and adds nothing.
+A wildcard bind is reachable from loopback, the local network, the tailnet and any container
+bridge the host grows later, so it is the one scope worth an interrupt; a loopback listener is
+not a finding and never becomes one.
+
+One finding for the whole condition, keyed `net:unexpected-exposure`, listing every listener in
+its note. Not one per port: a mesh VPN is assigned fresh wildcard ports on every start, so a
+per-port key would mint a new generation every hour — the same collapse `cpu:<comm>` makes,
+one step further.
+
+A non-zero exit from `host-net` is data, not a failure: exit 1 is how it reports an unexpected
+listener and exit 2 is how it reports that it could not check. If the binary has never been
+built, this prints one stderr line and files nothing rather than reporting a clean host. It
+calls `target/release/host-net-cli` directly and never the launcher, so an hourly job can never
+trigger a `cargo build`.
+
 Memory and thermals are not checked. Both measured healthy at the incident (pressure
 normal, zero swap, no thermal warning recorded in 26h) and adding a check for a condition
 that has never fired manufactures alerts rather than information.
@@ -110,6 +128,9 @@ Every threshold and allowed process name is in
 `<overlay>/config/host-watch-policy.toml`; this capability's code contains no process
 name and no number (README.md#generic-in-axon-specific-in-the-overlay). Shape:
 `schemas/host-watch-policy.toml.example`.
+
+The network half reads a second file, `<overlay>/config/host-net-policy.toml`, which belongs
+to `capabilities/host-net` and is documented there. Nothing in this capability parses it.
 
 The allowlist is meant to stay short. Every name on it is a process this watcher can
 never warn about again, so an allowlist grown to silence noise is how the check quietly

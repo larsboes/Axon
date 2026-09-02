@@ -4,12 +4,13 @@
 //! shell string. Subtitles download into a temp dir that is always removed (via
 //! `TmpDir`'s Drop). No raw audio/video is ever written.
 
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::config::Config;
+use crate::config::{self, Config};
 // `cap` is the extraction stage's cap, so it lives there; the alias keeps the
 // name every fetch_* arm already reads by.
 use crate::extraction::{
@@ -478,11 +479,32 @@ fn strip_tags(s: &str) -> String {
 
 /// The one HTTP client every extractor uses. A descriptive user agent is not
 /// politeness here — Reddit and the GitHub API both reject the default one.
+///
+/// The redirect policy is the second half of `check_destination`: checking only
+/// the URL the caller handed over leaves `302 -> http://169.254.169.254/` as a
+/// complete bypass, so every hop is re-checked and the chain is capped at three.
 fn http_client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .user_agent("AxonComms/0.1")
         .gzip(true)
         .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            // `>`, not `>=`: reqwest's `previous()` starts with the initial
+            // URL, which is not a redirection (reqwest-0.12.28
+            // src/redirect.rs:135 says so, and its own `Policy::limited`
+            // compares the same way). With `>=` the error said three and
+            // followed two.
+            if attempt.previous().len() > MAX_REDIRECTS {
+                return attempt.error(CommsError::Other(format!(
+                    "refused: more than {MAX_REDIRECTS} redirects"
+                )));
+            }
+            let next = attempt.url().as_str().to_string();
+            match check_scheme(&next).and_then(|()| check_destination(&next)) {
+                Ok(()) => attempt.follow(),
+                Err(e) => attempt.error(e),
+            }
+        }))
         .build()?)
 }
 
@@ -995,6 +1017,144 @@ fn check_scheme(url: &str) -> Result<()> {
     }
 }
 
+/// How many hops `http_client`'s redirect policy will follow. Three is enough
+/// for the shorteners and the http->https->canonical-host chains real articles
+/// use, and short enough that a redirect loop fails fast.
+const MAX_REDIRECTS: usize = 3;
+
+/// Refuse a URL that resolves to an address inside this machine or this network.
+///
+/// `check_scheme` above closes `file://`; this closes the other half of the same
+/// hole, because `http://127.0.0.1:8086/api/plans` is still http. Every Axon
+/// service binds loopback (see `libs/axon-server`), so without this an ingested
+/// link drives an internal API from the outside: `POST /ingest`
+/// (`server/feed.rs`) takes the URL from the request body, and
+/// `server/source_handlers.rs` fetches URLs that an external feed produced.
+/// CodeQL rust/request-forgery reported it against `extract_article`.
+///
+/// One escape, and it is written down rather than inferred: an origin listed in
+/// the config's `ingest_allowed_origins` passes even when it resolves inside
+/// this machine. It exists for `tools/demo-up`, which stands a synthetic origin
+/// up on loopback and seeds Comms by asking it to fetch from there — the one
+/// caller that legitimately points ingest at this machine. Empty everywhere
+/// else; see [`crate::config::ingest_allowed_origins`].
+///
+/// Two residuals, both deliberate and neither closed here:
+///
+/// 1. **DNS rebinding.** The name is resolved once for this check and again by
+///    the connector, so a record with a one-second TTL can answer public here
+///    and private there. Closing it needs the checked address to be the address
+///    the socket gets — a pinned `ClientBuilder::resolve` or a custom connector
+///    — which is a larger change than this guard, and one no unit test in this
+///    file could observe.
+/// 2. **A blocking resolve on a redirect hop.** `to_socket_addrs` is
+///    synchronous, and `http_client`'s redirect policy calls this function from
+///    inside reqwest's own runtime thread, so a slow resolver on a hop can push
+///    a request past the 30 s timeout set beside that policy. One client per
+///    fetch bounds the damage to that fetch.
+fn check_destination(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url.trim())
+        .map_err(|e| CommsError::Other(format!("refused: unparsable URL ({e})")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| CommsError::Other("refused: URL names no host".into()))?;
+    // `host_str` keeps the brackets on an IPv6 literal; `to_socket_addrs` parses
+    // an address literal before it resolves, and it cannot parse the brackets.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<_> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| CommsError::Other(format!("refused: cannot resolve {host} ({e})")))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(CommsError::Other(format!(
+            "refused: {host} resolves to no address"
+        )));
+    }
+    // ALL, not ANY. A name that answers with one public address and one private
+    // address is the ordinary way this check is bypassed.
+    if addrs.iter().all(|a| is_public(a.ip())) {
+        return Ok(());
+    }
+    if origin_is_allowed(&parsed, &config::ingest_allowed_origins()) {
+        return Ok(());
+    }
+    Err(CommsError::Other(format!(
+        "refused: {host} resolves to a non-public address"
+    )))
+}
+
+/// Whether a URL's own origin — the scheme, host and port as written, never the
+/// address it resolved to — is one the operator listed.
+///
+/// Matching the written host is the point. An attacker who publishes a name
+/// that resolves to 127.0.0.1 still does not match `http://127.0.0.1:8099`, so
+/// the entry clears exactly the origin it names and nothing that merely lands
+/// in the same place.
+fn origin_is_allowed(url: &reqwest::Url, allowed: &[String]) -> bool {
+    match config::normalize_origin(url.as_str()) {
+        Some(origin) => allowed.contains(&origin),
+        None => false,
+    }
+}
+
+/// Whether an address is routable on the public internet. Stricter than "not
+/// loopback" on purpose: link-local carries the cloud metadata service at
+/// 169.254.169.254, and the CGNAT range carries this machine's VPN peers.
+fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            // Four ranges written out by hand. Three of them have a std
+            // predicate that is still behind feature `ip` on the pinned 1.96.0
+            // toolchain (rust-toolchain.toml) -- `is_shared`, `is_reserved`,
+            // `is_benchmarking` -- and 0.0.0.0/8 has none at all. Every other
+            // test below is stable std, so do not hand-roll those.
+            let o = v4.octets();
+            // RFC 6598 carrier-grade NAT, 100.64.0.0/10: this machine's VPN peers.
+            let cgnat = o[0] == 100 && (64..128).contains(&o[1]);
+            // RFC 1122 "this network", 0.0.0.0/8. Some stacks route 0.x.y.z to
+            // localhost, and no destination on it is legitimate.
+            let this_network = o[0] == 0;
+            // RFC 1112 reserved, 240.0.0.0/4, and RFC 2544 benchmarking,
+            // 198.18.0.0/15. Neither is routable, so neither is a public host.
+            let reserved = o[0] >= 240;
+            let benchmarking = o[0] == 198 && (18..20).contains(&o[1]);
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_unspecified()
+                || cgnat
+                || this_network
+                || reserved
+                || benchmarking)
+        }
+        IpAddr::V6(v6) => {
+            // The v6 tests run FIRST. `::1` is an IPv4-compatible address as
+            // well as the loopback one, and unwrapping it before testing it
+            // yields 0.0.0.1 -- which the v4 arm would have to special-case to
+            // avoid calling loopback public.
+            if v6.is_loopback()
+                || v6.is_multicast()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+            {
+                return false;
+            }
+            // `::ffff:a.b.c.d` (mapped) and the deprecated `::a.b.c.d`
+            // (compatible) are both an IPv4 destination wearing a v6 name;
+            // `::ffff:127.0.0.1` has to fail for the reason 127.0.0.1 fails,
+            // and so does `::7f00:1`.
+            match v6.to_ipv4() {
+                Some(v4) => is_public(IpAddr::V4(v4)),
+                None => true,
+            }
+        }
+    }
+}
+
 /// Build a `FeedItem` for a URL: metadata + transcript, no summary. Does NOT
 /// persist -- the caller upserts. Never leaves temp files behind.
 ///
@@ -1004,6 +1164,14 @@ fn check_scheme(url: &str) -> Result<()> {
 /// prints the summary, calls `ingest` and waits for both.
 pub fn fetch(url: &str) -> Result<FeedItem> {
     check_scheme(url)?;
+    // The one place the guard is needed, because this is the one function that
+    // makes a request. Every arm below goes out through it, including yt-dlp,
+    // which fetches in a subprocess the redirect policy never sees.
+    // `extract_article` -- the line CodeQL anchored on -- is private and reached
+    // only from here and from the GitHub and HuggingFace arms below, so it is
+    // covered by domination; checking it again would mean a second DNS
+    // resolution, which widens the rebinding window rather than narrowing it.
+    check_destination(url)?;
     let (kind, stream) = detect(url);
     let mut item = FeedItem::new(url, stream, kind);
 
@@ -1085,6 +1253,12 @@ pub fn fetch_with_content(
         return fetch(url);
     }
     check_scheme(url)?;
+    // No `check_destination` here, unlike `fetch`. Past this point the arm makes
+    // no request -- the client already handed the document over, which is the
+    // whole reason this function exists -- so resolving the host would add a DNS
+    // dependency to the one path that is meant to work without the network, and
+    // refuse a hand-over made offline. The no-content fall-through above returns
+    // through `fetch`, which is guarded.
     let (kind, stream) = detect(url);
     let mut item = FeedItem::new(url, stream, kind);
 
@@ -1666,6 +1840,121 @@ mod tests {
         assert!(check_scheme("file:///etc/passwd").is_err());
         assert!(check_scheme("ftp://example.com/x").is_err());
         assert!(check_scheme("example.com").is_err());
+    }
+
+    /// Every case is an IP literal, so the test asserts the address policy and
+    /// never touches a resolver. The redirect policy in `http_client` calls this
+    /// same function on each hop, but `reqwest::redirect::Attempt` cannot be
+    /// constructed outside reqwest, so that wiring is only exercised by an
+    /// end-to-end ingest of a public URL that redirects to a private one.
+    #[test]
+    fn check_destination_refuses_non_public_addresses() {
+        for url in [
+            "http://127.0.0.1:8086/api/plans",
+            "http://[::1]/x",
+            "http://[::ffff:127.0.0.1]/x",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/",
+            "http://172.16.0.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[fe80::1]/",
+            "http://[fd00::1]/",
+            "http://100.64.0.1/",
+            "http://0.0.0.0/",
+            "http://255.255.255.255/",
+            "http://[ff02::1]/",
+            // The deprecated IPv4-compatible spelling of 127.0.0.1. Modern
+            // stacks do not route it, but the guard must not be the thing that
+            // depends on that.
+            "http://[::7f00:1]/",
+            "http://240.0.0.1/",
+            "http://198.18.0.1/",
+            "http://0.1.2.3/",
+        ] {
+            let err = check_destination(url).expect_err(url);
+            assert!(err.to_string().starts_with("refused: "), "{url}: {err}");
+        }
+    }
+
+    #[test]
+    fn check_destination_allows_a_public_address() {
+        assert!(check_destination("http://93.184.216.34/index.html").is_ok());
+        assert!(check_destination("https://[2606:2800:220:1::1]/").is_ok());
+    }
+
+    #[test]
+    fn check_destination_refuses_a_url_without_a_host() {
+        assert!(check_destination("http:///nowhere").is_err());
+    }
+
+    #[test]
+    fn is_public_maps_the_boundaries_of_the_hand_written_ranges() {
+        // Every range below is written out because its std predicate is behind
+        // feature `ip`. The neighbours on each side prove the mask, not just
+        // the middle.
+        // 100.64.0.0/10, carrier-grade NAT.
+        assert!(!is_public("100.64.0.0".parse().unwrap()));
+        assert!(!is_public("100.127.255.255".parse().unwrap()));
+        assert!(is_public("100.63.255.255".parse().unwrap()));
+        assert!(is_public("100.128.0.0".parse().unwrap()));
+        // 0.0.0.0/8, "this network".
+        assert!(!is_public("0.255.255.255".parse().unwrap()));
+        assert!(is_public("1.0.0.0".parse().unwrap()));
+        // 198.18.0.0/15, benchmarking. 198.20.0.0 is an ordinary public host.
+        assert!(!is_public("198.18.0.0".parse().unwrap()));
+        assert!(!is_public("198.19.255.255".parse().unwrap()));
+        assert!(is_public("198.17.255.255".parse().unwrap()));
+        assert!(is_public("198.20.0.0".parse().unwrap()));
+        // 240.0.0.0/4, reserved. Its lower neighbour is inside multicast
+        // (224.0.0.0/4), so the last public IPv4 address is 223.255.255.255.
+        assert!(!is_public("240.0.0.0".parse().unwrap()));
+        assert!(!is_public("239.255.255.254".parse().unwrap()));
+        assert!(is_public("223.255.255.255".parse().unwrap()));
+    }
+
+    /// `::1` is IPv4-compatible as well as loopback, so it is the case that
+    /// decides the order of the two tests in the v6 arm: unwrapped first it
+    /// becomes 0.0.0.1, which no v4 predicate calls loopback.
+    #[test]
+    fn is_public_unwraps_both_v4_in_v6_forms_without_laundering_v6_loopback() {
+        assert!(!is_public("::1".parse().unwrap()));
+        assert!(!is_public("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!is_public("::7f00:1".parse().unwrap()));
+        assert!(!is_public("::ffff:192.168.1.1".parse().unwrap()));
+        assert!(is_public("::ffff:93.184.216.34".parse().unwrap()));
+        assert!(is_public("2606:2800:220:1::1".parse().unwrap()));
+    }
+
+    /// The allowlist is matched against the URL as written, so it clears the
+    /// origin the operator named and nothing else that happens to resolve to
+    /// the same machine. `tools/demo-up` is the one caller that sets it.
+    #[test]
+    fn origin_is_allowed_matches_the_written_origin_only() {
+        let allowed = vec!["http://127.0.0.1:8099".to_string()];
+        let url = |u: &str| reqwest::Url::parse(u).unwrap();
+
+        assert!(origin_is_allowed(
+            &url("http://127.0.0.1:8099/articles/a-slug"),
+            &allowed
+        ));
+        // A different port on the same host is a different Axon service. This
+        // is the whole reason the entry is an origin and not a host.
+        assert!(!origin_is_allowed(
+            &url("http://127.0.0.1:8086/api/plans"),
+            &allowed
+        ));
+        // A name that resolves to loopback is still not the listed origin.
+        assert!(!origin_is_allowed(
+            &url("http://localhost:8099/articles/a-slug"),
+            &allowed
+        ));
+        assert!(!origin_is_allowed(
+            &url("https://127.0.0.1:8099/x"),
+            &allowed
+        ));
+        // Nothing is allowed by default, which is what every non-demo machine
+        // runs with.
+        assert!(!origin_is_allowed(&url("http://127.0.0.1:8099/x"), &[]));
     }
 
     #[test]

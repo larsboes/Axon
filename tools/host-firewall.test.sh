@@ -90,7 +90,7 @@ check "an unscoped port says so in the ruleset"    "1" "$(printf '%s' "$OUT2" | 
 out="$(AXON_HOST_FIREWALL_CONFIG="$C2" "$FW" check 2>&1)"
 case "$out" in *"reachable from any source"*) echo "  ✓ and check warns about it out loud" ;;
   *) echo "  ✗ check is silent about a port open to any source"; fails=$((fails + 1)) ;; esac
-case "$out" in *"nft not installed"*|*"nft parses"*) echo "  ✓ check states whether nft verified the syntax" ;;
+case "$out" in *"nft not installed"*|*"nft parses"*|*"check needs root"*) echo "  ✓ check states whether nft verified the syntax" ;;
   *) echo "  ✗ check does not say whether the ruleset was syntax-checked"; fails=$((fails + 1)) ;; esac
 
 echo

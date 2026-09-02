@@ -167,6 +167,10 @@ cmd_check() {
   if command -v nft >/dev/null 2>&1; then
     if render | nft -c -f - 2>/dev/null; then
       echo "  ✓ nft parses the rendered ruleset (nft -c, nothing loaded)"
+    elif [ "$(id -u)" -ne 0 ]; then
+      # nft -c still opens netlink, which an unprivileged user cannot; that is not a verdict
+      # on the ruleset. Say so, the same way the nft-absent branch does.
+      echo "  ○ nft present but check needs root — ruleset syntax unchecked, not passed (re-run as root for the verdict)"
     else
       echo "  ✗ nft rejects the rendered ruleset:" >&2
       render | nft -c -f - 2>&1 | sed 's/^/      /' >&2

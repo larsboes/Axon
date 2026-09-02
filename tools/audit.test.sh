@@ -1,75 +1,20 @@
 #!/bin/bash
-# Proves that image exceptions are selected by capability instead of leaking into every scan.
-# Trivy owns expiry parsing; this test owns Axon's routing contract. Bash 3.2-safe.
+# Proves tools/audit's exit contract and how it decides what a repository is.
+# 0 clean · 1 a finding · 2 a scanner is not installed, and a finding outranks a missing
+# scanner. Bash 3.2-safe.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 MOCK_BIN="$SCRATCH/bin"
-LOG="$SCRATCH/trivy.log"
-mkdir -p "$MOCK_BIN"
-
-cat > "$MOCK_BIN/trivy" <<'MOCK'
-#!/bin/sh
-printf '%s\n' "$*" >> "$AXON_AUDIT_TEST_LOG"
-exit 0
-MOCK
-chmod +x "$MOCK_BIN/trivy"
-
-AXON_AUDIT_TEST_LOG="$LOG" PATH="$MOCK_BIN:$PATH" \
-  "$ROOT/tools/audit" --skip gitleaks --skip semgrep --skip osv >"$SCRATCH/out" 2>&1 || true
-
-# Deliberately NOT asserting exit 0 here. This block owns policy routing, and it runs
-# against the tracked trivy-ignore files, whose dates are real -- so once one of them
-# lapses this run legitimately exits non-zero for a reason that has nothing to do with
-# routing. A routing test that starts failing on a calendar date is the same rot the expiry
-# clock exists to prevent. What must hold is narrower and durable: no MOCKED scan produced
-# a finding. Exit codes are proved below, over planted policies whose dates are generated
-# per run.
-if grep -F 'CRITICAL/HIGH finding(s)' "$SCRATCH/out" >/dev/null; then
-  cat "$SCRATCH/out"
-  echo "FAIL: audit rejected clean mocked image scans" >&2
-  exit 1
-fi
-
-# trivy-ignore/*.txt is gone (52aa8c5, 2026-08-28), so the invariant is no longer "each
-# capability gets its own policy" but the simpler and stronger "no capability is scanned
-# with one". expect_policy and the per-policy routing loop that stood here went with the
-# directory they read.
-expect_bare_scan() {
-  cap="$1"
-  ref="$2"
-  grep -F -- "$ref" "$LOG" >/dev/null || {
-    echo "FAIL: $cap was not scanned" >&2
-    exit 1
-  }
-  if grep -F -- '--ignorefile' "$LOG" | grep -F -- "$ref" >/dev/null; then
-    echo "FAIL: $cap was scanned with a policy file, and none exist any more" >&2
-    exit 1
-  fi
-}
-
-# Every capability that declares an image, discovered rather than named — the same two
-# manifest fields tools/audit itself reads. Naming them here is what made the postgres
-# retirement look like a broken test (PRD Q45); a capability added tomorrow is covered
-# without an edit, and a repository that declares no image at all says so out loud rather
-# than passing over nothing.
-images=0
-for manifest in "$ROOT"/capabilities/*/service.toml; do
-  [ -f "$manifest" ] || continue
-  image="$(sed -n 's/^image *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
-  [ -n "$image" ] || continue
-  tag="$(sed -n 's/^tag *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
-  cap="$(basename "$(dirname "$manifest")")"
-  expect_bare_scan "$cap" "$image:${tag:-latest}"
-  images=$((images + 1))
-done
-[ "$images" -gt 0 ] || echo "  ⊘ no capability declares an image — trivy routing is unexercised this run"
+GITLEAKS_ONLY_BIN="$SCRATCH/bin-gitleaks-only"
+mkdir -p "$MOCK_BIN" "$GITLEAKS_ONLY_BIN"
 
 # Repository detection must use Git plumbing: linked worktrees have a .git file,
 # not a directory. Run the real audit script against isolated repositories with
-# every other scanner skipped and a deterministic gitleaks mock.
+# a deterministic gitleaks mock and an osv-scanner stub that always reports clean,
+# so a non-zero exit can only have come from the half under test.
 PRIMARY="$SCRATCH/primary"
 LINKED="$SCRATCH/linked"
 NONREPO="$SCRATCH/not-a-repo"
@@ -84,14 +29,10 @@ git -C "$PRIMARY" -c user.name=Axon -c user.email=axon@example.invalid \
 git -C "$PRIMARY" worktree add -q -b audit-linked "$LINKED"
 
 cp "$ROOT/tools/audit" "$AUDIT_FIXTURE/tools/audit"
-# tools/audit sources lib/expiry.sh relative to itself, so the fixture root needs it even
-# on the path that skips trivy and osv entirely.
-cp "$ROOT/tools/lib/expiry.sh" "$AUDIT_FIXTURE/tools/lib/expiry.sh"
 cat > "$AUDIT_FIXTURE/tools/lib/paths.sh" <<'PATHS'
 AXON_ROOT="$AXON_AUDIT_TEST_ROOT"
 AXON_PERSONAL_ROOT="${AXON_AUDIT_TEST_OVERLAY:-}"
 export AXON_ROOT AXON_PERSONAL_ROOT
-toml_get() { return 0; }
 PATHS
 
 cat > "$MOCK_BIN/gitleaks" <<'MOCK'
@@ -99,7 +40,13 @@ cat > "$MOCK_BIN/gitleaks" <<'MOCK'
 printf '%s\n' "$*" >> "$AXON_AUDIT_GITLEAKS_LOG"
 exit "${AXON_AUDIT_GITLEAKS_RC:-0}"
 MOCK
-chmod +x "$MOCK_BIN/gitleaks" "$AUDIT_FIXTURE/tools/audit"
+cat > "$MOCK_BIN/osv-scanner" <<'MOCK'
+#!/bin/sh
+exit 0
+MOCK
+cp "$MOCK_BIN/gitleaks" "$GITLEAKS_ONLY_BIN/gitleaks"
+chmod +x "$MOCK_BIN/gitleaks" "$MOCK_BIN/osv-scanner" \
+  "$GITLEAKS_ONLY_BIN/gitleaks" "$AUDIT_FIXTURE/tools/audit"
 
 run_gitleaks_audit() {
   AXON_AUDIT_GITLEAKS_LOG="$GITLEAKS_LOG" \
@@ -107,7 +54,7 @@ run_gitleaks_audit() {
   AXON_AUDIT_TEST_OVERLAY="$1" \
   AXON_AUDIT_GITLEAKS_RC="${2:-0}" \
   PATH="$MOCK_BIN:$PATH" \
-    "$AUDIT_FIXTURE/tools/audit" --skip semgrep --skip osv --skip trivy
+    "$AUDIT_FIXTURE/tools/audit"
 }
 
 : > "$GITLEAKS_LOG"
@@ -183,168 +130,47 @@ grep -F 'Axon — gitleaks errored (exit 2' "$SCRATCH/error.out" >/dev/null || {
   exit 1
 }
 
-# --- the expiry clock -----------------------------------------------------
+# --- the exit contract ----------------------------------------------------
 #
-# Trivy and osv-scanner enforce their own dates; what is tested here is that Axon SAYS a
-# date is coming, and refuses to treat a lapsed policy as a live one. That needs planted
-# policies: the tracked files can only ever show the states they happen to be in today,
-# and the three interesting ones (near, past, undated) are none of them.
-#
-# Every fixture date is generated relative to `date` at run time. A literal would pass
-# today and start failing on its own expiry, which is the bug under test wearing a
-# different hat.
+# A scanner that is not installed is a setup error, not a finding. Until 2026-09-02 a 127
+# fell into the finding branch, so this Mac reported fabricated security findings on every
+# run — a gate that cries wolf over an absent binary is worse than no gate.
 
-day_offset() {  # day_offset <+N|-N> — an ISO date N days from today, UTC. GNU then BSD.
-  if date --version >/dev/null 2>&1; then
-    date -u -d "$1 days" +%Y-%m-%d
-  else
-    date -u -v"$1"d +%Y-%m-%d
-  fi
+env PATH="/usr/bin:/bin" AXON_AUDIT_TEST_ROOT="$PRIMARY" \
+  "$AUDIT_FIXTURE/tools/audit" >"$SCRATCH/nobin.out" 2>&1
+nobin_rc=$?
+[ "$nobin_rc" -eq 2 ] || {
+  cat "$SCRATCH/nobin.out"
+  echo "FAIL: audit with no scanner on PATH must exit 2, got $nobin_rc" >&2
+  exit 1
 }
-
-EXPIRY_ROOT="$SCRATCH/expiry-root"
-mkdir -p "$EXPIRY_ROOT/tools/lib"
-cp "$ROOT/tools/audit" "$EXPIRY_ROOT/tools/audit"
-cp "$ROOT/tools/lib/toml.sh" "$EXPIRY_ROOT/tools/lib/toml.sh"
-cp "$ROOT/tools/lib/expiry.sh" "$EXPIRY_ROOT/tools/lib/expiry.sh"
-chmod +x "$EXPIRY_ROOT/tools/audit"
-
-# These cases used to plant trivy-ignore/demo.txt, whose `exp:` dates the audit read
-# alongside osv-scanner.toml's `ignoreUntil`. That directory emptied on 2026-08-28
-# (52aa8c5) and tools/audit stopped reading the format, so the whole clock is exercised
-# through the one policy file that still exists. The classification is unchanged — nearest
-# date governs, undated outranks near, the window comes from axon.toml — and it is the
-# classification, not the file extension, that these assert.
-
-# Unlike the gitleaks fixture above, this stub sources the real toml.sh: the expiry clock
-# reads its window through toml_get_in, and stubbing that away would test a script that
-# cannot read its own configuration.
-cat > "$EXPIRY_ROOT/tools/lib/paths.sh" <<'PATHS'
-AXON_ROOT="$AXON_AUDIT_TEST_ROOT"
-AXON_PERSONAL_ROOT=""
-export AXON_ROOT AXON_PERSONAL_ROOT
-. "$AXON_ROOT/tools/lib/toml.sh"
-PATHS
-
-# osv-scanner itself must succeed, so that a non-zero exit can only have come from the
-# expiry clock and never from the scan it runs beside.
-cat > "$MOCK_BIN/osv-scanner" <<'MOCK'
-#!/bin/sh
-exit 0
-MOCK
-chmod +x "$MOCK_BIN/osv-scanner"
-
-write_window() {  # write_window <days> — the fixture root's [audit] expiry window
-  cat > "$EXPIRY_ROOT/axon.toml" <<TOML
-[audit]
-expiry_warn_days = "$1"
-TOML
+grep -F 'not installed' "$SCRATCH/nobin.out" >/dev/null || {
+  echo "FAIL: missing scanner was not named" >&2
+  exit 1
 }
-
-write_policy() {  # write_policy <offset|none>… — one [[IgnoredVulns]] block per argument
-  : > "$EXPIRY_ROOT/osv-scanner.toml"
-  _n=0
-  for _off in "$@"; do
-    _n=$((_n + 1))
-    printf '[[IgnoredVulns]]\nid = "RUSTSEC-0000-000%s"\n' "$_n" >> "$EXPIRY_ROOT/osv-scanner.toml"
-    # An entry with no ignoreUntil at all is the "never re-decided" case; osv_ignored_count
-    # still counts the block, so the undated total is the difference.
-    [ "$_off" = "none" ] || printf 'ignoreUntil = %s\n' "$(day_offset "$_off")" >> "$EXPIRY_ROOT/osv-scanner.toml"
-    printf '\n' >> "$EXPIRY_ROOT/osv-scanner.toml"
-  done
-}
-
-run_expiry() {  # everything but osv-scanner skipped; the mock keeps that scan clean
-  AXON_AUDIT_TEST_ROOT="$EXPIRY_ROOT" \
-  PATH="$MOCK_BIN:$PATH" \
-    "$EXPIRY_ROOT/tools/audit" --skip gitleaks --skip semgrep --skip trivy
-}
-
-expiry_case() {  # expiry_case <label> <expected rc> <substring> — run and assert
-  _label="$1"; _want_rc="$2"; _needle="$3"
-  run_expiry >"$SCRATCH/expiry.out" 2>&1
-  _rc=$?
-  if [ "$_rc" -ne "$_want_rc" ]; then
-    cat "$SCRATCH/expiry.out"
-    echo "FAIL: $_label — expected exit $_want_rc, got $_rc" >&2
-    exit 1
-  fi
-  grep -F -- "$_needle" "$SCRATCH/expiry.out" >/dev/null || {
-    cat "$SCRATCH/expiry.out"
-    echo "FAIL: $_label — output did not contain '$_needle'" >&2
-    exit 1
-  }
-}
-
-write_window 14
-
-# Comfortably ahead: reported with its date, no warning, and the audit stays green.
-write_policy +90
-expiry_case "distant expiry" 0 "expires $(day_offset +90) (90d left)"
-if grep -F 'inside the' "$SCRATCH/expiry.out" >/dev/null; then
-  echo "FAIL: a policy 90 days out was reported as needing a re-decision" >&2
+if grep -F 'finding(s)' "$SCRATCH/nobin.out" >/dev/null; then
+  cat "$SCRATCH/nobin.out"
+  echo "FAIL: a missing scanner was reported as a finding" >&2
   exit 1
 fi
 
-# Inside the window: warns, and still exits 0 — near is notice, not failure. A gate that
-# fails on "soon" is one that gets skipped rather than heeded.
-write_policy +3
-expiry_case "near expiry warns" 0 "inside the 14d re-decision window"
-grep -F 'exception policies needing a re-decision inside 14d' "$SCRATCH/expiry.out" >/dev/null || {
-  echo "FAIL: the near-expiry summary line was missing" >&2
+# Precedence: a real finding outranks a missing scanner, so a run with both exits 1.
+# Otherwise a leak would be reported under the exit code that means "nothing was scanned".
+: > "$GITLEAKS_LOG"
+env PATH="$GITLEAKS_ONLY_BIN:/usr/bin:/bin" \
+  AXON_AUDIT_GITLEAKS_LOG="$GITLEAKS_LOG" \
+  AXON_AUDIT_GITLEAKS_RC=1 \
+  AXON_AUDIT_TEST_ROOT="$PRIMARY" \
+  "$AUDIT_FIXTURE/tools/audit" >"$SCRATCH/both.out" 2>&1
+both_rc=$?
+[ "$both_rc" -eq 1 ] || {
+  cat "$SCRATCH/both.out"
+  echo "FAIL: a finding beside a missing scanner must exit 1, got $both_rc" >&2
+  exit 1
+}
+grep -F 'not installed' "$SCRATCH/both.out" >/dev/null || {
+  echo "FAIL: the missing scanner was not reported alongside the finding" >&2
   exit 1
 }
 
-# Past its date: fails by name, even though the scanner itself returned clean. This is the
-# whole point — without it the only signal is osv-scanner going red for reasons nobody
-# connects back to a policy that quietly stopped applying.
-write_policy -2
-expiry_case "lapsed policy fails" 1 "EXPIRED $(day_offset -2) (2d ago"
-grep -F 'exception policies past their date: osv-scanner.toml' "$SCRATCH/expiry.out" >/dev/null || {
-  echo "FAIL: the lapsed summary line did not name the policy" >&2
-  exit 1
-}
-
-# One lapsed entry among healthy ones still fails: the nearest date is what governs, not
-# the average or the majority.
-write_policy +90 -2 +45
-expiry_case "one lapsed entry among many fails" 1 "1 of 3 dated entries"
-
-# An entry with no date at all never expires, so nothing will ever re-decide it. Reported
-# as needing attention rather than passing silently.
-write_policy +90 none
-expiry_case "undated entry is surfaced" 0 "1 undated and therefore permanent"
-
-# The window is configuration, not a literal in the script: the same policy changes verdict
-# when only axon.toml moves.
-write_policy +20
-expiry_case "20 days out is quiet at a 14d window" 0 "(20d left)"
-if grep -F 'inside the' "$SCRATCH/expiry.out" >/dev/null; then
-  echo "FAIL: 20 days out warned at a 14-day window" >&2
-  exit 1
-fi
-write_window 30
-expiry_case "the same policy warns at a 30d window" 0 "inside the 30d re-decision window"
-write_window 14
-
-if grep -qE '(^|[^0-9])14([^0-9]|$)' "$EXPIRY_ROOT/tools/audit"; then
-  echo "FAIL: tools/audit contains a literal 14 — the window must come from axon.toml" >&2
-  exit 1
-fi
-
-# --expiry runs no scanner at all, so it must reach the same verdict with every binary
-# absent from PATH. That is what tools/doctor delegates to.
-write_policy -5
-if env PATH="/usr/bin:/bin" AXON_AUDIT_TEST_ROOT="$EXPIRY_ROOT" \
-     "$EXPIRY_ROOT/tools/audit" --expiry >"$SCRATCH/expiry-only.out" 2>&1; then
-  cat "$SCRATCH/expiry-only.out"
-  echo "FAIL: --expiry passed over a lapsed policy" >&2
-  exit 1
-fi
-grep -F 'past their date: osv-scanner.toml' "$SCRATCH/expiry-only.out" >/dev/null || {
-  cat "$SCRATCH/expiry-only.out"
-  echo "FAIL: --expiry did not name the lapsed policy" >&2
-  exit 1
-}
-
-echo "audit policy, repository detection and expiry-clock tests: pass"
+echo "audit exit contract and repository detection tests: pass"

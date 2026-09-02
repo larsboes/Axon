@@ -1,0 +1,10 @@
+    1     0 /sbin/launchd
+  451    65 /usr/sbin/mDNSResponder
+  622   501 /usr/libexec/rapportd
+ 3734     0 /Library/SystemExtensions/00000000-0000-0000-0000-000000000000/example-vpn-network-extension
+ 9001   501 /opt/example/bin/example-server
+ 9002   501 /opt/example/bin/example-tailnet
+ 9008   501 /opt/example/bin/example-agent
+22458   501 /Library/Application Support/Example/interceptor-daemon
+74138   501 /Applications/OrbStack.app/Contents/Frameworks/OrbStack Helper.app/Contents/MacOS/OrbStack Helper
+80286   501 /Applications/Obsidian.app/Contents/Frameworks/Obsidian Helper.app/Contents/MacOS/Obsidian Helper

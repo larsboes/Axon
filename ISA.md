@@ -52,8 +52,11 @@ tracker holds nothing, and no automation creates entries in it.
   Verify in a `git worktree` of origin/main, not in place.
 - **C3** — sweeps run `rg --no-ignore --hidden --follow`; plain `rg` honours `.gitignore`
   and hides most of the private overlay's `config/`.
-- **C4** — `service-runner.sh status` prints the DECLARED image tag; `container list`
-  prints the running one. Only the second answers what is actually running.
+- **C4** — `service-runner.sh status` prints the DECLARED image tag; the runtime prints
+  the running one (`docker ps --format '{{.Names}} {{.Image}}'`, or `docker inspect <name>
+  --format '{{.Config.Image}}'` for a stopped one). Only the second answers what is actually
+  running — `report_arg_drift` compares ports, mounts, caps and network, never the image.
+  Was `container list` until Q75 retired apple-container on 2026-09-02.
 
 ## Goal
 
@@ -111,15 +114,18 @@ whose error was silenced.
 
 Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
 
-- [ ] ISC-8 — every entry Renovate's dependency dashboard reports as behind is either
-  bumped through the audit gate or has a written reason it is held. Falsifier: a listed
-  entry with neither. (2026-08-19, measured by the since-retired `tools/upstream-checker`:
-  76 entries · 50 ok · 17 n/a · 9 warn · 0 fail, every warn inside its cooldown hold, where
-  waiting is the action. 2026-08-28, PRD Q41: that checker is deleted and `renovate.json5`
-  replaces it, so **this claim has no instrument until the operator installs the Renovate
-  GitHub App** — and even then it covers 24 of the manifest's 80 entries, the rest being
-  empty pins, declared `pin_kind` opt-outs, non-GitHub URLs and host-installed probes that
-  a bot must not touch. The claim is unverified, not false, and the gap is the App.)
+- [ ] ISC-8 — every entry a Dependabot pull request or alert names as behind or vulnerable
+  is either merged or has a written reason it is held. Falsifier: an open Dependabot pull
+  request older than a week with neither. (2026-08-19, measured by the since-retired
+  `tools/upstream-checker`: 76 entries · 50 ok · 17 n/a · 9 warn · 0 fail, every warn inside
+  its cooldown hold, where waiting was the action. 2026-08-28, PRD Q41 deleted that checker
+  and named `renovate.json5` its replacement; the Renovate GitHub App was never installed, so
+  the claim then ran for five days with no instrument at all — measured 2026-09-02, the
+  repository has zero Renovate pull requests and zero Renovate issues over its whole life.
+  2026-09-02, Q74: `renovate.json5` is deleted and `.github/dependabot.yml` replaces it.
+  Dependabot needs no App, so the claim has an instrument for the first time — and the hold
+  half is gone with the cooldown, so "held with a reason" now means a deliberate refusal,
+  never a timer.)
 - [x] ISC-9 — the postgres 17.9 → 17.10 image decision is made on its own, not ridden
   along with another change. Falsifier: the bump appears in a commit about something else.
   Closed 2026-08-27 by PRD Q45, which retired the image rather than bumping it: the running
@@ -160,7 +166,7 @@ Why: pins drift, and a bump is a deliberate audited act, never an auto-pull.
 | ISC-5 | command | `cargo test --workspace --locked` | all pass | cargo | C1 |
 | ISC-6 | command | demo build, inspect recorded responses | three capabilities present | bash | F1 |
 | ISC-7 | code inspect | read transit's URL consts | env-overridable | rg | F1 |
-| ISC-8 | dashboard | Renovate dependency dashboard (needs the App installed) | every listed entry bumped or held with a reason | GitHub | F2 |
+| ISC-8 | queue | `gh pr list --author app/dependabot` | every open entry merged or held with a written reason | gh | F2 |
 | ISC-9 | command | `git log` for the postgres retirement | its own commit | git | F2 |
 
 ## Anti-claims

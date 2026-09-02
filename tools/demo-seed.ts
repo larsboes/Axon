@@ -175,6 +175,8 @@ const SEEDERS: Record<string, (ctx: Ctx) => Promise<string>> = {
       // No `content`, deliberately. Passing the body would make this a fixture with extra
       // steps; omitting it makes the server fetch and extract the page itself, which is the
       // behaviour worth demonstrating and the one that breaks loudly when extraction does.
+      // It is also why demo-up has to name this origin in `ingest_allowed_origins`: Comms
+      // refuses to fetch a loopback address unless the deployment wrote that permission down.
       const item = await post<{ item?: { id: string } ; id?: string }>(ingest, {
         url: `${ctx.manifest.origin}/articles/${article.slug}`,
         client: "demo-seed",
@@ -514,11 +516,16 @@ function writeSubscriptionVault(): void {
 // ─── Guards ───────────────────────────────────────────────────────────────────
 
 /** Which overlay the running capabilities were configured from. Asked of paths.sh rather
- *  than reimplemented, because the answer has to be the one the service runner got. */
-function activeOverlay(): string {
+ *  than reimplemented, because the answer has to be the one the service runner got.
+ *
+ *  The checkout path arrives as `$1`, never as script text. Interpolating it into the
+ *  `-c` string made a checkout directory containing `"` or `$(` a command -- the rule the
+ *  Rust half already states (capabilities/comms/src/media.rs: argument arrays only, never
+ *  a shell string). CodeQL js/shell-command-injection-from-environment reported it. */
+export function activeOverlay(pathsSh: string = join(AXON_ROOT, "tools/lib/paths.sh")): string {
   const out = execFileSync(
     "bash",
-    ["-c", `source "${AXON_ROOT}/tools/lib/paths.sh" && printf '%s' "$AXON_OVERLAY_ROOT"`],
+    ["-c", 'source "$1" && printf %s "$AXON_OVERLAY_ROOT"', "demo-seed", pathsSh],
     { encoding: "utf8" },
   );
   return out.trim();

@@ -6,13 +6,12 @@
 // can't parse, which is why this is TS, not bash. It stays an interpreted command with no
 // build step of its own (README.md#cargo-and-bun-are-the-build-path).
 //
-// Delegates each rule to the script that owns it rather than reimplementing it: the
-// accepted-finding clock to tools/audit --expiry, the host toolchain to
-// tools/toolchain-check. Upstream freshness used to be delegated here too, to
-// tools/upstream-checker; PRD Q41 retired that script on 2026-08-28 and Renovate answers
-// the question now, on GitHub rather than to a local health command. Same
-// reasoning applies to systems.toml/connection checks below: this extends the
-// existing state-mount reality-check idiom (systems.toml stays the one
+// Delegates each rule to the script that owns it rather than reimplementing it: the host
+// toolchain to tools/toolchain-check, boot persistence to tools/service-runner.sh. Upstream
+// freshness used to be delegated here too, to tools/upstream-checker; PRD Q41 retired that
+// script on 2026-08-28 and Dependabot answers the question now, on GitHub rather than to a
+// local health command. The same reasoning applies to the systems.toml/connection checks
+// below: this extends the existing state-mount reality-check idiom (systems.toml stays the one
 // hand-authored registry, README.md#one-manifest-per-concern) rather than adding a second manifest or a
 // separate tool — see README.md#documentation-stays-owned-and-current.
 //
@@ -740,8 +739,8 @@ const CHECKS: Check[] = [
     },
   },
 
-  // Host toolchain — delegate to tools/toolchain-check, don't reimplement (same shape as
-  // the tools/audit --expiry delegation below: the script owns the rule, doctor reports). Reads
+  // Host toolchain — delegate to tools/toolchain-check, don't reimplement: the script owns
+  // the rule, doctor reports. This is the exemplar the delegations below point at. Reads
   // --json so a required miss maps to bad and an optional absence to warn, rather than
   // collapsing everything into one exit code. os/runtime come from machine.toml when we
   // have it; the checker self-resolves from uname otherwise.
@@ -1051,7 +1050,8 @@ const CHECKS: Check[] = [
   // Boot persistence for the autostart set. A capability could declare autostart = true, be
   // enabled, run fine all day, and simply be gone after the next reboot — because nothing ever
   // called install-persistence and nothing ever checked (#9). Delegated to service-runner.sh,
-  // which owns the rule; doctor reports. Same shape as the tools/audit --expiry delegation.
+  // which owns the rule; doctor reports. Same shape as the tools/toolchain-check delegation
+  // above.
   //
   // The second half is the inverse and is not cosmetic: watchdog.sh calls
   // `service-runner.sh start <cap>` every 30s and consults nothing about the enabled set, so a
@@ -1889,7 +1889,7 @@ const CHECKS: Check[] = [
 
   // Architecture-generator inputs — delegate to tools/check-generator-inputs-tracked.sh.
   // Needs `git ls-files` and the real checkout, which is what doctor already has. Same
-  // delegation shape as tools/audit --expiry below: doctor reports, the script owns the rule.
+  // delegation shape as tools/toolchain-check above: doctor reports, the script owns the rule.
   {
     name: "Architecture-generator input visibility (Axon#30)",
     run(ctx) {
@@ -1953,7 +1953,8 @@ const CHECKS: Check[] = [
 
   // There was an "Upstream audit" check here until 2026-08-28. It delegated to
   // tools/upstream-checker, which PRD Q41 retired along with the rest of the homegrown
-  // freshness stack; Renovate reports drift on GitHub now (renovate.json5).
+  // freshness stack; Dependabot reports drift on GitHub now (.github/dependabot.yml), which
+  // — unlike the Renovate App named here until 2026-09-02 — needs nothing installed to run.
   //
   // Nothing replaces it in this file, and that is the honest outcome rather than a gap
   // worth papering over. doctor answers "is this machine healthy", offline, in a second.
@@ -1964,37 +1965,47 @@ const CHECKS: Check[] = [
   // documentation file, and README.md#dependency-verdicts-and-provenance now says plainly
   // that a human owns it.
 
-  // Accepted-finding policies — delegate to tools/audit --expiry, don't reimplement.
-  //
-  // Every finding Axon accepts is accepted UNTIL a date — osv-scanner.toml's ignoreUntil.
-  // trivy-ignore/*.txt carried the same until 52aa8c5 (2026-08-28) retired the postgres
-  // capability and deleted the last policy in that directory.
-  // trivy and osv-scanner each enforce their own dates silently at scan time, so without this
-  // the first notice that a decision lapsed is a red build — and the only thing that ever
-  // "tracked" the re-decision was one GitHub issue per image whose entire content was "re-scan
-  // when the upstream digest changes". The files already carry the dates; a ticket restating
-  // them was waiting dressed up as work, and this is where that belongs instead.
-  //
-  // --expiry reads the files and runs no scanner, so this costs no image pull, no container
-  // runtime and no network — it answers offline exactly like the manifest checks above.
+  // There was an "Accepted-finding policies" check here until 2026-09-02. It delegated to
+  // `tools/audit --expiry`, which read osv-scanner.toml's ignoreUntil dates and warned before
+  // one lapsed. Q74 deleted the flag and the clock behind it: osv-scanner enforces those
+  // dates itself and names a lapsed entry under "unused ignores", so the pre-warning was the
+  // only thing Axon added and the only thing lost. The notice now arrives on the day, from
+  // the scanner, on the next push or the next weekly security.yml run.
+
+  // Host patch — did the daily upgrade job run. A launchd StartInterval unit does not fire on
+  // a sleeping Mac, so "scheduled" and "ran" are different questions and only the receipt
+  // answers the second. tools/host-patch.sh writes it; doctor reports. Same delegation shape
+  // as the toolchain check above.
   {
-    name: "Accepted-finding policies (tools/audit --expiry)",
+    name: "Host patch (capabilities/host-patch)",
     run(ctx) {
-      const auditPath = join(ctx.root, "tools", "audit");
-      if (!existsSync(auditPath)) {
-        ctx.warn(`missing ${auditPath}`);
+      const enabled: string[] = Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : [];
+      if (!enabled.includes("host-patch")) {
+        ctx.ok("host-patch not enabled on this machine — nothing to report");
         return;
       }
-      const proc = Bun.spawnSync({ cmd: [auditPath, "--expiry"], stdout: "pipe", stderr: "pipe" });
-      const out = proc.stdout.toString().trim();
-      if (out) console.log(out.split("\n").map((l) => `  ${l}`).join("\n"));
-      if (proc.exitCode !== 0) {
-        ctx.bad("an accepted-finding policy has lapsed — the scanner is reporting those findings again");
-      } else if (out.includes("needing a re-decision")) {
-        // warn, not bad: a date that is merely close is notice, not breakage. Failing here
-        // would hold the whole of doctor red for a fortnight before anything is wrong.
-        ctx.warn("an accepted-finding policy needs a re-decision soon — see above");
+      const receipt = join(ctx.overlayPath, "data", "host-patch", "last.json");
+      if (!existsSync(receipt)) {
+        ctx.warn("host-patch is enabled but has never written a receipt — it has not run");
+        return;
       }
+      let r: any;
+      try {
+        r = JSON.parse(readFileSync(receipt, "utf8"));
+      } catch {
+        ctx.bad("<overlay>/data/host-patch/last.json is not valid JSON — the last run could not record what it did");
+        return;
+      }
+      const ageH = (Date.now() - Date.parse(r.at)) / 3_600_000;
+      if (!Number.isFinite(ageH)) {
+        ctx.bad("the host-patch receipt carries no readable timestamp");
+        return;
+      }
+      if (ageH > 48) ctx.warn(`last patch run was ${Math.round(ageH)}h ago — a 24h job that has not run in two days is not running`);
+      if (r.failed) ctx.warn(`last patch run had failed steps:${r.failed}`);
+      if (r.audit === "finding") ctx.bad("the last patch run's audit found something — run tools/audit");
+      else if (r.audit === "scanner-missing") ctx.warn("the last patch run's audit could not run a scanner");
+      else if (ageH <= 48 && !r.failed) ctx.ok(`patched ${Math.round(ageH)}h ago, audit clean`);
     },
   },
 

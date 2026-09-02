@@ -29,7 +29,7 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # --- 1. a declared provider resolves through the systems id ---------------------------------
 cat > "$AXON_MACHINE_TOML" <<'EOF'
 os = "macos"
-container_runtime = "apple-container"
+container_runtime = "docker"
 capabilities = ["comms"]
 
 [capability.vaultwarden]
@@ -80,7 +80,7 @@ set -e
 # client at whatever answers on this host.
 cat > "$AXON_MACHINE_TOML" <<'EOF'
 os = "macos"
-container_runtime = "apple-container"
+container_runtime = "docker"
 capabilities = []
 
 [capability.vaultwarden]
@@ -98,7 +98,7 @@ grep -q "systems.local.toml" "$TEST_ROOT/err" || fail "the error must name the f
 # --- 6. the external set is exactly the sections that declare a provider --------------------
 cat > "$AXON_MACHINE_TOML" <<'EOF'
 os = "macos"
-container_runtime = "apple-container"
+container_runtime = "docker"
 capabilities = ["comms"]
 
 [capability.comms]

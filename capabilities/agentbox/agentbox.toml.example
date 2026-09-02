@@ -9,11 +9,12 @@
 agent = "pi"                     # a directory under capabilities/agentbox/profiles/
 
 # --- the model endpoint on the host ---------------------------------------
-# Left unset, the base URL is derived at run time: http://<network gateway>:<model_port>/v1.
-# The gateway is read from the network itself, so no subnet is ever hardcoded here —
-# which also means a `container` release that renumbers the bridge changes nothing.
+# Left unset, the base URL is derived at run time: http://host.docker.internal:<model_port>/v1.
+# That name is the host as docker sees it, so no subnet is hardcoded here and a daemon that
+# renumbers its bridge changes nothing. It resolves ONLY in an `--online` box; the default
+# box has no network at all (Q75, and capabilities/agentbox/README.md).
 model_port = "8000"
-# model_base_url = "http://<host>:<port>/v1"   # override, for an endpoint off this bridge
+# model_base_url = "http://<host>:<port>/v1"   # override, for an endpoint elsewhere
 
 model_id             = "<the id your server advertises at /v1/models>"
 model_name           = "<how it should read in the agent's model picker>"
@@ -27,6 +28,11 @@ api_key_file = "config/agentbox.env"
 api_key_var  = "AGENTBOX_MODEL_API_KEY"
 
 # --- the box ---------------------------------------------------------------
-network = "agentbox"             # host-only network; created on first build/run
+# `network` stood here until 2026-09-02 (Q75). It named a host-only network the
+# launcher created; docker has no equivalent, so the two modes are now built in and neither
+# takes a name — `--network none` by default, the daemon's own bridge with --online.
+#
+# cpus is a CFS quota, not a vCPU count: the box still sees every host core in `nproc` and
+# is throttled at this share. memory is a hard limit the box does see.
 cpus    = "4"
 memory  = "8G"

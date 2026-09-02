@@ -286,59 +286,96 @@ argues for it — and that rule is unchanged. The consuming README also records 
 and what Axon adopted: runtime, idea, architecture, algorithm, code or asset. A local clone or
 archive path is never durable provenance.
 
-What changed on 2026-08-28 (PRD Q41) is who checks what, not what is required:
+What changed on 2026-09-02 (Q74) is who checks what, and how fast a fix lands. What is
+required is unchanged.
 
 | Question | Answered by |
 |---|---|
 | Is there a verdict, a pin, a licence and a reason? | `upstreams.toml` itself, read by a human at review time |
-| Is a newer release out? | Renovate — `renovate.json5`, reporting to its dependency dashboard |
-| Is there a known vulnerability in a locked dependency? | GitHub's own alerts, plus `osv-scanner` inside `tools/audit` |
-| Is there a secret, a SAST finding or a CVE in an image? | `tools/audit` — gitleaks, semgrep, osv-scanner, trivy |
+| Is a newer release out? | Dependabot version updates — `.github/dependabot.yml`, one grouped pull request per ecosystem per day, with no cooldown |
+| Is a locked dependency known-vulnerable? | Dependabot alerts and security updates, and `osv-scanner` in `.github/workflows/security.yml` and in `tools/audit` |
+| Is there a CVE in a pinned capability image? | `grype registry:<image>:<tag>` in `security.yml`, weekly. No container runtime and no local pull |
+| Is there a secret in this repository? | GitHub secret scanning, with push protection — and `gitleaks` in `tools/audit`, which reads history the push protection never saw |
+| Is there a secret in the private overlay? | `tools/audit` alone. GitHub charges for secret scanning on a private repository, and this repository's CI cannot reach the overlay, so this is the one scan that has to be local |
+| Is there a flaw in the code as written? | CodeQL — `.github/workflows/codeql.yml`, `security-extended` over rust, javascript-typescript, python and actions |
+| Is a host package behind? | Nothing asks. `capabilities/host-patch` upgrades this machine every day |
 
-`upstreams.toml` is documentation now, and only documentation. Until this date a bash script
-(`tools/upstream-checker`, 404 lines, with a hand-rolled bash-3.2 semver comparator and a GHSA
-fetcher behind it) enforced the manifest and reported drift. It is deleted. Axon was maintaining a
-private Dependabot, and the doctrine it protected does not need custom code to survive — it needs
-a human to read a verdict before adopting a dependency, which was always true.
+`upstreams.toml` is documentation, and only documentation. Nothing enforces its fields. A human
+reads a verdict before adopting a dependency, which was always the actual rule. One script still
+reads a `pin` — `tools/agent-integrations.sh` drives an upstream's own installer at its pinned
+version — and `tools/self.ts` publishes verdict and pin into `self.json`. Neither enforces
+anything.
 
-**Renovate is a GitHub App and the operator must install it.** Committing `renovate.json5` enables
-nothing on its own. Until the App is installed on the repository there is no automated freshness
-check at all; that is a real gap and it is stated here rather than left to be discovered. When
-installed, it covers 24 of the manifest's 80 entries — the rest have empty pins, declare a
-`pin_kind` that a release tag cannot describe, are not GitHub URLs, or describe what a host has
-installed rather than what a registry lists. `renovate.json5` names each exclusion and why.
+`pin_kind`, `tracked_by` and `installed_probe` were deleted on 2026-09-02. Each existed to
+describe an opt-out from `renovate.json5`'s release watch, and that file went with the cooldown.
+`installed_probe` named how to ask *this* machine what it really has, and under patch-first the
+answer is "whatever brew installed last night" — the question stops being askable rather than
+stopping being asked. What each deleted line said is still in the manifest's git history.
 
-One thing genuinely lost: nothing now compares a pin against what *this machine* has installed.
-The retired checker executed `installed_probe` commands for that and caught brew moving `typst`
-and `bitwarden-cli` past their pins on 2026-08-03. Renovate compares pin against registry, both
-remote, and cannot see it. Those six `installed_probe` declarations stay in the manifest as a
-record of how to ask; asking is manual.
+**Two gaps, named rather than left to be inferred from a green check.** Shell is scanned by
+nothing: CodeQL has no shell extractor, `semgrep` was retired with the rest of the set, and
+0.44 MB of `tools/` is the largest hand-written surface here. And nothing detects a malicious
+release — see [Patch first](#patch-first) for why that trade was taken.
 
-### Pins and cooldown
+### Patch first
 
-Never consume `:latest`. Pin code to a reviewed ref, then hold seven to fourteen days before
-adopting a release. The hold is what catches a compromised publish: the ecosystem finds those in
-days, and reading the dependency tree yourself cannot. The window lives once, in `axon.toml`
-`[upstream] cooldown_min_days`. Audit the delta rather than the world. A dependency that is
-mutable data rather than executable code must say why its pin policy differs.
+This section was **Pins and cooldown** until 2026-09-02, and an `upstreams.toml` entry dated
+before then was decided under the hold it described. Those entries still point here; their text is
+left as written, because rewriting a decision's reasoning to match a later rule falsifies it.
 
-The hold used to be a recommendation a script reported and never failed on. Renovate applies it as
-`minimumReleaseAge`, which is stricter: it will not raise an update at all until the release is
-seven days old. The active-vulnerability carve-out — the one reason to bump inside the hold — is
-therefore a manual bump now, which is correct, because that carve-out always required a human to
-have read the advisory. `capabilities/agentbox` reads the same `axon.toml` key for its
-host-install gate, where the hold is still a confirmation and fails closed without a terminal.
+Take the patch. There is no adoption cooldown, on the host or in this repository. Q74
+removed it.
 
-Not every correct pin is a release. A commit sha is the right pin for a repository that cuts no
-releases, and an image tag, a hosted API surface or a data path are right for what they name — but
-`releases/latest` cannot describe any of them, so the freshness check must be told rather than left
-to fail. Such an entry declares `pin_kind` and `tracked_by` in `upstreams.toml`, and
-`renovate.json5`'s regex manager skips it by construction: the pattern matches only an entry whose
-`pin` is followed directly by `why`, which is exactly the shape of an entry claiming a release tag.
-`tracked_by` is what keeps the opt-out honest: it names what governs the entry's freshness once
-release drift no longer does, so declaring a check inapplicable never becomes permission to stop
-thinking about staleness. Nineteen entries are in this state today, and nothing automated reads
-their `tracked_by` — it is written for the human doing the review.
+The hold asked a release to age seven to fourteen days before adoption, on the argument that the
+ecosystem finds a compromised publish in days and reading the dependency tree yourself cannot.
+That argument is still true, and it was traded away deliberately. The same window that catches a
+poisoned release also holds every ordinary security fix, and this deployment has one operator: a
+hold that needs a human to end it is a hold that ends late. What was measured on the day of the
+ruling is why the trade is defensible rather than merely chosen — Homebrew formulae sat outdated
+with no updater configured at all, `openssl@3`, `gnupg`, `libgcrypt`, `nss` and `ffmpeg` among
+them, while the bot that was to enforce the hold had never been installed. The hold was guarding a
+door that was already open.
+
+**What replaces it is speed and reporting, not silence.** `capabilities/host-patch` runs
+`tools/host-patch.sh` every 24 hours — `brew update`, `brew upgrade`, `brew cleanup`,
+`uv tool upgrade --all`, `rustup update`, then `tools/audit` — and writes a receipt the next
+`tools/doctor` reads out, because a scheduled job's real failure is that it quietly stops running.
+`.github/dependabot.yml` opens the repository half daily, with `cooldown: default-days: 0` written
+out in every block so the three-day default cannot creep the hold back in.
+`.github/workflows/security.yml`, CodeQL and GitHub's advisory alerts are what now stand between
+a bad publish and this machine.
+
+**The named cost.** A compromised publish now reaches this host within a day instead of after a
+seven-day hold. Nothing here detects that class: a scanner reads advisories, and the advisory for
+a malicious release is written after somebody finds it. What stands against it is smallness and
+reading — every entry in `upstreams.toml` carries a human verdict, and `bun install` never runs a
+lifecycle hook (`tools/check-bun-install-policy.sh`), which is the path ChainDrop took.
+
+**One binary, one owner.** On macOS `brew` owns `bun`, `uv`, `gitleaks` and `osv-scanner`, so
+`host-patch.sh` never calls `bun upgrade` or `uv self update`. A second updater for one file is
+how a `~/.local/bin` copy comes to shadow the `brew` one and answer differently — the PRD records
+that happening to `yt-dlp`, which returned HTTP 403 on every media URL while `--dump-json` kept
+working.
+
+**Never consume `:latest`, and pin anyway.** `tools/check-service-tomls.sh` still refuses a
+floating image tag, because a deploy that cannot be reproduced cannot be diagnosed. What changed is
+the waiting, not the pinning. For a host tool a package manager owns, the `pin` records the version
+its `why` was written against, not the version installed today — `host-patch` moves the installed
+one nightly and nothing here objects. Audit the delta rather than the world. Not every correct pin
+is a release: a commit sha is right for a repository that cuts no releases, and an image tag is
+right for what it names.
+
+**The Bun the workflows install is `latest`.** `oven-sh/setup-bun` is asked for `bun-version:
+latest` in both workflows, so CI runs the runtime a contributor's package manager just gave them.
+It was three pinned literals and `tools/check-bun-pin.sh` keeping them equal until 2026-09-02; with
+no literal left there is nothing to diverge, and the class that gate caught is impossible rather
+than watched. `upstreams.toml [bun]` keeps a `pin` as the record of what its verdict was written
+against. The cost is stated rather than hidden: a bad Bun release can turn CI red for a reason
+unrelated to the code, which is the same trade `security.yml` makes for its scanners.
+
+`capabilities/agentbox`'s host-install keeps the sha256 verification of the release archive and the
+printed advisory reminder. The cooldown half, and the separate `gate` verb that was left holding
+only it, are gone.
 
 ### Secrets
 
@@ -661,8 +698,8 @@ standing specification type.
 
 One web app is the visible form of the gluing layer: **installer, maintainer, and dashboard**.
 
-- **Install/maintain**: guided flows to pick plugins, run the audit gate, apply updates after
-  cooldown, and see doctor results as UI.
+- **Install/maintain**: guided flows to pick plugins, run the audit gate, apply updates, and
+  see doctor results as UI.
 - **Dashboards**: system status plus tabs embedding the UIs of integrated services: home
   automation, home-server services, printer, transit, finance, the public daemon profile, ...
   one place, all of it.
@@ -673,7 +710,7 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 
 | Path | Holds |
 |---|---|
-| `axon.toml` | Axon manifest: platform name, upstream cooldown window, default overlay root. Tracked and shared, so nothing machine-specific lives here |
+| `axon.toml` | Axon manifest: platform name, the release-tag pattern, default overlay root. Tracked and shared, so nothing machine-specific lives here |
 | `axon.local.toml` | this machine's overlay root, and optionally which of that overlay's machines this is. Gitignored, one per machine, written by `tools/install.sh` (`axon.local.toml.example` is the template) |
 | `<overlay>/config/machine.toml` | this machine's identity: os, container runtime, enabled capabilities, state-mount registry. One file per machine once an overlay holds more than one, under `config/machines/` |
 | `<overlay>/config/deployment.env` | this deployment's shared facts, resolved by `libs/axon-config` and `libs/axon-server` for every capability that needs one. A capability may still override, but may not silently disagree |
@@ -687,7 +724,7 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 | `dashboard/` | the spine's shell — discovers installed capabilities via their manifests and mounts their panels (installer, doctor UI, service dashboards); owns no domain, no data |
 | `libs/<name>/` | spine-owned shared code with no domain of its own — statically linked into capability binaries at compile time, own crate in the Cargo workspace from day one |
 | `schemas/` | shared contracts; import, never redefine |
-| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks/semgrep/osv-scanner/trivy behind one verb), generate-architecture, graphify, agent-integrations (harness integrations from upstream pins), mini-tools |
+| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks + osv-scanner behind one verb), host-patch (the daily upgrade job), generate-architecture, graphify, agent-integrations (harness integrations from upstream pins), mini-tools |
 
 `ARCHITECTURE.md`'s tables and its Mermaid dependency graph (Packs → capabilities they drive →
 the upstream image each is pinned to) are derived straight from

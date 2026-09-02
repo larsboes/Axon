@@ -72,29 +72,24 @@ env_file = "config/example.env"           # relative to the selected overlay; re
 # namespace instead of a bridge, and `ports` are NOT published (host mode binds the
 # container's own ports directly). Required by capabilities needing LAN mDNS/service
 # discovery — e.g. home-assistant finding Hue/Shelly/ESPHome. Omit for normal bridged
-# capabilities. Honored on docker/podman; apple-container host networking differs, verify there.
+# capabilities. Honored on docker and podman, the two runtimes service-runner.sh accepts.
 # network_mode = "host"
 
 # Optional — Linux capabilities to grant beyond the runtime's default set, for an image
 # that genuinely needs one (pihole's FTLDNS binds :53 and manages its own interface, so it
-# needs NET_ADMIN). Bare names, no CAP_ prefix — docker's canonical form, and
-# apple-container accepts the same spelling. Grant the single capability the image
+# needs NET_ADMIN). Bare names, no CAP_ prefix — docker's canonical form, which podman
+# takes too. Grant the single capability the image
 # documents; --privileged is not expressible here on purpose. NB: bare array line, no
 # inline comment (toml_array contract).
 # cap_add = ["NET_ADMIN"]
 
-# Optional — only if the image chowns/chmods its data dir on startup (e.g. the official
-# postgres image) AND runs under apple-container, whose virtiofs bind mounts don't support
-# guest-side chown/chmod at all (confirmed on capabilities/postgres — see
-# schemas/service.toml.example).
-# When "true", service-runner.sh creates a real `container volume` and mounts that instead
-# of bind-mounting `volumes`' host path — apple-container only; docker/podman keep the plain
-# bind mount, their filesystem sharing has real chown support. Tradeoff: a managed volume
-# isn't a host directory, so it's invisible to tools/backup.sh's raw-copy/backup_sqlite —
-# only omit this if the image doesn't need real Unix ownership on its data dir. Don't set it
-# for "safety" on a capability that doesn't strictly need it: it trades away backup reachability
-# and host-side debuggability (ls/cat on the real files) for nothing.
-# managed_volume = "true"
+# `managed_volume = "true"` stood here until 2026-09-02, when Q75 retired it with
+# apple-container. It existed for exactly one runtime property — apple-container's virtiofs
+# bind mounts refused guest-side chown/chmod — and docker and podman share the host filesystem
+# with real Unix ownership, so the field had nothing left to do. No manifest had declared it
+# since capabilities/postgres retired (2026-08-27, PRD Q45). service-runner.sh deleted the
+# PARSE along with the branch: a field read and then ignored would silently change where a
+# capability's data lands.
 
 # Optional — only if this capability is backed up by tools/backup.sh.
 # Each completed archive embeds `axon-backup.toml` with this historical contract plus
@@ -311,7 +306,7 @@ freshness_stale_hours  = "24"             # past this age nothing is arriving, a
 
 # tools/service-runner.sh:
 #   start <name>               -> container: dispatches by machine.toml's container_runtime
-#                                  (apple-container | docker | podman). process: execs `command`
+#                                  (docker | podman). process: execs `command`
 #                                  and waits for health. Either way a no-op while a maintenance
 #                                  hold is set, which is what stops the watchdog racing a
 #                                  maintenance window
@@ -322,6 +317,6 @@ freshness_stale_hours  = "24"             # past this age nothing is arriving, a
 #   status <name>              -> pid/container state + live health, one line
 #   up | down | status         -> no capability argument: the whole enabled set, started in
 #                                  dependency order (`requires =`) and stopped in reverse
-#   install-persistence <name> -> dispatches by machine.toml's os; docker/podman
-#                                  skip this (native --restart), apple-container
-#                                  needs it (no restart policy in that runtime)
+#   install-persistence <name> -> dispatches by machine.toml's os. A container capability
+#                                  is skipped outright: both runtimes restart it natively
+#                                  (--restart unless-stopped), so a unit would fight them

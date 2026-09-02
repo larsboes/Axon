@@ -1,9 +1,9 @@
 /**
  * Protected paths — the seatbelt, not the boundary.
  *
- * The micro-VM is what actually contains this agent: only /workspace is mounted, so
- * there is no host home to protect. This extension exists for the two cases the VM
- * doesn't cover — the day someone widens a mount, and the agent's own config
+ * The container is what actually contains this agent: only /workspace is mounted, so
+ * there is no host home to protect. This extension exists for the two cases the
+ * container doesn't cover — the day someone widens a mount, and the agent's own config
  * directory, which holds the model API key in plaintext because the agent needs to
  * read it.
  *

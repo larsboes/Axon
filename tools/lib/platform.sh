@@ -2,7 +2,7 @@
 # Source AFTER paths.sh. Exports AXON_OS and AXON_CONTAINER_RUNTIME from
 # axon-overlay/config/machine.toml — the one place per-machine platform
 # facts are declared. Capability scripts branch on these instead of
-# assuming macOS/apple-container the way the first vaultwarden cut did.
+# assuming macOS and one container runtime the way the first vaultwarden cut did.
 
 if [ -z "${AXON_PERSONAL_ROOT:-}" ]; then
   echo "platform.sh: source tools/lib/paths.sh first" >&2

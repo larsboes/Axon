@@ -523,9 +523,35 @@ with `comms summarize --pending`).
 
 ## Extractors
 
-A URL is routed by host and path. Only http(s) is accepted, checked before any
-extractor runs: `file://` would otherwise make yt-dlp and the article fetcher
-read the local disk, and this path is reachable over HTTP.
+A URL is routed by host and path. Two checks run before any extractor does, at
+the one door every caller goes through, because this path is reachable over
+HTTP and its input is a URL a stranger chose:
+
+- **Scheme.** Only http(s). `file://` would otherwise make yt-dlp and the
+  article fetcher read the local disk.
+- **Destination.** The host is resolved and every address it answers with must
+  be publicly routable. Loopback, RFC 1918 private, link-local (which carries
+  the cloud metadata service at 169.254.169.254), unique-local, carrier-grade
+  NAT, multicast and reserved addresses are all refused, in the IPv4-in-IPv6
+  spellings as well as the plain ones. Every Axon service binds `127.0.0.1`, so
+  without this an ingested link reaches them all: `http://127.0.0.1:8086/api/plans`
+  is still http. `http_client`'s redirect policy re-runs both checks on each of
+  at most three hops, so a `302` is not the way around them. Q74.
+
+**The operator-visible cost: a LAN or loopback URL can no longer be ingested.**
+A link to a NAS, a router page or a home dashboard pasted into `/ingest` or
+found in a `vault_link_sources` file now fails with
+`refused: <host> resolves to a non-public address` instead of being fetched.
+The one escape is `ingest_allowed_origins` in the config — an exact
+scheme-host-port, empty by default, and written down rather than inferred.
+`tools/demo-up` is its only user in this repository (`demo/README.md`).
+
+Not closed: DNS rebinding. The name is resolved once for the check and again by
+the connector, so a record with a one-second TTL can answer public to one and
+private to the other. Closing it needs the checked address to be the address
+the socket gets — a pinned resolver or a custom connector — which is a larger
+change than the guard, and the doc comment on `check_destination` says so
+rather than implying the hole is shut.
 
 | Source | Matches | Title / author | Transcript |
 |---|---|---|---|
@@ -789,7 +815,10 @@ Routes:
 Binds `127.0.0.1`, not `0.0.0.0`: `/ingest` makes the server fetch a URL on
 request, so anything that can reach the port can use it to reach whatever the
 host can. Remote access belongs in front of the process (Tailscale), not in an
-open bind.
+open bind. Since Q74 the second half of that sentence is narrower than it
+was — the destination check under "Extractors" refuses a fetch to this machine
+or this network — but it is still the right bind, because the guard bounds
+where a request can go and not who may make one.
 
 ## Configuration
 
@@ -821,6 +850,9 @@ while `summary`, `current_focus` and `category_affinity` remain reader-facing me
 `vault_link_sources[] {id, path, heading?, enabled}`,
 `feed_sources[] {id, adapter, enabled, query?, language?, since?, limit, data_class}`,
 `rules[]`, `keeper_export_dir`,
+`ingest_allowed_origins[]` (exact `scheme://host:port` strings that `/ingest` may fetch even
+though they resolve inside this machine; **empty by default and on every real machine**, and an
+entry clears that one origin rather than the host — see "Extractors"),
 `obsidian {root}` (the vault the feed library projects into; absent leaves the bridge off,
 and the same block shape as `trips.json`). See
 `comms.config.example.json`. Nothing personal lives in this repo — sender

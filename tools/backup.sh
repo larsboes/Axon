@@ -149,11 +149,11 @@ for cp in ${CPATHS[@]+"${CPATHS[@]}"}; do
   safe_relative "${cp#/}" || { echo "backup.sh: unsafe container backup path declaration: $cp" >&2; exit 1; }
 done
 
-# The container runtime, resolved once — backup_container_paths needs it.
+# The container runtime, resolved once — backup_container_paths needs it. Both remaining
+# runtimes name their own CLI, so the manifest value IS the command.
 runtime_exec() {
   case "$AXON_CONTAINER_RUNTIME" in
-    apple-container) echo "container exec $NAME" ;;
-    docker|podman)   echo "$AXON_CONTAINER_RUNTIME exec $NAME" ;;
+    docker|podman) echo "$AXON_CONTAINER_RUNTIME exec $NAME" ;;
     *) echo "backup.sh: unsupported container_runtime '$AXON_CONTAINER_RUNTIME'" >&2; exit 1 ;;
   esac
 }
