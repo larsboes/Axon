@@ -333,8 +333,11 @@ This section was **Pins and cooldown** until 2026-09-02, and an `upstreams.toml`
 before then was decided under the hold it described. Those entries still point here; their text is
 left as written, because rewriting a decision's reasoning to match a later rule falsifies it.
 
-Take the patch. There is no adoption cooldown, on the host or in this repository. Q74
-removed it.
+Take the patch. There is no adoption cooldown, on the host or in this repository, and nothing is
+held at a version anywhere. Q74 removed the cooldown on 2026-09-02; Q_DEPIN, the same day,
+removed what was left — `upstreams.toml`'s 86 `pin` lines, the Rust toolchain literal, the three
+container image versions, and `capabilities/agentbox`'s pinned release and checksums. Every
+dependency here tracks its upstream's latest, and an update lands the day it exists.
 
 The hold asked a release to age seven to fourteen days before adoption, on the argument that the
 ecosystem finds a compromised publish in days and reading the dependency tree yourself cannot.
@@ -346,20 +349,47 @@ with no updater configured at all, `openssl@3`, `gnupg`, `libgcrypt`, `nss` and 
 them, while the bot that was to enforce the hold had never been installed. The hold was guarding a
 door that was already open.
 
-**What replaces it is speed and reporting, not silence.** `capabilities/host-patch` runs
-`tools/host-patch.sh` every 24 hours — `brew update`, `brew upgrade`, `brew cleanup`,
-`uv tool upgrade --all`, `rustup update`, then `tools/audit` — and writes a receipt the next
-`tools/doctor` reads out, because a scheduled job's real failure is that it quietly stops running.
-`.github/dependabot.yml` opens the repository half daily, with `cooldown: default-days: 0` written
-out in every block so the three-day default cannot creep the hold back in.
-`.github/workflows/security.yml`, CodeQL and GitHub's advisory alerts are what now stand between
-a bad publish and this machine.
+**What replaces it is speed and reporting, not silence.** Four things move on their own, and each
+one leaves something a check can read:
+
+- `capabilities/host-patch` runs `tools/host-patch.sh` every 24 hours — `brew update`, `brew
+  upgrade --formula`, `brew upgrade --cask --greedy`, `brew cleanup`, one `uv tool upgrade` per
+  installed tool, `rustup update`, then `tools/audit`.
+- `capabilities/container-refresh` runs `tools/container-refresh.sh` every 24 hours on a host
+  that runs containers: it pulls every image a `service.toml` declares and recreates the ones
+  whose digest moved.
+- `.github/dependabot.yml` opens the repository half daily, with `cooldown: default-days: 0`
+  written out in every block so the three-day default cannot creep the hold back in, and
+  `.github/workflows/dependabot-automerge.yml` arms `gh pr merge --auto --squash` on each pull
+  request — so the ordinary bump merges itself once the required checks pass, and no bump waits
+  for somebody to look.
+- `rust-toolchain.toml` names the `stable` channel rather than a release, which is the toolchain
+  `rustup update` above already installs.
+
+Both scheduled jobs write a receipt the next `tools/doctor` reads out, because a scheduled job's
+real failure is that it quietly stops running. `.github/workflows/security.yml`, CodeQL and
+GitHub's advisory alerts are what now stand between a bad publish and this machine.
 
 **The named cost.** A compromised publish now reaches this host within a day instead of after a
 seven-day hold. Nothing here detects that class: a scanner reads advisories, and the advisory for
 a malicious release is written after somebody finds it. What stands against it is smallness and
 reading — every entry in `upstreams.toml` carries a human verdict, and `bun install` never runs a
 lifecycle hook (`tools/check-bun-install-policy.sh`), which is the path ChainDrop took.
+
+**The second cost, from dropping the versions.** A merely BAD release now lands too. A broken
+`graphify` breaks `tools/graphify.sh` the day it ships, a bad Home Assistant `:stable` is what
+the house runs by the next morning, and CI can go red for a Bun release nobody here chose. That
+is the trade, not an oversight: a version literal bought a delay and, on this deployment, delay
+was measured to be the more expensive failure. It also never bought reproducibility — a container
+tag is rebuilt under the same name, and `upstreams.toml`'s `pin` recorded an audit date while
+`host-patch` moved the installed version past it every night.
+
+**Where the version actually lives now.** Not in a manifest. The digest of a running container
+(`docker inspect <name> --format '{{.Image}}'`, ISA.md C4), the label on a built agentbox image,
+`Cargo.lock` and `bun.lock` for what is compiled, and `<overlay>/data/*/last.json` for what the
+last scheduled run did. Every one of those describes a machine rather than an intention.
+`toolchain.toml`'s `min_version` rows are the exception that proves the rule: they are FLOORS —
+the oldest release Axon's use of a tool is known to work on — and never a version to install.
 
 **One binary, one owner.** On macOS `brew` owns `bun`, `uv`, `gitleaks` and `osv-scanner`, so
 `host-patch.sh` never calls `bun upgrade` or `uv self update`. A second updater for one file is
@@ -382,9 +412,13 @@ there is nothing to diverge, and the class that gate caught is impossible rather
 cost is stated rather than hidden: a bad Bun release can turn CI red for a reason
 unrelated to the code, which is the same trade `security.yml` makes for its scanners.
 
-`capabilities/agentbox`'s host-install keeps the sha256 verification of the release archive and the
-printed advisory reminder. The cooldown half, and the separate `gate` verb that was left holding
-only it, are gone.
+**`capabilities/agentbox` builds from the latest release.** `agentbox build` and `agentbox
+host-install` resolve GitHub's `/releases/latest` and verify the tarball against THAT release's
+own published `SHA256SUMS` — so the sha256 refusal survives, and the version and checksum
+literals it used to compare against are gone. The self-update shim went with them: it refused
+`pi update` to protect a pin, and with no pin it would refuse the outcome this section asks for.
+The cooldown half, and the separate `gate` verb that was left holding only it, are gone. The
+printed advisory reminder stays, because nothing automated reads advisories for a release tarball.
 
 ### Secrets
 
@@ -733,7 +767,7 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 | `dashboard/` | the spine's shell — discovers installed capabilities via their manifests and mounts their panels (installer, doctor UI, service dashboards); owns no domain, no data |
 | `libs/<name>/` | spine-owned shared code with no domain of its own — statically linked into capability binaries at compile time, own crate in the Cargo workspace from day one |
 | `schemas/` | shared contracts; import, never redefine |
-| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks + osv-scanner behind one verb), host-patch (the daily upgrade job), generate-architecture, graphify, agent-integrations (harness integrations from upstream pins), mini-tools |
+| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks + osv-scanner behind one verb), host-patch (the daily host upgrade job), container-refresh (the daily image pull + recreate), generate-architecture, graphify, agent-integrations (each upstream's own harness integration, at its latest release), mini-tools |
 
 `ARCHITECTURE.md`'s tables and its Mermaid dependency graph (Packs → capabilities they drive →
 the upstream image each declares) are derived straight from
