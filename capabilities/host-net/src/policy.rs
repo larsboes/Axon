@@ -85,6 +85,36 @@ pub fn unexpected(listeners: &[Listener], policy: &Policy) -> Vec<Exposure> {
     out
 }
 
+/// The code `check` answers with for this finding list.
+///
+/// `check`'s answer is a number before it is a sentence: `tools/host-watch.ts` branches on the
+/// exit code and never parses the text. The mapping lives here, next to the rule it reports on,
+/// so a test can reach it — inline in `main`'s dispatch nothing could.
+pub fn verdict(found: &[Exposure]) -> u8 {
+    if found.is_empty() {
+        crate::EXIT_MATCHED
+    } else {
+        crate::EXIT_UNEXPECTED
+    }
+}
+
+/// Turn "there is no policy" into an error instead of a pass.
+///
+/// `load` reports absence as `Ok(None)`, because a file that was never written is not a read
+/// failure. This is the step that refuses to score it as a clean host: without it, an operator
+/// who never wrote a policy gets exit 0 and a reassuring sentence, which is the failure shape
+/// the whole crate is built against
+/// (Packs/axon/skills/axon/references/shared-failure-policy.md).
+pub fn require(
+    loaded: Option<(std::path::PathBuf, Policy)>,
+) -> Result<(std::path::PathBuf, Policy), String> {
+    loaded.ok_or_else(|| {
+        "no policy at <overlay>/config/host-net-policy.toml\n       \
+         See schemas/host-net-policy.toml.example for the expected shape."
+            .to_string()
+    })
+}
+
 /// Read the overlay policy. `Ok(None)` means there is no overlay to read one from, which the
 /// caller reports as a setup problem rather than as a clean host.
 pub fn load() -> Result<Option<(std::path::PathBuf, Policy)>, String> {
@@ -116,6 +146,23 @@ mod tests {
 
     fn policy(toml_text: &str) -> Policy {
         toml::from_str(toml_text).unwrap()
+    }
+
+    /// A policy that accounts for every wildcard listener in the fixture.
+    fn fully_declared() -> Policy {
+        policy(
+            r#"
+[[expect_wildcard]]
+process = "example-vpn-network-extension"
+reason = "the VPN extension's relay port"
+[[expect_wildcard]]
+process = "rapportd"
+reason = "stock macOS continuity"
+[[expect_wildcard]]
+process = "interceptor-daemon"
+reason = "an operator-accepted daemon"
+"#,
+        )
     }
 
     /// The match is on the basename `ps` reports, never on netstat's truncated field. The
@@ -161,22 +208,36 @@ mod tests {
         assert_eq!(rapportd[0].describe(), "rapportd on *:59039 (tcp4+tcp6)");
     }
 
+    /// The three exit codes are the contract `tools/host-watch.ts` consumes, so they are pinned
+    /// as numbers rather than as names. Renaming a constant is free; renumbering one silently
+    /// turns "something is exposed" into "checked and clean" at the only caller that reads it.
+    #[test]
+    fn the_exit_codes_are_the_contract_host_watch_reads() {
+        let rows = listeners();
+
+        // Nothing unexpected -> 0.
+        let found = unexpected(&rows, &fully_declared());
+        assert!(found.is_empty());
+        assert_eq!(verdict(&found), 0);
+
+        // One unexpected wildcard listener -> 1.
+        let found = unexpected(&rows, &Policy::default());
+        assert!(!found.is_empty());
+        assert_eq!(verdict(&found), 1);
+
+        // No policy file -> an error, which `main` reports as 2. `Ok(None)` must never reach
+        // `verdict`, or an unconfigured host scores the same as a clean one.
+        assert!(require(None).is_err());
+        assert_eq!(crate::EXIT_CANNOT_CHECK, 2);
+
+        // And the named constants agree with the numbers above.
+        assert_eq!(crate::EXIT_MATCHED, 0);
+        assert_eq!(crate::EXIT_UNEXPECTED, 1);
+    }
+
     #[test]
     fn a_fully_declared_host_has_nothing_unexpected() {
         let rows = listeners();
-        let all = policy(
-            r#"
-[[expect_wildcard]]
-process = "example-vpn-network-extension"
-reason = "the VPN extension's relay port"
-[[expect_wildcard]]
-process = "rapportd"
-reason = "stock macOS continuity"
-[[expect_wildcard]]
-process = "interceptor-daemon"
-reason = "an operator-accepted daemon"
-"#,
-        );
-        assert_eq!(unexpected(&rows, &all), vec![]);
+        assert_eq!(unexpected(&rows, &fully_declared()), vec![]);
     }
 }

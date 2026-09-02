@@ -37,6 +37,7 @@ Policy: <overlay>/config/host-net-policy.toml — see schemas/host-net-policy.to
 Exit: 0 = matched the policy, 1 = unexpected exposure, 2 = could not check.
 ";
 
+const EXIT_MATCHED: u8 = 0;
 const EXIT_UNEXPECTED: u8 = 1;
 const EXIT_CANNOT_CHECK: u8 = 2;
 
@@ -286,13 +287,7 @@ fn cmd_tailnet(json: bool) -> Result<u8, String> {
 }
 
 fn cmd_check(json: bool) -> Result<u8, String> {
-    let Some((path, policy)) = policy::load()? else {
-        return Err(
-            "no policy at <overlay>/config/host-net-policy.toml\n       \
-             See schemas/host-net-policy.toml.example for the expected shape."
-                .into(),
-        );
-    };
+    let (path, policy) = policy::require(policy::load()?)?;
     let rows = listeners()?;
     let found = policy::unexpected(&rows, &policy);
     if json {
@@ -333,7 +328,7 @@ fn cmd_check(json: bool) -> Result<u8, String> {
     }
     // --json still carries the verdict in the exit code: host-watch reads both, and a
     // non-zero exit here is data, not a failure.
-    Ok(if found.is_empty() { 0 } else { EXIT_UNEXPECTED })
+    Ok(policy::verdict(&found))
 }
 
 /// Left-aligned columns, padded to the widest cell. Row 0 is the header.
