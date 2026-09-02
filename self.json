@@ -1219,7 +1219,7 @@
     },
     {
       "name": "apple-container",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "1.2.2"
     },
     {

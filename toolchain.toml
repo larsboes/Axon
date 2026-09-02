@@ -5,7 +5,7 @@
 # host tool must be on PATH for Axon's own scripts to run, and how do you install it." Most
 # entries here (git, jq, uv, gh, restic, docker, cargo) are host infrastructure with no
 # upstreams.toml entry at all — Axon doesn't build them, it just calls them. The few that are
-# ALSO adopted code (bun, the scanners, bitwarden-cli, apple-container) carry `upstream = <id>`
+# ALSO adopted code (bun, bitwarden-cli, apfel, macmon, the scanners) carry `upstream = <id>`
 # pointing at their upstreams.toml section; the pin/license/why live THERE, never restated here
 # (README.md#schemas-and-dependency-direction "import, never redefine"; README.md#one-manifest-per-concern no duplication).
 #
@@ -169,18 +169,21 @@ install_linux = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
 
 # ---- container runtimes (the checker validates only this machine's chosen one) ---------
 
-[apple-container]
-required = "runtime"
-os = "macos"
-bin = "container"
-upstream = "apple-container"
-why = "the container runtime on macOS (machine.toml container_runtime = apple-container)"
-install_macos = "see upstreams.toml pin — Apple's `container` CLI"
+# [apple-container] stood here until 2026-09-02, when Q_CONTAINER retired it. This machine
+# declares container_runtime = "docker" and capabilities/agentbox invokes docker, so no machine
+# needs Apple's `container` executable to run Axon. Deleted rather than kept: toolchain.toml
+# declares what a machine must have, and a host tool nothing calls is a check that can only be
+# noise. upstreams.toml [apple-container] holds the dated verdict and the last pin.
+#
+# WHICH DAEMON supplies the docker CLI is a machine fact, not a second entry here. OrbStack does
+# on this Mac; Docker Desktop, colima or a Linux daemon do elsewhere. [docker] below is the whole
+# assumption Axon makes, and it is the [ollama] rule above applied again: Axon calls it and
+# builds nothing from it, so there is no upstreams.toml row either.
 
 [docker]
 required = "runtime"
-why = "container runtime (machine.toml container_runtime = docker)"
-install_macos = "brew install --cask docker"
+why = "container runtime (machine.toml container_runtime = docker). Since 2026-09-02 it is the only one this machine declares, and capabilities/agentbox depends on the CLI by name. `bin` is deliberately absent: the section name is the command, whichever daemon answers it. NB on macOS the OrbStack CLI lives at ~/.orbstack/bin/docker, which a login shell has on PATH and a bare launchd or cron environment does not -- tools/service-runner.sh injects its dirname into generated units for exactly that reason, and a hand-written invocation has to do the same"
+install_macos = "brew install --cask orbstack   # or --cask docker, or colima — Axon assumes the docker CLI, never one provider of it"
 install_linux = "apt-get install -y docker.io   # or Docker Engine per docs.docker.com"
 
 [podman]
