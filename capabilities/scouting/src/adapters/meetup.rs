@@ -33,25 +33,39 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 /// key to an id first (`luma.rs` `resolve_city_id`, which errors on an
 /// unknown city rather than echoing it).
 fn cache_slug(s: &str) -> String {
-    let mut out = String::with_capacity(s.len().min(64));
+    /// Bytes, not characters: the cap exists to keep a file name inside every
+    /// file system's limit, and one lowercased character can be four bytes.
+    const MAX: usize = 64;
+    let mut out = String::with_capacity(s.len().min(MAX));
     for c in s.chars().flat_map(|c| c.to_lowercase()) {
-        if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-            out.push(c);
+        // `_` is deliberately NOT in this set, though it is a legal file-name
+        // character. It is the separator in `meetup_{city}_{query}.json`, so
+        // letting it through would let city `berlin_x` + query `y` and city
+        // `berlin` + query `x_y` name one cache file and read each other's
+        // pages.
+        let next = if c.is_ascii_alphanumeric() || matches!(c, '.' | '-') {
+            c
         } else if !out.is_empty() && !out.ends_with('-') {
             // A run of rejected characters collapses to one '-'; a leading run
             // is dropped. `/` never survives, so the result is one component.
-            out.push('-');
-        }
-        if out.len() >= 64 {
+            '-'
+        } else {
+            continue;
+        };
+        // Checked before the push, not after: after leaves the last character
+        // hanging over the cap by up to three bytes.
+        if out.len() + next.len_utf8() > MAX {
             break;
         }
+        out.push(next);
     }
     // Dots are trimmed at the ends as well as separators: `.` and `..` are legal
     // file names by the rule above and are exactly the two that mean "somewhere
     // else", and a leading dot would otherwise hide the cache file.
     let trimmed = out.trim_matches(|c| c == '-' || c == '.');
     if trimmed.is_empty() {
-        "_".to_string()
+        // '-', not '_', for the reason above: no slug may contain the separator.
+        "-".to_string()
     } else {
         trimmed.to_string()
     }
@@ -329,11 +343,28 @@ mod tests {
             assert!(!slug.contains('\\'), "{hostile} -> {slug}");
             assert!(!slug.starts_with('.'), "{hostile} -> {slug}");
         }
-        assert_eq!(cache_slug(".."), "_");
-        assert_eq!(cache_slug("."), "_");
-        assert_eq!(cache_slug("///"), "_");
-        assert_eq!(cache_slug(""), "_");
+        assert_eq!(cache_slug(".."), "-");
+        assert_eq!(cache_slug("."), "-");
+        assert_eq!(cache_slug("///"), "-");
+        assert_eq!(cache_slug(""), "-");
         assert!(cache_slug(&"a".repeat(200)).len() <= 64);
+        // The cap counts bytes. 'İ' lowercases to two chars, three bytes, so a
+        // cap tested after the push would leave this over the line.
+        assert!(cache_slug(&"İ".repeat(200)).len() <= 64);
+    }
+
+    /// The file name is `meetup_{city}_{query}.json`, so a slug that could
+    /// contain `_` would let two different searches name one file.
+    #[test]
+    fn no_slug_can_contain_the_file_names_separator() {
+        for input in ["berlin_x", "_", "a__b", "Berlin Mitte_Rust"] {
+            let slug = cache_slug(input);
+            assert!(!slug.contains('_'), "{input} -> {slug}");
+        }
+        assert_ne!(
+            (cache_slug("berlin_x"), cache_slug("y")),
+            (cache_slug("berlin"), cache_slug("x_y"))
+        );
     }
 
     #[test]
