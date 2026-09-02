@@ -28,13 +28,21 @@ image    = "someorg/example"              # image repo, no tag. A registry prefi
                                           # the runner prefixed docker.io/ unconditionally, so a
                                           # ghcr reference silently became docker.io/ghcr.io/…;
                                           # see service-runner.sh's qualified_image.)
-tag      = "1.2.3"                        # ALWAYS pin — never "latest", never "stable" (Axon
-                                          # security doctrine). Pin to the version you verified,
-                                          # and prefer reading it off the running container over
-                                          # trusting a registry listing. Note a version tag is not
-                                          # a byte pin: official images get rebuilt under the same
-                                          # tag, so record the digest in a comment when byte
-                                          # identity matters.
+tag      = "stable"                       # REQUIRED, and it names a CHANNEL, not a version
+                                          # (Q_DEPIN, 2026-09-02). Prefer the publisher's own
+                                          # rolling tag — "stable", "latest", "alpine" — so the
+                                          # capability takes each upstream release the day it
+                                          # exists. capabilities/container-refresh pulls every
+                                          # declared image daily and recreates the container when
+                                          # the digest moves.
+                                          #
+                                          # A version literal was the rule until Q_DEPIN and was
+                                          # never a byte pin either: publishers rebuild under the
+                                          # same tag. So the declared tag has never answered "what
+                                          # is running" — ask the runtime for the digest instead
+                                          # (`docker inspect <name> --format '{{.Image}}'`, ISA.md
+                                          # C4). Write a literal only when an upstream publishes
+                                          # no rolling tag, and say in a comment why.
 
 # Optional — runtime dependencies on OTHER capabilities, by directory name.
 # The dependency is on the capability's CONTRACT (HTTP surface + schema), never its

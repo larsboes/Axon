@@ -66,7 +66,7 @@ RUNNER
 cat > "$FIXTURE/capabilities/vaultwarden/service.toml" <<'MANIFEST'
 name = "vaultwarden"
 image = "vaultwarden/server"
-tag = "1.37.0-alpine"
+tag = "alpine"
 env_file = "config/vaultwarden.env"
 backup_paths = ["data/vaultwarden/data", "data/vaultwarden/tls"]
 backup_sqlite = "data/vaultwarden/data/db.sqlite3"

@@ -7,15 +7,16 @@
 # unconditionally, so a ghcr reference became docker.io/ghcr.io/… and the field could not name
 # any other registry. That branch was made conditional on 2026-07-26 and deleted outright on
 # 2026-09-02 with apple-container itself (Q75) — service-runner.sh now passes the
-# reference through as written. The pin below is unaffected either way: it names the artifact
+# reference through as written. The tag below is unaffected either way: it names the artifact
 # that actually runs rather than a mirror of it.
 name         = "homeassistant"
 image        = "ghcr.io/home-assistant/home-assistant"
-tag          = "2026.7.4"   # newest stable reviewed 2026-08-01; manifest digest sha256:5a531753.
-                            # Trivy fell from 156 HIGH/CRITICAL entries on 2026.6.3 to 111; the
-                            # residual upstream-image policy expires 2026-08-15 under Axon#184.
-                            # NEVER :stable — a floating tag makes the house's version whatever
-                            # the registry happened to hold the last time somebody deployed.
+tag          = "stable"     # ROLLING, not a pin (Q_DEPIN, 2026-09-02). `stable` is Home
+                            # Assistant's own release channel: it moves to each new stable
+                            # release, and capabilities/container-refresh pulls it daily and
+                            # recreates this container when the digest moves. The declared tag
+                            # names a channel; the running digest is the only version fact
+                            # (`docker inspect homeassistant --format '{{.Image}}'`).
 network_mode = "host"       # required: LAN mDNS discovery of Hue/Shelly/ESPHome (repo ADR). host mode
                             # publishes no ports — HA binds :8123 on the host directly. Runner support added
                             # 2026-07-16 (service-runner.sh + schema network_mode field).

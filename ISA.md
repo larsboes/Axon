@@ -52,11 +52,15 @@ tracker holds nothing, and no automation creates entries in it.
   Verify in a `git worktree` of origin/main, not in place.
 - **C3** — sweeps run `rg --no-ignore --hidden --follow`; plain `rg` honours `.gitignore`
   and hides most of the private overlay's `config/`.
-- **C4** — `service-runner.sh status` prints the DECLARED image tag; the runtime prints
-  the running one (`docker ps --format '{{.Names}} {{.Image}}'`, or `docker inspect <name>
-  --format '{{.Config.Image}}'` for a stopped one). Only the second answers what is actually
-  running — `report_arg_drift` compares ports, mounts, caps and network, never the image.
-  Was `container list` until Q75 retired apple-container on 2026-09-02.
+- **C4** — `service-runner.sh status` prints the DECLARED image reference, and since
+  Q_DEPIN (2026-09-02) that reference is a CHANNEL — `:stable`, `:latest`, `:alpine`. It
+  names what the capability tracks, never what it is running. The digest is the only version
+  fact: `docker image inspect <image>:<tag> --format '{{index .RepoDigests 0}}'`, or
+  `docker inspect <name> --format '{{.Image}}'` for the container itself
+  (`docker ps --format '{{.Names}} {{.Image}}'` re-prints the channel, so it does not answer
+  this). `report_arg_drift` compares ports, mounts, caps and network, never the image, so a
+  moved digest shows as no drift at all — `capabilities/container-refresh` is what pulls and
+  recreates instead. Was `container list` until Q75 retired apple-container on 2026-09-02.
 
 ## Goal
 

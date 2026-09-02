@@ -357,9 +357,13 @@ how a `~/.local/bin` copy comes to shadow the `brew` one and answer differently 
 that happening to `yt-dlp`, which returned HTTP 403 on every media URL while `--dump-json` kept
 working.
 
-**Never consume `:latest`, and pin anyway.** `tools/check-service-tomls.sh` still refuses a
-floating image tag, because a deploy that cannot be reproduced cannot be diagnosed. What changed is
-the waiting, not the pinning. For a host tool a package manager owns, the `pin` records the version
+**Container images track a channel.** A `service.toml` `tag` names the publisher's rolling tag —
+`:stable` for Home Assistant, `:latest` for Pi-hole, `:alpine` for Vaultwarden — and
+`capabilities/container-refresh` pulls every declared image every 24 hours, recreating the
+container when the digest moves. `tools/check-service-tomls.sh` refused `latest` until 2026-09-02;
+it was defending a reproducibility a tag never gave, since publishers rebuild under the same
+literal. The digest is what identifies a running image (ISA.md C4). For a host tool a package
+manager owns, the `pin` records the version
 its `why` was written against, not the version installed today — `host-patch` moves the installed
 one nightly and nothing here objects. Audit the delta rather than the world. Not every correct pin
 is a release: a commit sha is right for a repository that cuts no releases, and an image tag is
