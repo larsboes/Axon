@@ -143,8 +143,20 @@ esac
 
 # 2. Capabilities enabled, runtime not on PATH. Skipped, not failed — the same rule
 #    tools/host-patch.sh states for a missing upgrader.
+# "Absent" has to be built, not assumed: GitHub's Ubuntu runners ship /usr/bin/docker, so a
+# planted PATH of /usr/bin:/bin finds a real daemon there and this case turns into a real pull
+# (measured 2026-09-02: the case passed on macOS and failed in CI with exit 2). The bin dir
+# below is /usr/bin and /bin with every container CLI left out.
+NODOCKER_BIN="$SCRATCH/nodocker-bin"
+mkdir -p "$NODOCKER_BIN"
+for d in /usr/bin /bin; do
+  for f in "$d"/*; do
+    case "$(basename "$f")" in docker|podman|nerdctl) continue ;; esac
+    [ -x "$f" ] && ln -s "$f" "$NODOCKER_BIN/$(basename "$f")" 2>/dev/null
+  done
+done
 write_machine docker refresh-alpha
-AXON_TEST_FAIL_PULL="" run_refresh "/usr/bin:/bin"
+AXON_TEST_FAIL_PULL="" run_refresh "$NODOCKER_BIN"
 [ "$rc" -eq 0 ] || fail "an absent runtime must exit 0, got $rc"
 case "$(receipt_field skipped)" in
   *docker-not-installed*) ;;
