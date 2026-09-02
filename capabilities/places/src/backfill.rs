@@ -1535,8 +1535,10 @@ fn takeout_reviews(
 }
 
 pub fn takeout_from(store: &PlacesStore, dir: &Path, today: &str) -> Fallible<TakeoutReport> {
-    let mut report = TakeoutReport::default();
-    report.dirs = 1;
+    let mut report = TakeoutReport {
+        dirs: 1,
+        ..TakeoutReport::default()
+    };
     let labelled = dir.join("Labelled places.json");
     if labelled.is_file() {
         takeout_labelled(
