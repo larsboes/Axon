@@ -468,9 +468,11 @@ bad()  { echo "  ✗ $*"; DOCTOR_FAILED=1; }
 cmd_doctor() {
   DOCTOR_FAILED=0
   echo "agentbox"
-  require_config
-  ok "agent: $AGENT $VERSION (profiles/$AGENT/profile.toml)"
 
+  # The runtime verdict comes first because it needs nothing from the profile. require_config
+  # dies when the profile has no checksum for this host's arch (x86_64 CI runners, since the
+  # pinned pi release is arm64-only), and a doctor that has to fetch a checksum before it can
+  # say "wrong runtime" answers the cheap question last.
   # Three separate causes, three separate lines. Reporting them as one ("not available")
   # was the old shape, and it sends a machine that declares the wrong runtime looking for a
   # missing binary.
@@ -485,6 +487,8 @@ cmd_doctor() {
     runtime_ok=1
     ok "runtime: docker $(docker version --format '{{.Server.Version}}' 2>/dev/null) on $(docker info --format '{{.OperatingSystem}}' 2>/dev/null)"
   fi
+  require_config
+  ok "agent: $AGENT $VERSION (profiles/$AGENT/profile.toml)"
 
   # Everything below asks the runtime a question, so a machine without one gets "not checked"
   # rather than an answer obtained from a daemon it does not declare.

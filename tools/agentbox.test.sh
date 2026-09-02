@@ -58,12 +58,19 @@ for runtime in podman apple-container ""; do
   esac
   # A doctor that cannot use the declared runtime must not then answer runtime questions from
   # whatever daemon happens to be installed. Every such line reads "not checked".
-  case "$runtime" in
-    podman|apple-container)
-      case "$out" in
-        *"image: not checked"*) ;;
-        *) fail "container_runtime = '$runtime' still had doctor query a runtime it does not declare: $out" ;;
+  # The profile pins an arm64-only release, so on any other arch require_config dies right
+  # after the runtime line and the "not checked" lines are never reached. The gate itself was
+  # already asserted above; only this half is arch-bound.
+  case "$(uname -m)" in
+    arm64|aarch64)
+      case "$runtime" in
+        podman|apple-container)
+          case "$out" in
+            *"image: not checked"*) ;;
+            *) fail "container_runtime = '$runtime' still had doctor query a runtime it does not declare: $out" ;;
+          esac ;;
       esac ;;
+    *) [ -n "${_arch_note:-}" ] || { echo "  ⊘ $(uname -m) host — profile.toml has no linux checksum for it, so the 'not checked' lines are not asserted"; _arch_note=1; } ;;
   esac
 done
 
