@@ -462,15 +462,27 @@ cmd_doctor() {
   require_config
   ok "agent: $AGENT $VERSION (profiles/$AGENT/profile.toml)"
 
-  if [ "$AXON_CONTAINER_RUNTIME" = "docker" ] && command -v docker >/dev/null 2>&1 \
-     && docker info >/dev/null 2>&1; then
-    ok "runtime: docker $(docker version --format '{{.Server.Version}}' 2>/dev/null) on $(docker info --format '{{.OperatingSystem}}' 2>/dev/null)"
+  # Three separate causes, three separate lines. Reporting them as one ("not available")
+  # was the old shape, and it sends a machine that declares the wrong runtime looking for a
+  # missing binary.
+  runtime_ok=0
+  if [ "$AXON_CONTAINER_RUNTIME" != "docker" ]; then
+    bad "runtime: machine.toml declares container_runtime = '$AXON_CONTAINER_RUNTIME'; agentbox needs docker (Q_CONTAINER; podman's network semantics are unmeasured here)"
+  elif ! command -v docker >/dev/null 2>&1; then
+    bad "runtime: 'docker' not on PATH — OrbStack installs it at ~/.orbstack/bin/docker, which a non-login environment does not have"
+  elif ! docker info >/dev/null 2>&1; then
+    bad "runtime: the docker daemon is not answering — start it ('open -a OrbStack' for OrbStack)"
   else
-    bad "runtime: docker not on PATH, or its daemon is not answering ('open -a OrbStack')"
+    runtime_ok=1
+    ok "runtime: docker $(docker version --format '{{.Server.Version}}' 2>/dev/null) on $(docker info --format '{{.OperatingSystem}}' 2>/dev/null)"
   fi
 
+  # Everything below asks the runtime a question, so a machine without one gets "not checked"
+  # rather than an answer obtained from a daemon it does not declare.
   have_image=0
-  if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  if [ "$runtime_ok" -eq 0 ]; then
+    bad "image: not checked — no usable runtime to ask"
+  elif docker image inspect "$IMAGE" >/dev/null 2>&1; then
     have_image=1
     ok "image: $IMAGE"
   else
