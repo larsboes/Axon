@@ -1105,8 +1105,8 @@ fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             // Four ranges written out by hand. Three of them have a std
-            // predicate that is still behind feature `ip` on the pinned 1.96.0
-            // toolchain (rust-toolchain.toml) -- `is_shared`, `is_reserved`,
+            // predicate that is still behind feature `ip` on stable
+            // (rust-toolchain.toml) -- `is_shared`, `is_reserved`,
             // `is_benchmarking` -- and 0.0.0.0/8 has none at all. Every other
             // test below is stable std, so do not hand-roll those.
             let o = v4.octets();

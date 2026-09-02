@@ -1,4 +1,8 @@
+# Rolling, not pinned (Q_DEPIN, 2026-09-02). `stable` means every machine and every CI run
+# compiles on the release rustup last fetched: capabilities/host-patch runs `rustup update`
+# daily, so a held literal here would only describe a toolchain nothing installs.
+# Cargo.toml's `rust-version` is the floor this code needs, which is a different fact.
 [toolchain]
-channel = "1.96.0"
+channel = "stable"
 components = ["clippy", "rustfmt"]
 profile = "minimal"

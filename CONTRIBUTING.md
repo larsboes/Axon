@@ -55,8 +55,9 @@ cargo check --workspace --locked
 cargo test --workspace --locked
 ~~~
 
-Run the format and Clippy commands from the repository root. They use the exact
-toolchain and components pinned in `rust-toolchain.toml`; do not replace a finding
+Run the format and Clippy commands from the repository root. They use the channel and
+components `rust-toolchain.toml` names -- `stable`, so the release rustup last fetched;
+CI resolves the same file, not a literal held somewhere else. Do not replace a finding
 with a workspace-wide allowance. A narrow allowance belongs beside the affected
 item and must explain the invariant that makes the lint inapplicable.
 

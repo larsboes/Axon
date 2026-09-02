@@ -25,8 +25,9 @@ concurrency:
 # makes for its scanners.
 
 jobs:
-  # rust-toolchain.toml pins both the compiler and these two components, so local
-  # contributor commands and CI cannot silently lint with different releases.
+  # rust-toolchain.toml names the `stable` channel and these two components, so local
+  # contributor commands and CI lint with the same release rustup last fetched (Q_DEPIN).
+  # It rolls rather than holding a literal, which is the same trade the Bun note above makes.
   # Clippy compiles tests and feature-gated paths; running them is cargo-tests' job.
   rust-quality:
     name: cargo fmt + clippy

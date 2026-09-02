@@ -30,6 +30,8 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# A floor, not a pin: the oldest release this workspace compiles on. rust-toolchain.toml
+# rolls on `stable` (Q_DEPIN), so what actually builds is newer than this on every machine.
 rust-version = "1.96"
 license = "MIT"
 
