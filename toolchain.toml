@@ -189,15 +189,17 @@ why = "rootless container runtime alternative (machine.toml container_runtime = 
 install_macos = "brew install podman"
 install_linux = "apt-get install -y podman"
 
-# ---- audit scanners (needed for tools/audit; absence warns) ----------------------------
+# ---- audit scanners (absence warns). Two run in tools/audit since 2026-09-02 -----------
 
-[semgrep]
-required = "optional"
-needed_by = ["workflow:audit"]
-upstream = "semgrep"
-why = "SAST over Axon's own code — tools/audit"
-install_macos = "brew install semgrep"
-install_linux = "uv tool install semgrep   # or pipx install semgrep"
+# [semgrep] stood here until 2026-09-02, when Q_AUDIT retired it. CodeQL already runs rust,
+# javascript-typescript, python and actions with the security-extended suite
+# (.github/workflows/codeql.yml), which is total overlap -- and semgrep's `--config auto`
+# downloaded its rules at scan time, so the pinned version described nothing that ran.
+#
+# [trivy] stood here until the same date and ruling. .github/workflows/security.yml scans every
+# declared image with `grype registry:`, which needs no container runtime, and tools/audit no
+# longer scans images at all. The host-audit capability this entry's `why` promised was retired
+# in the same change. upstreams.toml holds both dated verdicts.
 
 [gitleaks]
 required = "optional"
@@ -216,13 +218,18 @@ why = "dependency-CVE scan over every lockfile — tools/audit"
 install_macos = "brew install osv-scanner"
 install_linux = "go install github.com/google/osv-scanner/cmd/osv-scanner@<pin>   # see upstreams.toml"
 
-[trivy]
+[grype]
 required = "optional"
 needed_by = ["workflow:audit"]
-upstream = "trivy"
-why = "container/OS-package CVE scanner — tools/audit (and the future host-audit capability)"
-install_macos = "brew install trivy"
-install_linux = "apt-get install -y trivy   # or the pinned release in upstreams.toml"
+upstream = "grype"
+# Scoped to the audit workflow so a machine that runs the audit by hand is told it can also
+# scan an image before pinning one. tools/audit does NOT call it: the automated image scan is
+# .github/workflows/security.yml, which installs its own copy and runs whether or not this
+# machine is awake. This row is the local copy, for triaging an image a service.toml is about
+# to pin, and its absence is a warning by design rather than a failure.
+why = "container-image CVE scan by hand — `grype registry:<image>:<tag>`, no container runtime"
+install_macos = "brew install grype"
+install_linux = "apt-get install -y grype   # or the pinned release in upstreams.toml"
 
 [rsync]
 required = "optional"

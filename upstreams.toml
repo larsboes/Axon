@@ -1,25 +1,22 @@
 # Every external project Axon touches. No entry, no entry.
 # verdict = "adopt" | "contribute" | "overlay" | "fork" | "build" | "inspiration" | "quarry" | "reject"
 #   Preference order: adopt > contribute > overlay > fork (last resort). fork is a PR vehicle only.
-# pin = exact ref/commit consumed (empty until first consumption)
-# pin_kind = "commit" | "image" | "monorepo" | "hosted" | "dataset"
-#   Only for a pin that a GitHub release cannot describe, naming which shape it is instead. Absent
-#   means a release tag, which renovate.json5's regex manager watches against GitHub releases.
-#   Declaring a kind turns that watch off for the entry -- so every pin_kind requires tracked_by,
-#   because opting out of one check is not opting out of thinking about staleness.
-# tracked_by = one line: what keeps this entry current, given that releases/latest cannot.
-# installed_probe = the command that asks THIS HOST which version it actually has, for a pin
-#   that means "what is installed here" rather than "what the registry lists". Freshness alone
-#   compares pin against releases/latest -- both sides remote -- so a package manager can move
-#   the machine past the pin and nothing notices (it did: brew took typst and bitwarden-cli,
-#   found 2026-08-03).
-#   NOTHING EXECUTES THESE ANY MORE. tools/upstream-checker ran them as argv, never through a
-#   shell, and PRD Q41 deleted it on 2026-08-28. Renovate cannot replace them: it compares a
-#   pin against a registry, which is the exact comparison that misses this. The field stays
-#   because it records how to ask -- run it by hand when you bump the entry. Its old argv
-#   safety rule still applies to whatever runs it: letters, digits and - _ . / = : only.
-# cooldown: new upstream releases wait out a hold window (axon.toml [upstream]) before adoption unless fixing an exposed vuln.
-#   Renovate applies it as minimumReleaseAge (renovate.json5); capabilities/agentbox reads the same key.
+# pin = the exact ref consumed at the moment the `why` below it was written. Empty until first
+#   consumption. For a tool a package manager owns -- brew, uv, cargo install -- this is a
+#   RECORD, not a claim about this machine: capabilities/host-patch upgrades brew nightly, so
+#   the installed version moves ahead of the pin by design (README.md#patch-first).
+# license / url / why = the rest of the verdict. `why` carries the audit.
+#
+# This file is a verdict register and nothing else. pin_kind, tracked_by and installed_probe
+#   stood here until 2026-09-02 (Q_AUDIT). All three existed to describe an entry's opt-out from
+#   renovate.json5's release watch, and renovate.json5 is deleted. installed_probe recorded how
+#   to ask a host which version it really had; under patch-first the answer is whatever brew
+#   installed last night, so the question no longer has a stable answer to compare against.
+#   What each deleted line said is in this file's git history at that date, for a re-decision
+#   that needs it.
+# No cooldown. A release is adopted when it has been read (README.md#patch-first). Six `why`
+#   strings below still cite README.md#pins-and-cooldown: they record adoptions decided under the
+#   hold, they are left as written, and that section is now #patch-first.
 # No adopt/overlay/fork verdict lands without an audit. That is a rule for the human editing this
 #   file -- since 2026-08-28 (PRD Q41) no script enforces it, and README.md#dependency-verdicts-and-provenance says so plainly.
 
@@ -63,7 +60,7 @@ url = "https://github.com/paperless-ngx/paperless-ngx"
 verdict = "inspiration"
 license = "GPL-3.0"
 pin = ""
-why = "leading document-management candidate for a future documents capability: watched-folder and scanner ingestion, OCR, full-text search, metadata workflows, permissions, and an exporter-based restore path match Axon's planned document inbox. It is not adopted yet: documents are stored in clear text, multiple user trust scopes need an explicit instance/dataset decision, and backup/restore must pass before scanning originals. Two upstream facts already constrain the eventual pin, verified against the project's own docs 2026-08-02: (a) containers are the only supported route -- upstream states Paperless runs on Linux only and documents bare metal for Linux distributions alone, with macOS appearing solely as a host for the installer script, so pin_kind will be \"image\"; (b) document_exporter/document_importer is the supported migration path but the export is an exact database image, so it cannot be imported into a different version, the target must be completely empty, and changing paths during a move risks data loss -- which means the pin must be an explicit image tag and never \"latest\", or this entry's own upgrade path breaks its own restore path. Permissions are object-level with workflow-driven owner assignment on consume, so one instance can serve separate people; the limit is that the exporter exports an instance rather than an owner, making a later split manual"
+why = "leading document-management candidate for a future documents capability: watched-folder and scanner ingestion, OCR, full-text search, metadata workflows, permissions, and an exporter-based restore path match Axon's planned document inbox. It is not adopted yet: documents are stored in clear text, multiple user trust scopes need an explicit instance/dataset decision, and backup/restore must pass before scanning originals. Two upstream facts already constrain the eventual pin, verified against the project's own docs 2026-08-02: (a) containers are the only supported route -- upstream states Paperless runs on Linux only and documents bare metal for Linux distributions alone, with macOS appearing solely as a host for the installer script, so the pin must be an explicit image tag; (b) document_exporter/document_importer is the supported migration path but the export is an exact database image, so it cannot be imported into a different version, the target must be completely empty, and changing paths during a move risks data loss -- which means the pin must be an explicit image tag and never \"latest\", or this entry's own upgrade path breaks its own restore path. Permissions are object-level with workflow-driven owner assignment on consume, so one instance can serve separate people; the limit is that the exporter exports an instance rather than an owner, making a later split manual"
 
 # --- document recognition, the Q63 extraction ladder ------------------------
 
@@ -134,10 +131,10 @@ why = "AIVSS methodology, CWE check library, semgrep rulesets for the manual/age
 
 [semgrep]
 url = "https://github.com/semgrep/semgrep"
-verdict = "adopt"
+verdict = "reject"
 license = "LGPL-2.1"
-pin = "1.168.0"         # 2026-06-24, past 7-14d cooldown as of 2026-07-10; installed via `uv tool` (rule 8, Python)
-why = "static code/injection SAST over skills+hooks+TS/sh via tools/audit's `semgrep scan --config auto`; SARIF + exit codes. The semgrep/ai-best-practices ruleset for agentic/LLM tool-calling patterns is not wired in yet"
+pin = "1.168.0"         # the version the row was written against. Kept, not removed, so what ran is recorded rather than drifting
+why = "RETIRED 2026-09-02 by Q_AUDIT. It was the SAST half of tools/audit -- `semgrep scan --config auto` over skills, hooks, TS and shell. Two measurements killed it. First, total overlap: .github/workflows/codeql.yml already analyses rust, javascript-typescript, python and actions with the security-extended suite, on every push and weekly, in CI that does not need this Mac awake. Second, the pin above described nothing that ran: `--config auto` downloads its rule set from the registry at scan time, so the version pinned here governed the binary and never the rules, and two runs a week apart could reach different verdicts with the pin unchanged. What is genuinely lost is shell: CodeQL ships no shell extractor, and tools/ is the largest hand-written surface in the repository. That gap is stated in codeql.yml and left open on purpose -- shellcheck is the honest replacement and adopting a new upstream is the opposite of this change. Re-adopting means a new audit at that date, not restoring this row"
 
 [gitleaks]
 url = "https://github.com/gitleaks/gitleaks"
@@ -153,12 +150,19 @@ license = "Apache-2.0"
 pin = "v2.4.0"          # 2026-06-18, 22d old = past cooldown; brew formula
 why = "dependency CVE scan (Google OSV DB) over bun/uv/npm/Cargo lockfiles; lean, SARIF, --fail-on-vuln exit code. Complements trivy: osv = lockfiles, trivy = images/OS — not redundant"
 
-[trivy]
-url = "https://github.com/aquasecurity/trivy"
+[grype]
+url = "https://github.com/anchore/grype"
 verdict = "adopt"
 license = "Apache-2.0"
-pin = "v0.72.0"         # brew stable; 10d old at adoption (2026-07-10) = amber cooldown, but a deliberate first adoption of an established scanner, not an auto-bump — accepted with eyes open
-why = "container-image + OS-package + IaC CVE scan — the layer osv-scanner (lockfiles only) can't reach; covers the vaultwarden image + any container capability. Closes the audit coverage gap on images"
+pin = "v0.118.0"        # the release the verdict was written against, 2026-09-02. brew formula; .github/workflows/security.yml installs the latest instead, deliberately (a scanner held at a pin gets weaker as the pin ages)
+why = "container-image CVE scan for every image a capabilities/*/service.toml declares, run weekly and on push by .github/workflows/security.yml. This REVERSES a written refusal: the host-audit capability's README declined grype under a 'Considered and declined' heading, on the argument that trivy was already adopted and a second image scanner earned nothing. That capability was deleted on 2026-09-02 in this same ruling, so the refusal is recorded here instead of vanishing with the file that held it. That argument died with [trivy] above, which is now rejected. What settles the choice is a property trivy does not have here: `grype registry:<ref>` pulls the image straight from the registry with no container runtime and no daemon (grype 0.118.0's own help says so), and all three pinned images run on the family Pi rather than on this Mac, so a scanner that needs a local pull is a scanner that needs a machine nobody is using for this. It refuses to run on a stale vulnerability database, which is why the CI job installs a fresh copy every run rather than caching one"
+
+[trivy]
+url = "https://github.com/aquasecurity/trivy"
+verdict = "reject"
+license = "Apache-2.0"
+pin = "v0.72.0"         # the version the row was written against. Kept, not removed, so what was adopted is recorded rather than drifting
+why = "RETIRED 2026-09-02 by Q_AUDIT, and it never ran here. Adopted 2026-07-10 for the image half of tools/audit, it was measured absent from the operator's machine on the day of this ruling, and the capability built on it -- capabilities/host-audit, retired in the same change -- returned rc=2 on Darwin by construction, because trivy has no Homebrew analyzer. So the image scan this row promised had no working path on the only machine that ran the audit. [grype] below does that job instead: `grype registry:<image>:<tag>` pulls from the registry with no container runtime, which matters because all three pinned images run on the family Pi and nothing here should need a local daemon to scan them. Re-adopting means a new audit at that date, not restoring this row"
 
 [telekom-mcp-security]
 url = "https://github.com/telekom/mcp-security"
@@ -172,16 +176,13 @@ url = "https://github.com/dani-garcia/vaultwarden"
 verdict = "adopt"
 license = "AGPL-3.0"
 pin = "1.37.0-alpine"   # 2026-07-25, 1d old — INSIDE the 7d cooldown, adopted under the active-vulnerability carve-out in README.md#pins-and-cooldown: trivy scored the running 1.36.0-alpine at 8 HIGH across CVE-2026-{33630,45447,5773,6276} (libcurl cookie leak, OpenSSL PKCS7_verify UAF) and 1.37.0-alpine at 0. Upstream also states 1.37.0 is REQUIRED for clients >= 2026.7.0, which is what broke the browser extension.
-pin_kind = "image"      # an image tag, not a release tag — declared 2026-08-28 so renovate.json5's exclusion is stated rather than incidental (the -alpine suffix happened to fail the regex)
-tracked_by = "tools/audit's trivy image scan on the family Pi's deployment, plus the client-compatibility pressure that forced this very pin"
-why = "single-user secrets store, replaces the two-container HashiCorp Vault experiment (unnecessary Raft/unseal machinery for one user); Bitwarden-protocol compatible so real client apps/browser extensions work against it unmodified, and it's the self-hosted sibling to Proton Pass for eventual import"
+why = "the image is scanned weekly by `grype registry:` in .github/workflows/security.yml, which reads the tag from this capability's service.toml; the other thing that keeps it current is the client-compatibility pressure that forced this very pin. Single-user secrets store, replaces the two-container HashiCorp Vault experiment (unnecessary Raft/unseal machinery for one user); Bitwarden-protocol compatible so real client apps/browser extensions work against it unmodified, and it's the self-hosted sibling to Proton Pass for eventual import"
 
 [bitwarden-cli]
 url = "https://github.com/bitwarden/clients"
 verdict = "adopt"
 license = "GPL-3.0-only"
 pin = "cli-v2026.7.0"   # 2026-07-24, audited + pinned 2026-08-03. Same case as typst: brew had already upgraded, so the previous pin described an install that no longer existed. Delta is importers (KeePass/Keeper), tray settings and an org-invite refactor -- nothing touching `bw config server` or the item create/read tools/setup-secret.sh drives. Watch item: PM-37875 automatic V2 cipher migration, already live on the pinned machine without incident
-installed_probe = "bw --version"   # how tools/setup-secret.sh reads and writes the vault -- the uncomfortable one: it ran an unaudited version for days
 why = "official CLI for the vaultwarden-protocol-compatible vault; setup-secret.sh scripts item create/read against self-hosted vaultwarden (bw config server) so Vaultwarden, not per-machine Keychain, is the canonical capability-secret store"
 
 [scout]
@@ -238,8 +239,6 @@ url = "https://github.com/docker-library/postgres"
 verdict = "reject"
 license = "PostgreSQL License (permissive) -- official image"
 pin = "17.10-alpine"    # 2026-07-08; adopted 2026-08-01 after cooldown, last consumed pin. Kept, not removed, so the row records what ran rather than drifting
-pin_kind = "image"
-tracked_by = "nothing now. It was the Docker Hub tag list for the official postgres image, checked at a deliberate rebuild; a re-adoption starts that over"
 why = "RETIRED 2026-08-27 by PRD Q45 -- one shared SQLite file replaces it (upstreams.toml [rusqlite], libs/axon-store/README.md) and no capability opens a connection now. It was the shared correlation data layer: one instance, a Postgres schema per capability (scouting.*, transit.*) so migrations and ownership stayed per-capability, with cross-schema joins as the actual product thesis. That thesis survived the retirement and is the reason the replacement is ONE file rather than one per capability -- a file per capability would have dropped exactly the joins this row existed for. What did not survive was the cost: a container, a managed volume, a password, a watchdog, a logical-dump backup contract and a CI service container, for a database taking 0.30 commits/s whose 462 of 464 columns were SQLite-native. The 15 accepted gosu CVEs in trivy-ignore/postgres.txt went with the image. Re-adopting means a new audit at that date, not restoring this row"
 
 [r2d2]
@@ -247,8 +246,6 @@ url = "https://github.com/sfackler/r2d2"
 verdict = "adopt"
 license = "MIT OR Apache-2.0"
 pin = "0.8.10"          # published 2022-06-21; four years past any cooldown window, and the age is the point rather than a caveat
-pin_kind = "commit"
-tracked_by = "crates.io releases for r2d2; this is a finished crate rather than a maintained one -- three releases in seven years, and the check is whether a CVE appears, not whether a version does"
 why = "the generic connection pool behind [r2d2_sqlite] below, and behind [r2d2_postgres] before it -- it outlived the database it was adopted for, which is the point of it being generic. Adopted for the second half of the Store::open problem recorded in libs/axon-store/README.md: libs/axon-store removed the migration from every open, but every open still built a fresh Postgres session. Measured against the live database rather than inferred: Client::connect runs 32-39 ms, a pooled open 0.20-0.30 ms. The issue estimated ~50 ms and was high -- the /feed endpoint improved ~21 ms end to end and the rest of its time turns out to scale with response size, not with connections. Chosen over deadpool/bb8 because those are async pools for tokio-postgres, and this repo's data layer is deliberately the SYNC postgres crate driven from spawn_blocking -- capabilities/comms/Cargo.toml states that choice and its reason (the CLI path carries no async runtime, only the server does). Swapping the pool would have meant swapping the client, making 134 call sites async across seven capabilities to solve a connection-reuse problem. Dependency tree is three crates (log, parking_lot, scheduled-thread-pool). Same author as the postgres client itself, which is why the two versions track each other"
 
 [r2d2_postgres]
@@ -256,8 +253,6 @@ url = "https://github.com/sfackler/r2d2-postgres"
 verdict = "reject"
 license = "MIT"
 pin = "0.18.2"          # published 2024-12-23; last consumed version. Kept as the record of what was resolved, not as a pin anything reads
-pin_kind = "commit"
-tracked_by = "nothing now. It was crates.io releases for r2d2_postgres, watching for a postgres 0.20 rather than for this adapter's own version"
 why = "RETIRED 2026-08-27 by PRD Q45 -- [r2d2_sqlite] is the manager now and neither this crate nor the postgres client appears in Cargo.lock any more. It was the r2d2 manager for the postgres client: connect, is-valid, has-broken, and nothing else. Preferred at the time over hand-rolling a pool behind libs/axon-store, and that judgement is the half that survived -- the pool stayed through the database change, because the reason for it (checkout, return, health-check, sizing, timeout, and the intermittent failures of getting them wrong) had nothing to do with which database was on the other end"
 
 [rusqlite]
@@ -265,8 +260,6 @@ url = "https://github.com/rusqlite/rusqlite"
 verdict = "adopt"
 license = "MIT"
 pin = "0.40.2"          # carries libsqlite3-sys 0.38.2, which bundles SQLite 3.53.2
-pin_kind = "commit"
-tracked_by = "crates.io releases for rusqlite; the version to watch is libsqlite3-sys's bundled SQLite, because a CVE lands there rather than in the Rust wrapper"
 why = "the database, after PRD Q45 (2026-08-27) retired Postgres. Adopted on measurement rather than preference: of 464 columns in the live instance 462 are SQLite-native (the two exceptions are a jsonb and an integer[], both TEXT here), no extension, enum, FTS index or LISTEN/NOTIFY is in use, all 9 partial indexes are btree and supported, and every ON CONFLICT (44), RETURNING (18) and window function in the tree is supported by the bundled SQLite. The write rate is 0.30 commits/s, so single-writer WAL with a busy_timeout is ample. Taken with the `bundled` feature so the deployment does not depend on whichever SQLite macOS or an Alpine image happens to ship -- the failure that avoids is a build that works on the developer's machine and loses a function on the host. The blocking API is the one this repo's data layer is written against (see [r2d2]), so the 134 sync call sites needed no async conversion"
 
 [r2d2_sqlite]
@@ -274,8 +267,6 @@ url = "https://github.com/ivanceras/r2d2-sqlite"
 verdict = "adopt"
 license = "MIT"
 pin = "0.35.0"
-pin_kind = "commit"
-tracked_by = "crates.io releases for r2d2_sqlite; a thin adapter whose version moves when rusqlite's minor does, so the signal to watch is a rusqlite release, not this crate"
 why = "the r2d2 manager for rusqlite, replacing [r2d2_postgres] under PRD Q45. Kept the pool rather than opening per call because of what the manager's `with_init` buys: journal_mode, busy_timeout and foreign_keys are applied to every connection in one place instead of at 134 call sites, and foreign_keys is the one that fails silently -- SQLite parses REFERENCES either way and simply does not enforce it. Keeping the pool also kept `Store::open` a checkout, which is the shape the call sites are already written against"
 
 [bun]
@@ -283,7 +274,7 @@ url = "https://github.com/oven-sh/bun"
 verdict = "adopt"
 license = "MIT"
 pin = "1.3.14"          # 2026-05-13, 58d old as of 2026-07-10 -- well past cooldown
-why = "the TS/JS runtime README.md#language-tooling mandates (bun, never npm/node), and the owner of its one pin. This row is the source of truth tools/check-bun-pin.sh compares the two workflows' BUN_VERSION against, because README.md#one-manifest-per-concern puts every external pin here. From 2026-07 to 2026-08-25 it was ALSO consumed as a hand-rolled hermetic toolchain under Bazel -- per-platform release zips (darwin-aarch64, darwin-x64, linux-aarch64, linux-x64) sha256-pinned against oven-sh's published SHASUMS256.txt and cross-checked by direct download rather than trusted from the file -- because no published ruleset wrapped bun. PRD Q44 retired that toolchain with the rest of Bazel, so the pin describes the `bun` a machine has on PATH and nothing else"
+why = "the TS/JS runtime README.md#language-tooling mandates (bun, never npm/node). The pin above is a RECORD of the version this verdict was written against, and not a claim about any machine: brew owns the binary here and capabilities/host-patch moves it nightly, while both workflows install `latest` through oven-sh/setup-bun. It was the source of truth tools/check-bun-pin.sh compared two BUN_VERSION literals against until 2026-09-02 (Q_AUDIT); with no literal left in either workflow there is nothing to compare, which is what removed the gate rather than replacing it. From 2026-07 to 2026-08-25 it was ALSO consumed as a hand-rolled hermetic toolchain under Bazel -- per-platform release zips (darwin-aarch64, darwin-x64, linux-aarch64, linux-x64) sha256-pinned against oven-sh's published SHASUMS256.txt and cross-checked by direct download rather than trusted from the file -- because no published ruleset wrapped bun. PRD Q44 retired that toolchain with the rest of Bazel, so the pin describes the `bun` a machine has on PATH and nothing else"
 
 [maplibre-gl-js]
 url = "https://github.com/maplibre/maplibre-gl-js"
@@ -325,8 +316,6 @@ url = "https://github.com/hyperknot/openfreemap"
 verdict = "adopt"
 license = "MIT (server); OpenMapTiles/OSM attribution applies to rendered data"
 pin = "hosted-style-api"
-pin_kind = "hosted"
-tracked_by = "the hosted style URL itself, which has no version to drift; a breaking change surfaces as a broken basemap in the Trips slice, behind the one constant that names it"
 why = "keyless vector basemap for the first Trips vertical slice, using the documented hosted style URL behind one constant. The map keeps provider attribution visible and the seam can later point at a self-hosted OpenFreeMap/PMTiles deployment without changing Trip contracts"
 
 [wikimedia-api]
@@ -341,8 +330,6 @@ url = "https://nominatim.org/release-docs/latest/api/Search/"
 verdict = "adopt"
 license = "API output is ODbL (OpenStreetMap data); places stores responses in its own local cache and the map keeps OSM attribution visible"
 pin = "search-and-reverse-api-v1"
-pin_kind = "hosted"
-tracked_by = "the hosted search and reverse endpoints themselves, which have no version to drift; a breaking change surfaces as geocode misses behind the one constant that names them (capabilities/places/src/geocode.rs NOMINATIM_URL; the reverse endpoint is derived from it in reverse_endpoint)"
 why = "forward and reverse geocoder for the places registry (capabilities/places decision D3: external API with a permanent local cache, chosen over bundled datasets). The usage constraints are part of the adoption, enforced in geocode.rs rather than remembered: at most 1 request/s with the identifying User-Agent axon-places/0.1 per the Nominatim usage policy; every response cached permanently in places.geocode_cache so a query egresses at most once; and a query carries place text or a bare coordinate pair only -- never a person name, an amount, or a date (PRD 6.1, places ISA PLC-3/A1)"
 
 [platforms]
@@ -378,7 +365,6 @@ url = "https://github.com/ClementTsang/bottom"
 verdict = "adopt"
 license = "MIT"
 pin = "0.14.7"          # 2026-07-27, 7d old on 2026-08-03 = the near edge of the 7-14d window, so bumped after an audit rather than on sight. Installed and VERIFIED on this machine (`btm --version` -> 0.14.7) in the same change that moved this line; installed via `cargo install bottom --version 0.14.7 --locked`, not brew (brew's bottle always tracks latest, no clean way to pin an older formula version). Delta 0.14.3..0.14.7 read in full: four releases, all bug fixes plus one small config feature (default sort order, 0.14.7), no breaking change and nothing touching how tools/sysmon consumes it. What actually mattered: the first disk I/O reading at startup being wildly too high and Linux signals >=34 being off by two (both 0.14.5), and 'Q' not quitting (0.14.4). The 0.14.4-only note this comment used to carry is superseded -- it was skipped at one day old for cooldown, and its fixes arrive here
-installed_probe = "btm --version"   # cargo install, so nothing but this pin decides which version the host runs
 why = "tools/sysmon TUI backend -- cross-platform system monitor (CPU/mem/disk/net/proc, history graphs), Rust, matches the language bias in README.md#implementation-languages-and-intelligence. Adopt over build: README.md#upstream-first requires checking for prior art before writing a system-usage overview from scratch"
 
 [presidio]
@@ -399,7 +385,6 @@ url = "https://github.com/Arthur-Ficial/apfel"
 verdict = "adopt"
 license = "MIT"
 pin = "1.9.1"           # released 2026-08-05, adopted 2026-08-29 — 24 days, past the 14-day cooldown ceiling in axon.toml. Installed with `brew install apfel`.
-installed_probe = "apfel --version"
 why = "capabilities/foundation-models serves Apple's on-device model behind the OpenAI chat shape; this replaces the 311-line afm-server Axon used to maintain for that. Supersedes it on features (streaming, /v1/responses, MCP tool calling, structured output) with none of the maintenance. NOTE its README documents no port option and is wrong: Sources/CLI/CLIArguments.swift carries --port/--host and APFEL_PORT/APFEL_HOST, which is what lets it keep this deployment's 8091 instead of colliding with Ollama on its 11434 default."
 
 [macmon]
@@ -407,7 +392,6 @@ url = "https://github.com/vladkens/macmon"
 verdict = "adopt"
 license = "MIT"
 pin = "0.7.0"           # crates.io lags GitHub (latest tag there is v0.7.2, 2026-05-02); 0.7.0 is what `cargo install macmon` resolves and is well past cooldown either way. Installed via `cargo install macmon --version 0.7.0 --locked`
-installed_probe = "macmon --version"   # cargo install, same shape as bottom
 why = "tools/sysmon power/thermal backend -- sudoless powermetrics wrapper for Apple Silicon (GPU/ANE utilization, package power draw, thermal pressure) that bottom and Activity Monitor don't surface. arm64-only; tools/sysmon gates the `power` subcommand on `uname -m`"
 
 [typst]
@@ -415,7 +399,6 @@ url = "https://github.com/typst/typst"
 verdict = "adopt"
 license = "Apache-2.0"
 pin = "0.15.1"          # 2026-07-17, audited + pinned 2026-08-03. NOTE the pin was behind the MACHINE, not the other way round: brew had already upgraded to 0.15.1, so 0.15.0 described an install that no longer existed. Delta is bugfix-only (NCM font 8.1.1, two math-alignment regressions, layout fixes)
-installed_probe = "typst --version"   # brew formula; the entry whose pin the machine had already overtaken when this check was written
 why = "capabilities/cv rendering -- LaTeX replacement for CV typesetting. Plain-text templates with real scripting (array filter/map) instead of awesome-cv.cls's `\\ifx\\cvtarget` macro chains; single Rust-built binary, no TeX Live install, git-diffable output. Adopt over build: a typesetting engine is exactly the kind of thing not to hand-roll"
 
 [yq]
@@ -430,8 +413,6 @@ url = "https://github.com/JCarterJohnson/vibecoded-design-tells"
 verdict = "adopt"
 license = "MIT (code/skills; the harvested Reddit dataset under a separate, unvendored data note -- not consumed)"
 pin = "f7c4aef"         # 2026-06-23, well past cooldown as of 2026-07-10
-pin_kind = "commit"
-tracked_by = "diffing upstream's default branch against this sha whenever Packs/unslop or Packs/writing is revisited; the repo cuts no releases"
 why = "Packs/unslop/skills/unslop vendored near-verbatim (references/, scripts/; the two source skills unslop-code + unslop-ui were merged into one 2026-07-28 and their shared body prose rewritten) -- data-grounded (11.9k-73k Reddit posts per study) AI-tell scanners for code and web design, stdlib-only Python. Both halves came from the same commit; the merged SKILL.md's Provenance section documents the second-person-clause rewordings and the merge. See Packs/unslop/README.md for full attribution. The former unslop-text prose skill moved to Packs/writing/skills/human-writing 2026-07-25 and was merged with human-voice + oberskills; its references/tells.md and references/writing-with-intent.md are still this upstream's text, so this entry covers that pack too."
 
 [human-voice]
@@ -439,8 +420,6 @@ url = "https://github.com/stephenoffer/human-voice"
 verdict = "adopt"
 license = "MIT"
 pin = "9bcba2f"         # 2026-06-23, evaluated + vendored 2026-07-25
-pin_kind = "commit"
-tracked_by = "diffing upstream's default branch against this sha whenever Packs/writing/skills/human-writing is revisited; the repo cuts no releases"
 why = "Packs/writing/skills/human-writing vendors this skill's linter wholesale (scripts/human_voice_linter/, detect_ai_prose.py, ai_prose_patterns.json) plus references/{over-correction,structural-craft,cited-vs-matched,discourse-and-structure}.md verbatim with an attribution header; references/{registers,anti-hallucination}.md are extracted+condensed from its SKILL.md. Chosen as the substrate because it is the only one of the four prose-tell projects with real structural computation (32 checks: burstiness, lexical diversity, n-gram repetition, SVO monotony, over-correction, dialect drift) rather than a pure lexical regex list -- measured: it scores the over-corrected corpus at 63.5 strong-tell where the old unslop-text scanner returned clean. Two local deltas, both documented in that SKILL.md's Gotchas + Provenance: (1) check_em_dash fires on presence instead of upstream's `per_1k > threshold and count >= 2`, since a lone em dash is an absolute tell -- verified 0/24 human and 0/10 ESL-formal false positives on the bundled corpus; (2) additive entries in ai_prose_patterns.json meta_commentary/hedging. NOTE its eval corpus is hand-authored to exhibit the tells the linter looks for (ablation reports AUC 1.0 with zero drop for every category) -- calibration only, never cite as a benchmark."
 
 [oberskills]
@@ -448,8 +427,6 @@ url = "https://github.com/ryanthedev/oberskills"
 verdict = "quarry"
 license = "MIT declared in .claude-plugin/plugin.json only -- NO LICENSE file at repo root"
 pin = "5050537"         # v2.8.1, 2026-07-25
-pin_kind = "commit"
-tracked_by = "the open licence question below, not a version: this entry is re-read if upstream adds a root LICENSE file, which is the only change that would move the verdict"
 why = "Packs/writing/skills/human-writing takes the architecture of this repo's `write` skill: the mode router, the reader-job type taxonomy (references/types.md), voice profiles + template (references/voice-template.md), and the phased review protocol. Quarry not overlay -- because the MIT grant exists only as a plugin.json field with no root LICENSE text, everything taken is paraphrased and rewritten rather than copied verbatim, and both derived reference files carry an explicit note saying so. Revisit if upstream adds a proper LICENSE file."
 
 [stop-slop]
@@ -457,8 +434,6 @@ url = "https://github.com/hardikpandya/stop-slop"
 verdict = "reject"
 license = "MIT"
 pin = "8da1f03"         # 2026-03-18, evaluated 2026-07-10, re-evaluated + re-declined 2026-07-25
-pin_kind = "commit"
-tracked_by = "nothing, deliberately: rejected twice and consumed nowhere. The sha is the state that was compared, kept so a third comparison starts from evidence"
 why = "same job as human-writing (prose AI-tell removal) with a smaller hand-written phrase/structure list, no data grounding. Declined twice. Re-evaluated 2026-07-25 during the human-writing merge: its distinctive contributions (false_agency, narrator_distance, negative_listing, dramatic_fragmentation, vague_declarative) are ALREADY present as pattern categories in the vendored human-voice linter, so it adds nothing new; and its absolutist framing ('kill all adverbs', 'no em dashes ever', 'two items beat three', 'no Wh- starters') manufactures exactly the fresh uniform signature that skill exists to prevent -- human-voice's own SKILL.md names it as the anti-pattern. Recorded here, not just in a pack README, so the pin/license survive if the comparison is ever revisited."
 
 [skills-best-practices]
@@ -466,8 +441,6 @@ url = "https://github.com/mgechev/skills-best-practices"
 verdict = "reject"
 license = "NONE -- no LICENSE file at repo root and no licence field anywhere; all rights reserved by default"
 pin = "675ee84"         # 2026-06-22, cloned 2026-07-09 alongside the Anthropic skill docs, evaluated 2026-08-18
-pin_kind = "commit"
-tracked_by = "nothing, deliberately: rejected and consumed nowhere. The sha is the state that was compared, kept so a second comparison starts from evidence. Revisit only if upstream adds a LICENSE file, which is the single change that could move the verdict"
 why = "same job as Packs/writing/skills/writing-skills (authoring + validating agent skills) and smaller on every axis compared: its skill/SKILL.md is a 46-line 5-step procedure against that skill's SKILL.md plus 8 references, and its scripts/validate-metadata.py is 50 bare lines against the installed 126-line validator, which additionally combines the agentskills.io rules with Anthropic's requirements and the local directory-name convention and prints field-by-field errors an agent can self-correct from. Nothing in it is absent downstream. Licence is the hard blocker independent of that: no LICENSE file at all, which is stricter than the oberskills case above (MIT in plugin.json, no root file) that already earned quarry rather than overlay -- with no grant of any kind there is nothing to quarry from, so reject rather than paraphrase. One lead recorded and not taken: its README points at github.com/mgechev/skillgrade for skill eval and regression testing, which is adjacent to the Evals skill and is a separate evaluation if ever wanted. Retroactive entry: cloned 2026-07-09 into the gitignored staging dir alongside the Anthropic docs that writing-skills DID absorb, and never itself consumed -- recorded now so the folder's retirement does not erase the fact that it was looked at."
 
 [academic-researcher]
@@ -475,8 +448,6 @@ url = "https://github.com/SiluPanda/academic-researcher"
 verdict = "overlay"
 license = "MIT"
 pin = "e75d70d"         # 2026-02-16, retroactive entry -- see why
-pin_kind = "commit"
-tracked_by = "diffing upstream's default branch against this sha whenever the three adapted scripts in Packs/academic-writing are revisited; the repo cuts no releases"
 why = "Packs/academic-writing/skills/academic-writing/scripts/{resolve-papers,validate-bib,check-citations}.js adapted+generalized from this skill's citation-workflow scripts (check-citations.js given Quarto @citekey support beyond the original's LaTeX-only \\cite{} handling, hardcoded path removed). Retroactive entry -- the pack shipped 2026-07-11 with this source recorded only as 'unknown license' in its README; resolved 2026-07-14. Real code adapted (not just ideas), so verdict is overlay not quarry -- tools/audit should still be run against these three files to close the content-scan gate properly, and the manifest half of that gate is now a human reading this entry (PRD Q41, 2026-08-28). See Packs/academic-writing/README.md Attribution."
 
 [academic-writing-agents]
@@ -505,7 +476,8 @@ why = "Prof. Peng Sida's (彭思达) publicly shared research/paper-writing note
 # so nothing watched them and nothing recorded what was running — while scripts/update.sh
 # called `docker compose pull` on every deploy. Every pin below is the version read out of the
 # LIVE container on 2026-07-26, not a registry guess, and digest-confirmed where the registry
-# allowed it. They enter as entries first so Renovate watches them; the capability
+# allowed it. They enter as entries first so Dependabot and the weekly image scan see them;
+# the capability
 # migration that takes the containers over is separate work.
 #
 # One caveat that applies to all of them: an official-image version tag is not a byte pin.
@@ -539,8 +511,6 @@ url = "https://github.com/eclipse-mosquitto/mosquitto"
 verdict = "reject"
 license = "EPL-2.0"
 pin = "2.1.2-alpine"    # the running container reports 2.1.2 but its digest (sha256:a908c65c) matches NO current tag: the tag `2` it was pulled by has since been rebuilt to sha256:6f8d8a94, now also carrying 2.1.2-alpine and 2.1-alpine. Adopting this tag means taking the newer 2.1.2 build on next restart — a base-layer change, deliberate instead of silent. No bare 2.1.2 tag exists; 2.1.x ships -alpine only
-pin_kind = "image"
-tracked_by = "nothing while rejected: the pin records the tag the container last ran. Re-adoption is a fresh tag-and-digest decision, taken then rather than watched now"
 why = "REJECTED and removed 2026-07-26: nothing had ever used it. No mqtt config entry in HA, zero established connections, and 'Restored 0 clients / 0 subscriptions / 0 retained messages' on every restart in its own log. The devices that speak MQTT on that deployment talk to their vendor clouds, and those were the MQTT lines in HA's log, not a local broker. Re-adopt the moment a local broker has a client: the commented zigbee2mqtt service needs one"
 
 # --- vendored Home Assistant custom components -----------------------------
@@ -554,9 +524,7 @@ why = "REJECTED and removed 2026-07-26: nothing had ever used it. No mqtt config
 url = "https://github.com/StevenBlack/hosts"
 verdict = "adopt"
 license = "MIT"
-pin = "master"          # the branch, not a ref on it: see pin_kind/tracked_by — this is the one entry that is meant to float
-pin_kind = "dataset"
-tracked_by = "Pi-hole's own gravity pull, which refreshes the list on its schedule. Staleness is the failure mode here and drift is the intended behaviour, so there is no release to compare against"
+pin = "master"          # the branch, not a ref on it: the one entry here that is meant to float, argued in the why below
 why = "Pi-hole's blocklist, pulled at runtime by gravity. The one entry here that SHOULD float: for a blocklist the failure mode is staleness, not supply chain — a pinned list stops blocking new domains, and it is consumed as hostname data, never executed. Recorded so it is a decision instead of an accident, which is the distinction the old setup did not make anywhere"
 
 # --- private remote-access layer --------------------------------------------
@@ -582,8 +550,6 @@ url = "https://github.com/sveltejs/ai-tools"
 verdict = "adopt"
 license = "MIT"
 pin = "6468954"         # plugin v1.0.8, 2026-07-27 — see cooldown note in `why`
-pin_kind = "commit"
-tracked_by = "`/plugin marketplace update`, which the why below makes a fresh cooldown decision rather than a routine bump. The repo's releases name individual monorepo packages (@sveltejs/opencode), never the plugin ref pinned here"
 why = "the Svelte org's own agent toolchain, adopted as a Claude Code plugin (`/plugin marketplace add sveltejs/ai-tools`) rather than vendored into a Pack. Three of its four parts are things a Pack structurally cannot carry — an HTTP MCP server (https://mcp.svelte.dev/mcp, which means every doc lookup and autofixer call sends code context to Svelte's server: public-class work only), an LSP wiring for svelteserver, and a subagent. The fourth, the two skills, is a generated artifact synced from svelte.dev and tools/skills — vendoring it would fork a moving target (runes, async Svelte, {@attach}) with no upstream path. INSIDE COOLDOWN AT ADOPTION: installed 2026-07-28 on a 1-day-old ref, accepted because the installed tree is 13 markdown files plus 2 json and contains no executable code (verified against the cache). The residual vector is plugin.json's lspServers.command, which Claude Code spawns — re-verify that field on every `/plugin marketplace update`, and treat an update as a fresh cooldown decision, not a routine bump"
 
 [sveltejs-mcp]
@@ -598,8 +564,6 @@ url = "https://github.com/sveltejs/language-tools"
 verdict = "adopt"
 license = "MIT"
 pin = "0.18.3"          # npm, 2026-06-23 — ~5 weeks old, well past cooldown. Installed globally via `bun add -g`
-pin_kind = "monorepo"
-tracked_by = "the npm version of the svelte-language-server package. sveltejs/language-tools releases name its siblings (svelte2tsx, typescript-svelte-plugin) and never this package, so a repo-level release comparison would be reading someone else's version"
 why = "the `svelteserver` binary that svelte-ai-tools declares but does not ship. Without it the plugin has no Svelte diagnostics, definition lookup or rename support. Registered separately because it is a distinct package and repository"
 
 # --- agentbox: the sandboxed coding agent (capabilities/agentbox) -----------
@@ -616,7 +580,6 @@ url = "https://github.com/apple/container"
 verdict = "adopt"
 license = "Apache-2.0"
 pin = "1.2.2"           # what is INSTALLED and running (`container --version`, verified 2026-08-19), read off the machine rather than a registry listing -- a signed .pkg the operator installs by hand, so upstream-checker watches drift here, it does not own the update. The pin deliberately does NOT move ahead of the machine: a pin claiming a version the host is not running is the exact failure Axon#54 exists to catch, so it bumps in the change that verifies `container --version`, never before. That guard earned itself this time -- between the install and this bump the checker read "pin says 1.0.0, machine has 1.2.2". AUDIT 2026-08-19 -- the 2026-08-03 review of 1.1.0/1.2.0 DEFERRED adoption to "the next release", which is this one; that audit stands and is not repeated. Installer signature verified before running: Developer ID Installer: Apple Inc. - Containerization (UPBK2H6LZM), notarized, trusted timestamp 2026-08-08 01:47:20 +0000. The four advisories the pin was sitting inside all clear at 1.2.2: GHSA-wg28-286f-56v6 and GHSA-2v2q-4q35-h585 (<= 1.1.0), GHSA-xwgf-4rc5-p4m4 and GHSA-g57j-434g-5xj2 (< 1.2.0). ONE UPGRADE TRAP, found the hard way and worth more than the version number: `container system stop` followed by `start` replaces the apiserver and NOT the plugin helpers. After the .pkg installed, `container-network-vmnet` and `container-core-images` were still the 1.0.0 processes from two days earlier while apiserver and container-runtime-linux were 1.2.2, and every bootstrap failed with `no available interface strategy for network default, plugin=container-network-vmnet variant=nil` -- a message that names the network and hides the skew. The vmnet helper logs an allocated attachment with a real IP immediately before the failure, so the network is fine and reading the error as a network problem sends you the wrong way. What fixes it: run `container system stop` a SECOND time once the apiserver is already new, which does then stop the helpers, then `start`. Check `ps` for `libexec/container/plugins` start times, not just `container system status`, which reports only the apiserver version. Restore parity verified rather than assumed: postgres came back on the SAME 17.9-alpine container (not recreated -- `service-runner.sh status` prints the DECLARED 17.10 tag, `container list` prints the running one, and only the second answers this question), with 288 tables and 482,520 rows, identical to the counts taken before the upgrade and to that morning's backup receipt. Same six services healthy after as before. Previous pin: 1.0.0, verified 2026-08-03
-installed_probe = "container --version"   # the runtime every containerised capability boots on; its `why` already said the pin is read off the machine
 why = "the container runtime <overlay>/config/machine.toml already names (container_runtime = \"apple-container\"), registered here now that a capability depends on more than `run`: each container is its own VM rather than a shared kernel, which is the isolation claim agentbox actually rests on, and `container network create --internal` gives a host-only network with no external route -- the egress control the writeup left explicitly out of scope. Apple-signed component, no third-party daemon, which is the install story a sovereignty review asks about"
 
 [debian]
@@ -624,8 +587,6 @@ url = "https://github.com/debuerreotype/docker-debian-artifacts"
 verdict = "adopt"
 license = "various (Debian main; base image is DFSG-free)"
 pin = "trixie-20260713-slim"   # 2026-07-14, 14d old on 2026-07-28 = the far edge of the cooldown window. arm64 digest sha256:8b5033c95ca60cdffb0e0f4c446e5f714e82d8960a9ef4153c0eaf13e988b0ea. Dated tag, not the rolling `trixie-slim`, so a rebuild is a decision
-pin_kind = "image"
-tracked_by = "the dated trixie-*-slim tag list on Docker Hub. The dated tag is chosen over the rolling one precisely so a rebuild is a decision; that decision is when the pin is re-read"
 why = "base image for the agentbox image. Debian rather than Alpine because the pi release binary is a dynamically-linked glibc ELF (`ELF 64-bit LSB executable, ARM aarch64, interpreter /lib/ld-linux-aarch64.so.1`) -- musl is not an option here. trixie (glibc 2.41) over bookworm because the binary is built on a newer toolchain than bookworm ships"
 
 [deutsche-bahn-data]
@@ -633,8 +594,6 @@ url = "https://github.com/piebro/deutsche-bahn-data"
 verdict = "adopt"
 license = "CC-BY-4.0 (data, licensed by Deutsche Bahn; attribution required)"
 pin = "monthly_processed_data/data-2025-11 .. data-2026-06"   # the monthly releases consumed, not a git ref: the code that produces them is irrelevant here, the published parquet files are the artifact. Files are immutable once published; a new month is a new file, never a rewrite of an old one
-pin_kind = "dataset"
-tracked_by = "the repo's monthly parquet publication. A new month is a new immutable file, so becoming current means extending the range in this pin after checking the schema note in the why below — never re-reading an old one"
 why = "historical German rail punctuality, the empirical baseline capabilities/punctuality is built on. Collected 4x/day from DB's own Station Data + Timetables APIs and republished monthly as parquet, so it is DB's data under DB's licence rather than a scrape. Chosen over calling the Timetables API directly because that answers 'what is delayed right now' and cannot be asked about last March -- history is the whole point here. Two properties the README states and the ingest must respect: coverage changes on 2025-11-02 (before it, only the ~100 largest stations; after, all ~5300), so mixing the two eras makes station coverage a confounder; and collection is 98.92% complete with 196 named missing hours, so an absent train never means 'did not run'. Schema broke once (2026-05: train_name split into train_number + line_number, all historical files reprocessed), which is why the pin names files rather than tracking a moving 'latest'"
 
 [arrow-rs]
@@ -656,8 +615,6 @@ url = "https://ar5iv.labs.arxiv.org"
 verdict = "adopt"
 license = "renders arXiv submissions; each paper keeps the licence its authors chose, exactly as on arxiv.org"
 pin = "hosted-html-render"
-pin_kind = "hosted"
-tracked_by = "the rendered HTML itself, which has no version to drift. A regression surfaces as arXiv items falling back to their abstracts, which capabilities/comms records per item as transcript_source and does not hide"
 why = "second HTML source for arXiv full text in capabilities/comms (#78), consulted only when arxiv.org/html answers 404. Measured 2026-08-04 across the 24 newest cs.AI/cs.LG/cs.CL papers: arxiv.org served HTML for 21, and ar5iv answered all three misses plus a 2007 paper, with real body text rather than a conversion stub. It is the older LaTeXML pipeline with much wider backfill, which is the shape of the gap. Adopted as a fetch target only: the response goes through the same extraction trait every other page does, so no provider markup or script is ever evaluated, and a failure costs an abstract rather than an error. It is a labs-grade host, which is why it is the fallback and never the first request. Together with arxiv.org it reduces the case for a PDF reader to papers with no LaTeX source at all -- scans and PDF-only submissions -- which is what xberg's pdf feature is for once its cooldown clears"
 
 # --- local semantic relevance (capabilities/comms) --------------------------
@@ -710,6 +667,4 @@ license = "MIT"
 pin = "0.3.2"           # npm, @pascal-app/mcp. Pinned 2026-08-17, consumed 2026-08-20 to 2026-08-30.
                         # Kept as the record of what the room model was drawn against, not as a
                         # version to keep current. [lifeos] keeps its pin for the same reason.
-pin_kind = "monorepo"
-tracked_by = "nothing, deliberately, since 2026-08-30 — no consumer means no staleness to track. The field stays because pin_kind requires it and dropping pin_kind would put the row back under renovate.json5's release watch, which is the opposite of what a retired entry wants. Its previous answer, for the record: the npm version of the @pascal-app/mcp package, because pascalorg/editor releases describe the editor application and not this MCP server sibling"
-why = "the geometry engine behind the interior capability, read while it still lived in the private overlay (it moved here 2026-08-30, PRD Q59): rooms, walls, openings, levels and a browser view, driven over MCP. Adopted rather than rebuilt after it returned 22.700000000000003 m2 for a polygon measured on site at 22,7. What it does NOT provide is the reason the capability exists: its check_collisions is documented as an axis-aligned bounding-box overlap test between item footprints, and every clearance rule this capability enforces is about the space that stays EMPTY — room to walk, to reach, to open a door, to let light past. None of those can be written as an overlap test, so src/clearance.ts is ours and the engine underneath is theirs. CONSUMER LOST 2026-08-30, which is why the verdict is inspiration and not adopt. The TypeScript capability spawned @pascal-app/mcp via bunx and pinned the version in its package.json on purpose -- \"a floating range would let the geometry engine change under a verified room model\". The Rust rewrite links nothing and shells out to nothing: the whole engine is capabilities/interior/src/geometry.rs, an exact Felzenszwalb/Huttenlocher distance transform plus a maximum-bottleneck search, both ours. Nothing in Axon installs this now. What survives is the shape of the read, not the code -- and the 22.700000000000003 above, which is still the reason to prefer integer centimetres to floats for a measured room"
+why = "nothing tracks this entry, deliberately, since 2026-08-30: no consumer means no staleness to track. It is the geometry engine behind the interior capability, read while it still lived in the private overlay (it moved here 2026-08-30, PRD Q59): rooms, walls, openings, levels and a browser view, driven over MCP. Adopted rather than rebuilt after it returned 22.700000000000003 m2 for a polygon measured on site at 22,7. What it does NOT provide is the reason the capability exists: its check_collisions is documented as an axis-aligned bounding-box overlap test between item footprints, and every clearance rule this capability enforces is about the space that stays EMPTY — room to walk, to reach, to open a door, to let light past. None of those can be written as an overlap test, so src/clearance.ts is ours and the engine underneath is theirs. CONSUMER LOST 2026-08-30, which is why the verdict is inspiration and not adopt. The TypeScript capability spawned @pascal-app/mcp via bunx and pinned the version in its package.json on purpose -- \"a floating range would let the geometry engine change under a verified room model\". The Rust rewrite links nothing and shells out to nothing: the whole engine is capabilities/interior/src/geometry.rs, an exact Felzenszwalb/Huttenlocher distance transform plus a maximum-bottleneck search, both ours. Nothing in Axon installs this now. What survives is the shape of the read, not the code -- and the 22.700000000000003 above, which is still the reason to prefer integer centimetres to floats for a measured room"
