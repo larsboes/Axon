@@ -34,6 +34,14 @@ _here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tools/lib/paths.sh
 . "$_here/lib/paths.sh"   # AXON_ROOT, AXON_PERSONAL_ROOT
 
+# launchd hands a job PATH=/usr/bin:/bin:/usr/sbin:/sbin (plus tools/, from the rendered unit).
+# None of the package managers live there, so the first scheduled run on 2026-09-02 skipped
+# every step and reported "scanner-missing" for an audit whose scanners were installed. The
+# managers' homes are fixed by their installers, so they are named here rather than left to
+# whichever shell started the job: Homebrew (arm64 and Intel), rustup, and uv's tool shims.
+PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export PATH
+
 RAN=""; SKIPPED=""; FAILED=""
 
 step() {  # step <binary> <label> <argv...>
@@ -61,7 +69,17 @@ step brew   "brew upgrade formula"  brew upgrade --formula
 step brew   "brew upgrade cask"     brew upgrade --cask
 step brew   "brew cleanup"          brew cleanup -s
 step brew   "brew autoremove"       brew autoremove
-step uv     "uv tool upgrade"       uv tool upgrade --all
+# One step per uv tool, not `--all`: a single tool whose local source directory has gone
+# (measured 2026-09-02: an editable install pointing at a deleted checkout) fails `--all`
+# outright and leaves every other tool unpatched. Named steps also put the broken one in the
+# receipt by name.
+if command -v uv >/dev/null 2>&1; then
+  for _tool in $(uv tool list 2>/dev/null | awk 'NF && $1 !~ /^-/ {print $1}'); do
+    step uv "uv tool upgrade $_tool" uv tool upgrade "$_tool"
+  done
+else
+  step uv "uv tool upgrade" uv tool upgrade --all
+fi
 step rustup "rustup update"         rustup update
 
 echo
