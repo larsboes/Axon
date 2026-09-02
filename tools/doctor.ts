@@ -1973,6 +1973,43 @@ const CHECKS: Check[] = [
   // only thing Axon added and the only thing lost. The notice now arrives on the day, from
   // the scanner, on the next push or the next weekly security.yml run.
 
+  // Host patch — did the daily upgrade job run. A launchd StartInterval unit does not fire on
+  // a sleeping Mac, so "scheduled" and "ran" are different questions and only the receipt
+  // answers the second. tools/host-patch.sh writes it; doctor reports. Same delegation shape
+  // as the toolchain check above.
+  {
+    name: "Host patch (capabilities/host-patch)",
+    run(ctx) {
+      const enabled: string[] = Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : [];
+      if (!enabled.includes("host-patch")) {
+        ctx.ok("host-patch not enabled on this machine — nothing to report");
+        return;
+      }
+      const receipt = join(ctx.overlayPath, "data", "host-patch", "last.json");
+      if (!existsSync(receipt)) {
+        ctx.warn("host-patch is enabled but has never written a receipt — it has not run");
+        return;
+      }
+      let r: any;
+      try {
+        r = JSON.parse(readFileSync(receipt, "utf8"));
+      } catch {
+        ctx.bad(`${receipt} is not valid JSON — the last run could not record what it did`);
+        return;
+      }
+      const ageH = (Date.now() - Date.parse(r.at)) / 3_600_000;
+      if (!Number.isFinite(ageH)) {
+        ctx.bad("the host-patch receipt carries no readable timestamp");
+        return;
+      }
+      if (ageH > 48) ctx.warn(`last patch run was ${Math.round(ageH)}h ago — a 24h job that has not run in two days is not running`);
+      if (r.failed) ctx.warn(`last patch run had failed steps:${r.failed}`);
+      if (r.audit === "finding") ctx.bad("the last patch run's audit found something — run tools/audit");
+      else if (r.audit === "scanner-missing") ctx.warn("the last patch run's audit could not run a scanner");
+      else if (ageH <= 48 && !r.failed) ctx.ok(`patched ${Math.round(ageH)}h ago, audit clean`);
+    },
+  },
+
   // Repo freshness — is this checkout, on any deployment host, behind origin/main. `--online`
   // fetches first for a live answer; offline reads whatever origin/main ref
   // was last fetched, best-effort. This is the only check left that the flag makes
