@@ -10,9 +10,8 @@
 // toolchain to tools/toolchain-check, boot persistence to tools/service-runner.sh. Upstream
 // freshness used to be delegated here too, to tools/upstream-checker; PRD Q41 retired that
 // script on 2026-08-28 and Dependabot answers the question now, on GitHub rather than to a
-// local health command. Same
-// reasoning applies to systems.toml/connection checks below: this extends the
-// existing state-mount reality-check idiom (systems.toml stays the one
+// local health command. The same reasoning applies to the systems.toml/connection checks
+// below: this extends the existing state-mount reality-check idiom (systems.toml stays the one
 // hand-authored registry, README.md#one-manifest-per-concern) rather than adding a second manifest or a
 // separate tool — see README.md#documentation-stays-owned-and-current.
 //
@@ -1994,7 +1993,7 @@ const CHECKS: Check[] = [
       try {
         r = JSON.parse(readFileSync(receipt, "utf8"));
       } catch {
-        ctx.bad(`${receipt} is not valid JSON — the last run could not record what it did`);
+        ctx.bad("<overlay>/data/host-patch/last.json is not valid JSON — the last run could not record what it did");
         return;
       }
       const ageH = (Date.now() - Date.parse(r.at)) / 3_600_000;
