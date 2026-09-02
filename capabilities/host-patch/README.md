@@ -29,8 +29,10 @@ two owners of one binary is a failure this deployment has already paid for: a `~
 `--dump-json` kept working (PRD §13). If `bun` should stay put on this machine, that is a
 `brew pin`, not a special case in the script — one owner, one mechanism.
 
-Container images are not scanned here either. `grype` runs in `.github/workflows/security.yml`,
-which installs it itself and runs whether or not this Mac is awake.
+Container images are neither pulled nor scanned here. `capabilities/container-refresh` is the
+pull, on the hosts that run containers; `grype` is the scan, in
+`.github/workflows/security.yml`, which installs it itself and runs whether or not this Mac is
+awake.
 
 ## The cadence, honestly
 
