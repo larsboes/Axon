@@ -23,7 +23,7 @@
       "kind": "capability",
       "code": {
         "files": 3,
-        "nodes": 44
+        "nodes": 39
       }
     },
     {
@@ -121,8 +121,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 75,
-        "nodes": 1268
+        "files": 76,
+        "nodes": 1284
       }
     },
     {
@@ -214,14 +214,6 @@
       }
     },
     {
-      "name": "host-audit",
-      "kind": "capability",
-      "code": {
-        "files": 2,
-        "nodes": 21
-      }
-    },
-    {
       "name": "host-firewall",
       "kind": "capability",
       "code": {
@@ -234,7 +226,19 @@
       "kind": "capability",
       "code": {
         "files": 10,
-        "nodes": 108
+        "nodes": 112
+      }
+    },
+    {
+      "name": "host-patch",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 9
       }
     },
     {
@@ -417,7 +421,7 @@
       },
       "code": {
         "files": 30,
-        "nodes": 526
+        "nodes": 530
       }
     },
     {
@@ -493,7 +497,7 @@
       "kind": "spine",
       "code": {
         "files": 134,
-        "nodes": 1119
+        "nodes": 1098
       }
     },
     {
@@ -1233,7 +1237,7 @@
     },
     {
       "name": "apple-container",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "1.2.2"
     },
     {
@@ -1335,6 +1339,11 @@
       "name": "graphify",
       "verdict": "adopt",
       "pin": "0.9.31"
+    },
+    {
+      "name": "grype",
+      "verdict": "adopt",
+      "pin": "v0.118.0"
     },
     {
       "name": "hledger",
@@ -1538,7 +1547,7 @@
     },
     {
       "name": "semgrep",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "1.168.0"
     },
     {
@@ -1598,7 +1607,7 @@
     },
     {
       "name": "trivy",
-      "verdict": "adopt",
+      "verdict": "reject",
       "pin": "v0.72.0"
     },
     {
@@ -1649,7 +1658,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 11571,
+    "nodes": 11559,
     "external": 73,
     "stale": [],
     "unmatched": [
