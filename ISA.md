@@ -60,7 +60,10 @@ tracker holds nothing, and no automation creates entries in it.
   (`docker ps --format '{{.Names}} {{.Image}}'` re-prints the channel, so it does not answer
   this). `report_arg_drift` compares ports, mounts, caps and network, never the image, so a
   moved digest shows as no drift at all — `capabilities/container-refresh` is what pulls and
-  recreates instead. Was `container list` until Q75 retired apple-container on 2026-09-02.
+  recreates instead. A backup archive records the digest its container was running as
+  `image_digest` in `axon-backup.toml`, and `tools/restore.sh` prints it: an archive's own
+  `tag` is the same channel string as every other archive's, so nothing else in it says which
+  build wrote the bytes. Was `container list` until Q75 retired apple-container on 2026-09-02.
 
 ## Goal
 

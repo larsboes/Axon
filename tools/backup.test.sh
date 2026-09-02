@@ -166,6 +166,29 @@ else
   /bin/date "$@"
 fi
 DATE
+# The runtime, mocked so the digest the manifest records is one this file chose. A real docker
+# would make the assertion below depend on whatever the operator happens to be running, and a
+# hermetic test that talks to the live daemon is not hermetic — backup.sh reaches for the
+# runtime by name whenever the capability declares an image, so this mock is what keeps it here.
+#
+# Two shapes, exactly the two backup.sh sends: `inspect <name> --format {{.Image}}` for the
+# container's local image id, then `image inspect <id>` for the registry digest.
+cat > "$MOCK_BIN/docker" <<'DOCKER'
+#!/bin/bash
+printf 'docker:%s\n' "$1" >> "$MOCK_LOG"
+case "$1" in
+  inspect)
+    [ "$2" = "${MOCK_DOCKER_CONTAINER:-vaultwarden}" ] || exit 1
+    printf '%s\n' "${MOCK_DOCKER_IMAGE_ID:-sha256:0f0f0f0f}"
+    ;;
+  image)
+    # An image with no registry digest prints nothing and exits 0, which is what the real
+    # `{{if .RepoDigests}}` template does — the case backup.sh falls back to the image id for.
+    printf '%s\n' "${MOCK_DOCKER_REPO_DIGEST-vaultwarden/server@sha256:d1d1d1d1}"
+    ;;
+  *) exit 1 ;;
+esac
+DOCKER
 chmod +x "$FIXTURE/tools/backup.sh" "$FIXTURE/tools/service-runner.sh" "$MOCK_BIN/"*
 
 export PATH="$MOCK_BIN:$PATH"
@@ -246,6 +269,22 @@ tar -tzf "$stream_archive" | grep -q './axon-backup.toml' \
   || fail "stream archive omitted its backup contract"
 grep -q 'stream vaultwarden archive' "$stream_log" \
   || fail "stream diagnostics were not written to stderr"
+
+# Which build wrote these bytes. `tag` stopped answering that on 2026-09-02 (Q_DEPIN) — the
+# manifest declares "alpine", a rolling channel that reads the same for every archive this
+# capability will ever produce — so backup.sh records the running container's digest beside it.
+stream_meta="$(tar -xOzf "$stream_archive" ./axon-backup.toml)"
+printf '%s' "$stream_meta" | grep -q 'image_digest = "vaultwarden/server@sha256:d1d1d1d1"' \
+  || fail "the archive does not record the digest the container was running: $stream_meta"
+
+# An image the daemon holds no registry digest for (built locally, or pulled before it recorded
+# one) falls back to the local image id. Unknown would be worse than local-only.
+reset_run
+MOCK_DOCKER_REPO_DIGEST="" "$BACKUP" --stream vaultwarden > "$SCRATCH/vaultwarden-localid.tar.gz" 2>/dev/null \
+  || fail "stream backup failed with an image that has no registry digest"
+printf '%s' "$(tar -xOzf "$SCRATCH/vaultwarden-localid.tar.gz" ./axon-backup.toml)" \
+  | grep -q 'image_digest = "sha256:0f0f0f0f"' \
+  || fail "an image with no registry digest did not fall back to the local image id"
 if grep -q '^ssh:' "$MOCK_LOG"; then fail "stream mode contacted a push target"; fi
 [ ! -e "$OVERLAY/backup/receipts/vaultwarden.json" ] \
   || fail "stream mode fabricated a push receipt"
@@ -400,6 +439,10 @@ if [ -n "$store_archive" ]; then
   meta="$(tar -xOzf "$store_archive" ./axon-backup.toml)"
   printf '%s' "$meta" | grep -q 'sqlite_online = "data/axon/axon.db"' \
     || fail "the archive contract does not name the live database"
+  # No image, so no digest. The field is omitted rather than written empty: an empty string
+  # would claim the answer is known to be nothing, and this capability has no container at all.
+  printf '%s' "$meta" | grep -q 'image_digest' \
+    && fail "a capability with no image recorded an image_digest anyway"
   # The counts a restore compares against. Without them a replayed-into-nothing archive
   # would pass integrity_check and read as a successful restore.
   printf '%s' "$meta" | grep -q 'sqlite_tables = "46"' || fail "table count not recorded"
