@@ -1,0 +1,50 @@
+name: Dependabot auto-merge
+
+# Q_DEPIN (2026-09-02): a dependency update lands the day it exists. Dependabot opens the pull
+# requests daily with no cooldown (.github/dependabot.yml); this arms auto-merge on each one, so
+# the ordinary bump merges itself the moment the required checks go green and a human is not the
+# thing standing between a published fix and this repository.
+#
+# It was armed by hand on #199-#203 before this file existed, which is exactly why the file
+# exists: a step that needs somebody to remember it is a step that happens late.
+#
+# WHAT THIS IS NOT. It is not a review waiver. `--auto` queues the merge behind the base
+# branch's required checks — the merge happens only if CI passes, and a red check leaves the
+# pull request open and waiting, which is the whole safety property. What Axon gave up is the
+# WAIT, not the check (README.md#patch-first names the cost: a compromised publish reaches this
+# repository within a day). .github/workflows/security.yml's image scan is deliberately
+# report-only for the same reason — a red-by-upstream image must not hold a dependency bump.
+#
+# --squash, never --merge: this repository allows squash merges and refuses merge commits.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Elevated from the read-only default a Dependabot-triggered run gets: `gh pr merge --auto`
+# writes to the pull request, and enabling auto-merge is a write on the repository itself.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  automerge:
+    name: enable auto-merge
+    runs-on: ubuntu-latest
+    # The actor, not the branch name. A branch called `dependabot/...` can be pushed by anyone
+    # with write access; the actor is what GitHub itself asserts about who opened this.
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      # No `uses:` at all, and no checkout. `gh` is preinstalled on the runner and resolves the
+      # repository from the pull request URL, so this job has no third-party action to pin, no
+      # action to bump, and nothing of this repository's code on disk while it holds a write
+      # token.
+      - name: gh pr merge --auto --squash
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "$PR_URL"
