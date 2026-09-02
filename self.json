@@ -23,7 +23,7 @@
       "kind": "capability",
       "code": {
         "files": 3,
-        "nodes": 41
+        "nodes": 39
       }
     },
     {
@@ -38,16 +38,16 @@
       "name": "axon-config",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 29
+        "files": 3,
+        "nodes": 30
       }
     },
     {
       "name": "axon-server",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 50
+        "files": 4,
+        "nodes": 51
       }
     },
     {
@@ -59,16 +59,16 @@
         "port": "8082"
       },
       "code": {
-        "files": 11,
-        "nodes": 123
+        "files": 12,
+        "nodes": 124
       }
     },
     {
       "name": "axon-store",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 38
+        "files": 3,
+        "nodes": 39
       }
     },
     {
@@ -92,16 +92,16 @@
         "port": "8087"
       },
       "code": {
-        "files": 24,
-        "nodes": 567
+        "files": 25,
+        "nodes": 568
       }
     },
     {
       "name": "candidate-fingerprint",
       "kind": "lib",
       "code": {
-        "files": 1,
-        "nodes": 12
+        "files": 2,
+        "nodes": 13
       }
     },
     {
@@ -121,16 +121,16 @@
         "port": "8083"
       },
       "code": {
-        "files": 74,
-        "nodes": 1267
+        "files": 75,
+        "nodes": 1268
       }
     },
     {
       "name": "content-item",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 68
+        "files": 3,
+        "nodes": 69
       }
     },
     {
@@ -153,7 +153,7 @@
       },
       "code": {
         "files": 103,
-        "nodes": 626
+        "nodes": 627
       }
     },
     {
@@ -175,8 +175,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 17,
-        "nodes": 569
+        "files": 18,
+        "nodes": 570
       }
     },
     {
@@ -249,8 +249,8 @@
       "name": "inference",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 88
+        "files": 3,
+        "nodes": 89
       }
     },
     {
@@ -262,8 +262,8 @@
         "port": "8092"
       },
       "code": {
-        "files": 30,
-        "nodes": 535
+        "files": 31,
+        "nodes": 536
       }
     },
     {
@@ -271,7 +271,7 @@
       "kind": "pack",
       "code": {
         "files": 11,
-        "nodes": 162
+        "nodes": 169
       }
     },
     {
@@ -316,8 +316,8 @@
       "name": "markdown-root",
       "kind": "lib",
       "code": {
-        "files": 4,
-        "nodes": 106
+        "files": 5,
+        "nodes": 107
       }
     },
     {
@@ -362,8 +362,8 @@
         "port": "8093"
       },
       "code": {
-        "files": 11,
-        "nodes": 222
+        "files": 12,
+        "nodes": 223
       }
     },
     {
@@ -383,16 +383,16 @@
         "port": "8085"
       },
       "code": {
-        "files": 11,
-        "nodes": 151
+        "files": 12,
+        "nodes": 152
       }
     },
     {
       "name": "route-manifest",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 23
+        "files": 3,
+        "nodes": 24
       }
     },
     {
@@ -412,8 +412,8 @@
         "port": "8084"
       },
       "code": {
-        "files": 29,
-        "nodes": 525
+        "files": 30,
+        "nodes": 526
       }
     },
     {
@@ -441,8 +441,8 @@
         "port": "8088"
       },
       "code": {
-        "files": 18,
-        "nodes": 276
+        "files": 19,
+        "nodes": 277
       }
     },
     {
@@ -460,8 +460,8 @@
       "name": "station-time",
       "kind": "lib",
       "code": {
-        "files": 2,
-        "nodes": 15
+        "files": 3,
+        "nodes": 16
       }
     },
     {
@@ -480,16 +480,16 @@
       "name": "summarize",
       "kind": "lib",
       "code": {
-        "files": 3,
-        "nodes": 106
+        "files": 4,
+        "nodes": 107
       }
     },
     {
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 132,
-        "nodes": 1091
+        "files": 133,
+        "nodes": 1090
       }
     },
     {
@@ -501,8 +501,8 @@
         "port": "3000"
       },
       "code": {
-        "files": 11,
-        "nodes": 298
+        "files": 12,
+        "nodes": 299
       }
     },
     {
@@ -522,8 +522,8 @@
         "port": "8086"
       },
       "code": {
-        "files": 12,
-        "nodes": 240
+        "files": 13,
+        "nodes": 241
       }
     },
     {
@@ -543,8 +543,8 @@
         "port": "8094"
       },
       "code": {
-        "files": 9,
-        "nodes": 89
+        "files": 10,
+        "nodes": 90
       }
     },
     {
@@ -1640,8 +1640,8 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 11358,
-    "external": 71,
+    "nodes": 11387,
+    "external": 73,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
