@@ -1,18 +1,18 @@
 # Operate Axon
 
-Resolve the capability first with `scripts/axon-context with <capability>`. Read its current
+Resolve the capability first with `tools/axon-context with <capability>`. Read its current
 contract before using an unfamiliar route.
 
 ## Common operations
 
 ```bash
-scripts/axapi ingest <url>
-scripts/axapi feed [days]
-scripts/axapi call <capability> get <path> [curl-args...]
-scripts/axapi call <capability> post <path> '<json>' [curl-args...]
+axon capability ingest <url>
+axon capability feed [days]
+axon capability call <capability> get <path> [curl-args...]
+axon capability call <capability> post <path> '<json>' [curl-args...]
 ```
 
-Use `scripts/axapi url <capability>` plus `curl` when the generic wrapper does not express the
+Use `axon capability url <capability>` plus `curl` when the generic wrapper does not express the
 contract. Prefer read-only requests for orientation.
 
 Before a write:

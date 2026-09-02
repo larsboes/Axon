@@ -13,13 +13,13 @@ substitute a remembered port, inventory, issue state, service status, or graph c
 Run one bounded context command before reading broadly:
 
 ```bash
-scripts/axon-context with [capability]
-scripts/axon-context on [unit-or-path]
+tools/axon-context with [capability]
+tools/axon-context on [unit-or-path]
 ```
 
-If the command cannot find the checkout, work from the Axon repository or set the existing
-`AXON_ROOT` environment variable. Read `references/shared-failure-policy.md` when any expected
-tool, overlay, service, graph, or remote is unavailable.
+The path is repository-relative: run it from the Axon checkout. The installed `axon` CLI
+exposes the same surface as `axon context with|on`. Read `references/shared-failure-policy.md`
+when any expected tool, overlay, service, graph, or remote is unavailable.
 
 ## Select one mode
 
