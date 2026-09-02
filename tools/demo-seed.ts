@@ -88,7 +88,11 @@ async function waitFor(url: string, seconds = 60): Promise<void> {
   while (Date.now() < deadline) {
     try {
       const res = await fetch(url);
-      if (res.ok) return;
+      // Ready means the server answers, not that this probe is authorized: since B6 every
+      // non-exempt route answers 401 to a bare GET, and the probe deliberately sends no token
+      // (a token is proof of a caller, not of a listener). Found 2026-09-02 when the Pages
+      // build reached this line for the first time since 2026-08-28.
+      if (res.ok || res.status === 401 || res.status === 403) return;
       last = `${res.status}`;
     } catch (err) {
       last = err instanceof Error ? err.message : String(err);
