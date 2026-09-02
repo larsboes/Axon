@@ -349,13 +349,19 @@ async function runHostNet(): Promise<NetReport | null> {
     return null;
   }
   const proc = Bun.spawn([bin, "check", "--json"], { stdout: "pipe", stderr: "pipe" });
-  const text = await new Response(proc.stdout).text();
+  // Both pipes are drained together, before awaiting exit. Reading one and leaving the other
+  // buffered deadlocks the moment the child writes more than a pipe buffer to the one nobody
+  // is reading, and the child that talks most on stderr is exactly the failing one.
+  const [text, err] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
   await proc.exited;
   try {
     return JSON.parse(text) as NetReport;
   } catch {
-    const err = (await new Response(proc.stderr).text()).trim().slice(0, 200);
-    console.error(`host-watch: host-net check --json unreadable (exit ${proc.exitCode}) ${err}`);
+    const tail = err.trim().slice(0, 200);
+    console.error(`host-watch: host-net check --json unreadable (exit ${proc.exitCode}) ${tail}`);
     return null;
   }
 }
