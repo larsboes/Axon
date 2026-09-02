@@ -846,7 +846,7 @@ fn parse_decimal_cents_with_rounding(
     let unsigned = value.strip_prefix(['-', '+']).unwrap_or(value.as_str());
     let (whole, fraction) = unsigned
         .split_once(decimal_separator)
-        .map_or((unsigned, ""), |parts| parts);
+        .unwrap_or((unsigned, ""));
     if fraction.len() > 2 && rounding == AmountRounding::Reject {
         return Err(ImportError(
             "amount has more than two decimal places".into(),

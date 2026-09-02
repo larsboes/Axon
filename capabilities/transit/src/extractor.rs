@@ -501,9 +501,9 @@ fn parse_date_time(text: &str) -> (Option<String>, Option<String>) {
     });
 
     let arrival = if dates.len() > 1 && times.len() > 1 {
-        Some(format!("{}T{}:00", &dates[1], &times[1]))
+        Some(format!("{}T{}:00", dates[1], times[1]))
     } else if times.len() > 1 {
-        dates.first().map(|d| format!("{}T{}:00", d, &times[1]))
+        dates.first().map(|d| format!("{}T{}:00", d, times[1]))
     } else {
         None
     };
