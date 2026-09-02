@@ -3,8 +3,8 @@
    * The icons this shell uses, inline.
    *
    * A dependency would buy a few thousand glyphs to ship a dozen, and every dependency
-   * needs an upstreams.toml verdict and a cooldown before it may be consumed
-   * (README.md#dependency-verdicts-and-provenance and README.md#pins-and-cooldown). Paths are
+   * needs an upstreams.toml verdict before it may be consumed
+   * (README.md#dependency-verdicts-and-provenance and README.md#patch-first). Paths are
    * from Lucide (ISC), which the React shell used;
    * inlining them keeps the attribution honest and the bundle self-contained.
    */

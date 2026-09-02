@@ -2,7 +2,8 @@
 # check-service-tomls.sh — the service.toml schema gate (CI: repo gates).
 # Asserts every service.toml declares the load-bearing fields its kind needs, and that a
 # container's tag is a real pin: present, non-empty, and never "latest" (an unpinned tag
-# makes a deploy non-reproducible; see README.md#pins-and-cooldown). Pure file-based check:
+# makes a deploy non-reproducible; see README.md#patch-first, which removed the waiting and
+# kept the pinning — "patch first" is never a licence to consume ":latest"). Pure file-based:
 # it reads the tracked manifests and nothing else — no git, no network, no live service.
 #
 # Three kinds, three field sets (schemas/service.toml.example):

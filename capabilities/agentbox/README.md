@@ -158,33 +158,39 @@ current directory. Home and `/` are refused outright.
 Files the agent writes into the project are owned by you: the image is built with your uid and
 gid, which is why they do not land as a foreign uid 1000.
 
-## The host-install gate
+## What host-install refuses
 
 `agentbox host-install` puts the pinned agent on the host itself, outside the box, plus a shim
-that refuses the agent's own `update` verbs. `agentbox gate [<version>]` runs the checks alone,
-installs nothing, and is what `host-install` calls first.
+that refuses the agent's own `update` verbs.
 
-What the gate enforces:
+What it enforces:
 
 | Check | Kind | Source of the rule |
 |---|---|---|
-| sha256 of the release archive | hard refusal | `archive_sha256_${OS}_${ARCH}` in the overlay's `agentbox.toml` |
-| cooldown since the release was published | confirmation, fails closed without a terminal | `axon.toml` `[upstream] cooldown_min_days` |
+| sha256 of the release archive | hard refusal, in `fetch_archive` on the install path | `archive_sha256_${OS}_${ARCH}` in the overlay's `agentbox.toml` |
 | published GHSAs against the version | **not checked — yours to do** | see below |
 
-**Advisories are a manual step, and the gate prints that every run.** Until 2026-08-28 it
+There was a separate `agentbox gate` verb, and a cooldown on how old the release was, until
+2026-09-02. Q_AUDIT removed the adoption hold (README.md#patch-first), and with it gone the verb
+refused nothing at all — it resolved a repository, printed two lines and returned 0. It is
+deleted rather than kept, because a step that cannot say no is how a green line comes to read as
+a passed check. What remains is the sha256, which was never in the gate, and the printed
+advisory reminder, which `host-install` now prints itself.
+
+**Advisories are a manual step, and host-install prints that every run.** Until 2026-08-28 it
 fetched published advisories and refused an install whose target sat inside an affected range.
 PRD Q41 retired the script behind that (`tools/lib/advisories.sh`) with the rest of Axon's
 homegrown supply-chain plumbing, and no standard tool replaces it *for this dependency*: the
 agent arrives as a pinned release tarball, so it appears in no lockfile, which is exactly what
-GitHub's Dependabot alerts and `osv-scanner` both read. Renovate watches `earendil-works/pi`
-for new release tags (`renovate.json5`), and a new tag is freshness, not exposure.
+GitHub's Dependabot alerts and `osv-scanner` both read. Dependabot does not watch release
+tarballs either, so the tool swap changes nothing here — and a new tag is freshness, not
+exposure.
 
 So before you accept a bump, open
 [the repository's advisories](https://github.com/earendil-works/pi/security/advisories) and read
 them against the version you are about to install. This is a genuine reduction in what the
-machine checks for you, stated here rather than discovered later — and the gate refuses to be
-silent about it, because a step that prints nothing reads as a step that passed.
+machine checks for you, stated here rather than discovered later — and host-install refuses to
+be silent about it, because a step that prints nothing reads as a step that passed.
 
 ## The boundary, and how it was checked
 
