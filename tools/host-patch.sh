@@ -39,8 +39,13 @@ _here="$(cd "$(dirname "$0")" && pwd)"
 # every step and reported "scanner-missing" for an audit whose scanners were installed. The
 # managers' homes are fixed by their installers, so they are named here rather than left to
 # whichever shell started the job: Homebrew (arm64 and Intel), rustup, and uv's tool shims.
-PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-export PATH
+# AXON_HOST_PATCH_KEEP_PATH=1 leaves the caller's PATH alone — for a host with its own layout,
+# and for tools/host-patch.test.sh, which plants a PATH to prove what the script does without
+# each manager.
+if [ -z "${AXON_HOST_PATCH_KEEP_PATH:-}" ]; then
+  PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+  export PATH
+fi
 
 RAN=""; SKIPPED=""; FAILED=""
 

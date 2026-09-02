@@ -36,6 +36,8 @@ for tool in brew uv rustup; do
   cat > "$MOCK_BIN/$tool" <<MOCK
 #!/bin/sh
 printf '$tool %s\n' "\$*" >> "\$AXON_TEST_CALLS"
+# uv's inventory: one installed tool, so the per-tool upgrade loop has something to upgrade.
+[ "$tool \$1 \$2" = "uv tool list" ] && echo "demo-tool v1.0.0"
 case "\$AXON_TEST_FAIL_STEP" in
   "$tool \$1 \$2"|"$tool \$1") exit 3 ;;
 esac
@@ -46,7 +48,7 @@ done
 
 run_patch() {  # run_patch <PATH> — exit code left in $patch_rc, output in $SCRATCH/out
   rm -f "$RECEIPT" "$CALLS"
-  env PATH="$1" \
+  env PATH="$1" AXON_HOST_PATCH_KEEP_PATH=1 \
     AXON_TEST_CALLS="$CALLS" \
     AXON_TEST_FAIL_STEP="${AXON_TEST_FAIL_STEP:-}" \
     AXON_TEST_AUDIT_RC="${AXON_TEST_AUDIT_RC:-0}" \
@@ -83,7 +85,7 @@ esac
 AXON_TEST_FAIL_STEP="brew upgrade --formula" AXON_TEST_AUDIT_RC=0 run_patch "$MOCK_BIN:/usr/bin:/bin"
 [ "$patch_rc" -eq 2 ] || {
   cat "$SCRATCH/out"; echo "FAIL: a failed step must exit 2, got $patch_rc" >&2; exit 1; }
-for later in "uv tool upgrade --all" "rustup update" "audit"; do
+for later in "uv tool upgrade demo-tool" "rustup update" "audit"; do
   grep -F "$later" "$CALLS" >/dev/null || {
     cat "$CALLS"; echo "FAIL: '$later' did not run after a failed step" >&2; exit 1; }
 done
