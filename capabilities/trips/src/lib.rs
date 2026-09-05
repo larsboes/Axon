@@ -1,7 +1,12 @@
 pub mod config;
+pub mod gear;
 pub mod intent;
+pub mod jobs;
 pub mod kiwi;
 pub mod obsidian;
+pub mod pack;
+pub mod plan_search;
 pub mod projection;
 pub mod store;
+pub mod upstream;
 pub mod windows;

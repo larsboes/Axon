@@ -21,6 +21,9 @@ Usage:
   trips draft-intent -            read the sentence from stdin
   trips export-vault              write every plan to the vault projection
   trips export-vault --dry-run    print what would be written, touch nothing
+  trips gear import               propose interior items from the overlay's gear notes
+  trips gear import --json        the same proposals as JSON
+  trips gear import --apply       refused for now; prints what has to exist first
 
 draft-intent prints a CreatePlan-shaped draft plus what it could not resolve.
 Persists nothing and resolves no station: every destination comes back as a
@@ -31,9 +34,16 @@ the vault named by <overlay>/config/trips.json, each carrying every plan item's
 payload verbatim. The server does the same after every write; this is the copy
 you can take by hand.
 
+gear import READS the overlay's item notes and PROPOSES one interior item per
+note. It writes nothing: interior_item has no column for category, weight_g,
+packable, waterproof, quick_dry, pack_location or trip_types, so an imported
+gear row would be indistinguishable from a piece of furniture. Proposal ids are
+derived from the note file names, so running it twice proposes the same set.
+
 Environment:
   AXON_INTENT_URL     chat-completions endpoint (default http://127.0.0.1:8091/v1/chat/completions)
-  AXON_INTENT_MODEL   model name (default apple-foundationmodel)";
+  AXON_INTENT_MODEL   model name (default apple-foundationmodel)
+  AXON_TRIPS_GEAR_DIR gear notes directory (default <overlay>/data/items/vault-notes)";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -45,6 +55,17 @@ fn main() {
                 text.to_string()
             };
             if let Err(error) = draft(&sentence) {
+                eprintln!("trips: {error}");
+                std::process::exit(1);
+            }
+        }
+        (Some("gear"), Some(verb)) if verb == "import" => {
+            let flag = args.get(2).map(String::as_str);
+            if !matches!(flag, None | Some("--json") | Some("--apply")) {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            }
+            if let Err(error) = gear_import(flag) {
                 eprintln!("trips: {error}");
                 std::process::exit(1);
             }
@@ -107,6 +128,56 @@ fn export_vault(dry_run: bool) -> Result<(), String> {
     for path in &report.refused {
         println!("  refused, a human owns this file now: {path}");
     }
+    Ok(())
+}
+
+/// Read the overlay's gear notes and print the proposals.
+///
+/// `--apply` is refused with the reason rather than silently doing nothing:
+/// the operator asked for a write, and "nothing happened" and "this cannot
+/// happen yet" are different answers. See `trips::gear` for the whole
+/// argument; when interior has the seven columns, the apply branch POSTs each
+/// proposal to interior's own `POST /api/items`, which answers 409 for an id
+/// that already exists and is therefore idempotent for free.
+fn gear_import(flag: Option<&str>) -> Result<(), String> {
+    if flag == Some("--apply") {
+        return Err(trips::gear::APPLY_REFUSED.to_string());
+    }
+    let directory = trips::config::Config::load().gear_items_dir.ok_or(
+        "no gear notes directory: set AXON_PERSONAL_ROOT, or gear.items_dir in \
+         <overlay>/config/trips.json",
+    )?;
+    let report = trips::gear::scan(&directory)?;
+
+    if flag == Some("--json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "{} note(s) read, {} proposal(s), {} skipped (no item fields)",
+        report.scanned,
+        report.proposals.len(),
+        report.skipped
+    );
+    for proposal in &report.proposals {
+        let gaps = if proposal.incomplete.is_empty() {
+            String::new()
+        } else {
+            format!("  [missing: {}]", proposal.incomplete.join(", "))
+        };
+        println!("  {}  {}{gaps}", proposal.id, proposal.label);
+    }
+    if !report.trip_type_vocabulary.is_empty() {
+        println!(
+            "trip_types in use ({}): {}",
+            report.trip_type_vocabulary.len(),
+            report.trip_type_vocabulary.join(", ")
+        );
+    }
+    println!("\nNothing was written. {}", trips::gear::APPLY_REFUSED);
     Ok(())
 }
 

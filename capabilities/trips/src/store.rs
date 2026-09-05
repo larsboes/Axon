@@ -229,6 +229,16 @@ fn generated_id(prefix: &str) -> String {
     format!("{prefix}:{nanos:x}{sequence:04x}")
 }
 
+/// [`generated_id`] for the sibling module. One id minter per capability.
+pub fn new_id(prefix: &str) -> String {
+    generated_id(prefix)
+}
+
+/// [`now_text`] for the sibling module.
+pub fn stamp() -> String {
+    now_text()
+}
+
 fn now_text() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -386,7 +396,27 @@ impl TripsStore {
             ",
             prefix = prefix
         ))?;
+        // --- pack lists (own block, appended; see src/pack.rs) -------------
+        // Its own statement rather than more text inside the batch above, so
+        // two streams editing this file touch two hunks that merge cleanly.
+        conn.execute_batch(&crate::pack::DDL.replace("{prefix}", prefix))?;
         Ok(())
+    }
+
+    /// The table prefix, for the sibling module that owns its own tables.
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    /// A pooled connection for `crate::pack`.
+    ///
+    /// The same escape hatch `capabilities/interior`'s store exposes as
+    /// `borrow_connection`, for the same reason: the tables belong to this
+    /// capability, and the queries belong beside the shape that reads them.
+    pub fn borrow_connection(
+        &self,
+    ) -> Result<axon_store::PooledClient, Box<dyn std::error::Error>> {
+        self.conn()
     }
 
     pub fn create_plan(&self, input: &CreatePlan) -> Result<TripPlan, Box<dyn std::error::Error>> {
