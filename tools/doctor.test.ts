@@ -357,6 +357,23 @@ describe("findPlaintextSecretsInEnvTemplate", () => {
 describe("findDanglingDecisionRefs", () => {
   const alive = (s: string) => s === "root-is-the-spine-three-nouns";
 
+  test("a mid-path segment is an HTTP route, not a repo citation", () => {
+    // Measured 2026-09-05: the finance capability's route for recomputing
+    // investment proposals failed this gate in four files at once, in Rust,
+    // TypeScript and Markdown. The dissolved directory was at the repository
+    // root, so a real citation always begins the path.
+    expect(findDanglingDecisionRefs(
+      [{ path: "capabilities/finance/src/server.rs", text: '"/api/decisions/run"' }], alive,
+    )).toEqual([]);
+    expect(findDanglingDecisionRefs(
+      [{ path: "tools/demo-seed.ts", text: "post(`${base}/decisions/run`, {})" }], alive,
+    )).toEqual([]);
+    // And the narrowing must not swallow a real citation in the same file.
+    expect(findDanglingDecisionRefs(
+      [{ path: "README.md", text: "`/api/decisions/run` and `decisions/gone/README.md`" }], alive,
+    )).toEqual([{ file: "README.md", slug: "gone" }]);
+  });
+
   test("a citation of a dissolved entry is reported", () => {
     expect(findDanglingDecisionRefs(
       [{ path: "README.md", text: "See `decisions/dissolved-entry/README.md`." }], alive,
