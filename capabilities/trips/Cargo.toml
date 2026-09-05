@@ -36,7 +36,7 @@ schemars = "1.2.2"
 # Was loopback-only with no TLS backend; the Kiwi flight adapter (kiwi.rs)
 # speaks HTTPS to mcp.kiwi.com, so the default TLS stack is back in. Version
 # matched to capabilities/calendar and transit so the workspace resolves one reqwest.
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.13", features = ["blocking", "json"] }
 # Flight-segment times arrive naive airport-local; station-time resolves them
 # to UTC via country + island-airport lookups (PRD X1/F2).
 station-time = { path = "../../libs/station-time" }

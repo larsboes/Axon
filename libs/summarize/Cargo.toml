@@ -14,4 +14,4 @@ path = "src/lib.rs"
 # This crate owns its HTTP and JSON dependencies directly.
 [dependencies]
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+reqwest = { version = "0.13", features = ["json", "blocking"] }

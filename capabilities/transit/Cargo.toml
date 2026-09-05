@@ -49,7 +49,7 @@ route-manifest = { path = "../../libs/route-manifest" }
 station-time = { path = "../../libs/station-time" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-reqwest = { version = "0.12", features = ["json", "gzip", "blocking"] }
+reqwest = { version = "0.13", features = ["json", "gzip", "blocking", "query", "form"] }
 thiserror = "1.0"
 regex = "1"
 pdf-extract = "0.12"

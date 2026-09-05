@@ -24,7 +24,7 @@ axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream", "query", "form"] }
 # The shell's front door (src/proxy.rs): ServeDir/ServeFile for the built bundle, and
 # ServiceExt::oneshot to hand a request to them from inside a fallback handler rather than
 # mounting them as the fallback outright -- the proxy has to get first refusal on the path.

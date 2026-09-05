@@ -41,4 +41,4 @@ csv = "1.4"
 sha2 = "0.10"
 # Outbound HTTP to Nominatim and transit's suggest surface; the blocking client,
 # matching capabilities/transit/src/hafas.rs.
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.13", features = ["blocking", "json", "query", "form"] }
