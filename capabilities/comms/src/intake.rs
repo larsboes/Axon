@@ -86,6 +86,11 @@ fn classify_mail_against(
 pub struct Intake {
     pub item: TriageItem,
     pub redactions: Vec<RedactionFinding>,
+    /// Which deterministic rung decided this thread's stream. Carried out of
+    /// `rules::classify` because it cannot be re-derived from the stored row:
+    /// the classifier reads `List-Unsubscribe`, a header no column holds.
+    /// `Store::upsert_triage_with_rules` persists it beside the row.
+    pub decided_by: rules::DecidedBy,
 }
 
 impl Intake {
@@ -128,9 +133,9 @@ fn from_thread_against(
         subject: &subject,
         has_list_unsubscribe: meta.has_list_unsubscribe(),
     };
-    let (stream, rationale) = rules::classify(&facts, config_rules);
+    let verdict = rules::classify(&facts, config_rules);
     let classification = classify_mail_against(
-        &stream,
+        &verdict.stream,
         &from,
         &subject,
         meta.snippet.as_deref().unwrap_or_default(),
@@ -158,10 +163,10 @@ fn from_thread_against(
             snippet,
             internal_date_ms: meta.internal_date_ms,
             internal_date_text: None,
-            stream,
-            rationale,
+            stream: verdict.stream,
+            rationale: verdict.rationale,
             classification_method: content_item::METHOD_DETERMINISTIC.into(),
-            classification_version: "mail-rules-v1".into(),
+            classification_version: rules::MAIL_RULES_VERSION.into(),
             data_class: classification.value,
             data_class_rationale: classification.rationale,
             data_classification_method: classification.method,
@@ -183,6 +188,7 @@ fn from_thread_against(
             last_seen: String::new(),
         },
         redactions,
+        decided_by: verdict.decided_by,
     }
 }
 

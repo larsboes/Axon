@@ -713,7 +713,7 @@ pub(crate) mod db_tests {
             stream: stream.into(),
             rationale: "test".into(),
             classification_method: content_item::METHOD_DETERMINISTIC.into(),
-            classification_version: "mail-rules-v1".into(),
+            classification_version: crate::rules::MAIL_RULES_VERSION.into(),
             data_class: "c1".into(),
             data_class_rationale: "Mail metadata is Mine by default.".into(),
             data_classification_method: content_item::METHOD_DETERMINISTIC.into(),
@@ -1268,6 +1268,203 @@ pub(crate) mod db_tests {
             row.snippet.as_deref(),
             Some("a newer message in the thread")
         );
+    }
+
+    /// The rung a deterministic verdict fired on, as a re-upsert carries it.
+    fn verdict(stream: &str, decided_by: crate::rules::DecidedBy) -> crate::rules::Verdict {
+        crate::rules::Verdict {
+            stream: stream.into(),
+            rationale: "a fresh rules result".into(),
+            decided_by,
+        }
+    }
+
+    /// A row the model rung wrote, built the way `apply_model_stream` will:
+    /// one upsert at `method = 'model'` over an existing deterministic row.
+    fn make_model_row(store: &Store, id: &str, stream: &str) {
+        let mut written = mk_triage(id, stream);
+        written.classification_method = content_item::METHOD_MODEL.into();
+        written.classification_version = "mail-model-v1".into();
+        written.rationale = "the model's sentence".into();
+        store.upsert_triage(&written).unwrap();
+        let row = store.get_triage(id).unwrap().unwrap();
+        assert_eq!(row.classification_method, "model", "setup did not take");
+    }
+
+    /// THE defect this stream had to fix before the model rung could store
+    /// anything. The category axis preserved only against the literal `'human'`
+    /// (`store/triage.rs`), so the next deterministic sweep reverted a
+    /// `method = 'model'` row — and the unattended sweep is enabled in this
+    /// overlay, so the window was one sweep interval, not a hypothetical.
+    ///
+    /// Fails on the code that shipped before this test.
+    #[test]
+    fn a_model_row_survives_a_deterministic_resweep() {
+        let store = open_test_store("triage_model_survives_resweep");
+        store
+            .upsert_triage(&mk_triage("thread:model", "aktiv"))
+            .unwrap();
+        make_model_row(&store, "thread:model", "issue");
+
+        let mut resweep = mk_triage("thread:model", "aktiv");
+        resweep.rationale = "No rule matched; kept active as the conservative default.".into();
+        store
+            .upsert_triage_with_rules(
+                &resweep,
+                &verdict("aktiv", crate::rules::DecidedBy::Fallback),
+            )
+            .unwrap();
+
+        let row = store.get_triage("thread:model").unwrap().unwrap();
+        assert_eq!(row.stream, "issue");
+        assert_eq!(row.rationale, "the model's sentence");
+        assert_eq!(row.classification_method, "model");
+        assert_eq!(row.classification_version, "mail-model-v1");
+    }
+
+    /// The clause a bare method rank would have got wrong. The model rung ran
+    /// only because the rules fell through, so a rule that now FIRES takes the
+    /// row back — which is what keeps a new overlay rule able to correct the
+    /// model rather than being frozen out by it.
+    #[test]
+    fn a_firing_rule_takes_a_model_row_back() {
+        for decided_by in [
+            crate::rules::DecidedBy::ConfigRule,
+            crate::rules::DecidedBy::Heuristic,
+        ] {
+            let store = open_test_store(&format!("triage_rule_reclaims_{}", decided_by.as_str()));
+            store
+                .upsert_triage(&mk_triage("thread:reclaim", "aktiv"))
+                .unwrap();
+            make_model_row(&store, "thread:reclaim", "issue");
+
+            let mut resweep = mk_triage("thread:reclaim", "werbung");
+            resweep.rationale = "a fresh rules result".into();
+            store
+                .upsert_triage_with_rules(&resweep, &verdict("werbung", decided_by))
+                .unwrap();
+
+            let row = store.get_triage("thread:reclaim").unwrap().unwrap();
+            assert_eq!(row.stream, "werbung", "{decided_by:?} did not take the row");
+            assert_eq!(row.classification_method, "deterministic");
+        }
+    }
+
+    /// And the other half of the same clause: a deterministic FALLBACK is not a
+    /// rule firing, and a caller that passes no verdict at all reads as one.
+    /// `NULL IN (…)` is NULL in SQLite, so this is also the regression test for
+    /// the `COALESCE` in the predicate.
+    #[test]
+    fn a_deterministic_fallback_does_not() {
+        let store = open_test_store("triage_fallback_keeps_off");
+        store
+            .upsert_triage(&mk_triage("thread:fallback", "aktiv"))
+            .unwrap();
+        make_model_row(&store, "thread:fallback", "issue");
+
+        store
+            .upsert_triage_with_rules(
+                &mk_triage("thread:fallback", "werbung"),
+                &verdict("werbung", crate::rules::DecidedBy::Fallback),
+            )
+            .unwrap();
+        assert_eq!(
+            store.get_triage("thread:fallback").unwrap().unwrap().stream,
+            "issue"
+        );
+
+        // No verdict at all: the 30-odd callers that never learned about rungs.
+        store
+            .upsert_triage(&mk_triage("thread:fallback", "feed"))
+            .unwrap();
+        assert_eq!(
+            store.get_triage("thread:fallback").unwrap().unwrap().stream,
+            "issue",
+            "a caller with no verdict must not outrank the model"
+        );
+    }
+
+    /// The rank is a ladder, not a swap: nothing a machine writes displaces a
+    /// human, whichever rung the machine was.
+    #[test]
+    fn a_human_row_still_survives_a_model_write() {
+        let store = open_test_store("triage_human_beats_model");
+        store
+            .upsert_triage(&mk_triage("thread:human", "aktiv"))
+            .unwrap();
+        assert!(store.set_triage_stream("thread:human", "steuern").unwrap());
+
+        let mut model = mk_triage("thread:human", "werbung");
+        model.classification_method = content_item::METHOD_MODEL.into();
+        model.classification_version = "mail-model-v1".into();
+        model.rationale = "the model's sentence".into();
+        store.upsert_triage(&model).unwrap();
+
+        let row = store.get_triage("thread:human").unwrap().unwrap();
+        assert_eq!(row.stream, "steuern");
+        assert_eq!(row.rationale, "Category set manually in Axon.");
+        assert_eq!(row.classification_method, "human");
+        assert_eq!(row.classification_version, "manual-v1");
+    }
+
+    /// The SQL `CASE` ranks and `content_item::method_rank` are two spellings of
+    /// one ladder, and the only thing stopping them drifting is this. All
+    /// sixteen (stored, incoming) method pairs crossed with the three
+    /// `decided_by` values, through a real upsert against a real file.
+    #[test]
+    fn the_stream_guard_agrees_with_method_rank() {
+        let store = open_test_store("triage_stream_guard_matrix");
+        for stored_method in content_item::CLASSIFICATION_METHODS {
+            for incoming_method in content_item::CLASSIFICATION_METHODS {
+                for decided_by in [
+                    crate::rules::DecidedBy::ConfigRule,
+                    crate::rules::DecidedBy::Heuristic,
+                    crate::rules::DecidedBy::Fallback,
+                ] {
+                    let id = format!("thread:{stored_method}:{incoming_method}:{decided_by:?}");
+                    let mut first = mk_triage(&id, "aktiv");
+                    first.classification_method = stored_method.into();
+                    first.classification_version = "stored-version".into();
+                    store.upsert_triage(&first).unwrap();
+
+                    let mut second = mk_triage(&id, "werbung");
+                    second.classification_method = incoming_method.into();
+                    second.classification_version = "incoming-version".into();
+                    store
+                        .upsert_triage_with_rules(&second, &verdict("werbung", decided_by))
+                        .unwrap();
+
+                    // The Rust twin of the predicate. A firing rule outranks a
+                    // stored model row; a fallback does not.
+                    let rule_fired = matches!(
+                        decided_by,
+                        crate::rules::DecidedBy::ConfigRule | crate::rules::DecidedBy::Heuristic
+                    );
+                    let preserved = stored_method == content_item::METHOD_HUMAN
+                        || (content_item::method_rank(incoming_method)
+                            < content_item::method_rank(stored_method)
+                            && !(stored_method == content_item::METHOD_MODEL && rule_fired));
+
+                    let row = store.get_triage(&id).unwrap().unwrap();
+                    let expected_stream = if preserved { "aktiv" } else { "werbung" };
+                    assert_eq!(
+                        row.stream, expected_stream,
+                        "stored={stored_method} incoming={incoming_method} \
+                         decided_by={decided_by:?}"
+                    );
+                    assert_eq!(
+                        row.classification_version,
+                        if preserved {
+                            "stored-version"
+                        } else {
+                            "incoming-version"
+                        },
+                        "stored={stored_method} incoming={incoming_method} \
+                         decided_by={decided_by:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -15,16 +15,42 @@ impl Store {
         "dismissed",
     ];
 
-    /// Upsert a triage proposal observed in the Gmail Inbox. Human category
-    /// decisions survive. A previously archived/trashed legacy row returns to
-    /// the queue because the inbox observation is authoritative.
+    /// Upsert a triage proposal observed in the Gmail Inbox, with no record of
+    /// which deterministic rung decided it.
     ///
+    /// The shape every caller outside the two sweep paths wants. The sweep
+    /// itself calls [`Store::upsert_triage_with_rules`], which is the same
+    /// transaction plus the `{prefix}_triage_rules` row.
+    pub fn upsert_triage(&self, item: &TriageItem) -> Result<bool, Box<dyn std::error::Error>> {
+        self.upsert_triage_inner(item, None)
+    }
+
+    /// [`Store::upsert_triage`] plus the deterministic verdict that produced
+    /// the row, written inside the same transaction.
+    ///
+    /// One transaction rather than two writes, because a crash between them
+    /// would leave a row whose rung nothing records — and the rung is what
+    /// decides whether the model rung may look at it. It is also the parameter
+    /// the stream guard needs: a rule that actually **fired** may take a row
+    /// back from the model, a rule that merely fell through to `aktiv` may not.
+    pub fn upsert_triage_with_rules(
+        &self,
+        item: &TriageItem,
+        verdict: &crate::rules::Verdict,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        self.upsert_triage_inner(item, Some(verdict))
+    }
+
     /// One transaction, because two of the columns it writes are governed by a
     /// third: the class decides whether `subject` and `snippet` may be stored
     /// as they arrived, and that class is only known after the stored row has
     /// been read. See `class_after_upsert` below for the split the two rules
     /// make — redaction follows the winning class, freshness follows the thread.
-    pub fn upsert_triage(&self, item: &TriageItem) -> Result<bool, Box<dyn std::error::Error>> {
+    fn upsert_triage_inner(
+        &self,
+        item: &TriageItem,
+        verdict: Option<&crate::rules::Verdict>,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         // Gmail internalDate is epoch-ms; convert to fractional epoch-seconds so
         // the bound param is a plain double for the `unixepoch` modifier below.
         let internal_secs: Option<f64> = item.internal_date_ms.map(|ms| ms as f64 / 1000.0);
@@ -44,6 +70,45 @@ impl Store {
               ELSE 0 END) < \
              (CASE {table}.data_class WHEN 'c3' THEN 30 WHEN 'c2' THEN 20 WHEN 'c1' THEN 10 \
               ELSE 0 END)"
+        );
+        // The same shape for the CATEGORY axis, and it did not exist before the
+        // model rung did. Four columns tested `= 'human'` as a bare literal, so
+        // a row written `classification_method = 'model'` was reverted by the
+        // next deterministic sweep — silently, with the rationale column then
+        // reading as a rules result. The unattended sweep is enabled in this
+        // overlay (`inbox_sweep_minutes`), so the window was one sweep interval.
+        //
+        // This is NOT `preserve_class` with a different column list.
+        // `preserve_class` ranks the class VALUE, which is why a sweep may still
+        // escalate a model-written class; this ranks the METHOD, and the four
+        // inline ranks equal `content_item::method_rank` exactly (legacy 0,
+        // deterministic 10, model 20, human 30).
+        //
+        // The third clause is what a bare method rank would get wrong. Without
+        // it, one model write would freeze the thread against every future
+        // overlay rule — including a rule written specifically to correct the
+        // model. `?14` is the incoming `decided_by`: a deterministic verdict a
+        // rule actually FIRED for (`config_rule`, `heuristic`) takes the row
+        // back, a deterministic FALLBACK does not, because the model rung only
+        // ran on the rows the rules fell through on. It is NULL for every caller
+        // that passes no verdict, and `COALESCE` rather than a bare `IN` is
+        // load-bearing: `NULL IN (…)` is NULL, `x AND NULL` is NULL, and a NULL
+        // predicate takes the ELSE arm — so without it the missing verdict
+        // would OVERWRITE the model row, which is the opposite of the default
+        // this clause is for.
+        let method_rank = |side: &str| {
+            format!(
+                "(CASE {side}.classification_method WHEN 'human' THEN 30 WHEN 'model' THEN 20 \
+                  WHEN 'deterministic' THEN 10 ELSE 0 END)"
+            )
+        };
+        let preserve_stream = format!(
+            "{table}.classification_method = 'human' \
+             OR ( {incoming} < {stored} \
+                  AND NOT ({table}.classification_method = 'model' \
+                           AND COALESCE(?14, 'fallback') IN ('config_rule','heuristic')) )",
+            incoming = method_rank("excluded"),
+            stored = method_rank(&table),
         );
         // `?5` is Unix seconds; the column holds the canonical stamp, so the
         // conversion is SQL rather than Rust.
@@ -111,13 +176,13 @@ impl Store {
                      subject = excluded.subject,
                      snippet = excluded.snippet,
                      internal_date = excluded.internal_date,
-                     stream = CASE WHEN {table}.classification_method = 'human'
+                     stream = CASE WHEN {preserve_stream}
                         THEN {table}.stream ELSE excluded.stream END,
-                     rationale = CASE WHEN {table}.classification_method = 'human'
+                     rationale = CASE WHEN {preserve_stream}
                         THEN {table}.rationale ELSE excluded.rationale END,
-                     classification_method = CASE WHEN {table}.classification_method = 'human'
+                     classification_method = CASE WHEN {preserve_stream}
                         THEN {table}.classification_method ELSE excluded.classification_method END,
-                     classification_version = CASE WHEN {table}.classification_method = 'human'
+                     classification_version = CASE WHEN {preserve_stream}
                         THEN {table}.classification_version ELSE excluded.classification_version END,
                      data_class = CASE WHEN {preserve_class}
                         THEN {table}.data_class ELSE excluded.data_class END,
@@ -138,6 +203,7 @@ impl Store {
                 prefix = self.prefix,
                 table = table,
                 preserve_class = preserve_class,
+                preserve_stream = preserve_stream,
                 internal_date = internal_date,
                 now = axon_store::NOW
             ),
@@ -154,6 +220,7 @@ impl Store {
                 &item.data_class_rationale,
                 &item.data_classification_method,
                 &item.data_classification_version,
+                &verdict.map(|verdict| verdict.decided_by.as_str()),
             ],
         )?;
         transaction.commit()?;

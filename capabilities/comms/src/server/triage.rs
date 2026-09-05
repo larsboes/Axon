@@ -1127,7 +1127,7 @@ mod tests {
             stream: "aktiv".into(),
             rationale: "test".into(),
             classification_method: content_item::METHOD_DETERMINISTIC.into(),
-            classification_version: "mail-rules-v1".into(),
+            classification_version: comms::rules::MAIL_RULES_VERSION.into(),
             // The state this endpoint has to repair: a row stored before the
             // intake gate existed, holding its subject verbatim.
             data_class: "c1".into(),

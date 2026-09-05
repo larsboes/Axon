@@ -661,7 +661,7 @@ mod tests {
             stream: "aktiv".into(),
             rationale: "Safe fallback.".into(),
             classification_method: content_item::METHOD_DETERMINISTIC.into(),
-            classification_version: "mail-rules-v1".into(),
+            classification_version: comms::rules::MAIL_RULES_VERSION.into(),
             data_class: "c1".into(),
             data_class_rationale: "Mail metadata is Mine by default.".into(),
             data_classification_method: content_item::METHOD_DETERMINISTIC.into(),
