@@ -25,11 +25,19 @@ out="$("$AXON" help)"
 contains "$out" "capability list"
 contains "$out" "pack deploy"
 contains "$out" "search <words...>"
+contains "$out" "storage <report|apply|target|prune>"
 
 out="$("$AXON" help capability)"
 contains "$out" "ingest <url>"
 
 out="$("$AXON" help pack)"
 contains "$out" "opencode"
+
+# storage dispatches to a launcher, not to a binary path: the launcher is what resolves the
+# overlay and builds the release binary on demand. Asserted as a file rather than by running
+# it, because running it on a cold checkout is a cargo build.
+out="$("$AXON" help storage)"
+contains "$out" "target [--json]"
+[ -x "$ROOT/tools/storage/storage" ] || fail "tools/storage/storage is not executable"
 
 echo "axon CLI contract passed"

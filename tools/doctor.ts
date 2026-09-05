@@ -2051,6 +2051,79 @@ const CHECKS: Check[] = [
     },
   },
 
+  // Build artifacts — PRD §9's R6, the resource rule §9 had no check for until now. Q53
+  // (2026-08-28) ratified it and named tools/doctor as the checker; it stayed unimplemented
+  // until 2026-09-03, when tools/storage grew the `target` verb that can answer it.
+  //
+  // Delegated, not reimplemented, exactly as the toolchain check above is: axon-storage
+  // owns the walk, the buckets, the ratio and the toolchain comparison, and doctor reads
+  // its verdict. A warn rather than a bad, for the reason Q53 itself gives about gates that
+  // fire when nothing is wrong: a checkout mid-refactor legitimately carries a debug tree
+  // that no release build matches, and the tool reports the unit counts that show it.
+  //
+  // The binary is used only if it is already built. Building it here would make the fast
+  // local sweep pay for a release compile, which is the same reason the UI section below
+  // runs discovery and never the checks.
+  {
+    name: "Build artifacts (PRD §9 R6)",
+    run(ctx) {
+      const launcher = join(ctx.root, "tools", "storage", "storage");
+      if (!existsSync(launcher)) {
+        ctx.warn(`missing ${launcher}`);
+        return;
+      }
+      const targetDir = process.env.CARGO_TARGET_DIR || join(ctx.root, "target");
+      const bin = join(targetDir, "release", "axon-storage");
+      if (!existsSync(bin)) {
+        ctx.warn("axon-storage not built — run `axon storage target` to check R6");
+        return;
+      }
+      const proc = Bun.spawnSync({ cmd: [bin, "target", "--json"], stdout: "pipe", stderr: "pipe" });
+      let data: any;
+      try {
+        data = JSON.parse(proc.stdout.toString());
+      } catch {
+        ctx.warn("axon-storage target did not emit JSON — run `axon storage target` for detail");
+        return;
+      }
+      const gb = (b: number) => `${(b / 1024 ** 3).toFixed(1)} GB`;
+      const units = (name: string) =>
+        (data.profiles ?? []).find((p: any) => p.name === name)?.units ?? 0;
+
+      if (data.ratio === null || data.ratio === undefined) {
+        ctx.warn(`${gb(data.bytes ?? 0)} in ${data.target_dir} — no release build, so R6 has no control`);
+      } else if (data.r6 === "over") {
+        // Say the unit counts in the same line as the ratio. R6's control is "same crates,
+        // same machine, same moment" (Q53), and a mismatch there is the difference between
+        // a real finding and two builds that were never comparable.
+        ctx.warn(
+          `target/debug is ${data.ratio.toFixed(1)}× target/release, over R6's ${data.r6_max_ratio}× ` +
+            `(${units("debug")} vs ${units("release")} units) — axon storage prune --incremental, or ` +
+            `build both profiles and re-check`,
+        );
+      } else {
+        ctx.ok(`target/debug is ${data.ratio.toFixed(1)}× target/release, within R6's ${data.r6_max_ratio}× (${gb(data.bytes ?? 0)} total)`);
+      }
+
+      // The rot no ratio detects: both profiles carry it equally. On 2026-09-03 this
+      // workspace's target dir held 21 GB, most of it output from rustc versions no longer
+      // installed, and a clean rebuild of the same tree was 4.7 GB.
+      const tc = data.toolchain ?? {};
+      if (tc.matches === false) {
+        ctx.warn(
+          `target/.rustc_info.json records rustc ${String(tc.recorded).slice(0, 9)} but this machine runs ` +
+            `${String(tc.current).slice(0, 9)} — ${gb(tc.stale_candidate_bytes ?? 0)} of deps and fingerprints ` +
+            `was built by a compiler that is gone; axon storage prune --target`,
+        );
+      } else if (tc.recorded) {
+        // "last recorded", not "clean": cargo rewrites .rustc_info.json on its first run
+        // under a new compiler and leaves the older generation's output in deps/, so a
+        // match means cargo has run since the last roll and nothing stronger.
+        ctx.ok(`cargo last recorded rustc ${String(tc.recorded).slice(0, 9)}, which is the one installed`);
+      }
+    },
+  },
+
   // Repo freshness — is this checkout, on any deployment host, behind origin/main. `--online`
   // fetches first for a live answer; offline reads whatever origin/main ref
   // was last fetched, best-effort. This is the only check left that the flag makes

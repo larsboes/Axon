@@ -604,6 +604,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "axon-storage"
+version = "0.1.0"
+dependencies = [
+ "axon-config",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "axon-store"
 version = "0.1.0"
 dependencies = [

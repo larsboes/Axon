@@ -24,6 +24,9 @@ members = [
     "libs/route-manifest",
     "libs/station-time",
     "libs/summarize",
+    # A tool, not a capability: operator machinery lives in tools/ (on-placement.md), and its
+    # backend logic is Rust (on-dependencies-and-build.md), so tools/ holds a Cargo member.
+    "tools/storage",
 ]
 resolver = "2"
 
