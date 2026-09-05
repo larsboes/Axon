@@ -10,6 +10,15 @@ cd "$ROOT"
 failed=0
 mac_home="/""Users/"
 linux_home="/""home/"
+# An absolute path starts a path. A repo-relative one does not.
+#
+# `$lib/home/kinds/mail.ts` matched `/home/<name>/` and was reported as a workstation home
+# directory: the dashboard's Home ladder lives under `src/lib/home/`, and giving it
+# subdirectories was enough to trip this. Requiring the slash to begin a path — at the
+# start of a line or after whitespace, a quote, a parenthesis, `=` or `:` — keeps every
+# real hit (`/home/lars/...`, `/Users/lars/...` all appear that way) and drops the class of
+# false positive that a directory called `home` or `Users` produces anywhere in the tree.
+path_start="(^|[^A-Za-z0-9._~-])"
 
 while IFS= read -r -d '' path; do
   case "$path" in
@@ -28,13 +37,13 @@ while IFS= read -r path; do
   [ -n "$path" ] || continue
   home_hits="$({ git show ":$path" 2>/dev/null || true; } \
     | LC_ALL=C strings \
-    | grep -E "${mac_home}[A-Za-z0-9._-]+/|${linux_home}[A-Za-z0-9._-]+/" \
+    | grep -E "${path_start}(${mac_home}|${linux_home})[A-Za-z0-9._-]+/" \
     | grep -Ev "${linux_home}(agent|runner)/" || true)"
   if [ -n "$home_hits" ]; then
     echo "publication hygiene: tracked blob contains a workstation home path: $path" >&2
     failed=1
   fi
-done < <(git grep --cached -a -l -E "${mac_home}[A-Za-z0-9._-]+/|${linux_home}[A-Za-z0-9._-]+/" || true)
+done < <(git grep --cached -a -l -E "${path_start}(${mac_home}|${linux_home})[A-Za-z0-9._-]+/" || true)
 
 legacy_tooling_path='~/Developer/'"Tooling"
 # Each marker must be followed by a non-identifier character or end of line, so a name that

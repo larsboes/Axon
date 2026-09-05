@@ -486,6 +486,12 @@ verdict = "adopt"
 license = "MIT"
 why = "the Svelte org's own agent toolchain, adopted as a Claude Code plugin (`/plugin marketplace add sveltejs/ai-tools`) rather than vendored into a Pack. Three of its four parts are things a Pack structurally cannot carry — an HTTP MCP server (https://mcp.svelte.dev/mcp, which means every doc lookup and autofixer call sends code context to Svelte's server: public-class work only), an LSP wiring for svelteserver, and a subagent. The fourth, the two skills, is a generated artifact synced from svelte.dev and tools/skills — vendoring it would fork a moving target (runes, async Svelte, {@attach}) with no upstream path. INSIDE COOLDOWN AT ADOPTION: installed 2026-07-28 on a 1-day-old ref, accepted because the installed tree is 13 markdown files plus 2 json and contains no executable code (verified against the cache). The residual vector is plugin.json's lspServers.command, which Claude Code spawns — re-verify that field on every `/plugin marketplace update`, and treat an update as a fresh cooldown decision, not a routine bump"
 
+[lucide]
+url = "https://github.com/lucide-icons/lucide"
+verdict = "quarry"
+license = "ISC"
+why = "the source of every glyph in `dashboard/src/lib/Icon.svelte`, whose own header has said so since the React shell and which this register did not carry — against this file's first line, \"No entry, no entry.\" Quarry rather than adopt because nothing is installed and nothing tracks the upstream: thirty-eight path strings were copied once and are maintained here, which is exactly the relationship a dependency was refused for (a few thousand glyphs shipped to use a dozen). Audited 2026-09-05 while fixing the `boxes` glyph, whose third subpath walked to y = -0.5 outside the 24x24 viewBox and never closed, and adding `wallet` and `history` — a copied path is a copied path, and correcting one is this pass's work rather than an upstream bump"
+
 [sveltejs-mcp]
 url = "https://www.npmjs.com/package/@sveltejs/mcp"
 verdict = "adopt"

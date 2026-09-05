@@ -13,9 +13,19 @@ own, exposes its own HTTP surface, and this only reads.
 Svelte 5 (runes) + SvelteKit 2 + Vite, per
 [`this file`](../this file).
 Bun for packages. No CSS framework and no component library: Svelte scopes a component's
-own styles at compile time, so what is worth sharing is a token layer plus four
-primitives, and `src/app.css` is that whole design system. Icons are inline SVG in
-`src/lib/Icon.svelte` rather than a dependency.
+own styles at compile time, so what is worth sharing is a token layer plus a handful of
+primitives, and `src/app.css` is that whole design system. It declares a named type scale,
+a spacing rhythm, three breakpoints and one focus ring, and the classes `.card` /
+`.card-interactive`, `.tag`, `.btn`, `.input` and `.table`. What a class cannot express
+once is a component: `ListRow`, `RowMeta`, `StateLine`, `FactorBars`, `PageTabs` and
+`PageHeader`. Icons are inline SVG in `src/lib/Icon.svelte`, quarried from Lucide (ISC),
+rather than a dependency.
+
+Home's decision ladder is a registry: a kind is one file under `src/lib/home/kinds/` and
+its row one file under `src/lib/home/rows/`, discovered by `import.meta.glob` and joined on
+the kind's `view` string. `src/lib/home/decisions.ts` is the contract, and it imports
+nothing at runtime so a kind stays readable by plain `bun test` outside Vite. Rank is
+`band x 1000 + urgency clamped to 999`, which is what makes PRD 8.1's band decide the order.
 
 The travel workspace keeps MapLibre and its stylesheet in a separate async bundle. A map
 loads only when it approaches the viewport or the reader explicitly selects **Karte
