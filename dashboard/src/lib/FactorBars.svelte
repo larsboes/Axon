@@ -63,9 +63,10 @@
           {#if factor.mark}<Icon name={factor.mark as never} size={11} />{/if}
           {factor.label}
         </span>
-        <span class="value mono">
-          {percent(factor.score)}{#if weighted}<small>/{percent(factor.weight)}</small>{/if}
-        </span>
+        <!-- The score alone. `100/20` for "scored 100, weighted 20%" reads as "100 out of
+             20", which is the opposite of a number that helps; the weight goes in the
+             expanded rationale and in the bar's own aria-label. -->
+        <span class="value mono">{percent(factor.score)}</span>
       </div>
 
       <div
@@ -106,9 +107,11 @@
 
   /* auto-fit, not a fixed column count: four was hardcoded against a loop over however
      many factors the evaluator published, so a fifth wrapped into a ragged row. */
+  /* 6.5rem, not 4.75: at the smaller step "Travel relevance" and "Content evidence"
+     both truncated to a word and a half on every card, which names nothing. */
   .compact {
-    grid-template-columns: repeat(auto-fit, minmax(4.75rem, 1fr));
-    gap: var(--space-3);
+    grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+    gap: var(--space-3) var(--space-4);
   }
 
   .factor {
@@ -138,11 +141,6 @@
   .value {
     color: var(--text-tertiary);
     font-variant-numeric: tabular-nums;
-  }
-
-  .value small {
-    font-size: 0.85em;
-    opacity: 0.75;
   }
 
   /* The unfilled track is a tinted step of the same hue, so the state reads across the

@@ -8,6 +8,13 @@
   import type { DecisionRowProps } from "../decisions";
 
   let { row, id, current, tone, whyHere }: DecisionRowProps<HostWatchFinding> = $props();
+
+  /// The note's opening line states the condition and the rest is what to run about it.
+  /// `whyHere` is that first line, so rendering the whole note below it printed the same
+  /// sentence twice on every finding.
+  const commands = $derived(
+    row.note.split("\n").slice(1).join("\n").trim(),
+  );
 </script>
 
 <ListRow {id} {current} {tone}>
@@ -20,7 +27,7 @@
        whole surface, because there is no button here — host-watch closes a finding itself
        when the next hourly run stops seeing it, and a Dismiss control would let an
        operator silence a machine fault that is still true. -->
-  <pre class="note">{row.note}</pre>
+  {#if commands}<pre class="note">{commands}</pre>{/if}
 
   {#snippet meta()}<RowMeta {whyHere} />{/snippet}
 

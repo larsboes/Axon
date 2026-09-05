@@ -29,7 +29,7 @@
   {#snippet meta()}<RowMeta {whyHere} {candidateStatus} />{/snippet}
 
   {#snippet actions()}
-    <a class="btn btn-primary" href={link("/travel")}>
+    <a class="btn btn-soft" href={link("/travel")}>
       Continue planning <Icon name="arrow-right" size={13} />
     </a>
   {/snippet}

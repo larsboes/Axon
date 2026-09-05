@@ -27,7 +27,7 @@
   {#snippet meta()}<RowMeta {whyHere} candidateStatus="accepted" />{/snippet}
 
   {#snippet actions()}
-    <a class="btn btn-primary" {href}>Open note</a>
+    <a class="btn btn-soft" {href}>Open note</a>
   {/snippet}
 </ListRow>
 

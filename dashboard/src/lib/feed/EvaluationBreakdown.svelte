@@ -66,7 +66,9 @@
 
   <FactorBars {factors} {compact} weighted>
     {#snippet detail(factor)}
-      {#if factor.rationale}<p class="rationale">{factor.rationale}</p>{/if}
+      {#if factor.rationale}
+        <p class="rationale">{factor.rationale} · weight {Math.round(factor.weight * 100)}%</p>
+      {/if}
       {#if factor.context}
         <a class="context" href={factor.context.href}>
           {factor.context.label}

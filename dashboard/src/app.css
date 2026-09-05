@@ -392,6 +392,22 @@ a.row-title:hover {
  * local rules silently outranked this primitive and the app drifted into four button
  * shapes. Anything the primitive cannot express belongs here, once. */
 
+/* The emphasised action INSIDE a list row.
+ *
+ * A solid primary button on every row of a ladder is a page of solid primary buttons, and
+ * the eye cannot then find the one decision that matters. This is the tinted form the Home
+ * rows used before they had a name for it. `.btn-primary` stays for a page-level action,
+ * where there is one. */
+.btn-soft {
+  background-color: var(--primary-soft);
+  color: var(--primary);
+}
+
+.btn-soft:hover {
+  background-color: var(--primary);
+  color: var(--text-inverse);
+}
+
 .btn-outline {
   border: 1px solid var(--card-border);
   background-color: var(--card-bg);

@@ -616,14 +616,15 @@
     border-bottom: 1px solid var(--rule);
   }
 
+  /* Sentence case, like PageHeader's badge and the drawer's section labels. A
+     tracked-out all-caps line above every heading is template chrome, and Home carried
+     five of them: the date and four section kickers. */
   .date,
   .section-kicker {
-    margin: 0 0 0.35rem;
+    margin: 0 0 var(--space-1);
     color: var(--primary);
-    font-size: 0.6875rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font-size: var(--text-2xs);
+    font-weight: 600;
   }
 
   h1 {
@@ -835,7 +836,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
-    padding: var(--space-4) var(--space-4) var(--space-2);
+    padding: var(--space-4) var(--space-4) var(--space-2) 0;
     color: var(--text-tertiary);
     font-size: var(--text-2xs);
     list-style: none;
@@ -848,15 +849,17 @@
     background: var(--rule);
   }
 
+  /* The break's mark sits on the queue's own left edge, exactly where each row's spine
+     does, so the two read as one device rather than two. */
   .band-break span {
     position: relative;
-    padding-left: var(--space-3);
+    padding-left: var(--space-4);
   }
 
   .band-break span::before {
     content: "";
     position: absolute;
-    inset: 0.15em auto 0.15em -2px;
+    inset: 0.1em auto 0.1em 0;
     width: 2px;
   }
 

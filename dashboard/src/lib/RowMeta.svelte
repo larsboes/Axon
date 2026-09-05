@@ -48,8 +48,11 @@
     <span class="class" class:redacted>{CLASS_LABEL[dataClass]}</span>
   {/if}
   {#if processingRoute}<span class="route">{processingRoute}</span>{/if}
-  {#if candidateStatus && candidateStatus !== "open"}
-    <span class="status">{candidateStatus}</span>
+  {#if candidateStatus === "accepted"}
+    <!-- Only `accepted` renders. Every row on a decision ladder is by definition proposed
+         or open, so those two words were a chip that appeared on every row and told the
+         reader nothing; `accepted` is the one that marks a call already made. -->
+    <span class="status">accepted</span>
   {/if}
 </p>
 

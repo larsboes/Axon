@@ -25,7 +25,7 @@
   {#snippet meta()}<RowMeta {whyHere} />{/snippet}
 
   {#snippet actions()}
-    <a class="btn btn-primary" href={link("/capabilities")}>
+    <a class="btn btn-soft" href={link("/capabilities")}>
       Check <Icon name="arrow-right" size={13} />
     </a>
   {/snippet}

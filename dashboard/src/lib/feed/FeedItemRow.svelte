@@ -117,7 +117,7 @@
     <a class="btn" {href}>Read</a>
     {#if onkeep}
       <button
-        class="btn btn-primary"
+        class="btn btn-soft"
         type="button"
         disabled={busy}
         onclick={() => onkeep()}
@@ -146,7 +146,7 @@
 <style>
   .factors {
     margin-top: var(--space-2);
-    max-width: 26rem;
+    max-width: 34rem;
   }
 
   .from-digest {

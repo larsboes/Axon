@@ -12,12 +12,14 @@ mac_home="/""Users/"
 linux_home="/""home/"
 # An absolute path starts a path. A repo-relative one does not.
 #
-# `$lib/home/kinds/mail.ts` matched `/home/<name>/` and was reported as a workstation home
-# directory: the dashboard's Home ladder lives under `src/lib/home/`, and giving it
-# subdirectories was enough to trip this. Requiring the slash to begin a path — at the
-# start of a line or after whitespace, a quote, a parenthesis, `=` or `:` — keeps every
-# real hit (`/home/lars/...`, `/Users/lars/...` all appear that way) and drops the class of
-# false positive that a directory called `home` or `Users` produces anywhere in the tree.
+# A dashboard import of the form $lib/home/kinds/mail.ts matched the home-directory
+# pattern and was reported as a workstation path: the Home ladder lives under
+# src/lib/home/, and giving it subdirectories was enough to trip this. Requiring the slash
+# to BEGIN a path -- at the start of a line, or after whitespace, a quote, a parenthesis,
+# an equals or a colon -- keeps every real hit, since a real absolute path always appears
+# that way, and drops the class of false positive that any directory named `home` or
+# `Users` produces anywhere in the tree. The markers themselves stay split above for the
+# same reason this comment names no example: the file must not match its own rule.
 path_start="(^|[^A-Za-z0-9._~-])"
 
 while IFS= read -r -d '' path; do

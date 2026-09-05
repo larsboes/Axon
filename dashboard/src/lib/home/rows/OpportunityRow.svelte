@@ -32,7 +32,7 @@
   {#snippet actions()}
     <a class="btn" {href} target="_blank" rel="noreferrer">Open</a>
     <button
-      class="btn btn-primary"
+      class="btn btn-soft"
       type="button"
       disabled={busy}
       onclick={() => act(() => scouting.setStatus(row.id, "saved").then(() => undefined), { dismiss: true })}

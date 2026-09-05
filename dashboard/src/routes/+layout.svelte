@@ -28,6 +28,17 @@
    */
   const attemptedStarts = new Set<string>();
 
+  /**
+   * Bumped once, when a start POST has actually brought a capability up.
+   *
+   * Starting the capability is not enough on its own: the page below has already run its
+   * own `onMount` fetch against a service that was still down, and it holds the error
+   * string it got. Re-keying the page subtree on this counter renders it again against the
+   * capability that is now running. It never changes on a machine where everything is
+   * already up, and `attemptedStarts` caps it at one bump per capability per tab.
+   */
+  let startedCount = $state(0);
+
   // `data.demo` is null outside a demo build, so both lists below are the untouched arrays
   // and the banner never renders. In a demo build the index names the capabilities the
   // recording could not include; the destinations that lead only to those are dropped
@@ -81,10 +92,13 @@
         attemptedStarts.add(name);
         const capability = capabilities.byName(name);
         if (!capability || capability.up === true) continue;
-        await axonStatus.start(name).catch(() => {
+        const started = await axonStatus.start(name).then(
+          (result) => result.up === true,
           // Swallowed: the page itself reports what it could not read, and a failed start
           // is not a second thing to tell the reader about.
-        });
+          () => false,
+        );
+        if (started) startedCount += 1;
       }
       await capabilities.refresh();
     })();
@@ -237,7 +251,9 @@
   {/if}
 
   <main id="main">
-    {@render children()}
+    {#key startedCount}
+      {@render children()}
+    {/key}
   </main>
 
   <footer>

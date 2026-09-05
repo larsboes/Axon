@@ -38,7 +38,7 @@
   {#snippet actions()}
     <a class="btn" {href}>Calendar</a>
     <button
-      class="btn btn-primary"
+      class="btn btn-soft"
       type="button"
       disabled={busy}
       onclick={() =>
