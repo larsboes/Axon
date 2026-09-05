@@ -60,6 +60,10 @@
 //! `foreign_keys` is per-connection and OFF by default, so a capability that
 //! declares `ON DELETE CASCADE` gets nothing without this line.
 //!
+//! The connection also gets a 64-statement prepared-statement cache, up from
+//! rusqlite's 16. [`QueryAll::query_all`] prepares through it, so a store that
+//! reads the same SQL twice on one connection parses it once.
+//!
 //! ## Dependency rule
 //!
 //! Its dependency surface stays intentionally narrow: `rusqlite`, `r2d2` and
@@ -165,6 +169,17 @@ const CONNECTION_PRAGMAS: &str = "
     PRAGMA foreign_keys = ON;
 ";
 
+/// How many prepared statements a connection keeps for [`QueryAll::query_all`].
+///
+/// rusqlite's default is 16 (`STATEMENT_CACHE_DEFAULT_CAPACITY`, rusqlite
+/// 0.40.2 src/lib.rs:168), and it is an LRU: the 17th distinct statement evicts
+/// the least recently used one, which then has to be parsed again next time.
+/// comms has 18 `query_all` call sites and places 16, both against one shared
+/// file, so the default would start evicting exactly in the two crates with the
+/// most reads. 64 holds every `query_all` site in the workspace at once and
+/// costs one finalized statement handle each.
+const STATEMENT_CACHE_SIZE: usize = 64;
+
 fn pools() -> &'static Mutex<HashMap<PathBuf, Pool>> {
     static POOLS: OnceLock<Mutex<HashMap<PathBuf, Pool>>> = OnceLock::new();
     POOLS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -211,8 +226,10 @@ fn pool_for_key(key: &Path) -> Result<Pool, Box<dyn Error>> {
         return Ok(existing.clone());
     }
 
-    let manager = SqliteConnectionManager::file(key)
-        .with_init(|conn: &mut Connection| conn.execute_batch(CONNECTION_PRAGMAS));
+    let manager = SqliteConnectionManager::file(key).with_init(|conn: &mut Connection| {
+        conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE_SIZE);
+        conn.execute_batch(CONNECTION_PRAGMAS)
+    });
     let pool = r2d2::Pool::builder()
         .max_size(MAX_CONNECTIONS)
         .min_idle(Some(0))
@@ -358,12 +375,25 @@ pub trait QueryAll {
 }
 
 impl QueryAll for Connection {
+    /// `prepare_cached`, not `prepare`: the SQL text is the cache key, and every
+    /// store here builds its statement with `format!("… {prefix} …")`, so the
+    /// same call site produces a byte-identical string every time and SQLite
+    /// stops re-parsing it. The cache lives on the connection, which is what
+    /// makes it safe — the pool hands a connection to one caller at a time, so
+    /// a cached statement is never shared across threads.
+    ///
+    /// Two properties that would otherwise need checking: a cached statement is
+    /// removed from the cache while it is in use, so a `map` closure that runs
+    /// the same SQL again gets its own statement rather than the one it is
+    /// iterating; and SQLite re-prepares a cached statement itself when the
+    /// schema changes under it, so a migration cannot leave a stale plan behind
+    /// (`a_cached_statement_survives_a_schema_change` pins both).
     fn query_all<T, P, F>(&self, sql: &str, params: P, map: F) -> rusqlite::Result<Vec<T>>
     where
         P: rusqlite::Params,
         F: FnMut(&Row<'_>) -> rusqlite::Result<T>,
     {
-        let mut statement = self.prepare(sql)?;
+        let mut statement = self.prepare_cached(sql)?;
         let rows = statement.query_map(params, map)?;
         rows.collect()
     }
@@ -591,6 +621,99 @@ mod tests {
             )
             .unwrap();
         assert_eq!(computed.len(), 29, "got {computed}");
+    }
+
+    /// `query_all` prepares through the connection's statement cache, so the
+    /// second run of one SQL string reuses the statement the first left behind.
+    /// What is under test is that reuse changes nothing a caller can see: the
+    /// same rows in the same order, and parameters bound fresh each time rather
+    /// than inherited from the previous run.
+    #[test]
+    fn the_same_sql_twice_returns_the_same_rows() {
+        let path = temp_database("cached-rows");
+        let pool = open_pool(&path, "cache_probe", |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS cache_probe_t (
+                     id   TEXT PRIMARY KEY,
+                     kind TEXT NOT NULL
+                 )",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let conn = pool.get().unwrap();
+        conn.execute_batch(
+            "INSERT INTO cache_probe_t (id, kind)
+             VALUES ('a','one'),('b','two'),('c','one')",
+        )
+        .unwrap();
+
+        let sql = "SELECT id FROM cache_probe_t WHERE kind = ?1 ORDER BY id";
+        let ones = || {
+            conn.query_all(sql, ["one"], |row| row.get::<_, String>(0))
+                .unwrap()
+        };
+
+        assert_eq!(ones(), vec!["a".to_string(), "c".to_string()]);
+        assert_eq!(ones(), ones(), "the cached statement must not drift");
+
+        // A different parameter through the same cached statement, then the
+        // first one again. A binding left over from the previous run is the one
+        // way a reused statement could answer the wrong question.
+        let twos = conn
+            .query_all(sql, ["two"], |row| row.get::<_, String>(0))
+            .unwrap();
+        assert_eq!(twos, vec!["b".to_string()]);
+        assert_eq!(ones(), vec!["a".to_string(), "c".to_string()]);
+    }
+
+    /// A cached statement holds a compiled plan, and the schema it was compiled
+    /// against can change under it — `migrate_once` runs DDL on a pooled
+    /// connection that may already have read through this cache. SQLite
+    /// re-prepares on the next step rather than answering from the stale plan,
+    /// and this is the test that says so out loud.
+    ///
+    /// The nested read in the middle covers the other property the cache has to
+    /// have: `prepare_cached` takes the statement out of the cache while it is
+    /// in use, so a `map` closure running the same SQL cannot end up stepping
+    /// the statement it is already iterating.
+    #[test]
+    fn a_cached_statement_survives_a_schema_change() {
+        let path = temp_database("cached-schema");
+        let pool = open_pool(&path, "cache_alter", |conn| {
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS cache_alter_t (id TEXT PRIMARY KEY)")?;
+            Ok(())
+        })
+        .unwrap();
+        let conn = pool.get().unwrap();
+        conn.execute_batch("INSERT INTO cache_alter_t (id) VALUES ('a'),('b'),('c')")
+            .unwrap();
+
+        let sql = "SELECT id FROM cache_alter_t ORDER BY id";
+        let before = conn
+            .query_all(sql, [], |row| row.get::<_, String>(0))
+            .unwrap();
+        assert_eq!(before, vec!["a", "b", "c"]);
+
+        let reference: &super::Connection = &conn;
+        let nested = reference
+            .query_all(sql, [], |row| {
+                let inner = reference.query_all(sql, [], |row| row.get::<_, String>(0))?;
+                assert_eq!(inner, before, "the nested read got the outer statement");
+                row.get::<_, String>(0)
+            })
+            .unwrap();
+        assert_eq!(nested, before);
+
+        conn.execute_batch("ALTER TABLE cache_alter_t ADD COLUMN note TEXT")
+            .unwrap();
+        conn.execute_batch("INSERT INTO cache_alter_t (id, note) VALUES ('d','added')")
+            .unwrap();
+
+        let after = conn
+            .query_all(sql, [], |row| row.get::<_, String>(0))
+            .unwrap();
+        assert_eq!(after, vec!["a", "b", "c", "d"], "stale plan after the DDL");
     }
 
     /// A path whose parent is a file, not a directory. `open` must say so
