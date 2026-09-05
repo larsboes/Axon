@@ -73,6 +73,9 @@
     };
   };
 
+  /** The point-id list the current view is framed on. */
+  let fitKey = "";
+
   function updateMap(): void {
     if (!map || !ready) return;
     (map.getSource("trip-points") as GeoJSONSource | undefined)?.setData(featureCollection());
@@ -80,6 +83,18 @@
 
     if (points.length === 0) return;
     if (!mapLibrary) return;
+
+    // Refit only when the SET of points changes, not on every change to `points`.
+    //
+    // `overviewMapPoints` is derived on the filtered plan list AND on which plan is
+    // highlighted, so hovering a row rebuilt the array with the same places and a
+    // different `selected` flag — and the map flew to the same bounds again on every
+    // mouse move. Keyed on the id list rather than a once-forever flag, because switching
+    // the plan filter really does change which places are on the map and must refit.
+    const nextKey = points.map((point) => point.id).join("|");
+    if (nextKey === fitKey) return;
+    fitKey = nextKey;
+
     const bounds = points.reduce(
       (current, point) => current.extend([point.longitude, point.latitude]),
       new mapLibrary.LngLatBounds(),
