@@ -71,6 +71,37 @@ principal's call from measured options.
   overlay, the table is never seeded into `axon_demo`, and its rows never reach a
   cloud model raw.
 
+  Three additions, 2026-09-05.
+
+  **A planner reads an aggregate, never a row.** `GET /api/people/presence`
+  answers `{radius_km, from, to, known_companions, overlap_days}` — how many
+  known companions are near a coordinate in a window, and for how many days.
+  That is the §6.2 derived aggregate the PRD names as the only way this table
+  reaches a planner at all, and it is what lets `trips` say "a known companion is
+  near this destination" without ever holding the row.
+
+  **What it deliberately cannot answer**: no person, no place name, no row id,
+  no confidence — and no caller-chosen radius. `PRESENCE_RADIUS_KM = 50` is a
+  places constant, echoed in the reply, because how precisely places will answer
+  about a person's location is places' disclosure policy, not a travel-matching
+  rule. (It is therefore also not the same number as
+  `DESTINATION_MATCH_RADIUS_KM = 75` in
+  `dashboard/src/lib/travel/travel-candidates.ts`, which answers a different
+  question and has its own single home.) Worth recording honestly: this is not a
+  defence against a local caller — `GET /api/layers/people` already serves every
+  confirmed row **by name** with its exact coordinate to the same callers behind
+  the same origin guard. The aggregate is the boundary that keeps `trips` from
+  holding the row.
+
+  **A dismissal is final; a confirmation stays withdrawable.** The review guard
+  is asymmetric: `proposed → confirmed`, `proposed → dismissed` and
+  `confirmed → dismissed` are allowed, while `dismissed → confirmed` and any
+  review that would change nothing answer **409** naming the state found (never
+  404, which would claim the row does not exist). Symmetric would have been the
+  other mistake: these two routes are the only writers of that column, so a
+  `state = 'proposed'` predicate would make a mis-clicked confirm permanent and
+  leave hand-written SQL as the only repair.
+
 ## Tables (prefix `places`, owned here)
 
 - `places_places` — `id, name, kind (venue|city|station|address|region), address, city,
@@ -108,6 +139,13 @@ mirrors). The register behind this surface is C2 (D4), and the refusal is what
 keeps a hostile page in the operator's browser from reading it or driving the
 confirm route cross-site.
 
+Since 2026-09-05 the predicate itself lives in `libs/axon-server/src/origin.rs`,
+because `trips` needs the same refusal for its plan-search body and a second copy
+of a security predicate is drift. **Every new route must be registered above the
+`.layer()` call in `build_router`**: axum wraps only the routes added before it,
+and `a_foreign_origin_cannot_read_people_presence` drives the wired router to
+catch a route that lands below it.
+
 - `GET /health`, `GET /ready`, `GET /routes`
 - `GET /api/places` — list/search the registry
 - `POST /api/geocode` — cached forward geocode (free-text or structured address)
@@ -124,7 +162,11 @@ confirm route cross-site.
   description matches exactly to one place, at `venue` or `city` precision; a
   city-kind place is linked at city precision whatever was requested (D1)
 - `GET /api/people/proposals`, `POST /api/people/proposals/{id}/confirm`,
-  `POST /api/people/proposals/{id}/dismiss` — the §8.2 review path
+  `POST /api/people/proposals/{id}/dismiss` — the §8.2 review path. A review
+  that is not an allowed transition answers 409 with the state it found (D4)
+- `GET /api/people/presence` — the name-free aggregate: `latitude`, `longitude`,
+  `from`, `to`, all four required, and a reply of `known_companions` and
+  `overlap_days` inside a radius places owns (D4)
 
 ## Backfills (CLI, one-shot)
 

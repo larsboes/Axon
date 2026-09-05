@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use places::config::Config;
 use places::geocode::{GeocodeQuery, Geocoder, StructuredQuery};
-use places::store::{PlacesStore, Review};
+use places::store::{PlacesStore, Review, ReviewOutcome, PRESENCE_RADIUS_KM};
 use places::{layers, today};
 
 const ROUTES: &[route_manifest::Route] = &[
@@ -83,6 +83,14 @@ const ROUTES: &[route_manifest::Route] = &[
         "POST",
         "/api/people/proposals/:id/dismiss",
         "Dismiss one register proposal.",
+    ),
+    r(
+        "GET",
+        "/api/people/presence",
+        "How many known companions are near a coordinate in a window, and for how many days. \
+         Query: latitude, longitude, from, to (YYYY-MM-DD, from <= to) — all four required. \
+         There is NO radius parameter: places owns it (50 km) and echoes it. Confirmed rows \
+         only, and the reply carries no person, no place name, no row id and no confidence.",
     ),
 ];
 
@@ -432,15 +440,72 @@ async fn review(state: AppState, id: String, decision: Review) -> ApiResponse {
     })
     .await
     {
-        Ok(Ok(true)) => respond(
+        Ok(Ok(ReviewOutcome::Applied)) => respond(
             StatusCode::OK,
             json!({ "ok": true, "state": decision.as_str() }),
         ),
-        Ok(Ok(false)) => respond(
+        Ok(Ok(ReviewOutcome::NoSuchRow)) => respond(
             StatusCode::NOT_FOUND,
             json!({ "error": "no register row with that id" }),
         ),
+        // 409, never 404: the row exists, and telling a caller it does not
+        // would be a second wrong answer on top of the refused write. The state
+        // found is named so the surface can say which one.
+        Ok(Ok(ReviewOutcome::Refused { state })) => respond(
+            StatusCode::CONFLICT,
+            json!({ "error": "that proposal was already reviewed", "state": state }),
+        ),
         Ok(Err(error)) => failed(error),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+#[derive(Deserialize)]
+struct PresenceQuery {
+    latitude: f64,
+    longitude: f64,
+    from: String,
+    to: String,
+}
+
+/// A count and an overlap. See `PlacesStore::confirmed_presence` for the whole
+/// argument; the short version is that this is the only shape in which the C2
+/// register reaches a planner, and it carries no identity at all.
+///
+/// Registered ABOVE the `.layer()` call in `build_router`, because axum wraps
+/// only the routes added before it.
+async fn people_presence(
+    State(state): State<AppState>,
+    Query(query): Query<PresenceQuery>,
+) -> ApiResponse {
+    if query.from > query.to {
+        return respond(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "from must be on or before to" }),
+        );
+    }
+    let database_path = state.database_path.clone();
+    let (from, to) = (query.from.clone(), query.to.clone());
+    match tokio::task::spawn_blocking(move || {
+        PlacesStore::open(&database_path)
+            .and_then(|store| {
+                store.confirmed_presence(query.latitude, query.longitude, &query.from, &query.to)
+            })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(presence)) => respond(
+            StatusCode::OK,
+            json!({
+                "radius_km": PRESENCE_RADIUS_KM,
+                "from": from,
+                "to": to,
+                "known_companions": presence.known_companions,
+                "overlap_days": presence.overlap_days,
+            }),
+        ),
+        Ok(Err(error)) => respond(StatusCode::BAD_REQUEST, json!({ "error": error })),
         Err(_) => failed("task panicked".into()),
     }
 }
@@ -475,6 +540,7 @@ fn build_router(state: AppState) -> Router {
         .route("/api/people/proposals", get(list_proposals))
         .route("/api/people/proposals/:id/confirm", post(confirm_proposal))
         .route("/api/people/proposals/:id/dismiss", post(dismiss_proposal))
+        .route("/api/people/presence", get(people_presence))
         // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the C2 guard.
         .layer(middleware::from_fn_with_state(
             CAPABILITY,

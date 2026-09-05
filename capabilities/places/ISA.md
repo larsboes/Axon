@@ -113,11 +113,26 @@ data, and every coordinate on it is traceable to a registry row with a source.
 ### F3 · People layer (companion register, PRD §8.2)
 
 - [x] PLC-7 — no `person_places` row reaches `confirmed` state without an
-  explicit confirm call. Evidence: `propose_person_place` hardcodes
-  `'proposed'`; the only writer of `'confirmed'` is `review_person_place`
-  behind the two-variant `Review` enum, called solely from the confirm route;
-  the live table held only proposed rows, 2026-08-25. Falsifier: a backfill or
-  proposal path that writes `state = 'confirmed'`.
+  explicit confirm call, **and a confirmed row can always be withdrawn.**
+  Evidence: `propose_person_place` hardcodes `'proposed'`; the only writer of
+  `'confirmed'` is `review_person_place` behind the two-variant `Review` enum,
+  called solely from the confirm route; the live table held only proposed rows,
+  2026-08-25. Since 2026-09-05 that writer is also guarded asymmetrically —
+  `proposed → confirmed`, `proposed → dismissed` and `confirmed → dismissed`
+  apply, `dismissed → confirmed` and any no-op review are refused with the state
+  found — so a replayed or stale call cannot resurrect a dismissal, and a
+  mis-clicked confirm does not need hand-written SQL to repair.
+  Tests: `store::db_tests::a_dismissed_row_cannot_be_confirmed`,
+  `store::db_tests::a_confirmed_row_can_still_be_dismissed`.
+  Falsifier: a backfill or proposal path that writes `state = 'confirmed'`, or a
+  guard that refuses `confirmed → dismissed`.
+- [x] PLC-13 — the register reaches a planner only as an aggregate. Evidence:
+  `GET /api/people/presence` selects `person`, counts the distinct set and
+  returns `known_companions` and `overlap_days`; the person string never leaves
+  the function. Test: `store::db_tests::presence_answers_a_count_and_no_identity`
+  asserts the serialised body carries no person, no place name, no row id and no
+  confidence. Falsifier: any identity field on that route's reply, or a
+  caller-chosen radius.
 - [x] PLC-8 — `axon_demo` contains no `person_places` rows. Evidence:
   `axon_demo` has no `places` schema at all, 2026-08-25. Falsifier: any row in
   that table in the demo database.
@@ -157,8 +172,9 @@ data, and every coordinate on it is traceable to a registry row with a source.
 | PLC-4 | command | count venue links vs raw Amex address rows | equal | psql | D1 |
 | PLC-5 | command | compare layer sums to projection sums | equal | psql | F1 |
 | PLC-6 | command | legs with unresolvable EVA endpoints | 0 | psql | F2 |
-| PLC-7 | code inspect | grep write paths for `confirmed` | review only | rg | D4 |
+| PLC-7 | code inspect | grep write paths for `confirmed`; run the two review tests | review only, and withdrawable | rg, cargo test | D4 |
 | PLC-8 | command | `SELECT count(*)` in axon_demo | 0 | psql | D4 |
+| PLC-13 | code inspect | fields on `GET /api/people/presence` | count + overlap only | cargo test | D4 |
 | PLC-9 | command | fallback-source links with precision='venue' | 0 rows | psql | D1 |
 | PLC-10 | command | assign to a city-kind place, read response precision | city | curl | D1 |
 | PLC-11 | command | `cargo test -p finance -- db_tests::`; column presence | pass | cargo | F1 |
