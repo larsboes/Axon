@@ -5,7 +5,8 @@
   import "../app.css";
   import Icon from "$lib/Icon.svelte";
   import { capabilities } from "$lib/capabilities.svelte";
-  import { PRIMARY_NAV, UTILITY_NAV, withoutCapabilities, link } from "$lib/nav";
+  import { PRIMARY_NAV, UTILITY_NAV, capabilityForPath, withoutCapabilities, link } from "$lib/nav";
+  import { axonStatus } from "$lib/api";
   import SoundscapeDock from "$lib/SoundscapeDock.svelte";
 
   let { children, data } = $props();
@@ -14,6 +15,18 @@
   let menuOpen = $state(false);
   let moreOpen = $state(false);
   let now = $state(new Date());
+  let moreEl: HTMLDetailsElement | undefined = $state();
+  let drawerEl: HTMLElement | undefined = $state();
+
+  /**
+   * Capabilities this shell has already tried to start, for the lifetime of the tab.
+   *
+   * Module-level and never cleared, and both halves are load-bearing. `capabilities`
+   * re-assigns its list every fifteen seconds, so an effect that reads the store would
+   * re-run on every poll; and a capability that failed to start will fail again, so a
+   * retry loop is the failure mode this set exists to prevent.
+   */
+  const attemptedStarts = new Set<string>();
 
   // `data.demo` is null outside a demo build, so both lists below are the untouched arrays
   // and the banner never renders. In a demo build the index names the capabilities the
@@ -41,9 +54,73 @@
   $effect(() => {
     document.documentElement.classList.toggle("dark", dark);
   });
+
+  /**
+   * Start what this page needs, in the shell, once per capability.
+   *
+   * /finance and /map were the only two primary destinations that started nothing, so on a
+   * machine where those capabilities were stopped both rendered an error card and the
+   * operator had to visit /capabilities. Home already solved this per kind; this is the
+   * same fix one level up, so a page added tomorrow inherits it.
+   *
+   * The ONLY tracked read is `page.url.pathname`. Everything after the first `await` is
+   * untracked, which is what keeps the fifteen-second capability poll from re-running this.
+   */
+  $effect(() => {
+    const pathname = page.url.pathname;
+    // A demo build has no start route: /map ships in the published nav with no fixture,
+    // and posting to it answers 501 and logs an error a visitor cannot act on.
+    if (data?.demo) return;
+    const wanted = capabilityForPath(pathname);
+    if (wanted.length === 0) return;
+
+    void (async () => {
+      await capabilities.refresh();
+      for (const name of wanted) {
+        if (attemptedStarts.has(name)) continue;
+        attemptedStarts.add(name);
+        const capability = capabilities.byName(name);
+        if (!capability || capability.up === true) continue;
+        await axonStatus.start(name).catch(() => {
+          // Swallowed: the page itself reports what it could not read, and a failed start
+          // is not a second thing to tell the reader about.
+        });
+      }
+      await capabilities.refresh();
+    })();
+  });
+
+  function closeMore(event: MouseEvent): void {
+    if (moreOpen && moreEl && !moreEl.contains(event.target as Node)) moreOpen = false;
+  }
+
+  function handleShellKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      moreOpen = false;
+      menuOpen = false;
+      return;
+    }
+    // A drawer that lets Tab walk out behind its own scrim is a drawer to a mouse only.
+    if (event.key !== "Tab" || !menuOpen || !drawerEl) return;
+    const stops = [...drawerEl.querySelectorAll<HTMLElement>("a[href], button:not([disabled])")];
+    if (stops.length === 0) return;
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 </script>
 
+<svelte:window onkeydown={handleShellKeydown} onclick={closeMore} />
+
 <div class="shell">
+  <!-- Every page is one Tab away from its own content, rather than fourteen nav links. -->
+  <a class="skip" href="#main">Skip to content</a>
   <header>
     <div class="bar">
       <a class="brand" href={link("/")}>
@@ -73,14 +150,19 @@
     <div class="desktop-wrap">
       <nav class="desktop" aria-label="Main navigation">
         {#each primary as item (item.href)}
-          <a class="nav-link" class:active={isActive(item.href)} href={link(item.href)}>
+          <a
+            class="nav-link"
+            class:active={isActive(item.href)}
+            href={link(item.href)}
+            aria-current={isActive(item.href) ? "page" : undefined}
+          >
             <Icon name={item.icon as never} size={14} />
             {item.label}
           </a>
         {/each}
       </nav>
 
-      <details class="more" bind:open={moreOpen}>
+      <details class="more" bind:this={moreEl} bind:open={moreOpen}>
         <summary class="nav-link" class:active={utilityActive}>
           <Icon name="boxes" size={14} />
           More
@@ -91,6 +173,7 @@
               class="nav-link"
               class:active={isActive(item.href)}
               href={link(item.href)}
+              aria-current={isActive(item.href) ? "page" : undefined}
               onclick={() => (moreOpen = false)}
             >
               <Icon name={item.icon as never} size={14} />
@@ -123,13 +206,14 @@
   {#if menuOpen}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="scrim" onclick={() => (menuOpen = false)}></div>
-    <nav class="mobile" aria-label="Mobile navigation">
+    <nav class="mobile" bind:this={drawerEl} aria-label="Mobile navigation">
       <span class="nav-section">Work</span>
       {#each primary as item (item.href)}
         <a
           class="nav-link"
           class:active={isActive(item.href)}
           href={link(item.href)}
+          aria-current={isActive(item.href) ? "page" : undefined}
           onclick={() => (menuOpen = false)}
         >
           <Icon name={item.icon as never} />
@@ -142,6 +226,7 @@
           class="nav-link"
           class:active={isActive(item.href)}
           href={link(item.href)}
+          aria-current={isActive(item.href) ? "page" : undefined}
           onclick={() => (menuOpen = false)}
         >
           <Icon name={item.icon as never} />
@@ -151,7 +236,7 @@
     </nav>
   {/if}
 
-  <main>
+  <main id="main">
     {@render children()}
   </main>
 
@@ -198,8 +283,8 @@
   }
 
   .bar {
-    height: 3.5rem;
-    padding-inline: 1.5rem;
+    height: var(--header-h);
+    padding-inline: var(--space-6);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -307,7 +392,7 @@
 
   .demo-banner {
     position: sticky;
-    top: 3.5rem;
+    top: var(--header-h);
     z-index: 45;
     display: flex;
     flex-wrap: wrap;
@@ -339,16 +424,16 @@
 
   .scrim {
     position: fixed;
-    inset: 3.5rem 0 0;
+    inset: var(--header-h) 0 0;
     z-index: 40;
     background-color: rgb(0 0 0 / 40%);
   }
 
   nav.mobile {
     position: fixed;
-    inset: 3.5rem 0 auto auto;
+    inset: var(--header-h) 0 auto auto;
     z-index: 41;
-    height: calc(100vh - 3.5rem);
+    height: calc(100vh - var(--header-h));
     width: 16rem;
     padding: 1rem;
     display: flex;
@@ -363,13 +448,13 @@
     font-size: 0.875rem;
   }
 
+  /* Sentence case. A tracked-out all-caps label over each half of the drawer is template
+     chrome; these are two short headings, and they read as headings without it. */
   .nav-section {
-    padding: 0.35rem 1rem 0.2rem;
+    padding: var(--space-2) var(--space-5) var(--space-1);
     color: var(--text-tertiary);
-    font-size: 0.625rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    font-size: var(--text-2xs);
+    font-weight: 600;
   }
 
   .nav-section.second {
@@ -378,9 +463,29 @@
     border-top: 1px solid var(--card-border);
   }
 
+  /* Denser by a step at the top end: 2rem rather than 2.5rem of gutter on a wide display,
+     which is where the old value read as an airy admin template. */
   main {
     flex-grow: 1;
-    padding: clamp(1.25rem, 2.5vw, 2.5rem);
+    padding: clamp(var(--space-5), 1.6vw, var(--space-7));
+  }
+
+  .skip {
+    position: absolute;
+    left: var(--space-3);
+    top: calc(var(--header-h) * -2);
+    z-index: 60;
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    background: var(--card-bg);
+    color: var(--primary);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    transition: top var(--motion-fast) ease;
+  }
+
+  .skip:focus-visible {
+    top: var(--space-3);
   }
 
   footer {
@@ -406,10 +511,11 @@
     }
   }
 
+  /* The bar's own height comes from --header-h, which app.css redeclares as 3.25rem
+     inside this same breakpoint. All six offsets above follow it without being restated. */
   @media (width < 38rem) {
     .bar {
-      height: 3.25rem;
-      padding-inline: 1rem;
+      padding-inline: var(--space-5);
     }
 
     .meta {
@@ -422,18 +528,12 @@
       padding: 0.5rem;
     }
 
-    .scrim {
-      inset-block-start: 3.25rem;
-    }
-
     nav.mobile {
-      inset-block-start: 3.25rem;
       width: min(19rem, 100%);
-      height: calc(100vh - 3.25rem);
     }
 
     main {
-      padding: 1rem;
+      padding: var(--space-5);
     }
 
     footer {

@@ -297,6 +297,41 @@ code,
   font-variant-numeric: tabular-nums;
 }
 
+/* Row typography, shared by every list row in the app.
+ *
+ * These are three global classes rather than a copy inside each of the ten row
+ * components, because a row's title and its meta line are the one place where a drift of
+ * a sixteenth of a rem is visible: the rows sit directly on top of each other. */
+.row-kind {
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+}
+
+.row-title {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: var(--leading-tight);
+}
+
+a.row-title:hover {
+  color: var(--primary);
+}
+
+/* One line. A ladder row states the decision; the page behind it states the case. */
+.row-text {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+
 .tag {
   display: inline-flex;
   align-items: center;

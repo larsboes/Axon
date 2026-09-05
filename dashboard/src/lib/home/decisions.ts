@@ -12,6 +12,9 @@
  * (dashboard/README.md:7-9), so this interface is the durable contract in a schema's place.
  */
 
+/** The visual spine. Four tones over thirteen bands, because a reader distinguishes four. */
+export type BandTone = "alarm" | "now" | "owed" | "offer";
+
 /** The four data classes. c2 and c3 never leave the host and never reach a cloud model. */
 export type DataClass = "c0" | "c1" | "c2" | "c3";
 
@@ -32,6 +35,16 @@ export interface ScoreContext {
    * this: its gate and both of its rank adjustments read calendar entries and contexts.
    */
   peer<Row>(key: string): readonly Row[];
+  /**
+   * A dependency's loaded source, before its own gate ran.
+   *
+   * Additive to `peer`, not a replacement, and needed because `peer` hands back the rows a
+   * kind chose to raise. `opportunity` reads calendar entries the calendar kind
+   * deliberately does NOT raise — every committed and planned entry, which is what tells
+   * an opportunity whether it collides with something already in the diary — and the
+   * contexts, which are not entries at all. Returns null until that kind has settled.
+   */
+  peerSource<Source>(key: string): Source | null;
 }
 
 export interface LoadContext extends ScoreContext {
@@ -53,6 +66,29 @@ export interface DecisionViewProps<Row> {
    * this generalises.
    */
   act(run: () => Promise<void>, options?: { dismiss?: boolean }): void;
+}
+
+/**
+ * What a row component under `home/rows/` receives.
+ *
+ * Additive to `DecisionViewProps`: the four extra fields are the shell's, not the row's —
+ * where the row sits in the DOM, whether the keyboard cursor is on it, which band tone its
+ * spine wears and where its title points. A row renders its own `ListRow` so that it owns
+ * its mark, its actions and its meta line; the page owns only the order.
+ */
+export interface DecisionRowProps<Row> extends DecisionViewProps<Row> {
+  /** Stable DOM id, so the keyboard cursor can focus this row. */
+  id: string;
+  current: boolean;
+  tone: BandTone;
+  href: string;
+  /** The attention contract, already evaluated against the live context.
+   *  The kind states it, the page evaluates it, the row only shows it — so no row has to
+   *  invent a ScoreContext to ask its own kind a question. */
+  whyHere: string;
+  dataClass: DataClass | null;
+  processingRoute: "local" | "cloud" | null;
+  candidateStatus: "proposed" | "accepted" | "open";
 }
 
 export interface DecisionKind<Source = unknown, Row = unknown> {
@@ -77,6 +113,9 @@ export interface DecisionKind<Source = unknown, Row = unknown> {
   /** The gate lives here: a source row that earns no decision is simply not returned. */
   rows(source: Source, ctx: ScoreContext): Row[];
   id(row: Row): string;
+  /** The row's own name, for the briefing line at the top of the page. Optional because
+   *  a kind with one row (system health) has a fixed sentence instead. */
+  title?(row: Row): string;
   /** 0..999. `score()` clamps, so a kind may return an unbounded expression. */
   urgency(row: Row, ctx: ScoreContext): number;
   /** `link(...)` for an internal route, or an absolute URL with `external` set. */
@@ -177,9 +216,6 @@ export const compareDecisions = (a: Decision, b: Decision): number =>
 export const PRD_BANDS: readonly number[] = [
   10_000, 900, 800, 700, 640, 630, 620, 610, 600, 550, 540, 500, 490,
 ];
-
-/** The visual spine. Four tones over thirteen bands, because a reader distinguishes four. */
-export type BandTone = "alarm" | "now" | "owed" | "offer";
 
 export const bandTone = (band: number): BandTone =>
   band >= 900 ? "alarm" : band >= 700 ? "now" : band >= 610 ? "owed" : "offer";
