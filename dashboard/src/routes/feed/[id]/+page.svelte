@@ -43,6 +43,7 @@
     type FeedStatus,
     type MailCategory,
   } from "$lib/api";
+  import { feedPersonalization } from "$lib/feed/api";
 
   type GmailAction = "archive" | "trash" | "restore";
 
@@ -494,6 +495,22 @@
         void loadGoogleExportState(entry.id);
       }
       whenProblem = null;
+      // After the entry resolves, and only for a feed item. The same route
+      // serves mail and calendar, so an ungated POST would send a triage id to
+      // /feed/:id/interactions and swallow a 404 on every mail open. An entry
+      // the operator already decided on is a REOPEN: coming back to something
+      // filed is a different signal from a first read.
+      //
+      // In-app entry-to-entry navigation records nothing, and that is stated
+      // rather than silently missed: `loadEntry` has two callers and does not
+      // re-run on a parameter change, so this page never observes one.
+      if (entry.source === "feed") {
+        void feedPersonalization.recordInteraction(
+          entry.id,
+          entry.status === "new" ? "opened" : "reopened",
+          "reader",
+        );
+      }
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -537,7 +554,7 @@
     if (!entry || entry.source !== "feed" || busy) return;
     busy = true;
     try {
-      await comms.setStatus(entry.id, status);
+      await feedPersonalization.setStatus(entry.id, status, "reader");
       entry.status = status;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);

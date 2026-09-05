@@ -194,12 +194,22 @@ pub(super) async fn triage_relevance_handler(
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
-        let profiles = relevance::load_profiles(&cfg.relevance);
-        let triage = store
-            .list_triage(None)
-            .map_err(|error| error.to_string())?
+        let profiles = relevance::load_profiles(&cfg.relevance)?;
+        let all_triage = store.list_triage(None).map_err(|error| error.to_string())?;
+        // The class gate runs over EVERY stored mail, not only the page this
+        // pass would have scored. Rows derived from a refused item are a
+        // standing fact about what a model was once shown; leaving them behind
+        // because the item's status moved out of the scoring window would
+        // repair the gate and keep the evidence.
+        let refused_ids = all_triage
+            .iter()
+            .filter(|item| !content_item::local_prompt_allowed(&item.data_class))
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>();
+        let triage = all_triage
             .into_iter()
             .filter(|item| item.status == "proposed" || item.status == "approved")
+            .filter(|item| content_item::local_prompt_allowed(&item.data_class))
             .take(limit)
             .collect::<Vec<_>>();
         let items = triage
@@ -214,6 +224,18 @@ pub(super) async fn triage_relevance_handler(
                 item.title = proposal.subject.clone();
                 item.author = proposal.from_addr.clone();
                 item.transcript = proposal.snippet.clone();
+                // The class travels with the item, and this line is the whole
+                // repair. `FeedItem::new` fills the class from
+                // `DataClass::undeclared()`, which is literally c1 — so every
+                // c3 mail read as c1 here and was embedded, sender address and
+                // all, by a synthetic item that had simply forgotten what it
+                // was. §6.2b: C3 never reaches any model, and the gate blocks
+                // the read at the tool boundary rather than filtering the
+                // prompt afterwards.
+                item.data_class = proposal.data_class.clone();
+                item.data_class_rationale = proposal.data_class_rationale.clone();
+                item.data_classification_method = proposal.data_classification_method.clone();
+                item.data_classification_version = proposal.data_classification_version.clone();
                 item
             })
             .collect::<Vec<_>>();
@@ -223,26 +245,47 @@ pub(super) async fn triage_relevance_handler(
         let reranking_role = cfg
             .reranking_role()
             .filter(|role| loopback_inference_url(&role.backend.base_url));
-        let scored = relevance::score_items(
+        let outcome = relevance::score_items(
             &items,
             &profiles,
             embedding_role.as_ref(),
             reranking_role.as_ref(),
         );
-        let mode = scored
+        let mode = outcome
+            .items
             .iter()
             .flat_map(|item| item.matches.first())
             .map(|matched| matched.mode.clone())
             .next();
-        for item in &scored {
+        let mut scored = 0usize;
+        for item in &outcome.items {
+            scored += 1;
             store
                 .replace_triage_relevance(&item.feed_id, &item.matches)
                 .map_err(|error| error.to_string())?;
         }
+        // A refused item is written with an EMPTY match set, which deletes
+        // whatever a previous ungated pass derived from it: 15 stored rows over
+        // 11 c3 mails go on the first gated pass. Written as a deletion rather
+        // than left alone, because a stored score is a claim about content the
+        // gate says no model may read.
+        for id in &refused_ids {
+            store
+                .replace_triage_relevance(id, &[])
+                .map_err(|error| error.to_string())?;
+        }
+        let refused_class = refused_ids.len();
         Ok(json!({
-            "scored": scored.len(),
+            "scored": scored,
+            "refused_class": refused_class,
             "profile_count": profiles.len(),
             "mode": mode,
+            "embedding": {
+                "mode": outcome.mode,
+                "error_class": outcome.error_class,
+                "chunks": outcome.chunks,
+                "chunks_failed": outcome.chunks_failed,
+            },
             "local_only": true,
         }))
     })

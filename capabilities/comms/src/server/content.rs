@@ -173,7 +173,7 @@ pub(super) async fn quality_refresh_handler(Json(body): Json<QualityRefreshBody>
         let cfg = Config::load();
         let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
         let items = store
-            .feed_for_relevance(days, 500)
+            .feed_for_relevance(days, 500, 0)
             .map_err(|error| error.to_string())?;
         let reviewed = items.len();
         let mut flagged_items = 0usize;

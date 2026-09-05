@@ -64,6 +64,40 @@ pub fn item_revision(item: &FeedItem) -> String {
     ])
 }
 
+/// What decides whether an item must be RE-EMBEDDED.
+///
+/// The half of the old `context_revision` that is genuinely about the vector
+/// space: the lens texts and the two producers. Split out because
+/// `relevance_refresh_handler` retains items by `is_current` and hands the
+/// retained set straight to `score_items`, so every term in `context_revision`
+/// was an embedding trigger — a changed travel snapshot, or a retrained
+/// feedback model, would re-embed the whole window for a factor weighted 0.10.
+///
+/// The last completed full sweep records this in the `relevance-pass` receipt's
+/// cursor, so a pass can tell "the vector space moved" from "the ranking inputs
+/// moved" without a new column and without an ALTER.
+pub fn relevance_revision(
+    profiles: &[InterestProfile],
+    embedding_producer: Option<&str>,
+    reranking_producer: Option<&str>,
+) -> String {
+    let mut revisions = profiles
+        .iter()
+        .map(|profile| format!("{}:{}", profile.key, profile.fingerprint))
+        .collect::<Vec<_>>();
+    revisions.push(format!(
+        "embedding:{}",
+        embedding_producer.unwrap_or("lexical")
+    ));
+    revisions.push(format!(
+        "reranking:{}",
+        reranking_producer.unwrap_or("semantic")
+    ));
+    revisions.sort();
+    revision_hash(&revisions.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// What decides whether an item must be RE-EVALUATED, from stored matches.
 pub fn context_revision(
     profiles: &[InterestProfile],
     embedding_producer: Option<&str>,
@@ -90,16 +124,53 @@ pub fn context_revision(
     revision_hash(&revisions.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
+/// Whether a stored evaluation may be left alone.
+///
+/// `semantic_available` is the fourth condition, and it is not folded into a
+/// revision on purpose: making the answering mode part of the hash would mint a
+/// second revision per outcome and thrash between them. A row that was written
+/// `lexical` while an embedding role is reachable is stale by definition — 525
+/// such rows were all written in one pass on 2026-08-30 and have read as
+/// current ever since. Passing `false` (no reachable role) keeps them current,
+/// so the drain happens over ordinary passes with no force flag.
 pub fn is_current(
     stored: Option<&FeedEvaluation>,
     item_revision: &str,
     context_revision: &str,
+    semantic_available: bool,
 ) -> bool {
     stored.is_some_and(|evaluation| {
-        evaluation.item_revision == item_revision
+        let mode_is_final =
+            !(semantic_available && matches!(evaluation.mode.as_str(), "lexical" | "unscored"));
+        mode_is_final
+            && evaluation.item_revision == item_revision
             && evaluation.context_revision == context_revision
             && evaluation.evaluator_revision == EVALUATOR_REVISION
     })
+}
+
+/// The share the learned feedback factor takes when it is active.
+///
+/// Taste, not measurement, which is why it is a named constant reported by
+/// `GET /feed/evaluation/status`: 15 points of 100 re-orders inside a band and
+/// can never outvote the 45-point TELOS factor.
+pub const FEEDBACK_WEIGHT: f64 = 0.15;
+
+/// One factor's contribution before the weights are normalised.
+///
+/// `weight` is the factor's share when it can be computed and `0.0` when it
+/// cannot. The rule that makes both states legal: **a factor that cannot be
+/// computed carries weight 0 and the remaining factors scale so the sum stays
+/// 1.0.** That is what lets a class refusal, or an inert learned factor, leave
+/// the arithmetic whole instead of dumping the item to the bottom of its band.
+fn normalise_weights(factors: &mut [EvaluationFactor]) {
+    let total = factors.iter().map(|factor| factor.weight).sum::<f64>();
+    if total <= 0.0 {
+        return;
+    }
+    for factor in factors.iter_mut() {
+        factor.weight /= total;
+    }
 }
 
 pub fn evaluate(
@@ -107,24 +178,32 @@ pub fn evaluate(
     strongest_match: Option<&RelevanceMatch>,
     context_revision: &str,
     travel_contexts: &[TravelContext],
+    refused_class: bool,
 ) -> FeedEvaluation {
     let interest_score = strongest_match
         .map(|matched| matched.score.clamp(0.0, 1.0))
         .unwrap_or(0.0);
-    let interest_rationale = strongest_match
-        .map(|matched| {
-            format!(
-                "{} with {:.0}% alignment ({})",
-                matched.profile_label,
-                interest_score * 100.0,
-                match matched.mode.as_str() {
-                    "reranked" => "reranked",
-                    "semantic" => "semantic",
-                    _ => "lexical",
-                }
-            )
-        })
-        .unwrap_or_else(|| "No configured TELOS lens is available".into());
+    let interest_rationale = if refused_class {
+        // Stored as a row rather than as an absence. An item with no
+        // evaluation is indistinguishable from one nobody has got to yet; a
+        // refusal says who refused and why, and it survives the next pass.
+        "Not scored: c3 is never read by a model".to_string()
+    } else {
+        strongest_match
+            .map(|matched| {
+                format!(
+                    "{} with {:.0}% alignment ({})",
+                    matched.profile_label,
+                    interest_score * 100.0,
+                    match matched.mode.as_str() {
+                        "reranked" => "reranked",
+                        "semantic" => "semantic",
+                        _ => "lexical",
+                    }
+                )
+            })
+            .unwrap_or_else(|| "No configured TELOS lens is available".into())
+    };
 
     let age = age_days(&item.day);
     let freshness_score = freshness_score(age);
@@ -137,12 +216,12 @@ pub fn evaluate(
 
     let (evidence_score, evidence_rationale) = evidence_score(item);
     let travel_signal = travel::score_item(item, travel_contexts);
-    let factors = vec![
+    let mut factors = vec![
         EvaluationFactor {
             key: "interest".into(),
             label: "Interest fit".into(),
-            score: interest_score,
-            weight: 0.45,
+            score: if refused_class { 0.0 } else { interest_score },
+            weight: if refused_class { 0.0 } else { 0.45 },
             rationale: interest_rationale,
             context: None,
         },
@@ -180,19 +259,27 @@ pub fn evaluate(
             context: None,
         },
     ];
+    normalise_weights(&mut factors);
     let overall_score = factors
         .iter()
         .map(|factor| factor.score * factor.weight)
         .sum::<f64>()
         .clamp(0.0, 1.0);
-    let strongest = factors
+    // Zero-weight factors are skipped: a refused interest factor scoring 0.0
+    // counts for nothing in the score, so reporting it as the largest deduction
+    // would be the explanation contradicting the arithmetic.
+    let counted = factors
+        .iter()
+        .filter(|factor| factor.weight > 0.0)
+        .collect::<Vec<_>>();
+    let strongest = counted
         .iter()
         .max_by(|left, right| left.score.partial_cmp(&right.score).unwrap())
-        .expect("the evaluator always has factors");
-    let weakest = factors
+        .expect("the evaluator always has at least one weighted factor");
+    let weakest = counted
         .iter()
         .min_by(|left, right| left.score.partial_cmp(&right.score).unwrap())
-        .expect("the evaluator always has factors");
+        .expect("the evaluator always has at least one weighted factor");
     let explanation = format!(
         "Strongest signal: {} ({:.0}%). Largest deduction: {} ({:.0}%).",
         strongest.label,
@@ -205,9 +292,11 @@ pub fn evaluate(
         feed_id: item.id.clone(),
         overall_score,
         explanation,
-        mode: strongest_match
-            .map(|matched| matched.mode.clone())
-            .unwrap_or_else(|| "unscored".into()),
+        mode: match strongest_match {
+            // A refusal is `unscored` whatever a stale match once said.
+            Some(matched) if !refused_class => matched.mode.clone(),
+            _ => "unscored".into(),
+        },
         item_revision: item_revision(item),
         context_revision: context_revision.to_string(),
         evaluator_revision: EVALUATOR_REVISION.into(),
@@ -423,7 +512,7 @@ mod tests {
             mode: "semantic".into(),
             profile_revision: "r".into(),
         };
-        let evaluation = evaluate(&item, Some(&matched), "context", &[]);
+        let evaluation = evaluate(&item, Some(&matched), "context", &[], false);
         assert_eq!(evaluation.factors.len(), 4);
         assert!((0.0..=1.0).contains(&evaluation.overall_score));
         assert!(
@@ -492,6 +581,90 @@ mod tests {
         let mut legacy = thin.clone();
         legacy.content_status = "unknown".into();
         assert_eq!(score(&legacy), score(&thin));
+    }
+
+    fn stored(mode: &str) -> FeedEvaluation {
+        FeedEvaluation {
+            feed_id: "id".into(),
+            overall_score: 0.5,
+            explanation: String::new(),
+            mode: mode.into(),
+            item_revision: "item".into(),
+            context_revision: "context".into(),
+            evaluator_revision: EVALUATOR_REVISION.into(),
+            evaluated_at: String::new(),
+            factors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_lexical_row_is_stale_while_the_embedding_role_answers() {
+        // Every revision matches. The only thing that differs is whether an
+        // embedding role is answering right now -- which is what drains the 525
+        // rows written lexical in one pass, with no force flag and no endpoint.
+        let lexical = stored("lexical");
+        assert!(!is_current(Some(&lexical), "item", "context", true));
+        assert!(is_current(Some(&lexical), "item", "context", false));
+
+        let unscored = stored("unscored");
+        assert!(!is_current(Some(&unscored), "item", "context", true));
+
+        let semantic = stored("semantic");
+        assert!(is_current(Some(&semantic), "item", "context", true));
+        assert!(!is_current(Some(&semantic), "moved", "context", true));
+    }
+
+    #[test]
+    fn relevance_revision_ignores_the_travel_snapshot() {
+        // The whole point of the split: a trip that starts or ends must not
+        // re-embed 372 items for a factor weighted 0.10.
+        assert_eq!(
+            relevance_revision(&[], Some("ollama:bge-m3"), None),
+            relevance_revision(&[], Some("ollama:bge-m3"), None)
+        );
+        assert_ne!(
+            context_revision(&[], Some("ollama:bge-m3"), None, "trip-one"),
+            context_revision(&[], Some("ollama:bge-m3"), None, "trip-two")
+        );
+        assert_ne!(
+            relevance_revision(&[], Some("ollama:bge-m3"), None),
+            relevance_revision(&[], Some("omlx:e5"), None)
+        );
+    }
+
+    #[test]
+    fn a_refused_factor_carries_weight_zero_and_the_rest_rescale() {
+        let item = item();
+        let matched = RelevanceMatch {
+            profile_key: "p".into(),
+            profile_label: "Local AI".into(),
+            score: 0.8,
+            rationale: "match".into(),
+            mode: "semantic".into(),
+            profile_revision: "r".into(),
+        };
+        let refused = evaluate(&item, Some(&matched), "context", &[], true);
+        let interest = refused
+            .factors
+            .iter()
+            .find(|factor| factor.key == "interest")
+            .expect("the refusal is a row, not an absence");
+        assert_eq!(interest.weight, 0.0);
+        assert!(interest.rationale.contains("never read by a model"));
+        assert_eq!(refused.mode, "unscored");
+        assert!(
+            (refused
+                .factors
+                .iter()
+                .map(|factor| factor.weight)
+                .sum::<f64>()
+                - 1.0)
+                .abs()
+                < 1e-9,
+            "the weights still sum to one with a factor at zero"
+        );
+        // The explanation must not report a factor that counts for nothing.
+        assert!(!refused.explanation.contains("Interest fit"));
     }
 
     #[test]

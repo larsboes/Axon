@@ -51,6 +51,31 @@ pub struct RelevanceMatch {
 pub struct ScoredFeedItem {
     pub feed_id: String,
     pub matches: Vec<RelevanceMatch>,
+    /// The class ladder refused this item: it reached neither the embedder nor
+    /// the lexical scorer. `matches` is empty by refusal rather than by
+    /// absence, and the caller stores that as a refusal instead of a zero.
+    pub refused_class: bool,
+}
+
+/// What a scoring pass did, beside what it scored.
+///
+/// `context_revision` records the *configured* embedding producer, not the
+/// producer that answered, so a pass that fell back was stamped semantic and
+/// never re-scored (#the 525 lexical rows all written in one pass on
+/// 2026-08-30). This is the receipt that makes the difference readable.
+#[derive(Debug, Clone)]
+pub struct ScoringOutcome {
+    pub items: Vec<ScoredFeedItem>,
+    /// The strongest mode any item actually got: `reranked`, `semantic`,
+    /// `lexical`, or `unscored` when there was nothing to score.
+    pub mode: &'static str,
+    /// A stable class, never a provider message: `embedding-unreachable`,
+    /// `embedding-failed` or `no-profiles`.
+    pub error_class: Option<&'static str>,
+    /// Embedding calls attempted and how many of them fell back. One failure
+    /// now costs one chunk, not the pass.
+    pub chunks: usize,
+    pub chunks_failed: usize,
 }
 
 pub fn embedding_provider_label(role: Option<&ResolvedRole>) -> &'static str {
@@ -64,29 +89,55 @@ pub fn embedding_backend_configured(role: Option<&ResolvedRole>) -> bool {
     })
 }
 
-pub fn load_profiles(config: &RelevanceConfig) -> Vec<InterestProfile> {
+/// Read the configured TELOS lenses, or say why there are none.
+///
+/// Fallible, and narrowly so. Declaring no profile path is the ordinary state
+/// of a fresh install, of CI and of every worktree — `RelevanceConfig::default`
+/// has an empty list and two tests pin it (config.rs) — so zero declared paths
+/// is `Ok(vec![])` and `/feed/evaluation/status` keeps answering 200 with
+/// `profile_count: 0`. What used to fail open and now does not is the real
+/// defect: a *declared* directory that has moved silently produced zero
+/// profiles, and the pass then scored 372 good rows against nothing and wrote
+/// them all `unscored`.
+pub fn load_profiles(config: &RelevanceConfig) -> Result<Vec<InterestProfile>, String> {
     let mut files = Vec::new();
     for configured in &config.profile_paths {
         let path = PathBuf::from(configured);
         if path.is_file() {
             files.push(path);
         } else if path.is_dir() {
-            let mut entries = fs::read_dir(&path)
-                .into_iter()
-                .flatten()
+            let entries = fs::read_dir(&path).map_err(|error| {
+                format!("a declared TELOS profile directory cannot be read: {error}")
+            })?;
+            let mut markdown = entries
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
                 .filter(|entry| entry.extension().and_then(|ext| ext.to_str()) == Some("md"))
                 .collect::<Vec<_>>();
-            entries.sort();
-            files.extend(entries);
+            markdown.sort();
+            files.extend(markdown);
+        } else {
+            // Neither a file nor a directory. The operator declared it, so a
+            // silent skip is the answer that loses the lens.
+            return Err("a declared TELOS profile path does not exist".into());
         }
     }
 
-    files
+    // No declared path is not an error. It is the default, and erroring here
+    // would turn /feed and /feed/library into a 500 on load for a machine that
+    // has simply not written a lens.
+    if config.profile_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let profiles = files
         .into_iter()
         .filter_map(|path| parse_profile(&path))
-        .collect()
+        .collect::<Vec<_>>();
+    if profiles.is_empty() {
+        return Err("declared TELOS profile paths yielded no readable profiles".into());
+    }
+    Ok(profiles)
 }
 
 fn parse_profile(path: &Path) -> Option<InterestProfile> {
@@ -144,60 +195,151 @@ fn frontmatter_value(body: &str, key: &str) -> Option<String> {
     None
 }
 
+/// One embedding call per this many items, plus one for the profile set.
+///
+/// The old shape sent every item and every profile in ONE call and fell back to
+/// lexical for the whole batch when it failed. That is how 525 rows were
+/// written lexical in a single pass. A chunk now costs a chunk.
+const EMBED_CHUNK_SIZE: usize = 32;
+
+/// Score items against the configured lenses.
+///
+/// Two things happen before any text leaves this process. Items are partitioned
+/// by `content_item::local_prompt_allowed`, and a refused item is excluded from
+/// the embedding input AND from the lexical fallback — one rule instead of two,
+/// because a lexical score is still a content-derived number rendered in a
+/// rationale on a surface. An embedding is a model call and `item_document`
+/// joins title, author and content, which for a mail is the sender address.
 pub fn score_items(
     items: &[FeedItem],
     profiles: &[InterestProfile],
     embedding_role: Option<&ResolvedRole>,
     reranking_role: Option<&ResolvedRole>,
-) -> Vec<ScoredFeedItem> {
+) -> ScoringOutcome {
+    let allowed = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| crate::content_item::local_prompt_allowed(&item.data_class))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let mut scored = items
+        .iter()
+        .map(|item| ScoredFeedItem {
+            feed_id: item.id.clone(),
+            matches: Vec::new(),
+            refused_class: !crate::content_item::local_prompt_allowed(&item.data_class),
+        })
+        .collect::<Vec<_>>();
+
     if profiles.is_empty() {
-        return items
-            .iter()
-            .map(|item| ScoredFeedItem {
-                feed_id: item.id.clone(),
-                matches: Vec::new(),
-            })
-            .collect();
+        return ScoringOutcome {
+            items: scored,
+            mode: "unscored",
+            error_class: Some("no-profiles"),
+            chunks: 0,
+            chunks_failed: 0,
+        };
+    }
+    if allowed.is_empty() {
+        return ScoringOutcome {
+            items: scored,
+            mode: "unscored",
+            error_class: None,
+            chunks: 0,
+            chunks_failed: 0,
+        };
     }
 
-    let profile_documents = profiles
+    let item_documents = allowed
         .iter()
-        .map(|profile| profile.text.clone())
+        .map(|index| item_document(&items[*index]))
         .collect::<Vec<_>>();
-    let item_documents = items.iter().map(item_document).collect::<Vec<_>>();
-    let semantic_inputs = profiles
+    // Always computed: they are the fallback space for any chunk that does not
+    // get an embedding, and comparing a lexical item vector against a semantic
+    // profile vector would be a number with no meaning.
+    let lexical_profile_vectors = profiles
         .iter()
-        .map(|profile| (profile.text.clone(), TextRole::Query))
-        .chain(
-            item_documents
-                .iter()
-                .cloned()
-                .map(|document| (document, TextRole::Document)),
-        )
+        .map(|profile| lexical_vector(&profile.text))
         .collect::<Vec<_>>();
-    let lexical_documents = profile_documents
-        .iter()
-        .cloned()
-        .chain(item_documents.iter().cloned())
-        .collect::<Vec<_>>();
-    let semantic = embed(&semantic_inputs, embedding_role);
-    let (vectors, mode) = match semantic {
-        Some(vectors) if vectors.len() == semantic_inputs.len() => (vectors, "semantic"),
-        _ => (
-            lexical_documents
-                .iter()
-                .map(|document| lexical_vector(document))
-                .collect(),
-            "lexical",
-        ),
+
+    let mut chunks = 0usize;
+    let mut chunks_failed = 0usize;
+    let mut error_class: Option<&'static str> = None;
+
+    let semantic_profile_vectors = embedding_role.and_then(|role| {
+        chunks += 1;
+        let inputs = profiles
+            .iter()
+            .map(|profile| (profile.text.clone(), TextRole::Query))
+            .collect::<Vec<_>>();
+        match embed(role, &inputs) {
+            Ok(vectors) if vectors.len() == profiles.len() => Some(vectors),
+            outcome => {
+                chunks_failed += 1;
+                error_class = Some(report_embed_failure("the profile set", role, outcome.err()));
+                None
+            }
+        }
+    });
+
+    let mut item_vectors: Vec<Vec<f64>> = Vec::with_capacity(item_documents.len());
+    let mut item_modes: Vec<&'static str> = Vec::with_capacity(item_documents.len());
+    for chunk in item_documents.chunks(EMBED_CHUNK_SIZE) {
+        let embedded = match (embedding_role, semantic_profile_vectors.as_ref()) {
+            (Some(role), Some(_)) => {
+                chunks += 1;
+                let inputs = chunk
+                    .iter()
+                    .cloned()
+                    .map(|document| (document, TextRole::Document))
+                    .collect::<Vec<_>>();
+                match embed(role, &inputs) {
+                    Ok(vectors) if vectors.len() == chunk.len() => Some(vectors),
+                    outcome => {
+                        chunks_failed += 1;
+                        error_class = error_class.or(Some(report_embed_failure(
+                            "a chunk",
+                            role,
+                            outcome.err(),
+                        )));
+                        None
+                    }
+                }
+            }
+            // No embedding role, or its profile call failed. Lexical is the
+            // declared control, not a degradation, when no role is configured.
+            _ => None,
+        };
+        match embedded {
+            Some(vectors) => {
+                item_vectors.extend(vectors);
+                item_modes.extend(std::iter::repeat_n("semantic", chunk.len()));
+            }
+            None => {
+                item_vectors.extend(chunk.iter().map(|document| lexical_vector(document)));
+                item_modes.extend(std::iter::repeat_n("lexical", chunk.len()));
+            }
+        }
+    }
+
+    let profile_vectors_for = |mode: &str| -> &[Vec<f64>] {
+        match (mode, semantic_profile_vectors.as_ref()) {
+            ("semantic", Some(vectors)) => vectors.as_slice(),
+            _ => lexical_profile_vectors.as_slice(),
+        }
     };
 
-    let profile_vectors = &vectors[..profiles.len()];
-    let item_vectors = &vectors[profiles.len()..];
     let candidate_profiles = item_vectors
         .iter()
-        .map(|item_vector| {
-            let mut candidates = profile_vectors
+        .enumerate()
+        .map(|(position, item_vector)| {
+            // A lexical item is never a rerank candidate: the reranker is a
+            // cross-encoder over the semantic stage, and feeding it a fallback
+            // row would report `reranked` for a pass that never embedded.
+            if item_modes[position] != "semantic" {
+                return Vec::new();
+            }
+            let mut candidates = profile_vectors_for("semantic")
                 .iter()
                 .enumerate()
                 .map(|(index, profile_vector)| (index, cosine(profile_vector, item_vector)))
@@ -212,7 +354,8 @@ pub fn score_items(
             candidates
         })
         .collect::<Vec<_>>();
-    let reranked = if mode == "semantic" {
+
+    let reranked = if candidate_profiles.iter().any(|row| !row.is_empty()) {
         reranking_role.and_then(|role| {
             match rerank_candidate_scores(role, profiles, &item_documents, &candidate_profiles) {
                 Ok(scores) => Some(scores),
@@ -225,69 +368,102 @@ pub fn score_items(
     } else {
         None
     };
-    items
-        .iter()
-        .enumerate()
-        .map(|(item_index, item)| {
-            let rerank_scores = reranked.as_ref().map(|scores| &scores[item_index]);
-            let profile_scores = if let Some(scores) = rerank_scores {
-                candidate_profiles[item_index]
-                    .iter()
-                    .map(|(profile_index, _)| (*profile_index, scores[*profile_index].unwrap()))
-                    .collect::<Vec<_>>()
-            } else {
-                profiles
-                    .iter()
-                    .enumerate()
-                    .map(|(profile_index, _)| {
-                        (
-                            profile_index,
-                            cosine(&profile_vectors[profile_index], &item_vectors[item_index]),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            };
-            let scoring_mode = if rerank_scores.is_some() {
-                "reranked"
-            } else {
-                mode
-            };
-            let mut matches = profile_scores
-                .into_iter()
-                .map(|(profile_index, score)| {
-                    let profile = &profiles[profile_index];
-                    let method = match scoring_mode {
-                        "reranked" => "Reranked relevance",
-                        "semantic" => "Semantic similarity",
-                        _ => "Lexical similarity",
-                    };
-                    let rationale = if profile.focus.is_empty() {
-                        format!("{method} for the TELOS lens {}", profile.label)
-                    } else {
-                        format!("{method} for {} · {}", profile.label, profile.focus)
-                    };
-                    RelevanceMatch {
-                        profile_key: profile.key.clone(),
-                        profile_label: profile.label.clone(),
-                        score,
-                        rationale,
-                        mode: scoring_mode.to_string(),
-                        profile_revision: profile.fingerprint.clone(),
-                    }
+
+    for (position, item_index) in allowed.iter().enumerate() {
+        let mode = item_modes[position];
+        let rerank_scores = reranked
+            .as_ref()
+            .filter(|_| !candidate_profiles[position].is_empty())
+            .map(|scores| &scores[position]);
+        let profile_scores = if let Some(scores) = rerank_scores {
+            candidate_profiles[position]
+                .iter()
+                .map(|(profile_index, _)| (*profile_index, scores[*profile_index].unwrap()))
+                .collect::<Vec<_>>()
+        } else {
+            let profile_vectors = profile_vectors_for(mode);
+            (0..profiles.len())
+                .map(|profile_index| {
+                    (
+                        profile_index,
+                        cosine(&profile_vectors[profile_index], &item_vectors[position]),
+                    )
                 })
-                .collect::<Vec<_>>();
-            matches.sort_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            matches.truncate(3);
-            ScoredFeedItem {
-                feed_id: item.id.clone(),
-                matches,
-            }
-        })
-        .collect()
+                .collect::<Vec<_>>()
+        };
+        let scoring_mode = if rerank_scores.is_some() {
+            "reranked"
+        } else {
+            mode
+        };
+        let mut matches = profile_scores
+            .into_iter()
+            .map(|(profile_index, score)| {
+                let profile = &profiles[profile_index];
+                let method = match scoring_mode {
+                    "reranked" => "Reranked relevance",
+                    "semantic" => "Semantic similarity",
+                    _ => "Lexical similarity",
+                };
+                let rationale = if profile.focus.is_empty() {
+                    format!("{method} for the TELOS lens {}", profile.label)
+                } else {
+                    format!("{method} for {} · {}", profile.label, profile.focus)
+                };
+                RelevanceMatch {
+                    profile_key: profile.key.clone(),
+                    profile_label: profile.label.clone(),
+                    score,
+                    rationale,
+                    mode: scoring_mode.to_string(),
+                    profile_revision: profile.fingerprint.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        matches.truncate(3);
+        scored[*item_index].matches = matches;
+    }
+
+    let mode = if scored
+        .iter()
+        .any(|item| item.matches.first().is_some_and(|m| m.mode == "reranked"))
+    {
+        "reranked"
+    } else if item_modes.contains(&"semantic") {
+        "semantic"
+    } else {
+        "lexical"
+    };
+    ScoringOutcome {
+        items: scored,
+        mode,
+        error_class,
+        chunks,
+        chunks_failed,
+    }
+}
+
+/// Say why an embedding call did not answer, and put it in a class.
+///
+/// The reason is printed the way the rerank path prints its own — the previous
+/// `.ok()` discarded it, so a degraded pass looked exactly like a configured
+/// lexical one. `model_reachable` is probed only on a failure, which is what
+/// separates "the server is down" from "the server answered wrongly".
+fn report_embed_failure(what: &str, role: &ResolvedRole, error: Option<String>) -> &'static str {
+    let reachable = role.model_reachable();
+    let class = if reachable {
+        "embedding-failed"
+    } else {
+        "embedding-unreachable"
+    };
+    let reason = error.unwrap_or_else(|| "the model returned the wrong number of vectors".into());
+    eprintln!("  comms: embedding {what} failed ({class}: {reason}) - scoring it lexically");
+    class
 }
 
 fn rerank_candidate_scores(
@@ -355,8 +531,11 @@ fn item_document(item: &FeedItem) -> String {
     )
 }
 
-fn embed(inputs: &[(String, TextRole)], role: Option<&ResolvedRole>) -> Option<Vec<Vec<f64>>> {
-    role?.embed_mixed(inputs).ok().map(|vectors| {
+/// One embedding call. The error is returned rather than swallowed: `.ok()`
+/// here was the reason a pass could degrade to lexical with nothing on stderr
+/// and nothing in the store to say so.
+fn embed(role: &ResolvedRole, inputs: &[(String, TextRole)]) -> Result<Vec<Vec<f64>>, String> {
+    role.embed_mixed(inputs).map(|vectors| {
         vectors
             .into_iter()
             .map(|vector| vector.into_iter().map(f64::from).collect())
@@ -476,7 +655,7 @@ mod tests {
             fingerprint: "revision".into(),
         };
         let scored = score_items(&[item], &[profile], None, None);
-        assert!(scored[0].matches[0]
+        assert!(scored.items[0].matches[0]
             .rationale
             .starts_with("Lexical similarity for Systems"));
     }
@@ -487,6 +666,216 @@ mod tests {
         assert_eq!(
             embedding_provider_label(None),
             "No embedding role configured"
+        );
+    }
+}
+
+/// A loopback embedding server that answers a scripted number of calls and then
+/// fails, so the chunking repair can be tested without a model.
+#[cfg(test)]
+mod stub_embedding {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    /// Bodies of every embedding request the stub received, in order.
+    pub(super) type Recorded = Arc<Mutex<Vec<String>>>;
+
+    /// Serve on 127.0.0.1. `succeed_calls` embedding calls answer 200 with one
+    /// vector per input; every later call answers 500, which is what a
+    /// half-available embedding server looks like from here.
+    pub(super) fn start(succeed_calls: usize) -> (String, Recorded) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a free loopback port");
+        let port = listener.local_addr().expect("a bound address").port();
+        let recorded: Recorded = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&recorded);
+        std::thread::spawn(move || {
+            let mut embed_calls = 0usize;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().expect("a clone"));
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).is_err() {
+                    continue;
+                }
+                let mut length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).to_string();
+                let is_embedding = request_line.contains("/embeddings");
+                let response = if !is_embedding {
+                    // The reachability probe. Refusing it is honest: this stub
+                    // is not a model server.
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_string()
+                } else {
+                    sink.lock().expect("the record").push(body.clone());
+                    embed_calls += 1;
+                    if embed_calls > succeed_calls {
+                        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n"
+                            .to_string()
+                    } else {
+                        let parsed: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+                        let count = parsed["input"].as_array().map(Vec::len).unwrap_or(0);
+                        let data = (0..count)
+                            .map(|index| {
+                                serde_json::json!({
+                                    "index": index,
+                                    "embedding": [1.0, 0.5, 0.25, 0.125],
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        let payload = serde_json::json!({ "data": data }).to_string();
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
+                            payload.len()
+                        )
+                    }
+                };
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (format!("http://127.0.0.1:{port}/v1"), recorded)
+    }
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+    use crate::config::RelevanceConfig;
+    use axon_inference::{Api, Backend};
+
+    fn role(base_url: &str) -> ResolvedRole {
+        ResolvedRole {
+            backend_name: "stub".into(),
+            backend: Backend {
+                api: Api::OpenAi,
+                base_url: base_url.into(),
+                api_key_file: None,
+            },
+            model: "stub-embed".into(),
+            provider_name: None,
+            cloud_data_tier: None,
+            billing_mode: None,
+            failover_priority: None,
+            max_requests_per_day: None,
+            max_input_tokens: None,
+            credit_expires_on: None,
+            query_prefix: String::new(),
+            document_prefix: String::new(),
+            chat_template_kwargs: None,
+            request_overrides: None,
+        }
+    }
+
+    fn profile() -> InterestProfile {
+        InterestProfile {
+            key: "lens".into(),
+            label: "Systems".into(),
+            focus: "software architecture".into(),
+            text: "software architecture".into(),
+            fingerprint: "revision".into(),
+        }
+    }
+
+    fn item(index: usize, class: &str) -> FeedItem {
+        let mut item = FeedItem::new(&format!("https://example.com/{index}"), "news", "article");
+        item.title = Some(format!("Item {index} about architecture"));
+        item.summary = Some("A bounded summary".into());
+        item.data_class = class.into();
+        item
+    }
+
+    #[test]
+    fn zero_declared_paths_is_not_an_error() {
+        // Every worktree, every CI run and every fresh install is this state.
+        assert_eq!(
+            load_profiles(&RelevanceConfig::default()).map(|profiles| profiles.len()),
+            Ok(0),
+            "a machine that declares no TELOS lens must not 500 its feed"
+        );
+
+        let declared = RelevanceConfig {
+            profile_paths: vec!["/nonexistent/telos/lenses".into()],
+        };
+        assert!(
+            load_profiles(&declared).is_err(),
+            "a declared path that has moved is a fault, not zero lenses"
+        );
+
+        let empty = std::env::temp_dir().join(format!("comms-lenses-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).expect("a writable temp directory");
+        let declared_empty = RelevanceConfig {
+            profile_paths: vec![empty.to_string_lossy().to_string()],
+        };
+        assert!(
+            load_profiles(&declared_empty).is_err(),
+            "a declared directory holding no lens yields no scores and must say so"
+        );
+    }
+
+    #[test]
+    fn one_failed_chunk_does_not_downgrade_the_pass() {
+        // Two calls answer: the profile set and the first chunk of 32. The
+        // second chunk fails. Before the repair one failure took the pass.
+        let (base_url, _recorded) = stub_embedding::start(2);
+        let role = role(&base_url);
+        let items = (0..40).map(|index| item(index, "c0")).collect::<Vec<_>>();
+        let outcome = score_items(&items, &[profile()], Some(&role), None);
+
+        assert_eq!(outcome.mode, "semantic");
+        assert_eq!(outcome.chunks, 3, "one profile call plus two item chunks");
+        assert_eq!(outcome.chunks_failed, 1);
+        assert!(
+            outcome.error_class.is_some_and(|class| !class.is_empty()),
+            "a degraded pass must carry an error class"
+        );
+        for scored in outcome.items.iter().take(EMBED_CHUNK_SIZE) {
+            assert_eq!(scored.matches[0].mode, "semantic");
+        }
+        for scored in outcome.items.iter().skip(EMBED_CHUNK_SIZE) {
+            assert_eq!(scored.matches[0].mode, "lexical");
+        }
+    }
+
+    #[test]
+    fn a_c3_item_reaches_neither_the_embedder_nor_the_lexical_scorer() {
+        let (base_url, recorded) = stub_embedding::start(10);
+        let role = role(&base_url);
+        let mut refused = item(1, "c3");
+        refused.title = Some("Refused private correspondence".into());
+        refused.summary = Some("Refused private body".into());
+        let allowed = item(2, "c0");
+        let allowed_title = allowed.title.clone().expect("a title");
+        let outcome = score_items(&[refused, allowed], &[profile()], Some(&role), None);
+
+        assert!(outcome.items[0].refused_class);
+        assert!(
+            outcome.items[0].matches.is_empty(),
+            "a refused item gets no score from either path"
+        );
+        assert!(!outcome.items[1].refused_class);
+        assert!(!outcome.items[1].matches.is_empty());
+
+        let sent = recorded.lock().expect("the record").join("\n");
+        assert!(
+            !sent.contains("Refused private"),
+            "a refused item must not reach the embedder at all"
+        );
+        assert!(
+            sent.contains(&allowed_title),
+            "the allowed item is what the embedder saw"
         );
     }
 }

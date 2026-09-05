@@ -4,9 +4,18 @@
   import DiscoverView from "$lib/feed/DiscoverView.svelte";
   import EvaluationBreakdown from "$lib/feed/EvaluationBreakdown.svelte";
   import FeedNav from "$lib/feed/FeedNav.svelte";
+  import KeyboardLegend from "$lib/feed/KeyboardLegend.svelte";
   import ModelStatus from "$lib/feed/ModelStatus.svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
+  import { feedPersonalization, type FeedStatusExtras } from "$lib/feed/api";
+  import {
+    clampAfterDecision,
+    isTypingTarget,
+    next as nextRow,
+    prev as prevRow,
+    type CursorRow,
+  } from "$lib/feed/list-cursor";
   import {
     axonStatus,
     comms,
@@ -77,7 +86,6 @@
 
   let entries = $state<FeedEntry[]>([]);
   let runs = $state<FeedRun[]>([]);
-  let expandedRuns = $state<Set<string>>(new Set());
   let triage = $state<TriageItem[]>([]);
   let mailCategory = $state<"all" | MailCategory>("all");
   let mailStatus = $state<MailStatusFilter>("pending");
@@ -107,7 +115,16 @@
   let ready = $state(false);
   let relevanceBusy = $state(false);
   let relevanceNotice = $state<string | null>(null);
-  let modelStatus = $state<CommsEvaluationStatus | null>(null);
+  let modelStatus = $state<(CommsEvaluationStatus & Partial<FeedStatusExtras>) | null>(null);
+  // Keyboard triage state. The cursor is an index into `flatRows`; the page owns
+  // it, and `$lib/feed/list-cursor` owns the arithmetic.
+  let cursorIndex = $state(-1);
+  let legendOpen = $state(true);
+  // A decided row is greyed in place and leaves on the next load. Removing it
+  // under the cursor is survivable for a click and wrong for a key: the cursor
+  // jumps and the next keystroke lands on an item the operator never saw.
+  let decided = $state<Map<string, FeedStatus>>(new Map());
+  let expandedEvaluations = $state<Set<string>>(new Set());
   let vaultOpen = $state(false);
   let vaultBusy = $state(false);
   let vaultLinks = $state<VaultLinkCandidate[]>([]);
@@ -200,45 +217,155 @@
   // decides only how they are shown.
   const runOf = $derived(new Map(runs.map((r) => [r.feed_id, r])));
 
-  type Row =
-    | { kind: "single"; id: string; entry: FeedEntry }
-    | { kind: "run"; id: string; label: string; entries: FeedEntry[] };
+  type FlatRow =
+    | { kind: "header"; id: string; label: string; count: number; tone: "day" | "run" }
+    | { kind: "item"; id: string; entry: FeedEntry };
 
-  // A run of one is just an item: collapsing it would hide a row behind a click
-  // and tell the reader nothing they could not already see.
-  function rowsFor(items: FeedEntry[]): Row[] {
-    const groups = new Map<string, FeedEntry[]>();
-    for (const e of items) {
-      const key = runOf.get(e.id)?.run_key;
-      if (!key) continue;
-      const list = groups.get(key);
-      if (list) list.push(e);
-      else groups.set(key, [e]);
-    }
-
-    const rows: Row[] = [];
-    const grouped = new Set<string>();
-    for (const [key, group] of groups) {
-      if (group.length < 2) continue;
-      for (const e of group) grouped.add(e.id);
-      const run = runOf.get(group[0].id);
+  /**
+   * One flat list of rows across every day group, so the cursor and the DOM
+   * cannot disagree about what is on screen.
+   *
+   * A collector run is now a LABEL, not a container. Collapsing a run of two or
+   * more into one clickable line turned 185 arXiv papers and 147 GitHub
+   * repositories into a handful of rows, so the daily triage surface showed
+   * almost nothing to triage. The run still reads as one arrival — it keeps its
+   * header and its count — but every item it brought is a row the operator can
+   * reach with one keystroke.
+   */
+  const flatRows = $derived.by<FlatRow[]>(() => {
+    const rows: FlatRow[] = [];
+    for (const [day, items] of grouped) {
       rows.push({
-        kind: "run",
-        id: key,
-        label: run?.label ?? run?.source_id ?? "Collection run",
-        entries: group,
+        kind: "header",
+        id: `day:${day}`,
+        label: dayLabel(day),
+        count: items.length,
+        tone: "day",
       });
-    }
-    for (const e of items) {
-      if (!grouped.has(e.id)) rows.push({ kind: "single", id: e.id, entry: e });
+      // Ranked order is one sequence by definition: regrouping it by arrival
+      // would put the run's order back on top of the ranking.
+      if (order === "relevance") {
+        for (const entry of items) rows.push({ kind: "item", id: entry.id, entry });
+        continue;
+      }
+      const runs = new Map<string, FeedEntry[]>();
+      const loose: FeedEntry[] = [];
+      for (const entry of items) {
+        const key = runOf.get(entry.id)?.run_key;
+        if (!key) {
+          loose.push(entry);
+          continue;
+        }
+        const list = runs.get(key);
+        if (list) list.push(entry);
+        else runs.set(key, [entry]);
+      }
+      for (const [key, group] of runs) {
+        // A run of one is just an item; a header over it would say nothing.
+        if (group.length < 2) {
+          loose.push(...group);
+          continue;
+        }
+        const run = runOf.get(group[0].id);
+        rows.push({
+          kind: "header",
+          id: `run:${key}`,
+          label: run?.label ?? run?.source_id ?? "Collection run",
+          count: group.length,
+          tone: "run",
+        });
+        for (const entry of group) rows.push({ kind: "item", id: entry.id, entry });
+      }
+      for (const entry of loose) rows.push({ kind: "item", id: entry.id, entry });
     }
     return rows;
+  });
+
+  const cursorRows = $derived<CursorRow[]>(
+    flatRows.map((row) => ({ kind: row.kind, id: row.id })),
+  );
+  const cursorId = $derived(
+    cursorIndex >= 0 && flatRows[cursorIndex]?.kind === "item" ? flatRows[cursorIndex].id : null,
+  );
+
+  // The list changed under the cursor -- a reload, a filter, a decided row
+  // leaving. Without this the cursor lands on a header or past the end and the
+  // next keystroke does nothing.
+  $effect(() => {
+    const clamped = clampAfterDecision(cursorRows, cursorIndex < 0 ? 0 : cursorIndex);
+    if (cursorIndex >= 0 && clamped !== cursorIndex) cursorIndex = clamped;
+  });
+
+  function rowDomId(id: string): string {
+    return `feed-row-${id}`;
   }
 
-  function toggleRun(key: string): void {
-    const next = new Set(expandedRuns);
-    if (!next.delete(key)) next.add(key);
-    expandedRuns = next;
+  function moveCursor(to: number): void {
+    if (to < 0) return;
+    cursorIndex = to;
+    const row = flatRows[to];
+    if (!row) return;
+    // After the frame that paints the selection, so the element exists.
+    queueMicrotask(() => {
+      document.getElementById(rowDomId(row.id))?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  function toggleEvaluation(id: string): void {
+    const open = new Set(expandedEvaluations);
+    if (!open.delete(id)) open.add(id);
+    expandedEvaluations = open;
+  }
+
+  /**
+   * Keyboard triage.
+   *
+   * `j`/`k` move, because Home already owns that pair as movement and two pages
+   * disagreeing about `k` is worse than one letter moving. `s` keeps, `d`
+   * dismisses, `o` opens, `e` explains, `u` undoes. The typing guard is
+   * `isTypingTarget`, lifted from Home so the paste box and the mail search
+   * still take letters.
+   */
+  function onKeydown(event: KeyboardEvent): void {
+    if (view !== "inbox" || isTypingTarget(event)) return;
+    if (event.key === "?") {
+      legendOpen = !legendOpen;
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "j") {
+      moveCursor(nextRow(cursorRows, cursorIndex));
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "k") {
+      moveCursor(prevRow(cursorRows, cursorIndex));
+      event.preventDefault();
+      return;
+    }
+    const id = cursorId;
+    if (!id) return;
+    if (event.key === "s") {
+      void setStatus(id, decided.get(id) === "keeper" ? "new" : "keeper", "inbox");
+      event.preventDefault();
+    } else if (event.key === "d") {
+      void setStatus(id, "dismissed", "inbox");
+      event.preventDefault();
+    } else if (event.key === "u") {
+      void setStatus(id, "new", "inbox");
+      event.preventDefault();
+    } else if (event.key === "e") {
+      toggleEvaluation(id);
+      event.preventDefault();
+    } else if (event.key === "o") {
+      // Click the row's own link rather than calling goto: `link()` stays the
+      // single place a Feed href is built, and the router handles the rest.
+      const anchor = document
+        .getElementById(rowDomId(id))
+        ?.querySelector<HTMLAnchorElement>("a.title");
+      anchor?.click();
+      event.preventDefault();
+    }
   }
 
   async function load(): Promise<void> {
@@ -276,7 +403,10 @@
   }
 
   async function loadModelStatus(): Promise<void> {
-    modelStatus = await comms.evaluationStatus().catch(() => null);
+    // Through `$lib/feed/api`, which declares the two blocks this stream added
+    // to the endpoint. `$lib/api.ts` is not edited: it is 3472 lines and the
+    // file several streams append to at once.
+    modelStatus = await feedPersonalization.evaluationStatus().catch(() => null);
   }
 
   $effect(() => {
@@ -451,14 +581,28 @@
     }
   }
 
-  async function setStatus(id: string, status: FeedStatus): Promise<void> {
+  /**
+   * Keep, dismiss or retract, and leave the row where it is.
+   *
+   * The row is greyed in place and reads "kept · u to undo"; it leaves on the
+   * next `load()`. The write is the ledger's only writer of a decisive verb, so
+   * `surface` travels with it and the store records one row per decision.
+   */
+  async function setStatus(id: string, status: FeedStatus, surface: "inbox" | "reader"): Promise<void> {
     busy = id;
     try {
-      await comms.setStatus(id, status);
-      entries = entries.filter((entry) => entry.id !== id);
+      await feedPersonalization.setStatus(id, status, surface);
+      const marked = new Map(decided);
+      if (status === "new") marked.delete(id);
+      else marked.set(id, status);
+      decided = marked;
     } finally {
       busy = null;
     }
+  }
+
+  function decidedLabel(status: FeedStatus): string {
+    return status === "keeper" ? "kept · u to undo" : "dismissed · u to undo";
   }
 
   function dayLabel(day: string): string {
@@ -652,6 +796,10 @@
     }
   }
 </script>
+
+<!-- Window-level, like Home's own handler: the queue is never focused, so a
+     keydown on the page is what a shortcut has to be. -->
+<svelte:window onkeydown={onKeydown} />
 
 <PageHeader
   badge="Feed"
@@ -1083,68 +1231,73 @@
 {:else if grouped.length === 0}
   <p class="notice muted">Nothing in this period.</p>
 {:else}
-  {#each grouped as [day, items] (day)}
-    <section class="day">
-      <h2>{dayLabel(day)} <span class="count mono">{items.length}</span></h2>
-      <ul>
-        {#each rowsFor(items) as row (row.id)}
-          {#if row.kind === "run"}
-            <li class="card run" class:open={expandedRuns.has(row.id)}>
-              <button
-                class="run-head"
-                onclick={() => toggleRun(row.id)}
-                aria-expanded={expandedRuns.has(row.id)}
-              >
-                <span class="chevron"><Icon name="arrow-right" size={13} /></span>
-                <span class="text">{row.label}</span>
-                <span class="count mono">{row.entries.length}</span>
-              </button>
-              {#if expandedRuns.has(row.id)}
-                <ul class="run-items">
-                  {#each row.entries as e (e.id)}
-                    {@render entryCard(e)}
-                  {/each}
-                </ul>
-              {/if}
-            </li>
-          {:else}
-            {@render entryCard(row.entry)}
-          {/if}
-        {/each}
-      </ul>
-    </section>
-  {/each}
+  <KeyboardLegend open={legendOpen} ontoggle={() => (legendOpen = !legendOpen)} />
+  <ul class="rows" role="list">
+    {#each flatRows as row (row.id)}
+      {#if row.kind === "header"}
+        <li class="group-head" class:run={row.tone === "run"}>
+          <span class="text">{row.label}</span>
+          <span class="count mono">{row.count}</span>
+        </li>
+      {:else}
+        {@render entryCard(row.entry, row.id === cursorId)}
+      {/if}
+    {/each}
+  </ul>
 {/if}
 
-{#snippet entryCard(e: FeedEntry)}
-          <li class="card entry">
+<!-- The row markup is inline on purpose. The dashboard-refresh stream owns
+     `$lib/feed/FeedItemRow.svelte` and that file has not merged; adding a second
+     shared row component for the same list is the merge outcome nobody wants, so
+     this stays here until the primitive exists and then moves onto it whole. -->
+{#snippet entryCard(e: FeedEntry, selected: boolean)}
+          <li
+            class="card entry"
+            id={rowDomId(e.id)}
+            class:selected
+            class:decided={decided.has(e.id)}
+            aria-current={selected ? "true" : undefined}
+          >
             <div class="row">
               <a class="title" href={link(`/feed/${e.id}`)}>
                 <span class="kind tag mono">{KIND_LABEL[e.kind] ?? e.kind}</span>
                 <span class="text">{e.title ?? e.url}</span>
               </a>
               <div class="acts">
-                <a class="btn" href={e.url} target="_blank" rel="noreferrer" aria-label="Original">
-                  <Icon name="external" size={13} />
-                </a>
-                {#if busy === e.id}
-                  <span class="btn"><Icon name="loader" size={13} /></span>
+                {#if decided.has(e.id)}
+                  <span class="verdict mono">{decidedLabel(decided.get(e.id)!)}</span>
+                  <button class="btn" onclick={() => setStatus(e.id, "new", "inbox")}>Undo</button>
                 {:else}
-                  <button
+                  <a
                     class="btn"
-                    class:kept={e.status === "keeper"}
-                    onclick={() => setStatus(e.id, e.status === "keeper" ? "new" : "keeper")}
-                    aria-label="Keep"
+                    href={e.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Original"
+                    onclick={() => feedPersonalization.recordInteraction(e.id, "opened", "inbox")}
                   >
-                    <Icon name="check" size={13} />
-                  </button>
-                  <button
-                    class="btn"
-                    onclick={() => setStatus(e.id, "dismissed")}
-                    aria-label="Dismiss"
-                  >
-                    <Icon name="close" size={13} />
-                  </button>
+                    <Icon name="external" size={13} />
+                  </a>
+                  {#if busy === e.id}
+                    <span class="btn"><Icon name="loader" size={13} /></span>
+                  {:else}
+                    <button
+                      class="btn"
+                      class:kept={e.status === "keeper"}
+                      onclick={() =>
+                        setStatus(e.id, e.status === "keeper" ? "new" : "keeper", "inbox")}
+                      aria-label="Keep"
+                    >
+                      <Icon name="check" size={13} />
+                    </button>
+                    <button
+                      class="btn"
+                      onclick={() => setStatus(e.id, "dismissed", "inbox")}
+                      aria-label="Dismiss"
+                    >
+                      <Icon name="close" size={13} />
+                    </button>
+                  {/if}
                 {/if}
               </div>
             </div>
@@ -1152,7 +1305,10 @@
             {#if e.author}<p class="meta mono">{e.author}</p>{/if}
             {#if e.evaluation}
               <div class="evaluation-compact">
-                <EvaluationBreakdown evaluation={e.evaluation} compact />
+                <EvaluationBreakdown
+                  evaluation={e.evaluation}
+                  compact={!expandedEvaluations.has(e.id)}
+                />
               </div>
             {:else if e.relevance}
               <p class="relevance">
@@ -1316,10 +1472,6 @@
     background-color: var(--card-bg);
     color: var(--primary);
     box-shadow: var(--card-shadow);
-  }
-
-  .day {
-    margin-bottom: 1.75rem;
   }
 
   h2 {
@@ -1781,50 +1933,55 @@
     border: 0;
   }
 
-  /* A collector run, collapsed to one row until asked to open. */
-  .run {
-    padding: 0;
-    overflow: hidden;
-  }
-
-  .run-head {
+  /* A day or a collector run: a label over the rows it brought, and nothing to
+     click. The disclosure it replaces hid twelve papers behind one line. */
+  .group-head {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 0.5rem;
-    width: 100%;
-    padding: 0.625rem 0.75rem;
-    background: none;
-    border: 0;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
+    margin: 0.75rem 0 0.1rem;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
 
-  .run-head:hover {
-    background: var(--surface-hover, rgba(127, 127, 127, 0.08));
+  .group-head:first-child {
+    margin-top: 0;
   }
 
-  .run-head .text {
-    flex: 1;
+  .group-head.run {
+    padding-left: 0.25rem;
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+    font-weight: 500;
+  }
+
+  .group-head .text {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .chevron {
-    display: flex;
+  .rows {
+    gap: 0.35rem;
+  }
+
+  .entry.selected {
+    border-color: var(--primary);
+    box-shadow: inset 2px 0 0 var(--primary);
+  }
+
+  /* Greyed in place, not removed: the cursor stays where the operator left it
+     and the decision is one `u` away from being retracted. */
+  .entry.decided {
+    opacity: 0.55;
+  }
+
+  .verdict {
+    align-self: center;
+    font-size: 0.625rem;
     color: var(--text-tertiary);
-    transition: transform 120ms ease;
-  }
-
-  .run.open .chevron {
-    transform: rotate(90deg);
-  }
-
-  .run-items {
-    padding: 0 0.5rem 0.5rem;
   }
 
   .row {

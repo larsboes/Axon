@@ -358,10 +358,22 @@ impl Store {
         Ok(affected > 0)
     }
 
+    /// Move an item between `new`, `keeper` and `dismissed`, and record that the
+    /// operator did so.
+    ///
+    /// The UPDATE and exactly one row in `{prefix}_feed_interactions` commit
+    /// together. This route is the only writer of the three decisive verbs —
+    /// `POST /feed/:id/interactions` refuses them — because two paths writing
+    /// one decision double every count the learned factor is gated on, and the
+    /// transactional write is the one that cannot be lost.
+    ///
+    /// `surface` says where the press happened (`inbox`, `reader`, `library`,
+    /// `home`, `cli`, `api`). It is a verb and a place, never content.
     pub fn set_feed_status(
         &self,
         id: &str,
         status: &str,
+        surface: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         if !Self::FEED_STATUSES.contains(&status) {
             return Err(format!(
@@ -370,15 +382,30 @@ impl Store {
             )
             .into());
         }
-        let conn = self.conn()?;
-        let affected = conn.execute(
+        if let Some(refusal) = super::feedback::reject_surface(surface) {
+            return Err(refusal.into());
+        }
+        let event = match status {
+            "keeper" => "kept",
+            "dismissed" => "dismissed",
+            // Back to `new` is a retraction, and the trainer reads it as one.
+            _ => "unkept",
+        };
+        let mut conn = self.conn()?;
+        let transaction = conn.transaction()?;
+        let affected = transaction.execute(
             &format!(
                 "UPDATE {}_feed_items SET status = ?1 WHERE id = ?2",
                 self.prefix
             ),
             params![&status, &id],
         )?;
-        Ok(affected > 0)
+        if affected == 0 {
+            return Ok(false);
+        }
+        super::feedback::insert_interaction(&transaction, &self.prefix, id, event, surface)?;
+        transaction.commit()?;
+        Ok(true)
     }
 
     pub fn get_feed_status(&self, id: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
@@ -792,6 +819,7 @@ impl Store {
         &self,
         days: i32,
         limit: usize,
+        offset: usize,
     ) -> Result<Vec<FeedItem>, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         Ok(conn.query_all(
@@ -802,12 +830,100 @@ impl Store {
                  FROM {}_feed_items
                  WHERE day >= date('now', '-' || ?1 || ' days')
                  ORDER BY created_at DESC
-                 LIMIT ?2",
+                 LIMIT ?2 OFFSET ?3",
                 self.prefix
             ),
-            params![days, limit as i64],
+            params![days, limit as i64, offset as i64],
             row_to_feed_full,
         )?)
+    }
+
+    /// The items a caller named, whatever page they would have fallen on.
+    ///
+    /// The refresh route used to select the newest 200 rows and THEN retain the
+    /// requested ids, so an explicitly named item outside that window was
+    /// silently dropped and could never be re-scored. Selecting by id is the
+    /// fix; the caller applies no limit to it, because it already named the set.
+    pub fn feed_items_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<FeedItem>, Box<dyn std::error::Error>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let placeholders = (1..=ids.len())
+            .map(|position| format!("?{position}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let bound = ids
+            .iter()
+            .map(|id| id as &dyn ToSql)
+            .collect::<Vec<&dyn ToSql>>();
+        Ok(conn.query_all(
+            &format!(
+                "SELECT id, stream, kind, title, url, author, summary, transcript, day, created_at, status,
+                        content_status, summary_attempts, summary_last_error, summary_next_attempt, captured_via, transcript_source,
+                        data_class, data_class_rationale, data_classification_method, data_classification_version
+                 FROM {}_feed_items
+                 WHERE id IN ({placeholders})
+                 ORDER BY created_at DESC",
+                self.prefix
+            ),
+            bound.as_slice(),
+            row_to_feed_full,
+        )?)
+    }
+
+    /// Stored matches for many items in one query.
+    ///
+    /// The split currency check re-evaluates from stored matches instead of
+    /// re-embedding, and doing that per item would be one `feed_relevance` call
+    /// per row — 372 round trips to answer a question one grouped read answers.
+    pub fn feed_relevance_map(
+        &self,
+        ids: &[String],
+    ) -> Result<BTreeMap<String, Vec<RelevanceMatch>>, Box<dyn std::error::Error>> {
+        let mut map: BTreeMap<String, Vec<RelevanceMatch>> = BTreeMap::new();
+        if ids.is_empty() {
+            return Ok(map);
+        }
+        let conn = self.conn()?;
+        let placeholders = (1..=ids.len())
+            .map(|position| format!("?{position}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let bound = ids
+            .iter()
+            .map(|id| id as &dyn ToSql)
+            .collect::<Vec<&dyn ToSql>>();
+        let rows = conn.query_all(
+            &format!(
+                "SELECT feed_id, profile_key, profile_label, score, rationale, mode, profile_revision
+                 FROM {}_feed_relevance
+                 WHERE feed_id IN ({placeholders})
+                 ORDER BY feed_id, score DESC",
+                self.prefix
+            ),
+            bound.as_slice(),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    RelevanceMatch {
+                        profile_key: row.get(1)?,
+                        profile_label: row.get(2)?,
+                        score: row.get(3)?,
+                        rationale: row.get(4)?,
+                        mode: row.get(5)?,
+                        profile_revision: row.get(6)?,
+                    },
+                ))
+            },
+        )?;
+        for (feed_id, matched) in rows {
+            map.entry(feed_id).or_default().push(matched);
+        }
+        Ok(map)
     }
 
     /// Replace every profile result for one item in one transaction. Removed

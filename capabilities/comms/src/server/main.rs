@@ -240,6 +240,15 @@ const ROUTES: &[route_manifest::Route] = &[
         "/vault-links/import",
         "Link scanned vault notes to their entries.",
     ),
+    // feed-personalization 2026-09-03. Appended rather than filed beside the
+    // other /feed rows: a second stream appends to this table tonight, and one
+    // region is one conflict.
+    r(
+        "POST",
+        "/feed/:id/interactions",
+        "Record that a feed entry was opened or reopened. Body: {event: opened|reopened, surface}. \
+         The decisive verbs (kept, dismissed, unkept) are written by /feed/:id/status and refused here.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -339,7 +348,12 @@ fn build_router(dashboard_origin: &str) -> Router {
         .route("/ingest", post(ingest_handler))
         .route("/vault-links/scan", post(vault_scan_handler))
         .route("/vault-links/import", post(vault_import_handler))
-        .route("/sources/scan", post(source_scan_handler));
+        .route("/sources/scan", post(source_scan_handler))
+        // feed-personalization 2026-09-03, on the EXISTING write set rather
+        // than a third router: the projection layer below sits on this block
+        // and nowhere else, so a route added here is covered by the same
+        // sentence that covers every other mutation.
+        .route("/feed/:id/interactions", post(feed_interactions_handler));
 
     Router::new()
         .merge(read_routes)
@@ -357,6 +371,14 @@ fn build_router(dashboard_origin: &str) -> Router {
 /// the one state the mechanism exists to prevent; two mutations landing together
 /// must not interleave inside one file.
 static EXPORT_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+/// "The library has changed since the last export finished."
+///
+/// One flag rather than a queue: the export is a full re-projection of
+/// `feed_library()`, so two pending exports and one pending export produce
+/// byte-identical folders. See `project_library_after_write` for the ordering
+/// that makes coalescing safe.
+static EXPORT_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Re-project the feed library into the vault after any successful write.
 ///
@@ -388,26 +410,40 @@ async fn project_library_after_write(
     let Some(root) = Config::load().obsidian_root else {
         return response;
     };
+    // Mark the library dirty BEFORE queuing, so a writer can never be the one
+    // whose change is missed: whoever holds the lock next sees the flag.
+    EXPORT_DIRTY.store(true, Ordering::SeqCst);
     tokio::spawn(async move {
         let _held = EXPORT_LOCK.get_or_init(Default::default).lock().await;
-        let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
-            let root = markdown_root::MarkdownRoot::declare(root).map_err(|e| e.to_string())?;
-            let cfg = Config::load();
-            let store = Store::open(&cfg.database_path).map_err(|e| e.to_string())?;
-            let saved = store.feed_library().map_err(|e| e.to_string())?;
-            comms::projection::export_all(&root, &saved).map_err(|e| e.to_string())
-        })
-        .await;
-        match outcome {
-            Ok(Ok(report)) => {
-                for path in &report.refused {
-                    eprintln!("comms: vault projection refused, somebody else owns {path}");
+        // Coalescing, not throttling. Keyboard triage turns one glance into a
+        // burst of presses, and `feed_library()` reads the same whole set every
+        // time — so N presses cost one export, and the LAST press is always
+        // exported. The flag is cleared before the read and re-checked after
+        // it: a write that lands mid-export sets it again and buys one more
+        // pass, which is why this drops a redundant export and never the last
+        // one. A task that finds the flag already clear exits having done
+        // nothing, because someone else has just exported the state it wanted.
+        while EXPORT_DIRTY.swap(false, Ordering::SeqCst) {
+            let root = root.clone();
+            let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
+                let root = markdown_root::MarkdownRoot::declare(root).map_err(|e| e.to_string())?;
+                let cfg = Config::load();
+                let store = Store::open(&cfg.database_path).map_err(|e| e.to_string())?;
+                let saved = store.feed_library().map_err(|e| e.to_string())?;
+                comms::projection::export_all(&root, &saved).map_err(|e| e.to_string())
+            })
+            .await;
+            match outcome {
+                Ok(Ok(report)) => {
+                    for path in &report.refused {
+                        eprintln!("comms: vault projection refused, somebody else owns {path}");
+                    }
                 }
+                Ok(Err(error)) => eprintln!(
+                    "comms: vault projection failed ({error}); the rows are safe, the folder is stale — run `comms export-sources`"
+                ),
+                Err(error) => eprintln!("comms: vault projection task failed ({error})"),
             }
-            Ok(Err(error)) => eprintln!(
-                "comms: vault projection failed ({error}); the rows are safe, the folder is stale — run `comms export-sources`"
-            ),
-            Err(error) => eprintln!("comms: vault projection task failed ({error})"),
         }
     });
     response

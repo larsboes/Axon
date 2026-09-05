@@ -1,10 +1,26 @@
 <script lang="ts">
   import type { CommsEvaluationStatus } from "$lib/api";
+  import type { FeedStatusExtras } from "$lib/feed/api";
 
-  let { status }: { status: CommsEvaluationStatus } = $props();
+  // Widened, not replaced. Every added member is optional, so a caller holding a
+  // plain `CommsEvaluationStatus` still satisfies this and keeps compiling; the
+  // new cells sit behind `{#if}` and render nothing for it.
+  let { status }: { status: CommsEvaluationStatus & Partial<FeedStatusExtras> } = $props();
 
   function shortModel(model: string): string {
     return model.split("/").at(-1) ?? model;
+  }
+
+  /** Epoch seconds, as the source-state table stores them, in local time. */
+  function passTime(at: string): string {
+    const seconds = Number(at);
+    if (!Number.isFinite(seconds) || seconds <= 0) return "unknown";
+    return new Date(seconds * 1000).toLocaleString("en-GB", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   }
 </script>
 
@@ -41,6 +57,28 @@
       <dd>{status.evaluator_revision}</dd>
       <small>{status.ledger.reranked} reranked · {status.ledger.semantic} semantic · {status.ledger.lexical} lexical</small>
     </div>
+    {#if status.last_pass}
+      <div>
+        <dt>
+          <span class:online={!status.last_pass.error_class} class="dot"></span>
+          Last pass
+        </dt>
+        <dd>
+          {status.last_pass.error_class
+            ? "lexical fallback"
+            : (status.last_pass.mode ?? "not run yet")}
+        </dd>
+        <!-- The line that would have made the 2026-08-30 degradation visible
+             the day it happened: 525 rows were written lexical in one pass and
+             nothing on the machine said which mode had answered. -->
+        <small>
+          {passTime(status.last_pass.at)} · {status.last_pass.considered} considered ·
+          {status.last_pass.written} written{status.last_pass.error_class
+            ? ` · ${status.last_pass.error_class}`
+            : ""}
+        </small>
+      </div>
+    {/if}
     {#if status.travel_context}
       <div>
         <dt>

@@ -333,6 +333,50 @@ impl Store {
                 ON {prefix}_content_cloud_derivatives(approved_at DESC);
             CREATE INDEX IF NOT EXISTS idx_{prefix}_content_cloud_jobs_queued
                 ON {prefix}_content_cloud_jobs(queued_at ASC) WHERE status = 'queued';
+
+            -- feed-personalization 2026-09-03 ---------------------------------
+            -- Appended as one block at the end of the batch rather than beside
+            -- the tables it belongs with: a second stream edits this same file
+            -- tonight, and one delimited region is one merge conflict instead
+            -- of three. Order still holds -- every table referenced here is
+            -- declared above.
+
+            -- What the operator did with a feed item, and when. The status
+            -- column it complements is a mutable enum with no history, which
+            -- is why the vault projection cannot render a saved date
+            -- (projection.rs) and why nothing learned could ever decay.
+            --
+            -- One writer per verb. `kept`, `dismissed` and `unkept` are
+            -- written only by `set_feed_status`, in the same transaction as
+            -- the UPDATE, so a decision can neither be lost nor counted twice.
+            -- `POST /feed/:id/interactions` refuses those three with 400 and
+            -- accepts `opened` and `reopened` only.
+            --
+            -- Reading the label: an item's label is its most recent row whose
+            -- event is in ('kept','dismissed'), retracted by a later `unkept`.
+            --
+            -- `shared` ships with no writer on purpose. SQLite has no
+            -- alterable constraint, so widening this CHECK later costs the
+            -- table-rebuild dance this file documents below; declaring a value
+            -- now is free.
+            CREATE TABLE IF NOT EXISTS {prefix}_feed_interactions (
+                interaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                feed_id TEXT NOT NULL REFERENCES {prefix}_feed_items(id) ON DELETE CASCADE,
+                event TEXT NOT NULL
+                    CHECK (event IN ('opened','kept','dismissed','reopened','unkept','shared')),
+                -- Where the press happened. No content and no text: ids and
+                -- verbs only, which is what keeps this row c1 and keeps it
+                -- trainable.
+                surface TEXT NOT NULL DEFAULT 'api'
+                    CHECK (surface IN ('inbox','reader','library','home','cli','api')),
+                occurred_at TEXT NOT NULL DEFAULT ({now})
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_feed_interactions_item
+                ON {prefix}_feed_interactions(feed_id, occurred_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_feed_interactions_time
+                ON {prefix}_feed_interactions(occurred_at DESC);
+            -- end feed-personalization 2026-09-03 -----------------------------
             ",
             prefix = prefix,
             now = axon_store::NOW,

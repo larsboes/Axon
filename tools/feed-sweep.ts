@@ -158,3 +158,45 @@ console.log(
   `feed-sweep: ${results.length} source(s), ${payload.new_count ?? 0} new item(s)` +
     (broken ? `, ${broken} source(s) unreachable` : ""),
 );
+
+// One bounded relevance page after the scan, so newly collected items are ranked by the time
+// anyone opens the Inbox — and so a lexical row written while the embedding role was down gets
+// a chance to become semantic on an ordinary schedule rather than only on a manual backfill.
+//
+// Bounded on purpose: one page of 100, not the whole corpus. This job's contract is the scan;
+// re-scoring everything belongs to `comms relevance backfill`, which pages explicitly.
+//
+// A failure here is reported and does NOT fail the run. The scan already succeeded and its
+// result is what the schedule exists to produce; refusing to record that because a ranking pass
+// fell over would be the tail wagging the dog.
+try {
+  const relevance = await fetch(`http://127.0.0.1:${port}/feed/relevance/refresh`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${bearerToken()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ days: 3650, limit: 100 }),
+    signal: AbortSignal.timeout(600_000),
+  });
+  const relevanceBody = await relevance.text();
+  if (!relevance.ok) {
+    console.error(`feed-sweep: relevance page answered ${relevance.status}: ${relevanceBody.slice(0, 400)}`);
+  } else {
+    const page = JSON.parse(relevanceBody) as {
+      considered?: number;
+      rescored?: number;
+      reused_relevance?: number;
+      has_more?: boolean;
+      embedding?: { mode?: string; error_class?: string | null };
+    };
+    console.log(
+      `feed-sweep: relevance considered=${page.considered ?? 0} re-scored=${page.rescored ?? 0} ` +
+        `re-evaluated=${page.reused_relevance ?? 0} mode=${page.embedding?.mode ?? "unknown"}` +
+        (page.embedding?.error_class ? ` fallback=${page.embedding.error_class}` : "") +
+        (page.has_more ? " (more pages remain — run `comms relevance backfill`)" : ""),
+    );
+  }
+} catch (error) {
+  console.error(`feed-sweep: relevance page skipped — ${error}`);
+}

@@ -256,11 +256,57 @@ that backend is unavailable, both sides use the same deterministic lexical vecto
 stored match is labelled `lexical`. Scores are raw ranking signals, not calibrated probabilities.
 
 The Feed's displayed rank is a separate deterministic evaluation, not an LLM judgment.
-`feed-evaluator-v2-travel` combines the strongest TELOS match (45%), an explicit upcoming-trip
+`feed-evaluator-v5-english` combines the strongest TELOS match (45%), an explicit upcoming-trip
 match (25%), age since first ingest (20%) and the stored content basis — title, author, summary
 and source text (10%). Travel matching compares item text with destination names and the plan's
 declared interests; the winning factor carries the Trip ID, label, dates and matched terms so
 the UI never has to reverse-engineer a prose explanation.
+
+One rule governs every factor that cannot be computed: **it carries weight 0 and the others
+scale so the sum stays 1.0.** That is how an item the class ladder refuses is still ranked, on
+age and content basis, instead of being dumped to the bottom by a zero it never earned.
+
+**Nothing the class ladder refuses is scored, by either path.** `score_items` asks
+`content_item::local_prompt_allowed` before it builds the embedding batch, and a refused item
+is excluded from the lexical fallback too — one rule instead of two, because a lexical score is
+still a content-derived number rendered in a rationale on a surface. A refused item is stored
+as a refusal: an evaluation at `mode = 'unscored'` with a zero-weight interest factor reading
+"Not scored: c3 is never read by a model", and its stored matches deleted. This is not
+hypothetical for mail: the triage scoring path built a synthetic `FeedItem` and never copied
+the triage row's class, so `FeedItem::new` stamped the undeclared default — literally `c1` —
+and every c3 mail was embedded, sender address included.
+
+**What must be re-embedded and what must merely be re-ranked are two different questions.**
+The *relevance revision* (lens fingerprints plus the embedding and reranking producers) decides
+what has to go back through a model; the *context revision* (those plus the travel snapshot)
+decides only what has to be re-evaluated, from matches already stored. Before the split every
+term in the context revision was an embedding trigger, so a trip starting re-embedded the whole
+window for a factor weighted 0.10. A stored `lexical` row is also stale while an embedding role
+is reachable, which drains rows written during an outage over ordinary passes rather than
+needing a force flag.
+
+**A pass records a receipt, and the receipt is not a delivery.** `POST /feed/relevance/refresh`
+writes a `relevance-pass` row into `comms_source_state` with the mode that actually answered,
+the counters and an error class — and never `last_success_at`, because that column is the whole
+body of `GET /__axon/freshness`, which answers "is data still reaching this capability".
+`local-inference` is excluded from that query for the same reason: a machine whose collectors
+have all stopped must not be held green by a local model answering a drain.
+
+`comms relevance backfill [--days N] [--batch N] [--max N] [--force]` pages that route until
+every item in the window has been seen, printing the mode each page answered in. It is an HTTP
+client against the running server, never a second opener of the database: `Store::open` runs the
+whole migration on every call and two openers deadlock.
+
+**Every decision is now recorded, with its time.** `comms_feed_interactions` is append-only:
+`(feed_id, event, surface, occurred_at)`, where `event` is one of `opened`, `kept`, `dismissed`,
+`reopened`, `unkept` or `shared`. An item's label is its most recent decisive event, retracted
+by a later `unkept`. **One writer per verb**: `set_feed_status` writes `kept`, `dismissed` and
+`unkept` inside the same transaction as the UPDATE, and `POST /feed/:id/interactions` refuses
+those three with a 400 naming the status route, accepting only `opened` and `reopened`. Two
+paths writing one decision would double every count in a table whose whole justification is
+that it can be read by hand. `shared` ships with no writer on purpose: SQLite has no alterable
+constraint, so widening that CHECK later costs a table rebuild, and declaring the value now is
+free. A row carries ids and verbs — no content, no text.
 
 Trips remains the owner. Comms reads `GET /api/plans`, retains a bounded snapshot containing
 only upcoming plan identity, title, destinations, date window, interests and revision, and
@@ -354,9 +400,12 @@ summaries run 484–1,293 characters, and a paragraph that size in a YAML scalar
 note. `data_class`, `stream`, `content_status` and the provenance columns have no vault
 reader and stay in the store.
 
-**Known gap.** The store records no time at which a link was saved — `set_feed_status` writes
-no timestamp — so `created` is the day the item was ingested, which is earlier than the save
-and sometimes by weeks. Fixing it is a column and a migration, not a rendering change.
+**The saved date exists now, and this note still does not render it.** `set_feed_status`
+writes a `kept` row into `comms_feed_interactions` in the same transaction as the status
+change, so the moment a link was saved is kept — it was not before. What the frontmatter
+should carry is a separate decision about the note: `created` is still the day the item was
+ingested, which is earlier than the save and sometimes by weeks. The fact is now available to
+whoever takes that decision; it is no longer a column and a migration.
 
 **No `Resources/Sources/` Base exists yet.** `Media.base` still filters
 `file.inFolder("Atlas/Media")`, so these notes are queryable only by folder until the

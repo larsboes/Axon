@@ -15,6 +15,7 @@
 //! state, and row mapping. Callers therefore keep one stable type without one
 //! file becoming the owner of every persistence concern.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use axon_store::QueryAll;
@@ -461,6 +462,56 @@ pub struct TravelContextSnapshot {
     pub refreshed_at: String,
 }
 
+/// A revisioned blob feeding `context_revision`, addressed by its kind.
+/// `travel` and `feedback-model` are the two kinds today; the shape is the
+/// same, which is why one accessor pair serves both.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextSnapshot {
+    pub revision: String,
+    pub payload: String,
+    pub refreshed_at: String,
+}
+
+/// How often the operator has decided anything, for the cold-start gate to
+/// report against its own thresholds. Verbs only, never content.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InteractionCounts {
+    pub opened: i64,
+    pub kept: i64,
+    pub dismissed: i64,
+    pub reopened: i64,
+    pub unkept: i64,
+    pub shared: i64,
+    pub total: i64,
+}
+
+/// One training row: the item that was decided, what the decision was, and
+/// when — with the ledger's own date where it has one, and the item's capture
+/// date where the decision predates the ledger.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeedbackLabel {
+    pub feed_id: String,
+    /// `true` for kept, `false` for dismissed. A retracted decision is not a
+    /// label at all and never reaches this list.
+    pub kept: bool,
+    /// Epoch seconds of the decisive event, for the time decay and the
+    /// time-ordered holdout split.
+    pub decided_at: i64,
+    /// `true` when the decision has no ledger row and was read from the item's
+    /// `status`, so the trainer can weight it at the decay floor: the decision
+    /// is real, its date is not.
+    pub seeded_from_status: bool,
+}
+
+/// Every label the trainer may see, with the two counts the gate has to report:
+/// how many decisions the class ladder refused, and how many carry no date.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TrainingLabels {
+    pub labels: Vec<FeedbackLabel>,
+    pub skipped_class: usize,
+    pub seeded_from_status: usize,
+}
+
 /// Canonicalize a URL for stable identity: trim, drop the `#fragment`, drop a
 /// single trailing slash, lowercase the scheme+host. Deliberately conservative
 /// -- it does not try to normalize query params or youtu.be↔youtube.com.
@@ -542,6 +593,7 @@ fn cloud_job_id(request: &CloudQueueRequest) -> String {
 mod cloud;
 mod evaluation;
 mod feed;
+mod feedback;
 mod migrations;
 mod origins;
 mod rows;
@@ -1970,7 +2022,7 @@ pub(crate) mod db_tests {
         let store = open_test_store("feed_relevance_replace");
         let item = mk_feed("https://example.com/relevant", "article", "news");
         store.upsert_feed(&item).unwrap();
-        store.set_feed_status(&item.id, "keeper").unwrap();
+        store.set_feed_status(&item.id, "keeper", "api").unwrap();
         let first = vec![
             RelevanceMatch {
                 profile_key: "a".into(),
@@ -2006,7 +2058,7 @@ pub(crate) mod db_tests {
         let store = open_test_store("feed_quality_flags");
         let item = mk_feed("https://example.com/quality", "article", "news");
         store.upsert_feed(&item).unwrap();
-        store.set_feed_status(&item.id, "keeper").unwrap();
+        store.set_feed_status(&item.id, "keeper", "api").unwrap();
 
         store
             .replace_feed_quality_flags(
@@ -2201,7 +2253,9 @@ pub(crate) mod db_tests {
             .unwrap();
         let dismissed = mk_feed("https://youtu.be/b", "youtube", "media");
         store.upsert_feed(&dismissed).unwrap();
-        store.set_feed_status(&dismissed.id, "dismissed").unwrap();
+        store
+            .set_feed_status(&dismissed.id, "dismissed", "api")
+            .unwrap();
 
         let media = store.list_feed(Some("media"), None, 7, false).unwrap();
         assert_eq!(
@@ -2278,7 +2332,7 @@ pub(crate) mod db_tests {
         let store = open_test_store("feed_preserve");
         let item = mk_feed("https://youtu.be/keepme", "youtube", "media");
         store.upsert_feed(&item).unwrap();
-        store.set_feed_status(&item.id, "keeper").unwrap();
+        store.set_feed_status(&item.id, "keeper", "api").unwrap();
 
         let mut refetched = mk_feed("https://youtu.be/keepme", "youtube", "media");
         refetched.title = Some("Re-ingested".into());
