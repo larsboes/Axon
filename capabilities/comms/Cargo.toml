@@ -31,6 +31,13 @@ path = "src/extraction_eval_main.rs"
 name = "comms-redaction-eval"
 path = "src/redaction_eval_main.rs"
 
+# The frozen-corpus gate for the mail model rung. Makes zero model calls: it
+# joins the corpus labels to the verdicts a shadow pass already stored, which is
+# what makes the number reproducible.
+[[bin]]
+name = "comms-mail-model-eval"
+path = "src/mail_model_eval_main.rs"
+
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
 # The readers this capability used to own, promoted at the second consumer

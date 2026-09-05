@@ -287,10 +287,67 @@ pub(super) struct TriageOut {
     pub(super) first_seen: String,
     pub(super) last_seen: String,
     pub(super) relevance: Vec<RelevanceOut>,
+    /// The local model rung's verdict, when one has been stored. `None` for a
+    /// thread the rules decided, for a thread no pass has reached yet, and for
+    /// every row while the rung is unconfigured.
+    ///
+    /// Appended after `relevance` deliberately: the feed-personalization stream
+    /// adds its own field after `waiting_since`, so the two additions are
+    /// non-adjacent and git merges both.
+    pub(super) model: Option<TriageModelOut>,
+}
+
+/// One stored verdict, as the review page reads it.
+///
+/// `urgency_validated` is what the dashboard reads to decide whether urgency
+/// may rank anything. It is false until the frozen corpus carries a measured
+/// urgency band error, because a number that reorders the operator's ladder
+/// passes the same door the stream does.
+#[derive(Debug, Serialize)]
+pub(super) struct TriageModelOut {
+    pub(super) mode: String,
+    pub(super) state: String,
+    pub(super) rule_stream: String,
+    pub(super) model_stream: Option<String>,
+    pub(super) confidence_bp: Option<i64>,
+    pub(super) urgency_bp: Option<i64>,
+    pub(super) urgency_validated: bool,
+    pub(super) rationale: Option<String>,
+    pub(super) urgency_rationale: Option<String>,
+    pub(super) data_class: String,
+    pub(super) held_reason: Option<String>,
+    pub(super) classification_version: String,
+    pub(super) applied_at: Option<String>,
+}
+
+impl From<ModelVerdict> for TriageModelOut {
+    fn from(verdict: ModelVerdict) -> Self {
+        Self {
+            mode: verdict.mode,
+            state: verdict.state,
+            rule_stream: verdict.rule_stream,
+            model_stream: verdict.model_stream,
+            confidence_bp: verdict.confidence_bp,
+            urgency_bp: verdict.urgency_bp,
+            // Hard-coded false, not read from a config key. Flipping it is a
+            // measurement, and the measurement is the corpus.
+            urgency_validated: false,
+            rationale: verdict.rationale,
+            urgency_rationale: verdict.urgency_rationale,
+            data_class: verdict.data_class,
+            held_reason: verdict.held_reason,
+            classification_version: verdict.classification_version,
+            applied_at: verdict.applied_at,
+        }
+    }
 }
 
 impl TriageOut {
-    pub(super) fn from_store(item: TriageItem, relevance: Vec<RelevanceMatch>) -> Self {
+    pub(super) fn from_store(
+        item: TriageItem,
+        relevance: Vec<RelevanceMatch>,
+        model: Option<ModelVerdict>,
+    ) -> Self {
         Self {
             id: item.id,
             from_addr: item.from_addr,
@@ -319,6 +376,7 @@ impl TriageOut {
             first_seen: item.first_seen,
             last_seen: item.last_seen,
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
+            model: model.map(TriageModelOut::from),
         }
     }
 }

@@ -10,12 +10,17 @@ pub(super) async fn triage_handler(Query(params): Query<TriageParams>) -> Json<V
         let cfg = Config::load();
         let store = Store::open(&cfg.database_path).ok()?;
         let items = store.list_triage(params.status.as_deref()).ok()?;
+        // One query for every verdict, before the loop. This handler already
+        // issues a relevance query per item; a second per-item query would
+        // double that over the whole table for no reason.
+        let mut verdicts = store.model_verdicts().unwrap_or_default();
         Some(
             items
                 .into_iter()
                 .map(|item| {
                     let relevance = store.triage_relevance(&item.id).unwrap_or_default();
-                    TriageOut::from_store(item, relevance)
+                    let model = verdicts.remove(&item.id);
+                    TriageOut::from_store(item, relevance, model)
                 })
                 .collect(),
         )
@@ -975,6 +980,313 @@ pub(super) async fn triage_data_class_refresh_handler(
 }
 
 #[derive(Debug, Deserialize)]
+pub(super) struct TriageClassifyRefreshBody {
+    mode: Option<String>,
+    limit: Option<usize>,
+}
+
+/// Run one bounded pass of the local model rung.
+///
+/// `spawn_blocking` for the reason the data-class refresh uses it:
+/// `summarize::complete` speaks HTTP through a blocking client, and a pass over
+/// a hundred threads at about two seconds each would hold a tokio worker for
+/// minutes.
+///
+/// Shadow by default, and `apply` is refused with a 409 unless the overlay
+/// declares `mail_model.apply`. The refusal is decided by
+/// `mail_model::apply_allowed`, a pure function over the config section, so
+/// what this handler does is testable without the operator's machine.
+pub(super) async fn triage_classify_refresh_handler(
+    Json(body): Json<TriageClassifyRefreshBody>,
+) -> HttpResponse {
+    let requested = match body.mode.as_deref().unwrap_or("shadow").parse::<Mode>() {
+        Ok(mode) => mode,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    let limit = body.limit.unwrap_or(200).clamp(1, 500);
+
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, (StatusCode, String)> {
+        let cfg = Config::load();
+        let mode = mail_model::apply_allowed(cfg.mail_model.as_ref(), requested)
+            .map_err(|error| (StatusCode::CONFLICT, error))?;
+        let store = Store::open(&cfg.database_path)
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        let min_confidence_bp = cfg
+            .mail_model
+            .as_ref()
+            .map_or(0, |section| i64::from(section.min_confidence_bp));
+        let receipt = mail_model::run_pass(&cfg, &store, mode, limit, min_confidence_bp)
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
+        let (registry_state, registry_names) = people_registry_receipt();
+        Ok(json!({
+            "mode": receipt.mode,
+            "reviewed": receipt.reviewed,
+            "eligible": receipt.eligible,
+            "prompted": receipt.prompted,
+            "refused_c3": receipt.refused_c3,
+            "over_window": receipt.over_window,
+            "unparseable": receipt.unparseable,
+            "invalid_stream": receipt.invalid_stream,
+            "errors": receipt.errors,
+            // The model matched the rule and nothing was written: re-stamping an
+            // unchanged verdict as method='model' would erase the true fact
+            // that a rule decided it.
+            "agreed_no_write": receipt.agreed_no_write,
+            "disagreed": receipt.disagreed,
+            "applied": receipt.applied,
+            // Proposals apply refused because they would raise the data class.
+            // The class UPDATE is escalation-only and the narrowing after it
+            // cannot be undone, so a machine may not open that door.
+            "held_class_escalation": receipt.held_class_escalation,
+            "below_confidence": receipt.below_confidence,
+            "redactions": receipt.redactions,
+            "model": {
+                "producer": receipt.producer,
+                "prompt_revision": receipt.prompt_revision,
+                "loopback": true,
+            },
+            "classifier_version": mail_model::MAIL_MODEL_VERSION,
+            "rules_version": comms::rules::MAIL_RULES_VERSION,
+            "transformation": cloud_derivative::REDACTION_VERSION,
+            "content_inputs": ["sender_domain", "subject", "snippet", "stream_vocabulary"],
+            "people_registry": {
+                "state": registry_state,
+                "names": registry_names,
+            },
+            "cloud_calls": 0,
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err((status, error))) => error_response(status, error),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct TriageClassifyReportParams {
+    mode: Option<String>,
+}
+
+/// The agreement between the rules and the model rung, as counts.
+///
+/// Counts only — no subject, no snippet, no rationale — which is the rule
+/// `SweepOutcome` already states for the sweep receipt, and the reason the
+/// store method behind it cannot select the text at all. The body is meant to
+/// be safe to log and to paste into a decision record.
+pub(super) async fn triage_classify_report_handler(
+    Query(params): Query<TriageClassifyReportParams>,
+) -> HttpResponse {
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
+        let summaries = store
+            .model_verdict_summaries(params.mode.as_deref())
+            .map_err(|error| error.to_string())?;
+        // Named `candidates`, not `eligible`: the refresh receipt's `eligible`
+        // is how many rows were DUE this run, and two fields of one name
+        // meaning two things is the drift a report gets read wrong by. This is
+        // the coarse set the rung may look at at all.
+        let candidates = store
+            .model_rung_candidates()
+            .map_err(|error| error.to_string())?
+            .len();
+
+        let by_rule_stream: Vec<Value> = mail_model::agreement(&summaries)
+            .into_iter()
+            .map(|(rule_stream, n, agree, model_streams)| {
+                let mut streams: Vec<(String, usize)> = model_streams.into_iter().collect();
+                streams
+                    .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+                json!({
+                    "rule_stream": rule_stream,
+                    "n": n,
+                    "agree": agree,
+                    "agree_percent": percent(agree, n),
+                    "model_streams": streams
+                        .into_iter()
+                        .map(|(stream, n)| json!({ "stream": stream, "n": n }))
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "verdicts": summaries.len(),
+            "candidates": candidates,
+            "by_rule_stream": by_rule_stream,
+            "by_state": tally(summaries.iter().map(|row| row.state.clone()))
+                .into_iter()
+                .map(|(state, n)| json!({ "state": state, "n": n }))
+                .collect::<Vec<_>>(),
+            // What a receipt proves "no Secret mail was prompted" from: the
+            // class at prompt time, beside how many of that class produced an
+            // answer rather than a refusal.
+            "by_data_class": by_data_class(&summaries),
+            "held": tally(
+                summaries
+                    .iter()
+                    .filter_map(|row| row.held_reason.clone()),
+            )
+            .into_iter()
+            .map(|(reason, n)| json!({ "reason": reason, "n": n }))
+            .collect::<Vec<_>>(),
+            "confidence_bp": spread(summaries.iter().filter_map(|row| row.confidence_bp)),
+            "urgency_bp": urgency_spread(&summaries),
+            "apply_enabled": cfg.mail_model.as_ref().is_some_and(|section| section.apply),
+            "producer": mail_model::producer(&cfg),
+            "prompt_revision": mail_model::MAIL_MODEL_PROMPT_REVISION,
+            "cloud_calls": 0,
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+/// The urgency numbers, plus how many verdicts carry one and whether anything
+/// may rank on them.
+///
+/// `validated` is hard-coded false rather than read from a key: flipping it is
+/// a measurement, and the measurement is the frozen corpus's urgency band
+/// error. Until it carries a number, urgency is stored, published and displayed
+/// and ranks nothing.
+fn urgency_spread(summaries: &[ModelVerdictSummary]) -> Value {
+    let scored: Vec<i64> = summaries.iter().filter_map(|row| row.urgency_bp).collect();
+    let mut value = spread(scored.iter().copied());
+    value["scored"] = json!(scored.len());
+    value["validated"] = json!(false);
+    value
+}
+
+/// One decimal, or `null` where there is nothing to divide by. A zero would
+/// read as a measured zero.
+fn percent(part: usize, whole: usize) -> Option<f64> {
+    (whole > 0).then(|| (part as f64 * 1_000.0 / whole as f64).round() / 10.0)
+}
+
+/// Count occurrences, largest first, name second. Deterministic order, because
+/// a report a human compares against yesterday's must not reshuffle.
+fn tally(values: impl Iterator<Item = String>) -> Vec<(String, usize)> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for value in values {
+        *counts.entry(value).or_default() += 1;
+    }
+    let mut rows: Vec<(String, usize)> = counts.into_iter().collect();
+    rows.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    rows
+}
+
+fn by_data_class(summaries: &[ModelVerdictSummary]) -> Vec<Value> {
+    let mut rows: Vec<Value> = Vec::new();
+    for class in content_item::DATA_CLASSES {
+        let of_class: Vec<&ModelVerdictSummary> = summaries
+            .iter()
+            .filter(|row| row.data_class == class)
+            .collect();
+        if of_class.is_empty() {
+            continue;
+        }
+        rows.push(json!({
+            "data_class": class,
+            "n": of_class.len(),
+            "prompted": of_class
+                .iter()
+                .filter(|row| row.state != digest::LOCAL_REFUSED
+                    && row.state != digest::SKIPPED_OVER_WINDOW)
+                .count(),
+        }));
+    }
+    rows
+}
+
+/// Min, median and max, or nulls. Not a mean: the question a threshold is set
+/// from is where the middle sits, and one confident outlier moves a mean.
+fn spread(values: impl Iterator<Item = i64>) -> Value {
+    let mut values: Vec<i64> = values.collect();
+    values.sort_unstable();
+    match values.len() {
+        0 => json!({ "min": null, "median": null, "max": null }),
+        n => json!({
+            "min": values[0],
+            "median": values[n / 2],
+            "max": values[n - 1],
+        }),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct TriageClassifyRevertBody {
+    ids: Option<Vec<String>>,
+    all: Option<bool>,
+}
+
+/// Put the deterministic verdict back on rows the model rung moved.
+///
+/// The bulk rollback, and it states in its own response what it cannot undo:
+/// the class UPDATE is escalation-only and the narrowing that follows it is
+/// deliberately not a delete. That asymmetry is exactly why apply never
+/// escalates in the first place.
+pub(super) async fn triage_classify_revert_handler(
+    Json(body): Json<TriageClassifyRevertBody>,
+) -> HttpResponse {
+    let ids = match (body.ids, body.all) {
+        (Some(ids), _) if !ids.is_empty() => Some(ids),
+        (_, Some(true)) => None,
+        // Neither is a request to revert nothing, and answering 200 to it would
+        // read as "nothing had been applied".
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "one of `ids` (non-empty) or `all: true` is required",
+            )
+        }
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
+        let (reverted, skipped_not_model, skipped_no_rules_row) = store
+            .revert_model_streams(ids.as_deref())
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "reverted": reverted,
+            "skipped_not_model": skipped_not_model,
+            "skipped_no_rules_row": skipped_no_rules_row,
+            "class_unchanged": true,
+            "note": "the data class and any narrowing this rung caused are NOT restored",
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub(super) struct TriageGmailBody {
     action: String,
 }
@@ -1158,6 +1470,130 @@ mod tests {
             let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
         }
         Store::open(&path).expect("a store on a path this test owns")
+    }
+
+    /// A shadow pass writes verdicts and moves no category. Driven through the
+    /// store rather than the HTTP handler, because the handler reads
+    /// `Config::load()` — the operator's real overlay and their real database
+    /// path — and a test that took that route would be a test about this
+    /// machine.
+    #[test]
+    fn the_shadow_route_writes_verdicts_and_changes_no_category() {
+        let store = test_store("classify_shadow");
+        store
+            .upsert_triage_with_rules(
+                &stored_row("thread:shadow", "Re: the thing", "A short preview."),
+                &comms::rules::Verdict {
+                    stream: "aktiv".into(),
+                    rationale: "No rule matched; kept active as the conservative default.".into(),
+                    decided_by: comms::rules::DecidedBy::Fallback,
+                },
+            )
+            .unwrap();
+        // No light role on this config, so no request is made and the state is
+        // `unconfigured`. What the test is about is the two invariants either
+        // side of the call: a verdict row exists, and the category did not move.
+        let cfg = Config {
+            database_path: std::path::PathBuf::new(),
+            ..Config::load()
+        };
+        let receipt = mail_model::run_pass(&cfg, &store, Mode::Shadow, 200, 0)
+            .expect("a pass over one candidate");
+        assert_eq!(receipt.eligible, 1);
+        assert_eq!(receipt.applied, 0);
+
+        let summaries = store.model_verdict_summaries(None).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].mode, "shadow");
+        let row = store.get_triage("thread:shadow").unwrap().unwrap();
+        assert_eq!(row.stream, "aktiv");
+        assert_eq!(
+            row.classification_method, "deterministic",
+            "a shadow pass must move no category"
+        );
+    }
+
+    /// The report body is meant to be pasteable into a decision record. The
+    /// store method behind it cannot select a rationale, and this pins that the
+    /// handler adds no second path to one.
+    #[test]
+    fn the_report_quotes_no_mail_content() {
+        let store = test_store("classify_report_safe");
+        store
+            .upsert_triage_with_rules(
+                &stored_row("thread:report", "ZZSUBJECTTOKEN", "ZZSNIPPETTOKEN"),
+                &comms::rules::Verdict {
+                    stream: "aktiv".into(),
+                    rationale: "No rule matched; kept active as the conservative default.".into(),
+                    decided_by: comms::rules::DecidedBy::Fallback,
+                },
+            )
+            .unwrap();
+        store
+            .upsert_model_verdict(&ModelVerdict {
+                triage_id: "thread:report".into(),
+                mode: "shadow".into(),
+                state: "generated".into(),
+                rule_decided_by: "fallback".into(),
+                rule_stream: "aktiv".into(),
+                model_stream: Some("issue".into()),
+                confidence_bp: Some(9_000),
+                urgency_bp: Some(7_000),
+                rationale: Some("ZZRATIONALETOKEN".into()),
+                urgency_rationale: Some("ZZURGENCYTOKEN".into()),
+                redactions: 0,
+                data_class: "c1".into(),
+                redaction_class: "c1".into(),
+                producer: "foundation-models/apple:mail-stream-v1-english".into(),
+                item_revision: "revision".into(),
+                prompt_revision: mail_model::MAIL_MODEL_PROMPT_REVISION.into(),
+                classification_version: mail_model::MAIL_MODEL_VERSION.into(),
+                attempts: 0,
+                last_error: None,
+                next_attempt: None,
+                held_reason: None,
+                applied_at: None,
+            })
+            .unwrap();
+
+        let summaries = store.model_verdict_summaries(None).unwrap();
+        let body = json!({
+            "by_rule_stream": mail_model::agreement(&summaries)
+                .into_iter()
+                .map(|(rule_stream, n, agree, _)| json!({
+                    "rule_stream": rule_stream,
+                    "n": n,
+                    "agree": agree,
+                    "agree_percent": percent(agree, n),
+                }))
+                .collect::<Vec<_>>(),
+            "by_state": tally(summaries.iter().map(|row| row.state.clone()))
+                .into_iter()
+                .map(|(state, n)| json!({ "state": state, "n": n }))
+                .collect::<Vec<_>>(),
+            "by_data_class": by_data_class(&summaries),
+            "held": tally(summaries.iter().filter_map(|row| row.held_reason.clone()))
+                .into_iter()
+                .map(|(reason, n)| json!({ "reason": reason, "n": n }))
+                .collect::<Vec<_>>(),
+            "confidence_bp": spread(summaries.iter().filter_map(|row| row.confidence_bp)),
+            "urgency_bp": urgency_spread(&summaries),
+        })
+        .to_string();
+
+        for token in [
+            "ZZSUBJECTTOKEN",
+            "ZZSNIPPETTOKEN",
+            "ZZRATIONALETOKEN",
+            "ZZURGENCYTOKEN",
+        ] {
+            assert!(!body.contains(token), "the report quoted {token}: {body}");
+        }
+        assert!(body.contains("\"agree\":0"), "got {body}");
+        assert!(
+            body.contains("\"validated\":false"),
+            "urgency must not read as ranked"
+        );
     }
 
     fn stored_row(id: &str, subject: &str, snippet: &str) -> TriageItem {

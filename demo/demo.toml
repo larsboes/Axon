@@ -112,6 +112,9 @@ paths = [
   "/comms/feed/origins",
   "/comms/sources",
   "/comms/triage",
+  # mail-llm-rung: counts only, and empty until a pass has run. An empty state
+  # is the honest demo of a rung that ships in shadow.
+  "/comms/triage/classify/report",
 ]
 expand = [{ from = "/comms/feed", id_field = "id", into = "/comms/feed/{id}" }]
 
