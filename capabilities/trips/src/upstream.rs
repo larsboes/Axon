@@ -425,14 +425,6 @@ fn urlencode(value: &str) -> String {
     encoded
 }
 
-/// `crate::windows`' day numbers count from 0000-03-01, not from the Unix
-/// epoch: `day_number`/`iso_of_day_number` are Hinnant's civil form WITHOUT the
-/// `- 719468` shift, and they only ever round-trip against each other inside
-/// that module. A Unix day count therefore has to be shifted before it can be
-/// read as a date, and the first version of `now_iso` that did not stamped
-/// `0056-11-03` into a live response.
-const UNIX_EPOCH_DAY: i64 = 719_468;
-
 /// Now, as an ISO instant, without a date crate: the day number gives the date
 /// and the remainder gives the clock.
 pub fn now_iso() -> String {
@@ -444,7 +436,7 @@ pub fn now_iso() -> String {
     let rest = seconds.rem_euclid(86_400);
     format!(
         "{}T{:02}:{:02}:{:02}Z",
-        crate::windows::iso_of_day_number(day + UNIX_EPOCH_DAY),
+        crate::windows::iso_of_day_number(day + crate::windows::UNIX_EPOCH_DAY),
         rest / 3600,
         (rest % 3600) / 60,
         rest % 60
@@ -480,7 +472,7 @@ mod tests {
         );
         // The epoch shift, checked against a day whose date is known.
         assert_eq!(
-            crate::windows::iso_of_day_number(UNIX_EPOCH_DAY),
+            crate::windows::iso_of_day_number(crate::windows::UNIX_EPOCH_DAY),
             "1970-01-01"
         );
     }

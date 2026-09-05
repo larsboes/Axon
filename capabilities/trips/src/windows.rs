@@ -213,6 +213,24 @@ pub fn day_number(iso: &str) -> Option<i64> {
     Some(era * 146097 + doe)
 }
 
+/// The day number of 1970-01-01.
+///
+/// `day_number`'s epoch is proleptic year 0, not Unix — its own doc comment says
+/// "an arbitrary fixed epoch", and it is arbitrary. Anything converting a wall
+/// clock into this scale must add this, and the one that did not was off by
+/// nearly two thousand years while still returning a well-formed date, which is
+/// the failure mode a named constant exists to prevent.
+pub const UNIX_EPOCH_DAY: i64 = 719_468;
+
+/// Today as an ISO date from the wall clock, UTC, on `day_number`'s scale.
+pub fn today() -> String {
+    let unix_days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| (since.as_secs() / 86_400) as i64)
+        .unwrap_or_default();
+    iso_of_day_number(UNIX_EPOCH_DAY + unix_days)
+}
+
 /// `day_number`'s inverse.
 pub fn iso_of_day_number(z: i64) -> String {
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
@@ -225,6 +243,35 @@ pub fn iso_of_day_number(z: i64) -> String {
     let m = (mp + 2) % 12 + 1;
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[cfg(test)]
+mod epoch_tests {
+    use super::*;
+
+    /// The trap: `iso_of_day_number` on a raw Unix day count returns a
+    /// well-formed date that is nearly two thousand years wrong, so nothing
+    /// downstream can tell it went wrong.
+    #[test]
+    fn the_two_scales_do_not_agree_and_the_constant_is_the_bridge() {
+        assert_eq!(iso_of_day_number(UNIX_EPOCH_DAY), "1970-01-01");
+        assert_eq!(day_number("1970-01-01"), Some(UNIX_EPOCH_DAY));
+        assert_eq!(iso_of_day_number(UNIX_EPOCH_DAY + 20_697), "2026-09-01");
+        // A raw Unix day count parses as a date and is not one.
+        assert_eq!(iso_of_day_number(20_697), "0056-10-30");
+    }
+
+    #[test]
+    fn today_is_a_plausible_iso_date_on_the_day_number_scale() {
+        let today = today();
+        assert_eq!(today.len(), 10, "{today}");
+        let day = day_number(&today).expect("today parses back");
+        // Anything between 2020 and 2100: this asserts the epoch, not the clock.
+        assert!(
+            day > day_number("2020-01-01").unwrap() && day < day_number("2100-01-01").unwrap(),
+            "today() returned {today}, which is off the wall clock's scale"
+        );
+    }
 }
 
 #[cfg(test)]

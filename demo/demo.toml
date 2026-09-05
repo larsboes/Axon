@@ -82,10 +82,16 @@ paths = [
 [capability.trips]
 writes = "trips"
 paths = ["/trips/api/plans"]
+# Plan search is a POST, and the demo refuses every non-GET with its own sentence, so no
+# job can start and no job id can exist. The two GET paths are listed anyway so the shim
+# recognises them as trips calls and answers 501 rather than letting them reach the host.
 # Plan detail pages are per-id and the ids are generated, so they cannot be listed here.
 # The recorder expands this against whatever /trips/api/plans returned: one fixture per
 # plan, no id ever written down. Same mechanism serves any list→detail pair.
-expand = [{ from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}" }]
+expand = [
+  { from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}" },
+  { from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}/pack" },
+]
 
 [capability.finance]
 writes = "finance"
@@ -185,3 +191,9 @@ the capability that measures them is not running. That is the designed behaviour
 degrades, it never fails — and the demo shows it rather than inventing a number.\
 """
 
+[absent.places]
+reason = """
+places owns the companion register — who was where, and when — which is the most sensitive store in this system. It is C2: it never leaves the host, and it is never seeded into the demo database (places ISA PLC-8). So places is absent here, and deliberately without a fixture: a synthetic companion register is the one thing this demo must not have, because a made-up person in a made-up city is exactly the shape of the data the rule exists to protect.
+
+The Travel page still works. Its "Companions" section renders this sentence in place of the waiting decisions, and the map layers places would draw are simply not there. That is the designed behaviour — absence degrades, it never fails — and it is worth reading as part of the demonstration.\
+"""

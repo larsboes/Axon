@@ -84,11 +84,32 @@ HTTP surface on the manifest-declared port:
 - `GET /api/import/obsidian/scan`
 - `POST /api/import/obsidian`
 - `POST /api/import/obsidian/all`
+- `POST /api/plan-search` · `GET /api/plan-search/:id` · `POST /api/plan-search/:id/adopt`
+- `GET /api/plans/:id/pack` · `POST /api/plans/:id/pack` ·
+  `DELETE /api/plans/:id/pack/:list_id` · `PUT /api/plans/:id/pack/:list_id/items`
+
+`GET /routes` is the current list; the names above are the ones worth knowing by heart.
+
+**Foreign origins are refused.** Since 2026-09-05 every route here answers 403 to a browser
+whose `Origin` is not one the dashboard is served from, using the shared predicate in
+`libs/axon-server/src/origin.rs` (set `AXON_TRIPS_ALLOWED_ORIGIN_HOSTS` to name the
+deployment's hosts). The reason is the plan-search body: it carries the operator's feasible
+calendar windows and a companion hint, and `CorsLayer::permissive()` made every route above
+it readable by any page open in the operator's browser. It also closes an older leak —
+`GET /api/flights/when` returns calendar entry titles in `collisions`. A request with **no**
+`Origin` still passes, which is how `capabilities/calendar` POSTs into this capability. New
+routes must be registered above the `.layer()` call in `build_router`: axum wraps only the
+routes added before it.
 
 Rows live in the shared SQLite file — `AXON_DB_PATH`, else
-`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `trips`, so the two tables
-are `trips_plans` and `trips_plan_items` (libs/axon-store/README.md). No personal station,
-destination or credential is tracked here.
+`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `trips`, so the tables are
+`trips_plans`, `trips_plan_items`, `trips_pack_lists` and `trips_pack_list_items`
+(libs/axon-store/README.md). No personal station, destination or credential is tracked here.
+
+The plan-search result is deliberately **not** a table. It is a §6.2 derived aggregate, C1:
+it holds a companion COUNT and never a register row, it lives in an in-process job map
+capped at ten, and it is never persisted and never projected. What is worth keeping becomes
+durable only through `POST /api/plan-search/:id/adopt`, which writes one `option_set` row.
 
 Obsidian scanning is enabled by `$AXON_PERSONAL_ROOT/config/trips.json`, shaped like
 [`schemas/trips.json.example`](../../schemas/trips.json.example). The scanner stays inside
@@ -99,9 +120,26 @@ opportunities; those vault surfaces remain owned by their respective capabilitie
 
 ## A sentence to a draft
 
-There is one way to start a trip today: a form needing an origin picked from
-`transit.suggest`, destinations, dates and modes typed field by field. "Somewhere warm in
-October, under 300 euro, by train" has no entry point at all.
+Until 2026-09-05 there was one way to start a trip: a form needing an origin picked from
+`transit.suggest`, destinations, dates and modes typed field by field, so "Somewhere warm in
+October, under 300 euro, by train" had no entry point at all.
+
+`POST /api/plan-search` is that entry point, as a form rather than as a sentence. It answers
+202 with a job number because fares take seconds each; the job composes calendar's feasible
+windows, the place registry, scouting's opportunities, transit's fares and — when it exists
+— climate, then ranks candidates on four visible factors (`budget_fit` 0.35, `feasibility`
+0.30, `season` 0.20, `events` 0.15) in the shape the feed evaluator publishes, revisioned as
+`plan-search-v1`.
+
+Two rules make the ranking readable. A factor that could **not be measured is absent** from
+`factors[]` and the remaining weights re-normalise to 1, so no number in the response is a
+guess wearing a measurement's clothes; `degraded[]` names every input that was missing, and
+scores are comparable inside one response and not across two. And a **month search with no
+calendar fails** — "a month search needs feasible windows" — because calendar → transit is
+the load-bearing order; an explicit `date_window` degrades instead, reports
+`window_source: "caller"` and drops the feasibility factor.
+
+The sentence front door is still the CLI below.
 
 ```bash
 trips draft-intent "Munich for a conference the 14th to the 16th of September 2026, by train"
