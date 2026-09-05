@@ -3,8 +3,9 @@
 // WRITTEN AHEAD OF ITS REGISTRY, and the one thing to fix on merge is at the top
 // of this file.
 //
-// `dashboard/src/lib/home/decisions.ts` and `registry.ts` belong to the
-// dashboard-refresh stream and neither existed when this was written
+// The Home registry's own two modules -- `decisions.ts` and `registry.ts`, in the
+// directory above this one -- belong to the dashboard-refresh stream and neither
+// existed when this was written
 // (2026-09-05). `bun run check` is a build gate, so importing types from a module
 // that does not exist would have failed it. The contract's two shapes are
 // therefore declared locally below, marked, and MUST be deleted the day the
@@ -21,7 +22,7 @@
 import { decisions, type Decision } from "../../finance/invest-api";
 import { link } from "../../nav";
 
-// ---- TEMPORARY: delete when dashboard/src/lib/home/decisions.ts lands ----
+// ---- TEMPORARY: delete when the registry's decisions.ts lands one level up ----
 type DataClass = "c0" | "c1" | "c2" | "c3";
 
 interface ScoreContext {

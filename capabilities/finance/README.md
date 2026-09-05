@@ -255,6 +255,14 @@ its note is the one fact here that no re-import and no re-run reproduces.
 `finance-cli decisions export` is the copy you can take when the server is down — never
 the only writer.
 
+The destination is `AXON_FINANCE_DECISIONS_ROOT` if it is set and the overlay root
+otherwise. The override is not a convenience: `AXON_DB_PATH` isolates the database and
+nothing else, so a verification run that only overrides the database still writes month
+files into the owner's overlay and a subscriptions projection into their vault. Redirect
+those two with `AXON_FINANCE_DECISIONS_ROOT` and `AXON_FINANCE_OBSIDIAN_ROOT`; overriding
+`AXON_PERSONAL_ROOT` instead would redirect the config read as well, so the run would be
+against a configuration that is not the one being tested.
+
 ## Configuration
 
 The eight tables live in the shared SQLite file — `AXON_DB_PATH`, else

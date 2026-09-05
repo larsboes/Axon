@@ -184,6 +184,15 @@ pub struct Config {
     pub planning: PlanningConfig,
     pub instruments: Vec<InstrumentProfile>,
     pub targets: Option<TargetPolicy>,
+    /// Where the decision ledger's human-readable copy is written.
+    ///
+    /// Its own field rather than "the overlay root, always", because a live check
+    /// needs to redirect the WRITE without also redirecting the config READ --
+    /// pointing `AXON_PERSONAL_ROOT` at a scratch directory does both, so a
+    /// verification run either writes into the owner's overlay or runs against a
+    /// configuration that is not theirs. `AXON_FINANCE_DECISIONS_ROOT` separates
+    /// the two. `None` means no overlay is configured and nothing is exported.
+    pub decisions_root: Option<PathBuf>,
     /// Where the feed-evidence lookup goes. Loopback, and the class rule that
     /// makes it safe is stated at the point of copy in `decision.rs`: only id,
     /// title, url and day are read, and those are published sources.
@@ -276,6 +285,14 @@ impl Config {
             .map(|config| config.instruments.clone())
             .unwrap_or_default();
         let targets = personal.as_ref().and_then(|config| config.targets.clone());
+        let decisions_root = std::env::var("AXON_FINANCE_DECISIONS_ROOT")
+            .ok()
+            .map(|root| expand_tilde(&root))
+            .or_else(|| {
+                std::env::var("AXON_PERSONAL_ROOT")
+                    .ok()
+                    .map(|root| expand_tilde(&root))
+            });
         let comms_base_url = std::env::var("AXON_COMMS_BASE_URL")
             .ok()
             .or_else(|| {
@@ -324,6 +341,7 @@ impl Config {
             planning,
             instruments,
             targets,
+            decisions_root,
             comms_base_url,
         }
     }

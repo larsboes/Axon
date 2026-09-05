@@ -221,9 +221,11 @@ struct AppState {
     instruments: Arc<Vec<InstrumentProfile>>,
     targets: Option<Arc<TargetPolicy>>,
     comms_base_url: Arc<String>,
-    /// Where the human-readable copy of the decision ledger is written. `None`
-    /// means no overlay is configured, and the verdict route says so rather than
-    /// recording a decision whose copy silently did not happen.
+    /// Where the human-readable copy of the decision ledger is written.
+    ///
+    /// `AXON_FINANCE_DECISIONS_ROOT` if set, else the overlay root. The override
+    /// exists so a live check can redirect the WRITE without redirecting the
+    /// config READ. `None` means no overlay is configured at all.
     overlay_root: Option<Arc<PathBuf>>,
 }
 
@@ -1862,6 +1864,7 @@ impl AppState {
             planning: self.planning.as_ref().clone(),
             instruments: self.instruments.as_ref().clone(),
             targets: self.targets.as_deref().cloned(),
+            decisions_root: self.overlay_root.as_deref().cloned(),
             comms_base_url: self.comms_base_url.as_ref().clone(),
         }
     }
@@ -2277,9 +2280,7 @@ async fn main() {
         instruments: Arc::new(config.instruments),
         targets: config.targets.map(Arc::new),
         comms_base_url: Arc::new(config.comms_base_url),
-        overlay_root: std::env::var("AXON_PERSONAL_ROOT")
-            .ok()
-            .map(|root| Arc::new(axon_config::expand_tilde(&root))),
+        overlay_root: config.decisions_root.map(Arc::new),
     };
     let app = Router::new()
         .route("/routes", get(routes))

@@ -41,8 +41,14 @@ the server already writes on every verdict. This is the copy you can take by
 hand when the server is down.
 
 Environment:
-  AXON_DB_PATH          the shared SQLite file
-  AXON_PERSONAL_ROOT    the overlay, where config/finance.json and the exports live";
+  AXON_DB_PATH                   the shared SQLite file
+  AXON_PERSONAL_ROOT             the overlay, where config/finance.json lives
+  AXON_FINANCE_DECISIONS_ROOT    where the month files are written (default: the overlay)
+  AXON_FINANCE_OBSIDIAN_ROOT     the vault this capability projects into
+
+A verification run should set the last two to a scratch directory. Neither is
+isolated by AXON_DB_PATH: the exports and the vault projection are files, and
+they land wherever the configuration points.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -87,10 +93,11 @@ fn store_and_config() -> Result<(FinanceStore, Config), String> {
     Ok((store, config))
 }
 
+/// Where the month files go. `AXON_FINANCE_DECISIONS_ROOT` if set, else the
+/// overlay. The override is what lets a verification run write its exports to a
+/// scratch directory while still reading the real configuration.
 fn overlay_root() -> Option<std::path::PathBuf> {
-    std::env::var("AXON_PERSONAL_ROOT")
-        .ok()
-        .map(|root| axon_config::expand_tilde(&root))
+    Config::load().decisions_root
 }
 
 /// Exit 0 when at least one target produced a row; non-zero only when every
