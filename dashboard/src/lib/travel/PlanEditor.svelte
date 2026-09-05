@@ -38,6 +38,11 @@
   let interests = $state("");
   let travelers = $state("");
   let transportModes = $state<TransportMode[]>([]);
+  // Held as text so an empty field means "no budget" rather than 0. Euros in,
+  // integer minor units out -- a price in floating point is a price that
+  // eventually disagrees with the receipt.
+  let budget = $state("");
+  let currency = $state("EUR");
   let validation = $state<string | null>(null);
   let deleteArmed = $state(false);
 
@@ -52,6 +57,8 @@
     interests = plan.interests;
     travelers = plan.travelers.join(", ");
     transportModes = [...plan.transport_modes];
+    budget = plan.budget_cents === null ? "" : (plan.budget_cents / 100).toFixed(2);
+    currency = plan.currency ?? "EUR";
     validation = null;
     deleteArmed = false;
   });
@@ -87,6 +94,16 @@
       validation = "Select at least one transport mode.";
       return;
     }
+    const code = currency.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(code)) {
+      validation = "Currency is a three-letter ISO code, e.g. EUR.";
+      return;
+    }
+    const budgetText = budget.trim();
+    if (budgetText !== "" && !(Number(budgetText) >= 0)) {
+      validation = "A budget is a number, and never negative.";
+      return;
+    }
     validation = null;
     await onSave({
       title: title.trim(),
@@ -100,6 +117,12 @@
         .map((traveler) => traveler.trim())
         .filter(Boolean),
       transport_modes: transportModes,
+      // Without these two the budget half can never be populated from this UI,
+      // which is why no plan carries one. `currency` is load-bearing twice: it
+      // denominates the budget AND gates whether a retrospective may record a
+      // cost at all.
+      budget_cents: budgetText === "" ? null : Math.round(Number(budgetText) * 100),
+      currency: code,
     });
   }
 </script>
@@ -177,6 +200,22 @@
       <label>
         <span>Travellers</span>
         <input class="input" bind:value={travelers} placeholder="Separate with commas" />
+      </label>
+      <label>
+        <span>Budget</span>
+        <input
+          class="input"
+          type="number"
+          step="0.01"
+          min="0"
+          inputmode="decimal"
+          bind:value={budget}
+          placeholder="What it should cost"
+        />
+      </label>
+      <label>
+        <span>Currency</span>
+        <input class="input" bind:value={currency} maxlength="3" placeholder="EUR" />
       </label>
     </div>
 

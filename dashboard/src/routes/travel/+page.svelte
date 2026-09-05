@@ -13,11 +13,15 @@
   import PlanEditor from "$lib/travel/PlanEditor.svelte";
   import PlaceField from "$lib/travel/PlaceField.svelte";
   import TripMap, { type MapPoint } from "$lib/travel/TripMap.svelte";
+  import ClimateStrip from "$lib/travel/ClimateStrip.svelte";
+  import RetrospectiveForm from "$lib/travel/RetrospectiveForm.svelte";
+  import { climateFor, type ClimateBatch } from "$lib/travel/api";
   import {
     loadNearbyPlaces,
     type NearbyPlace,
   } from "$lib/travel/nearby-places";
   import { loadPlaceImage, placeName, type PlaceImage } from "$lib/travel/place-image";
+  import type { Retrospective } from "$lib/api";
   import {
     assessTravelCandidates,
     calendarCandidatesFor,
@@ -123,6 +127,13 @@
   let openedPlanFromLink = "";
   let tripSpending = $state<TripSpendingSummary[]>([]);
   let tripSpendingRequested = false;
+  // Seasonality for the open plan's destinations, keyed by "lat,lon" exactly as
+  // sent so a result never has to be re-associated with its request.
+  let climate = $state<ClimateBatch | null>(null);
+  // The open plan's close-out record. Held beside `activePlan` rather than on
+  // it, because `activePlan` is typed `TripPlan` and widening it would touch a
+  // declaration another stream is also editing tonight.
+  let planRetrospective = $state<Retrospective | null>(null);
 
   const selected = $derived(results.find((result) => result.place.id === selectedId) ?? null);
   const upcomingPlans = $derived(
@@ -615,6 +626,31 @@
     }
   }
 
+  /**
+   * Normals for every destination that carries a coordinate, in ONE request.
+   *
+   * Failure is swallowed on purpose: places being down or refusing the origin
+   * must not break the trip view, so the strip simply stays absent. It never
+   * degrades into an empty grid — the route distinguishes "no normals yet" from
+   * "no such place" and the component prints whichever it got.
+   */
+  async function loadClimate(plan: TripPlan): Promise<void> {
+    climate = null;
+    const keys = [...plan.destinations]
+      .filter(
+        (place): place is PlaceRef & { latitude: number; longitude: number } =>
+          typeof place.latitude === "number" && typeof place.longitude === "number",
+      )
+      .map((place) => ({ latitude: place.latitude, longitude: place.longitude }));
+    if (keys.length === 0) return;
+    try {
+      await axonStatus.start("places").catch(() => undefined);
+      climate = await climateFor(keys, { from: plan.date_start, to: plan.date_end });
+    } catch {
+      // Deliberate empty state — the strip stays absent rather than lying.
+    }
+  }
+
   async function openPlan(plan: TripPlan): Promise<void> {
     error = null;
     editingPlan = false;
@@ -622,6 +658,8 @@
     try {
       const details = await trips.get(plan.id);
       items = details.items;
+      planRetrospective = details.retrospective;
+      void loadClimate(details);
       if (details.date_end < todayKey) {
         activePlan = details;
         selectedId = details.destinations[0]?.id ?? "";
@@ -1567,6 +1605,14 @@
         {/if}
       </div>
 
+      <RetrospectiveForm
+        planId={activePlan.id}
+        currency={activePlan.currency}
+        existing={planRetrospective}
+        proposal={null}
+        onSaved={(row) => (planRetrospective = row)}
+      />
+
       <div class="past-timeline">
         <div class="section-heading">
           <h3>Saved itinerary</h3>
@@ -1645,6 +1691,19 @@
             </button>
           </div>
         </header>
+
+        {#if climate}
+          {@const found = climate.results.find(
+            (result) => result.matched_place?.name === selected.city,
+          ) ?? climate.results[0]}
+          {#if found}
+            <ClimateStrip
+              result={found}
+              rule={climate.best_months_rule}
+              attribution={climate.attribution}
+            />
+          {/if}
+        {/if}
 
         {#if selected.anchors.length > 0}
           <section class="calendar-anchors" aria-labelledby="calendar-anchor-heading">

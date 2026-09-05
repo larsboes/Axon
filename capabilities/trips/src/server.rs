@@ -138,6 +138,31 @@ const ROUTES: &[route_manifest::Route] = &[
          them this answers 400, not an empty success. Every option is separate tickets \
          with no through-protection, and says so.",
     ),
+    route_manifest::Route {
+        method: "POST",
+        path: "/api/plans/:id/retrospective",
+        summary: "Record or correct one plan's retrospective: exactly the three fields PRD 8.2 \
+                  rules -- cost_cents (in the PLAN's currency; a plan with none refuses a cost), \
+                  again (yes|no|maybe) and change_note. One row per plan, so a second POST is a \
+                  correction and answers 200. Different from POST /api/plans/:id/outcome, which \
+                  measures one stage against the option it was chosen under.",
+        request_schema: Some(route_manifest::schema_of::<RetrospectiveBody>),
+    },
+    r(
+        "GET",
+        "/api/retrospectives/pending",
+        "Closed trips with no retrospective, inside the 45-day window: what the dashboard \
+         ladder should raise today. No parameters. Archived plans are excluded, because \
+         archiving is the operator's explicit 'I am done with this'.",
+    ),
+    r(
+        "GET",
+        "/api/retrospectives/summary",
+        "The feed-forward weight, per DESTINATION only. Carries the formula, the bounds and \
+         the contract a consumer is held to: multiply a candidate's rank by factor and show \
+         the basis, never filter on it. by_companion is a sentence rather than data -- see \
+         capabilities/trips/README.md for the three preconditions.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -404,6 +429,116 @@ async fn record_outcome(
     {
         Ok(Ok(item)) => response(StatusCode::CREATED, item),
         Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+/// Exactly the three fields PRD §8.2 rules, and `deny_unknown_fields` so a
+/// fourth cannot arrive by accident.
+///
+/// No `currency`: `cost_cents` is denominated in the plan's own currency, so the
+/// wire body, the table and the form are all the same three fields.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RetrospectiveBody {
+    #[serde(default)]
+    cost_cents: Option<i64>,
+    again: String,
+    #[serde(default)]
+    change_note: String,
+}
+
+async fn record_retrospective(
+    State(state): State<AppState>,
+    Path(plan_id): Path<String>,
+    Json(body): Json<RetrospectiveBody>,
+) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    match tokio::task::spawn_blocking(move || {
+        TripsStore::open(&database_path)
+            .and_then(|store| {
+                store.put_retrospective(
+                    &plan_id,
+                    body.cost_cents,
+                    body.again.trim(),
+                    &body.change_note,
+                )
+            })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        // A second write corrects the first, so it is 200 rather than 201.
+        Ok(Ok(Some((row, created)))) => response(
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            row,
+        ),
+        Ok(Ok(None)) => response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "trip plan not found" }),
+        ),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn pending_retrospectives(State(state): State<AppState>) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    // `windows::today()`, not a hand-rolled conversion: `day_number`'s epoch is
+    // proleptic year 0, so a raw Unix day count reads as a date in the first
+    // century and the window silently matches nothing.
+    let today = trips::windows::today();
+    match tokio::task::spawn_blocking(move || {
+        TripsStore::open(&database_path)
+            .and_then(|store| store.pending_retrospectives(&today))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(pending)) => response(
+            StatusCode::OK,
+            json!({
+                "pending": pending,
+                "window_days": trips::store::RETROSPECTIVE_WINDOW_DAYS,
+            }),
+        ),
+        Ok(Err(error)) => response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn retrospective_summary(State(state): State<AppState>) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    match tokio::task::spawn_blocking(move || {
+        let store = TripsStore::open(&database_path).map_err(|e| e.to_string())?;
+        // Every plan, archived ones included: a finished trip is exactly the one
+        // a retrospective is written about.
+        let plans: Vec<TripPlan> = store
+            .list_every_plan()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|details| details.plan)
+            .collect();
+        let rows = store.retrospectives().map_err(|e| e.to_string())?;
+        Ok::<_, String>(trips::retrospective::summary(&rows, &plans))
+    })
+    .await
+    {
+        Ok(Ok(summary)) => response(StatusCode::OK, summary),
+        Ok(Err(error)) => response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })),
         Err(error) => response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": error.to_string() }),
@@ -1051,6 +1186,9 @@ async fn main() {
         .route("/api/flights/when", get(flight_when))
         .route("/api/flights/pivot", get(flight_pivot))
         .route("/api/plans/:id/outcome", post(record_outcome))
+        .route("/api/plans/:id/retrospective", post(record_retrospective))
+        .route("/api/retrospectives/pending", get(pending_retrospectives))
+        .route("/api/retrospectives/summary", get(retrospective_summary))
         .route("/api/import/obsidian/scan", get(scan_obsidian))
         .route("/api/import/obsidian/all", post(import_all_obsidian))
         .route("/api/import/obsidian", post(import_obsidian))

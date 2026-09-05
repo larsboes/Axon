@@ -151,8 +151,28 @@ export interface PlanItem {
   created_at: string;
 }
 
+/**
+ * One plan's close-out record: exactly the three fields PRD 8.2 rules, plus the
+ * plan key and the stamp. `currency` is echoed from the plan and is not stored
+ * on the row — `cost_cents` is denominated in the plan's own currency, so the
+ * money is named exactly once.
+ *
+ * Declared here rather than imported, because this module deliberately has no
+ * imports at all: `dashboard/src/lib/home/kinds/*.ts` must stay importable under
+ * plain `bun test`.
+ */
+export interface Retrospective {
+  plan_id: string;
+  cost_cents: number | null;
+  currency: string | null;
+  again: 'yes' | 'no' | 'maybe';
+  change_note: string;
+  filled_at: string;
+}
+
 export interface PlanDetails extends TripPlan {
   items: PlanItem[];
+  retrospective: Retrospective | null;
 }
 
 export interface ObsidianTripCandidate {
@@ -309,6 +329,8 @@ export const trips = {
         | 'transport_modes'
         | 'stages'
         | 'cover_image_url'
+        | 'budget_cents'
+        | 'currency'
       >
     >,
   ) =>
