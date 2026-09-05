@@ -69,3 +69,6 @@ demo/state/
 demo/overlay/config/scouting.json
 # Comms' demo config, generated with a fresh throwaway API token on every run.
 demo/overlay/config/comms.json
+
+# Agent worktrees created by Claude Code isolation (not repository content)
+.claude/worktrees/

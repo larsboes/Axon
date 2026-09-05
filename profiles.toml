@@ -5,7 +5,7 @@
 [[profile]]
 name = "productive"
 description = "Daily driver — coding, prose, academic writing"
-packs = ["writing", "unslop", "academic-writing"]
+packs = ["writing", "unslop", "academic-writing", "deliberation"]
 
 [[profile]]
 name = "home"

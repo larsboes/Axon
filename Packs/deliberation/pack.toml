@@ -1,0 +1,5 @@
+# See schemas/pack.toml.example for the field reference.
+name        = "deliberation"
+description = "Two ways to test a decision before it is made: a council of subagents that debate the options, and a red-team pass that attacks one proposal."
+skills      = ["council", "red-team"]
+license     = "MIT"
