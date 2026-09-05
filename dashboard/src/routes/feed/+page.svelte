@@ -3,6 +3,8 @@
   import { page } from "$app/state";
   import DiscoverView from "$lib/feed/DiscoverView.svelte";
   import EvaluationBreakdown from "$lib/feed/EvaluationBreakdown.svelte";
+  import FeedItemRow from "$lib/feed/FeedItemRow.svelte";
+  import StateLine from "$lib/StateLine.svelte";
   import FeedNav from "$lib/feed/FeedNav.svelte";
   import ModelStatus from "$lib/feed/ModelStatus.svelte";
   import Icon from "$lib/Icon.svelte";
@@ -36,16 +38,6 @@
     { value: "media", label: "Media" },
   ];
   const RANGES = [7, 30, 90];
-  const KIND_LABEL: Record<string, string> = {
-    youtube: "YouTube",
-    instagram: "Instagram",
-    podcast: "Podcast",
-    article: "Article",
-    mail: "Mail",
-    github: "GitHub",
-    arxiv: "arXiv",
-    reddit: "Reddit",
-  };
   const MAIL_CATEGORY_LABEL: Record<MailCategory, string> = {
     aktiv: "Active",
     issue: "Action",
@@ -77,7 +69,11 @@
 
   let entries = $state<FeedEntry[]>([]);
   let runs = $state<FeedRun[]>([]);
-  let expandedRuns = $state<Set<string>>(new Set());
+  /// Runs are OPEN by default and this holds the ones the reader closed. The inverse of
+  /// what it used to be: a collapsed-by-default run turned the inbox into six identical
+  /// source names with counts beside them, and the items — the things to triage — were
+  /// behind a click each.
+  let collapsedRuns = $state<Set<string>>(new Set());
   let triage = $state<TriageItem[]>([]);
   let mailCategory = $state<"all" | MailCategory>("all");
   let mailStatus = $state<MailStatusFilter>("pending");
@@ -236,9 +232,9 @@
   }
 
   function toggleRun(key: string): void {
-    const next = new Set(expandedRuns);
+    const next = new Set(collapsedRuns);
     if (!next.delete(key)) next.add(key);
-    expandedRuns = next;
+    collapsedRuns = next;
   }
 
   async function load(): Promise<void> {
@@ -1079,36 +1075,43 @@
     Feed could not be started. See <a href={link("/capabilities")}>Capabilities</a> for details.
   </p>
 {:else if loading && entries.length === 0}
-  <p class="notice muted">Loading…</p>
+  <StateLine state="loading" message="Reading the last {days} days…" />
 {:else if grouped.length === 0}
-  <p class="notice muted">Nothing in this period.</p>
+  <StateLine state="empty">
+    {#snippet empty()}Nothing arrived in this period.{/snippet}
+  </StateLine>
 {:else}
   {#each grouped as [day, items] (day)}
     <section class="day">
       <h2>{dayLabel(day)} <span class="count mono">{items.length}</span></h2>
-      <ul>
+      <ul class="entries" role="list">
         {#each rowsFor(items) as row (row.id)}
           {#if row.kind === "run"}
-            <li class="card run" class:open={expandedRuns.has(row.id)}>
+            <!-- A collector run is a caption over its items, not a door in front of them.
+                 Collapsed by default, the inbox showed six identical source names with
+                 counts beside them and nothing to triage — the reader had to open every
+                 one to find out what had arrived. The grouping is still real and still
+                 collapsible; it just no longer hides the list it describes. -->
+            <li class="run-head-item">
               <button
                 class="run-head"
                 onclick={() => toggleRun(row.id)}
-                aria-expanded={expandedRuns.has(row.id)}
+                aria-expanded={!collapsedRuns.has(row.id)}
               >
-                <span class="chevron"><Icon name="arrow-right" size={13} /></span>
+                <span class="chevron" class:open={!collapsedRuns.has(row.id)}>
+                  <Icon name="chevron" size={12} />
+                </span>
                 <span class="text">{row.label}</span>
                 <span class="count mono">{row.entries.length}</span>
               </button>
-              {#if expandedRuns.has(row.id)}
-                <ul class="run-items">
-                  {#each row.entries as e (e.id)}
-                    {@render entryCard(e)}
-                  {/each}
-                </ul>
-              {/if}
             </li>
+            {#if !collapsedRuns.has(row.id)}
+              {#each row.entries as e (e.id)}
+                {@render entryRow(e, true)}
+              {/each}
+            {/if}
           {:else}
-            {@render entryCard(row.entry)}
+            {@render entryRow(row.entry, false)}
           {/if}
         {/each}
       </ul>
@@ -1116,65 +1119,23 @@
   {/each}
 {/if}
 
-{#snippet entryCard(e: FeedEntry)}
-          <li class="card entry">
-            <div class="row">
-              <a class="title" href={link(`/feed/${e.id}`)}>
-                <span class="kind tag mono">{KIND_LABEL[e.kind] ?? e.kind}</span>
-                <span class="text">{e.title ?? e.url}</span>
-              </a>
-              <div class="acts">
-                <a class="btn" href={e.url} target="_blank" rel="noreferrer" aria-label="Original">
-                  <Icon name="external" size={13} />
-                </a>
-                {#if busy === e.id}
-                  <span class="btn"><Icon name="loader" size={13} /></span>
-                {:else}
-                  <button
-                    class="btn"
-                    class:kept={e.status === "keeper"}
-                    onclick={() => setStatus(e.id, e.status === "keeper" ? "new" : "keeper")}
-                    aria-label="Keep"
-                  >
-                    <Icon name="check" size={13} />
-                  </button>
-                  <button
-                    class="btn"
-                    onclick={() => setStatus(e.id, "dismissed")}
-                    aria-label="Dismiss"
-                  >
-                    <Icon name="close" size={13} />
-                  </button>
-                {/if}
-              </div>
-            </div>
-
-            {#if e.author}<p class="meta mono">{e.author}</p>{/if}
-            {#if e.evaluation}
-              <div class="evaluation-compact">
-                <EvaluationBreakdown evaluation={e.evaluation} compact />
-              </div>
-            {:else if e.relevance}
-              <p class="relevance">
-                <span>{e.relevance.profile_label}</span>
-                <span class="mono">{e.relevance.score.toFixed(2)}</span>
-                <span class="method">{e.relevance.mode}</span>
-              </p>
-            {/if}
-            {#if e.summary}
-              <p class="preview">{e.summary}</p>
-            {:else if e.digest_preview}
-              <!-- No summary of its own: past the on-device window, so the enrichment drain left
-                   it and the digest drain took it through the cloud instead. Showing the digest's
-                   opening rather than an empty card, labelled so the two are not confused. -->
-              <p class="preview">{e.digest_preview}</p>
-              <p class="muted from-digest">from the digest</p>
-            {:else if ingested === e.id}
-              <p class="muted pending">
-                <Icon name="loader" size={12} /> Summary is running — it will appear after the next load.
-              </p>
-            {/if}
-          </li>
+{#snippet entryRow(e: FeedEntry, inRun: boolean)}
+  <FeedItemRow
+    entry={e}
+    id={`feed-${e.id}`}
+    busy={busy === e.id}
+    tone={e.status === "keeper" ? "owed" : "none"}
+    onkeep={() => setStatus(e.id, e.status === "keeper" ? "new" : "keeper")}
+    ondismiss={() => setStatus(e.id, "dismissed")}
+  >
+    {#snippet meta()}
+      {#if ingested === e.id}
+        <p class="pending">
+          <Icon name="loader" size={11} /> Summary is running. It will appear after the next load.
+        </p>
+      {/if}
+    {/snippet}
+  </FeedItemRow>
 {/snippet}
 
 {/if}
@@ -1341,14 +1302,33 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
   }
 
-  .entry {
-    padding: 0.75rem;
+  /* One bordered stack, not a column of cards with a gap between each.
+     Seventy items as seventy cards is 70 shadows and 70 gaps of vertical travel; as one
+     list it is a list, which is what an inbox is. */
+  .entries {
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    background: var(--card-bg);
+    overflow: hidden;
   }
+
+  .run-head-item {
+    list-style: none;
+    border-bottom: 1px solid var(--card-border);
+    background: var(--surface);
+  }
+
+  .pending {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: var(--text-2xs);
+  }
+
 
   .mail-toolbar {
     display: flex;
@@ -1572,10 +1552,6 @@
     accent-color: var(--primary);
   }
 
-  .from-digest {
-    font-size: 0.75rem;
-    margin-top: 0.15rem;
-  }
 
   .proposal-summary {
     display: flex;
@@ -1782,17 +1758,15 @@
   }
 
   /* A collector run, collapsed to one row until asked to open. */
-  .run {
-    padding: 0;
-    overflow: hidden;
-  }
 
   .run-head {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-3);
     width: 100%;
-    padding: 0.625rem 0.75rem;
+    padding: var(--space-2) var(--space-4);
+    font-size: var(--text-2xs);
+    color: var(--text-secondary);
     background: none;
     border: 0;
     color: inherit;
@@ -1816,69 +1790,22 @@
   .chevron {
     display: flex;
     color: var(--text-tertiary);
-    transition: transform 120ms ease;
+    transition: transform var(--motion-fast) ease;
   }
 
-  .run.open .chevron {
+  .chevron.open {
     transform: rotate(90deg);
   }
 
-  .run-items {
-    padding: 0 0.5rem 0.5rem;
-  }
 
-  .row {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem;
-  }
 
-  .title {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    flex: 1;
-    min-width: 0;
-    padding: 0;
-    border: 0;
-    background: none;
-    font: inherit;
-    text-align: left;
-    color: inherit;
-    cursor: pointer;
-    text-decoration: none;
-  }
 
-  .title:hover .text {
-    color: var(--primary);
-  }
 
-  .title .text {
-    font-size: 0.875rem;
-    font-weight: 500;
-  }
 
-  .kind {
-    flex-shrink: 0;
-    font-size: 0.5625rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
 
-  .acts {
-    display: flex;
-    gap: 0.15rem;
-    flex-shrink: 0;
-  }
 
-  .acts .btn {
-    padding: 0.3rem;
-  }
 
-  .acts .kept {
-    color: var(--success);
-  }
+
 
   .meta {
     margin: 0.3rem 0 0;
@@ -1886,37 +1813,9 @@
     color: var(--text-tertiary);
   }
 
-  .relevance {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    margin: 0.45rem 0 0;
-    color: var(--primary);
-    font-size: 0.6875rem;
-  }
 
-  .evaluation-compact {
-    max-width: 32rem;
-    margin-top: 0.55rem;
-    padding-top: 0.5rem;
-    border-top: 1px solid var(--card-border);
-  }
 
-  .relevance .method {
-    color: var(--text-tertiary);
-  }
 
-  .preview {
-    display: -webkit-box;
-    overflow: hidden;
-    margin: 0.45rem 0 0;
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    line-height: 1.45;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-  }
 
   .lead {
     margin: 0;
