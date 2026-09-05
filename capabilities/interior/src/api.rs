@@ -650,18 +650,26 @@ async fn api_put_layout(
 /// `service.toml` nennt diese Trennung als den Grund, aus dem die Capability oeffentlich stehen
 /// darf: das Bundle enthaelt kein Foto, die Dateien liegen im Overlay, und geliefert wird erst
 /// auf Anfrage.
+///
+/// Jeder Dateizugriff hier laeuft ueber `tokio::fs`, nicht ueber `std::fs`. Das ist der einzige
+/// Handler im Repo, der ein ganzes Bild liest, und ein `std::fs::read` in einem `async fn` haelt
+/// einen Worker-Thread der Laufzeit an, statt nur diese eine Anfrage warten zu lassen. Die
+/// Pfadpruefung bleibt davon unberuehrt: `canonicalize` und `starts_with` sagen dasselbe.
 async fn api_media(Path(pfad): Path<String>) -> Result<impl IntoResponse, (StatusCode, String)> {
     let wurzel = crate::model::data_dir()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .join("media");
-    let wurzel = wurzel
-        .canonicalize()
+    let wurzel = tokio::fs::canonicalize(&wurzel)
+        .await
         .map_err(|_| (StatusCode::NOT_FOUND, "kein media-Verzeichnis".to_string()))?;
-    let ziel = wurzel
-        .join(&pfad)
-        .canonicalize()
+    let ziel = tokio::fs::canonicalize(wurzel.join(&pfad))
+        .await
         .map_err(|_| (StatusCode::NOT_FOUND, format!("kein Medium `{pfad}`")))?;
-    if !ziel.starts_with(&wurzel) || !ziel.is_file() {
+    let ist_datei = tokio::fs::metadata(&ziel)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false);
+    if !ziel.starts_with(&wurzel) || !ist_datei {
         return Err((
             StatusCode::FORBIDDEN,
             format!("`{pfad}` liegt nicht unter media/"),
@@ -680,7 +688,7 @@ async fn api_media(Path(pfad): Path<String>) -> Result<impl IntoResponse, (Statu
         // Kein Standardtyp: was hier unbekannt ist, wird nicht geraten und nicht geliefert.
         _ => return Err((StatusCode::UNSUPPORTED_MEDIA_TYPE, "kein Bildformat".into())),
     };
-    let bytes = std::fs::read(&ziel).map_err(boom)?;
+    let bytes = tokio::fs::read(&ziel).await.map_err(boom)?;
     Ok(([(axum::http::header::CONTENT_TYPE, typ)], bytes))
 }
 
