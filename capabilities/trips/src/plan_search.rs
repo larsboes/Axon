@@ -900,11 +900,20 @@ pub fn factors(inputs: &ScoringInputs) -> Vec<ScoreFactor> {
 }
 
 pub fn weighted_score(factors: &[ScoreFactor]) -> f64 {
-    factors
+    let score = factors
         .iter()
         .map(|f| f.score.clamp(0.0, 1.0) * f.weight)
         .sum::<f64>()
-        .clamp(0.0, 1.0)
+        .clamp(0.0, 1.0);
+    // A candidate with no measurable factor at all scores zero, and it must
+    // serialise as `0.0`. Negative zero is a real f64 that survives `clamp`
+    // (`-0.0 == 0.0`, so clamp returns self) and reaches a response body as
+    // `-0.0`, which reads as a bug.
+    if score == 0.0 {
+        0.0
+    } else {
+        score
+    }
 }
 
 /// Priced candidates first, then by score.

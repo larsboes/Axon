@@ -79,12 +79,34 @@ fn get_json(url: &str, timeout: Duration) -> Result<Value, String> {
         .map_err(|error| format!("unreadable reply: {}", short(&error.to_string())))
 }
 
-/// A reason short enough to sit inside a `reach` string. A reqwest error prints
-/// the whole URL chain, which would put a host name into a response body for no
-/// diagnostic gain.
+/// A reason short enough to sit inside a `reach` string, with the URL removed.
+///
+/// A reqwest error prints the whole URL chain, which would put a host and a
+/// port into a response body for no diagnostic gain. Splitting on `:` was the
+/// first attempt and it cut `...for url (http` mid-scheme; the parenthesised
+/// URL is what has to go, not everything after the first colon.
 fn short(reason: &str) -> String {
-    let first = reason.split(':').next().unwrap_or(reason).trim();
-    first.chars().take(80).collect()
+    let mut cleaned = String::with_capacity(reason.len());
+    let mut depth = 0usize;
+    for character in reason.chars() {
+        match character {
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            _ if depth == 0 => cleaned.push(character),
+            _ => {}
+        }
+    }
+    // Removing the parentheses leaves a double space and an orphan colon where
+    // the URL was, so the words are re-joined rather than left as
+    // "for url : connection refused".
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    words
+        .join(" ")
+        .replace(" :", ":")
+        .trim_end_matches(':')
+        .chars()
+        .take(80)
+        .collect()
 }
 
 /// The live implementation of [`Sources`].
@@ -262,11 +284,20 @@ impl Sources for HttpSources {
         destination: &DestinationCandidate,
         depart_iso: &str,
     ) -> Result<Option<i64>, String> {
-        let Some(from_eva) = self.origin_eva(origin)? else {
+        // Which of the two transit surfaces failed matters to a reader: the
+        // station lookup and the fare search fail for different reasons and on
+        // different days, and "answered 500" alone names neither.
+        let Some(from_eva) = self
+            .origin_eva(origin)
+            .map_err(|reason| format!("transit station lookup {reason}"))?
+        else {
             return Ok(None);
         };
         std::thread::sleep(FARE_PAUSE);
-        let Some(to_eva) = self.eva_for(&destination.destination.name)? else {
+        let Some(to_eva) = self
+            .eva_for(&destination.destination.name)
+            .map_err(|reason| format!("transit station lookup {reason}"))?
+        else {
             return Ok(None);
         };
         if from_eva == to_eva {
@@ -277,7 +308,8 @@ impl Sources for HttpSources {
             "{}/api/search?from={from_eva}&to={to_eva}&time={depart_iso}{DEPARTURE_TIME}",
             base_url("AXON_TRANSIT_URL", 3000)
         );
-        let body = get_json(&url, SEARCH_TIMEOUT)?;
+        let body = get_json(&url, SEARCH_TIMEOUT)
+            .map_err(|reason| format!("transit fare search {reason}"))?;
         let cheapest = body
             .as_array()
             .into_iter()
@@ -393,8 +425,16 @@ fn urlencode(value: &str) -> String {
     encoded
 }
 
+/// `crate::windows`' day numbers count from 0000-03-01, not from the Unix
+/// epoch: `day_number`/`iso_of_day_number` are Hinnant's civil form WITHOUT the
+/// `- 719468` shift, and they only ever round-trip against each other inside
+/// that module. A Unix day count therefore has to be shifted before it can be
+/// read as a date, and the first version of `now_iso` that did not stamped
+/// `0056-11-03` into a live response.
+const UNIX_EPOCH_DAY: i64 = 719_468;
+
 /// Now, as an ISO instant, without a date crate: the day number gives the date
-/// (`crate::windows::iso_of_day_number`) and the remainder gives the clock.
+/// and the remainder gives the clock.
 pub fn now_iso() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -404,7 +444,7 @@ pub fn now_iso() -> String {
     let rest = seconds.rem_euclid(86_400);
     format!(
         "{}T{:02}:{:02}:{:02}Z",
-        crate::windows::iso_of_day_number(day),
+        crate::windows::iso_of_day_number(day + UNIX_EPOCH_DAY),
         rest / 3600,
         (rest % 3600) / 60,
         rest % 60
@@ -423,13 +463,26 @@ mod tests {
         assert_eq!(urlencode("a,b"), "a%2Cb");
     }
 
+    /// The shape AND the century. The first version of this function fed a Unix
+    /// day count straight into `iso_of_day_number`, whose day 0 is 0000-03-01,
+    /// and stamped `0056-11-03` into a live response body.
     #[test]
-    fn now_is_an_iso_instant() {
+    fn now_is_an_iso_instant_in_this_century() {
         let now = now_iso();
         assert_eq!(now.len(), 20, "{now}");
         assert!(now.ends_with('Z'));
         assert_eq!(&now[4..5], "-");
         assert_eq!(&now[10..11], "T");
+        let year: i64 = now[..4].parse().expect("a four-digit year");
+        assert!(
+            (2025..2100).contains(&year),
+            "now_iso answered {now}, which is not a date this process is running on"
+        );
+        // The epoch shift, checked against a day whose date is known.
+        assert_eq!(
+            crate::windows::iso_of_day_number(UNIX_EPOCH_DAY),
+            "1970-01-01"
+        );
     }
 
     /// The climate contract is not agreed, so the reader is tolerant in what it
@@ -458,7 +511,10 @@ mod tests {
     fn a_reason_is_short_and_carries_no_host() {
         let long =
             "error sending request for url (http://127.0.0.1:8093/api/places): connection refused";
-        assert_eq!(short(long), "error sending request for url (http");
+        assert_eq!(
+            short(long),
+            "error sending request for url: connection refused"
+        );
         assert!(!short(long).contains("8093"));
     }
 }
