@@ -350,7 +350,13 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-fn revision_hash(parts: &[&str]) -> String {
+/// A length-prefixed SHA-256 over an ordered list of parts.
+///
+/// `pub` so the mail model rung stamps its `item_revision` with the same hash
+/// the feed evaluator uses rather than a second one, and so
+/// `mail_model_eval` can recompute it over a frozen corpus fixture. Length
+/// prefixes rather than a separator, so no choice of parts can collide.
+pub fn revision_hash(parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     for part in parts {
         hasher.update((part.len() as u64).to_be_bytes());

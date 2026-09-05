@@ -387,6 +387,58 @@ impl Store {
                    stream, rationale
               FROM {prefix}_triage_items
              WHERE classification_method = 'deterministic';
+
+            -- UNLIKE {prefix}_gmail_action_jobs, which states that no message
+            -- content is copied into it, this table DOES hold message-derived
+            -- text: `rationale` and `urgency_rationale` are a model's sentences
+            -- about a subject and a snippet. They are redacted before insert
+            -- against `redaction_class` = the higher of the row's class and the
+            -- class the PROPOSED stream implies, so an escalation at confirm
+            -- time cannot leave them under-redacted.
+            --
+            -- `agree` is deliberately NOT a column: it is rule_stream =
+            -- model_stream, derived in the report, and a stored copy would be a
+            -- second place for it to be wrong.
+            --
+            -- `state` carries no CHECK, following {prefix}_content_digests. The
+            -- vocabulary is enumerated by
+            -- `mail_model::tests::every_stored_state_is_in_the_documented_set`
+            -- instead, because it is the union of `summarize::Outcome::state()`
+            -- and four states this rung owns, and a CHECK here would drift from
+            -- that enum silently.
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_model_verdicts (
+                triage_id TEXT PRIMARY KEY
+                    REFERENCES {prefix}_triage_items(id) ON DELETE CASCADE,
+                mode TEXT NOT NULL CHECK (mode IN ('shadow','applied','held')),
+                state TEXT NOT NULL,
+                rule_decided_by TEXT NOT NULL
+                    CHECK (rule_decided_by IN ('config_rule','heuristic','fallback')),
+                rule_stream TEXT NOT NULL
+                    CHECK (rule_stream IN ('aktiv','issue','feed','werbung','belege','steuern','sonstiges')),
+                model_stream TEXT
+                    CHECK (model_stream IS NULL OR model_stream IN ('aktiv','issue','feed','werbung','belege','steuern','sonstiges')),
+                confidence_bp INTEGER
+                    CHECK (confidence_bp IS NULL OR confidence_bp BETWEEN 0 AND 10000),
+                urgency_bp INTEGER
+                    CHECK (urgency_bp IS NULL OR urgency_bp BETWEEN 0 AND 10000),
+                rationale TEXT,
+                urgency_rationale TEXT,
+                redactions INTEGER NOT NULL DEFAULT 0 CHECK (redactions >= 0),
+                data_class TEXT NOT NULL CHECK (data_class IN ('c0','c1','c2','c3')),
+                redaction_class TEXT NOT NULL CHECK (redaction_class IN ('c0','c1','c2','c3')),
+                producer TEXT NOT NULL,
+                item_revision TEXT NOT NULL,
+                prompt_revision TEXT NOT NULL DEFAULT 'mail-stream-v1-english',
+                classification_version TEXT NOT NULL DEFAULT 'mail-model-v1',
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                last_error TEXT,
+                next_attempt TEXT,
+                held_reason TEXT,
+                applied_at TEXT,
+                decided_at TEXT NOT NULL DEFAULT ({now})
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_triage_model_state
+                ON {prefix}_triage_model_verdicts(state);
             -- end mail-llm-rung 2026-09-03 -----------------------------------
             ",
             prefix = prefix,

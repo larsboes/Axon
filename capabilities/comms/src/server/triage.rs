@@ -519,10 +519,22 @@ pub(super) async fn triage_bulk_handler(Json(body): Json<TriageBulkBody>) -> Htt
                     .set_triage_status(&id, "dismissed")
                     .map_err(|error| error.to_string())
                     .map(|updated| updated.then_some(())),
-                "categorize" => store
-                    .set_triage_stream(&id, stream.as_deref().unwrap_or_default())
-                    .map_err(|error| error.to_string())
-                    .map(|updated| updated.then_some(())),
+                "categorize" => {
+                    let chosen = stream.as_deref().unwrap_or_default();
+                    match class_for_stream(&store, &id, chosen) {
+                        Ok(Some(classification)) => store
+                            .set_triage_stream(&id, chosen, &classification)
+                            .map_err(|error| error.to_string())
+                            .map(|write| {
+                                if write.narrowed {
+                                    narrowed += 1;
+                                }
+                                write.changed.then_some(())
+                            }),
+                        Ok(None) => Ok(None),
+                        Err(error) => Err(error),
+                    }
+                }
                 "set-data-class" => store
                     .set_triage_data_class(
                         &id,
@@ -644,22 +656,50 @@ pub(super) struct TriageStreamBody {
     stream: String,
 }
 
+/// The class a thread would hold once it sits in `stream`.
+///
+/// The sweep's rule set, registry pass included, applied to the row as it is
+/// stored and the category the operator just chose. `set_triage_stream` settles
+/// the class in its own transaction and needs the answer as plain data, because
+/// the people registry lives above the store.
+fn class_for_stream(store: &Store, id: &str, stream: &str) -> Result<Option<DataClass>, String> {
+    let Some(item) = store.get_triage(id).map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+    Ok(Some(intake::classify_mail(
+        stream,
+        item.from_addr.as_deref().unwrap_or_default(),
+        item.subject.as_deref().unwrap_or_default(),
+        item.snippet.as_deref().unwrap_or_default(),
+    )))
+}
+
 pub(super) async fn triage_stream_handler(
     Path(id): Path<String>,
     Json(body): Json<TriageStreamBody>,
 ) -> HttpResponse {
-    let result = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+    let result = tokio::task::spawn_blocking(move || -> Result<StreamWrite, String> {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
+        // The class the new category implies, settled in the same transaction
+        // as the category itself: `steuern` and `belege` are Others by rule, so
+        // a correction into one of them is also a redaction decision, and the
+        // dashboard prints "Redacted" from the class alone.
+        let Some(classification) = class_for_stream(&store, &id, &body.stream)? else {
+            return Ok(StreamWrite::default());
+        };
         store
-            .set_triage_stream(&id, &body.stream)
+            .set_triage_stream(&id, &body.stream, &classification)
             .map_err(|error| error.to_string())
     })
     .await;
 
     match result {
-        Ok(Ok(true)) => (StatusCode::OK, Json(json!({ "ok": true }))),
-        Ok(Ok(false)) => error_response(StatusCode::NOT_FOUND, "not found"),
+        Ok(Ok(write)) if write.changed => (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "narrowed": write.narrowed })),
+        ),
+        Ok(Ok(_)) => error_response(StatusCode::NOT_FOUND, "not found"),
         Ok(Err(error)) => error_response(StatusCode::BAD_REQUEST, error),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,

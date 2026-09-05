@@ -37,7 +37,7 @@ use comms::relevance::{self, RelevanceMatch};
 use comms::sources;
 use comms::store::{
     ClassWrite, CloudDerivativeApproval, CloudDerivativeState, CloudQueueRequest, FeedItem,
-    FeedOrigin, FeedRun, GmailActionJob, OriginSummary, Store, TriageItem,
+    FeedOrigin, FeedRun, GmailActionJob, OriginSummary, Store, StreamWrite, TriageItem,
 };
 use comms::travel;
 use comms::vault_links;

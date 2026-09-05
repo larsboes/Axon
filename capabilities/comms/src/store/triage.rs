@@ -292,11 +292,28 @@ impl Store {
     /// Record a human category correction without resolving the proposal. The
     /// separate classification provenance is what prevents the next sweep from
     /// overwriting the correction with a deterministic rule result.
+    ///
+    /// One transaction over three writes, because the category decides the
+    /// other two. `steuern` and `belege` are Others by rule
+    /// (`content_item::mail_others_reason`), so moving a thread into one of
+    /// them raises its class — and a row at the new `c2` still holding the
+    /// verbatim subject `c2` exists to hide is exactly the gap
+    /// `set_triage_data_class` was given a transaction to close. This is the
+    /// human path, and it is the ONLY path allowed to raise a class here:
+    /// `apply_model_stream` refuses a class-escalating proposal outright,
+    /// because the class UPDATE is escalation-only and the narrowing is
+    /// deliberately not a delete.
+    ///
+    /// `classification` is re-derived by the caller from the stored row and the
+    /// new stream, the way `refresh_one_triage_class` does it — the people
+    /// registry lives above the store, and a store that read it would be a
+    /// second classifier.
     pub fn set_triage_stream(
         &self,
         id: &str,
         stream: &str,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+        classification: &crate::content_item::DataClass,
+    ) -> Result<StreamWrite, Box<dyn std::error::Error>> {
         if !crate::rules::STREAMS.contains(&stream) {
             return Err(format!(
                 "invalid triage stream '{stream}' -- must be one of: {}",
@@ -304,8 +321,11 @@ impl Store {
             )
             .into());
         }
-        let conn = self.conn()?;
-        let affected = conn.execute(
+        let mut conn = self.conn()?;
+        // Immediate, for the reason `upsert_triage` states: this writes, then
+        // reads the settled class back, then writes again.
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let affected = transaction.execute(
             &format!(
                 "UPDATE {}_triage_items SET
                     stream = ?1,
@@ -317,7 +337,55 @@ impl Store {
             ),
             params![&stream, &id],
         )?;
-        Ok(affected > 0)
+        if affected == 0 {
+            return Ok(StreamWrite::default());
+        }
+        let class_changed = transaction.execute(
+            &self.refresh_data_class_sql(),
+            params![
+                &classification.value,
+                &classification.rationale,
+                &classification.method,
+                &classification.version,
+                &id,
+            ],
+        )? > 0;
+        // Read back rather than assume the argument: the escalation guard can
+        // refuse the write, and what the row NOW HOLDS is what the redaction is
+        // judged against.
+        let Some((stored_class, subject, snippet)) = transaction
+            .query_row(
+                &format!(
+                    "SELECT data_class, subject, snippet FROM {}_triage_items WHERE id = ?1",
+                    self.prefix
+                ),
+                params![&id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            return Ok(StreamWrite::default());
+        };
+        let narrowed = narrow_review_fields(
+            &transaction,
+            &self.prefix,
+            id,
+            &stored_class,
+            subject.as_deref(),
+            snippet.as_deref(),
+        )?;
+        transaction.commit()?;
+        Ok(StreamWrite {
+            changed: true,
+            class_changed,
+            narrowed,
+        })
     }
 
     /// Set a mail's class by hand. Same rule as [`Store::set_feed_data_class`],
@@ -544,6 +612,390 @@ impl Store {
             params![&subject, &snippet, &id],
         )?;
         Ok(affected > 0)
+    }
+
+    // -- the model rung -----------------------------------------------------
+
+    /// The threads the model rung may look at, newest first, with whatever
+    /// verdict each already carries.
+    ///
+    /// Four filters, and each one is load-bearing:
+    /// - `decided_by = 'fallback'` — the rung exists for the rows the rules did
+    ///   not decide. Today those are the same 102 rows as `stream = 'aktiv'`,
+    ///   but the moment an overlay rule declares `aktiv` the two sets diverge,
+    ///   which is why the rung is persisted rather than string-matched.
+    /// - `classification_method = 'deterministic'` — not merely `<> 'human'`.
+    ///   An already-applied model row is not re-prompted, which is what closes
+    ///   the second-pass loop.
+    /// - `status IN ('proposed','approved')` — an archived or trashed thread
+    ///   has no category decision left to make.
+    /// - a joined verdict, so the caller can compare `item_revision`.
+    ///
+    /// `limit` is applied by the CALLER, after the `item_revision` comparison,
+    /// because SQL cannot compute that hash. The coarse filters already cut the
+    /// table to the fallback rows, so this reads a hundred-odd rows and not the
+    /// whole file.
+    pub fn model_rung_candidates(&self) -> Result<Vec<ModelCandidate>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        Ok(conn.query_all(
+            &format!(
+                "SELECT i.id, i.from_addr, i.subject, i.snippet, i.data_class,
+                        r.stream, r.rationale, r.decided_by,
+                        v.producer, v.prompt_revision, v.item_revision, v.state,
+                        v.mode, v.attempts, v.next_attempt
+                   FROM {prefix}_triage_items i
+                   JOIN {prefix}_triage_rules r ON r.triage_id = i.id
+                   LEFT JOIN {prefix}_triage_model_verdicts v ON v.triage_id = i.id
+                  WHERE r.decided_by = 'fallback'
+                    AND i.classification_method = 'deterministic'
+                    AND i.status IN ('proposed','approved')
+                  ORDER BY i.internal_date DESC NULLS LAST",
+                prefix = self.prefix
+            ),
+            [],
+            |row| {
+                let producer: Option<String> = row.get(8)?;
+                Ok(ModelCandidate {
+                    id: row.get(0)?,
+                    from_addr: row.get(1)?,
+                    subject: row.get(2)?,
+                    snippet: row.get(3)?,
+                    data_class: row.get(4)?,
+                    rule_stream: row.get(5)?,
+                    rule_rationale: row.get(6)?,
+                    rule_decided_by: row.get(7)?,
+                    stored: match producer {
+                        Some(producer) => Some(StoredVerdictState {
+                            producer,
+                            prompt_revision: row.get(9)?,
+                            item_revision: row.get(10)?,
+                            state: row.get(11)?,
+                            mode: row.get(12)?,
+                            attempts: row.get(13)?,
+                            next_attempt: row.get(14)?,
+                        }),
+                        None => None,
+                    },
+                })
+            },
+        )?)
+    }
+
+    /// Store one verdict, replacing whatever this thread carried.
+    ///
+    /// Whole-row replacement rather than a partial update: a row with a new
+    /// state and a previous run's rationale would describe two runs at once,
+    /// and the report reads both columns.
+    pub fn upsert_model_verdict(
+        &self,
+        verdict: &ModelVerdict,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        conn.execute(
+            &format!(
+                "INSERT INTO {prefix}_triage_model_verdicts
+                    (triage_id, mode, state, rule_decided_by, rule_stream, model_stream,
+                     confidence_bp, urgency_bp, rationale, urgency_rationale, redactions,
+                     data_class, redaction_class, producer, item_revision, prompt_revision,
+                     classification_version, attempts, last_error, next_attempt, held_reason,
+                     applied_at, decided_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,
+                         ?20,?21,?22,{now})
+                 ON CONFLICT (triage_id) DO UPDATE SET
+                     mode = excluded.mode,
+                     state = excluded.state,
+                     rule_decided_by = excluded.rule_decided_by,
+                     rule_stream = excluded.rule_stream,
+                     model_stream = excluded.model_stream,
+                     confidence_bp = excluded.confidence_bp,
+                     urgency_bp = excluded.urgency_bp,
+                     rationale = excluded.rationale,
+                     urgency_rationale = excluded.urgency_rationale,
+                     redactions = excluded.redactions,
+                     data_class = excluded.data_class,
+                     redaction_class = excluded.redaction_class,
+                     producer = excluded.producer,
+                     item_revision = excluded.item_revision,
+                     prompt_revision = excluded.prompt_revision,
+                     classification_version = excluded.classification_version,
+                     attempts = excluded.attempts,
+                     last_error = excluded.last_error,
+                     next_attempt = excluded.next_attempt,
+                     held_reason = excluded.held_reason,
+                     applied_at = excluded.applied_at,
+                     decided_at = excluded.decided_at",
+                prefix = self.prefix,
+                now = axon_store::NOW
+            ),
+            params![
+                &verdict.triage_id,
+                &verdict.mode,
+                &verdict.state,
+                &verdict.rule_decided_by,
+                &verdict.rule_stream,
+                &verdict.model_stream,
+                &verdict.confidence_bp,
+                &verdict.urgency_bp,
+                &verdict.rationale,
+                &verdict.urgency_rationale,
+                &verdict.redactions,
+                &verdict.data_class,
+                &verdict.redaction_class,
+                &verdict.producer,
+                &verdict.item_revision,
+                &verdict.prompt_revision,
+                &verdict.classification_version,
+                &verdict.attempts,
+                &verdict.last_error,
+                &verdict.next_attempt,
+                &verdict.held_reason,
+                &verdict.applied_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Write one accepted model proposal onto the category axis.
+    ///
+    /// The stream and nothing else. It refuses a proposal that would raise the
+    /// data class before it opens a transaction, because the caller must have
+    /// stored that verdict `held` instead: the class UPDATE is escalation-only
+    /// and the narrowing that follows it "is deliberately not a delete", so a
+    /// wrong `belege` from an uncalibrated model on a thread nobody read would
+    /// leave a permanently Others row with a permanently redacted subject. A
+    /// machine may not open that door; the human confirm path
+    /// ([`Store::set_triage_stream`]) may, and says so in the button.
+    ///
+    /// The `WHERE` clause is the method ladder for an incoming `model`: rank 20
+    /// takes a legacy, deterministic or older model row and loses to a human.
+    pub fn apply_model_stream(
+        &self,
+        verdict: &ModelVerdict,
+    ) -> Result<ModelWrite, Box<dyn std::error::Error>> {
+        let Some(stream) = verdict.model_stream.as_deref() else {
+            return Err("a verdict with no model stream cannot be applied".into());
+        };
+        if !crate::rules::STREAMS.contains(&stream) {
+            return Err(format!("invalid triage stream '{stream}'").into());
+        }
+        if crate::content_item::class_rank(&verdict.redaction_class)
+            > crate::content_item::class_rank(&verdict.data_class)
+        {
+            return Err(format!(
+                "applying '{stream}' would raise this mail from {} to {}; \
+                 a class-raising proposal is held for a human",
+                verdict.data_class, verdict.redaction_class
+            )
+            .into());
+        }
+        let mut conn = self.conn()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let affected = transaction.execute(
+            &format!(
+                "UPDATE {prefix}_triage_items SET
+                    stream = ?1,
+                    rationale = ?2,
+                    classification_method = 'model',
+                    classification_version = ?3
+                 WHERE id = ?4
+                   AND (CASE classification_method WHEN 'human' THEN 30 WHEN 'model' THEN 20
+                        WHEN 'deterministic' THEN 10 ELSE 0 END) <= 20",
+                prefix = self.prefix
+            ),
+            params![
+                &stream,
+                verdict
+                    .rationale
+                    .as_deref()
+                    .unwrap_or("Classified by the local model rung."),
+                &verdict.classification_version,
+                &verdict.triage_id,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(ModelWrite {
+            stream_changed: affected > 0,
+        })
+    }
+
+    /// Put the deterministic verdict back on every row this rung moved.
+    ///
+    /// The bulk rollback: "the model was wrong about a class of mail" has to be
+    /// one command rather than a hundred clicks. It restores stream, rationale,
+    /// classification_method and classification_version from
+    /// `{prefix}_triage_rules` and marks the verdict `shadow` again.
+    ///
+    /// It cannot restore a lowered class or an un-narrowed subject, and it does
+    /// not pretend to: `refresh_data_class_sql` is escalation-only and the
+    /// narrowing is permanent. That is the whole reason apply never escalates,
+    /// and the route says it in words.
+    ///
+    /// Returns `(reverted, skipped_not_model, skipped_no_rules_row)`.
+    pub fn revert_model_streams(
+        &self,
+        ids: Option<&[String]>,
+    ) -> Result<(usize, usize, usize), Box<dyn std::error::Error>> {
+        let mut conn = self.conn()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let selected: Vec<(String, String, Option<String>)> = {
+            let mut statement = transaction.prepare(&format!(
+                "SELECT i.id, i.classification_method, r.stream
+                   FROM {prefix}_triage_items i
+                   LEFT JOIN {prefix}_triage_rules r ON r.triage_id = i.id
+                  WHERE i.id IN (SELECT triage_id FROM {prefix}_triage_model_verdicts
+                                  WHERE mode = 'applied')
+                     OR i.classification_method = 'model'",
+                prefix = self.prefix
+            ))?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get::<_, Option<String>>(2)?))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let wanted: Option<std::collections::HashSet<&str>> =
+            ids.map(|ids| ids.iter().map(String::as_str).collect());
+
+        let mut reverted = 0usize;
+        let mut skipped_not_model = 0usize;
+        let mut skipped_no_rules_row = 0usize;
+        for (id, method, rules_stream) in &selected {
+            if let Some(wanted) = &wanted {
+                if !wanted.contains(id.as_str()) {
+                    continue;
+                }
+            }
+            if method != crate::content_item::METHOD_MODEL {
+                skipped_not_model += 1;
+                continue;
+            }
+            if rules_stream.is_none() {
+                // No deterministic verdict to put back. Leaving the model row
+                // in place is the honest answer: overwriting it with a guess
+                // would be a third classifier nobody asked for.
+                skipped_no_rules_row += 1;
+                continue;
+            }
+            transaction.execute(
+                &format!(
+                    "UPDATE {prefix}_triage_items SET
+                        stream = (SELECT stream FROM {prefix}_triage_rules WHERE triage_id = ?1),
+                        rationale = (SELECT rationale FROM {prefix}_triage_rules WHERE triage_id = ?1),
+                        classification_method = 'deterministic',
+                        classification_version =
+                            (SELECT rules_version FROM {prefix}_triage_rules WHERE triage_id = ?1)
+                     WHERE id = ?1 AND classification_method = 'model'",
+                    prefix = self.prefix
+                ),
+                params![&id],
+            )?;
+            transaction.execute(
+                &format!(
+                    "UPDATE {prefix}_triage_model_verdicts
+                        SET mode = 'shadow', applied_at = NULL
+                      WHERE triage_id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&id],
+            )?;
+            reverted += 1;
+        }
+        transaction.commit()?;
+        Ok((reverted, skipped_not_model, skipped_no_rules_row))
+    }
+
+    /// Every stored verdict, as the report counts them.
+    ///
+    /// The SELECT list carries no `rationale` and no `urgency_rationale` on
+    /// purpose. The report body is meant to be safe to log and to paste into a
+    /// decision record, and the cheapest way to keep it so is for the query
+    /// that feeds it to be unable to return the text.
+    pub fn model_verdict_summaries(
+        &self,
+        mode: Option<&str>,
+    ) -> Result<Vec<ModelVerdictSummary>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let base = format!(
+            "SELECT triage_id, mode, state, rule_stream, model_stream, confidence_bp,
+                    urgency_bp, data_class, held_reason, producer, prompt_revision
+               FROM {}_triage_model_verdicts",
+            self.prefix
+        );
+        let read = |row: &rusqlite::Row| {
+            Ok(ModelVerdictSummary {
+                triage_id: row.get(0)?,
+                mode: row.get(1)?,
+                state: row.get(2)?,
+                rule_stream: row.get(3)?,
+                model_stream: row.get(4)?,
+                confidence_bp: row.get(5)?,
+                urgency_bp: row.get(6)?,
+                data_class: row.get(7)?,
+                held_reason: row.get(8)?,
+                producer: row.get(9)?,
+                prompt_revision: row.get(10)?,
+            })
+        };
+        Ok(match mode {
+            Some(mode) => conn.query_all(
+                &format!("{base} WHERE mode = ?1 ORDER BY decided_at DESC"),
+                params![&mode],
+                read,
+            )?,
+            None => conn.query_all(&format!("{base} ORDER BY decided_at DESC"), [], read)?,
+        })
+    }
+
+    /// Every stored verdict in full, keyed by thread, for the reader contract.
+    ///
+    /// One query before the loop rather than one per item: `triage_handler`
+    /// already issues a relevance query per item, and a second per-item query
+    /// would double that over the whole table for no reason.
+    pub fn model_verdicts(
+        &self,
+    ) -> Result<std::collections::HashMap<String, ModelVerdict>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let rows: Vec<ModelVerdict> = conn.query_all(
+            &format!(
+                "SELECT triage_id, mode, state, rule_decided_by, rule_stream, model_stream,
+                        confidence_bp, urgency_bp, rationale, urgency_rationale, redactions,
+                        data_class, redaction_class, producer, item_revision, prompt_revision,
+                        classification_version, attempts, last_error, next_attempt, held_reason,
+                        applied_at
+                   FROM {}_triage_model_verdicts",
+                self.prefix
+            ),
+            [],
+            |row| {
+                Ok(ModelVerdict {
+                    triage_id: row.get(0)?,
+                    mode: row.get(1)?,
+                    state: row.get(2)?,
+                    rule_decided_by: row.get(3)?,
+                    rule_stream: row.get(4)?,
+                    model_stream: row.get(5)?,
+                    confidence_bp: row.get(6)?,
+                    urgency_bp: row.get(7)?,
+                    rationale: row.get(8)?,
+                    urgency_rationale: row.get(9)?,
+                    redactions: row.get(10)?,
+                    data_class: row.get(11)?,
+                    redaction_class: row.get(12)?,
+                    producer: row.get(13)?,
+                    item_revision: row.get(14)?,
+                    prompt_revision: row.get(15)?,
+                    classification_version: row.get(16)?,
+                    attempts: row.get(17)?,
+                    last_error: row.get(18)?,
+                    next_attempt: row.get(19)?,
+                    held_reason: row.get(20)?,
+                    applied_at: row.get(21)?,
+                })
+            },
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(|verdict| (verdict.triage_id.clone(), verdict))
+            .collect())
     }
 
     /// Record the `Waiting` label locally, after Gmail has already accepted it.

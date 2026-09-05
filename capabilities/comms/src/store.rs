@@ -266,6 +266,105 @@ pub struct RulesVerdictRow {
     pub rules_version: String,
 }
 
+/// One thread the model rung may look at, with whatever verdict it already
+/// carries.
+///
+/// The verdict travels with the candidate so the staleness check happens once,
+/// in Rust, against an `item_revision` SQL cannot compute.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelCandidate {
+    pub id: String,
+    pub from_addr: Option<String>,
+    pub subject: Option<String>,
+    pub snippet: Option<String>,
+    pub data_class: String,
+    pub rule_stream: String,
+    pub rule_rationale: String,
+    pub rule_decided_by: String,
+    pub stored: Option<StoredVerdictState>,
+}
+
+/// The part of a stored verdict that decides whether the thread is asked again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredVerdictState {
+    pub producer: String,
+    pub prompt_revision: String,
+    pub item_revision: String,
+    pub state: String,
+    pub mode: String,
+    pub attempts: i64,
+    pub next_attempt: Option<String>,
+}
+
+/// What one pass decided about one thread. Written whole; there is no partial
+/// update, because a verdict with a new state and an old rationale would be a
+/// row describing two different runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelVerdict {
+    pub triage_id: String,
+    /// `shadow`, `applied`, or `held` — apply refused this proposal because it
+    /// would raise the data class, and a human owns that decision.
+    pub mode: String,
+    pub state: String,
+    pub rule_decided_by: String,
+    pub rule_stream: String,
+    pub model_stream: Option<String>,
+    pub confidence_bp: Option<i64>,
+    pub urgency_bp: Option<i64>,
+    pub rationale: Option<String>,
+    pub urgency_rationale: Option<String>,
+    pub redactions: i64,
+    /// The class at prompt time. This is what a receipt proves "no Secret mail
+    /// was prompted" from.
+    pub data_class: String,
+    /// The class the free text was redacted against: the higher of `data_class`
+    /// and the class `model_stream` implies.
+    pub redaction_class: String,
+    pub producer: String,
+    pub item_revision: String,
+    pub prompt_revision: String,
+    pub classification_version: String,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub next_attempt: Option<String>,
+    pub held_reason: Option<String>,
+    pub applied_at: Option<String>,
+}
+
+/// One verdict as the report counts it. Deliberately carries no `rationale`
+/// and no `urgency_rationale`: the report body is meant to be safe to log and
+/// to paste, and the cheapest way to keep it so is for the query that feeds it
+/// never to select the text at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelVerdictSummary {
+    pub triage_id: String,
+    pub mode: String,
+    pub state: String,
+    pub rule_stream: String,
+    pub model_stream: Option<String>,
+    pub confidence_bp: Option<i64>,
+    pub urgency_bp: Option<i64>,
+    pub data_class: String,
+    pub held_reason: Option<String>,
+    pub producer: String,
+    pub prompt_revision: String,
+}
+
+/// What applying one verdict did to the row.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ModelWrite {
+    pub stream_changed: bool,
+}
+
+/// What a human category change did to the row and to the two columns the
+/// class governs.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct StreamWrite {
+    pub changed: bool,
+    pub class_changed: bool,
+    pub narrowed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GmailActionJob {
     pub job_id: i64,
@@ -749,6 +848,22 @@ pub(crate) mod db_tests {
         }
     }
 
+    /// `set_triage_stream` with the class the new category implies, re-derived
+    /// the way the handler does it. A helper because the class is now a
+    /// parameter and every caller has to answer the same question.
+    pub(crate) fn set_stream(store: &Store, id: &str, stream: &str) -> StreamWrite {
+        let item = store.get_triage(id).unwrap().expect("the row exists");
+        let classification = crate::intake::classify_mail(
+            stream,
+            item.from_addr.as_deref().unwrap_or_default(),
+            item.subject.as_deref().unwrap_or_default(),
+            item.snippet.as_deref().unwrap_or_default(),
+        );
+        store
+            .set_triage_stream(id, stream, &classification)
+            .unwrap()
+    }
+
     fn mk_feed(url: &str, kind: &str, stream: &str) -> FeedItem {
         let mut f = FeedItem::new(url, stream, kind);
         f.title = Some("A Title".into());
@@ -1066,7 +1181,7 @@ pub(crate) mod db_tests {
         store
             .upsert_triage(&mk_triage("thread:manual", "aktiv"))
             .unwrap();
-        assert!(store.set_triage_stream("thread:manual", "belege").unwrap());
+        assert!(set_stream(&store, "thread:manual", "belege").changed);
 
         let mut refetched = mk_triage("thread:manual", "werbung");
         refetched.rationale = "new rule result".into();
@@ -1081,7 +1196,11 @@ pub(crate) mod db_tests {
             row.status, "proposed",
             "categorizing does not resolve the proposal"
         );
-        assert!(store.set_triage_stream("thread:manual", "bogus").is_err());
+        let classification =
+            crate::content_item::DataClass::classify_mail("aktiv", "a@b.example", "x");
+        assert!(store
+            .set_triage_stream("thread:manual", "bogus", &classification)
+            .is_err());
     }
 
     #[test]
@@ -1407,7 +1526,7 @@ pub(crate) mod db_tests {
         store
             .upsert_triage(&mk_triage("thread:human", "aktiv"))
             .unwrap();
-        assert!(store.set_triage_stream("thread:human", "steuern").unwrap());
+        assert!(set_stream(&store, "thread:human", "steuern").changed);
 
         let mut model = mk_triage("thread:human", "werbung");
         model.classification_method = content_item::METHOD_MODEL.into();
@@ -1564,6 +1683,277 @@ pub(crate) mod db_tests {
             .triage_rules_verdict("thread:no-rung")
             .unwrap()
             .is_none());
+    }
+
+    /// A verdict as the pass writes one, with only the fields a test cares
+    /// about set.
+    fn mk_verdict(
+        id: &str,
+        model_stream: &str,
+        data_class: &str,
+        redaction_class: &str,
+    ) -> ModelVerdict {
+        ModelVerdict {
+            triage_id: id.into(),
+            mode: "shadow".into(),
+            state: "generated".into(),
+            rule_decided_by: "fallback".into(),
+            rule_stream: "aktiv".into(),
+            model_stream: Some(model_stream.into()),
+            confidence_bp: Some(8_000),
+            urgency_bp: Some(4_000),
+            rationale: Some("the model's sentence".into()),
+            urgency_rationale: Some("nothing is asked".into()),
+            redactions: 0,
+            data_class: data_class.into(),
+            redaction_class: redaction_class.into(),
+            producer: "foundation-models/apple:mail-stream-v1-english".into(),
+            item_revision: "revision-1".into(),
+            prompt_revision: "mail-stream-v1-english".into(),
+            classification_version: "mail-model-v1".into(),
+            attempts: 0,
+            last_error: None,
+            next_attempt: None,
+            held_reason: None,
+            applied_at: None,
+        }
+    }
+
+    /// A fallback row with its rung recorded, which is the only shape the model
+    /// rung ever sees.
+    fn seed_fallback(store: &Store, id: &str) {
+        store
+            .upsert_triage_with_rules(
+                &mk_triage(id, "aktiv"),
+                &crate::rules::Verdict {
+                    stream: "aktiv".into(),
+                    rationale: "No rule matched; kept active as the conservative default.".into(),
+                    decided_by: crate::rules::DecidedBy::Fallback,
+                },
+            )
+            .unwrap();
+    }
+
+    /// A human correction is also a redaction decision, because `steuern` and
+    /// `belege` are Others by rule. Before this, the class settled on a second
+    /// endpoint nobody remembers to call, and the dashboard printed "Redacted"
+    /// from the class alone — so the gap was invisible in the one place a human
+    /// would look.
+    #[test]
+    fn a_human_stream_change_settles_the_class_and_narrows_in_one_call() {
+        let store = open_test_store("triage_human_stream_settles_class");
+        let mut item = mk_triage("thread:settle", "aktiv");
+        // One token, because the redactor is token-based: a spaced IBAN is
+        // six short words to it, and none of them looks like an account.
+        item.subject = Some("Rechnung DE89370400440532013000".into());
+        item.snippet = Some("Bitte zahlen Sie an DE89370400440532013000".into());
+        store.upsert_triage(&item).unwrap();
+        assert_eq!(
+            store
+                .get_triage("thread:settle")
+                .unwrap()
+                .unwrap()
+                .data_class,
+            "c1",
+            "the setup row starts Mine"
+        );
+
+        let write = set_stream(&store, "thread:settle", "belege");
+        assert!(write.changed);
+        assert!(
+            write.class_changed,
+            "moving to belege must settle the class"
+        );
+        assert!(write.narrowed, "and narrow what that class does not admit");
+
+        let row = store.get_triage("thread:settle").unwrap().unwrap();
+        assert_eq!(row.stream, "belege");
+        assert_eq!(row.classification_method, "human");
+        assert_eq!(row.data_class, "c2");
+        assert_eq!(row.data_classification_method, "deterministic");
+        assert!(
+            !row.subject.unwrap().contains("DE89370400440532013000"),
+            "the subject still holds what c2 exists to hide"
+        );
+    }
+
+    /// The one thing a machine may not do here. The class UPDATE is
+    /// escalation-only and the narrowing that follows it cannot be undone, so a
+    /// wrong `belege` on a thread nobody read would leave a permanently Others
+    /// row with a permanently redacted subject.
+    #[test]
+    fn apply_refuses_a_class_escalating_proposal() {
+        let store = open_test_store("triage_apply_refuses_escalation");
+        seed_fallback(&store, "thread:escalate");
+        let before = store.get_triage("thread:escalate").unwrap().unwrap();
+
+        let verdict = mk_verdict("thread:escalate", "belege", "c1", "c2");
+        let error = store
+            .apply_model_stream(&verdict)
+            .expect_err("a class-raising proposal must be refused")
+            .to_string();
+        assert!(error.contains("held for a human"), "got {error}");
+
+        let after = store.get_triage("thread:escalate").unwrap().unwrap();
+        assert_eq!(after.stream, before.stream);
+        assert_eq!(after.classification_method, "deterministic");
+        assert_eq!(after.data_class, before.data_class);
+        assert_eq!(after.subject, before.subject);
+        assert_eq!(after.snippet, before.snippet);
+    }
+
+    /// Applying moves the category and nothing else, and a human still outranks
+    /// it. `ModelWrite.stream_changed` is false when the guard refused.
+    #[test]
+    fn apply_writes_the_category_and_loses_to_a_human() {
+        let store = open_test_store("triage_apply_writes_category");
+        seed_fallback(&store, "thread:apply");
+        let write = store
+            .apply_model_stream(&mk_verdict("thread:apply", "werbung", "c1", "c1"))
+            .unwrap();
+        assert!(write.stream_changed);
+        let row = store.get_triage("thread:apply").unwrap().unwrap();
+        assert_eq!(row.stream, "werbung");
+        assert_eq!(row.classification_method, "model");
+        assert_eq!(row.classification_version, "mail-model-v1");
+        assert_eq!(row.data_class, "c1", "apply never touches the class axis");
+
+        seed_fallback(&store, "thread:human-apply");
+        set_stream(&store, "thread:human-apply", "feed");
+        let write = store
+            .apply_model_stream(&mk_verdict("thread:human-apply", "werbung", "c1", "c1"))
+            .unwrap();
+        assert!(!write.stream_changed);
+        assert_eq!(
+            store
+                .get_triage("thread:human-apply")
+                .unwrap()
+                .unwrap()
+                .stream,
+            "feed"
+        );
+    }
+
+    /// The loop a second pass would otherwise run: apply writes
+    /// `classification_method = 'model'`, and the candidate query filters on
+    /// `= 'deterministic'` rather than `<> 'human'`, so the row leaves the
+    /// candidate set for good.
+    #[test]
+    fn a_second_apply_pass_prompts_nothing() {
+        let store = open_test_store("triage_second_pass_empty");
+        seed_fallback(&store, "thread:once");
+        assert_eq!(store.model_rung_candidates().unwrap().len(), 1);
+
+        let verdict = mk_verdict("thread:once", "werbung", "c1", "c1");
+        store.apply_model_stream(&verdict).unwrap();
+        store.upsert_model_verdict(&verdict).unwrap();
+
+        assert!(
+            store.model_rung_candidates().unwrap().is_empty(),
+            "an applied row must not be prompted again"
+        );
+    }
+
+    /// Only the rows the rules did not decide, and only the rows that carry a
+    /// stored rung at all.
+    #[test]
+    fn only_fallback_rows_are_candidates() {
+        let store = open_test_store("triage_candidates_are_fallback");
+        for (id, stream, decided_by) in [
+            ("thread:cfg", "feed", crate::rules::DecidedBy::ConfigRule),
+            ("thread:heur", "werbung", crate::rules::DecidedBy::Heuristic),
+            ("thread:fall", "aktiv", crate::rules::DecidedBy::Fallback),
+        ] {
+            store
+                .upsert_triage_with_rules(
+                    &mk_triage(id, stream),
+                    &crate::rules::Verdict {
+                        stream: stream.into(),
+                        rationale: "a rules result".into(),
+                        decided_by,
+                    },
+                )
+                .unwrap();
+        }
+        // Written by a caller that knows nothing about rungs: no rules row, so
+        // no eligibility, which is the conservative reading of "unknown".
+        store
+            .upsert_triage(&mk_triage("thread:norung", "aktiv"))
+            .unwrap();
+
+        let ids: Vec<String> = store
+            .model_rung_candidates()
+            .unwrap()
+            .into_iter()
+            .map(|candidate| candidate.id)
+            .collect();
+        assert_eq!(ids, vec!["thread:fall".to_string()]);
+
+        // And an archived thread has no category decision left to make.
+        store.set_triage_status("thread:fall", "archived").unwrap();
+        assert!(store.model_rung_candidates().unwrap().is_empty());
+    }
+
+    /// Rollback is the config boolean plus this. It puts the deterministic
+    /// verdict back exactly, and it does NOT put the class back — which the
+    /// route says in words, because it cannot.
+    #[test]
+    fn revert_restores_the_rules_verdict() {
+        let store = open_test_store("triage_revert_restores");
+        seed_fallback(&store, "thread:revert");
+        let mut verdict = mk_verdict("thread:revert", "werbung", "c1", "c1");
+        store.apply_model_stream(&verdict).unwrap();
+        verdict.mode = "applied".into();
+        verdict.applied_at = Some("2026-09-05 20:00:00+00:00".into());
+        store.upsert_model_verdict(&verdict).unwrap();
+        // Raise the class the way a later refresh would, so the test can prove
+        // the revert does not lower it back.
+        store
+            .set_triage_data_class("thread:revert", "c2", None)
+            .unwrap();
+
+        let (reverted, not_model, no_rules) = store.revert_model_streams(None).unwrap();
+        assert_eq!((reverted, not_model, no_rules), (1, 0, 0));
+
+        let rules = store
+            .triage_rules_verdict("thread:revert")
+            .unwrap()
+            .unwrap();
+        let row = store.get_triage("thread:revert").unwrap().unwrap();
+        assert_eq!(row.stream, rules.stream);
+        assert_eq!(row.rationale, rules.rationale);
+        assert_eq!(row.classification_method, "deterministic");
+        assert_eq!(row.classification_version, rules.rules_version);
+        assert_eq!(
+            row.data_class, "c2",
+            "revert restores the stream axis only; the class is escalation-only"
+        );
+        let summaries = store.model_verdict_summaries(None).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].mode, "shadow");
+    }
+
+    /// The report is meant to be safe to log and to paste. The query that feeds
+    /// it cannot return a rationale, which is a stronger guarantee than a
+    /// handler that remembers not to serialize one.
+    #[test]
+    fn the_summary_query_cannot_return_mail_content() {
+        let store = open_test_store("triage_summary_no_content");
+        seed_fallback(&store, "thread:summary");
+        let mut verdict = mk_verdict("thread:summary", "werbung", "c1", "c1");
+        verdict.rationale = Some("ZZTOPSECRETTOKEN".into());
+        verdict.urgency_rationale = Some("ZZTOPSECRETTOKEN".into());
+        store.upsert_model_verdict(&verdict).unwrap();
+
+        let rendered = format!("{:?}", store.model_verdict_summaries(None).unwrap());
+        assert!(!rendered.contains("ZZTOPSECRETTOKEN"), "got {rendered}");
+        // The reader contract does carry it, because the dashboard renders it
+        // beside the rule's rationale.
+        let full = store.model_verdicts().unwrap();
+        assert_eq!(
+            full["thread:summary"].rationale.as_deref(),
+            Some("ZZTOPSECRETTOKEN")
+        );
     }
 
     #[test]

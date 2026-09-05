@@ -121,7 +121,7 @@ pub fn unattended_producer_revisions(cfg: &Config) -> Vec<String> {
 /// The `Target` shape is deliberately plain data: `libs/summarize` never learns
 /// what an `InferenceConfig` is, so a capability with no inference dependency
 /// can still call it.
-fn to_target(cfg: &Config, role: &axon_inference::ResolvedRole) -> Target {
+pub(crate) fn to_target(cfg: &Config, role: &axon_inference::ResolvedRole) -> Target {
     let loopback = role.is_loopback();
     Target {
         endpoint: role.chat_completions_endpoint(),
