@@ -78,6 +78,43 @@ a per-capability security decision that stays visible in that capability's sourc
 axon-status, which can start and stop the machine's capabilities, correctly carries
 none.
 
+## The browser-origin refusal (`origin`)
+
+A second, narrower gate, for the capabilities that serve C2 data to a browser.
+`origin::refuse_foreign_origins` answers **403** when a request carries an `Origin`
+header this deployment does not serve the dashboard from. Refusing the request — rather
+than merely omitting CORS response headers — is what also stops a hostile page's
+"simple" cross-site POST, which a browser sends before it reads any response header.
+
+A request with **no** `Origin` passes. That is not a hole: it is how every
+server-to-server caller works (curl, the runner's probes, `capabilities/calendar`'s POST
+into trips), and a browser always sends one on a cross-origin request.
+
+| | |
+|---|---|
+| Allowed by default | `localhost`, `127.0.0.1`, `[::1]`, any `*.ts.net` host |
+| Env var | `AXON_<CAPABILITY>_ALLOWED_ORIGIN_HOSTS` — comma-separated exact hosts, which **replaces** the `.ts.net` suffix and closes the Tailscale Funnel gap |
+| Applied by | `places` (the companion register, README D4 / ISA PLC-7) and `trips` (the plan-search body carries the operator's feasible windows and a companion hint under `CorsLayer::permissive()`) |
+
+```rust
+.layer(axum::middleware::from_fn_with_state(
+    "places",
+    axon_server::origin::refuse_foreign_origins,
+))
+```
+
+**axum applies a layer only to routes registered before it**: "Additional routes added
+after `layer` is called will not have the middleware added" (axum 0.7,
+`src/docs/routing/layer.md`). A route appended below that call silently loses the
+refusal, and a test that exercises `origin_allowed_by` alone still passes. Each consumer
+therefore drives its **wired** `Router` with a foreign `Origin` in its own test —
+`places::server::tests::a_foreign_origin_cannot_read_people_presence` and
+`trips::server::origin_tests::a_foreign_origin_cannot_read_a_plan_search_result`.
+
+This module was moved out of `capabilities/places/src/server.rs` on 2026-09-05, when a
+second capability needed it. A second copy of a security predicate is drift; one home is
+the point.
+
 ## What actually enforces this
 
 `serve_local` alone enforces nothing: a server that ignores it and builds its own
