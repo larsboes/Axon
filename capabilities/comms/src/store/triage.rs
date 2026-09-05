@@ -1210,3 +1210,263 @@ fn narrow_review_fields(
     )?;
     Ok(true)
 }
+
+// -- mail evaluations ----------------------------------------------------
+//
+// feed-personalization 2026-09-03. Mirrors store/evaluation.rs column for
+// column and gate for gate, against the triage tables: same currency check,
+// same tier gate, same contract type. Appended at the end of the file rather
+// than filed beside `replace_triage_relevance`, because a second stream edits
+// the top of this file tonight.
+
+impl Store {
+    /// Store one mail evaluation and its factors atomically.
+    ///
+    /// `Ok(false)` means the tier gate refused it: a `deterministic` write never
+    /// replaces a stored `model` row, which is the same rule the feed keeps and
+    /// the reason `ranking_tier` decides the tier from the relevance mode alone.
+    pub fn replace_triage_evaluation(
+        &self,
+        evaluation: &FeedEvaluation,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let mut conn = self.conn()?;
+        let transaction = conn.transaction()?;
+        let tier = provenance::ranking_tier(&evaluation.mode);
+        let affected = transaction.execute(
+            &format!(
+                "INSERT INTO {prefix}_triage_evaluations
+                    (triage_id, overall_score, explanation, mode, item_revision,
+                     context_revision, evaluator_revision, tier, evaluated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,{now})
+                 ON CONFLICT (triage_id) DO UPDATE SET
+                    overall_score = excluded.overall_score,
+                    explanation = excluded.explanation,
+                    mode = excluded.mode,
+                    item_revision = excluded.item_revision,
+                    context_revision = excluded.context_revision,
+                    evaluator_revision = excluded.evaluator_revision,
+                    tier = excluded.tier,
+                    evaluated_at = {now}
+                 WHERE CASE excluded.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                       CASE {prefix}_triage_evaluations.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END",
+                prefix = self.prefix,
+                now = axon_store::NOW
+            ),
+            params![
+                &evaluation.feed_id,
+                evaluation.overall_score,
+                &evaluation.explanation,
+                &evaluation.mode,
+                &evaluation.item_revision,
+                &evaluation.context_revision,
+                &evaluation.evaluator_revision,
+                &tier,
+            ],
+        )?;
+        if affected == 0 {
+            return Ok(false);
+        }
+        transaction.execute(
+            &format!(
+                "DELETE FROM {}_triage_evaluation_factors WHERE triage_id = ?1",
+                self.prefix
+            ),
+            params![&evaluation.feed_id],
+        )?;
+        for (position, factor) in evaluation.factors.iter().enumerate() {
+            let context_json = factor
+                .context
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
+            transaction.execute(
+                &format!(
+                    "INSERT INTO {prefix}_triage_evaluation_factors
+                        (triage_id, factor_key, label, score, weight, rationale, context_json, position)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    prefix = self.prefix
+                ),
+                params![
+                    &evaluation.feed_id,
+                    &factor.key,
+                    &factor.label,
+                    factor.score,
+                    factor.weight,
+                    &factor.rationale,
+                    &context_json,
+                    position as i32,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    pub fn triage_evaluation(
+        &self,
+        triage_id: &str,
+    ) -> Result<Option<FeedEvaluation>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let evaluation = conn
+            .query_row(
+                &format!(
+                    "SELECT overall_score, explanation, mode, item_revision,
+                            context_revision, evaluator_revision, evaluated_at
+                     FROM {}_triage_evaluations WHERE triage_id = ?1",
+                    self.prefix
+                ),
+                params![&triage_id],
+                |row| {
+                    Ok((
+                        row.get::<_, f64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            overall_score,
+            explanation,
+            mode,
+            item_revision,
+            context_revision,
+            evaluator_revision,
+            evaluated_at,
+        )) = evaluation
+        else {
+            return Ok(None);
+        };
+        let factors = conn.query_all(
+            &format!(
+                "SELECT factor_key, label, score, weight, rationale, context_json
+                 FROM {}_triage_evaluation_factors
+                 WHERE triage_id = ?1 ORDER BY position",
+                self.prefix
+            ),
+            params![&triage_id],
+            |factor| {
+                Ok(EvaluationFactor {
+                    key: factor.get(0)?,
+                    label: factor.get(1)?,
+                    score: factor.get(2)?,
+                    weight: factor.get(3)?,
+                    rationale: factor.get(4)?,
+                    context: factor.get::<_, Option<String>>(5)?.and_then(|value| {
+                        serde_json::from_str::<EvaluationFactorContext>(&value).ok()
+                    }),
+                })
+            },
+        )?;
+        Ok(Some(FeedEvaluation {
+            feed_id: triage_id.to_string(),
+            overall_score,
+            explanation,
+            mode,
+            item_revision,
+            context_revision,
+            evaluator_revision,
+            evaluated_at,
+            factors,
+        }))
+    }
+
+    /// Every stored mail score, in one query.
+    ///
+    /// `GET /triage` renders a list; asking per item would be one read per row
+    /// against a table the list already knows the keys of.
+    pub fn triage_score_map(
+        &self,
+    ) -> Result<BTreeMap<String, (f64, String)>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let rows = conn.query_all(
+            &format!(
+                "SELECT triage_id, overall_score, evaluated_at
+                 FROM {}_triage_evaluations",
+                self.prefix
+            ),
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                ))
+            },
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, score, evaluated_at)| (id, (score, evaluated_at)))
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod mail_evaluation_db_tests {
+    use super::*;
+    use crate::store::db_tests::{mk_triage, open_test_store};
+
+    fn evaluation(id: &str, mode: &str, score: f64) -> FeedEvaluation {
+        FeedEvaluation {
+            feed_id: id.into(),
+            overall_score: score,
+            explanation: "Strongest signal: Category (100%).".into(),
+            mode: mode.into(),
+            item_revision: "item".into(),
+            context_revision: "context".into(),
+            evaluator_revision: crate::mail_evaluation::MAIL_EVALUATOR_REVISION.into(),
+            evaluated_at: String::new(),
+            factors: vec![EvaluationFactor {
+                key: "category".into(),
+                label: "Category".into(),
+                score: 1.0,
+                weight: 1.0,
+                rationale: "Active correspondence (aktiv)".into(),
+                context: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_mail_evaluation_round_trips_and_keeps_its_tier_gate() {
+        let store = open_test_store("mail_evaluation_round_trip");
+        let item = mk_triage("thread:evaluated", "aktiv");
+        store.upsert_triage(&item).expect("the fixture stores");
+
+        assert!(store
+            .replace_triage_evaluation(&evaluation(&item.id, "semantic", 0.62))
+            .expect("the first write lands"));
+        let stored = store
+            .triage_evaluation(&item.id)
+            .expect("read back")
+            .expect("a row");
+        assert_eq!(stored.evaluator_revision, "mail-evaluator-v1");
+        assert_eq!(stored.factors.len(), 1);
+        assert_eq!(stored.factors[0].key, "category");
+
+        // The tier gate: a `deterministic` write never replaces a stored
+        // `model` row. `reranked` is the model tier; `lexical` is not.
+        assert!(store
+            .replace_triage_evaluation(&evaluation(&item.id, "reranked", 0.80))
+            .expect("a model-tier write lands"));
+        assert!(!store
+            .replace_triage_evaluation(&evaluation(&item.id, "lexical", 0.10))
+            .expect("a weaker write is refused, not an error"));
+        let held = store
+            .triage_evaluation(&item.id)
+            .expect("read back")
+            .expect("a row");
+        assert_eq!(held.mode, "reranked");
+        assert!((held.overall_score - 0.80).abs() < 1e-9);
+
+        let map = store.triage_score_map().expect("the batched read");
+        assert_eq!(map.len(), 1);
+        let (score, evaluated_at) = map.get(&item.id).expect("the item's score");
+        assert!((score - 0.80).abs() < 1e-9);
+        assert!(!evaluated_at.is_empty(), "the row stamps its own time");
+    }
+}

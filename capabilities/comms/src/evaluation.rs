@@ -156,20 +156,39 @@ pub fn is_current(
 /// can never outvote the 45-point TELOS factor.
 pub const FEEDBACK_WEIGHT: f64 = 0.15;
 
-/// One factor's contribution before the weights are normalised.
+/// The one weight rule, stated once and reused by both evaluators.
 ///
-/// `weight` is the factor's share when it can be computed and `0.0` when it
-/// cannot. The rule that makes both states legal: **a factor that cannot be
-/// computed carries weight 0 and the remaining factors scale so the sum stays
-/// 1.0.** That is what lets a class refusal, or an inert learned factor, leave
-/// the arithmetic whole instead of dumping the item to the bottom of its band.
-fn normalise_weights(factors: &mut [EvaluationFactor]) {
-    let total = factors.iter().map(|factor| factor.weight).sum::<f64>();
-    if total <= 0.0 {
+/// **A factor that cannot be computed carries weight 0, and the remaining
+/// factors scale so the sum stays 1.0.** That is what lets a class refusal, or
+/// an inert learned factor, or an urgency the model rung has not published,
+/// leave the arithmetic whole instead of dumping the item to the bottom of its
+/// band by a zero it never earned.
+///
+/// `reserved_keys` names the factors whose weight is a fixed share rather than a
+/// share of the base — `feedback` on the feed, `urgency` on mail. Those keep
+/// their stated number and the base factors scale into what is left, which is
+/// why 0.45/0.25/0.20/0.10 with an active learned factor becomes
+/// 0.3825/0.2125/0.17/0.085/0.15 and not five equal fifths of 1.15.
+pub(crate) fn scale_weights(factors: &mut [EvaluationFactor], reserved_keys: &[&str]) {
+    let is_reserved = |factor: &EvaluationFactor| reserved_keys.contains(&factor.key.as_str());
+    let reserved = factors
+        .iter()
+        .filter(|factor| is_reserved(factor))
+        .map(|factor| factor.weight)
+        .sum::<f64>();
+    let base_total = factors
+        .iter()
+        .filter(|factor| !is_reserved(factor))
+        .map(|factor| factor.weight)
+        .sum::<f64>();
+    if base_total <= 0.0 {
         return;
     }
+    let share = (1.0 - reserved).max(0.0);
     for factor in factors.iter_mut() {
-        factor.weight /= total;
+        if !reserved_keys.contains(&factor.key.as_str()) {
+            factor.weight = factor.weight / base_total * share;
+        }
     }
 }
 
@@ -259,7 +278,7 @@ pub fn evaluate(
             context: None,
         },
     ];
-    normalise_weights(&mut factors);
+    scale_weights(&mut factors, &[]);
     let overall_score = factors
         .iter()
         .map(|factor| factor.score * factor.weight)
@@ -394,7 +413,7 @@ fn non_empty(value: &str) -> bool {
     !value.trim().is_empty()
 }
 
-fn freshness_score(age: Option<i64>) -> f64 {
+pub(crate) fn freshness_score(age: Option<i64>) -> f64 {
     match age {
         None => 0.0,
         Some(days) if days <= 0 => 1.0,
@@ -411,7 +430,7 @@ fn interpolate(value: i64, start: i64, end: i64, high: f64, low: f64) -> f64 {
     high + (low - high) * progress
 }
 
-fn age_days(day: &str) -> Option<i64> {
+pub(crate) fn age_days(day: &str) -> Option<i64> {
     let mut parts = day.split('-');
     let year = parts.next()?.parse::<i64>().ok()?;
     let month = parts.next()?.parse::<i64>().ok()?;
@@ -439,7 +458,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-fn revision_hash(parts: &[&str]) -> String {
+pub(crate) fn revision_hash(parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     for part in parts {
         hasher.update((part.len() as u64).to_be_bytes());

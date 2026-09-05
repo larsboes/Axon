@@ -10,12 +10,16 @@ pub(super) async fn triage_handler(Query(params): Query<TriageParams>) -> Json<V
         let cfg = Config::load();
         let store = Store::open(&cfg.database_path).ok()?;
         let items = store.list_triage(params.status.as_deref()).ok()?;
+        // One grouped read for the whole list, not one per row. The list already
+        // knows the keys; asking per item would be a query per rendered line.
+        let scores = store.triage_score_map().unwrap_or_default();
         Some(
             items
                 .into_iter()
                 .map(|item| {
                     let relevance = store.triage_relevance(&item.id).unwrap_or_default();
-                    TriageOut::from_store(item, relevance)
+                    let score = scores.get(&item.id).cloned();
+                    TriageOut::from_store(item, relevance, score)
                 })
                 .collect(),
         )
@@ -201,9 +205,13 @@ pub(super) async fn triage_relevance_handler(
         // standing fact about what a model was once shown; leaving them behind
         // because the item's status moved out of the scoring window would
         // repair the gate and keep the evidence.
-        let refused_ids = all_triage
+        let refused_items = all_triage
             .iter()
             .filter(|item| !content_item::local_prompt_allowed(&item.data_class))
+            .cloned()
+            .collect::<Vec<_>>();
+        let refused_ids = refused_items
+            .iter()
             .map(|item| item.id.clone())
             .collect::<Vec<_>>();
         let triage = all_triage
@@ -212,6 +220,7 @@ pub(super) async fn triage_relevance_handler(
             .filter(|item| content_item::local_prompt_allowed(&item.data_class))
             .take(limit)
             .collect::<Vec<_>>();
+        let scorable = triage.clone();
         let items = triage
             .iter()
             .map(|proposal| {
@@ -275,11 +284,82 @@ pub(super) async fn triage_relevance_handler(
                 .map_err(|error| error.to_string())?;
         }
         let refused_class = refused_ids.len();
+
+        // Evaluating mail is the same job as scoring it, with the same owner,
+        // so it extends this route rather than earning a second one — the
+        // loopback role filter already sits here and a new route would restate
+        // it.
+        let mail_context_revision = mail_evaluation::context_revision(
+            &profiles,
+            embedding_role
+                .as_ref()
+                .map(|role| role.cache_key())
+                .as_deref(),
+            reranking_role
+                .as_ref()
+                .map(|role| role.cache_key())
+                .as_deref(),
+        );
+        let semantic_available = relevance::embedding_backend_reachable(embedding_role.as_ref());
+        let mut evaluated = 0usize;
+        let mut skipped_current = 0usize;
+        let mut refused_lower_tier = 0usize;
+        for (item, scored_item) in scorable.iter().zip(&outcome.items) {
+            let stored = store.triage_evaluation(&item.id).ok().flatten();
+            let item_revision = mail_evaluation::item_revision(item);
+            if mail_evaluation::is_current(
+                stored.as_ref(),
+                &item_revision,
+                &mail_context_revision,
+                semantic_available,
+            ) {
+                skipped_current += 1;
+                continue;
+            }
+            let evaluation = mail_evaluation::evaluate(
+                item,
+                scored_item.matches.first(),
+                // The model rung has published no urgency yet, so the factor
+                // carries weight 0 and the other three scale to 1.0.
+                None,
+                &mail_context_revision,
+                false,
+            );
+            if store
+                .replace_triage_evaluation(&evaluation)
+                .map_err(|error| error.to_string())?
+            {
+                evaluated += 1;
+            } else {
+                refused_lower_tier += 1;
+            }
+        }
+        // A refusal is stored as a row, not as an absence: an evaluation at
+        // mode 'unscored' whose interest factor carries weight 0 and the
+        // rationale that says why. An item with no evaluation is
+        // indistinguishable from one nobody has reached yet.
+        for item in &refused_items {
+            let evaluation =
+                mail_evaluation::evaluate(item, None, None, &mail_context_revision, true);
+            if store
+                .replace_triage_evaluation(&evaluation)
+                .map_err(|error| error.to_string())?
+            {
+                evaluated += 1;
+            } else {
+                refused_lower_tier += 1;
+            }
+        }
+
         Ok(json!({
             "scored": scored,
+            "evaluated": evaluated,
+            "skipped_current": skipped_current,
             "refused_class": refused_class,
+            "refused_lower_tier": refused_lower_tier,
             "profile_count": profiles.len(),
             "mode": mode,
+            "evaluator_revision": mail_evaluation::MAIL_EVALUATOR_REVISION,
             "embedding": {
                 "mode": outcome.mode,
                 "error_class": outcome.error_class,

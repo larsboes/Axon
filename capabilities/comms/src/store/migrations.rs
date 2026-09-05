@@ -376,6 +376,49 @@ impl Store {
                 ON {prefix}_feed_interactions(feed_id, occurred_at DESC);
             CREATE INDEX IF NOT EXISTS idx_{prefix}_feed_interactions_time
                 ON {prefix}_feed_interactions(occurred_at DESC);
+
+            -- Mail's own evaluation, deliberately the same nine columns as
+            -- {prefix}_feed_evaluations. Same currency check, same tier gate,
+            -- same contract type, against a different table -- because the feed
+            -- evaluator reads a FeedItem and a trip snapshot, and a triage row
+            -- has neither.
+            --
+            -- `mode = 'unscored'` is the c3 refusal state, and it is why the
+            -- refusal cannot live on {prefix}_triage_relevance: that table's
+            -- mode CHECK admits only reranked, semantic and lexical.
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_evaluations (
+                triage_id TEXT PRIMARY KEY REFERENCES {prefix}_triage_items(id) ON DELETE CASCADE,
+                overall_score REAL NOT NULL CHECK (overall_score BETWEEN 0 AND 1),
+                explanation TEXT NOT NULL,
+                mode TEXT NOT NULL CHECK (mode IN ('reranked','semantic','lexical','unscored')),
+                item_revision TEXT NOT NULL,
+                context_revision TEXT NOT NULL,
+                evaluator_revision TEXT NOT NULL,
+                tier TEXT NOT NULL DEFAULT 'legacy'
+                    CHECK (tier IN ('legacy','deterministic','model','human')),
+                evaluated_at TEXT NOT NULL DEFAULT ({now})
+            );
+
+            -- Mail-shaped factors: interest, category, age, and a reserved
+            -- urgency slot the model rung fills. There is no correspondent
+            -- factor, and that is a ruling rather than an omission -- the people
+            -- registry is asked per token of subject and snippet, never over the
+            -- sender field (PRD Q72 rule 2).
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_evaluation_factors (
+                triage_id TEXT NOT NULL
+                    REFERENCES {prefix}_triage_evaluations(triage_id) ON DELETE CASCADE,
+                factor_key TEXT NOT NULL,
+                label TEXT NOT NULL,
+                score REAL NOT NULL CHECK (score BETWEEN 0 AND 1),
+                weight REAL NOT NULL CHECK (weight BETWEEN 0 AND 1),
+                rationale TEXT NOT NULL,
+                context_json TEXT,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (triage_id, factor_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_triage_evaluations_score
+                ON {prefix}_triage_evaluations(overall_score DESC);
             -- end feed-personalization 2026-09-03 -----------------------------
             ",
             prefix = prefix,

@@ -29,6 +29,7 @@ use comms::digest;
 use comms::evaluation::{self, EvaluationFactor, FeedEvaluation};
 use comms::google::{self, ThreadAction, ThreadLocation};
 use comms::intake;
+use comms::mail_evaluation;
 use comms::media;
 use comms::people_registry;
 use comms::provenance::StageProvenance;
@@ -717,7 +718,8 @@ mod tests {
             last_seen: "2026-08-04 09:31:00+02".into(),
         };
 
-        let value = serde_json::to_value(ContentItemOut::from_mail(item, Vec::new())).unwrap();
+        let value =
+            serde_json::to_value(ContentItemOut::from_mail(item, Vec::new(), None)).unwrap();
         assert_eq!(value["schema_version"], "content-item-v2");
         assert_eq!(value["source"], "mail");
         assert_eq!(value["kind"], "mail");
@@ -734,6 +736,89 @@ mod tests {
         assert!(value["mail"]["gmail_location"].is_null());
         assert!(value["mail"]["gmail_sync_status"].is_null());
         assert!(value["evaluation"].is_null());
+    }
+
+    /// A stored mail, built here because the lib's test fixtures are not
+    /// visible from a binary target.
+    fn triage_fixture(id: &str) -> TriageItem {
+        TriageItem {
+            id: id.into(),
+            from_addr: Some("sender@example.com".into()),
+            subject: Some("A useful subject".into()),
+            snippet: Some("A bounded Gmail preview.".into()),
+            internal_date_ms: None,
+            internal_date_text: Some("2026-09-04 09:30:00+02".into()),
+            stream: "aktiv".into(),
+            rationale: "Safe fallback.".into(),
+            classification_method: content_item::METHOD_DETERMINISTIC.into(),
+            classification_version: "mail-rules-v1".into(),
+            data_class: "c1".into(),
+            data_class_rationale: "Mail metadata is Mine by default.".into(),
+            data_classification_method: content_item::METHOD_DETERMINISTIC.into(),
+            data_classification_version: content_item::MAIL_CLASSIFIER_VERSION.into(),
+            status: "proposed".into(),
+            gmail_action: None,
+            gmail_action_at: None,
+            purge_after: None,
+            gmail_location: None,
+            gmail_observed_at: None,
+            gmail_sync_status: None,
+            gmail_sync_action: None,
+            gmail_sync_error: None,
+            waiting: false,
+            waiting_since: None,
+            first_seen: "2026-09-04 09:31:00+02".into(),
+            last_seen: "2026-09-04 09:31:00+02".into(),
+        }
+    }
+
+    /// One writer, one meaning, and one shape on the wire.
+    #[test]
+    fn score_bp_is_basis_points_and_absent_is_null() {
+        let item = triage_fixture("thread-bp");
+
+        let unscored =
+            serde_json::to_value(TriageOut::from_store(item.clone(), Vec::new(), None)).unwrap();
+        assert!(
+            unscored["score_bp"].is_null(),
+            "a mail with no evaluation is null, not zero -- 0 is a real score"
+        );
+        assert!(unscored["evaluated_at"].is_null());
+
+        let scored = serde_json::to_value(TriageOut::from_store(
+            item,
+            Vec::new(),
+            Some((0.6234, "2026-09-05 21:00:00+00:00".into())),
+        ))
+        .unwrap();
+        assert_eq!(scored["score_bp"], 6234);
+        assert_eq!(scored["evaluated_at"], "2026-09-05 21:00:00+00:00");
+    }
+
+    /// The mail reader's `evaluation` used to be hardcoded null. It carries the
+    /// factor breakdown now, in the same shape the feed uses.
+    #[test]
+    fn a_mail_carries_its_factor_breakdown() {
+        let item = triage_fixture("thread-factors");
+        let evaluation = mail_evaluation::evaluate(&item, None, None, "context", false);
+        let value = serde_json::to_value(ContentItemOut::from_mail(
+            item,
+            Vec::new(),
+            Some(evaluation),
+        ))
+        .unwrap();
+        assert!(!value["evaluation"].is_null());
+        assert_eq!(
+            value["evaluation"]["evaluator_revision"],
+            mail_evaluation::MAIL_EVALUATOR_REVISION
+        );
+        let keys = value["evaluation"]["factors"]
+            .as_array()
+            .expect("factors")
+            .iter()
+            .map(|factor| factor["key"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["interest", "category", "age", "urgency"]);
     }
 
     #[tokio::test]

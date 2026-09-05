@@ -297,6 +297,30 @@ every item in the window has been seen, printing the mode each page answered in.
 client against the running server, never a second opener of the database: `Store::open` runs the
 whole migration on every call and two openers deadlock.
 
+**Mail has its own evaluator, and it publishes one number with one writer.**
+`comms_triage_evaluations` and `comms_triage_evaluation_factors` mirror the feed's pair column
+for column — same currency check, same tier gate, same normalized factor table — with
+mail-shaped factors: TELOS interest 0.55 from the rows `POST /triage/relevance/refresh` already
+stores, category 0.30 from the `rules` stream, age 0.15 reusing the Feed's own freshness curve,
+and a reserved **urgency 0.25** that the LLM model rung fills. Until that rung publishes one,
+urgency carries weight 0 and the other three scale to 1.0. There is **no correspondent factor**:
+`is_known_person` compares one whitespace-free token, so it is false for every address, and
+Q72 rule 2 already settled that the registry is asked per token of subject and snippet, never
+over the sender. Said plainly: on the `aktiv` band the category factor is a constant, so
+ordering there is carried by interest, age and — when it exists — urgency.
+
+`TriageOut` gains `score_bp`, the evaluator's `overall_score` in basis points (0..=10000, the
+unit the companion register uses per Q73), and `evaluated_at`. **One writer**: this evaluator.
+The model rung's urgency is not a competing number on the same field — it arrives as the
+`urgency` factor's input, so it moves the score *through* the evaluator and keeps its rationale
+beside the other three. `null` means no stored evaluation, which is not the same as 0. The full
+breakdown rides the existing reader contract at `GET /content/mail/:id`, whose `evaluation` was
+hardcoded `None` until now.
+
+**A rationale never quotes a stored mail field.** `intake` redacts subject and snippet for c2
+and c3 and deliberately keeps the sender unredacted, so no address, subject or snippet appears
+in a rationale, a log or a receipt — only the lens label, the category and the age.
+
 **Every decision is now recorded, with its time.** `comms_feed_interactions` is append-only:
 `(feed_id, event, surface, occurred_at)`, where `event` is one of `opened`, `kept`, `dismissed`,
 `reopened`, `unkept` or `shared`. An item's label is its most recent decisive event, retracted

@@ -287,11 +287,29 @@ pub(super) struct TriageOut {
     pub(super) first_seen: String,
     pub(super) last_seen: String,
     pub(super) relevance: Vec<RelevanceOut>,
+    /// The mail evaluator's `overall_score` in basis points, 0..=10000 — the
+    /// unit `places_person_places.confidence_bp` already uses (PRD Q73).
+    ///
+    /// ONE writer, one meaning: `mail_evaluation::score_bp` and nothing else.
+    /// The model rung's urgency is not a second number on this field; it arrives
+    /// as the `urgency` factor's input and moves the score THROUGH the
+    /// evaluator, so the explanation stays whole. `null` means the mail has no
+    /// stored evaluation yet, which is deliberately not the same as 0.
+    pub(super) score_bp: Option<i32>,
+    pub(super) evaluated_at: Option<String>,
 }
 
 impl TriageOut {
-    pub(super) fn from_store(item: TriageItem, relevance: Vec<RelevanceMatch>) -> Self {
+    pub(super) fn from_store(
+        item: TriageItem,
+        relevance: Vec<RelevanceMatch>,
+        score: Option<(f64, String)>,
+    ) -> Self {
         Self {
+            score_bp: score
+                .as_ref()
+                .map(|(overall, _)| (overall.clamp(0.0, 1.0) * 10_000.0).round() as i32),
+            evaluated_at: score.map(|(_, at)| at),
             id: item.id,
             from_addr: item.from_addr,
             subject: item.subject,
@@ -429,7 +447,11 @@ impl ContentItemOut {
         }
     }
 
-    pub(super) fn from_mail(item: TriageItem, relevance: Vec<RelevanceMatch>) -> Self {
+    pub(super) fn from_mail(
+        item: TriageItem,
+        relevance: Vec<RelevanceMatch>,
+        evaluation: Option<FeedEvaluation>,
+    ) -> Self {
         let created_at = item
             .internal_date_text
             .clone()
@@ -471,7 +493,10 @@ impl ContentItemOut {
             processing_policy,
             cloud_processing: CloudDerivativeState::not_prepared(),
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
-            evaluation: None,
+            // No longer hardcoded None. A mail now carries the same factor
+            // breakdown the feed does, including the zero-weight refusal factor
+            // that says a c3 row was not read by a model.
+            evaluation: evaluation.map(EvaluationOut::from),
             processing: Vec::new(),
             origins: Vec::new(),
             digest: None,

@@ -9,7 +9,13 @@
 // `request` and `jsonInit` are module-private in api.ts, which is why the ten
 // lines below exist rather than an import.
 
-import { ApiError, describeFailure, type CommsEvaluationStatus, type FeedStatus } from '$lib/api';
+import {
+  ApiError,
+  describeFailure,
+  type CommsEvaluationStatus,
+  type FeedStatus,
+  type TriageItem,
+} from '$lib/api';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -109,6 +115,20 @@ export interface RelevanceRefreshResult {
     chunks: number;
     chunks_failed: number;
   };
+}
+
+/**
+ * A mail proposal carrying the mail evaluator's score.
+ *
+ * `score_bp` is basis points, 0..=10000, and `null` when the mail has no stored
+ * evaluation — which is deliberately not the same as 0. One writer: comms'
+ * mail evaluator. Declared here as an interface extension rather than added to
+ * `TriageItem` in `$lib/api.ts`, so the two can be merged in either order; when
+ * that field lands on `TriageItem` this collapses to a re-export.
+ */
+export interface TriageItemScored extends TriageItem {
+  score_bp: number | null;
+  evaluated_at: string | null;
 }
 
 export const feedPersonalization = {
