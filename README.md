@@ -227,10 +227,23 @@ bundles. Generated-architecture freshness is a script gate, `tools/check-archite
 not a build-graph target. PRD Q44 (2026-08-25) decided this and retired the Bazel graph that held
 the same jobs before it.
 
+A tool may be a Cargo member too. `tools/storage` is one: generalized operator tooling is built
+in Rust before shell, before Python, before TypeScript, and the placement guide already sends
+operator machinery to `tools/`. Its launcher builds the release binary on demand, the same
+on-demand build `tools/service-runner.sh` does from a service manifest.
+
 Any build layer above those two is argued per case, never assumed. Name what it buys and what
 toolchain cost it adds. `tools/doctor` stays an interpreted command because wrapping it would add
 machinery without improving correctness. The dashboard build was deliberately reopened when
 production began consuming capability-owned UI bundles; its README records that trigger.
+
+Build artifacts are not state. `axon storage target` measures `target/` per profile and per
+bucket and checks PRD §9's R6 — `target/debug` may not exceed `target/release` by more than 3× —
+and `tools/doctor` reports the verdict. `axon storage prune` gives the space back:
+`--incremental` for the cache that always regrows, `--target` for a `cargo clean`, and
+`--node-modules` for every ignored `node_modules`, `.svelte-kit` and `dist` in the checkout. The
+`[profile.dev.package."*"]` stanza in the root `Cargo.toml` is the measurement that produced the
+rule; its comment states what it trades.
 
 ### Implementation languages and intelligence
 
@@ -767,7 +780,7 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 | `dashboard/` | the spine's shell — discovers installed capabilities via their manifests and mounts their panels (installer, doctor UI, service dashboards); owns no domain, no data |
 | `libs/<name>/` | spine-owned shared code with no domain of its own — statically linked into capability binaries at compile time, own crate in the Cargo workspace from day one |
 | `schemas/` | shared contracts; import, never redefine |
-| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks + osv-scanner behind one verb), host-patch (the daily host upgrade job), container-refresh (the daily image pull + recreate), generate-architecture, graphify, agent-integrations (each upstream's own harness integration, at its latest release), mini-tools |
+| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks + osv-scanner behind one verb), host-patch (the daily host upgrade job), container-refresh (the daily image pull + recreate), storage (disk classes from the overlay policy, plus `target` for PRD §9's R6 and `prune` for the checkout — a Cargo member, see `tools/storage/README.md`), generate-architecture, graphify, agent-integrations (each upstream's own harness integration, at its latest release), mini-tools |
 
 `ARCHITECTURE.md`'s tables and its Mermaid dependency graph (Packs → capabilities they drive →
 the upstream image each declares) are derived straight from
