@@ -130,6 +130,31 @@ data, and every coordinate on it is traceable to a registry row with a source.
   the overlay evidence note). Falsifier: a confirmed write from this path, or
   a person name in its output.
 
+### F4 · Climate normals (PRD §8.2, README D5)
+
+- [x] PLC-13 — a climate request carries a coordinate pair rounded to two
+  decimals and the fixed ten-year period only: six query parameters
+  (`latitude`, `longitude`, `start_date`, `end_date`, `daily`, `timezone`) and
+  nothing else. No plan date, no person, no amount. Evidence:
+  `the_archive_request_carries_only_a_rounded_coordinate_and_the_fixed_period`
+  captures the stub's request line and asserts the parameter list exactly, both
+  coordinates at two decimals, and the ten complete calendar years rather than
+  any caller-supplied date (2026-09-05). Falsifier: a seventh query parameter in
+  a captured request, or a coordinate with more than two decimals.
+- [x] PLC-14 — a place's normals leave the host at most once. Evidence:
+  `stored_normals_answer_without_a_provider_request` fetches once, then calls
+  `fetch_normals` again with a URL pointing at a closed port and gets the stored
+  rows back with the stub's request counter still at 1 (2026-09-05). The refresh
+  path is the explicit `--force` flag, run by a human. Falsifier: a second
+  provider request for a place that already carries rows, without `--force`.
+- [x] PLC-15 — no `kind = 'address'` coordinate ever reaches the provider.
+  Evidence: `fetch_normals` refuses before a client is built, whichever path
+  names the place;
+  `an_address_kind_place_is_refused_before_a_request_is_built` asserts the stub
+  saw zero requests and that the refusal names the city alternative
+  (2026-09-05). Falsifier: an address-kind row in the fetch loop, or a request
+  built for one.
+
 ## Not yet specified
 
 - **Photos layer.** Blocked on an indexer that respects PRD N4 (index and link,
@@ -163,6 +188,9 @@ data, and every coordinate on it is traceable to a registry row with a source.
 | PLC-10 | command | assign to a city-kind place, read response precision | city | curl | D1 |
 | PLC-11 | command | `cargo test -p finance -- db_tests::`; column presence | pass | cargo | F1 |
 | PLC-12 | command | run `backfill travelers` twice; grep output for names | 0 names, idempotent | rg | D4 |
+| PLC-13 | command | `cargo test -p places climate::db_tests`; captured query-string parameter list | exactly 6, 2 decimals | cargo | F4 |
+| PLC-14 | command | fetch twice, count provider requests | 1 | cargo | F4 |
+| PLC-15 | command | `climate fetch --place <address row>`; count provider requests | 0, non-zero exit | cargo | F4 |
 
 ## Anti-claims
 

@@ -84,6 +84,16 @@ const ROUTES: &[route_manifest::Route] = &[
         "/api/people/proposals/:id/dismiss",
         "Dismiss one register proposal.",
     ),
+    r(
+        "GET",
+        "/api/places/:id/climate",
+        "Twelve months of climate normals for one registered place, folded from ten complete calendar years. Optional ?from=YYYY-MM-DD&to=YYYY-MM-DD marks the months a plan window covers. Empty months with fetched_at null means the place has none yet — run `places-server climate fetch`.",
+    ),
+    r(
+        "GET",
+        "/api/climate",
+        "Climate normals for up to 8 places at once. Exactly one of ?place_ids=<id>,<id> or ?at=<lat>,<lon>;<lat>,<lon> (semicolon between pairs, comma inside a pair — NOT a repeated key). Optional ?from=&to=. One result per requested key, in request order.",
+    ),
 ];
 
 const fn r(
@@ -252,6 +262,242 @@ async fn geocode(
         Ok(Err(error)) => failed(error),
         Err(_) => failed("task panicked".into()),
     }
+}
+
+// ─── Climate normals (README D5, ISA F4) ─────────────────────────────────────
+
+/// Optional plan window. Only the month numbers it covers are used, so a
+/// request cannot narrow the normals themselves — a normal is the whole month
+/// or it is nothing.
+#[derive(Debug, Deserialize)]
+struct ClimateWindow {
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// The month numbers a `from`..`to` window touches, capped at twelve. A window
+/// longer than a year covers every month, which is the honest answer rather than
+/// an error.
+fn window_months(from: Option<&str>, to: Option<&str>) -> Vec<u32> {
+    let index = |value: &str| -> Option<i64> {
+        let year: i64 = value.get(..4)?.parse().ok()?;
+        let month: i64 = value.get(5..7)?.parse().ok()?;
+        (1..=12).contains(&month).then_some(year * 12 + month - 1)
+    };
+    let (Some(first), Some(last)) = (from.and_then(index), to.and_then(index)) else {
+        return Vec::new();
+    };
+    if last < first {
+        return Vec::new();
+    }
+    (first..=last.min(first + 11))
+        .map(|slot| (slot.rem_euclid(12) + 1) as u32)
+        .collect()
+}
+
+/// One place's stored normals as the wire carries them. `months: []` with
+/// `fetched_at: null` is the never-fetched state, which the UI turns into "run
+/// the fetch verb" rather than into an empty grid.
+fn climate_body(store: &PlacesStore, place_id: &str, in_window: &[u32]) -> Result<Value, String> {
+    let months = store.climate_get(place_id).map_err(|e| e.to_string())?;
+    let meta = store.climate_meta(place_id).map_err(|e| e.to_string())?;
+    let best = places::climate::best_months(&months);
+    let rendered: Vec<Value> = months
+        .iter()
+        .map(|month| {
+            json!({
+                "month": month.month,
+                "t_max_mean": month.t_max_mean,
+                "t_min_mean": month.t_min_mean,
+                "rain_days_mean": month.rain_days_mean,
+                "precipitation_mm_mean": month.precipitation_mm_mean,
+                "daylight_hours_mean": month.daylight_hours_mean,
+                "sunshine_hours_mean": month.sunshine_hours_mean,
+                "days_observed": month.days_observed,
+                "best_month": best.contains(&month.month),
+                "in_window": in_window.contains(&month.month),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "source": meta.as_ref().map(|meta| meta.source.clone()),
+        "period": meta.as_ref().map(|meta| json!({
+            "start": meta.period_start,
+            "end": meta.period_end,
+            "years": meta.years_covered,
+        })),
+        "fetched_at": meta.as_ref().map(|meta| meta.fetched_at.clone()),
+        "months": rendered,
+    }))
+}
+
+fn place_summary(place: &places::store::Place, distance_km: Option<f64>) -> Value {
+    json!({
+        "id": place.id,
+        "name": place.name,
+        "kind": place.kind,
+        "latitude": place.latitude,
+        "longitude": place.longitude,
+        "distance_km": distance_km,
+    })
+}
+
+async fn place_climate(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(window): Query<ClimateWindow>,
+) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    let in_window = window_months(window.from.as_deref(), window.to.as_deref());
+    match tokio::task::spawn_blocking(move || -> Result<Option<Value>, String> {
+        let store = PlacesStore::open(&database_path).map_err(|e| e.to_string())?;
+        let Some(place) = store.place(&id).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let mut body = climate_body(&store, &place.id, &in_window)?;
+        let object = body.as_object_mut().expect("climate_body builds an object");
+        object.insert("place".into(), place_summary(&place, None));
+        object.insert(
+            "best_months_rule".into(),
+            json!(places::climate::BEST_MONTHS_RULE),
+        );
+        object.insert("attribution".into(), json!(places::climate::ATTRIBUTION));
+        Ok(Some(body))
+    })
+    .await
+    {
+        Ok(Ok(Some(body))) => respond(StatusCode::OK, body),
+        Ok(Ok(None)) => respond(StatusCode::NOT_FOUND, json!({ "error": "no such place" })),
+        Ok(Err(error)) => failed(error),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ClimateBatch {
+    place_ids: Option<String>,
+    /// Semicolon between pairs, comma inside a pair. NOT a repeated `at=` key:
+    /// axum's `Query` deserializes through serde_urlencoded, which cannot fill a
+    /// sequence from repeated keys, so `?at=..&at=..` would answer 400 for every
+    /// multi-destination request. Both delimiters are safe because every value
+    /// here is a number, and comma-splitting is this file's own precedent.
+    at: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// At most eight keys per request. A bound rather than a limit anybody will hit:
+/// a plan has a handful of destinations, and an unbounded batch would turn one
+/// request into an unbounded scan of the registry per key.
+const MAX_CLIMATE_KEYS: usize = 8;
+
+async fn climate(State(state): State<AppState>, Query(query): Query<ClimateBatch>) -> ApiResponse {
+    let selectors = (query.place_ids.as_deref(), query.at.as_deref());
+    let keys: Vec<String> = match selectors {
+        (Some(ids), None) => ids.split(',').map(|id| id.trim().to_string()).collect(),
+        (None, Some(at)) => at.split(';').map(|pair| pair.trim().to_string()).collect(),
+        _ => {
+            return respond(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "send exactly one of place_ids=<id>,<id> or at=<lat>,<lon>;<lat>,<lon>" }),
+            )
+        }
+    };
+    let keys: Vec<String> = keys.into_iter().filter(|key| !key.is_empty()).collect();
+    if keys.is_empty() || keys.len() > MAX_CLIMATE_KEYS {
+        return respond(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": format!("send 1 to {MAX_CLIMATE_KEYS} keys") }),
+        );
+    }
+    let by_id = query.place_ids.is_some();
+    let database_path = state.database_path.clone();
+    let in_window = window_months(query.from.as_deref(), query.to.as_deref());
+
+    match tokio::task::spawn_blocking(move || -> Result<Vec<Value>, String> {
+        let store = PlacesStore::open(&database_path).map_err(|e| e.to_string())?;
+        // Loaded once for the whole batch, not once per key.
+        let registry = if by_id {
+            Vec::new()
+        } else {
+            store.places_with_climate().map_err(|e| e.to_string())?
+        };
+        let mut results = Vec::with_capacity(keys.len());
+        for key in &keys {
+            let resolution = if by_id {
+                store
+                    .place(key)
+                    .map_err(|e| e.to_string())?
+                    .map(|place| ("id", place, None))
+            } else {
+                match parse_pair(key) {
+                    Some((latitude, longitude)) => {
+                        match places::climate::resolve_at(&registry, latitude, longitude) {
+                            places::climate::Resolution::Registry { place, distance_km } => {
+                                Some(("registry", place, Some(distance_km)))
+                            }
+                            places::climate::Resolution::Nearest { place, distance_km } => {
+                                Some(("nearest", place, Some(distance_km)))
+                            }
+                            places::climate::Resolution::Unmatched { .. } => None,
+                        }
+                    }
+                    None => None,
+                }
+            };
+            let entry = match resolution {
+                Some((resolved_by, place, distance_km)) => {
+                    let mut body = climate_body(&store, &place.id, &in_window)?;
+                    let object = body.as_object_mut().expect("an object");
+                    object.insert("key".into(), json!(key));
+                    object.insert("resolved_by".into(), json!(resolved_by));
+                    object.insert("matched_place".into(), place_summary(&place, distance_km));
+                    object.insert("reason".into(), Value::Null);
+                    body
+                }
+                None => json!({
+                    "key": key,
+                    "resolved_by": Value::Null,
+                    "matched_place": Value::Null,
+                    "reason": if by_id {
+                        "no place with that id".to_string()
+                    } else {
+                        format!(
+                            "no registered place with normals within {:.0} km",
+                            places::climate::CLIMATE_MATCH_RADIUS_KM
+                        )
+                    },
+                    "source": Value::Null,
+                    "period": Value::Null,
+                    "fetched_at": Value::Null,
+                    "months": [],
+                }),
+            };
+            results.push(entry);
+        }
+        Ok(results)
+    })
+    .await
+    {
+        Ok(Ok(results)) => respond(
+            StatusCode::OK,
+            json!({
+                "best_months_rule": places::climate::BEST_MONTHS_RULE,
+                "attribution": places::climate::ATTRIBUTION,
+                "results": results,
+            }),
+        ),
+        Ok(Err(error)) => failed(error),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+fn parse_pair(pair: &str) -> Option<(f64, f64)> {
+    let (latitude, longitude) = pair.split_once(',')?;
+    Some((
+        latitude.trim().parse().ok()?,
+        longitude.trim().parse().ok()?,
+    ))
 }
 
 async fn spend_layer(State(state): State<AppState>) -> ApiResponse {
@@ -537,6 +783,8 @@ pub async fn serve() {
         .route("/api/people/proposals", get(list_proposals))
         .route("/api/people/proposals/:id/confirm", post(confirm_proposal))
         .route("/api/people/proposals/:id/dismiss", post(dismiss_proposal))
+        .route("/api/places/:id/climate", get(place_climate))
+        .route("/api/climate", get(climate))
         .layer(middleware::from_fn(refuse_foreign_origins))
         .with_state(state);
     axon_server::serve_local("places-server", config.port, app).await;
@@ -545,6 +793,19 @@ pub async fn serve() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scratch database file this process owns. `store::db_tests` has the same
+    /// helper, but it is `#[cfg(test)]` inside the library and this file is the
+    /// binary, so it cannot be reached from here.
+    fn scratch_database(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("places-server-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a writable temp directory");
+        let path = dir.join(format!("{name}.db"));
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
+        }
+        path
+    }
 
     /// The manifest is data a caller reads to learn the surface; a served route
     /// missing from it is invisible. `undeclared_routes` reads this file's own
@@ -556,6 +817,110 @@ mod tests {
             route_manifest::undeclared_routes(include_str!("server.rs"), ROUTES).is_empty(),
             "a served route is missing from the manifest"
         );
+    }
+
+    /// The defect this test exists for: axum 0.7's `Query` deserializes through
+    /// serde_urlencoded, which cannot fill a `Vec` from a repeated key, so a
+    /// `?at=..&at=..` extractor would have answered 400 for every
+    /// multi-destination request. A pure resolver test cannot fail on a
+    /// query-string shape, so the assertion is made here, through the extractor.
+    #[tokio::test]
+    async fn two_coordinates_in_one_at_parameter_answer_two_results_in_request_order() {
+        let path = scratch_database("climate-handler");
+        let store = PlacesStore::open(&path).unwrap();
+        for (id, name, latitude, longitude) in [
+            ("place_first", "First", 52.52, 13.40),
+            ("place_second", "Second", 41.90, 12.50),
+        ] {
+            store
+                .upsert_place(
+                    &places::store::Place {
+                        id: id.into(),
+                        name: name.into(),
+                        kind: "city".into(),
+                        address: None,
+                        city: None,
+                        country_code: None,
+                        latitude: Some(latitude),
+                        longitude: Some(longitude),
+                        source: "test".into(),
+                        external_ref: Some(format!("test:{id}")),
+                    },
+                    "2026-09-05",
+                )
+                .unwrap();
+        }
+
+        let state = AppState {
+            database_path: Arc::new(path),
+        };
+        let query = ClimateBatch {
+            place_ids: None,
+            at: Some("52.52,13.40;41.90,12.50".into()),
+            from: None,
+            to: None,
+        };
+        let (status, Json(body)) = climate(State(state), Query(query)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let results = body["results"].as_array().expect("results is an array");
+        assert_eq!(results.len(), 2, "one result per requested key");
+        assert_eq!(results[0]["key"], "52.52,13.40", "request order is kept");
+        assert_eq!(results[1]["key"], "41.90,12.50");
+        assert_eq!(results[0]["resolved_by"], "registry");
+        assert_eq!(results[0]["matched_place"]["id"], "place_first");
+        assert_eq!(results[1]["matched_place"]["id"], "place_second");
+        // Registered but never fetched: an honest empty, with the stamp null so
+        // the UI says "run the fetch verb" instead of drawing an empty grid.
+        assert_eq!(results[0]["fetched_at"], Value::Null);
+        assert_eq!(results[0]["months"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_climate_batch_needs_exactly_one_selector() {
+        let state = AppState {
+            database_path: Arc::new(scratch_database("climate-selector")),
+        };
+        for (place_ids, at) in [
+            (None, None),
+            (Some("place_a".to_string()), Some("52.5,13.4".to_string())),
+        ] {
+            let (status, Json(body)) = climate(
+                State(state.clone()),
+                Query(ClimateBatch {
+                    place_ids,
+                    at,
+                    from: None,
+                    to: None,
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(
+                body["error"].as_str().unwrap_or_default().contains("at="),
+                "the 400 names both forms: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plan_window_marks_the_months_it_covers() {
+        assert_eq!(
+            window_months(Some("2026-06-10"), Some("2026-08-02")),
+            vec![6, 7, 8]
+        );
+        // Across a year boundary.
+        assert_eq!(
+            window_months(Some("2026-12-20"), Some("2027-01-04")),
+            vec![12, 1]
+        );
+        // Longer than a year: every month, not an error.
+        assert_eq!(
+            window_months(Some("2026-03-01"), Some("2030-03-01")).len(),
+            12
+        );
+        // No window is no marks, never all of them.
+        assert!(window_months(None, Some("2026-08-02")).is_empty());
+        assert!(window_months(Some("2026-08-02"), Some("2026-06-10")).is_empty());
     }
 
     #[test]

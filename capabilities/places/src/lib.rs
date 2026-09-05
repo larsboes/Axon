@@ -6,6 +6,7 @@
 //! usage `capabilities/store/README.md` chose one database for.
 
 pub mod backfill;
+pub mod climate;
 pub mod config;
 pub mod geocode;
 pub mod layers;
