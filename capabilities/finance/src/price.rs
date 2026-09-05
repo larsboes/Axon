@@ -158,6 +158,8 @@ pub struct FetchContext<'a> {
     /// The reviewed broker prices, by instrument. The `broker` provider's whole
     /// input; the networked providers ignore it.
     pub broker_prices: &'a BTreeMap<String, (Quantity, String, String)>,
+    /// The currencies held that are not [`FX_BASE`]. The FX provider's targets.
+    pub quote_currencies: &'a [String],
     pub as_of: &'a str,
     pub fetched_at: &'a str,
     /// How many days of history a networked provider should ask for.
@@ -223,6 +225,455 @@ impl PriceProvider for BrokerProvider {
             detail: String::new(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// ecb -- the FX reference rates
+// ---------------------------------------------------------------------------
+
+/// Daily euro foreign-exchange reference rates from the ECB Data Portal, read as
+/// CSV from the SDMX data endpoint.
+///
+/// Measured 2026-09-05:
+/// `GET https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A?format=csvdata&lastNObservations=2`
+/// answered HTTP 200 with a 31-column header and the rows TIME_PERIOD=2026-09-03
+/// OBS_VALUE=1.1615 and TIME_PERIOD=2026-09-04 OBS_VALUE=1.1622.
+///
+/// Read **by column name**, so an inserted column does not shift the parse.
+/// `lastNObservations` bounds the request. Rates are stored exactly as published
+/// -- quote units per one base unit -- and never inverted at write time, because
+/// a division is where an exact decimal stops being exact.
+pub struct EcbProvider {
+    pub client: reqwest::blocking::Client,
+    /// The fallback when the ECB endpoint is unreachable: Frankfurter, an
+    /// MIT-licensed server of the same ECB reference rates. A second path to one
+    /// fact rather than a second fact -- rows carry `source = "ecb"` either way
+    /// and the detail names which door answered.
+    pub allow_fallback: bool,
+}
+
+const ECB_BASE: &str = "https://data-api.ecb.europa.eu/service/data/EXR";
+const FRANKFURTER_BASE: &str = "https://api.frankfurter.dev/v1";
+
+impl PriceProvider for EcbProvider {
+    fn name(&self) -> &'static str {
+        "ecb"
+    }
+
+    fn targets(&self, context: &FetchContext<'_>) -> Vec<String> {
+        context.quote_currencies.to_vec()
+    }
+
+    fn fetch(&self, target: &str, context: &FetchContext<'_>) -> ProviderResult {
+        if target.len() != 3 || !target.chars().all(|c| c.is_ascii_uppercase()) {
+            return ProviderResult::refused("a currency code is three uppercase letters");
+        }
+        let url = format!(
+            "{ECB_BASE}/D.{target}.{FX_BASE}.SP00.A?format=csvdata&lastNObservations={}",
+            context.history_days.min(400)
+        );
+        match self.client.get(&url).send() {
+            Ok(response) => {
+                let status = response.status();
+                let Ok(body) = response.text() else {
+                    return ProviderResult::error(format!("HTTP {status}: the body was torn"));
+                };
+                match parse_ecb_csv(&body, target, context.fetched_at) {
+                    Ok(rates) if rates.is_empty() => ProviderResult {
+                        prices: Vec::new(),
+                        rates,
+                        status: FetchStatus::Empty,
+                        detail: format!("HTTP {status}: the series carried no observation"),
+                    },
+                    Ok(rates) => ProviderResult {
+                        prices: Vec::new(),
+                        rates,
+                        status: FetchStatus::Ok,
+                        detail: String::new(),
+                    },
+                    Err(reason) if self.allow_fallback => {
+                        self.frankfurter(target, context, &reason)
+                    }
+                    Err(reason) => ProviderResult::refused(format!("HTTP {status}: {reason}")),
+                }
+            }
+            Err(error) if self.allow_fallback => {
+                self.frankfurter(target, context, &format!("request failed: {error}"))
+            }
+            Err(error) => ProviderResult::error(format!("request failed: {error}")),
+        }
+    }
+}
+
+impl EcbProvider {
+    /// The same ECB reference rates over a simpler JSON shape.
+    ///
+    /// Measured 2026-09-05: `GET https://api.frankfurter.dev/v1/latest?base=EUR`
+    /// answered HTTP 200 with date 2026-09-04 and thirty-odd rates. Only the
+    /// latest, not a history: this door exists so a stale FX table has one more
+    /// chance to update, not so it becomes the primary series.
+    fn frankfurter(&self, target: &str, context: &FetchContext<'_>, why: &str) -> ProviderResult {
+        let url = format!("{FRANKFURTER_BASE}/latest?base={FX_BASE}&symbols={target}");
+        let Ok(response) = self.client.get(&url).send() else {
+            return ProviderResult::error(format!("{why}; the fallback did not answer either"));
+        };
+        let status = response.status();
+        let Ok(body) = response.text() else {
+            return ProviderResult::error(format!("{why}; the fallback body was torn"));
+        };
+        match parse_frankfurter_json(&body, target, context.fetched_at) {
+            Ok(rates) if rates.is_empty() => ProviderResult {
+                prices: Vec::new(),
+                rates,
+                status: FetchStatus::Empty,
+                detail: format!("{why}; the fallback answered HTTP {status} with no rate"),
+            },
+            Ok(rates) => ProviderResult {
+                prices: Vec::new(),
+                rates,
+                status: FetchStatus::Ok,
+                detail: format!("{why}; served by the frankfurter fallback"),
+            },
+            Err(reason) => {
+                ProviderResult::refused(format!("{why}; the fallback answered {reason}"))
+            }
+        }
+    }
+}
+
+/// Parse the SDMX CSV by column name.
+///
+/// The header check is the shape rule: a body whose first line does not carry
+/// `TIME_PERIOD` and `OBS_VALUE` is refused whatever the status code said.
+pub fn parse_ecb_csv(
+    body: &str,
+    quote: &str,
+    fetched_at: &str,
+) -> Result<Vec<FxObservation>, String> {
+    if looks_like_html(body) {
+        return Err("the body is HTML, not CSV".into());
+    }
+    if !csv_header_matches(body, &["TIME_PERIOD", "OBS_VALUE"]) {
+        return Err("the first line is not the expected CSV header".into());
+    }
+    let mut reader = csv::ReaderBuilder::new()
+        .flexible(true)
+        .from_reader(body.as_bytes());
+    let headers = reader
+        .headers()
+        .map_err(|_| "the CSV header could not be read".to_string())?
+        .clone();
+    let period = header_index(&headers, "TIME_PERIOD")?;
+    let value = header_index(&headers, "OBS_VALUE")?;
+    let mut rates = Vec::new();
+    for record in reader.records() {
+        let Ok(record) = record else { continue };
+        let (Some(day), Some(raw)) = (record.get(period), record.get(value)) else {
+            continue;
+        };
+        if raw.trim().is_empty() || !crate::clock::valid_iso_date(day.trim()) {
+            continue;
+        }
+        let rate = parse_provider_decimal(raw)?;
+        rates.push(FxObservation {
+            base: FX_BASE.into(),
+            quote: quote.to_string(),
+            observed_on: day.trim().to_string(),
+            rate,
+            source: "ecb".into(),
+            fetched_at: fetched_at.to_string(),
+        });
+    }
+    Ok(rates)
+}
+
+fn header_index(headers: &csv::StringRecord, name: &str) -> Result<usize, String> {
+    headers
+        .iter()
+        .position(|column| column.trim() == name)
+        .ok_or_else(|| format!("the CSV has no {name} column"))
+}
+
+/// Parse Frankfurter's `{ "date": "...", "rates": { "USD": 1.1622 } }`.
+pub fn parse_frankfurter_json(
+    body: &str,
+    quote: &str,
+    fetched_at: &str,
+) -> Result<Vec<FxObservation>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "a body that is not JSON".to_string())?;
+    let Some(day) = value.get("date").and_then(|day| day.as_str()) else {
+        return Err("JSON with no date".into());
+    };
+    if !crate::clock::valid_iso_date(day) {
+        return Err("JSON whose date is not a date".into());
+    }
+    let Some(raw) = value.get("rates").and_then(|rates| rates.get(quote)) else {
+        return Ok(Vec::new());
+    };
+    // Serialised back through `to_string` rather than read as f64: the number is
+    // exact in the JSON text and only becomes lossy once it is a float.
+    let rate = parse_provider_decimal(&raw.to_string())?;
+    Ok(vec![FxObservation {
+        base: FX_BASE.into(),
+        quote: quote.to_string(),
+        observed_on: day.to_string(),
+        rate,
+        source: "ecb".into(),
+        fetched_at: fetched_at.to_string(),
+    }])
+}
+
+// ---------------------------------------------------------------------------
+// yahoo -- daily close history
+// ---------------------------------------------------------------------------
+
+/// Daily close history per instrument, from Yahoo's v8 chart endpoint.
+///
+/// Unofficial and undocumented, and the flip condition is written into
+/// `upstreams.toml` rather than remembered: retired the day two consecutive
+/// manual runs get a non-200 that a fresh consent-plus-crumb handshake does not
+/// fix, or the day Yahoo publishes terms forbidding this use. On retirement the
+/// `broker` provider still prices every holding.
+///
+/// Measured 2026-09-05 from this network:
+/// `GET https://query1.finance.yahoo.com/v8/finance/chart/SPY?range=5d&interval=1d`
+/// answered **HTTP 200** with five daily closes and `chart.error = null` -- no
+/// cookie and no crumb needed. `GET https://query1.finance.yahoo.com/v1/test/getcrumb`
+/// answered **HTTP 429** both with and without the `A3` consent cookie that
+/// `GET https://fc.yahoo.com` sets (that endpoint answers 404 and sets the cookie
+/// anyway). So the bare call is the primary path and the handshake is the retry:
+/// a non-200 or an error body triggers consent, crumb and one retry.
+pub struct YahooProvider {
+    pub client: reqwest::blocking::Client,
+}
+
+const YAHOO_CHART: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
+const YAHOO_CONSENT: &str = "https://fc.yahoo.com";
+const YAHOO_CRUMB: &str = "https://query1.finance.yahoo.com/v1/test/getcrumb";
+
+impl PriceProvider for YahooProvider {
+    fn name(&self) -> &'static str {
+        "yahoo"
+    }
+
+    /// Only instruments with a configured ticker. An instrument without one is
+    /// still a target, so the run records a `refused` row naming the missing key
+    /// rather than passing over it in silence.
+    fn targets(&self, context: &FetchContext<'_>) -> Vec<String> {
+        context
+            .instruments
+            .iter()
+            .map(|profile| profile.instrument.clone())
+            .collect()
+    }
+
+    fn fetch(&self, target: &str, context: &FetchContext<'_>) -> ProviderResult {
+        let Some(profile) = context
+            .instruments
+            .iter()
+            .find(|profile| profile.instrument == target)
+        else {
+            return ProviderResult::refused("the instrument is not in the overlay's instruments");
+        };
+        let Some(ticker) = profile.ticker.as_deref().filter(|t| !t.trim().is_empty()) else {
+            return ProviderResult::refused(
+                "no ticker configured for this instrument; add `ticker` to its instruments entry",
+            );
+        };
+        let range = if context.history_days > 365 {
+            "2y"
+        } else {
+            "1y"
+        };
+        let url = format!(
+            "{YAHOO_CHART}/{}?range={range}&interval=1d",
+            urlencode(ticker)
+        );
+        match self.attempt(&url, target, context, None) {
+            Ok(result) => result,
+            Err(first) => match self.crumb() {
+                Some(crumb) => {
+                    let retried = format!("{url}&crumb={}", urlencode(&crumb));
+                    match self.attempt(&retried, target, context, Some(&first)) {
+                        Ok(result) => result,
+                        Err(second) => ProviderResult::refused(format!(
+                            "{first}; a fresh consent-plus-crumb handshake answered {second}"
+                        )),
+                    }
+                }
+                None => ProviderResult::refused(format!(
+                    "{first}; the crumb handshake did not produce a crumb"
+                )),
+            },
+        }
+    }
+}
+
+impl YahooProvider {
+    fn attempt(
+        &self,
+        url: &str,
+        instrument: &str,
+        context: &FetchContext<'_>,
+        after: Option<&str>,
+    ) -> Result<ProviderResult, String> {
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .map_err(|error| format!("request failed: {error}"))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .map_err(|_| format!("HTTP {status}: the body was torn"))?;
+        // The shape rule again, and it is what a status check would have missed:
+        // a gate page can arrive with any status at all.
+        if looks_like_html(&body) {
+            return Err(format!(
+                "HTTP {status}: the body is HTML, not the chart JSON"
+            ));
+        }
+        let observations = parse_yahoo_chart(&body, instrument, context.fetched_at)
+            .map_err(|reason| format!("HTTP {status}: {reason}"))?;
+        let detail = match after {
+            Some(first) => format!("{first}; recovered after the consent-plus-crumb handshake"),
+            None => String::new(),
+        };
+        Ok(ProviderResult {
+            status: if observations.is_empty() {
+                FetchStatus::Empty
+            } else {
+                FetchStatus::Ok
+            },
+            prices: observations,
+            rates: Vec::new(),
+            detail,
+        })
+    }
+
+    /// The EU consent cookie, then the crumb.
+    ///
+    /// `fc.yahoo.com` answers 404 and sets the `A3` cookie anyway, which is why
+    /// the status is ignored here and only the cookie jar matters. Measured
+    /// 2026-09-05: the crumb endpoint answered 429 from this network, so this
+    /// path is present and unverified live -- the bare chart call was the one
+    /// that worked.
+    fn crumb(&self) -> Option<String> {
+        let _ = self.client.get(YAHOO_CONSENT).send();
+        let response = self.client.get(YAHOO_CRUMB).send().ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let crumb = response.text().ok()?.trim().to_string();
+        // A crumb is a short opaque token. An HTML page or a sentence is the
+        // refusal wearing a 200, which is the whole reason for a shape check.
+        (!crumb.is_empty() && crumb.len() <= 32 && !crumb.contains(char::is_whitespace))
+            .then_some(crumb)
+    }
+}
+
+/// Turn the chart JSON into exact-decimal observations.
+///
+/// The wire carries IEEE doubles (`767.0499877929688` for a close of 767.05), so
+/// an exact decimal has to be CHOSEN at this boundary rather than recovered. The
+/// choice is four decimal places, which is more precision than any quoted equity
+/// price carries and is stated here rather than left for a reader to infer from a
+/// stored mantissa.
+pub fn parse_yahoo_chart(
+    body: &str,
+    instrument: &str,
+    fetched_at: &str,
+) -> Result<Vec<PriceObservation>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "a body that is not JSON".to_string())?;
+    let chart = value
+        .get("chart")
+        .ok_or_else(|| "JSON with no chart object".to_string())?;
+    if let Some(error) = chart.get("error").filter(|error| !error.is_null()) {
+        let description = error
+            .get("description")
+            .and_then(|value| value.as_str())
+            .unwrap_or("an unnamed error");
+        return Err(format!("the chart carried an error: {description}"));
+    }
+    let result = chart
+        .get("result")
+        .and_then(|result| result.as_array())
+        .and_then(|results| results.first())
+        .ok_or_else(|| "JSON with no chart result".to_string())?;
+    let currency = result
+        .get("meta")
+        .and_then(|meta| meta.get("currency"))
+        .and_then(|currency| currency.as_str())
+        .ok_or_else(|| "a chart result with no currency".to_string())?;
+    let timestamps = result
+        .get("timestamp")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    // `adjclose` when it is there, `close` otherwise. Adjusted closes are what a
+    // return series has to be computed from -- an unadjusted series records a
+    // dividend or a split as a price move that never happened.
+    let closes = result
+        .get("indicators")
+        .and_then(|indicators| {
+            indicators
+                .get("adjclose")
+                .and_then(|series| series.as_array())
+                .and_then(|series| series.first())
+                .and_then(|entry| entry.get("adjclose"))
+                .or_else(|| {
+                    indicators
+                        .get("quote")
+                        .and_then(|series| series.as_array())
+                        .and_then(|series| series.first())
+                        .and_then(|entry| entry.get("close"))
+                })
+        })
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if timestamps.len() != closes.len() {
+        return Err("the timestamp and close series are different lengths".into());
+    }
+    let mut observations = Vec::new();
+    for (timestamp, close) in timestamps.iter().zip(&closes) {
+        let (Some(seconds), Some(price)) = (timestamp.as_i64(), close.as_f64()) else {
+            continue;
+        };
+        if !price.is_finite() || price <= 0.0 {
+            continue;
+        }
+        let day = crate::clock::civil_from_days(seconds.div_euclid(86_400));
+        let quantity = parse_provider_decimal(&format!("{price:.4}"))?;
+        observations.push(PriceObservation {
+            instrument: instrument.to_string(),
+            observed_on: day,
+            price: quantity,
+            currency: currency.to_string(),
+            source: "yahoo".into(),
+            fetched_at: fetched_at.to_string(),
+        });
+    }
+    Ok(observations)
+}
+
+/// The three characters a ticker or a crumb could carry that a query string
+/// reads as structure. Not a general encoder: a ticker is `[A-Z0-9.^-]` and a
+/// crumb is base64-ish, so this covers the set and refuses to pretend otherwise.
+fn urlencode(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| match c {
+            '&' => "%26".to_string(),
+            '?' => "%3F".to_string(),
+            '=' => "%3D".to_string(),
+            '/' => "%2F".to_string(),
+            ' ' => "%20".to_string(),
+            other => other.to_string(),
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +817,65 @@ pub fn run_provider(
     Ok(run)
 }
 
+/// Every provider named, built and run against one store.
+///
+/// One assembly point, so `finance-cli prices fetch` and any future caller read
+/// the same context rather than two that drift. `names` is the provider list to
+/// run; an unknown name is an error rather than a silent skip.
+pub fn run_named(
+    store: &FinanceStore,
+    config: &crate::config::Config,
+    names: &[String],
+    as_of: &str,
+    fetched_at: &str,
+    dry_run: bool,
+) -> Result<Vec<FetchRun>, String> {
+    let snapshot = store
+        .holding_projection()
+        .map_err(|error| error.to_string())?
+        .ok_or("no reviewed holdings snapshot is in the projection; import one first")?;
+    let broker_prices = broker_prices_from_snapshot(&snapshot);
+    let quote_currencies: Vec<String> = snapshot
+        .holdings
+        .iter()
+        .map(|holding| holding.currency.clone())
+        .filter(|currency| currency != FX_BASE)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let context = FetchContext {
+        instruments: &config.instruments,
+        broker_prices: &broker_prices,
+        quote_currencies: &quote_currencies,
+        as_of,
+        fetched_at,
+        history_days: 400,
+    };
+    let mut runs = Vec::new();
+    for name in names {
+        // Built here, once per named provider, and never on an async runtime: a
+        // blocking reqwest client driven from a Tokio worker panics at run time.
+        let provider: Box<dyn PriceProvider> = match name.as_str() {
+            "broker" => Box::new(BrokerProvider),
+            "ecb" => Box::new(EcbProvider {
+                client: blocking_client()?,
+                allow_fallback: true,
+            }),
+            "yahoo" => Box::new(YahooProvider {
+                client: blocking_client()?,
+            }),
+            other => {
+                return Err(format!(
+                    "unknown provider {other:?}; the registered set is {}",
+                    PROVIDERS.join(", ")
+                ))
+            }
+        };
+        runs.push(run_provider(store, provider.as_ref(), &context, dry_run)?);
+    }
+    Ok(runs)
+}
+
 /// A reason a human reads, bounded so no provider can grow this column.
 fn truncate_detail(detail: &str) -> String {
     let cleaned: String = detail
@@ -483,6 +993,79 @@ mod tests {
         assert!(!detail.contains('\n'));
     }
 
+    /// The body the ECB Data Portal served on 2026-09-05, trimmed to the columns
+    /// the parser reads. Kept because the parse is by column NAME: this proves an
+    /// inserted column does not shift it.
+    const ECB_CSV: &str = concat!(
+        "KEY,FREQ,CURRENCY,CURRENCY_DENOM,EXR_TYPE,EXR_SUFFIX,TIME_PERIOD,OBS_VALUE,OBS_STATUS\n",
+        "EXR.D.USD.EUR.SP00.A,D,USD,EUR,SP00,A,2026-09-03,1.1615,A\n",
+        "EXR.D.USD.EUR.SP00.A,D,USD,EUR,SP00,A,2026-09-04,1.1622,A\n"
+    );
+
+    #[test]
+    fn the_ecb_csv_is_read_by_column_name_and_stays_exact() {
+        let rates = parse_ecb_csv(ECB_CSV, "USD", "2026-09-05T00:00:00Z").expect("rates");
+        assert_eq!(rates.len(), 2);
+        assert_eq!(rates[0].observed_on, "2026-09-03");
+        assert_eq!(rates[0].rate.mantissa, 11_615);
+        assert_eq!(rates[0].rate.scale, 4);
+        assert_eq!(rates[1].rate.mantissa, 11_622);
+        // Stored as published: quote units per one base unit, never inverted.
+        assert_eq!(rates[0].base, "EUR");
+        assert_eq!(rates[0].quote, "USD");
+    }
+
+    #[test]
+    fn a_gate_page_is_refused_by_every_networked_parser_whatever_the_status_said() {
+        assert!(parse_ecb_csv(STOOQ_PROOF_OF_WORK_BODY, "USD", "now").is_err());
+        assert!(parse_yahoo_chart(STOOQ_PROOF_OF_WORK_BODY, "SYN-A", "now").is_err());
+        assert!(parse_frankfurter_json(STOOQ_PROOF_OF_WORK_BODY, "USD", "now").is_err());
+        // A CSV with the wrong header is refused too, not parsed positionally.
+        assert!(parse_ecb_csv("A,B,C\n1,2,3\n", "USD", "now").is_err());
+    }
+
+    #[test]
+    fn the_frankfurter_fallback_reads_the_same_fact_and_labels_it_ecb() {
+        let rates = parse_frankfurter_json(
+            r#"{"amount":1.0,"base":"EUR","date":"2026-09-04","rates":{"USD":1.1622}}"#,
+            "USD",
+            "2026-09-05T00:00:00Z",
+        )
+        .expect("a rate");
+        assert_eq!(rates.len(), 1);
+        assert_eq!(rates[0].observed_on, "2026-09-04");
+        assert_eq!(rates[0].rate.mantissa, 11_622);
+        assert_eq!(rates[0].source, "ecb");
+    }
+
+    /// The shape Yahoo's v8 chart endpoint answered with on 2026-09-05, cut to
+    /// two days. `adjclose` is preferred over `close`: an unadjusted series
+    /// records a dividend or a split as a price move that never happened.
+    #[test]
+    fn the_yahoo_chart_becomes_exact_decimals_from_ieee_doubles() {
+        let body = r#"{"chart":{"result":[{"meta":{"currency":"USD","symbol":"SPY"},
+            "timestamp":[1788442200,1788528600],
+            "indicators":{"quote":[{"close":[773.1699829101562,770.1900024414062]}],
+            "adjclose":[{"adjclose":[773.1699829101562,770.1900024414062]}]}}],"error":null}}"#;
+        let observations =
+            parse_yahoo_chart(body, "SYN-A", "2026-09-05T00:00:00Z").expect("prices");
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].currency, "USD");
+        assert_eq!(observations[0].source, "yahoo");
+        // 773.1699829101562 at four places is 773.1700, stored as an exact pair.
+        assert_eq!(observations[0].price.mantissa, 7_731_700);
+        assert_eq!(observations[0].price.scale, 4);
+        assert_eq!(observations[1].price.mantissa, 7_701_900);
+    }
+
+    #[test]
+    fn a_yahoo_error_body_is_named_rather_than_parsed_as_an_empty_series() {
+        let body = r#"{"chart":{"result":null,"error":{"code":"Not Found",
+            "description":"No data found, symbol may be delisted"}}}"#;
+        let error = parse_yahoo_chart(body, "SYN-A", "now").expect_err("an error");
+        assert!(error.contains("delisted"), "{error}");
+    }
+
     #[test]
     fn a_broker_target_missing_from_the_projection_is_refused_not_skipped() {
         let broker = BrokerProvider;
@@ -490,6 +1073,7 @@ mod tests {
         let context = FetchContext {
             instruments: &[],
             broker_prices: &empty,
+            quote_currencies: &[],
             as_of: "2026-09-05",
             fetched_at: "2026-09-05T00:00:00Z",
             history_days: 400,

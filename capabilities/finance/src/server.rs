@@ -1840,22 +1840,41 @@ fn no_holdings() -> ApiResponse {
     )
 }
 
-/// Everything the portfolio and the rules read, assembled once.
-///
-/// A struct rather than a tuple because six of these are `Option` and a caller
-/// reading `.3` would eventually read the wrong one.
+impl AppState {
+    /// The parts of `Config` the investment surfaces read, rebuilt from what the
+    /// server already holds.
+    ///
+    /// `decision::recompute` and `price::run_named` both take a `&Config`, which
+    /// is what keeps the CLI and the handler reading one assembly rather than two
+    /// that drift. Rebuilding it here costs a few clones per request and removes
+    /// a second definition of what the rules see.
+    fn investment_config(&self) -> Config {
+        Config {
+            database_path: self.database_path.as_ref().clone(),
+            port: 0,
+            obsidian: self.obsidian.clone(),
+            journal: self.journal.clone(),
+            investment_snapshot: self.investment_snapshot.clone(),
+            balance_snapshot: self.balance_snapshot.clone(),
+            commitments: self.commitments.as_ref().clone(),
+            csv_mappings: self.csv_mappings.as_ref().clone(),
+            investment_csv_mappings: self.investment_csv_mappings.as_ref().clone(),
+            planning: self.planning.as_ref().clone(),
+            instruments: self.instruments.as_ref().clone(),
+            targets: self.targets.as_deref().cloned(),
+            comms_base_url: self.comms_base_url.as_ref().clone(),
+        }
+    }
+}
+
+/// What `GET /api/portfolio` reads. Two fields, because that is what the report
+/// takes: the reviewed snapshot and the newest observation per instrument.
 struct InvestmentReads {
     snapshot: finance::investment::ReviewedHoldingsSnapshot,
     latest_prices: Vec<finance::price::PriceObservation>,
-    rows: Vec<analytics::TransactionRow>,
-    subscriptions: Vec<finance::Subscription>,
-    balance_snapshot: Option<ManualBalanceSnapshot>,
 }
 
-fn read_investments(
-    database_path: &std::path::Path,
-    balance_snapshot_path: Option<&std::path::Path>,
-) -> Result<Option<InvestmentReads>, String> {
+fn read_investments(database_path: &std::path::Path) -> Result<Option<InvestmentReads>, String> {
     let store = FinanceStore::open(database_path).map_err(|error| error.to_string())?;
     let Some(snapshot) = store.holding_projection().map_err(|e| e.to_string())? else {
         return Ok(None);
@@ -1863,12 +1882,6 @@ fn read_investments(
     Ok(Some(InvestmentReads {
         snapshot,
         latest_prices: store.latest_prices().map_err(|e| e.to_string())?,
-        rows: store.transaction_projection().map_err(|e| e.to_string())?,
-        subscriptions: store.list().map_err(|e| e.to_string())?,
-        balance_snapshot: balance_snapshot_path
-            .map(balance::read_snapshot)
-            .transpose()?
-            .flatten(),
     }))
 }
 
@@ -1894,13 +1907,12 @@ async fn portfolio(
     Query(query): Query<CurrencyQuery>,
 ) -> ApiResponse {
     let database_path = state.database_path.clone();
-    let balance_snapshot = state.balance_snapshot.clone();
     let instruments = state.instruments.clone();
     let targets = state.targets.clone();
     let currency = query.currency.unwrap_or_else(|| "EUR".into());
     let as_of = today();
     match tokio::task::spawn_blocking(move || -> Result<Option<Value>, String> {
-        let Some(reads) = read_investments(&database_path, balance_snapshot.as_deref())? else {
+        let Some(reads) = read_investments(&database_path)? else {
             return Ok(None);
         };
         let report = portfolio_report(&reads, &instruments, targets.as_deref(), &as_of, &currency)?;
@@ -2109,66 +2121,36 @@ async fn run_decisions(
     body: Option<Json<DecisionRunRequest>>,
 ) -> ApiResponse {
     let request = body.map(|Json(request)| request).unwrap_or_default();
-    let database_path = state.database_path.clone();
-    let balance_snapshot = state.balance_snapshot.clone();
-    let instruments = state.instruments.clone();
-    let targets = state.targets.clone();
-    let commitments = state.commitments.clone();
-    let planning_config = state.planning.clone();
+    let config = state.investment_config();
     let comms_base_url = state.comms_base_url.clone();
     let overlay_root = state.overlay_root.clone();
     let currency = request.currency.unwrap_or_else(|| "EUR".into());
     let dry_run = request.dry_run;
     let as_of = today();
     let proposed_at = now_timestamp();
-    match tokio::task::spawn_blocking(move || -> Result<Option<Value>, String> {
-        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
-        let Some(reads) = read_investments(&database_path, balance_snapshot.as_deref())? else {
-            return Ok(None);
-        };
-        let report = portfolio_report(&reads, &instruments, targets.as_deref(), &as_of, &currency)?;
-        let portfolio_values =
-            investment::portfolio_valuations(&reads.snapshot).map_err(|error| error.to_string())?;
-        let planning = planning::report(planning::PlanningInputs {
-            rows: &reads.rows,
-            commitments: &commitments,
-            subscriptions: &reads.subscriptions,
-            balance_snapshot: reads.balance_snapshot.as_ref(),
-            investment_snapshot: Some(&reads.snapshot),
-            portfolio_values: &portfolio_values,
-            config: &planning_config,
-            as_of: &as_of,
-            currency: &currency,
-        });
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&config.database_path).map_err(|error| error.to_string())?;
         // Built inside this closure, never on the async runtime: a blocking
         // reqwest client driven from a Tokio worker panics at run time.
         let feed_items = read_feed_items(&comms_base_url);
-        let risk = finance::risk::report(&store, &reads.snapshot, targets.as_deref())
-            .ok()
-            .and_then(|report| serde_json::to_value(report).ok());
-        let inputs = finance::decision::DecisionInputs {
-            portfolio: &report,
-            report: &planning,
-            targets: targets.as_deref(),
-            instruments: &instruments,
-            subscriptions: &reads.subscriptions,
-            feed_items: &feed_items,
-            as_of: &as_of,
-            proposed_at: &proposed_at,
-            currency: &currency,
-            risk: risk.as_ref(),
-        };
-        let (minted, caveats) = finance::decision::propose_all(&inputs);
+        let (minted, caveats) = finance::decision::recompute(
+            &store,
+            &config,
+            &feed_items,
+            &as_of,
+            &proposed_at,
+            &currency,
+        )?;
         if dry_run {
-            return Ok(Some(json!({
+            return Ok(json!({
                 "ok": true,
                 "dry_run": true,
                 "proposed": minted.len(),
                 "unchanged": 0,
                 "superseded": 0,
-                "proposals": minted.iter().map(|m| &m.proposal).collect::<Vec<_>>(),
+                "proposals": minted.iter().map(|minted| &minted.proposal).collect::<Vec<_>>(),
                 "caveats": caveats,
-            })));
+            }));
         }
         let outcome = finance::decision::run(
             &store,
@@ -2176,19 +2158,19 @@ async fn run_decisions(
             &proposed_at,
             overlay_root.as_deref().map(|root| root.as_path()),
         )?;
-        Ok(Some(json!({
+        Ok(json!({
             "ok": true,
             "dry_run": false,
             "proposed": outcome.proposed,
             "unchanged": outcome.unchanged,
             "superseded": outcome.superseded,
             "caveats": caveats,
-        })))
+        }))
     })
     .await
     {
-        Ok(Ok(Some(value))) => response(StatusCode::OK, value),
-        Ok(Ok(None)) => no_holdings(),
+        Ok(Ok(value)) => response(StatusCode::OK, value),
+        Ok(Err(error)) if error.starts_with("no reviewed holdings snapshot") => no_holdings(),
         Ok(Err(error)) => failed(error),
         Err(error) => failed(error.to_string()),
     }

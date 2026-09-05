@@ -141,6 +141,25 @@ pub fn report(inputs: PortfolioInputs<'_>) -> Result<PortfolioReport, String> {
         }
         let profile = profiles.get(holding.instrument.as_str());
         let observation = prices.get(holding.instrument.as_str());
+        // A market price in a different currency from the holding must not value
+        // it. Measured 2026-09-05: a EUR holding priced by a USD market quote was
+        // valued at the USD number with no conversion and no marker, which is a
+        // wrong figure that looks right. Converting here is not the fix either --
+        // the FX rate is a second observation with its own date, and layering it
+        // in silently would hide two provenance facts behind one number. So the
+        // position falls back to its reviewed price and the mismatch is named.
+        let currency_matches = observation
+            .map(|observation| observation.currency == holding.currency)
+            .unwrap_or(true);
+        if !currency_matches {
+            caveats.push(format!(
+                "{} is held in {} and its market price is quoted in {}; it is valued at its reviewed price until an FX conversion with its own dated rate exists",
+                holding.instrument,
+                holding.currency,
+                observation.map(|o| o.currency.as_str()).unwrap_or("")
+            ));
+        }
+        let observation = observation.filter(|_| currency_matches);
         let age_days = observation
             .and_then(|observation| clock::days_between(&observation.observed_on, inputs.as_of));
         let market_price = observation.map(|observation| observation.price.clone());
@@ -451,6 +470,37 @@ mod tests {
         assert_eq!(report.positions[0].price_freshness, "none");
     }
 
+    /// One definition of what the portfolio is worth.
+    ///
+    /// With no market observation, `portfolio::report`'s total must equal
+    /// `investment::portfolio_valuations`' figure for the same currency -- the
+    /// number `/api/dashboard` serves. With a market observation the two answer
+    /// different questions on purpose, and `value_basis` on every position is how
+    /// a reader tells which they are looking at.
+    #[test]
+    fn the_review_basis_total_equals_the_dashboard_valuation() {
+        let holdings = vec![holding("SYN-A", 100, 10_000), holding("SYN-B", 7, 12_345)];
+        let books = snapshot(holdings);
+        let report = report(PortfolioInputs {
+            snapshot: &books,
+            latest_prices: &[],
+            instruments: &[],
+            targets: None,
+            as_of: "2026-09-05",
+            currency: "EUR",
+        })
+        .expect("a report");
+        let valuations = crate::investment::portfolio_valuations(&books).expect("a valuation");
+        let dashboard = valuations
+            .iter()
+            .find(|value| value.currency == "EUR")
+            .expect("a EUR valuation");
+        assert_eq!(
+            crate::investment::to_minor_units(&report.total).unwrap(),
+            crate::investment::to_minor_units(&dashboard.value).unwrap()
+        );
+    }
+
     #[test]
     fn a_market_price_overrides_the_review_price_and_says_so() {
         let observation = PriceObservation {
@@ -477,6 +527,37 @@ mod tests {
         assert_eq!(position.price_freshness, "fresh");
         // 10 units at 120.00 is 1,200.00 against a review value of 1,000.00.
         assert_eq!(position.change_since_review_bp, Some(2_000));
+    }
+
+    /// Measured 2026-09-05: a EUR holding was valued at a USD market quote with
+    /// no conversion and no marker.
+    #[test]
+    fn a_market_price_in_another_currency_does_not_value_the_position() {
+        let observation = PriceObservation {
+            instrument: "SYN-A".into(),
+            observed_on: "2026-09-04".into(),
+            price: quantity(77_000_000, 4),
+            currency: "USD".into(),
+            source: "yahoo".into(),
+            fetched_at: "2026-09-04T10:00:00Z".into(),
+        };
+        let report = report(PortfolioInputs {
+            snapshot: &snapshot(vec![holding("SYN-A", 10, 10_000)]),
+            latest_prices: std::slice::from_ref(&observation),
+            instruments: &[],
+            targets: None,
+            as_of: "2026-09-05",
+            currency: "EUR",
+        })
+        .expect("a report");
+        let position = &report.positions[0];
+        assert_eq!(position.value_basis, "review");
+        assert_eq!(position.market_price, None);
+        assert_eq!(position.price_freshness, "none");
+        assert!(report
+            .caveats
+            .iter()
+            .any(|caveat| caveat.contains("quoted in USD")));
     }
 
     #[test]

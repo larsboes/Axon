@@ -298,19 +298,63 @@ pub fn from_observations(
 // The series
 // ---------------------------------------------------------------------------
 
-/// One price per instrument-day, newest fetch wins.
+/// One price per instrument-day, from ONE source per instrument.
 ///
-/// Two sources may hold one instrument-day; the newest `fetched_at` is what a
-/// reader saw last, which is the same rule `store.latest_prices` follows. A day
-/// is never averaged across sources: an average of two quotes is a third number
-/// nobody published.
+/// The source rule is the load-bearing half, and it was bought with a live
+/// measurement rather than reasoned: on 2026-09-05 an instrument carried 502
+/// `yahoo` observations in USD and one `broker` observation in EUR, and the
+/// broker row landed inside the yahoo window. Mixing them produced a −87% day
+/// followed by a +666% day, an annualised portfolio volatility of 152%, and a
+/// minimum-variance portfolio computed from returns that never happened.
+///
+/// Two sources are two price scales — a different currency, a different
+/// adjustment basis, a different close convention — so a switch between them is
+/// a fabricated return, not a data point. The series therefore uses the source
+/// with the MOST observations for that instrument, ties broken by the newest
+/// observed day. A day is never averaged across sources either: an average of two
+/// quotes is a third number nobody published.
+///
+/// The consequence is stated rather than hidden: an instrument priced only by
+/// `broker` has a one-point-per-run series and will sit at
+/// `insufficient_history` for a long time. That is the correct answer, and it is
+/// why the `yahoo` provider exists.
 fn daily_series(
     observations: &[PriceObservation],
     held: &BTreeSet<&str>,
 ) -> BTreeMap<String, BTreeMap<String, f64>> {
+    let mut counts: BTreeMap<(&str, &str), (usize, &str)> = BTreeMap::new();
+    for observation in observations {
+        if !held.contains(observation.instrument.as_str()) {
+            continue;
+        }
+        let entry = counts
+            .entry((observation.instrument.as_str(), observation.source.as_str()))
+            .or_insert((0, ""));
+        entry.0 += 1;
+        if observation.observed_on.as_str() > entry.1 {
+            entry.1 = observation.observed_on.as_str();
+        }
+    }
+    let mut best: BTreeMap<&str, (usize, &str, &str)> = BTreeMap::new();
+    for ((instrument, source), (count, newest)) in counts {
+        let candidate = (count, newest, source);
+        match best.get(instrument) {
+            Some((best_count, best_newest, _))
+                if (*best_count, *best_newest) >= (count, newest) => {}
+            _ => {
+                best.insert(instrument, candidate);
+            }
+        }
+    }
     let mut chosen: BTreeMap<(String, String), (&str, f64)> = BTreeMap::new();
     for observation in observations {
         if !held.contains(observation.instrument.as_str()) {
+            continue;
+        }
+        let Some((_, _, source)) = best.get(observation.instrument.as_str()) else {
+            continue;
+        };
+        if *source != observation.source.as_str() {
             continue;
         }
         let Some(price) = decimal_to_f64(observation.price.mantissa, observation.price.scale)
@@ -650,6 +694,9 @@ mod tests {
     use super::*;
     use crate::investment::{Holding, HoldingsCoverage, Quantity};
 
+    /// A market observation. The source matters: `daily_series` picks ONE source
+    /// per instrument, so a fixture that labelled a long series `broker` would be
+    /// testing the wrong thing.
     fn observation(instrument: &str, day: &str, price: f64) -> PriceObservation {
         PriceObservation {
             instrument: instrument.into(),
@@ -659,7 +706,7 @@ mod tests {
                 scale: 4,
             },
             currency: "EUR".into(),
-            source: "broker".into(),
+            source: "yahoo".into(),
             fetched_at: format!("{day}T00:00:00Z"),
         }
     }
@@ -724,6 +771,38 @@ mod tests {
             .contains("floor of 120"));
         assert_eq!(report.minimum_variance_weights, None);
         assert_eq!(report.portfolio_volatility_bp, None);
+    }
+
+    /// The defect a live run found: one broker point at a different price scale
+    /// inside a long market series produced a −87% day and a +666% day.
+    #[test]
+    fn one_source_per_instrument_keeps_a_broker_point_out_of_a_market_series() {
+        let mut observations = synthetic_series("SYN-A", 300, 7);
+        // A broker observation on a day the market series already covers, at a
+        // wholly different scale -- a EUR activity price beside USD closes.
+        let collision_day = observations[150].observed_on.clone();
+        observations.push(PriceObservation {
+            instrument: "SYN-A".into(),
+            observed_on: collision_day,
+            price: Quantity {
+                mantissa: 1,
+                scale: 0,
+            },
+            currency: "EUR".into(),
+            source: "broker".into(),
+            fetched_at: "2026-09-05T00:00:00Z".into(),
+        });
+        let report = from_observations(&observations, &snapshot(&["SYN-A"]), None);
+        let volatility = report.instruments[0]
+            .annualised_volatility_bp
+            .expect("a volatility");
+        // Two fabricated returns of that size would put this in the thousands of
+        // basis points; the deterministic series sits far below that.
+        assert!(
+            volatility < 5_000,
+            "a broker point leaked into the market series: {volatility} bp"
+        );
+        assert_eq!(report.instruments[0].observations, 299);
     }
 
     #[test]

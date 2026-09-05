@@ -100,6 +100,9 @@ paths = [
   "/finance/api/import/candidates",
   "/finance/api/import/csv/mappings",
   "/finance/api/import/investments/mappings",
+  "/finance/api/portfolio",
+  "/finance/api/decisions",
+  "/finance/api/prices/status",
 ]
 
 [capability.comms]

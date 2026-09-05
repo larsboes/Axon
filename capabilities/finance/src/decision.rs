@@ -317,6 +317,62 @@ fn rebalance_proposals(
             inputs.proposed_at,
         ));
     }
+
+    // An asset-class target is drift too. Measured on a live fixture: with only
+    // the per-position loop, a policy written as "60% equity, 40% bonds" showed
+    // a 3,407 bp drift on /api/portfolio and produced no proposal at all, because
+    // an asset-class target attaches to the class view and never to a position.
+    // The two scopes are the ones `TargetAllocation.scope` declares, so both must
+    // be able to mint.
+    for class in &inputs.portfolio.asset_classes {
+        let (Some(target_bp), Some(band_bp), Some(drift_bp)) =
+            (class.target_bp, class.band_bp, class.drift_bp)
+        else {
+            continue;
+        };
+        if !class.outside_band {
+            continue;
+        }
+        let subject = format!("asset_class:{}", class.asset_class);
+        let direction = if drift_bp > 0 { "above" } else { "below" };
+        let proposal = Proposal {
+            kind: "rebalance".into(),
+            subject: subject.clone(),
+            title: format!("{} is {direction} its band", class.asset_class),
+            summary: format!(
+                "The {} allocation holds {} bp against a target of {target_bp} bp with a band of {band_bp} bp, a drift of {drift_bp} bp.",
+                class.asset_class, class.share_bp
+            ),
+            rung: "rule".into(),
+            instrument: None,
+            asset_class: Some(class.asset_class.clone()),
+            actual_bp: Some(class.share_bp),
+            target_bp: Some(target_bp),
+            band_bp: Some(band_bp),
+            drift_bp: Some(drift_bp),
+            amount_cents: None,
+            currency: inputs.currency.to_string(),
+        };
+        let evidence = Evidence {
+            numbers: BTreeMap::from([
+                ("actual_bp".into(), class.share_bp),
+                ("target_bp".into(), target_bp),
+                ("band_bp".into(), band_bp),
+                ("drift_bp".into(), drift_bp),
+            ]),
+            feed_items: Vec::new(),
+            caveats: Vec::new(),
+            risk: inputs.risk.cloned(),
+        };
+        minted.push(mint(
+            "rebalance",
+            &subject,
+            &[drift_bp / DRIFT_BUCKET_BP, target_bp, band_bp],
+            proposal,
+            evidence,
+            inputs.proposed_at,
+        ));
+    }
     minted
 }
 
@@ -597,6 +653,80 @@ fn contains_token_run(haystack: &[String], needle: &[String]) -> bool {
 // ---------------------------------------------------------------------------
 // The run
 // ---------------------------------------------------------------------------
+
+/// Assemble every input the rules read and mint the proposals.
+///
+/// One assembly point for the HTTP handler and the CLI. Two would be two
+/// definitions of what the rules see, which is the drift this whole stream keeps
+/// removing rather than adding.
+///
+/// `feed_items` is passed in rather than fetched here: the loopback call is I/O
+/// the caller owns, and a rule engine that opens sockets is a rule engine no test
+/// can run offline.
+pub fn recompute(
+    store: &FinanceStore,
+    config: &crate::config::Config,
+    feed_items: &[FeedEvidence],
+    as_of: &str,
+    proposed_at: &str,
+    currency: &str,
+) -> Result<(Vec<MintedProposal>, Vec<String>), String> {
+    let snapshot = store
+        .holding_projection()
+        .map_err(|error| error.to_string())?
+        .ok_or("no reviewed holdings snapshot is in the projection; import one first")?;
+    let latest_prices = store.latest_prices().map_err(|error| error.to_string())?;
+    let rows = store
+        .transaction_projection()
+        .map_err(|error| error.to_string())?;
+    let subscriptions = store.list().map_err(|error| error.to_string())?;
+    let balance_snapshot = config
+        .balance_snapshot
+        .as_deref()
+        .map(crate::balance::read_snapshot)
+        .transpose()?
+        .flatten();
+    let portfolio = crate::portfolio::report(crate::portfolio::PortfolioInputs {
+        snapshot: &snapshot,
+        latest_prices: &latest_prices,
+        instruments: &config.instruments,
+        targets: config.targets.as_ref(),
+        as_of,
+        currency,
+    })?;
+    let portfolio_values =
+        crate::investment::portfolio_valuations(&snapshot).map_err(|error| error.to_string())?;
+    let planning = crate::planning::report(crate::planning::PlanningInputs {
+        rows: &rows,
+        commitments: &config.commitments,
+        subscriptions: &subscriptions,
+        balance_snapshot: balance_snapshot.as_ref(),
+        investment_snapshot: Some(&snapshot),
+        portfolio_values: &portfolio_values,
+        config: &config.planning,
+        as_of,
+        currency,
+    });
+    // Rung 2, attached as evidence and never as a trigger. It returns `null`
+    // figures until a history exists, and that is the correct answer rather than
+    // a reason to withhold the proposal.
+    let risk = crate::risk::report(store, &snapshot, config.targets.as_ref())
+        .ok()
+        .and_then(|report| serde_json::to_value(report).ok());
+    let inputs = DecisionInputs {
+        portfolio: &portfolio,
+        report: &planning,
+        targets: config.targets.as_ref(),
+        instruments: &config.instruments,
+        subscriptions: &subscriptions,
+        feed_items,
+        as_of,
+        proposed_at,
+        currency,
+        risk: risk.as_ref(),
+    };
+    Ok(propose_all(&inputs))
+}
 
 /// Reconcile a run against the ledger and re-render the months it touched.
 ///
@@ -907,6 +1037,35 @@ mod tests {
         assert_eq!(minted[0].proposal.target_bp, Some(5_000));
         assert_eq!(minted[0].proposal.band_bp, Some(200));
         assert_eq!(minted[0].proposal.drift_bp, Some(1_000));
+    }
+
+    /// Measured on a live fixture: with only the per-position loop, an
+    /// asset-class policy showed a four-figure drift on /api/portfolio and minted
+    /// nothing at all.
+    #[test]
+    fn an_asset_class_target_outside_its_band_mints_a_rebalance_too() {
+        let mut books = portfolio(true, vec![position("SYN-A", 9_407, 0, 0)]);
+        books.positions[0].target_bp = None;
+        books.positions[0].band_bp = None;
+        books.positions[0].drift_bp = None;
+        books.positions[0].outside_band = false;
+        books.asset_classes = vec![crate::portfolio::AssetClassView {
+            asset_class: "equity".into(),
+            value: crate::investment::from_minor_units(940_700),
+            share_bp: 9_407,
+            target_bp: Some(6_000),
+            band_bp: Some(300),
+            drift_bp: Some(3_407),
+            outside_band: true,
+        }];
+        let report = planning_report(0);
+        let (minted, _) = propose_all(&inputs(&books, &report, None, &[]));
+        assert_eq!(minted.len(), 1);
+        assert_eq!(minted[0].proposal.kind, "rebalance");
+        assert_eq!(minted[0].proposal.subject, "asset_class:equity");
+        assert_eq!(minted[0].proposal.actual_bp, Some(9_407));
+        assert_eq!(minted[0].proposal.target_bp, Some(6_000));
+        assert_eq!(minted[0].proposal.drift_bp, Some(3_407));
     }
 
     #[test]
