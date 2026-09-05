@@ -52,7 +52,10 @@ export function describeFailure(status: number, body: string, path: string): str
   return capability ? `${capability}: request failed (${status})` : `Request failed (${status})`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** Exported so a stream-owned client module under `lib/<domain>/api.ts` gets the
+ *  ApiError shape, the describeFailure text and the embedded-error unwrap rather
+ *  than reimplementing all three. */
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -66,7 +69,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return parsed as T;
 }
 
-const jsonInit = (method: string, body: unknown): RequestInit => ({
+export const jsonInit = (method: string, body: unknown): RequestInit => ({
   method,
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
@@ -1914,6 +1917,38 @@ export interface TriageItem {
   waiting_since: string | null;
   internal_date: string | null;
   relevance: FeedRelevance[];
+  /** The local model rung's verdict, when a shadow pass has stored one. Null for
+   *  a thread the deterministic rules decided, and for every thread until a pass
+   *  has run. Declared here rather than in `lib/mail/api.ts` because TriageItem
+   *  is the reader contract for GET /triage and this file owns it; the client
+   *  FUNCTIONS all live in the stream's own module. */
+  model?: TriageModelVerdict | null;
+}
+
+/** One stored verdict from the local mail classification rung.
+ *
+ *  `urgency_validated` is false until the frozen corpus carries a measured
+ *  urgency band error. While it is false, urgency is shown and ranks nothing:
+ *  a number that would reorder the ladder passes the same door the stream does. */
+export interface TriageModelVerdict {
+  mode: 'shadow' | 'applied' | 'held';
+  /** `generated` when the model answered. `local_refused` when the class refuses
+   *  every prompt, `skipped_over_window` when the source is too long for the
+   *  light local model, and the transport states otherwise. */
+  state: string;
+  rule_stream: MailCategory;
+  model_stream: MailCategory | null;
+  confidence_bp: number | null;
+  urgency_bp: number | null;
+  urgency_validated: boolean;
+  rationale: string | null;
+  urgency_rationale: string | null;
+  data_class: DataClass;
+  /** Set when apply refused this proposal because it would raise the data class.
+   *  Names the class it would raise to. */
+  held_reason: string | null;
+  classification_version: string;
+  applied_at: string | null;
 }
 
 export interface TriageSweepResult {
