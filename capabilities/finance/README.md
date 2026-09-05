@@ -170,9 +170,90 @@ On the manifest-declared port. `GET /routes` serves the full manifest.
 - `POST /api/import/candidates/:id/reimbursement`
 - `GET /api/ledger/check` · `POST /api/ledger/rebuild`
 - `GET /api/dashboard?start=&end=&account=&category=&currency=`
+- `GET /api/portfolio?currency=EUR` — positions with price freshness, share in basis
+  points and drift against the configured targets
+- `GET /api/prices/status` — per-instrument freshness, the newest fetch attempts and the
+  last status per provider
+- `GET /api/decisions?status=open|accepted|rejected|superseded|all`
+- `POST /api/decisions/run` — recompute proposals and reconcile them against the ledger
+- `POST /api/decisions/:id/verdict` — record a human verdict
+- `GET /api/trips/:id/spending` — one trip's actuals, instead of the whole projection
 
 The dashboard response includes source freshness and the planning report. Neither is
 stored as a second source of truth.
+
+## A price is an observation, never a correction
+
+`finance_prices` holds what a source said an instrument was worth on a day, and nothing
+else. Three consequences follow, and each is a rule the code enforces rather than a
+convention:
+
+**A fetched price is never written back into the reviewed holdings snapshot.**
+`validate_source_snapshot` recomputes the file's content hash over `latest_unit_price`,
+so a quote written there would make the snapshot refuse itself on the next read. The
+market price is layered over the reviewed one at read time and every position says which
+of the two valued it, in `value_basis`.
+
+**A return series comes from one source per instrument.** Measured 2026-09-05: one
+`broker` observation in EUR sitting inside 502 `yahoo` closes in USD produced a −87% day,
+a +666% day and an annualised portfolio volatility of 152%. Two sources are two price
+scales — a different currency, a different adjustment basis — so a switch between them is
+a fabricated return. `risk.rs` uses the source with the most observations for each
+instrument, and the consequence is stated rather than hidden: an instrument priced only by
+`broker` grows one point per run and will sit at `insufficient_history` for a long time.
+
+**A market price in another currency does not value the position.** It falls back to the
+reviewed price and names the mismatch. Converting silently would hide two provenance facts
+— the quote's date and the rate's date — behind one number.
+
+`finance_prices` is NOT `finance_price_points`, which is Axon's own subscription pricing
+history. Market data and what Axon pays for a streaming service are two different series
+that happen to share a word.
+
+## What cannot be computed here
+
+There is no lot and no cost basis anywhere in this capability, and adding one is a
+different feature with a different import. So `change_since_review` is the difference
+between a position's market value and its value at the latest reviewed broker activity
+price. **It is not a return and it is not P&L**, and the UI does not call it either.
+
+## Two rungs: the rules propose, the model explains
+
+Principle 1 made structural. Rung 1 is three rules in `src/decision.rs`: drift beyond an
+allocation's band emits `rebalance`, a median monthly result above the configured floor
+emits `contribute`, and a lump-sum renewal dated in that month emits `review`. Every
+proposal carries `rung = "rule"` and `every_proposal_names_its_rung_and_none_is_model` is
+the test that keeps it so.
+
+Rung 2 is `src/risk.rs`: annualised volatility, pairwise correlation, portfolio volatility
+and long-only minimum-variance and max-Sharpe weights over a hand-rolled Cholesky. It is
+attached to a proposal as evidence and **never** as a trigger. Its floors are refusals
+rather than warnings — below 120 daily observations per instrument, or 60 overlapping
+dates per pair, the answer names the actual count and the figure is `null`. Never a zero:
+a zero volatility claims a price never moved and a zero correlation claims an independence
+nobody measured. A singular covariance is reported, never regularised: the Cholesky's
+non-positive pivot *is* the guard, so the solver and the refusal are one code path.
+
+`sell` is accepted by the ledger's CHECK and minted by no rule. A machine proposing the
+sale of a real position is a different order of claim from proposing a rebalance.
+
+## The decision ledger appends; it never updates
+
+`finance_decisions` holds the proposal and `finance_decision_events` holds everything
+afterwards — the verdict, the outcome, the supersession — as appended rows. There is no
+mutable `verdict` column, deliberately: a column is a thing that can be updated, and one
+UPDATEd verdict loses the date the call was actually made, which is the only fact that
+makes "what did I decide, and did it work" answerable a year later.
+
+Accepting a proposal records a decision and moves no money: no journal entry, no holdings
+snapshot, no order.
+
+The human-readable copy is written on the WRITE path, not by a CLI verb. The verdict
+handler re-renders `<overlay>/data/finance/decisions/YYYY-MM.md` in the same request that
+appends the event, whole-file through a temp-plus-rename at mode 0600. A human verdict and
+its note is the one fact here that no re-import and no re-run reproduces.
+`finance-cli decisions export` is the copy you can take when the server is down — never
+the only writer.
 
 ## Configuration
 
