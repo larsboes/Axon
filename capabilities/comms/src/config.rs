@@ -241,6 +241,42 @@ struct FileConfig {
     quality_flags: Option<QualityFlagConfig>,
     #[serde(default)]
     ingest_allowed_origins: Vec<String>,
+    /// Absent in the overlay today, and absent means the model rung stays in
+    /// shadow. See [`MailModelConfig`].
+    mail_model: Option<MailModelConfig>,
+}
+
+/// What the local model rung is allowed to do on this machine.
+///
+/// Absent in the overlay means shadow only: the pass writes verdicts and
+/// changes no category. The flip to live is one key a human sets after reading
+/// the report, not a code deploy and not a request flag a script could set by
+/// accident.
+///
+/// Read through `mail_model::apply_allowed`, which takes this section rather
+/// than the whole `Config`, so the refusal is a pure function and its test does
+/// not depend on what this machine's overlay happens to hold.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct MailModelConfig {
+    /// Whether a verdict may move a category at all.
+    pub apply: bool,
+    /// The blunt floor below which a disagreement is not written. The model's
+    /// confidence is self-reported and uncalibrated: this is a policy
+    /// threshold, not a probability, and the corpus is what sets it.
+    pub min_confidence_bp: u32,
+    /// How many threads one pass may prompt.
+    pub limit: usize,
+}
+
+impl Default for MailModelConfig {
+    fn default() -> Self {
+        Self {
+            apply: false,
+            min_confidence_bp: 0,
+            limit: 200,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +368,8 @@ pub struct Config {
     /// defaults; an explicit empty array disables them all.
     pub feed_sources: Vec<FeedSourceConfig>,
     pub quality_flags: QualityFlagConfig,
+    /// `None` until the overlay declares it, and `None` refuses every apply.
+    pub mail_model: Option<MailModelConfig>,
 }
 
 // One implementation, in libs/axon-config, re-exported under the name this
@@ -525,6 +563,10 @@ impl Config {
         let travel_context = file.travel_context.unwrap_or_default();
         let calendar_context = file.calendar_context.unwrap_or_default();
         let quality_flags = file.quality_flags.unwrap_or_default();
+        // Deliberately not `unwrap_or_default()`: "the operator has not decided"
+        // and "the operator decided no" have to stay distinguishable, because
+        // the first is what the 409 names.
+        let mail_model = file.mail_model;
 
         Self {
             database_path: axon_config::database_path(),
@@ -549,6 +591,7 @@ impl Config {
             vault_link_sources,
             feed_sources,
             quality_flags,
+            mail_model,
         }
     }
 

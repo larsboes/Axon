@@ -27,6 +27,7 @@ pub mod google;
 pub mod grounding;
 pub mod intake;
 pub mod local_gate;
+pub mod mail_model;
 pub mod media;
 pub mod normalize;
 pub mod people_registry;

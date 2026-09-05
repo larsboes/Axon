@@ -642,7 +642,8 @@ impl Store {
                 "SELECT i.id, i.from_addr, i.subject, i.snippet, i.data_class,
                         r.stream, r.rationale, r.decided_by,
                         v.producer, v.prompt_revision, v.item_revision, v.state,
-                        v.mode, v.attempts, v.next_attempt
+                        v.mode, v.attempts,
+                        (v.next_attempt IS NULL OR v.next_attempt <= {now})
                    FROM {prefix}_triage_items i
                    JOIN {prefix}_triage_rules r ON r.triage_id = i.id
                    LEFT JOIN {prefix}_triage_model_verdicts v ON v.triage_id = i.id
@@ -650,7 +651,8 @@ impl Store {
                     AND i.classification_method = 'deterministic'
                     AND i.status IN ('proposed','approved')
                   ORDER BY i.internal_date DESC NULLS LAST",
-                prefix = self.prefix
+                prefix = self.prefix,
+                now = axon_store::NOW
             ),
             [],
             |row| {
@@ -672,7 +674,7 @@ impl Store {
                             state: row.get(11)?,
                             mode: row.get(12)?,
                             attempts: row.get(13)?,
-                            next_attempt: row.get(14)?,
+                            backoff_expired: row.get(14)?,
                         }),
                         None => None,
                     },
@@ -686,10 +688,29 @@ impl Store {
     /// Whole-row replacement rather than a partial update: a row with a new
     /// state and a previous run's rationale would describe two runs at once,
     /// and the report reads both columns.
+    ///
+    /// `next_attempt` is DB-owned and the struct's value is ignored on write,
+    /// the way `TriageItem`'s `status` and `first_seen` are. The deadline is
+    /// derived here from the state and the attempt count, in the canonical
+    /// stamp format the column's other values are in — `axon_store::now_offset`
+    /// exists because `datetime('now','+1 minute')` renders 19 characters into
+    /// a column that holds 29, and one column at two widths stops `ORDER BY`
+    /// being time order.
     pub fn upsert_model_verdict(
         &self,
         verdict: &ModelVerdict,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // ?3 is the state and ?18 the attempt count: a retryable state below the
+        // cap arms a growing backoff, everything else clears it. `MIN(...,5)`
+        // is the ceiling the Gmail action queue already uses, so the two
+        // ledgers back off alike. Built here rather than inline, because a
+        // `format!` inside a `format!` argument is a lint and reads worse.
+        let backoff_arm = format!(
+            "CASE WHEN ?3 IN ({retryable}) AND ?18 < {cap} THEN {offset} ELSE NULL END",
+            retryable = retryable_model_verdict_states_sql(),
+            cap = MAX_MODEL_VERDICT_ATTEMPTS,
+            offset = axon_store::now_offset("'+' || MIN(?18 + 1, 5) || ' minutes'"),
+        );
         let conn = self.conn()?;
         conn.execute(
             &format!(
@@ -700,7 +721,7 @@ impl Store {
                      classification_version, attempts, last_error, next_attempt, held_reason,
                      applied_at, decided_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,
-                         ?20,?21,?22,{now})
+                         {backoff_arm},?20,?21,{now})
                  ON CONFLICT (triage_id) DO UPDATE SET
                      mode = excluded.mode,
                      state = excluded.state,
@@ -725,7 +746,8 @@ impl Store {
                      applied_at = excluded.applied_at,
                      decided_at = excluded.decided_at",
                 prefix = self.prefix,
-                now = axon_store::NOW
+                now = axon_store::NOW,
+                backoff_arm = backoff_arm,
             ),
             params![
                 &verdict.triage_id,
@@ -747,7 +769,6 @@ impl Store {
                 &verdict.classification_version,
                 &verdict.attempts,
                 &verdict.last_error,
-                &verdict.next_attempt,
                 &verdict.held_reason,
                 &verdict.applied_at,
             ],

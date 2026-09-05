@@ -293,7 +293,10 @@ pub struct StoredVerdictState {
     pub state: String,
     pub mode: String,
     pub attempts: i64,
-    pub next_attempt: Option<String>,
+    /// Whether the retry deadline has passed, answered by SQLite against the
+    /// same clock that wrote it. A raw stamp here would need the caller to
+    /// parse a timestamp to learn the one thing it wants.
+    pub backoff_expired: bool,
 }
 
 /// What one pass decided about one thread. Written whole; there is no partial
@@ -461,6 +464,37 @@ pub const RETRYABLE_DIGEST_STATES: [&str; 6] = [
     // three attempts — the daily request budget is a separate ceiling on top.
     crate::digest::CLOUD_ERROR,
 ];
+
+/// The verdict states the model rung will ask again about.
+///
+/// `Outcome::retryable()`'s five, plus `unparseable`: an answer this parser
+/// could not find JSON in is a fact about the prompt, and a bounded retry is
+/// cheaper than a prompt change while the rate is unknown. Deliberately NOT
+/// here: `local_refused` and `skipped_over_window`, which are verdicts about
+/// the item, and `invalid_stream`, where a second identical prompt reaches the
+/// same answer.
+pub const RETRYABLE_MODEL_VERDICT_STATES: [&str; 6] = [
+    "http_error",
+    "model_error",
+    "capacity_aborted",
+    "empty_response",
+    "timeout",
+    "unparseable",
+];
+
+/// Three attempts, matching the digest ladder's cap. A fourth would be the
+/// pass spending local model time to reach the same answer.
+pub const MAX_MODEL_VERDICT_ATTEMPTS: i64 = 3;
+
+/// [`RETRYABLE_MODEL_VERDICT_STATES`] as a SQL literal list, built from the
+/// const so the two cannot drift. Every element is a compile-time literal.
+fn retryable_model_verdict_states_sql() -> String {
+    RETRYABLE_MODEL_VERDICT_STATES
+        .iter()
+        .map(|state| format!("'{state}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 /// The states above, as a SQL literal list. Built from the const rather
 /// than typed out, so the two cannot drift. Every element is a compile-time
