@@ -1493,8 +1493,15 @@ mod tests {
         // No light role on this config, so no request is made and the state is
         // `unconfigured`. What the test is about is the two invariants either
         // side of the call: a verdict row exists, and the category did not move.
+        //
+        // `database_path` points at this test's own temp file rather than being
+        // empty, because `local_gate::lock_path` falls back to `.` when the
+        // path has no parent — an empty one drops an `axon-local-*.lock` in the
+        // crate directory, which is how one got committed once.
         let cfg = Config {
-            database_path: std::path::PathBuf::new(),
+            database_path: std::env::temp_dir()
+                .join(format!("comms-server-test-{}", std::process::id()))
+                .join("classify_shadow.db"),
             ..Config::load()
         };
         let receipt = mail_model::run_pass(&cfg, &store, Mode::Shadow, 200, 0)

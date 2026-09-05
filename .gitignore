@@ -72,3 +72,8 @@ demo/overlay/config/comms.json
 
 # Agent worktrees created by Claude Code isolation (not repository content)
 .claude/worktrees/
+
+# The local-inference advisory gate writes one lock file beside the database.
+# `local_gate::lock_path` falls back to the working directory when a config
+# carries no database path, which is how one of these reached a commit once.
+axon-local-*.lock
