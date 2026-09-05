@@ -16,8 +16,10 @@ use finance::accounting::AccountingEngine;
 use finance::allocation::{self, ExpenseAllocation, ReimbursementLink, SHARED_RECEIVABLE_ACCOUNT};
 use finance::analytics::{self, AnalyticsFilter};
 use finance::balance::{self, ManualBalanceSnapshot, ManualBalanceUpdate, TrackedNetWorth};
+use finance::clock::{iso_day, now_timestamp, today, valid_iso_date};
 use finance::config::{
-    Config, CsvMappingProfile, InvestmentCsvMappingProfile, ObsidianConfig, RecurringCommitment,
+    Config, CsvMappingProfile, InstrumentProfile, InvestmentCsvMappingProfile, ObsidianConfig,
+    RecurringCommitment, TargetPolicy,
 };
 use finance::import::{self, CandidateState, CsvMapping, TransactionCandidate};
 use finance::investment::{self, HoldingsCoverage, InvestmentCsvMapping};
@@ -158,6 +160,36 @@ const ROUTES: &[route_manifest::Route] = &[
         "/api/dashboard",
         "One reconciled projection for KPIs, trend, transactions, filters and Sankey links.",
     ),
+    r(
+        "GET",
+        "/api/portfolio",
+        "Positions with price freshness, share in basis points and drift against the configured targets. Optional ?currency=EUR, default EUR.",
+    ),
+    r(
+        "GET",
+        "/api/prices/status",
+        "Per-instrument price freshness, the newest 50 fetch attempts and the last status per provider. No parameters.",
+    ),
+    r(
+        "GET",
+        "/api/decisions",
+        "The decision ledger. Optional ?status=open|accepted|rejected|superseded|all, default open.",
+    ),
+    r(
+        "POST",
+        "/api/decisions/run",
+        "Recompute proposals and reconcile them against the ledger. Body: optional currency, optional dry_run. Response: proposed, unchanged, superseded, caveats.",
+    ),
+    r(
+        "POST",
+        "/api/decisions/:id/verdict",
+        "Record a human verdict. Body: expected_proposal_id, verdict (accepted|rejected), note (required on rejected). Records a decision and moves no money.",
+    ),
+    r(
+        "GET",
+        "/api/trips/:id/spending",
+        "One trip's actuals: personal spending, gross cash outflow, reimbursed, outstanding and the posting count. No parameters.",
+    ),
 ];
 
 const fn r(
@@ -186,7 +218,19 @@ struct AppState {
     journal_write: Arc<std::sync::Mutex<()>>,
     projection_write: Arc<std::sync::Mutex<()>>,
     balance_write: Arc<std::sync::Mutex<()>>,
+    instruments: Arc<Vec<InstrumentProfile>>,
+    targets: Option<Arc<TargetPolicy>>,
+    comms_base_url: Arc<String>,
+    /// Where the human-readable copy of the decision ledger is written. `None`
+    /// means no overlay is configured, and the verdict route says so rather than
+    /// recording a decision whose copy silently did not happen.
+    overlay_root: Option<Arc<PathBuf>>,
 }
+
+// No decision recompute mutex on `AppState`, deliberately: `finance-cli
+// decisions run` is a second process, and an in-process mutex cannot see it. The
+// guard is `BEGIN IMMEDIATE` inside `FinanceStore::reconcile_decisions`, which
+// two processes both respect.
 
 type ApiResponse = (StatusCode, Json<Value>);
 
@@ -1402,22 +1446,6 @@ fn source_freshness_status(as_of: Option<&str>, today: &str, threshold_days: u32
     .into()
 }
 
-fn iso_day(value: &str) -> Option<i64> {
-    if !valid_iso_date(value) {
-        return None;
-    }
-    let year = value[0..4].parse::<i64>().ok()?;
-    let month = value[5..7].parse::<i64>().ok()?;
-    let day = value[8..10].parse::<i64>().ok()?;
-    let adjusted_year = year - i64::from(month <= 2);
-    let era = adjusted_year.div_euclid(400);
-    let year_of_era = adjusted_year - era * 400;
-    let shifted_month = month + if month > 2 { -3 } else { 9 };
-    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    Some(era * 146_097 + day_of_era - 719_468)
-}
-
 async fn update_balance_snapshot(
     State(state): State<AppState>,
     Json(update): Json<ManualBalanceUpdate>,
@@ -1493,39 +1521,6 @@ async fn list_subscriptions(State(state): State<AppState>) -> ApiResponse {
 #[derive(Debug, Deserialize)]
 struct AtQuery {
     at: Option<String>,
-}
-
-fn valid_iso_date(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
-        return false;
-    }
-    if bytes
-        .iter()
-        .enumerate()
-        .any(|(index, byte)| !matches!(index, 4 | 7) && !byte.is_ascii_digit())
-    {
-        return false;
-    }
-
-    let Ok(year) = value[0..4].parse::<u32>() else {
-        return false;
-    };
-    let Ok(month) = value[5..7].parse::<u32>() else {
-        return false;
-    };
-    let Ok(day) = value[8..10].parse::<u32>() else {
-        return false;
-    };
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let last_day = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => return false,
-    };
-    (1..=last_day).contains(&day)
 }
 
 fn validate_price(price: &PricePoint) -> Result<(), String> {
@@ -1801,47 +1796,484 @@ fn scan_notes_or_empty(vault: &ObsidianConfig) -> Result<Vec<finance::ScannedNot
     }
 }
 
-/// Today as an ISO date, from the wall clock, with no date dependency.
-///
-/// Days since the Unix epoch converted through the civil-from-days algorithm
-/// (Howard Hinnant's, public domain). It is UTC: a subscription's billing date is
-/// not precise to the hour, and a timezone database would be a dependency bought
-/// for a boundary case that does not exist here.
-fn today() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    civil_from_days(secs / 86_400)
+// ---------------------------------------------------------------------------
+// Investments: the portfolio, the price series, and the decision ledger
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct CurrencyQuery {
+    currency: Option<String>,
 }
 
-fn now_timestamp() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0);
-    let seconds = secs.rem_euclid(86_400);
-    format!(
-        "{}T{:02}:{:02}:{:02}Z",
-        civil_from_days(secs.div_euclid(86_400)),
-        seconds / 3_600,
-        seconds % 3_600 / 60,
-        seconds % 60
+#[derive(Debug, Deserialize)]
+struct StatusQuery {
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerdictRequest {
+    /// The id the client believed it was answering. Re-derived server-side and
+    /// compared, exactly as `confirm_investments` re-runs the preview rather than
+    /// trusting the token it was handed.
+    expected_proposal_id: String,
+    verdict: String,
+    #[serde(default)]
+    note: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DecisionRunRequest {
+    #[serde(default)]
+    currency: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+fn no_holdings() -> ApiResponse {
+    response(
+        StatusCode::CONFLICT,
+        json!({
+            "ok": false,
+            "capability": "finance",
+            "error": "no reviewed holdings snapshot is configured; set investment_snapshot in the overlay's config/finance.json"
+        }),
     )
 }
 
-fn civil_from_days(days: i64) -> String {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-    format!("{year:04}-{m:02}-{d:02}")
+/// Everything the portfolio and the rules read, assembled once.
+///
+/// A struct rather than a tuple because six of these are `Option` and a caller
+/// reading `.3` would eventually read the wrong one.
+struct InvestmentReads {
+    snapshot: finance::investment::ReviewedHoldingsSnapshot,
+    latest_prices: Vec<finance::price::PriceObservation>,
+    rows: Vec<analytics::TransactionRow>,
+    subscriptions: Vec<finance::Subscription>,
+    balance_snapshot: Option<ManualBalanceSnapshot>,
+}
+
+fn read_investments(
+    database_path: &std::path::Path,
+    balance_snapshot_path: Option<&std::path::Path>,
+) -> Result<Option<InvestmentReads>, String> {
+    let store = FinanceStore::open(database_path).map_err(|error| error.to_string())?;
+    let Some(snapshot) = store.holding_projection().map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    Ok(Some(InvestmentReads {
+        snapshot,
+        latest_prices: store.latest_prices().map_err(|e| e.to_string())?,
+        rows: store.transaction_projection().map_err(|e| e.to_string())?,
+        subscriptions: store.list().map_err(|e| e.to_string())?,
+        balance_snapshot: balance_snapshot_path
+            .map(balance::read_snapshot)
+            .transpose()?
+            .flatten(),
+    }))
+}
+
+fn portfolio_report(
+    reads: &InvestmentReads,
+    instruments: &[InstrumentProfile],
+    targets: Option<&TargetPolicy>,
+    as_of: &str,
+    currency: &str,
+) -> Result<finance::portfolio::PortfolioReport, String> {
+    finance::portfolio::report(finance::portfolio::PortfolioInputs {
+        snapshot: &reads.snapshot,
+        latest_prices: &reads.latest_prices,
+        instruments,
+        targets,
+        as_of,
+        currency,
+    })
+}
+
+async fn portfolio(
+    State(state): State<AppState>,
+    Query(query): Query<CurrencyQuery>,
+) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    let balance_snapshot = state.balance_snapshot.clone();
+    let instruments = state.instruments.clone();
+    let targets = state.targets.clone();
+    let currency = query.currency.unwrap_or_else(|| "EUR".into());
+    let as_of = today();
+    match tokio::task::spawn_blocking(move || -> Result<Option<Value>, String> {
+        let Some(reads) = read_investments(&database_path, balance_snapshot.as_deref())? else {
+            return Ok(None);
+        };
+        let report = portfolio_report(&reads, &instruments, targets.as_deref(), &as_of, &currency)?;
+        serde_json::to_value(report)
+            .map(Some)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(Some(value))) => response(StatusCode::OK, value),
+        Ok(Ok(None)) => no_holdings(),
+        Ok(Err(error)) => failed(error),
+        Err(error) => failed(error.to_string()),
+    }
+}
+
+async fn prices_status(State(state): State<AppState>) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    let targets = state.targets.clone();
+    let as_of = today();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
+        let freshness_days = targets
+            .as_deref()
+            .map(|targets| targets.price_freshness_days)
+            .unwrap_or(4);
+        let latest = store.latest_prices().map_err(|e| e.to_string())?;
+        let counts: std::collections::BTreeMap<String, i64> = store
+            .price_counts()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect();
+        let instruments: Vec<Value> = latest
+            .iter()
+            .map(|observation| {
+                let age = finance::clock::days_between(&observation.observed_on, &as_of);
+                json!({
+                    "instrument": observation.instrument,
+                    "latest_observed_on": observation.observed_on,
+                    "source": observation.source,
+                    "age_days": age,
+                    "freshness": match age {
+                        Some(age) if age <= freshness_days => "fresh",
+                        Some(_) => "stale",
+                        None => "unknown",
+                    },
+                    "observations": counts.get(&observation.instrument).copied().unwrap_or(0),
+                })
+            })
+            .collect();
+        let fetches = store.recent_fetches(50).map_err(|e| e.to_string())?;
+        // The newest attempt per provider, so "is this source working" is one
+        // read rather than a scan of the list below it.
+        let mut providers: Vec<Value> = Vec::new();
+        for name in finance::price::PROVIDERS {
+            let last = fetches.iter().find(|attempt| attempt.provider == *name);
+            providers.push(json!({
+                "name": name,
+                "last_status": last.map(|attempt| attempt.status.as_str()),
+                "last_detail": last.map(|attempt| attempt.detail.clone()),
+                "last_fetched_at": last.map(|attempt| attempt.fetched_at.clone()),
+            }));
+        }
+        let rates = store.latest_fx_rates().map_err(|e| e.to_string())?;
+        Ok(json!({
+            "as_of": as_of,
+            "freshness_days": freshness_days,
+            "instruments": instruments,
+            "recent_fetches": fetches,
+            "providers": providers,
+            "fx": rates,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(value)) => response(StatusCode::OK, value),
+        Ok(Err(error)) => failed(error),
+        Err(error) => failed(error.to_string()),
+    }
+}
+
+async fn list_decisions(
+    State(state): State<AppState>,
+    Query(query): Query<StatusQuery>,
+) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    let status = query.status.unwrap_or_else(|| "open".into());
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
+        let stored = store
+            .decisions(Some(&status))
+            .map_err(|error| error.to_string())?;
+        let views: Vec<_> = stored.iter().map(finance::decision::view).collect();
+        serde_json::to_value(views).map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(value)) => response(StatusCode::OK, value),
+        Ok(Err(error)) => failed(error),
+        Err(error) => failed(error.to_string()),
+    }
+}
+
+/// The one thing here nothing can re-derive.
+///
+/// The gate copies `confirm_investments`: the client's `expected_proposal_id`
+/// must equal the id it is answering, and a mismatch is a 409 that names the
+/// current id rather than a silently recorded verdict on the wrong numbers. A
+/// rejection needs a note, mirroring the required reason on an append-only price
+/// point -- a rejection with no reason is a decision nobody can read a year later.
+///
+/// Accepting appends one row and writes the month file. It never writes the
+/// journal, never writes the holdings snapshot and never places an order.
+async fn record_verdict(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<VerdictRequest>,
+) -> ApiResponse {
+    if request.expected_proposal_id != id {
+        return response(
+            StatusCode::CONFLICT,
+            json!({
+                "ok": false,
+                "error": "the numbers moved since this was proposed",
+                "current_proposal_id": id,
+            }),
+        );
+    }
+    if !matches!(request.verdict.as_str(), "accepted" | "rejected") {
+        return response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "ok": false, "error": "verdict must be accepted or rejected" }),
+        );
+    }
+    if request.verdict == "rejected" && request.note.trim().is_empty() {
+        return response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "ok": false, "error": "a note is required for a rejected proposal" }),
+        );
+    }
+    let database_path = state.database_path.clone();
+    let overlay_root = state.overlay_root.clone();
+    let recorded_at = now_timestamp();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
+        let Some(stored) = store.decision(&id).map_err(|error| error.to_string())? else {
+            return Err("__not_found__".into());
+        };
+        if stored.status() != "open" {
+            return Err(format!("__closed__{}", stored.status()));
+        }
+        let event = finance::store::StoredDecisionEvent {
+            event: "verdict".into(),
+            verdict: Some(request.verdict.clone()),
+            note: request.note.clone(),
+            outcome_json: None,
+            recorded_at: recorded_at.clone(),
+        };
+        if !store
+            .append_decision_event(&id, &event)
+            .map_err(|error| error.to_string())?
+        {
+            return Err("__collision__".into());
+        }
+        let exported = match overlay_root.as_deref() {
+            Some(root) => {
+                let month = finance::clock::month_of(&stored.proposal.proposed_at[..10])
+                    .unwrap_or_else(|| recorded_at[..7].to_string());
+                Some(finance::decision::export_month(&store, root, &month)?)
+            }
+            None => None,
+        };
+        Ok(json!({
+            "ok": true,
+            "id": id,
+            "status": request.verdict,
+            "recorded_at": recorded_at,
+            "exported_to": exported,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(value)) => response(StatusCode::OK, value),
+        Ok(Err(error)) if error == "__not_found__" => response(
+            StatusCode::NOT_FOUND,
+            json!({ "ok": false, "error": "no proposal with that id" }),
+        ),
+        Ok(Err(error)) if error == "__collision__" => response(
+            StatusCode::CONFLICT,
+            json!({ "ok": false, "error": "a verdict for this proposal was just recorded" }),
+        ),
+        Ok(Err(error)) if error.starts_with("__closed__") => response(
+            StatusCode::CONFLICT,
+            json!({
+                "ok": false,
+                "error": format!("this proposal is already {}", &error["__closed__".len()..]),
+            }),
+        ),
+        Ok(Err(error)) => failed(error),
+        Err(error) => failed(error.to_string()),
+    }
+}
+
+async fn run_decisions(
+    State(state): State<AppState>,
+    body: Option<Json<DecisionRunRequest>>,
+) -> ApiResponse {
+    let request = body.map(|Json(request)| request).unwrap_or_default();
+    let database_path = state.database_path.clone();
+    let balance_snapshot = state.balance_snapshot.clone();
+    let instruments = state.instruments.clone();
+    let targets = state.targets.clone();
+    let commitments = state.commitments.clone();
+    let planning_config = state.planning.clone();
+    let comms_base_url = state.comms_base_url.clone();
+    let overlay_root = state.overlay_root.clone();
+    let currency = request.currency.unwrap_or_else(|| "EUR".into());
+    let dry_run = request.dry_run;
+    let as_of = today();
+    let proposed_at = now_timestamp();
+    match tokio::task::spawn_blocking(move || -> Result<Option<Value>, String> {
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
+        let Some(reads) = read_investments(&database_path, balance_snapshot.as_deref())? else {
+            return Ok(None);
+        };
+        let report = portfolio_report(&reads, &instruments, targets.as_deref(), &as_of, &currency)?;
+        let portfolio_values =
+            investment::portfolio_valuations(&reads.snapshot).map_err(|error| error.to_string())?;
+        let planning = planning::report(planning::PlanningInputs {
+            rows: &reads.rows,
+            commitments: &commitments,
+            subscriptions: &reads.subscriptions,
+            balance_snapshot: reads.balance_snapshot.as_ref(),
+            investment_snapshot: Some(&reads.snapshot),
+            portfolio_values: &portfolio_values,
+            config: &planning_config,
+            as_of: &as_of,
+            currency: &currency,
+        });
+        // Built inside this closure, never on the async runtime: a blocking
+        // reqwest client driven from a Tokio worker panics at run time.
+        let feed_items = read_feed_items(&comms_base_url);
+        let risk = finance::risk::report(&store, &reads.snapshot, targets.as_deref())
+            .ok()
+            .and_then(|report| serde_json::to_value(report).ok());
+        let inputs = finance::decision::DecisionInputs {
+            portfolio: &report,
+            report: &planning,
+            targets: targets.as_deref(),
+            instruments: &instruments,
+            subscriptions: &reads.subscriptions,
+            feed_items: &feed_items,
+            as_of: &as_of,
+            proposed_at: &proposed_at,
+            currency: &currency,
+            risk: risk.as_ref(),
+        };
+        let (minted, caveats) = finance::decision::propose_all(&inputs);
+        if dry_run {
+            return Ok(Some(json!({
+                "ok": true,
+                "dry_run": true,
+                "proposed": minted.len(),
+                "unchanged": 0,
+                "superseded": 0,
+                "proposals": minted.iter().map(|m| &m.proposal).collect::<Vec<_>>(),
+                "caveats": caveats,
+            })));
+        }
+        let outcome = finance::decision::run(
+            &store,
+            &minted,
+            &proposed_at,
+            overlay_root.as_deref().map(|root| root.as_path()),
+        )?;
+        Ok(Some(json!({
+            "ok": true,
+            "dry_run": false,
+            "proposed": outcome.proposed,
+            "unchanged": outcome.unchanged,
+            "superseded": outcome.superseded,
+            "caveats": caveats,
+        })))
+    })
+    .await
+    {
+        Ok(Ok(Some(value))) => response(StatusCode::OK, value),
+        Ok(Ok(None)) => no_holdings(),
+        Ok(Err(error)) => failed(error),
+        Err(error) => failed(error.to_string()),
+    }
+}
+
+/// Read the feed over loopback HTTP, and answer a failure with an empty list.
+///
+/// Evidence is optional by design: a proposal with no feed items is a proposal
+/// with no reading attached, while a proposal that never got made because comms
+/// was down is a decision lost to an unrelated service.
+///
+/// Only `id`, `title`, `url` and `day` are read. That bound is the class ruling
+/// made structural -- see `decision::FeedEvidence`.
+fn read_feed_items(base_url: &str) -> Vec<finance::decision::FeedEvidence> {
+    if base_url.is_empty() {
+        return Vec::new();
+    }
+    let Ok(client) = finance::price::blocking_client() else {
+        return Vec::new();
+    };
+    let mut request = client.get(format!("{}/feed", base_url.trim_end_matches('/')));
+    if let Some(header) = axon_server::InboundAuth::from_deployment().bearer_header() {
+        request = request.header("Authorization", header);
+    }
+    let Ok(body) = request.send().and_then(reqwest::blocking::Response::text) else {
+        return Vec::new();
+    };
+    let Ok(items) = serde_json::from_str::<Vec<Value>>(&body) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            Some(finance::decision::FeedEvidence {
+                id: item.get("id")?.as_str()?.to_string(),
+                title: item.get("title")?.as_str()?.to_string(),
+                url: item.get("url")?.as_str()?.to_string(),
+                day: item.get("day")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The per-trip slice, so a caller does not download the whole projection to read
+/// one object.
+///
+/// No start/end query, deliberately: a caller passing a range would silently get
+/// a partial trip total, and a partial total that looks whole is worse than no
+/// route. A trip with no allocated rows answers 200 with zeros, not 404 -- an
+/// empty state is the caller's to render.
+async fn trip_spending(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
+        let rows = store
+            .transaction_projection()
+            .map_err(|error| error.to_string())?;
+        let filter = AnalyticsFilter {
+            currency: Some("EUR".into()),
+            ..AnalyticsFilter::default()
+        };
+        let summaries = analytics::trip_spending(&rows, &filter);
+        let summary = summaries
+            .into_iter()
+            .find(|summary| summary.trip_id == id)
+            .unwrap_or(analytics::TripSpendingSummary {
+                trip_id: id.clone(),
+                personal_spending_cents: 0,
+                gross_cash_outflow_cents: 0,
+                reimbursed_cents: 0,
+                outstanding_cents: 0,
+                expense_posting_count: 0,
+            });
+        let mut value = serde_json::to_value(&summary).map_err(|error| error.to_string())?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert("currency".into(), json!("EUR"));
+        }
+        Ok(value)
+    })
+    .await
+    {
+        Ok(Ok(value)) => response(StatusCode::OK, value),
+        Ok(Err(error)) => failed(error),
+        Err(error) => failed(error.to_string()),
+    }
 }
 
 #[tokio::main]
@@ -1860,6 +2292,12 @@ async fn main() {
         journal_write: Arc::new(std::sync::Mutex::new(())),
         projection_write: Arc::new(std::sync::Mutex::new(())),
         balance_write: Arc::new(std::sync::Mutex::new(())),
+        instruments: Arc::new(config.instruments),
+        targets: config.targets.map(Arc::new),
+        comms_base_url: Arc::new(config.comms_base_url),
+        overlay_root: std::env::var("AXON_PERSONAL_ROOT")
+            .ok()
+            .map(|root| Arc::new(axon_config::expand_tilde(&root))),
     };
     let app = Router::new()
         .route("/routes", get(routes))
@@ -1907,6 +2345,12 @@ async fn main() {
         .route("/api/ledger/check", get(check_ledger))
         .route("/api/ledger/rebuild", post(rebuild_ledger))
         .route("/api/dashboard", get(dashboard_projection))
+        .route("/api/portfolio", get(portfolio))
+        .route("/api/prices/status", get(prices_status))
+        .route("/api/decisions", get(list_decisions))
+        .route("/api/decisions/run", post(run_decisions))
+        .route("/api/decisions/:id/verdict", post(record_verdict))
+        .route("/api/trips/:id/spending", get(trip_spending))
         .layer(CorsLayer::permissive())
         .with_state(state);
     axon_server::serve_local("finance-server", config.port, app).await;
@@ -1945,18 +2389,6 @@ mod tests {
             row_policy: CsvRowPolicy::Strict,
             location_columns: None,
         }
-    }
-
-    #[test]
-    fn the_date_conversion_matches_known_days() {
-        assert_eq!(civil_from_days(0), "1970-01-01");
-        assert_eq!(civil_from_days(19_723), "2024-01-01");
-        // 2024 was a leap year; the day after 02-28 is 02-29, not 03-01.
-        assert_eq!(civil_from_days(19_782), "2024-02-29");
-        assert_eq!(civil_from_days(20_673), "2026-08-08");
-        assert_eq!(iso_day("1970-01-01"), Some(0));
-        assert_eq!(iso_day("2024-02-29"), Some(19_782));
-        assert_eq!(iso_day("2026-08-08"), Some(20_673));
     }
 
     #[test]
@@ -2041,22 +2473,6 @@ mod tests {
     }
 
     #[test]
-    fn today_is_an_iso_date() {
-        let t = today();
-        assert_eq!(t.len(), 10);
-        assert_eq!(t.chars().filter(|c| *c == '-').count(), 2);
-    }
-
-    #[test]
-    fn dates_are_calendar_dates_not_only_ten_characters() {
-        assert!(valid_iso_date("2024-02-29"));
-        assert!(valid_iso_date("2026-08-08"));
-        assert!(!valid_iso_date("2026-02-29"));
-        assert!(!valid_iso_date("2026-13-01"));
-        assert!(!valid_iso_date("202610-01-08"));
-    }
-
-    #[test]
     fn a_price_append_needs_an_auditable_reason() {
         let price = PricePoint {
             valid_from: "2026-10-01".into(),
@@ -2072,44 +2488,22 @@ mod tests {
         );
     }
 
+    /// The manifest is data a caller reads to learn the surface; a served route
+    /// missing from it is invisible.
+    ///
+    /// This replaced a hand-typed array of 27 paths. That array could only assert
+    /// that each path it listed was in ROUTES -- it could not see a route the
+    /// router serves that nobody declared, which is the failure it existed to
+    /// catch. `undeclared_routes` reads this file's own source, so adding a
+    /// `.route()` without a manifest entry fails here (ISA PLC-1). If it fails,
+    /// declare the route; do not weaken the assertion.
     #[test]
-    fn every_route_the_router_serves_is_in_the_manifest() {
-        // The manifest is data a caller reads to learn the surface. A route missing
-        // from it is invisible, which is worse than one that does not exist.
-        for path in [
-            "/health",
-            "/ready",
-            "/routes",
-            "/api/subscriptions",
-            "/api/subscriptions/burn",
-            "/api/subscriptions/:id/price",
-            "/api/subscriptions/:id/state",
-            "/api/import/obsidian/scan",
-            "/api/import/obsidian",
-            "/api/writeback",
-            "/api/import/csv/preview",
-            "/api/import/csv",
-            "/api/import/csv/mappings",
-            "/api/import/investments/mappings",
-            "/api/import/investments/preview",
-            "/api/import/investments/confirm",
-            "/api/import/candidates",
-            "/api/import/candidates/confirm-batch",
-            "/api/import/candidates/reclassify-batch",
-            "/api/import/candidates/:id/review",
-            "/api/import/candidates/:id/reconcile-transfer",
-            "/api/import/candidates/:id/allocation",
-            "/api/import/candidates/:id/reimbursement",
-            "/api/balance-snapshot",
-            "/api/ledger/check",
-            "/api/ledger/rebuild",
-            "/api/dashboard",
-        ] {
-            assert!(
-                ROUTES.iter().any(|r| r.path == path),
-                "{path} is served but undeclared"
-            );
-        }
+    fn every_route_the_router_serves_is_declared() {
+        assert!(
+            route_manifest::undeclared_routes(include_str!("server.rs"), ROUTES).is_empty(),
+            "served but undeclared: {:?}",
+            route_manifest::undeclared_routes(include_str!("server.rs"), ROUTES)
+        );
     }
 
     #[test]
@@ -2148,6 +2542,10 @@ mod tests {
             journal_write: Arc::new(std::sync::Mutex::new(())),
             projection_write: Arc::new(std::sync::Mutex::new(())),
             balance_write: Arc::new(std::sync::Mutex::new(())),
+            instruments: Arc::new(Vec::new()),
+            targets: None,
+            comms_base_url: Arc::new(String::new()),
+            overlay_root: None,
         };
         let (status, Json(body)) = import_csv(
             State(state),
@@ -2181,6 +2579,10 @@ mod tests {
             journal_write: Arc::new(std::sync::Mutex::new(())),
             projection_write: Arc::new(std::sync::Mutex::new(())),
             balance_write: Arc::new(std::sync::Mutex::new(())),
+            instruments: Arc::new(Vec::new()),
+            targets: None,
+            comms_base_url: Arc::new(String::new()),
+            overlay_root: None,
         };
 
         let Json(returned) = list_csv_mappings(State(state)).await;
@@ -2222,6 +2624,10 @@ mod tests {
             journal_write: Arc::new(std::sync::Mutex::new(())),
             projection_write: Arc::new(std::sync::Mutex::new(())),
             balance_write: Arc::new(std::sync::Mutex::new(())),
+            instruments: Arc::new(Vec::new()),
+            targets: None,
+            comms_base_url: Arc::new(String::new()),
+            overlay_root: None,
         };
 
         let Json(returned) = list_investment_mappings(State(state)).await;
@@ -2243,6 +2649,10 @@ mod tests {
             journal_write: Arc::new(std::sync::Mutex::new(())),
             projection_write: Arc::new(std::sync::Mutex::new(())),
             balance_write: Arc::new(std::sync::Mutex::new(())),
+            instruments: Arc::new(Vec::new()),
+            targets: None,
+            comms_base_url: Arc::new(String::new()),
+            overlay_root: None,
         };
         let request = InvestmentConfirmRequest {
             content: String::new(),

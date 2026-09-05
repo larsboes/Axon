@@ -68,6 +68,107 @@ impl RecurringCommitment {
     }
 }
 
+/// One instrument the owner holds, named so a proposal can talk about it.
+///
+/// Three fields, and `currency` is deliberately not one of them:
+/// `finance_holding_projection.currency` is NOT NULL and written by the reviewed
+/// import, and a hand-typed second copy that disagrees is silent drift inside the
+/// very arithmetic that produces the drift figure.
+///
+/// `label` is the token the feed-evidence matcher looks for. Under three
+/// characters it is refused as a matcher rather than used, because a two-letter
+/// label matched as a substring finds nothing but noise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstrumentProfile {
+    pub instrument: String,
+    pub label: String,
+    #[serde(default = "default_asset_class")]
+    pub asset_class: String,
+    /// The symbol a market-data provider knows this instrument by. Absent means
+    /// no networked provider prices it and `broker` is its only source.
+    #[serde(default)]
+    pub ticker: Option<String>,
+}
+
+fn default_asset_class() -> String {
+    "equity".into()
+}
+
+/// One target allocation, in basis points, with the band around it that decides
+/// when drift is worth a decision.
+///
+/// `valid_from`/`valid_until` copy [`RecurringCommitment`]'s dating and its
+/// `active_on` predicate, so a cohort is "the allocations active on this date".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetAllocation {
+    pub id: String,
+    pub label: String,
+    /// `instrument` or `asset_class`; selects which nullable key below is read.
+    pub scope: String,
+    #[serde(default)]
+    pub instrument: Option<String>,
+    #[serde(default)]
+    pub asset_class: Option<String>,
+    pub target_bp: i64,
+    pub band_bp: i64,
+    #[serde(default)]
+    pub rationale: String,
+    pub valid_from: String,
+    #[serde(default)]
+    pub valid_until: Option<String>,
+}
+
+impl TargetAllocation {
+    pub fn active_on(&self, date: &str) -> bool {
+        self.valid_from.as_str() <= date
+            && self
+                .valid_until
+                .as_deref()
+                .is_none_or(|valid_until| date <= valid_until)
+    }
+}
+
+/// The hand-typed investment policy, in the overlay beside every other hand-typed
+/// policy this capability reads (commitments, spending rules, card options,
+/// loyalty balances). Not a table: it needs no write route and no confirm gate,
+/// and the overlay is already inside `service.toml`'s backup contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetPolicy {
+    #[serde(default = "default_currency")]
+    pub currency: String,
+    /// Below this, a contribution is not worth a decision.
+    #[serde(default)]
+    pub contribution_floor_cents: i64,
+    /// How old a market price may be before a position reads as stale. Here and
+    /// not on `PlanningConfig`, because `portfolio` reads it and `planning` does
+    /// not.
+    #[serde(default = "default_price_freshness_days")]
+    pub price_freshness_days: i64,
+    /// The annual risk-free rate in basis points. `None` omits the max-Sharpe
+    /// portfolio with a reason rather than defaulting it to zero -- a zero here
+    /// is a claim about the world, not a missing value.
+    #[serde(default)]
+    pub risk_free_rate_bp: Option<i64>,
+    #[serde(default)]
+    pub allocations: Vec<TargetAllocation>,
+}
+
+fn default_price_freshness_days() -> i64 {
+    4
+}
+
+impl Default for TargetPolicy {
+    fn default() -> Self {
+        Self {
+            currency: default_currency(),
+            contribution_floor_cents: 0,
+            price_freshness_days: default_price_freshness_days(),
+            risk_free_rate_bp: None,
+            allocations: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// The one shared SQLite file, under the table prefix `finance` (PRD Q45).
@@ -81,6 +182,12 @@ pub struct Config {
     pub csv_mappings: Vec<CsvMappingProfile>,
     pub investment_csv_mappings: Vec<InvestmentCsvMappingProfile>,
     pub planning: PlanningConfig,
+    pub instruments: Vec<InstrumentProfile>,
+    pub targets: Option<TargetPolicy>,
+    /// Where the feed-evidence lookup goes. Loopback, and the class rule that
+    /// makes it safe is stated at the point of copy in `decision.rs`: only id,
+    /// title, url and day are read, and those are published sources.
+    pub comms_base_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,6 +204,12 @@ struct FinanceFileConfig {
     investment_csv_mappings: Vec<InvestmentCsvMappingProfile>,
     #[serde(default)]
     planning: PlanningConfig,
+    #[serde(default)]
+    instruments: Vec<InstrumentProfile>,
+    #[serde(default)]
+    targets: Option<TargetPolicy>,
+    #[serde(default)]
+    comms_base_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +222,11 @@ struct FinanceFileObsidian {
 fn default_subscriptions_dir() -> String {
     "Atlas/Finance/Subscriptions".into()
 }
+
+/// comms' loopback port. A capability calling another capability's HTTP contract
+/// rather than linking its crate is the direction `README.md#schemas-and-dependency-direction`
+/// asks for, and the port is the deployment's, so the overlay may override it.
+const DEFAULT_COMMS_BASE_URL: &str = "http://127.0.0.1:8083";
 
 fn file_config() -> Option<FinanceFileConfig> {
     let overlay = std::env::var("AXON_PERSONAL_ROOT").ok()?;
@@ -153,6 +271,19 @@ impl Config {
             .as_ref()
             .map(|config| config.planning.clone())
             .unwrap_or_default();
+        let instruments = personal
+            .as_ref()
+            .map(|config| config.instruments.clone())
+            .unwrap_or_default();
+        let targets = personal.as_ref().and_then(|config| config.targets.clone());
+        let comms_base_url = std::env::var("AXON_COMMS_BASE_URL")
+            .ok()
+            .or_else(|| {
+                personal
+                    .as_ref()
+                    .and_then(|config| config.comms_base_url.clone())
+            })
+            .unwrap_or_else(|| DEFAULT_COMMS_BASE_URL.to_string());
         let journal = std::env::var("AXON_FINANCE_JOURNAL")
             .ok()
             .map(|path| expand_tilde(&path))
@@ -191,6 +322,9 @@ impl Config {
             csv_mappings,
             investment_csv_mappings,
             planning,
+            instruments,
+            targets,
+            comms_base_url,
         }
     }
 }

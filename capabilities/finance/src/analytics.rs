@@ -486,45 +486,7 @@ pub fn dashboard(rows: &[TransactionRow], filter: &AnalyticsFilter) -> Dashboard
         })
     })
     .collect();
-    let mut trip_spending: BTreeMap<String, TripSpendingSummary> = BTreeMap::new();
-    for row in transactions
-        .iter()
-        .filter(|row| row.kind == TransactionKind::Expense)
-    {
-        let Some(trip_id) = row.trip_id.clone() else {
-            continue;
-        };
-        let summary = trip_spending
-            .entry(trip_id.clone())
-            .or_insert(TripSpendingSummary {
-                trip_id,
-                personal_spending_cents: 0,
-                gross_cash_outflow_cents: 0,
-                reimbursed_cents: 0,
-                outstanding_cents: 0,
-                expense_posting_count: 0,
-            });
-        summary.personal_spending_cents += row.amount_cents;
-        summary.gross_cash_outflow_cents += row.cash_amount_cents;
-        summary.expense_posting_count += 1;
-    }
-    for shared in &shared_expenses {
-        let Some(trip_id) = shared.trip_id.as_ref() else {
-            continue;
-        };
-        let summary = trip_spending
-            .entry(trip_id.clone())
-            .or_insert(TripSpendingSummary {
-                trip_id: trip_id.clone(),
-                personal_spending_cents: 0,
-                gross_cash_outflow_cents: 0,
-                reimbursed_cents: 0,
-                outstanding_cents: 0,
-                expense_posting_count: 0,
-            });
-        summary.reimbursed_cents += shared.reimbursed_cents;
-        summary.outstanding_cents += shared.outstanding_cents;
-    }
+    let trip_spending = fold_trip_spending(&transactions, &shared_expenses);
     let accounts: BTreeSet<_> = rows.iter().map(|row| row.account.clone()).collect();
     let categories: BTreeSet<_> = rows.iter().map(|row| row.category.clone()).collect();
     DashboardProjection {
@@ -570,7 +532,7 @@ pub fn dashboard(rows: &[TransactionRow], filter: &AnalyticsFilter) -> Dashboard
         portfolio_values: Vec::new(),
         shared_expenses,
         purpose_spending,
-        trip_spending: trip_spending.into_values().collect(),
+        trip_spending: trip_spending.clone(),
     }
 }
 
@@ -606,6 +568,108 @@ pub fn outstanding_shared_cents(
         .map(|row| row.cash_amount_cents)
         .sum();
     Some(shared.saturating_sub(reimbursed))
+}
+
+/// The per-trip roll-up, folded once and reachable from two doors.
+///
+/// Private, and the two entry points are what is public: [`dashboard`] calls it
+/// with the `transactions` and `shared_expenses` it has already derived, and
+/// [`trip_spending`] derives the same two from raw rows. Two folds would be two
+/// definitions of what a trip cost, which is exactly the drift this extraction
+/// exists to remove.
+///
+/// The two halves read two different derived sets on purpose: the expense loop
+/// walks `transactions` (currency-, window-, account- and category-filtered, with
+/// transfers excluded) while `shared` comes from `shared_expenses(&scoped_rows)`,
+/// which includes transfers -- a reimbursement inflow has to be visible to pair
+/// against.
+fn fold_trip_spending(
+    transactions: &[TransactionRow],
+    shared: &[SharedExpenseSummary],
+) -> Vec<TripSpendingSummary> {
+    let mut trip_spending: BTreeMap<String, TripSpendingSummary> = BTreeMap::new();
+    for row in transactions
+        .iter()
+        .filter(|row| row.kind == TransactionKind::Expense)
+    {
+        let Some(trip_id) = row.trip_id.clone() else {
+            continue;
+        };
+        let summary = trip_spending
+            .entry(trip_id.clone())
+            .or_insert(TripSpendingSummary {
+                trip_id,
+                personal_spending_cents: 0,
+                gross_cash_outflow_cents: 0,
+                reimbursed_cents: 0,
+                outstanding_cents: 0,
+                expense_posting_count: 0,
+            });
+        summary.personal_spending_cents += row.amount_cents;
+        summary.gross_cash_outflow_cents += row.cash_amount_cents;
+        summary.expense_posting_count += 1;
+    }
+    for shared in shared {
+        let Some(trip_id) = shared.trip_id.as_ref() else {
+            continue;
+        };
+        let summary = trip_spending
+            .entry(trip_id.clone())
+            .or_insert(TripSpendingSummary {
+                trip_id: trip_id.clone(),
+                personal_spending_cents: 0,
+                gross_cash_outflow_cents: 0,
+                reimbursed_cents: 0,
+                outstanding_cents: 0,
+                expense_posting_count: 0,
+            });
+        summary.reimbursed_cents += shared.reimbursed_cents;
+        summary.outstanding_cents += shared.outstanding_cents;
+    }
+    trip_spending.into_values().collect()
+}
+
+/// Every trip's actuals, derived from raw projection rows.
+///
+/// The narrow door `GET /api/trips/:id/spending` uses. It derives `scoped_rows`,
+/// `transactions` and `shared_expenses` exactly as [`dashboard`] does, so the two
+/// numbers are equal by construction rather than by coincidence.
+///
+/// It reads every row and that is necessary rather than lazy: a reimbursement
+/// inflow does not carry the trip id, so `shared_expenses` needs the whole set to
+/// pair against. The saving is on the wire -- one object instead of the entire
+/// projection.
+pub fn trip_spending(
+    rows: &[TransactionRow],
+    filter: &AnalyticsFilter,
+) -> Vec<TripSpendingSummary> {
+    let currency = filter.currency.as_deref().unwrap_or("EUR");
+    let scoped_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.currency == currency)
+        .filter(|row| filter.start.as_ref().is_none_or(|start| row.date >= *start))
+        .filter(|row| filter.end.as_ref().is_none_or(|end| row.date <= *end))
+        .filter(|row| {
+            filter
+                .account
+                .as_ref()
+                .is_none_or(|account| row.account == *account)
+        })
+        .filter(|row| {
+            filter
+                .category
+                .as_ref()
+                .is_none_or(|category| row.category.starts_with(category))
+        })
+        .cloned()
+        .collect();
+    let transactions: Vec<_> = scoped_rows
+        .iter()
+        .filter(|row| filter.include_transfers || row.kind != TransactionKind::Transfer)
+        .cloned()
+        .collect();
+    let shared = shared_expenses(&scoped_rows);
+    fold_trip_spending(&transactions, &shared)
 }
 
 fn shared_expenses(rows: &[TransactionRow]) -> Vec<SharedExpenseSummary> {
@@ -835,6 +899,76 @@ mod tests {
                 .savings_rate_percent,
             None
         );
+    }
+
+    /// The narrow route and the dashboard field must be one number.
+    ///
+    /// The fixture carries a transfer, a reimbursement and a foreign-currency row
+    /// on purpose: those are the three shapes where the two derivations could
+    /// disagree, and the point of one fold is that they cannot.
+    #[test]
+    fn the_narrow_trip_route_equals_the_dashboard_number() {
+        let mut expense_tags = BTreeMap::new();
+        expense_tags.insert("axon-purpose".into(), "trip".into());
+        expense_tags.insert("axon-trip-id".into(), "trip:synthetic".into());
+        expense_tags.insert("axon-shared-cents".into(), "3000".into());
+        let mut reimbursement_tags = BTreeMap::new();
+        reimbursement_tags.insert("axon-reimbursement-for".into(), "synthetic-expense".into());
+        let transactions = vec![
+            JournalTransaction {
+                index: 1,
+                date: "2026-08-01".into(),
+                description: "synthetic group meal".into(),
+                source_id: Some("synthetic-expense".into()),
+                tags: expense_tags,
+                postings: vec![
+                    posting("assets:bank:checking", -40_00),
+                    posting("expenses:food", 10_00),
+                    posting(SHARED_RECEIVABLE_ACCOUNT, 30_00),
+                ],
+            },
+            JournalTransaction {
+                index: 2,
+                date: "2026-08-02".into(),
+                description: "synthetic reimbursement".into(),
+                source_id: Some("synthetic-reimbursement".into()),
+                tags: reimbursement_tags,
+                postings: vec![
+                    posting("assets:bank:checking", 20_00),
+                    posting(SHARED_RECEIVABLE_ACCOUNT, -20_00),
+                ],
+            },
+            JournalTransaction {
+                index: 3,
+                date: "2026-08-03".into(),
+                description: "synthetic transfer".into(),
+                source_id: Some("synthetic-transfer".into()),
+                tags: BTreeMap::new(),
+                postings: vec![
+                    posting("assets:bank:checking", -50_00),
+                    posting("assets:bank:savings", 50_00),
+                ],
+            },
+        ];
+        let mut rows = project(&transactions, "EUR");
+        // A row in another currency, which the currency filter must drop on both
+        // paths identically.
+        let mut foreign = rows[0].clone();
+        foreign.id = "synthetic-foreign".into();
+        foreign.source_id = Some("synthetic-foreign".into());
+        foreign.currency = "USD".into();
+        rows.push(foreign);
+
+        let filter = AnalyticsFilter {
+            currency: Some("EUR".into()),
+            ..AnalyticsFilter::default()
+        };
+        assert_eq!(
+            dashboard(&rows, &filter).trip_spending,
+            trip_spending(&rows, &filter)
+        );
+        assert_eq!(trip_spending(&rows, &filter).len(), 1);
+        assert_eq!(trip_spending(&rows, &filter)[0].trip_id, "trip:synthetic");
     }
 
     #[test]
