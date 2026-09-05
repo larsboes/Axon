@@ -146,6 +146,20 @@ impl Store {
                 -- ~512 bytes a cell, and a new question is now a query rather than
                 -- a re-ingest of every parquet file.
                 counts        TEXT    NOT NULL,
+                -- A rowid table, and that is measured rather than inherited.
+                -- The four key columns are stored twice here, once in the rowid
+                -- btree and once in the autoindex, which makes this the one table
+                -- in the file big enough for WITHOUT ROWID to be worth pricing:
+                -- 470,782 rows, 153.76 MB of table plus 12.06 MB of autoindex on
+                -- a copy of the live file (2026-09-05, dbstat).
+                --
+                -- Rebuilt three ways from that copy: 167.15 MB as a rowid table,
+                -- 178.86 MB WITHOUT ROWID filled in rowid order (7% worse, and
+                -- that is the order a CREATE-INSERT-SELECT migration would use),
+                -- 162.48 MB WITHOUT ROWID filled in key order (2.8% better). The
+                -- `counts` cell is what decides it: rows this wide pack a key
+                -- btree badly, so the autoindex it removes is nearly all it saves.
+                -- 2.8% does not pay for a 470k-row table rebuild. Leave it.
                 PRIMARY KEY (eva, train_type, hour, weekend)
             );
 
