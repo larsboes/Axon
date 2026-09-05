@@ -1,0 +1,143 @@
+//! The one call trips makes to finance, and the one place its failure is
+//! described.
+//!
+//! Separate from `cost.rs` and from the handler on purpose. `flight_when`
+//! degrades an unreachable calendar into "every day free" with
+//! `.unwrap_or_default()` and says nothing in the body — a guess that looks like
+//! a measurement. Money must not degrade that way, so the failure has a type
+//! (`Unreachable`) carrying a reason, and nothing in this file can produce a
+//! zero by accident. There is no `unwrap_or_default` here.
+
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+/// Where finance-server listens. Mirrors `calendar_base_url()` in `server.rs`,
+/// and this is now the THIRD capability hardcoding a sibling's port, which
+/// strengthens the case for the spine mechanism that comment defers
+/// (service-runner exporting declared siblings' ports).
+pub fn finance_base_url() -> String {
+    std::env::var("AXON_FINANCE_URL").unwrap_or_else(|_| "http://127.0.0.1:8090".to_string())
+}
+
+/// Long enough for a loopback query, short enough that a stopped finance never
+/// makes the trip view feel broken.
+const TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Finance's four per-trip figures plus its posting count, carried whole.
+///
+/// All six fields, not one flattened total. `reimbursed` and `outstanding` are
+/// filled only from shared expenses, so on a trip with friends the four numbers
+/// differ and that difference IS the shared-cost surface. A single
+/// `spent_cents` answers "was it worth it" wrongly.
+///
+/// Field names are finance's own (`capabilities/finance/src/analytics.rs`,
+/// `TripSpendingSummary`), read at the TOP LEVEL of the response body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TripSpending {
+    pub trip_id: String,
+    pub personal_spending_cents: i64,
+    pub gross_cash_outflow_cents: i64,
+    pub reimbursed_cents: i64,
+    pub outstanding_cents: i64,
+    pub expense_posting_count: usize,
+}
+
+/// Why the actuals are unknown, in words a reader can act on.
+///
+/// A type rather than an `Option`, because "finance is not running" and "no
+/// transaction is tagged to this trip" are different answers and the card has to
+/// say which one it got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreachable {
+    pub reason: String,
+}
+
+impl Unreachable {
+    fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Ask finance what one trip actually cost.
+///
+/// Every failure — a transport error, a timeout, a non-2xx, a 404 because the
+/// route does not exist yet, or a body that is not the six documented fields —
+/// yields the same `Unreachable` with a reason. It never yields zeroes.
+pub fn trip_spending(plan_id: &str) -> Result<TripSpending, Unreachable> {
+    let url = format!(
+        "{}/api/trips/{}/spending",
+        finance_base_url(),
+        urlencode(plan_id)
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(TIMEOUT)
+        .build()
+        .map_err(|error| Unreachable::new(format!("finance client: {error}")))?;
+    let mut request = client.get(&url);
+    // The inbound gate is on every route except /health and /ready, so without
+    // the token a gated finance reads as "not running" — the one wrong answer
+    // this must not give. Resolved per request, so rotating the token file needs
+    // no restart here (the axon-status precedent).
+    if let Some(bearer) = axon_server::InboundAuth::from_deployment().bearer_header() {
+        request = request.header(reqwest::header::AUTHORIZATION, bearer);
+    }
+    let response = request
+        .send()
+        .map_err(|error| Unreachable::new(format!("finance is not reachable: {error}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(Unreachable::new(format!(
+            "finance answered {status} for this trip's spending"
+        )));
+    }
+    response.json::<TripSpending>().map_err(|_| {
+        Unreachable::new("finance answered an unexpected shape for this trip's spending")
+    })
+}
+
+/// A plan id is `trip:plan:<hex>`, so the colons need escaping and nothing else
+/// does. Hand-rolled rather than a dependency, and deliberately conservative:
+/// anything outside the unreserved set is percent-encoded.
+fn urlencode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_plan_id_survives_the_path_intact() {
+        assert_eq!(urlencode("trip:plan:18d285e1"), "trip%3Aplan%3A18d285e1");
+        assert_eq!(urlencode("plain-id_1.0~x"), "plain-id_1.0~x");
+    }
+
+    /// Port 1 on loopback: nothing listens, the connection is refused. The
+    /// contract is that this is an `Err` with a reason, never a `TripSpending`
+    /// of zeroes.
+    #[test]
+    fn an_unreachable_finance_is_an_error_with_a_reason_and_never_a_zero() {
+        // Set for this test only, and read once at call time.
+        std::env::set_var("AXON_FINANCE_URL", "http://127.0.0.1:1");
+        let outcome = trip_spending("trip:plan:synthetic");
+        std::env::remove_var("AXON_FINANCE_URL");
+        let error = outcome.expect_err("a refused connection must not become zeroes");
+        assert!(
+            error.reason.contains("not reachable"),
+            "the reason must be actionable: {}",
+            error.reason
+        );
+    }
+}

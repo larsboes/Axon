@@ -158,8 +158,8 @@ export interface PlanItem {
  * money is named exactly once.
  *
  * Declared here rather than imported, because this module deliberately has no
- * imports at all: `dashboard/src/lib/home/kinds/*.ts` must stay importable under
- * plain `bun test`.
+ * imports at all: the Home decision-kind modules under `dashboard/src/lib/home`
+ * must stay importable under plain `bun test`.
  */
 export interface Retrospective {
   plan_id: string;

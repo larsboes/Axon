@@ -157,6 +157,16 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r(
         "GET",
+        "/api/plans/:id/cost",
+        "What one trip was meant to cost, what was committed to, and what was actually paid. \
+         No parameters: the window is the plan's own dates, so nobody can ask for a partial \
+         total. Carries all four of finance's per-trip figures rather than one flattened \
+         total, and when finance does not answer they are null with a named reason -- never 0. \
+         option_set and transport prices are floats with no currency and are reported \
+         separately, labelled offered-not-paid.",
+    ),
+    r(
+        "GET",
         "/api/retrospectives/summary",
         "The feed-forward weight, per DESTINATION only. Carries the formula, the bounds and \
          the contract a consumer is held to: multiply a candidate's rank by factor and show \
@@ -485,6 +495,38 @@ async fn record_retrospective(
             json!({ "error": "trip plan not found" }),
         ),
         Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+/// The cost roll-up: a computed read that stores nothing.
+///
+/// The finance call happens inside the same `spawn_blocking` as the store read,
+/// because both are blocking and neither may run on the async runtime. Its
+/// failure is a value, not a `?`: `cost::roll_up` takes the `Result` and turns it
+/// into four nulls and a reason, which is why no handler can quietly
+/// `unwrap_or_default()` it into zeroes.
+async fn plan_cost(State(state): State<AppState>, Path(plan_id): Path<String>) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    match tokio::task::spawn_blocking(move || -> Result<Option<trips::cost::CostRollup>, String> {
+        let store = TripsStore::open(&database_path).map_err(|e| e.to_string())?;
+        let Some(details) = store.get_plan(&plan_id).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let spending = trips::finance_client::trip_spending(&plan_id);
+        Ok(Some(trips::cost::roll_up(&details, spending)))
+    })
+    .await
+    {
+        Ok(Ok(Some(rollup))) => response(StatusCode::OK, rollup),
+        Ok(Ok(None)) => response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "trip plan not found" }),
+        ),
+        Ok(Err(error)) => response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })),
         Err(error) => response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": error.to_string() }),
@@ -1187,6 +1229,7 @@ async fn main() {
         .route("/api/flights/pivot", get(flight_pivot))
         .route("/api/plans/:id/outcome", post(record_outcome))
         .route("/api/plans/:id/retrospective", post(record_retrospective))
+        .route("/api/plans/:id/cost", get(plan_cost))
         .route("/api/retrospectives/pending", get(pending_retrospectives))
         .route("/api/retrospectives/summary", get(retrospective_summary))
         .route("/api/import/obsidian/scan", get(scan_obsidian))

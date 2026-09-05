@@ -12,8 +12,8 @@
  * FOLLOW-UP, deliberately not done here: hoist `travelRequest` to
  * `$lib/http.ts` and have both call it, once tonight's streams have merged.
  */
-// Relative, not the `$lib` alias: this module is reached from
-// `src/lib/home/kinds/`, which `tools/dashboard-home-registry.test.ts` imports
+// Relative, not the `$lib` alias: this module is reached from the Home
+// decision-kind modules under `src/lib/home`, which the registry test imports
 // under plain `bun test`, where a Vite alias may not resolve. Same reasoning
 // `tools/dashboard-nav-links.test.ts` records for `nav.ts`.
 import { ApiError, describeFailure, type Retrospective } from "../api";

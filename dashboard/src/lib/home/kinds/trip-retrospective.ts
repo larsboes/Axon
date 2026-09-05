@@ -16,10 +16,14 @@
  * the reason `tools/dashboard-nav-links.test.ts` records for `nav.ts`.
  */
 import { link } from "../../nav";
-import { pendingRetrospectives, type PendingRetrospective, type PendingRetrospectives } from "../../travel/api";
+import {
+  pendingRetrospectives,
+  type PendingRetrospective,
+  type PendingRetrospectives,
+} from "../../travel/api";
 
 /*
- * MERGE NOTE, 2026-09-05: `src/lib/home/decisions.ts` is owned and created by
+ * MERGE NOTE, 2026-09-05: `decisions.ts` in this directory's parent is owned and created by
  * the dashboard-refresh stream and did not exist when this file was written, so
  * the contract it publishes is mirrored below rather than imported. It is the
  * same vocabulary with the same field names, not a second one.
@@ -80,7 +84,9 @@ const kind: DecisionKind<PendingRetrospectives, PendingRetrospective> = {
   lane: "commitment",
   view: "TripRetrospectiveRow",
 
-  load: (ctx: LoadContext) => pendingRetrospectives(),
+  // The route takes no parameters at all: what the ladder should raise today is
+  // a judgement the capability owns, not one the caller narrows.
+  load: () => pendingRetrospectives(),
 
   rows: (source: PendingRetrospectives) => source.pending,
 

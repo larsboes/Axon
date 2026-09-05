@@ -89,7 +89,13 @@ paths = [
 # Plan detail pages are per-id and the ids are generated, so they cannot be listed here.
 # The recorder expands this against whatever /trips/api/plans returned: one fixture per
 # plan, no id ever written down. Same mechanism serves any list→detail pair.
-expand = [{ from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}" }]
+expand = [
+  { from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}" },
+  # The cost roll-up is per plan too. With no finance route tagged to a trip in the
+  # demo corpus, the recorded fixture shows the honest degrade -- named nulls and a
+  # reason rather than a confident zero, which is the behaviour worth demonstrating.
+  { from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}/cost" },
+]
 
 [capability.finance]
 writes = "finance"

@@ -14,8 +14,9 @@
   import PlaceField from "$lib/travel/PlaceField.svelte";
   import TripMap, { type MapPoint } from "$lib/travel/TripMap.svelte";
   import ClimateStrip from "$lib/travel/ClimateStrip.svelte";
+  import CostCard from "$lib/travel/CostCard.svelte";
   import RetrospectiveForm from "$lib/travel/RetrospectiveForm.svelte";
-  import { climateFor, type ClimateBatch } from "$lib/travel/api";
+  import { climateFor, planCost, type ClimateBatch, type PlanCost } from "$lib/travel/api";
   import {
     loadNearbyPlaces,
     type NearbyPlace,
@@ -31,7 +32,6 @@
     axonStatus,
     calendar,
     comms,
-    finance,
     scouting,
     transit,
     trips,
@@ -45,7 +45,6 @@
     type ScoutingOpportunity,
     type TransportMode,
     type TripPlan,
-    type TripSpendingSummary,
   } from "$lib/api";
 
   const EVENT_ADAPTERS = ["luma", "meetup", "euro_hackathons"];
@@ -125,8 +124,6 @@
   let plannerOpen = $state(false);
   let plannerNotice = $state<string | null>(null);
   let openedPlanFromLink = "";
-  let tripSpending = $state<TripSpendingSummary[]>([]);
-  let tripSpendingRequested = false;
   // Seasonality for the open plan's destinations, keyed by "lat,lon" exactly as
   // sent so a result never has to be re-associated with its request.
   let climate = $state<ClimateBatch | null>(null);
@@ -147,23 +144,10 @@
       .sort((a, b) => b.date_end.localeCompare(a.date_end)),
   );
   const viewingPast = $derived(activePlan !== null && activePlan.date_end < todayKey);
-  const money = (cents: number, currency: string | null) =>
-    (cents / 100).toLocaleString("en-GB", { style: "currency", currency: currency ?? "EUR" });
-  const tripCostLine = $derived.by(() => {
-    const plan = activePlan;
-    if (!plan) return null;
-    const spend = tripSpending.find((entry) => entry.trip_id === plan.id) ?? null;
-    const parts: string[] = [];
-    if (plan.budget_cents !== null) {
-      parts.push(`Budget ${money(plan.budget_cents, plan.currency)}`);
-    }
-    if (spend) {
-      parts.push(
-        `${parts.length > 0 ? "spent" : "Spent"} ${money(spend.personal_spending_cents, plan.currency)}`,
-      );
-    }
-    return parts.length > 0 ? parts.join(" · ") : null;
-  });
+  // The one-line placeholder this replaced summed nothing and said nothing when
+  // finance was down. The roll-up is computed by trips and rendered by CostCard,
+  // which is the trips README's rule: the frontend renders, the backend computes.
+  let planCostRollup = $state<PlanCost | null>(null);
   const filteredPlans = $derived(
     planFilter === "upcoming" ? upcomingPlans : planFilter === "past" ? pastPlans : [...upcomingPlans, ...pastPlans],
   );
@@ -614,15 +598,23 @@
     }
   }
 
-  // One fetch per page life, on the first opened plan. Finance being down must not
-  // break travel: the cost line simply stays absent, so failure is swallowed here.
-  async function loadTripSpending(): Promise<void> {
-    if (tripSpendingRequested) return;
-    tripSpendingRequested = true;
+  /**
+   * The plan's own cost roll-up: intent, committed and actual, per plan.
+   *
+   * This replaces a page-wide `finance.tripSpending()` that downloaded the whole
+   * projection to read one number. `finance.tripSpending()` itself stays defined
+   * in `$lib/api` — the demo has a recorded fixture for it and another consumer
+   * may still want it.
+   *
+   * Finance being down is not a failure of this call: trips answers 200 with
+   * `actuals.ok: false` and a reason, and the card prints it.
+   */
+  async function loadPlanCost(planId: string): Promise<void> {
+    planCostRollup = null;
     try {
-      tripSpending = await finance.tripSpending();
+      planCostRollup = await planCost(planId);
     } catch {
-      // Deliberate empty state — tripSpending stays [].
+      // Deliberate empty state — the card stays absent rather than lying.
     }
   }
 
@@ -654,7 +646,7 @@
   async function openPlan(plan: TripPlan): Promise<void> {
     error = null;
     editingPlan = false;
-    void loadTripSpending();
+    void loadPlanCost(plan.id);
     try {
       const details = await trips.get(plan.id);
       items = details.items;
@@ -1500,9 +1492,6 @@
         {placeName(activePlan.origin)} · {shortDate(activePlan.date_start)} –
         {shortDate(activePlan.date_end)}
       </p>
-      {#if tripCostLine}
-        <p>{tripCostLine}</p>
-      {/if}
       <div class="trip-meta">
         {#each activePlan.transport_modes as mode (mode)}
           <span>{modeLabel(mode)}</span>
@@ -1592,6 +1581,10 @@
       </details>
     {/each}
   </section>
+
+  {#if planCostRollup}
+    <CostCard cost={planCostRollup} />
+  {/if}
 
   {#if viewingPast}
     <section class="past-view">
