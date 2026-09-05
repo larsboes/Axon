@@ -84,6 +84,14 @@ extractors do not define the feed's future scope. Its first bounded recurring co
 GitHub Trending and configurable arXiv queries. A new source belongs in the general feed when
 its first job is awareness or reading.
 
+Mail triage has a second classification rung: a local model, run explicitly, over exactly the
+threads the deterministic rules left at the conservative fallback. It reads the sender's domain,
+the already-redacted subject and the already-redacted preview, refuses a Secret mail before a
+prompt is built, never leaves the machine, and ships in shadow — it stores a verdict beside the
+rule's and moves no category until a frozen labelled corpus has been measured and the overlay
+declares it. Even then it never raises a mail's data class: that write is irreversible on two
+axes, so a proposal that would raise it is held for a person.
+
 Personal relevance is a Feed annotation, not a new ownership boundary. Comms scores an item
 against explicitly configured TELOS focus notes, stores the matches separately from the item
 and labels whether the comparison was semantic or a lexical fallback. The dashboard can sort
