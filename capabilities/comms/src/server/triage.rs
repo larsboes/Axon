@@ -105,8 +105,12 @@ pub(super) fn run_inbox_sweep(
         if intake.redaction_count() > 0 {
             outcome.redacted += 1;
         }
+        // With the rules verdict, so the rung that decided this thread is
+        // stored in the same transaction the row is. The model rung's
+        // eligibility query reads it, and no later pass can re-derive it:
+        // `rules::classify` reads `List-Unsubscribe`, which no column holds.
         if store
-            .upsert_triage(&intake.item)
+            .upsert_triage_with_rules(&intake.item, &intake.verdict())
             .map_err(|error| error.to_string())?
         {
             outcome.new_count += 1;

@@ -103,6 +103,21 @@ impl Intake {
     pub fn redaction_count(&self) -> usize {
         self.redactions.iter().map(|finding| finding.count).sum()
     }
+
+    /// The deterministic verdict this intake was built from, as
+    /// `Store::upsert_triage_with_rules` wants it.
+    ///
+    /// Rebuilt from the stored row rather than kept whole: `TriageItem` already
+    /// owns `stream` and `rationale`, and a second copy on `Intake` would be a
+    /// second place for them to disagree. The rung is the only field the item
+    /// does not carry.
+    pub fn verdict(&self) -> rules::Verdict {
+        rules::Verdict {
+            stream: self.item.stream.clone(),
+            rationale: self.item.rationale.clone(),
+            decided_by: self.decided_by,
+        }
+    }
 }
 
 /// Classify a swept thread and build the row to store, redacting first when

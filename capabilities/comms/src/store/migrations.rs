@@ -333,6 +333,61 @@ impl Store {
                 ON {prefix}_content_cloud_derivatives(approved_at DESC);
             CREATE INDEX IF NOT EXISTS idx_{prefix}_content_cloud_jobs_queued
                 ON {prefix}_content_cloud_jobs(queued_at ASC) WHERE status = 'queued';
+
+            -- mail-llm-rung 2026-09-03 ---------------------------------------
+            -- Appended as one delimited block at the END of the batch: the feed
+            -- personalization stream edits the same function on the same night.
+
+            -- Which deterministic rung decided one thread's stream, and what it
+            -- decided. `decided_by`, not `rung`: `crate::quiet::Rung` already
+            -- owns that word in this crate for the inference ladder.
+            --
+            -- A table rather than a column on {prefix}_triage_items, because
+            -- CREATE TABLE IF NOT EXISTS is a no-op against the installed table
+            -- and a new column would need the swap_in_rebuilt_table dance below.
+            -- ON DELETE CASCADE covers the Trash purge with no new retention
+            -- mechanism (`PRAGMA foreign_keys = ON` is set per connection in
+            -- libs/axon-store).
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_rules (
+                triage_id TEXT PRIMARY KEY
+                    REFERENCES {prefix}_triage_items(id) ON DELETE CASCADE,
+                decided_by TEXT NOT NULL
+                    CHECK (decided_by IN ('config_rule','heuristic','fallback')),
+                stream TEXT NOT NULL
+                    CHECK (stream IN ('aktiv','issue','feed','werbung','belege','steuern','sonstiges')),
+                rationale TEXT NOT NULL,
+                rules_version TEXT NOT NULL DEFAULT 'mail-rules-v1',
+                decided_at TEXT NOT NULL DEFAULT ({now})
+            );
+
+            -- One backfill, deliberately, against this file's own rule that the
+            -- backfills are gone (see run_migration's doc comment). That rule
+            -- says every backfill described rows written before a COLUMN
+            -- existed, and there are none. These rows were written before this
+            -- TABLE existed, and the rationale literals partition them exactly:
+            -- measured on a copy of the live file 2026-09-05, fallback 102,
+            -- heuristic 111, config_rule 24, total 237. The four heuristic
+            -- literals are `rules::classify`'s own, and
+            -- `the_backfill_literals_match_the_classifier` asserts the two lists
+            -- still agree. INSERT OR IGNORE makes a re-run free.
+            INSERT OR IGNORE INTO {prefix}_triage_rules
+                (triage_id, decided_by, stream, rationale)
+            SELECT id,
+                   CASE
+                     WHEN rationale = 'No rule matched; kept active as the conservative default.'
+                       THEN 'fallback'
+                     WHEN rationale IN (
+                       'List-Unsubscribe plus a shopping signal in the subject; classified as advertising.',
+                       'List-Unsubscribe plus a development or technology signal in the subject; classified as a Feed newsletter.',
+                       'A no-reply sender plus a receipt or invoice signal in the subject; classified as a receipt.',
+                       'List-Unsubscribe is present, but no specific rule matched; classified as other.'
+                     ) THEN 'heuristic'
+                     ELSE 'config_rule'
+                   END,
+                   stream, rationale
+              FROM {prefix}_triage_items
+             WHERE classification_method = 'deterministic';
+            -- end mail-llm-rung 2026-09-03 -----------------------------------
             ",
             prefix = prefix,
             now = axon_store::NOW,

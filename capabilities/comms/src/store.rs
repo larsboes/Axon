@@ -251,6 +251,21 @@ pub struct TriageItem {
     pub last_seen: String,
 }
 
+/// One row of `{prefix}_triage_rules`: which deterministic rung decided a
+/// thread, and what it decided.
+///
+/// `decided_by` is the stored string rather than `rules::DecidedBy` because
+/// this is a read of whatever the file holds, and a value outside the CHECK
+/// vocabulary must be reportable rather than a parse failure at the boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RulesVerdictRow {
+    pub triage_id: String,
+    pub decided_by: String,
+    pub stream: String,
+    pub rationale: String,
+    pub rules_version: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GmailActionJob {
     pub job_id: i64,
@@ -1465,6 +1480,90 @@ pub(crate) mod db_tests {
                 }
             }
         }
+    }
+
+    /// The migration backfills `{prefix}_triage_rules` for rows written before
+    /// that table existed, and it partitions them on five rationale literals.
+    /// Four of them are `rules::classify`'s own heuristic sentences, copied
+    /// into a SQL string where no compiler checks them. A heuristic whose
+    /// wording changed would be backfilled as `config_rule` and would then be
+    /// invisible to the model rung — or worse, visible to it.
+    #[test]
+    fn the_backfill_literals_match_the_classifier() {
+        use crate::rules::{classify, DecidedBy, MailFacts};
+        let cases = [
+            ("news@shop.example", "Winter SALE -50% Rabatt", true),
+            ("hello@bytes.dev", "This week in AI: new release", true),
+            ("noreply@vendor.example", "Ihre Rechnung 2026-07", false),
+            ("info@social.example", "Weekly community update", true),
+        ];
+        let sql = include_str!("store/migrations.rs");
+        for (from, subject, list_unsubscribe) in cases {
+            let verdict = classify(
+                &MailFacts {
+                    from,
+                    subject,
+                    has_list_unsubscribe: list_unsubscribe,
+                },
+                &[],
+            );
+            assert_eq!(verdict.decided_by, DecidedBy::Heuristic);
+            assert!(
+                sql.contains(&format!("'{}'", verdict.rationale)),
+                "the migration's heuristic list does not carry {:?}",
+                verdict.rationale
+            );
+        }
+        let fallback = classify(
+            &MailFacts {
+                from: "a.person@example.com",
+                subject: "Re: lunch?",
+                has_list_unsubscribe: false,
+            },
+            &[],
+        );
+        assert_eq!(fallback.decided_by, DecidedBy::Fallback);
+        assert!(sql.contains(&format!("rationale = '{}'", fallback.rationale)));
+    }
+
+    /// The rung is written in the same transaction as the row, and a resweep
+    /// after a rule edit rewrites it rather than keeping the first answer.
+    #[test]
+    fn the_rules_verdict_is_stored_beside_the_row_and_follows_a_rule_edit() {
+        let store = open_test_store("triage_rules_verdict");
+        store
+            .upsert_triage_with_rules(
+                &mk_triage("thread:rules", "aktiv"),
+                &verdict("aktiv", crate::rules::DecidedBy::Fallback),
+            )
+            .unwrap();
+        let stored = store
+            .triage_rules_verdict("thread:rules")
+            .unwrap()
+            .expect("the sweep wrote a rung");
+        assert_eq!(stored.decided_by, "fallback");
+        assert_eq!(stored.stream, "aktiv");
+        assert_eq!(stored.rules_version, crate::rules::MAIL_RULES_VERSION);
+
+        store
+            .upsert_triage_with_rules(
+                &mk_triage("thread:rules", "werbung"),
+                &verdict("werbung", crate::rules::DecidedBy::ConfigRule),
+            )
+            .unwrap();
+        let stored = store.triage_rules_verdict("thread:rules").unwrap().unwrap();
+        assert_eq!(stored.decided_by, "config_rule");
+        assert_eq!(stored.stream, "werbung");
+
+        // A caller with no verdict writes no rung, which is what keeps the
+        // existing call sites untouched rather than quietly wrong.
+        store
+            .upsert_triage(&mk_triage("thread:no-rung", "aktiv"))
+            .unwrap();
+        assert!(store
+            .triage_rules_verdict("thread:no-rung")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

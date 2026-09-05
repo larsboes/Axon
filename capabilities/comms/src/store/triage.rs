@@ -223,8 +223,70 @@ impl Store {
                 &verdict.map(|verdict| verdict.decided_by.as_str()),
             ],
         )?;
+        // Inside the transaction the row itself is written in, not in a second
+        // connection after it: the rung is what decides whether the model rung
+        // may look at this thread, and a crash between the two writes would
+        // leave a row nothing records a rung for. `ON CONFLICT DO UPDATE`
+        // rather than `INSERT OR IGNORE`, because a resweep after a rule edit
+        // is exactly when the stored rung stops being true.
+        if let Some(verdict) = verdict {
+            transaction.execute(
+                &format!(
+                    "INSERT INTO {prefix}_triage_rules
+                        (triage_id, decided_by, stream, rationale, rules_version, decided_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, {now})
+                     ON CONFLICT (triage_id) DO UPDATE SET
+                         decided_by = excluded.decided_by,
+                         stream = excluded.stream,
+                         rationale = excluded.rationale,
+                         rules_version = excluded.rules_version,
+                         decided_at = excluded.decided_at",
+                    prefix = self.prefix,
+                    now = axon_store::NOW
+                ),
+                params![
+                    &item.id,
+                    verdict.decided_by.as_str(),
+                    &verdict.stream,
+                    &verdict.rationale,
+                    crate::rules::MAIL_RULES_VERSION,
+                ],
+            )?;
+        }
         transaction.commit()?;
         Ok(is_new)
+    }
+
+    /// The deterministic verdict stored beside one thread, if a sweep that knew
+    /// about rungs has written it.
+    ///
+    /// `None` for a row swept before `{prefix}_triage_rules` existed and for a
+    /// row whose only writer was a human. Read by the model rung's eligibility
+    /// query and by `POST /triage/classify/revert`.
+    pub fn triage_rules_verdict(
+        &self,
+        triage_id: &str,
+    ) -> Result<Option<RulesVerdictRow>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT triage_id, decided_by, stream, rationale, rules_version
+                       FROM {}_triage_rules WHERE triage_id = ?1",
+                    self.prefix
+                ),
+                params![&triage_id],
+                |row| {
+                    Ok(RulesVerdictRow {
+                        triage_id: row.get(0)?,
+                        decided_by: row.get(1)?,
+                        stream: row.get(2)?,
+                        rationale: row.get(3)?,
+                        rules_version: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     /// Record a human category correction without resolving the proposal. The
