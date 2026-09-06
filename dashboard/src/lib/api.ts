@@ -1692,6 +1692,10 @@ export interface CloudDerivativePreview {
   document: string;
   redaction_count: number;
   redactions: RedactionFinding[];
+  /** PRD Q9b's receipt: the sentence a human reads on a call that was reduced,
+   *  or null when nothing was removed. Composed by comms, not here, so every
+   *  surface says the same thing about the same call. */
+  redaction_receipt: string | null;
   entity_detection: 'not-required' | 'local-deterministic-v3';
   truncated: boolean;
   approval_required: true;

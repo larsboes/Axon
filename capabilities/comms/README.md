@@ -127,6 +127,26 @@ sentences as well: a verdict is redacted against the class its thread held when
 it was written, so a thread that rises to `c2` later has its verdict narrowed by
 whichever path raised it, this route included.
 
+**A reduced call says so in words** (PRD Q9b, 2026-08-23). Every cloud
+derivative that removed anything carries `redaction_receipt`, one sentence
+built from the findings already on the object: *"Reduced 4 details before this
+call: 2 mentions of people, 1 email address and 1 link."* `null` when nothing
+was removed — a receipt on an untouched call trains the reader to stop reading
+the ones that matter. It is composed in `cloud_derivative.rs` rather than by
+each surface, so the CLI, the dashboard and anything later say the same thing
+about the same call, and the dashboard renders it above the per-kind ledger it
+already had.
+
+Two things about the wording, because both are constraints and not choices.
+The sentence counts **occurrences, not people**: findings aggregate by
+`entity_type`, so `person: 5` means five mentions were replaced and says nothing
+about how many distinct people they were — the detector never learns that,
+because knowing it would mean keeping the names. Q9b's own example reads *"3
+facts about 2 people"*, and the second number is not in the data. And a kind the
+phrase table does not know is named by its raw literal instead of being dropped,
+because the leading total sums every finding: a receipt whose breakdown does not
+add up to its own number is worse than no receipt.
+
 A later sweep cannot undo that. Classification runs the named-person rule
 against the people registry, so a pass with the overlay unmounted answers `c1`
 for a thread an earlier pass raised to `c2`; the class column keeps the strict

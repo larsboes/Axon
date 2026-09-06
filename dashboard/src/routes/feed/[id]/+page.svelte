@@ -1719,6 +1719,13 @@
           <span>{cloudPreview.truncated ? "Bounded at 16,000 characters" : "Complete bounded document"}</span>
         </div>
 
+        <!-- PRD Q9b: a reduced call says so in words, above the per-kind ledger.
+             The count line in preview-facts is a number; this is the sentence,
+             and a gate nobody can see is indistinguishable from one that is off. -->
+        {#if cloudPreview.redaction_receipt}
+          <p class="redaction-receipt">{cloudPreview.redaction_receipt}</p>
+        {/if}
+
         {#if cloudPreview.redactions.length > 0}
           <div class="redaction-ledger" aria-label="Local entity redactions">
             <span class="section-label">Detected locally</span>
@@ -2698,6 +2705,15 @@
     border-radius: 999px;
     color: var(--text-secondary);
     font-size: 0.6875rem;
+  }
+
+  .redaction-receipt {
+    margin: 0.75rem 0 0;
+    padding: 0.5rem 0.65rem;
+    border-left: 3px solid var(--warning);
+    background: var(--warning-soft);
+    color: var(--text-primary);
+    font-size: 0.78rem;
   }
 
   .redaction-ledger {
