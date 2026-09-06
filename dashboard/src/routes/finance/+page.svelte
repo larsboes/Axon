@@ -2,7 +2,6 @@
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
-  import PageTabs from "$lib/PageTabs.svelte";
   import FinanceDashboard from "$lib/finance/FinanceDashboard.svelte";
   import {
     finance,
@@ -33,46 +32,19 @@
 
   async function load(date: string) {
     try {
-      const [list, totals] = await Promise.all([
+      const [list, totals, dashboard] = await Promise.all([
         finance.subscriptions(),
         finance.burn(date),
+        finance.dashboard({ currency: "EUR" }),
       ]);
       subs = list;
       burn = totals;
+      subscriptionInsights = dashboard.planning.subscriptions;
       error = null;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
       loaded = true;
-    }
-  }
-
-  /**
-   * The subscription anomalies, fetched the first time the subscriptions tab is opened.
-   *
-   * `finance.dashboard()` used to be a third slot in `load()`, which runs on mount — and
-   * FinanceDashboard.svelte requests the same full projection on its own mount. So the
-   * page asked the finance capability to rebuild its whole projection twice on first
-   * paint, and the second answer was read by one collapsed block on a tab most visits
-   * never open.
-   *
-   * A plain `view === "subscriptions"` gate inside `load()` would not work: `view`
-   * defaults to "overview", `load()` runs once at mount, and its re-run effect is keyed on
-   * `loaded` and the date only. `subscriptionInsights` would stay null forever and the
-   * review-flags block would silently disappear.
-   */
-  let insightsRequested = false;
-
-  async function ensureSubscriptionInsights(): Promise<void> {
-    if (insightsRequested) return;
-    insightsRequested = true;
-    try {
-      const dashboard = await finance.dashboard({ currency: "EUR" });
-      subscriptionInsights = dashboard.planning.subscriptions;
-    } catch {
-      // The tab's own totals came from `load()` and are already on screen; the review
-      // flags are an addition, and a failed fetch renders no block rather than an error.
-      insightsRequested = false;
     }
   }
 
@@ -89,10 +61,6 @@
 
   $effect(() => {
     if (loaded && validAt) void load(validAt);
-  });
-
-  $effect(() => {
-    if (view === "subscriptions") void ensureSubscriptionInsights();
   });
 
   const ORDER: Record<SubscriptionState, number> = {
@@ -382,18 +350,11 @@
   desc="Cash flow, reviewed transactions and recurring commitments from one journal-backed projection."
 />
 
-<!-- Real labels rather than the raw lowercase ids the page rendered before, on the same
-     tab strip Travel uses. -->
-<PageTabs
-  label="Finance views"
-  bind:value={view}
-  items={[
-    { id: "overview", label: "Overview" },
-    { id: "planning", label: "Planning" },
-    { id: "transactions", label: "Transactions" },
-    { id: "subscriptions", label: "Subscriptions", count: subs.length || undefined },
-  ]}
-/>
+<nav aria-label="Finance views">
+  {#each ["overview", "planning", "transactions", "subscriptions"] as item (item)}
+    <button class:active={view === item} onclick={() => view = item as View}>{item}</button>
+  {/each}
+</nav>
 
 {#if view !== "subscriptions"}
   <FinanceDashboard mode={view} onnavigate={(target) => view = target} />
@@ -607,6 +568,33 @@
 {/if}
 
 <style>
+  nav {
+    display: flex;
+    gap: 0.2rem;
+    margin: -0.25rem 0 1.25rem;
+    border-bottom: 1px solid var(--border, #333);
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  nav button {
+    border: 0;
+    border-bottom: 2px solid transparent;
+    padding: 0.55rem 0.75rem;
+    background: transparent;
+    color: var(--muted, #888);
+    font: inherit;
+    font-size: 0.78rem;
+    text-transform: capitalize;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  nav button.active {
+    color: inherit;
+    border-bottom-color: var(--primary);
+  }
+
   .bar {
     display: flex;
     flex-wrap: wrap;

@@ -5,7 +5,6 @@
   import Icon from "$lib/Icon.svelte";
   import Overlay from "$lib/Overlay.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
-  import PageTabs from "$lib/PageTabs.svelte";
   import Rail from "$lib/rail/Rail.svelte";
   import RailGroup from "$lib/rail/RailGroup.svelte";
   import RailSection from "$lib/rail/RailSection.svelte";
@@ -1035,14 +1034,10 @@
 {/if}
 
 {#if !activePlan}
-  <PageTabs
-    label="Travel sections"
-    value="plans"
-    items={[
-      { id: "plans", label: "Trip plans", icon: "map-pin", href: link("/travel") },
-      { id: "connections", label: "Connections", icon: "train", href: link("/travel/connections") },
-    ]}
-  />
+  <nav class="travel-nav" aria-label="Travel sections">
+    <a class="active" href={link("/travel")}><Icon name="map-pin" size={14} /> Trip plans</a>
+    <a href={link("/travel/connections")}><Icon name="train" size={14} /> Connections</a>
+  </nav>
 
   <!-- The board is the page; what is merely waiting for a decision sits in the rail
        beside it, the same way /calendar keeps its review lists. -->
@@ -1912,6 +1907,31 @@
 
   .editing-hidden {
     display: none;
+  }
+
+  .travel-nav {
+    display: flex;
+    gap: 0.25rem;
+    margin: -0.5rem 0 1.25rem;
+    padding-bottom: 0.65rem;
+    border-bottom: 1px solid var(--card-border);
+  }
+
+  .travel-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.65rem;
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .travel-nav a:hover,
+  .travel-nav a.active {
+    color: var(--primary);
+    background: var(--primary-soft);
   }
 
   /* The list view: the board is the page, the rail sits beside it. `minmax(0, 1fr)`
