@@ -101,6 +101,8 @@ export interface RelevanceRefreshResult {
   reused_relevance: number;
   refused_class: number;
   refused_lower_tier: number;
+  /** Stored matches actually deleted from refused items on this pass. */
+  refused_matches_cleared: number;
   missing_ids: string[];
   profile_count: number;
   mode: string | null;

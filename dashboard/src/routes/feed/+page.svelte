@@ -269,7 +269,12 @@
         const run = runOf.get(group[0].id);
         rows.push({
           kind: "header",
-          id: `run:${key}`,
+          // The day is part of the key. A run is derived per source with a
+          // 30-minute gap (comms store.rs `RUN_GAP_MINUTES`) while `day` is
+          // stamped in UTC at ingest, so a scan straddling UTC midnight puts one
+          // run_key into two day buckets -- and Svelte 5 throws on a duplicate
+          // key in production as well as in dev, which would blank the Inbox.
+          id: `run:${day}:${key}`,
           label: run?.label ?? run?.source_id ?? "Collection run",
           count: group.length,
           tone: "run",
@@ -464,7 +469,12 @@
     relevanceBusy = true;
     relevanceNotice = null;
     try {
-      const result = await comms.refreshRelevance(Math.max(days, 90));
+      // The Feed's own client, not `$lib/api`'s one-argument helper: this is
+      // the call that can name a window, a page and a force flag, and the
+      // button is the only surface the route has.
+      const result = await feedPersonalization.refreshRelevance({
+        days: Math.max(days, 90),
+      });
       const method =
         result.mode === "reranked"
           ? "reranked"
