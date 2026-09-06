@@ -423,9 +423,22 @@ function materializeStage(config: DeployConfig, pack: string, unit: Unit): { sta
   }
 }
 
-function ownerOf(state: DeploymentState, unitKey: string): string | null {
+/**
+ * The Pack that already occupies this unit's destination, if any.
+ *
+ * Ownership is a claim on a PATH, not on a name. For a skill the two coincide —
+ * its ledger key IS its destination basename — but a tree unit's key is the
+ * source directory (`agents/`) while its destination carries the pack name. Two
+ * Packs each carrying an agents/ tree therefore share a key and collide in no
+ * other way, and comparing keys made the second one permanently unclaimable:
+ * `agents/: already owned by Pack '<the first one>'`, with nothing wrong at the
+ * destination. Compare the resolved destinations instead.
+ */
+function ownerOf(config: DeployConfig, state: DeploymentState, unit: Unit): string | null {
   for (const [pack, record] of Object.entries(state.packs)) {
-    if (record.skills[unitKey]) return pack;
+    for (const unitKey of Object.keys(record.skills)) {
+      if (recordedDestination(config, pack, unitKey) === unit.destination) return pack;
+    }
   }
   return null;
 }
@@ -470,7 +483,7 @@ function installOne(
   mode: "deploy" | "sync",
 ): string {
   const destination = unit.destination;
-  const owner = ownerOf(state, unit.key);
+  const owner = ownerOf(config, state, unit);
   const existingRecord = state.packs[pack]?.skills[unit.key];
   if (owner && owner !== pack) throw new Error(`${unit.key}: already owned by Pack '${owner}'`);
   if (existsSync(destination) && !existingRecord) {
@@ -516,7 +529,7 @@ export function deployPack(config: DeployConfig, pack: string): string[] {
     const files = desiredFiles(config, pack, unit);
     validateUnit(config, files, unit, `${pack}/${unit.key}`);
     const record = state.packs[pack]?.skills[unit.key];
-    const owner = ownerOf(state, unit.key);
+    const owner = ownerOf(config, state, unit);
     if (owner && owner !== pack) throw new Error(`${unit.key}: already owned by Pack '${owner}'`);
     if (existsSync(unit.destination) && !record) {
       throw new Error(`${unit.key}: ${unit.destination} exists and is not owned by this Axon deployment`);
@@ -561,7 +574,7 @@ export function adoptPack(config: DeployConfig, pack: string): string[] {
   const messages: string[] = [];
   const failures: string[] = [];
   for (const unit of units) {
-    const owner = ownerOf(state, unit.key);
+    const owner = ownerOf(config, state, unit);
     if (owner === pack) { messages.push(`= ${unit.key} (already owned)`); continue; }
     if (owner) { failures.push(`${unit.key}: already owned by Pack '${owner}'`); continue; }
     if (!existsSync(unit.destination)) { messages.push(`= ${unit.key} (not deployed; nothing to adopt)`); continue; }
@@ -635,7 +648,7 @@ export function syncPack(config: DeployConfig, pack: string): string[] {
   for (const unit of units) {
     const files = desiredFiles(config, pack, unit);
     validateUnit(config, files, unit, `${pack}/${unit.key}`);
-    const owner = ownerOf(state, unit.key);
+    const owner = ownerOf(config, state, unit);
     if (owner && owner !== pack) throw new Error(`${unit.key}: already owned by Pack '${owner}'`);
     if (existsSync(unit.destination) && !state.packs[pack].skills[unit.key]) {
       throw new Error(`${unit.key}: ${unit.destination} exists and is not owned by this Axon deployment`);

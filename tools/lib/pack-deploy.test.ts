@@ -169,3 +169,32 @@ describe("adoptPack", () => {
     expect(adoptPack(config, "demo")).toEqual(["✓ demo-skill adopted", "✓ agents/ adopted"]);
   });
 });
+
+describe("ownership is a claim on a destination", () => {
+  // Two Packs each carrying agents/ share the ledger key `agents/` and nothing
+  // else: their destinations differ by pack name. A key-based owner lookup read
+  // that as a collision, so the SECOND pack to ship subagents could never be
+  // deployed — the failure this repository actually hit on 2026-09-07, with
+  // academic-writing installed and deliberation refused.
+  test("two packs may each carry an agents/ tree", () => {
+    writeAgents("demo", "reviewer");
+    writeManifest("second", ["second-skill"]);
+    writeSkill("second", "second-skill");
+    writeAgents("second", "clerk");
+
+    deployPack(config, "demo");
+    expect(deployPack(config, "second")).toEqual(["✓ second-skill deployed", "✓ agents/ deployed"]);
+
+    const treeRoot = config.treeConvention!.destinationRoot;
+    expect(readFileSync(join(treeRoot, "demo", "reviewer.md"), "utf8")).toBe("# reviewer\n");
+    expect(readFileSync(join(treeRoot, "second", "clerk.md"), "utf8")).toBe("# clerk\n");
+    expect(Object.keys(readState(config).packs).sort()).toEqual(["demo", "second"]);
+  });
+
+  test("a second pack claiming the same skill destination is still refused", () => {
+    deployPack(config, "demo");
+    writeManifest("rival", ["demo-skill"]);
+    writeSkill("rival", "demo-skill", "a different body");
+    expect(() => deployPack(config, "rival")).toThrow("already owned by Pack 'demo'");
+  });
+});
