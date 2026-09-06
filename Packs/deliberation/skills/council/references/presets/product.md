@@ -34,6 +34,23 @@ graph between the candidates.
 and fix what exists. Pushes on the usage of the nearest existing feature and on whether the need
 is already met by something nobody found. Demands the current usage numbers.
 
+## Types
+
+Launch each member with its `subagent_type`:
+
+| Member | `subagent_type` |
+|---|---|
+| Nora | `council-evidence` |
+| Emil | `council-cost` |
+| Halla | `council-cost` |
+| Piet | `council-owner` |
+| Ida | `council-skeptic` |
+
+Two members may share a type. The type carries the contract — read-only tools, the evidence
+rule, the return shape — and the brief above carries everything that makes them argue
+differently. `general-purpose` marks a member no type fits: paste the contract into its
+prompt (read only, never edit, cite or mark, return the round text alone).
+
 ## Evidence bar
 
 A claim about users cites an observation, a quote or a number with its source. A claim about cost
