@@ -555,7 +555,7 @@
       "kind": "spine",
       "code": {
         "files": 155,
-        "nodes": 1208
+        "nodes": 1209
       }
     },
     {
@@ -1855,8 +1855,8 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 13186,
-    "external": 10,
+    "nodes": 13188,
+    "external": 11,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
