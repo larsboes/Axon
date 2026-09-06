@@ -5,6 +5,7 @@
   import RowMeta from "../../RowMeta.svelte";
   import { dateLabel, metaLine } from "../format";
   import type { DecisionRowProps } from "../decisions";
+  import type { CalendarSource } from "../kinds/calendar";
 
   let {
     row,
@@ -16,7 +17,32 @@
     href,
     whyHere,
     candidateStatus,
-  }: DecisionRowProps<CalendarEntry> = $props();
+  }: DecisionRowProps<CalendarEntry, CalendarSource> = $props();
+
+  /// The entry the capability answered with, held between the write and the patch below.
+  let planned: CalendarEntry | null = null;
+
+  /// The updated entry replaces the old one in the source, so the horizon above the ladder
+  /// shows the entry the moment it is planned rather than at the next reload. Replaced and
+  /// not removed: a planned entry is still a dated commitment, it has just stopped being a
+  /// question. The base page wrote exactly this map.
+  function plan(): void {
+    act(
+      async () => {
+        const updated = await calendar.entries.update(row.id, { commitment: "planned" });
+        planned = updated;
+      },
+      {
+        dismiss: true,
+        patch: (source) => ({
+          ...source,
+          entries: source.entries.map((entry) =>
+            entry.id === row.id ? (planned ?? { ...entry, commitment: "planned" }) : entry,
+          ),
+        }),
+      },
+    );
+  }
 </script>
 
 <ListRow {id} {current} {tone} {href}>
@@ -41,10 +67,7 @@
       class="btn btn-soft"
       type="button"
       disabled={busy}
-      onclick={() =>
-        act(async () => {
-          await calendar.entries.update(row.id, { commitment: "planned" });
-        }, { dismiss: true })}
+      onclick={plan}
     >
       {#if busy}<Icon name="loader" size={13} />{:else}Plan{/if}
     </button>

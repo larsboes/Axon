@@ -23,17 +23,18 @@ import {
   type DecisionKind,
 } from "../dashboard/src/lib/home/decisions.ts";
 
-const kindStub = (key: string, band: number) =>
-  ({ key, band }) as unknown as DecisionKind<unknown, unknown>;
+const kindStub = (key: string, band: number, lane?: "commitment" | "reading") =>
+  ({ key, band, lane }) as unknown as DecisionKind<unknown, unknown>;
 
 const decision = (
   key: string,
   band: number,
   urgency: number,
   startOrDueAt: string | null = null,
+  lane?: "commitment" | "reading",
 ): Decision => ({
   key,
-  kind: kindStub(key.split(":")[0], band),
+  kind: kindStub(key.split(":")[0], band, lane),
   row: {},
   priority: score(band, urgency),
   startOrDueAt,
@@ -118,7 +119,8 @@ describe("ties break on start-or-due, then on the stable id", () => {
   });
 
   test("two kinds sharing band 640 order by urgency, then by both tie-breakers", () => {
-    // PRD:2213 and PRD:3115 both sit at 640, so this is the shared-band case.
+    // PRD §8.1's purchase decision and §13.1's budget overrun both sit at 640, so this
+    // is the shared-band case.
     const quiet = decision("finance:proposal-1", 640, 10, "2026-11-01");
     const loud = decision("purchase:renewal-9", 640, 800, "2026-12-01");
     const sameUrgency = decision("purchase:renewal-1", 640, 10, "2026-10-01");
@@ -126,6 +128,40 @@ describe("ties break on start-or-due, then on the stable id", () => {
       "purchase:renewal-9",
       "purchase:renewal-1",
       "finance:proposal-1",
+    ]);
+  });
+});
+
+describe("the date tie-break runs in the direction the lane gives it", () => {
+  test("a commitment breaks its tie on the soonest deadline", () => {
+    const soon = decision("calendar:b", 700, 5, "2026-09-10");
+    const later = decision("calendar:a", 700, 5, "2026-11-01");
+    expect([later, soon].sort(compareDecisions).map((d) => d.key)).toEqual([
+      "calendar:b",
+      "calendar:a",
+    ]);
+  });
+
+  test("reading breaks its tie on the newest arrival", () => {
+    // `startOrDueAt` on the reading lane is `created_at`, an arrival time and not a
+    // deadline. Earliest-first there put the six OLDEST unread articles in the collapsed
+    // preview of a list comms serves newest-first.
+    const oldest = decision("feed:a", 500, 500, "2026-08-10", "reading");
+    const middle = decision("feed:b", 500, 500, "2026-08-20", "reading");
+    const newest = decision("feed:c", 500, 500, "2026-09-05", "reading");
+    expect([oldest, middle, newest].sort(compareDecisions).map((d) => d.key)).toEqual([
+      "feed:c",
+      "feed:b",
+      "feed:a",
+    ]);
+  });
+
+  test("an undated reading row still sorts last", () => {
+    const dated = decision("feed:b", 500, 500, "2026-08-10", "reading");
+    const undated = decision("feed:a", 500, 500, null, "reading");
+    expect([undated, dated].sort(compareDecisions).map((d) => d.key)).toEqual([
+      "feed:b",
+      "feed:a",
     ]);
   });
 });

@@ -4,7 +4,15 @@
   import type { DecisionRowProps } from "../decisions";
 
   /** A thin wrapper, so Home's reading lane and /feed's inbox cannot drift apart. */
-  let { row, busy, act, id, current, tone }: DecisionRowProps<FeedEntry> = $props();
+  let { row, busy, act, id, current, tone }: DecisionRowProps<FeedEntry, FeedEntry[]> = $props();
+
+  /// The entry leaves the loaded list as well as the ladder: Sources shows the size of the
+  /// 30-day window, and a kept item is no longer in it.
+  const decide = (status: "keeper" | "dismissed") => () =>
+    act(() => comms.setStatus(row.id, status).then(() => undefined), {
+      dismiss: true,
+      patch: (source) => source.filter((entry) => entry.id !== row.id),
+    });
 </script>
 
 <FeedItemRow
@@ -13,6 +21,6 @@
   {current}
   {busy}
   {tone}
-  onkeep={() => act(() => comms.setStatus(row.id, "keeper").then(() => undefined), { dismiss: true })}
-  ondismiss={() => act(() => comms.setStatus(row.id, "dismissed").then(() => undefined), { dismiss: true })}
+  onkeep={decide("keeper")}
+  ondismiss={decide("dismissed")}
 />

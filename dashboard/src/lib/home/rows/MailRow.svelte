@@ -18,7 +18,13 @@
     whyHere,
     dataClass,
     candidateStatus,
-  }: DecisionRowProps<MailRow> = $props();
+  }: DecisionRowProps<MailRow, MailRow[]> = $props();
+
+  const dismiss = () =>
+    act(() => comms.setTriageStatus(row.id, "dismissed").then(() => undefined), {
+      dismiss: true,
+      patch: (source) => source.filter((item) => item.id !== row.id),
+    });
 </script>
 
 <ListRow {id} {current} {tone} {href}>
@@ -54,7 +60,7 @@
       disabled={busy}
       aria-label="Dismiss mail proposal"
       title="Dismiss"
-      onclick={() => act(() => comms.setTriageStatus(row.id, "dismissed").then(() => undefined), { dismiss: true })}
+      onclick={dismiss}
     >
       {#if busy}<Icon name="loader" size={13} />{:else}<Icon name="close" size={13} />{/if}
     </button>

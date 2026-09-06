@@ -39,12 +39,18 @@ const mail: DecisionKind<TriageItem[], MailRow> = {
     (items as MailRow[]).filter((item) => item.status === "proposed" && item.stream === "aktiv"),
   id: (item) => item.id,
   title: (item) => item.subject ?? "(no subject)",
-  urgency: (item) => {
+  urgency: (item, ctx) => {
     if (item.score_bp !== undefined && item.score_bp !== null) {
       // 0..10000 bp over 0..999: 10000 / 10.01 is 999.0.
       return Math.min(MAX_URGENCY, Math.max(0, Math.round(item.score_bp / 10.01)));
     }
-    const age = item.internal_date ? Date.now() - new Date(item.internal_date).getTime() : Infinity;
+    // `ctx.nowMs`, not the wall clock. Every other kind ranks against the context's own
+    // day, which is recomputed at local midnight; reading `Date.now()` here made this the
+    // one kind whose rank could not be reproduced from a context, and forced its test to
+    // build a fixture relative to the moment the test ran.
+    const age = item.internal_date
+      ? ctx.nowMs - new Date(item.internal_date).getTime()
+      : Infinity;
     return age < FORTY_EIGHT_HOURS ? 120 : 0;
   },
   // The entry route resolves an item from its source alone, so mail opens the same reader

@@ -8,15 +8,25 @@
  * of a row component rather than an imported component: a name costs nothing to test, an
  * import drags the Svelte compiler into every unit test that touches a kind.
  *
- * PRD §8.1 (lines 2207-2220) is the law this file implements. The dashboard owns no tables
- * (dashboard/README.md:7-9), so this interface is the durable contract in a schema's place.
+ * PRD §8.1, "the attention ladder" band table, is the law this file implements. Cited by
+ * section and row rather than by line number: the PRD is edited nightly by another writer,
+ * and every bare line anchor this file carried had already slipped by eighteen lines a day
+ * after it was written. The dashboard owns no tables (dashboard/README.md:7-9), so this
+ * interface is the durable contract in a schema's place.
  */
 
 /** The visual spine. Four tones over thirteen bands, because a reader distinguishes four. */
 export type BandTone = "alarm" | "now" | "owed" | "offer";
 
-/** The four data classes. c2 and c3 never leave the host and never reach a cloud model. */
-export type DataClass = "c0" | "c1" | "c2" | "c3";
+/**
+ * The four data classes. c2 and c3 never leave the host and never reach a cloud model.
+ *
+ * Re-exported from the client rather than redeclared: `api.ts` already owns this union, and
+ * a second copy would drift the day comms adds a class. `import type` is erased by both tsc
+ * and bun, so this module still imports nothing at runtime.
+ */
+import type { DataClass } from "../api";
+export type { DataClass };
 
 export interface ScoreContext {
   /** Local YYYY-MM-DD. Recomputed at local midnight — a tab left open overnight used to
@@ -53,7 +63,22 @@ export interface LoadContext extends ScoreContext {
   signal: AbortSignal;
 }
 
-export interface DecisionViewProps<Row> {
+export interface ActOptions<Source> {
+  /** False leaves the row on the ladder; the default drops it once the write resolves. */
+  dismiss?: boolean;
+  /**
+   * Rewrites the kind's loaded source, once the write resolves.
+   *
+   * The ladder is not the only reading of a kind's rows: Locations lists every new
+   * opportunity, Sources counts them, and the horizon reads every dated calendar entry.
+   * Dropping the row from the ladder alone left all three showing a decision the operator
+   * had just made — the page contradicting itself between two tabs. The base page wrote
+   * the same patch back by hand for each of its three actions; this is that, once.
+   */
+  patch?: (source: Source) => Source;
+}
+
+export interface DecisionViewProps<Row, Source = unknown> {
   row: Row;
   /** True while this row's own action is in flight. */
   busy: boolean;
@@ -62,10 +87,9 @@ export interface DecisionViewProps<Row> {
    *
    * The order is the point. An optimistic dismissal shows a decision as made that the
    * capability never recorded — the dashboard contradicting the owner of the record. On
-   * rejection the row stays and the error surfaces. See +page.svelte:430-437 for the shape
-   * this generalises.
+   * rejection the row stays and the error surfaces.
    */
-  act(run: () => Promise<void>, options?: { dismiss?: boolean }): void;
+  act(run: () => Promise<void>, options?: ActOptions<Source>): void;
 }
 
 /**
@@ -76,7 +100,8 @@ export interface DecisionViewProps<Row> {
  * spine wears and where its title points. A row renders its own `ListRow` so that it owns
  * its mark, its actions and its meta line; the page owns only the order.
  */
-export interface DecisionRowProps<Row> extends DecisionViewProps<Row> {
+export interface DecisionRowProps<Row, Source = unknown>
+  extends DecisionViewProps<Row, Source> {
   /** Stable DOM id, so the keyboard cursor can focus this row. */
   id: string;
   current: boolean;
@@ -135,6 +160,15 @@ export interface DecisionKind<Source = unknown, Row = unknown> {
   dataClass(row: Row): DataClass | null;
   /** null on every kind today. The gap is the capabilities', not this layer's. */
   processingRoute(row: Row): "local" | "cloud" | null;
+  /**
+   * The named terms behind this row's urgency, for a row component that wants to draw them.
+   *
+   * Declared on the contract and read by no shell: the page hands a row its own `row` and
+   * lets the row decide what to render, and the one kind that fills this in today — `feed`
+   * — reaches the same numbers through `FeedItemRow`'s `FactorBars`. Kept rather than
+   * dropped because `finance`'s kind already fills it, and a row that wants a breakdown
+   * should get it from its kind rather than recompute one.
+   */
   scoreFactors?(row: Row, ctx: ScoreContext): { label: string; score: number }[];
 }
 
@@ -173,6 +207,14 @@ export const compareStartOrDue = (a: string | null, b: string | null): number =>
   return a < b ? -1 : 1;
 };
 
+/** Later first; a row with no date still sorts last. */
+export const compareNewestFirst = (a: string | null, b: string | null): number => {
+  if (a === b) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return a > b ? -1 : 1;
+};
+
 /**
  * Highest priority first, then the two declared tie-breakers in order.
  *
@@ -180,38 +222,60 @@ export const compareStartOrDue = (a: string | null, b: string | null): number =>
  * the same number and so does every unscored mail. Without a declared tie-break, intra-band
  * order was whatever the capability happened to return that poll, and the ladder visibly
  * reshuffled between fifteen-second refreshes.
+ *
+ * The direction of the date tie-break follows the LANE, because the lane is already the
+ * statement of what the date means. A commitment's `startOrDueAt` is a deadline and the
+ * soonest one is the most urgent — the declared "earliest_start_or_due_at". The reading
+ * lane's is an arrival time (`created_at`), and "earliest first" there put the six OLDEST
+ * unread articles in the collapsed preview of a list comms itself serves newest-first.
+ * Rows in the two lanes are never compared for a result the reader sees: the ladder is
+ * partitioned by lane after this sort, and a partition keeps relative order.
  */
+const newestFirst = (decision: Decision): boolean => decision.kind.lane === "reading";
+
 export const compareDecisions = (a: Decision, b: Decision): number =>
   b.priority - a.priority ||
-  compareStartOrDue(a.startOrDueAt, b.startOrDueAt) ||
+  (newestFirst(a) && newestFirst(b)
+    ? compareNewestFirst(a.startOrDueAt, b.startOrDueAt)
+    : compareStartOrDue(a.startOrDueAt, b.startOrDueAt)) ||
   (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 
 /**
  * The band table. PRD §8.1's own numbers, plus 610 for the trip retrospective (§8.2).
  *
- * band  | key         | owner stream       | PRD row
- * ------|-------------|--------------------|--------------------------------------
- * 10000 | system      | dashboard-refresh  | System health
- *   900 | host        | dashboard-refresh  | §9 resource rule broken
- *   800 | trip        | dashboard-refresh  | Trip needing planning
- *   700 | calendar    | dashboard-refresh  | Calendar `possible`
- *   640 | finance     | finance-invest     | Purchase decision      (SHARED)
- *   640 | (open)      | —                  | purchase renewal / wishlist  PRD:2213
- *   640 | (open)      | —                  | budget overrun               PRD:3115
- *   630 | (open)      | —                  | stalled project              PRD:2214
- *   620 | task        | dashboard-refresh  | Task
- *   610 | retro       | travel-season-cost | ADDITION, PRD §8.2
- *   600 | opportunity | dashboard-refresh  | Opportunity
- *   550 | mail        | dashboard-refresh  | Mail
- *   540 | (open)      | —                  | person contact frequency     PRD:2218
- *   500 | feed        | dashboard-refresh  | Feed item
- *   490 | (open)      | —                  | note due for review          PRD:2220
+ * Every row cites a PRD SECTION and the row's own wording, never a line number. The PRD is
+ * edited by another writer most nights; the seven bare line anchors this table carried had
+ * slipped by eighteen lines within a day of being written, so each one resolved to
+ * unrelated text. A section and a row title stay findable after an edit.
  *
- * Bands are NOT unique. PRD:2213 gives 640 to the purchase decision and PRD:3115 routes a
- * doubled month of metered spend to the same band, so a band is a rank and not a slot. A
- * kind that joins an occupied band is correct; a kind that invents a band the table does
- * not name has to say which PRD row it extends, and `tools/dashboard-home-registry.test.ts`
- * asks for exactly that.
+ * band  | key                | owner stream       | PRD row
+ * ------|--------------------|--------------------|--------------------------------------
+ * 10000 | system             | dashboard-refresh  | §8.1 System health
+ *   900 | host               | dashboard-refresh  | §9 resource rule broken
+ *   800 | trip               | dashboard-refresh  | §8.1 Trip needing planning
+ *   700 | calendar           | dashboard-refresh  | §8.1 Calendar `possible`
+ *   640 | finance            | finance-invest     | §8.1 Purchase decision     (SHARED)
+ *   640 | (open)             | —                  | §8.1 purchase renewal / wishlist
+ *   640 | (open)             | —                  | §13.1 budget overrun
+ *   630 | (open)             | —                  | §8.1 stalled project
+ *   620 | task               | dashboard-refresh  | §8.1 Task
+ *   610 | trip-retrospective | travel-season-cost | ADDITION, §8.2
+ *   600 | opportunity        | dashboard-refresh  | §8.1 Opportunity
+ *   550 | mail               | dashboard-refresh  | §8.1 Mail
+ *   540 | (open)             | —                  | §8.1 person contact frequency
+ *   500 | feed               | dashboard-refresh  | §8.1 Feed item
+ *   490 | (open)             | —                  | §8.1 note due for review
+ *
+ * Bands are NOT unique. §8.1 gives 640 to the purchase decision and §13.1 routes a doubled
+ * month of metered spend to the same band, so a band is a rank and not a slot. A kind that
+ * joins an occupied band is correct; a kind that invents a band this table does not name
+ * declares the row it extends in its own file, on a line of the exact form
+ *
+ *     BAND <band> EXTENDS PRD <section and row>
+ *
+ * with the same number the kind sets. `tools/dashboard-home-registry.test.ts` asks for
+ * exactly that form, because the substring "PRD" alone appears in every kind file already
+ * and exempted anything that copied one.
  */
 export const PRD_BANDS: readonly number[] = [
   10_000, 900, 800, 700, 640, 630, 620, 610, 600, 550, 540, 500, 490,

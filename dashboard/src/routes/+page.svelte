@@ -36,6 +36,7 @@
     bandLabel,
     bandTone,
     compareDecisions,
+    type ActOptions,
     type Decision,
     type ScoreContext,
   } from "$lib/home/decisions";
@@ -44,6 +45,11 @@
   import { countLabel, daysUntil, localDateKey, sentenceCase } from "$lib/home/format";
 
   type HomeView = "now" | "locations" | "sources";
+
+  /// Only `demo` is read. The root layout's load puts it on every page's data, and it is
+  /// what keeps the per-kind autostart from posting a start route a demo build does not
+  /// serve — the same rule +layout.svelte states for its own.
+  let { data } = $props();
 
   /// The day, recomputed at local midnight. The old page read `new Date()` once at module
   /// scope, so a tab left open overnight ranked every date one day too urgent and kept
@@ -161,6 +167,8 @@
 
   const rowId = (decision: Decision) => `decision-${decision.key.replace(/[^\w-]/g, "-")}`;
 
+  const kindOf = (key: string) => KINDS.find((kind) => kind.key === key);
+
   const cursor = createListCursor({
     count: () => visibleDecisions.length,
     elFor: (index) => {
@@ -223,7 +231,7 @@
           daysUntil: (value: string) => daysUntil(value, today),
           signal: controller.signal,
         },
-        start: createStarter(),
+        start: createStarter(Boolean(data?.demo)),
         onSettled: (key, state) => {
           if (controller.signal.aborted) return;
           sources = { ...sources, [key]: state };
@@ -235,14 +243,36 @@
   });
 
   /// Awaits the capability write FIRST, and only on resolution does the key leave the
-  /// ladder. An optimistic dismissal would show a decision as made that the capability
-  /// never recorded — the dashboard contradicting the owner of the record.
-  function act(key: string, run: () => Promise<void>, options?: { dismiss?: boolean }): void {
+  /// ladder AND the row leave its kind's source. An optimistic dismissal would show a
+  /// decision as made that the capability never recorded — the dashboard contradicting
+  /// the owner of the record.
+  ///
+  /// Both halves are needed. `dismissed` only hides the row from the ladder, and the
+  /// ladder is not the only reading of these rows: Locations lists every new opportunity,
+  /// Sources counts them, and the horizon reads every dated calendar entry. Patching the
+  /// source too is what the base page did by hand in each of its three action handlers.
+  function act(
+    kindKey: string,
+    key: string,
+    run: () => Promise<void>,
+    options?: ActOptions<unknown>,
+  ): void {
     if (busy) return;
     busy = key;
     actionError = null;
     void run()
       .then(() => {
+        const patch = options?.patch;
+        const state = sources[kindKey];
+        if (patch && state) {
+          const source = patch(state.source);
+          sources = {
+            ...sources,
+            // `rows` is recomputed from the patched source through the kind's own gate, so
+            // a row the write took out of scope leaves every view at once.
+            [kindKey]: { ...state, source, rows: kindOf(kindKey)?.rows(source, scoreContext) ?? state.rows },
+          };
+        }
         if (options?.dismiss === false) return;
         // Reassigned, never mutated: `$state` proxies plain objects and arrays and does
         // not intercept Set methods, so `dismissed.add(key)` would leave the derived
@@ -257,12 +287,25 @@
       });
   }
 
+  /// The only schemes a capability-supplied destination may carry.
+  ///
+  /// `obsidian:` is here because a task's destination is a note, and `window.open` refuses
+  /// a non-http scheme. Everything else is refused rather than assigned to `location`:
+  /// `opportunity.href` is a URL harvested from a third-party feed and no scouting adapter
+  /// constrains its scheme, so `location.assign("javascript:…")` would run that feed's
+  /// script in the origin that renders this page's mail subjects and snippets. The base
+  /// page reached these rows through `window.open`, which browsers refuse for such a URL;
+  /// keeping the keyboard path narrower than the mouse path is the actual requirement.
+  const OPENABLE_SCHEME = /^(https?|obsidian):/i;
+
   function openDecision(decision: Decision | undefined): void {
     if (!decision) return;
     const href = decision.kind.href(decision.row);
     if (decision.kind.external?.(decision.row)) {
-      // `obsidian://` and the like are handed to the OS, which `window.open` refuses for
-      // a non-http scheme. A task's destination is a note, not a page.
+      if (!OPENABLE_SCHEME.test(href)) {
+        actionError = `${decision.kind.label} gave a destination this page will not open.`;
+        return;
+      }
       if (/^https?:/i.test(href)) window.open(href, "_blank", "noopener,noreferrer");
       else window.location.assign(href);
       return;
@@ -295,7 +338,10 @@
   }
 </script>
 
-<svelte:window onkeydown={cursor.handleKeydown} />
+<!-- Armed on the Now view only. The queue is the only thing J/K/Enter address, and it
+     renders under `homeView === "now"`; leaving the handler on the window meant an Enter
+     pressed on Locations or Sources navigated to a commitment that was not on screen. -->
+<svelte:window onkeydown={homeView === "now" ? cursor.handleKeydown : undefined} />
 
 <div class="home">
   <header class="briefing">
@@ -371,7 +417,7 @@
               </li>
             {/if}
           {/if}
-          {@render decisionRow(decision, index)}
+          {@render decisionRow(decision)}
         {/each}
       </ul>
 
@@ -384,22 +430,26 @@
         message="Reading current work…"
       />
 
-      {#snippet decisionRow(decision: Decision, index: number)}
+      <!-- No index parameter: the cursor's own position decides `current`, and the two
+           call sites were computing an offset that nothing read. -->
+      {#snippet decisionRow(decision: Decision)}
         {@const Row = rowComponent(decision.kind)}
-        <Row
-          row={decision.row}
-          id={rowId(decision)}
-          current={visibleDecisions[cursor.index]?.key === decision.key}
-          tone={bandTone(decision.kind.band)}
-          href={decision.kind.href(decision.row)}
-          busy={busy === decision.key}
-          whyHere={decision.kind.whyHere(decision.row, scoreContext)}
-          dataClass={decision.kind.dataClass(decision.row)}
-          processingRoute={decision.kind.processingRoute(decision.row)}
-          candidateStatus={decision.kind.candidateStatus(decision.row)}
-          act={(run: () => Promise<void>, options?: { dismiss?: boolean }) =>
-            act(decision.key, run, options)}
-        />
+        {#if Row}
+          <Row
+            row={decision.row}
+            id={rowId(decision)}
+            current={visibleDecisions[cursor.index]?.key === decision.key}
+            tone={bandTone(decision.kind.band)}
+            href={decision.kind.href(decision.row)}
+            busy={busy === decision.key}
+            whyHere={decision.kind.whyHere(decision.row, scoreContext)}
+            dataClass={decision.kind.dataClass(decision.row)}
+            processingRoute={decision.kind.processingRoute(decision.row)}
+            candidateStatus={decision.kind.candidateStatus(decision.row)}
+            act={(run: () => Promise<void>, options?: ActOptions<unknown>) =>
+              act(decision.kind.key, decision.key, run, options)}
+          />
+        {/if}
       {/snippet}
 
       <!-- Reading is the other 93% of what used to be one queue, and none of it expires.
@@ -424,8 +474,8 @@
 
           {#if showReading}
             <ul class="queue" role="list">
-              {#each visibleReading as decision, index (decision.key)}
-                {@render decisionRow(decision, commitments.length + index)}
+              {#each visibleReading as decision (decision.key)}
+                {@render decisionRow(decision)}
               {/each}
             </ul>
             {#if reading.length > READING_PREVIEW}
@@ -825,6 +875,13 @@
     border-top: 1px solid var(--rule);
     border-bottom: 1px solid var(--rule);
     list-style: none;
+  }
+
+  /* On a quiet day the queue really does render nothing. Without this, an empty <ul> still
+     painted its two rules as a pair of hairlines across the column — a "0 items" marker
+     drawn in CSS, which is the form PRD §8.1 names as the one to avoid. */
+  .queue:empty {
+    border: 0;
   }
 
   /* A hairline break where the band changes, carrying the band's NAME.

@@ -5,6 +5,7 @@
   import RowMeta from "../../RowMeta.svelte";
   import { dateLabel, metaLine } from "../format";
   import type { DecisionRowProps } from "../decisions";
+  import type { OpportunitySource } from "../kinds/opportunity";
 
   let {
     row,
@@ -16,7 +17,20 @@
     href,
     whyHere,
     candidateStatus,
-  }: DecisionRowProps<ScoutingOpportunity> = $props();
+  }: DecisionRowProps<ScoutingOpportunity, OpportunitySource> = $props();
+
+  /// A decided opportunity leaves the kind's source, not just the ladder. Locations lists
+  /// every opportunity still `new` and Sources counts them, so hiding it from the queue
+  /// alone left the page showing a call the operator had already made two tabs over. The
+  /// base page dropped it from the same array by hand.
+  const decide = (status: "saved" | "dismissed") => () =>
+    act(() => scouting.setStatus(row.id, status).then(() => undefined), {
+      dismiss: true,
+      patch: (source) => ({
+        ...source,
+        opportunities: source.opportunities.filter((entry) => entry.id !== row.id),
+      }),
+    });
 </script>
 
 <ListRow {id} {current} {tone}>
@@ -35,7 +49,7 @@
       class="btn btn-soft"
       type="button"
       disabled={busy}
-      onclick={() => act(() => scouting.setStatus(row.id, "saved").then(() => undefined), { dismiss: true })}
+      onclick={decide("saved")}
     >
       {#if busy}<Icon name="loader" size={13} />{:else}Save{/if}
     </button>
@@ -45,7 +59,7 @@
       disabled={busy}
       aria-label="Dismiss opportunity"
       title="Dismiss"
-      onclick={() => act(() => scouting.setStatus(row.id, "dismissed").then(() => undefined), { dismiss: true })}
+      onclick={decide("dismissed")}
     >
       <Icon name="close" size={13} />
     </button>

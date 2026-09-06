@@ -52,8 +52,8 @@ describe("no kind's urgency can leave 0..999", () => {
     ["calendar", calendarKind.urgency(anyRow({ starts_at: TODAY, source: "web" }), context())],
     // 900 days overdue at the highest vault priority.
     ["task", task.urgency(anyRow({ due: "2024-03-20", priority: 1 }), context())],
-    ["mail-bp", mail.urgency(anyRow({ score_bp: 10_000 }))],
-    ["mail-bp-over", mail.urgency(anyRow({ score_bp: 99_999 }))],
+    ["mail-bp", mail.urgency(anyRow({ score_bp: 10_000 }), context())],
+    ["mail-bp-over", mail.urgency(anyRow({ score_bp: 99_999 }), context())],
     ["feed", feed.urgency(anyRow({ evaluation: { overall_score: 1 }, created_at: `${TODAY}T11:00:00Z` }), context())],
     ["system", system.urgency(anyRow({}), context())],
   ];
@@ -196,13 +196,22 @@ describe("each rescale reproduces the expression it replaced", () => {
     // Deliberately NOT a rescale: the only term is a 48-hour recency nudge worth 30
     // points, and rescaling 30 by its own maximum would put every recent mail at the top
     // of the band.
-    const recent = anyRow({ internal_date: new Date(Date.now() - 3_600_000).toISOString() });
+    //
+    // Both fixtures are dated against the fixed context, not against the moment this test
+    // runs: the kind reads `ctx.nowMs`, so a wall-clock fixture would have been the only
+    // time-dependent assertion in the file.
+    const ctx = context();
+    const recent = anyRow({ internal_date: `${TODAY}T11:00:00Z` });
+    const justInside = anyRow({ internal_date: "2026-09-03T13:00:00Z" });
+    const justOutside = anyRow({ internal_date: "2026-09-03T11:00:00Z" });
     const old = anyRow({ internal_date: "2026-01-01T00:00:00Z" });
-    expect(mail.urgency(recent)).toBe(120);
-    expect(mail.urgency(old)).toBe(0);
-    expect(mail.urgency(anyRow({ score_bp: 0, internal_date: null }))).toBe(0);
-    expect(mail.urgency(anyRow({ score_bp: 5000, internal_date: null }))).toBe(500);
-    expect(mail.urgency(anyRow({ score_bp: 10_000, internal_date: null }))).toBe(MAX_URGENCY);
+    expect(mail.urgency(recent, ctx)).toBe(120);
+    expect(mail.urgency(justInside, ctx)).toBe(120);
+    expect(mail.urgency(justOutside, ctx)).toBe(0);
+    expect(mail.urgency(old, ctx)).toBe(0);
+    expect(mail.urgency(anyRow({ score_bp: 0, internal_date: null }), ctx)).toBe(0);
+    expect(mail.urgency(anyRow({ score_bp: 5000, internal_date: null }), ctx)).toBe(500);
+    expect(mail.urgency(anyRow({ score_bp: 10_000, internal_date: null }), ctx)).toBe(MAX_URGENCY);
   });
 });
 

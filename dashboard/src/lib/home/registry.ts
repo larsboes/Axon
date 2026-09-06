@@ -53,10 +53,28 @@ export const ROWS: Record<string, RowComponent> = Object.fromEntries(
   Object.entries(rowModules).map(([path, module]) => [fileName(path), module.default]),
 );
 
-export const rowComponent = (kind: AnyKind): RowComponent => {
+const reportedMissingRows = new Set<string>();
+
+/**
+ * The row component a kind names, or null when the file is not in this checkout.
+ *
+ * Null rather than a throw, and the reason is the whole point of the registry. This
+ * resolves inside Home's render snippet, which sits under no `<svelte:boundary>`, so a
+ * throw here blanks the flagship page — and it would be thrown by a kind file some other
+ * stream added, on the first row that kind ever produced. A kind whose row is absent is
+ * skipped and named once in the console, which is the same rule the demo index states for
+ * a capability the recording could not include: absence degrades, it does not fail.
+ */
+export const rowComponent = (kind: AnyKind): RowComponent | null => {
   const component = ROWS[kind.view];
-  if (!component) throw new Error(`home/rows/${kind.view}.svelte does not exist`);
-  return component;
+  if (component) return component;
+  if (!reportedMissingRows.has(kind.key)) {
+    reportedMissingRows.add(kind.key);
+    console.warn(
+      `home/kinds/${kind.key}.ts names rows/${kind.view}.svelte, which does not exist; its rows are not shown`,
+    );
+  }
+  return null;
 };
 
 /** What Home knows about one kind at a moment in time. */
@@ -74,18 +92,35 @@ export interface KindState {
  * up" test is vacuously false), and an unknown capability is skipped rather than started,
  * because a demo build has no such route. Keyed on the capability rather than the kind, so
  * comms is started once although both `mail` and `feed` read it.
+ *
+ * The PROMISE is memoised, not a flag. A flag records the attempt before the POST answers,
+ * and `POST …/capabilities/{name}/start` blocks until the capability replies
+ * (capabilities/axon-status/src/main.rs, "Start one capability and wait for it to answer"),
+ * so the second kind on the same capability — `feed`, after `mail` — would read while comms
+ * was still booting and get the proxy's 502 for a stopped capability. That failed its whole
+ * lane behind "Unavailable: Feed" on exactly the cold machine this function exists for.
+ * Both kinds now await the one start.
+ *
+ * `demo` is the same rule +layout.svelte states for its own autostart: a demo build has no
+ * start route, and posting to it answers 501 and logs an error a visitor cannot act on.
  */
-export function createStarter(): (capability: string | null) => Promise<void> {
-  const attempted = new Set<string>();
-  return async (capability) => {
-    if (!capability || attempted.has(capability)) return;
-    attempted.add(capability);
-    const view = capabilities.byName(capability);
-    if (!view || view.up === true) return;
-    await axonStatus.start(capability).catch(() => {
-      // Swallowed: the read below reports the real failure, and a start that could not
-      // even be attempted is not a second thing to tell the operator about.
-    });
+export function createStarter(demo = false): (capability: string | null) => Promise<void> {
+  const inflight = new Map<string, Promise<void>>();
+  return (capability) => {
+    if (!capability || demo) return Promise.resolve();
+    let started = inflight.get(capability);
+    if (!started) {
+      started = (async () => {
+        const view = capabilities.byName(capability);
+        if (!view || view.up === true) return;
+        await axonStatus.start(capability).catch(() => {
+          // Swallowed: the read below reports the real failure, and a start that could not
+          // even be attempted is not a second thing to tell the operator about.
+        });
+      })();
+      inflight.set(capability, started);
+    }
+    return started;
   };
 }
 
