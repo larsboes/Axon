@@ -83,14 +83,15 @@ paths = [
 writes = "trips"
 paths = ["/trips/api/plans"]
 # Plan search is a POST, and the demo refuses every non-GET with its own sentence, so no
-# job can start and no job id can exist. The two GET paths are listed anyway so the shim
-# recognises them as trips calls and answers 501 rather than letting them reach the host.
+# job can start and no job id can exist. GET /api/plan-search/:id is therefore deliberately
+# absent from `paths`: it is per-job, and the demo can never hold a job id. The
+# [capability.trips] block already makes the shim own the whole /trips/ prefix, so such a
+# call answers 501 instead of reaching the host.
 # Plan detail pages are per-id and the ids are generated, so they cannot be listed here.
 # The recorder expands this against whatever /trips/api/plans returned: one fixture per
 # plan, no id ever written down. Same mechanism serves any list→detail pair.
 expand = [
   { from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}" },
-  { from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}/pack" },
 ]
 
 [capability.finance]

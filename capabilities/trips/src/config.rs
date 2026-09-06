@@ -41,30 +41,12 @@ pub struct TravelPrefs {
     pub pivots: Vec<PivotConfig>,
 }
 
-/// Where `trips gear import` reads item notes from.
-///
-/// A directory under the overlay, never in this repository: the notes are the
-/// operator's own wardrobe and kit. `items_dir` is relative to
-/// `AXON_PERSONAL_ROOT` unless it is absolute.
-#[derive(Debug, Clone, Deserialize)]
-pub struct GearConfig {
-    #[serde(default = "default_items_dir")]
-    pub items_dir: String,
-}
-
-fn default_items_dir() -> String {
-    "data/items/vault-notes".into()
-}
-
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_path: PathBuf,
     pub port: u16,
     pub obsidian: Option<ObsidianConfig>,
     pub travel: TravelPrefs,
-    /// `None` when no overlay is configured, which is what `gear import` reports
-    /// rather than scanning a guessed path.
-    pub gear_items_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,8 +54,6 @@ struct TripsFileConfig {
     obsidian: Option<TripsFileObsidian>,
     #[serde(default)]
     travel: Option<TravelPrefs>,
-    #[serde(default)]
-    gear: Option<GearConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,25 +82,6 @@ fn obsidian_from_personal_config() -> Option<ObsidianConfig> {
     })
 }
 
-/// The gear notes directory, from `AXON_TRIPS_GEAR_DIR` or the overlay's
-/// `config/trips.json`. Absent when there is no overlay to resolve against.
-fn gear_items_dir() -> Option<PathBuf> {
-    if let Ok(explicit) = std::env::var("AXON_TRIPS_GEAR_DIR") {
-        return Some(expand_tilde(&explicit));
-    }
-    let overlay = expand_tilde(&std::env::var("AXON_PERSONAL_ROOT").ok()?);
-    let configured = file_config()
-        .and_then(|c| c.gear)
-        .map(|gear| gear.items_dir)
-        .unwrap_or_else(default_items_dir);
-    let relative = PathBuf::from(&configured);
-    Some(if relative.is_absolute() {
-        relative
-    } else {
-        overlay.join(relative)
-    })
-}
-
 impl Config {
     pub fn load() -> Self {
         let port = resolve_port(None, None, 8086);
@@ -140,7 +101,6 @@ impl Config {
             port,
             obsidian,
             travel,
-            gear_items_dir: gear_items_dir(),
         }
     }
 }
@@ -152,13 +112,5 @@ mod tests {
     #[test]
     fn obsidian_default_is_atlas_events() {
         assert_eq!(default_trips_dir(), "Atlas/Events");
-    }
-
-    /// A shape, not a value: the default is a directory layout this repository
-    /// may name, and the notes inside it are never read from here.
-    #[test]
-    fn the_gear_notes_default_is_a_relative_overlay_path() {
-        assert_eq!(default_items_dir(), "data/items/vault-notes");
-        assert!(!PathBuf::from(default_items_dir()).is_absolute());
     }
 }
