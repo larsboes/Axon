@@ -419,28 +419,11 @@ fn default_google_env_path() -> PathBuf {
     axon_config::overlay_config("comms.env").unwrap_or_else(|| PathBuf::from("comms.env"))
 }
 
-/// `http://127.0.0.1:8099/articles/x` -> `http://127.0.0.1:8099`. `None` for
-/// anything that is not an absolute http(s) URL naming a host.
-///
-/// The port is always written out, so `http://example.com` and
-/// `http://example.com:80` normalise to one string and cannot be configured
-/// apart. One normaliser, because the configured entries and the URL being
-/// checked have to be compared as the same shape or the comparison is a
-/// coin toss: `media::check_destination` calls this on the URL, and
-/// [`ingest_allowed_origins`] calls it on every entry.
-pub(crate) fn normalize_origin(raw: &str) -> Option<String> {
-    let url = reqwest::Url::parse(raw.trim()).ok()?;
-    let scheme = url.scheme();
-    if scheme != "http" && scheme != "https" {
-        return None;
-    }
-    // `host_str` keeps the brackets on an IPv6 literal. They stay: both sides
-    // of the comparison come through here, and a bracketed host is what the
-    // operator writes in the config file too.
-    let host = url.host_str()?.to_ascii_lowercase();
-    let port = url.port_or_known_default()?;
-    Some(format!("{scheme}://{host}:{port}"))
-}
+/// The one normaliser, and it is the guard's own: the configured entries and the
+/// URL being checked have to be compared as the same shape or the comparison is a
+/// coin toss. [`ingest_allowed_origins`] calls it on every entry;
+/// `axon_http::guard::origin_is_allowed` calls it on the URL.
+pub(crate) use axon_http::guard::normalize_origin;
 
 /// Origins `POST /ingest` may fetch even though they resolve to an address
 /// inside this machine or this network (Q74).
@@ -744,39 +727,6 @@ mod tests {
                 None => std::env::remove_var(self.0),
             }
         }
-    }
-
-    #[test]
-    fn normalize_origin_writes_the_port_out_and_drops_the_path() {
-        assert_eq!(
-            normalize_origin("http://127.0.0.1:8099/articles/x").as_deref(),
-            Some("http://127.0.0.1:8099")
-        );
-        // The default port is written out, so the two spellings of one origin
-        // are one string on both sides of the comparison.
-        assert_eq!(
-            normalize_origin("http://example.com").as_deref(),
-            Some("http://example.com:80")
-        );
-        assert_eq!(
-            normalize_origin("https://Example.COM/").as_deref(),
-            Some("https://example.com:443")
-        );
-        assert_eq!(
-            normalize_origin("http://[::1]:9000/").as_deref(),
-            Some("http://[::1]:9000")
-        );
-    }
-
-    #[test]
-    fn normalize_origin_refuses_what_is_not_an_http_origin() {
-        // A scheme that is not http(s) must not be configurable as an escape
-        // from a guard whose other half exists to refuse `file://`.
-        assert_eq!(normalize_origin("file:///etc/passwd"), None);
-        assert_eq!(normalize_origin("ftp://example.com/"), None);
-        // Relative, and host-less: neither names an origin.
-        assert_eq!(normalize_origin("127.0.0.1:8099"), None);
-        assert_eq!(normalize_origin(""), None);
     }
 
     #[test]

@@ -25,6 +25,11 @@
 //! Where a caller needs an option this crate does not decide — gzip, a cookie store,
 //! a redirect policy — [`builder`] hands back the same starting point unbuilt.
 //!
+//! [`guard`] holds the other half of the same door: what a URL has to prove before a
+//! request is made. It was `capabilities/comms/src/media.rs`, the only place in the
+//! workspace that checked an outbound destination, and it belongs beside the client
+//! that would otherwise fetch it.
+//!
 //! # Why its own crate
 //!
 //! `libs/axon-config` was the alternative, and it is the wrong host: five members
@@ -32,6 +37,8 @@
 //! axon-config and make no outbound request, and `reqwest` brings a TLS stack with
 //! it. A lib in this repository is spine-owned shared code with no domain of its own
 //! (ARCHITECTURE.md, "Libs"), and "how Axon talks to the network" is exactly that.
+
+pub mod guard;
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
