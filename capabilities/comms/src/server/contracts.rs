@@ -358,9 +358,10 @@ impl From<ModelVerdict> for TriageModelOut {
             model_stream: verdict.model_stream,
             confidence_bp: verdict.confidence_bp,
             urgency_bp: verdict.urgency_bp,
-            // Hard-coded false, not read from a config key. Flipping it is a
-            // measurement, and the measurement is the corpus.
-            urgency_validated: false,
+            // One writer for this answer, shared with the evaluator's own gate
+            // (`mail_evaluation::urgency_from_verdict`). Not a config key:
+            // flipping it is a measurement, and the measurement is the corpus.
+            urgency_validated: mail_evaluation::URGENCY_VALIDATED,
             rationale: verdict.rationale,
             urgency_rationale: verdict.urgency_rationale,
             data_class: verdict.data_class,

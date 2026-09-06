@@ -341,13 +341,26 @@ pub(super) async fn triage_relevance_handler(
         // it.
         let mut evaluated = 0usize;
         let mut refused_lower_tier = 0usize;
+        // One read for the whole pass, not one per item -- the same reason
+        // `triage_handler` batches it. The rung writes these on its own
+        // schedule, so most passes find an empty map and every urgency factor
+        // then carries weight 0.
+        let verdicts = store.model_verdicts().unwrap_or_default();
         for (item, scored_item) in scorable.iter().zip(&outcome.items) {
+            // The rung's urgency moves the score THROUGH the evaluator rather
+            // than competing with it on the wire, so a reader who asks why a
+            // mail is at the top gets four bars, one of which is the model's.
+            // Gated on `URGENCY_VALIDATED`, which is the same answer the wire's
+            // `urgency_validated` reports -- until the frozen corpus measures
+            // the band error this is `None` and the factor keeps weight 0.
+            let urgency = mail_evaluation::urgency_from_verdict(
+                verdicts.get(&item.id),
+                mail_evaluation::URGENCY_VALIDATED,
+            );
             let evaluation = mail_evaluation::evaluate(
                 item,
                 scored_item.matches.first(),
-                // The model rung has published no urgency yet, so the factor
-                // carries weight 0 and the other three scale to 1.0.
-                None,
+                urgency.as_ref(),
                 &mail_context_revision,
                 false,
             );
@@ -378,6 +391,9 @@ pub(super) async fn triage_relevance_handler(
                 skipped_current += 1;
                 continue;
             }
+            // No urgency on a refusal, whatever the rung once stored: a c3 mail
+            // reached no model in this pass, and a refusal exists to withdraw
+            // model-derived numbers rather than to carry one forward.
             let evaluation =
                 mail_evaluation::evaluate(item, None, None, &mail_context_revision, true);
             // Past the tier gate: a refusal withdraws a model-derived score, and

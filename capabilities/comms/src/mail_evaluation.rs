@@ -31,10 +31,25 @@
 
 use crate::evaluation::{self, EvaluationFactor, EvaluationFactorContext, FeedEvaluation};
 use crate::relevance::{InterestProfile, RelevanceMatch};
-use crate::store::TriageItem;
+use crate::store::{ModelVerdict, TriageItem};
 
 /// v1: interest, category and age, with a reserved urgency slot.
 pub const MAIL_EVALUATOR_REVISION: &str = "mail-evaluator-v1";
+
+/// May the model rung's urgency rank a mail?
+///
+/// ONE answer for two readers: this gate, and `TriageModelOut::urgency_validated`
+/// on the wire (`server/contracts.rs`). A second copy is how the surface and the
+/// score come to disagree about whether a number is trustworthy.
+///
+/// `false`, and not a config key. A number that reorders the operator's ladder
+/// passes the same door the model's category does, and the door here is a
+/// measurement: `mail_model_eval::Report::urgency_band_error` over the frozen
+/// corpus, against an `acceptance.max_urgency_band_error` the corpus states.
+/// Flipping this to `true` is the act of having measured that, so it is a
+/// source edit that a reviewer sees, not an overlay value that changes ranking
+/// silently.
+pub const URGENCY_VALIDATED: bool = false;
 
 /// The share the model rung's urgency takes when it has published one. Taste,
 /// like [`FEEDBACK_WEIGHT`], and a named constant for the same reason: it is one
@@ -144,6 +159,46 @@ pub struct UrgencySignal {
     pub score: f64,
     /// The rung's own words. Never a quotation of a stored mail field.
     pub rationale: String,
+}
+
+/// The urgency factor's input, read from one stored verdict.
+///
+/// `None` -- weight 0, and the other three factors scale to 1.0 -- for each of
+/// four different absences, deliberately collapsed into one: urgency is not
+/// validated yet, the rung stored no verdict for this mail, the verdict carries
+/// no `urgency_bp`, or it carries one with no sentence to explain it. The last
+/// is the one worth naming: a bar with no rationale under it is a number the
+/// reader cannot check, and this evaluator's whole claim is that every weighted
+/// factor says why.
+///
+/// `validated` is a parameter rather than a read of [`URGENCY_VALIDATED`] so
+/// that both sides of the gate are reachable from a test. Callers pass the
+/// constant.
+///
+/// The rationale is the rung's own sentence, which `mail_model` already
+/// redacted against the higher of the mail's class and the class its model
+/// stream implies. This function never reads a stored mail field.
+pub fn urgency_from_verdict(
+    verdict: Option<&ModelVerdict>,
+    validated: bool,
+) -> Option<UrgencySignal> {
+    if !validated {
+        return None;
+    }
+    let verdict = verdict?;
+    let urgency_bp = verdict.urgency_bp?;
+    let rationale = verdict
+        .urgency_rationale
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())?;
+    Some(UrgencySignal {
+        // Basis points in the store, 0..=1 in the evaluator. The clamp is not
+        // decoration: `urgency_bp` is an integer column, so a row written before
+        // `mail_model::clamp_bp` existed can hold anything.
+        score: (urgency_bp as f64 / 10_000.0).clamp(0.0, 1.0),
+        rationale: rationale.to_string(),
+    })
 }
 
 /// Evaluate one mail.
@@ -362,6 +417,90 @@ mod tests {
 
     fn weights_sum(evaluation: &FeedEvaluation) -> f64 {
         evaluation.factors.iter().map(|factor| factor.weight).sum()
+    }
+
+    /// A stored verdict, with only the fields this gate reads set.
+    fn verdict(urgency_bp: Option<i64>, urgency_rationale: Option<&str>) -> ModelVerdict {
+        ModelVerdict {
+            triage_id: "thread:eval".into(),
+            mode: "shadow".into(),
+            state: "generated".into(),
+            rule_decided_by: "fallback".into(),
+            rule_stream: "aktiv".into(),
+            model_stream: Some("issue".into()),
+            confidence_bp: Some(8_000),
+            urgency_bp,
+            rationale: Some("the model's sentence".into()),
+            urgency_rationale: urgency_rationale.map(str::to_string),
+            redactions: 0,
+            data_class: "c1".into(),
+            redaction_class: "c1".into(),
+            producer: "synthetic-producer".into(),
+            item_revision: "revision-1".into(),
+            prompt_revision: "prompt-1".into(),
+            classification_version: "mail-model-v1".into(),
+            attempts: 0,
+            last_error: None,
+            next_attempt: None,
+            held_reason: None,
+            applied_at: None,
+        }
+    }
+
+    /// The gate is the whole point of the reserved slot: an unvalidated urgency
+    /// is not a small urgency, it is no urgency at all.
+    #[test]
+    fn an_unvalidated_urgency_never_reaches_the_evaluator() {
+        let stored = verdict(Some(7_500), Some("A date is named."));
+        assert_eq!(urgency_from_verdict(Some(&stored), false), None);
+
+        let item = mail("aktiv", "c1");
+        let ungated = urgency_from_verdict(Some(&stored), true).expect("the validated signal");
+        let evaluation = evaluate(&item, Some(&matched(0.7)), Some(&ungated), "context", false);
+        assert!((weight_of(&evaluation, "urgency") - URGENCY_WEIGHT).abs() < 1e-9);
+        assert!((weights_sum(&evaluation) - 1.0).abs() < 1e-9);
+    }
+
+    /// Basis points in the store, 0..=1 in the evaluator, and the rung's own
+    /// sentence carried through as the factor's rationale.
+    #[test]
+    fn a_validated_verdict_becomes_a_bounded_signal_with_its_reason() {
+        let signal =
+            urgency_from_verdict(Some(&verdict(Some(7_500), Some("A date is named."))), true)
+                .expect("the signal");
+        assert!((signal.score - 0.75).abs() < 1e-9);
+        assert_eq!(signal.rationale, "A date is named.");
+
+        // An out-of-range column is clamped, not trusted: `urgency_bp` is a
+        // plain integer and a row predating `mail_model::clamp_bp` can hold
+        // anything.
+        let high = urgency_from_verdict(Some(&verdict(Some(99_999), Some("Overdue."))), true)
+            .expect("the clamped signal");
+        assert!((high.score - 1.0).abs() < 1e-9);
+    }
+
+    /// Four different absences, one answer. The last is the one worth a test: a
+    /// weighted bar with no sentence under it is a number nobody can check.
+    #[test]
+    fn an_urgency_with_no_reason_is_not_carried() {
+        assert_eq!(urgency_from_verdict(None, true), None);
+        assert_eq!(
+            urgency_from_verdict(Some(&verdict(None, Some("x"))), true),
+            None
+        );
+        assert_eq!(
+            urgency_from_verdict(Some(&verdict(Some(6_000), None)), true),
+            None
+        );
+        assert_eq!(
+            urgency_from_verdict(Some(&verdict(Some(6_000), Some("   "))), true),
+            None
+        );
+
+        // And an absent signal leaves the slot reserved rather than scoring 0.
+        let item = mail("aktiv", "c1");
+        let evaluation = evaluate(&item, Some(&matched(0.7)), None, "context", false);
+        assert_eq!(weight_of(&evaluation, "urgency"), 0.0);
     }
 
     #[test]
