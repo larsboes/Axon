@@ -293,7 +293,7 @@
   /* Translucent only while there is something behind it to see. At the top of the page
      the bar sits on flat background and the blur has nothing to do, so it goes opaque and
      loses its border — the rule appears as the page starts moving under it. */
-  @supports not (backdrop-filter: blur(1px)) {
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
     header {
       background-color: var(--card-bg);
     }

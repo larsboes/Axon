@@ -32,7 +32,7 @@
 
   {#snippet actions()}
     <a class="btn btn-soft" {href}>
-      Record it <Icon name="arrow-right" size={13} />
+      Record it
     </a>
   {/snippet}
 </ListRow>

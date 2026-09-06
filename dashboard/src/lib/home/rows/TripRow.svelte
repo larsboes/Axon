@@ -33,7 +33,7 @@
 
   {#snippet actions()}
     <a class="btn btn-soft" href={link("/travel")}>
-      Continue planning <Icon name="arrow-right" size={13} />
+      Continue planning
     </a>
   {/snippet}
 </ListRow>

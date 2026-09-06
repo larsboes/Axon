@@ -26,7 +26,7 @@
 
   {#snippet actions()}
     <a class="btn btn-soft" href={link("/capabilities")}>
-      Check <Icon name="arrow-right" size={13} />
+      Check
     </a>
   {/snippet}
 </ListRow>

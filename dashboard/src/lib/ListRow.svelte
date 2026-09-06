@@ -92,8 +92,9 @@
   .row::before {
     content: "";
     position: absolute;
-    inset: 0 auto 0 0;
-    width: 2px;
+    inset: 0.55rem auto 0.55rem 0;
+    width: 3px;
+    border-radius: 3px;
     background-color: transparent;
   }
 
@@ -102,8 +103,13 @@
   .tone-owed::before { background-color: var(--band-owed); }
   .tone-offer::before { background-color: var(--band-offer); }
 
+  /* The cursor is a HAIRLINE and a tint, not a filled block. A solid panel behind the
+     selected row competed with the row's own content and read heavier than the alarm
+     band above it, which inverted the ranking the ladder exists to show. */
   .row.current {
-    background-color: var(--primary-soft);
+    background-color: color-mix(in srgb, var(--primary) 6%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 22%, transparent);
+    border-radius: var(--radius-md);
   }
 
   .row:focus-visible {

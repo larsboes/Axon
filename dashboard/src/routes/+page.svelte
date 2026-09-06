@@ -388,7 +388,7 @@
       <p class="brief">{brief}</p>
     </div>
     <a class="library-link" href={link("/feed/library")}>
-      Library <Icon name="arrow-right" size={13} />
+      Library
     </a>
   </header>
 
@@ -428,7 +428,7 @@
 
       {#if homeView === "now"}
       {#if visibleDecisions.length > 1}
-        <p class="key-hint"><kbd>J</kbd><kbd>K</kbd> select · <kbd>Enter</kbd> open</p>
+        <p class="key-hint"><kbd>J</kbd><kbd>K</kbd> select<span></span><kbd>Enter</kbd> open</p>
       {/if}
 
       <!-- role="list" and rows as listitems, not a listbox. An option must not contain
@@ -682,14 +682,14 @@
                 </div>
                 <span class="mc-mem-num mono">{(macmonSample.memory.ram_usage / 1073741824).toFixed(1)} GB</span>
               </div>
-              <a class="mc-detail" href={link("/systems")}>Details <Icon name="arrow-right" size={11} /></a>
+              <a class="mc-detail" href={link("/systems")}>Details</a>
             </div>
           {/if}
 
           <RepoStatusCard />
 
           <a class="capabilities-link" href={link("/capabilities")}>
-            Capabilities <Icon name="arrow-right" size={12} />
+            Capabilities
           </a>
         </div>
       </details>
@@ -832,10 +832,18 @@
     letter-spacing: -0.015em;
   }
 
+  /* Two hints, separated by space. The empty span is the gap the middle dot used to
+     be — one flex child wide, nothing to read. */
   .key-hint {
-    margin: 0 0 0.5rem;
+    display: flex;
+    align-items: center;
+    margin: 0 0 var(--space-3);
     color: var(--text-tertiary);
-    font-size: 0.625rem;
+    font-size: var(--text-2xs);
+  }
+
+  .key-hint span {
+    width: var(--space-5);
   }
 
   /* The reading band. Deliberately quieter than a decision row: one line with
@@ -1055,7 +1063,23 @@
     gap: var(--space-6);
   }
 
+  /* Both halves are panes now. The reading column used to sit flat on the page while
+   * the rail floated, so the page read as one finished surface beside one unfinished
+   * one. The content pane does NOT scroll independently and is not sticky — it is the
+   * thing being read, and a reading surface that traps its own scroll is a worse
+   * reading surface. It is glass for the material, not for the behaviour. */
   @media (width >= 50rem) {
+    .next {
+      padding: var(--space-6) var(--space-7);
+      background-color: var(--glass-bg);
+      border: 1px solid var(--card-border);
+      border-top-color: var(--glass-border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--glass-shadow);
+      -webkit-backdrop-filter: var(--glass-blur);
+      backdrop-filter: var(--glass-blur);
+    }
+
     aside {
       position: sticky;
       top: calc(var(--header-stack) + var(--space-3));
@@ -1071,8 +1095,11 @@
       backdrop-filter: var(--glass-blur);
     }
 
-    /* Translucency without the blur is text over text. */
-    @supports not (backdrop-filter: blur(1px)) {
+    /* Translucency without the blur is text over text. Both spellings, because Safari
+       implements the prefixed one and a condition naming only the unprefixed property
+       would paint these opaque in the browser this surface is actually read in. */
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+      .next,
       aside {
         background-color: var(--card-bg);
       }
