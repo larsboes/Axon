@@ -251,6 +251,10 @@
       }
     },
     {
+      "name": "harness",
+      "kind": "pack"
+    },
+    {
       "name": "home-assistant",
       "kind": "capability",
       "service": {
@@ -1458,6 +1462,16 @@
     },
     {
       "from": "vault",
+      "to": "content-item",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/vault/Cargo.toml"
+      ]
+    },
+    {
+      "from": "vault",
       "to": "markdown-root",
       "kinds": [
         "cargo-dep"
@@ -1500,6 +1514,10 @@
     },
     {
       "name": "arrow-rs",
+      "verdict": "adopt"
+    },
+    {
+      "name": "asd-ste100-skill",
       "verdict": "adopt"
     },
     {
@@ -1604,6 +1622,10 @@
     },
     {
       "name": "ibm-plex",
+      "verdict": "adopt"
+    },
+    {
+      "name": "interceptor",
       "verdict": "adopt"
     },
     {
