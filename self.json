@@ -43,6 +43,10 @@
       }
     },
     {
+      "name": "axon-http",
+      "kind": "lib"
+    },
+    {
       "name": "axon-server",
       "kind": "lib",
       "code": {
@@ -103,6 +107,10 @@
         "files": 2,
         "nodes": 13
       }
+    },
+    {
+      "name": "civil-date",
+      "kind": "lib"
     },
     {
       "name": "cognitive-load",
@@ -169,6 +177,10 @@
       }
     },
     {
+      "name": "deliberation",
+      "kind": "pack"
+    },
+    {
       "name": "extraction",
       "kind": "lib",
       "code": {
@@ -197,6 +209,16 @@
       "code": {
         "files": 18,
         "nodes": 570
+      }
+    },
+    {
+      "name": "finance-prices",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "finance"
+        ]
       }
     },
     {
@@ -516,8 +538,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 138,
-        "nodes": 1119
+        "files": 135,
+        "nodes": 1098
       }
     },
     {
@@ -660,6 +682,16 @@
     },
     {
       "from": "calendar",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/calendar/Cargo.toml"
+      ]
+    },
+    {
+      "from": "calendar",
       "to": "axon-server",
       "kinds": [
         "cargo-dep"
@@ -671,6 +703,16 @@
     {
       "from": "calendar",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/calendar/Cargo.toml"
+      ]
+    },
+    {
+      "from": "calendar",
+      "to": "civil-date",
       "kinds": [
         "cargo-dep"
       ],
@@ -711,6 +753,16 @@
     {
       "from": "comms",
       "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/comms/Cargo.toml"
+      ]
+    },
+    {
+      "from": "comms",
+      "to": "axon-http",
       "kinds": [
         "cargo-dep"
       ],
@@ -820,6 +872,16 @@
     },
     {
       "from": "finance",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/finance/Cargo.toml"
+      ]
+    },
+    {
+      "from": "finance",
       "to": "axon-server",
       "kinds": [
         "cargo-dep"
@@ -841,6 +903,26 @@
     {
       "from": "finance",
       "to": "candidate-fingerprint",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/finance/Cargo.toml"
+      ]
+    },
+    {
+      "from": "finance",
+      "to": "civil-date",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/finance/Cargo.toml"
+      ]
+    },
+    {
+      "from": "finance",
+      "to": "content-item",
       "kinds": [
         "cargo-dep"
       ],
@@ -879,6 +961,16 @@
       ]
     },
     {
+      "from": "inference",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "libs/inference/Cargo.toml"
+      ]
+    },
+    {
       "from": "interior",
       "to": "axon-config",
       "kinds": [
@@ -921,6 +1013,16 @@
     {
       "from": "places",
       "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/places/Cargo.toml"
+      ]
+    },
+    {
+      "from": "places",
+      "to": "axon-http",
       "kinds": [
         "cargo-dep"
       ],
@@ -960,6 +1062,16 @@
     },
     {
       "from": "places",
+      "to": "civil-date",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/places/Cargo.toml"
+      ]
+    },
+    {
+      "from": "places",
       "to": "route-manifest",
       "kinds": [
         "cargo-dep"
@@ -971,6 +1083,16 @@
     {
       "from": "punctuality",
       "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/punctuality/Cargo.toml"
+      ]
+    },
+    {
+      "from": "punctuality",
+      "to": "axon-http",
       "kinds": [
         "cargo-dep"
       ],
@@ -1011,6 +1133,16 @@
     {
       "from": "scouting",
       "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/scouting/Cargo.toml"
+      ]
+    },
+    {
+      "from": "scouting",
+      "to": "axon-http",
       "kinds": [
         "cargo-dep"
       ],
@@ -1109,8 +1241,38 @@
       ]
     },
     {
+      "from": "summarize",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "libs/summarize/Cargo.toml"
+      ]
+    },
+    {
+      "from": "tools",
+      "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "tools/storage/Cargo.toml"
+      ]
+    },
+    {
       "from": "transit",
       "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/transit/Cargo.toml"
+      ]
+    },
+    {
+      "from": "transit",
+      "to": "axon-http",
       "kinds": [
         "cargo-dep"
       ],
@@ -1180,6 +1342,16 @@
     },
     {
       "from": "trips",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/trips/Cargo.toml"
+      ]
+    },
+    {
+      "from": "trips",
       "to": "axon-server",
       "kinds": [
         "cargo-dep"
@@ -1191,6 +1363,16 @@
     {
       "from": "trips",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/trips/Cargo.toml"
+      ]
+    },
+    {
+      "from": "trips",
+      "to": "civil-date",
       "kinds": [
         "cargo-dep"
       ],
@@ -1347,6 +1529,10 @@
       "verdict": "inspiration"
     },
     {
+      "name": "ecb-data-portal",
+      "verdict": "adopt"
+    },
+    {
       "name": "esphome",
       "verdict": "reject"
     },
@@ -1357,6 +1543,10 @@
     {
       "name": "exo",
       "verdict": "inspiration"
+    },
+    {
+      "name": "frankfurter-api",
+      "verdict": "adopt"
     },
     {
       "name": "gitleaks",
@@ -1397,6 +1587,10 @@
     {
       "name": "local-llm",
       "verdict": "inspiration"
+    },
+    {
+      "name": "lucide",
+      "verdict": "quarry"
     },
     {
       "name": "macmon",
@@ -1453,6 +1647,10 @@
     {
       "name": "ocrs",
       "verdict": "inspiration"
+    },
+    {
+      "name": "open-meteo-api",
+      "verdict": "adopt"
     },
     {
       "name": "openfreemap",
@@ -1547,6 +1745,10 @@
       "verdict": "adopt"
     },
     {
+      "name": "stooq",
+      "verdict": "reject"
+    },
+    {
       "name": "stop-slop",
       "verdict": "reject"
     },
@@ -1569,6 +1771,10 @@
     {
       "name": "telekom-mcp-security",
       "verdict": "inspiration"
+    },
+    {
+      "name": "tradegate",
+      "verdict": "reject"
     },
     {
       "name": "trek-travel",
@@ -1615,15 +1821,26 @@
       "verdict": "adopt"
     },
     {
+      "name": "yahoo-finance-chart",
+      "verdict": "adopt"
+    },
+    {
+      "name": "yfinance",
+      "verdict": "inspiration"
+    },
+    {
       "name": "yq",
       "verdict": "adopt"
     }
   ],
   "graph": {
     "present": true,
-    "nodes": 11702,
+    "nodes": 11700,
     "external": 10,
-    "stale": [],
+    "stale": [
+      "tools/storage.test.ts",
+      "tools/storage.ts"
+    ],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",
