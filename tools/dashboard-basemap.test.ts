@@ -65,6 +65,16 @@ describe("the vendored basemap", () => {
     expect([...named].filter((stack) => !vendored.has(stack))).toEqual([]);
   });
 
+  // The invariant that keeps the vendored glyph set a closed question. If a refresh let the
+  // two-script label form back in, the map would silently start fetching ~19 more codepoint
+  // ranges per view from the upstream host — correct-looking, and 29 requests slower.
+  test("labels in Latin script only, so no layer can ask for an unvendored range", () => {
+    const asking = (style.layers as Array<Record<string, any>>)
+      .filter((layer) => JSON.stringify(layer.layout?.["text-field"] ?? "").includes("name:nonlatin"))
+      .map((layer) => layer.id);
+    expect(asking).toEqual([]);
+  });
+
   test("ships every sprite variant MapLibre asks for", () => {
     for (const file of ["ofm.json", "ofm.png", "ofm@2x.json", "ofm@2x.png"]) {
       expect(existsSync(join(BASEMAP, "sprite", file))).toBe(true);

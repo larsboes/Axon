@@ -44,14 +44,18 @@
     },
     {
       "name": "axon-http",
-      "kind": "lib"
+      "kind": "lib",
+      "code": {
+        "files": 4,
+        "nodes": 45
+      }
     },
     {
       "name": "axon-server",
       "kind": "lib",
       "code": {
-        "files": 4,
-        "nodes": 51
+        "files": 6,
+        "nodes": 80
       }
     },
     {
@@ -72,7 +76,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 39
+        "nodes": 41
       }
     },
     {
@@ -110,7 +114,11 @@
     },
     {
       "name": "civil-date",
-      "kind": "lib"
+      "kind": "lib",
+      "code": {
+        "files": 3,
+        "nodes": 24
+      }
     },
     {
       "name": "cognitive-load",
@@ -129,8 +137,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 75,
-        "nodes": 1238
+        "files": 88,
+        "nodes": 1530
       }
     },
     {
@@ -172,20 +180,24 @@
         "port": "47117"
       },
       "code": {
-        "files": 102,
-        "nodes": 623
+        "files": 159,
+        "nodes": 983
       }
     },
     {
       "name": "deliberation",
-      "kind": "pack"
+      "kind": "pack",
+      "code": {
+        "files": 14,
+        "nodes": 76
+      }
     },
     {
       "name": "extraction",
       "kind": "lib",
       "code": {
         "files": 14,
-        "nodes": 195
+        "nodes": 196
       }
     },
     {
@@ -207,8 +219,8 @@
         "port": "8090"
       },
       "code": {
-        "files": 18,
-        "nodes": 570
+        "files": 24,
+        "nodes": 827
       }
     },
     {
@@ -219,6 +231,10 @@
         "requires": [
           "finance"
         ]
+      },
+      "code": {
+        "files": 1,
+        "nodes": 10
       }
     },
     {
@@ -252,7 +268,7 @@
       "kind": "pack",
       "code": {
         "files": 26,
-        "nodes": 335
+        "nodes": 343
       }
     },
     {
@@ -313,7 +329,7 @@
       },
       "code": {
         "files": 31,
-        "nodes": 536
+        "nodes": 558
       }
     },
     {
@@ -321,7 +337,7 @@
       "kind": "pack",
       "code": {
         "files": 11,
-        "nodes": 169
+        "nodes": 170
       }
     },
     {
@@ -412,8 +428,8 @@
         "port": "8093"
       },
       "code": {
-        "files": 12,
-        "nodes": 223
+        "files": 13,
+        "nodes": 289
       }
     },
     {
@@ -421,7 +437,7 @@
       "kind": "capability",
       "code": {
         "files": 3,
-        "nodes": 58
+        "nodes": 59
       }
     },
     {
@@ -450,7 +466,7 @@
       "kind": "spine",
       "code": {
         "files": 5,
-        "nodes": 1040
+        "nodes": 772
       }
     },
     {
@@ -463,7 +479,7 @@
       },
       "code": {
         "files": 30,
-        "nodes": 530
+        "nodes": 526
       }
     },
     {
@@ -531,15 +547,15 @@
       "kind": "lib",
       "code": {
         "files": 4,
-        "nodes": 107
+        "nodes": 109
       }
     },
     {
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 135,
-        "nodes": 1098
+        "files": 155,
+        "nodes": 1208
       }
     },
     {
@@ -560,7 +576,7 @@
       "kind": "pack",
       "code": {
         "files": 4,
-        "nodes": 37
+        "nodes": 38
       }
     },
     {
@@ -572,8 +588,8 @@
         "port": "8086"
       },
       "code": {
-        "files": 13,
-        "nodes": 241
+        "files": 19,
+        "nodes": 460
       }
     },
     {
@@ -581,7 +597,7 @@
       "kind": "pack",
       "code": {
         "files": 8,
-        "nodes": 85
+        "nodes": 87
       }
     },
     {
@@ -615,7 +631,7 @@
       "kind": "pack",
       "code": {
         "files": 40,
-        "nodes": 377
+        "nodes": 379
       }
     }
   ],
@@ -1839,14 +1855,9 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 11700,
+    "nodes": 13186,
     "external": 10,
-    "stale": [
-      "dashboard/src/lib/map/MapView.svelte",
-      "dashboard/src/lib/travel/TripMap.svelte",
-      "tools/storage.test.ts",
-      "tools/storage.ts"
-    ],
+    "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",

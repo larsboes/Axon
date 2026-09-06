@@ -119,7 +119,13 @@ tiles all survive. It is a pool and not a singleton because `/travel` can legiti
 two maps at once.
 
 MapLibre and its stylesheet stay in a separate async bundle — `vite.config.ts`'s `bundleGuard`
-fails the build if either reaches the eager import graph. A map loads when it approaches the
+fails the build if either reaches the eager import graph, **and if MapLibre's worker asset is
+not emitted**. That second assertion exists because its absence is silent: MapLibre asks for its
+worker through a template literal Rollup cannot follow, so no asset was built, the request fell
+through axon-status' SPA fallback as `200 text/html`, `new Worker` was handed the app shell and
+died — and every map on the served bundle rendered a blank canvas and sat on "Loading map…"
+forever, with no error and no failed request. `surface.ts` hands MapLibre a Vite-built worker
+through `setWorkerUrl` instead. A map loads when it approaches the
 viewport, or immediately where the map *is* the page (`eager`), or on the reader's explicit
 **Load map**; the list beside it is the complete fallback when loading fails.
 
@@ -129,8 +135,14 @@ the licence obligations in that directory's `LICENSE.md`. That removes four seri
 transatlantic round trips from the critical path (measured 2026-09-06: 0.23 s style, 0.19 s
 TileJSON, 0.31 s sprite, ~0.2 s per glyph range) and replaces them with ~1 ms loopback reads.
 The **vector tiles and the Natural Earth raster stay remote**; they are the large half, and
-self-hosting them is an open decision in `capabilities/places/ISA.md`. A glyph range outside
-the vendored set falls back to the upstream host rather than failing.
+self-hosting them is an open decision in `capabilities/places/ISA.md`.
+
+Labels are Latin-script only. Liberty renders `name:latin` concatenated with `name:nonlatin`, so
+a European overview asked for Greek, Cyrillic, Arabic, Devanagari and more — measured at **29
+glyph requests across 19 ranges** on the default view. `name:latin` already carries the romanised
+form of every place, so dropping the second line closes the question instead of vendoring 4.5 MB:
+four Latin ranges are vendored and **no glyph request leaves the machine**. A range outside the
+set still falls back upstream, so getting it wrong costs a slow label, not a missing one.
 
 Destination images come from Wikimedia's free-license page-image surface and stay validated
 inert data.

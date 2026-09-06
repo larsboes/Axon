@@ -51,16 +51,21 @@ const PUBLIC_BASE = "/basemap";
 
 // Codepoint ranges vendored for every fontstack the style names.
 //
-// Two, not all of them. Noto Sans is published in ~300 of these; the liberty style's
-// text-field renders `name:latin` concatenated with `name:nonlatin`, so a world view really
-// can ask for Cyrillic, Greek, Arabic or CJK. Vendoring all of it would be ~90 MB in a public
-// repository to make a label sharp in a city nobody on this machine has looked at.
+// Four, not all ~300 that Noto Sans is published in. `latinizeLabels` below drops the
+// `name:nonlatin` half of every label, so the map draws Latin script and only Latin script —
+// which makes the vendored set a closed question rather than an open-ended one, and these four
+// close it. Measured on the default view (Germany, z4.2) after the change: **zero** glyph
+// requests leave this machine.
 //
-// 0-255 is Basic Latin plus Latin-1 Supplement; 256-511 is Latin Extended-A and the start of
-// Extended-B. Between them they cover every place name in Latin script, which is every label
-// the default view (Germany, z4.2) draws. Anything outside the set falls back to the upstream
-// host through the surface module's transformRequest -- slower, and correct.
-const VENDORED_RANGES = ["0-255", "256-511"] as const;
+//   0-255      Basic Latin and Latin-1 Supplement
+//   256-511    Latin Extended-A, start of Extended-B
+//   512-767    the rest of Extended-B and IPA — reached by romanised names
+//   7680-7935  Latin Extended Additional — Vietnamese, and Welsh/Irish diacritics
+//
+// A range outside the set still falls back to the upstream host through the surface module's
+// transformRequest, so the failure mode of getting this wrong is a slow label, not a missing
+// one.
+const VENDORED_RANGES = ["0-255", "256-511", "512-767", "7680-7935"] as const;
 
 interface Manifest {
   /** When this vendoring ran, so a reader can see the pin's age without a network call. */
@@ -100,6 +105,36 @@ function fontstacks(style: Record<string, unknown>): string[] {
   return [...found].sort();
 }
 
+/**
+ * Label in Latin script only, and stop asking for the other 290 glyph ranges.
+ *
+ * Liberty's `text-field` renders `name:latin` concatenated with `name:nonlatin`, so a European
+ * overview asks for Greek, Cyrillic, Hebrew, Arabic, Devanagari, Thai, Georgian and more.
+ * Measured on the default view (Germany, z4.2) on 2026-09-06: **29 glyph requests to the
+ * upstream host across 19 ranges**, ~2 MB, every one of them on the critical path for a label.
+ *
+ * Vendoring those ranges would be ~4.5 MB in a public repository. Rendering them costs a
+ * request per range per fontstack, forever. The third option is to decide what the map is: a
+ * personal map, read by one person, in Latin script. `name:latin` already carries the
+ * romanised form of every place — Athína, Moskva, Kyiv — so the label survives; only the
+ * second line in the local script goes.
+ *
+ * Reversible in one place: delete this call and re-run, and the ranges come back through the
+ * surface module's upstream fallback exactly as before.
+ */
+function latinizeLabels(style: Record<string, unknown>): void {
+  const latinOnly = ["coalesce", ["get", "name:latin"], ["get", "name_en"], ["get", "name"]];
+  for (const layer of (style.layers ?? []) as Array<Record<string, unknown>>) {
+    const layout = layer.layout as Record<string, unknown> | undefined;
+    const field = layout?.["text-field"];
+    // Only the two-script form. A layer labelling something else -- a road `ref`, say -- is
+    // left exactly as upstream wrote it.
+    if (Array.isArray(field) && JSON.stringify(field).includes("name:nonlatin")) {
+      layout!["text-field"] = latinOnly;
+    }
+  }
+}
+
 async function refresh(): Promise<void> {
   const style = (await (await get(UPSTREAM_STYLE)).json()) as Record<string, unknown>;
   const sources = style.sources as Record<string, Record<string, unknown>>;
@@ -122,6 +157,8 @@ async function refresh(): Promise<void> {
   });
 
   const snapshot = /\/planet\/([^/]+)\//.exec(tiles[0] ?? "")?.[1] ?? "unknown";
+
+  latinizeLabels(style);
 
   const spriteBase = style.sprite as string;
   const glyphTemplate = style.glyphs as string;

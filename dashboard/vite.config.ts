@@ -61,12 +61,22 @@ function bundleGuard(): Plugin {
     name: "bundle-guard",
     generateBundle(_options, bundle) {
       const eager = new Set<string>();
-      const walk = (fileName: string) => {
+      // How each eager chunk was reached, so a failure can print the chain instead of only the
+      // verdict. "reachable from an entry" without the path is a sentence that costs whoever
+      // reads it an afternoon.
+      const reachedVia = new Map<string, string>();
+      const walk = (fileName: string, from?: string) => {
         if (eager.has(fileName)) return;
         const chunk = bundle[fileName];
         if (!chunk || chunk.type !== "chunk") return;
         eager.add(fileName);
-        for (const dep of chunk.imports) walk(dep);
+        if (from) reachedVia.set(fileName, from);
+        for (const dep of chunk.imports) walk(dep, fileName);
+      };
+      const chainTo = (fileName: string): string => {
+        const chain = [fileName];
+        for (let at = reachedVia.get(fileName); at; at = reachedVia.get(at)) chain.unshift(at);
+        return chain.join("\n    -> ");
       };
       for (const output of Object.values(bundle)) {
         if (output.type === "chunk" && output.isEntry) walk(output.fileName);
@@ -89,6 +99,29 @@ function bundleGuard(): Plugin {
         }
       }
 
+      // MapLibre without its worker is not a slow map, it is a dead one: no tile is parsed, no
+      // GeoJSON is processed, the canvas stays blank and the frame reads "Loading map…" forever
+      // with no error and no failed request. It reached the served bundle exactly that way,
+      // because MapLibre asks for its worker through a TEMPLATE literal
+      // (`new URL(\`./${name}\`, import.meta.url)`) that Rollup cannot follow, so nothing was
+      // emitted and the missing path fell through axon-status' SPA fallback as 200 text/html.
+      //
+      // src/lib/map/surface.ts hands MapLibre a Vite-built worker instead. This asserts the
+      // build actually produced one, because the runtime symptom of its absence is silence.
+      const hasMapLibre = allChunks.some((chunk) =>
+        Object.keys(chunk.modules).some((id) => id.includes("/maplibre-gl/")),
+      );
+      const hasWorker = Object.keys(bundle).some((fileName) =>
+        /maplibre-gl-worker.*\.js$/.test(fileName),
+      );
+      if (hasMapLibre && !hasWorker) {
+        this.error(
+          "MapLibre is in the bundle but its worker asset is not. Without it every map renders " +
+            "a blank canvas and never fires `load`, silently. Check the " +
+            "`maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url` import in src/lib/map/surface.ts.",
+        );
+      }
+
       for (const vendor of LAZY_VENDORS) {
         const owned = allChunks.filter((chunk) =>
           Object.keys(chunk.modules).some((id) =>
@@ -99,9 +132,13 @@ function bundleGuard(): Plugin {
 
         const leaked = owned.find((chunk) => eager.has(chunk.fileName));
         if (leaked) {
+          const owner = Object.keys(leaked.modules).find((id) =>
+            vendor.match.some((fragment) => id.includes(fragment)),
+          );
           this.error(
             `${vendor.label} must remain lazy; ${leaked.fileName} is reachable from an entry ` +
-              `without a dynamic import.`,
+              `without a dynamic import. It carries ${owner ?? "the library"}, and the static ` +
+              `chain that reaches it is:\n    ${chainTo(leaked.fileName)}`,
           );
         }
 
@@ -274,6 +311,11 @@ export default defineConfig(({ command }) => ({
   // worker correctly. Excluding it makes dev serve the real ESM from
   // node_modules, where import.meta.url points at the shipped worker.
   optimizeDeps: { exclude: ["maplibre-gl"] },
+  // MapLibre spawns its worker with `new Worker(url, { type: "module" })`, so the worker Vite
+  // emits for it has to be an ES module too. The default is IIFE, which a module worker
+  // refuses to run. Nothing else in this shell has a worker, so this is not a project-wide
+  // compromise -- it is the only worker's actual format.
+  worker: { format: "es" },
   build: {
     // Vite's own warning, silenced up to the largest size bundleGuard() will actually
     // allow — otherwise it fires on every lazy renderer chunk the guard has already

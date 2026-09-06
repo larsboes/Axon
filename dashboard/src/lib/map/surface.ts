@@ -127,8 +127,29 @@ export function boot(): Promise<Booted> {
       .then((response) => (response.ok ? (response.json() as Promise<Manifest>) : null))
       .catch(() => null),
     fetch(link(STYLE_PATH)).then((response) => response.json() as Promise<StyleSpecification>),
-  ]).then(([maplibregl, , manifest, style]) => {
+    // MapLibre's own worker, emitted and hashed by Vite, handed back as a URL.
+    //
+    // It has to be given to MapLibre explicitly, and the reason is a build-analysis gap with a
+    // nasty failure mode. MapLibre resolves its worker itself, from a TEMPLATE literal:
+    //
+    //   let t = import.meta.url.endsWith("-dev.mjs") ? "…-worker-dev.mjs" : "maplibre-gl-worker.mjs";
+    //   return new URL(`./${t}`, import.meta.url);
+    //
+    // Rollup only follows `new URL("literal", import.meta.url)`, so it emits no asset at all and
+    // the URL MapLibre computes points at a file that was never built. On this shell that path
+    // falls through axon-status' SPA fallback and answers 200 with the app shell, so `new Worker`
+    // is handed HTML, dies, and MapLibre reports nothing: a blank canvas and "Loading map…"
+    // forever, with no error and no failed request to find. Measured 2026-09-06 — no build in
+    // this repository had ever emitted that file, so every map on the served bundle was dead.
+    //
+    // Dynamic rather than a static top-level import, for the same reason the library itself is:
+    // `vite.config.ts`'s bundleGuard matches on the module id, and a static import of anything
+    // under maplibre-gl/ makes a route node's chunk statically reachable. One rule, no exception.
+    import("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url"),
+  ]).then(([maplibregl, , manifest, style, worker]) => {
     library = maplibregl;
+    // Before any Map exists, because the pool constructs one immediately after this resolves.
+    maplibregl.setWorkerUrl(worker.default);
     // A missing manifest is not a failure: every glyph then misses the vendored set and goes
     // upstream, which is exactly the behaviour before this module existed.
     vendoredGlyphs = new Set(manifest?.glyphs ?? []);
@@ -248,6 +269,12 @@ export async function lease(host: HTMLElement, options: LeaseOptions = {}): Prom
     // parking detaches this one, and the component's own element is never touched.
     const canvasHost = document.createElement("div");
     canvasHost.className = "map-canvas-host";
+    // Sized here, not in a stylesheet. This element is created by this module and re-parented
+    // into a different component instance over its life, so depending on a scoped rule that
+    // happens to match its current parent is a bug waiting for the next caller: a host without
+    // that rule gives MapLibre a 0x0 box, and a 0x0 map renders nothing while reporting itself
+    // perfectly healthy -- style loaded, tiles loaded, no error.
+    canvasHost.style.cssText = "position:absolute;inset:0";
     host.appendChild(canvasHost);
     map = new maplibregl.Map({
       container: canvasHost,

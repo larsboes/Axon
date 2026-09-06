@@ -199,13 +199,6 @@
     inset: 0;
   }
 
-  /* The element surface.svelte.ts creates and re-parents; MapLibre fills whatever it is
-     handed, so this is what gives the canvas its box. */
-  .map :global(.map-canvas-host) {
-    position: absolute;
-    inset: 0;
-  }
-
   .map-state {
     position: absolute;
     inset: 0;
