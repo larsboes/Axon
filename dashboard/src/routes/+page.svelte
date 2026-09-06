@@ -1209,7 +1209,7 @@
   }
 
   .mc-temp.warm {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .mc-temp.hot {

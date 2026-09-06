@@ -2287,7 +2287,7 @@
 
   .candidate-state.needs_travel_day {
     background: var(--warning-soft);
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .candidate-state.conflicts {
@@ -2795,7 +2795,7 @@
   }
 
   .import-origin.missing p {
-    color: var(--warning);
+    color: var(--warning-ink);
     font-weight: 600;
   }
 
@@ -2837,7 +2837,7 @@
   }
 
   .import-list small {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .import-list button,
@@ -3342,7 +3342,7 @@
   }
 
   .calendar-anchors em.possible {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .calendar-anchors li > button {
@@ -3380,7 +3380,7 @@
 
   .source-notice {
     margin: 0 0 0.75rem;
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.6875rem;
   }
 

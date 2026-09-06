@@ -148,8 +148,11 @@
   --warning-soft: rgb(217 119 6 / 8%);
 
   /* Warning as TEXT. --warning is 3.19:1 on white: fine for a fill or an icon, an AA
-   * failure for a word. It stays as it is because 14 files outside this pass use it as
-   * a colour; anything this pass writes uses the ink token. */
+   * failure for a word. The split is now enforced rather than described: every
+   * `color:` in the dashboard reads this token (48 declarations, 19 files, swapped
+   * 2026-09-07), and `tools/dashboard-contrast.test.ts` fails the build if a new `color`
+   * declaration reaches for --warning again. It keeps the 13 fills, strokes and borders
+   * it is correct for, where the 3:1 non-text bar applies. */
   --warning-ink: #b35208;
   --danger: #d82222;
   --danger-soft: rgb(216 34 34 / 8%);

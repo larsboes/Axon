@@ -192,7 +192,7 @@
   .meta { display: block; color: var(--text-tertiary); font-size: .66rem; font-variant-numeric: tabular-nums; }
   .tag { display: inline-block; padding: 0 .3rem; border-radius: var(--radius-sm); font-size: .95em; }
   .tag.fresh { background: var(--success-soft); color: var(--success); }
-  .tag.stale { background: var(--warning-soft); color: var(--warning); }
+  .tag.stale { background: var(--warning-soft); color: var(--warning-ink); }
   .tag.none { background: var(--accent-soft); color: var(--text-secondary); }
   .outside { color: var(--danger); }
   /* Two CSS tokens and a percentage width. No charting dependency: the build

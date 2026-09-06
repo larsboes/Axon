@@ -1849,7 +1849,7 @@
      cloud=never restrictions (Q27); both keep its warning colour. */
   .mail-data-class[data-class="c2"],
   .mail-data-class[data-class="c3"] {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   /* Its own colour rather than the data-class pill's grey: a Waiting thread is a
@@ -1869,7 +1869,7 @@
   .mail-purge {
     display: block;
     margin-top: 0.4rem;
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.625rem;
   }
 
@@ -1884,7 +1884,7 @@
   .mail-sync {
     display: block;
     margin-top: 0.35rem;
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.625rem;
   }
 
@@ -2132,7 +2132,7 @@
     padding: 0.75rem;
     border-radius: var(--radius-md);
     background-color: var(--warning-soft);
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.8125rem;
   }
 

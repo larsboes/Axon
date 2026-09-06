@@ -2161,7 +2161,7 @@
   }
 
   .digest-redactions {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .digest-provenance {
@@ -2326,7 +2326,7 @@
 
   .cloud-job-error {
     margin: 0.65rem 0 0;
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.6875rem;
     line-height: 1.45;
   }
@@ -2780,7 +2780,7 @@
 
   .error,
   .inline-error {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .inline-error {
