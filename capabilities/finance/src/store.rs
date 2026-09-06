@@ -325,23 +325,25 @@ impl FinanceStore {
             -- UNIQUE tuple; two verdicts inside one second are answered as a
             -- named 409 rather than a 500.
             --
-            -- One exception to append-only, and it is bounded to one event type:
-            -- `reconcile_decisions` DELETES a `superseded` row when a later run
-            -- produces that proposal again. A verdict and an outcome are facts
-            -- about the world and are never removed; a supersession is an
-            -- assertion by a run -- the run that produced this no longer produces
-            -- it -- and only a later run can withdraw it. It cannot be withdrawn
-            -- by appending a fourth event type instead: `event` carries a CHECK,
-            -- SQLite cannot alter one, and this crate has no table-rebuild path
-            -- (the migration doc comment above) -- measured 2026-09-06, this
-            -- table already exists with these three values in a database this
-            -- code must keep working against.
+            -- Nothing here is ever deleted, including a supersession. A run
+            -- asserts `superseded` -- the run that produced this no longer
+            -- produces it -- and a later run that produces it again asserts
+            -- `reinstated` beside it. The LATEST of that pair is the answer, so
+            -- the history of a proposal leaving and re-entering the inbox is
+            -- readable rather than overwritten; a `verdict` closes the row and
+            -- outranks both, because a human answered these exact numbers.
+            --
+            -- The fourth CHECK value costs a table rebuild on a file that already
+            -- carries the three-value shape, which `rebuild_decision_events_check`
+            -- below performs once, behind a probe. That is the whole reason the
+            -- earlier form deleted the row instead; the rebuild is the honest
+            -- price of an append-only ledger and it is paid here.
             CREATE TABLE IF NOT EXISTS {prefix}_decision_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 decision_id TEXT NOT NULL
                     REFERENCES {prefix}_decisions(id) ON DELETE CASCADE,
                 event TEXT NOT NULL
-                    CHECK (event IN ('verdict','outcome','superseded')),
+                    CHECK (event IN ('verdict','outcome','superseded','reinstated')),
                 verdict TEXT CHECK (verdict IN ('accepted','rejected')),
                 note TEXT NOT NULL DEFAULT '',
                 outcome_json TEXT,
@@ -353,6 +355,7 @@ impl FinanceStore {
                 ON {prefix}_decision_events(decision_id, recorded_at);
             "
         ))?;
+        rebuild_decision_events_check(conn, prefix)?;
         Ok(())
     }
 
@@ -1243,12 +1246,25 @@ impl FinanceStore {
         let transaction =
             conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let open_ids: Vec<String> = {
+            // "Currently open", derived exactly as `StoredDecision::status`
+            // derives it, because a presence test would be wrong now that a
+            // supersession can be answered by a later `reinstated`: a proposal
+            // that left the inbox and came back carries BOTH events, and only
+            // the later one is its state. A row with no verdict and no
+            // supersession at all has never left, hence the COALESCE default.
             let mut statement = transaction.prepare(&format!(
                 "SELECT d.id FROM {prefix}_decisions AS d
                  WHERE NOT EXISTS (
-                     SELECT 1 FROM {prefix}_decision_events AS e
-                     WHERE e.decision_id = d.id AND e.event IN ('verdict','superseded')
-                 )"
+                     SELECT 1 FROM {prefix}_decision_events AS answered
+                     WHERE answered.decision_id = d.id AND answered.event = 'verdict'
+                 )
+                 AND COALESCE((
+                     SELECT e.event FROM {prefix}_decision_events AS e
+                     WHERE e.decision_id = d.id
+                       AND e.event IN ('superseded','reinstated')
+                     ORDER BY e.recorded_at DESC, e.id DESC
+                     LIMIT 1
+                 ), 'reinstated') <> 'superseded'"
             ))?;
             let ids = statement
                 .query_map([], |row| row.get::<_, String>(0))?
@@ -1256,9 +1272,8 @@ impl FinanceStore {
             ids
         };
         let mut outcome = DecisionRunOutcome::default();
-        // Withdraw the supersession of anything this run produces again, BEFORE
-        // the insert loop, so a proposal the current run produces is open by
-        // definition.
+        // Reinstate anything this run produces again, BEFORE the supersede loop,
+        // so a proposal the current run produces is open by definition.
         //
         // The proposal id is a hash over BUCKETED numbers (decision.rs), so a
         // drift that crosses a band edge and comes back into the same 10 bp
@@ -1270,23 +1285,37 @@ impl FinanceStore {
         // rebalance proposals unreachable while the engine's own dry run still
         // produced both.
         //
-        // Deleting is bounded to this one event type and this one condition, and
-        // the DDL comment carries the rule. A proposal a human has answered is
-        // never touched: the verdict was given on these exact numbers.
+        // The answer is a row, not a deletion. Both assertions stay on the
+        // record and the later one is the state, so "this left the inbox on the
+        // 5th and came back on the 6th" is readable a year later -- which is the
+        // whole reason this ledger has no mutable column. A proposal a human has
+        // answered is not reinstated at all: the verdict was given on these exact
+        // numbers, and re-asking would be the ledger forgetting.
         let mut reopened: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for proposal in minted {
-            let removed = transaction.execute(
+            let appended = transaction.execute(
                 &format!(
-                    "DELETE FROM {prefix}_decision_events
-                     WHERE decision_id = ?1
-                       AND event = 'superseded'
-                       AND NOT EXISTS (
-                           SELECT 1 FROM {prefix}_decision_events AS answered
-                           WHERE answered.decision_id = ?1 AND answered.event = 'verdict')"
+                    "INSERT OR IGNORE INTO {prefix}_decision_events
+                        (decision_id, event, verdict, note, outcome_json, recorded_at)
+                     SELECT ?1, 'reinstated', NULL, ?2, NULL, ?3
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM {prefix}_decision_events AS answered
+                         WHERE answered.decision_id = ?1 AND answered.event = 'verdict')
+                       AND (
+                         SELECT e.event FROM {prefix}_decision_events AS e
+                         WHERE e.decision_id = ?1
+                           AND e.event IN ('superseded','reinstated')
+                         ORDER BY e.recorded_at DESC, e.id DESC
+                         LIMIT 1
+                       ) = 'superseded'"
                 ),
-                params![&proposal.id],
+                params![
+                    &proposal.id,
+                    "a later run produced this proposal again",
+                    recorded_at
+                ],
             )?;
-            if removed > 0 {
+            if appended == 1 {
                 reopened.insert(proposal.id.as_str());
             }
         }
@@ -1348,8 +1377,9 @@ pub struct DecisionRunOutcome {
     pub proposed: usize,
     pub unchanged: usize,
     /// Already in the ledger, superseded by an earlier run, and produced again by
-    /// this one. Counted apart from `unchanged` because the row moved back into
-    /// the human's inbox, which is a different fact from "nothing happened".
+    /// this one, so a `reinstated` event was appended. Counted apart from
+    /// `unchanged` because the row moved back into the human's inbox, which is a
+    /// different fact from "nothing happened".
     pub reopened: usize,
     pub superseded: usize,
 }
@@ -1393,13 +1423,14 @@ impl StoredDecision {
         if let Some(verdict) = self.latest_verdict() {
             return verdict.verdict.as_deref().unwrap_or("open");
         }
-        // A supersession the current run withdrew is not here to be read:
-        // `reconcile_decisions` removes it in the same transaction that
-        // re-produces the proposal, so a presence test is the whole rule.
-        if self.events.iter().any(|event| event.event == "superseded") {
-            return "superseded";
+        // The LATEST of the supersede/reinstate pair, not the presence of either.
+        // A proposal can leave the inbox and come back any number of times, and
+        // every one of those assertions stays on the record; a presence test on
+        // `superseded` would read a row that came back as still gone.
+        match self.latest_reachability() {
+            Some("superseded") => "superseded",
+            _ => "open",
         }
-        "open"
     }
 
     pub fn latest_verdict(&self) -> Option<&StoredDecisionEvent> {
@@ -1407,6 +1438,27 @@ impl StoredDecision {
             .iter()
             .filter(|event| event.event == "verdict")
             .max_by(|left, right| left.recorded_at.cmp(&right.recorded_at))
+    }
+
+    /// The later of this proposal's newest `superseded` and newest `reinstated`,
+    /// which is what decides whether it is in the inbox.
+    ///
+    /// Ordered on `recorded_at` and then on arrival, because the two can share a
+    /// second: `reconcile_decisions` stamps every event in one run with one
+    /// timestamp, and a run that reinstates a proposal and a later run that
+    /// supersedes it again inside the same second must still resolve.
+    fn latest_reachability(&self) -> Option<&str> {
+        self.events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| matches!(event.event.as_str(), "superseded" | "reinstated"))
+            .max_by(|left, right| {
+                left.1
+                    .recorded_at
+                    .cmp(&right.1.recorded_at)
+                    .then(left.0.cmp(&right.0))
+            })
+            .map(|(_, event)| event.event.as_str())
     }
 
     pub fn latest_outcome(&self) -> Option<&StoredDecisionEvent> {
@@ -1496,6 +1548,88 @@ fn row_to_decision_event(row: &Row) -> rusqlite::Result<Option<(String, StoredDe
             recorded_at: row.get("recorded_at")?,
         },
     )))
+}
+
+/// Widen `{prefix}_decision_events`' `event` CHECK to admit `reinstated`, once,
+/// on a file that already carries the three-value shape.
+///
+/// The doctrine above -- one `CREATE TABLE IF NOT EXISTS` batch, no ALTER path --
+/// holds only while no deployed file predates a constraint change. Measured
+/// 2026-09-06: the owner's `axon.db` already holds this table with
+/// `CHECK (event IN ('verdict','outcome','superseded'))`, written by an earlier
+/// run of this same code, and `CREATE TABLE IF NOT EXISTS` never revisits an
+/// installed table. So this is the table-rebuild dance SQLite's own documentation
+/// prescribes, behind a probe of what the file actually holds. The precedent is
+/// `capabilities/comms/src/store/migrations.rs`, which does the same for the
+/// C0-C3 class vocabulary.
+///
+/// Unlike that one, this runs INSIDE the migration transaction and does not turn
+/// `foreign_keys` off, and the difference is a property of this table rather than
+/// a shortcut. comms had to disable enforcement because `DROP TABLE` performs an
+/// implicit DELETE that fires `ON DELETE CASCADE` on the dropped table's
+/// children, and its tables have children. `{prefix}_decision_events` has none:
+/// it is the child, `{prefix}_decisions` is the parent, and `sqlite_master`
+/// carries no other `REFERENCES {prefix}_decision_events`. Dropping it therefore
+/// cascades nothing, and every copied row keeps its `decision_id` verbatim, so no
+/// reference changes.
+///
+/// Idempotent: the probe reads the installed DDL text, so a second pass finds the
+/// widened CHECK and does nothing.
+fn rebuild_decision_events_check(conn: &Connection, prefix: &str) -> Fallible<()> {
+    let table = format!("{prefix}_decision_events");
+    let installed: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![&table],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // No table at all means the batch above just created it with the four-value
+    // CHECK. A table whose DDL already names the value has been rebuilt.
+    let Some(installed) = installed else {
+        return Ok(());
+    };
+    if installed.contains("'reinstated'") {
+        return Ok(());
+    }
+    // Read the indexes back and replay them rather than trusting the batch above
+    // to have declared every one: a DROP takes every index the deployed file
+    // actually carries, including one this repository no longer ships.
+    let attached: Vec<String> = conn.query_all(
+        "SELECT sql FROM sqlite_master
+         WHERE tbl_name = ?1 AND type IN ('index','trigger') AND sql IS NOT NULL",
+        params![&table],
+        |row| row.get(0),
+    )?;
+    let scratch = format!("{table}_reinstated");
+    conn.execute_batch(&format!(
+        "DROP TABLE IF EXISTS {scratch};
+         CREATE TABLE {scratch} (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             decision_id TEXT NOT NULL
+                 REFERENCES {prefix}_decisions(id) ON DELETE CASCADE,
+             event TEXT NOT NULL
+                 CHECK (event IN ('verdict','outcome','superseded','reinstated')),
+             verdict TEXT CHECK (verdict IN ('accepted','rejected')),
+             note TEXT NOT NULL DEFAULT '',
+             outcome_json TEXT,
+             recorded_at TEXT NOT NULL,
+             CHECK ((event = 'verdict') = (verdict IS NOT NULL)),
+             UNIQUE (decision_id, event, recorded_at)
+         );
+         INSERT INTO {scratch}
+             (id, decision_id, event, verdict, note, outcome_json, recorded_at)
+         SELECT id, decision_id, event, verdict, note, outcome_json, recorded_at
+         FROM {table};
+         DROP TABLE {table};
+         ALTER TABLE {scratch} RENAME TO {table};"
+    ))?;
+    for statement in attached {
+        // The batch's own index is `IF NOT EXISTS`; a replayed one from the file
+        // may not be, and the DROP already took it.
+        conn.execute_batch(&statement)?;
+    }
+    Ok(())
 }
 
 fn insert_price(

@@ -2220,6 +2220,11 @@ async fn run_decisions(
             // `proposed: minted.len()` made a dry run and the wet run that
             // follows it answer different numbers for one unchanged state, which
             // is the one thing a preview must never do.
+            //
+            // `status()` is what keeps the two in step, and it now resolves the
+            // supersede/reinstate pair by recency rather than by presence -- so a
+            // proposal that has already been reinstated reads as open here and is
+            // counted `unchanged`, which is what the wet run will do with it.
             let ledger = store.decisions(None).map_err(|error| error.to_string())?;
             let mut counts = finance::store::DecisionRunOutcome::default();
             for proposal in &minted {

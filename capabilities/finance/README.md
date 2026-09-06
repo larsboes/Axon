@@ -240,10 +240,28 @@ sale of a real position is a different order of claim from proposing a rebalance
 ## The decision ledger appends; it never updates
 
 `finance_decisions` holds the proposal and `finance_decision_events` holds everything
-afterwards — the verdict, the outcome, the supersession — as appended rows. There is no
-mutable `verdict` column, deliberately: a column is a thing that can be updated, and one
-UPDATEd verdict loses the date the call was actually made, which is the only fact that
-makes "what did I decide, and did it work" answerable a year later.
+afterwards — the verdict, the outcome, the supersession, the reinstatement — as appended
+rows. There is no mutable `verdict` column, deliberately: a column is a thing that can be
+updated, and one UPDATEd verdict loses the date the call was actually made, which is the
+only fact that makes "what did I decide, and did it work" answerable a year later.
+
+**Nothing here is deleted either, including a supersession.** A run that no longer
+produces a proposal appends `superseded`; a later run that produces it again appends
+`reinstated` beside it, and the LATER of that pair is the proposal's state. A `verdict`
+outranks both and closes the row for good, because a human answered those exact numbers
+and re-asking would be the ledger forgetting. The reason this matters in practice: the
+proposal id is a hash over bucketed numbers, so a drift that leaves its band and comes back
+into the same bucket re-mints an id the ledger already carries. Reading the supersession by
+presence rather than by recency left such a proposal unreachable for ever — no later run
+can mint a different id for it — while the run reported success. Keeping both assertions
+means "this left the inbox on the 5th and came back on the 6th" is still readable a year
+later, which is the whole reason this table has no mutable column.
+
+Widening the `event` CHECK to admit `reinstated` costs a table rebuild on a file that
+already carries the three-value shape, and `FinanceStore::run_migration` performs it once,
+behind a probe of the installed DDL and idempotent on re-run. That price is why an earlier
+form of the repair deleted the row instead; it is the honest cost of an append-only ledger
+and the migration pays it.
 
 Accepting a proposal records a decision and moves no money: no journal entry, no holdings
 snapshot, no order.

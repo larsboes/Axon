@@ -696,6 +696,10 @@ mod db_tests {
     /// with `INSERT OR IGNORE` alone the supersession from run two survived it
     /// and the proposal the engine is producing right now could never reach the
     /// inbox again, while the run reported `unchanged` and success.
+    ///
+    /// The repair is an appended `reinstated` event, not a deleted `superseded`
+    /// one, so the fourth run below can supersede the same proposal again and the
+    /// whole journey stays readable.
     #[test]
     fn a_proposal_a_later_run_produces_again_is_open_again() {
         let store = store("ledger-reopen");
@@ -728,9 +732,14 @@ mod db_tests {
         let restored = store.decision(&first.id).unwrap().unwrap();
         assert_eq!(restored.status(), "open");
         assert_eq!(restored.proposal, first, "the row itself is unmodified");
-        assert!(
-            restored.events.is_empty(),
-            "the withdrawn supersession is the only row a run may remove"
+        assert_eq!(
+            restored
+                .events
+                .iter()
+                .map(|event| event.event.as_str())
+                .collect::<Vec<_>>(),
+            ["superseded", "reinstated"],
+            "both assertions stay on the record; the later one is the state"
         );
         let open = store.decisions(Some("open")).unwrap();
         assert_eq!(open.len(), 1);
@@ -832,5 +841,190 @@ mod db_tests {
             let mode = std::fs::metadata(&written).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "the copy is owner-only");
         }
+    }
+    /// Nothing in this ledger is deleted, including a supersession.
+    ///
+    /// The earlier form of the repair removed the `superseded` row, which made
+    /// the fact that a proposal had once left the inbox unrecoverable -- in the
+    /// one table whose entire shape exists so that a decision's history cannot be
+    /// overwritten. Both events survive and the later one is the state.
+    #[test]
+    fn a_reinstated_proposal_keeps_the_supersession_that_preceded_it() {
+        let store = store("ledger-reinstate-history");
+        let first = proposal("rebalance:asset_class:bond:0333", "asset_class:bond");
+        let moved = proposal("rebalance:asset_class:bond:0444", "asset_class:bond");
+        store
+            .reconcile_decisions(std::slice::from_ref(&first), "2026-09-05T08:00:00Z")
+            .unwrap();
+        store
+            .reconcile_decisions(std::slice::from_ref(&moved), "2026-09-05T09:00:00Z")
+            .unwrap();
+        store
+            .reconcile_decisions(std::slice::from_ref(&first), "2026-09-05T10:00:00Z")
+            .unwrap();
+
+        let restored = store.decision(&first.id).unwrap().unwrap();
+        assert_eq!(restored.status(), "open");
+        let superseded: Vec<&StoredDecisionEvent> = restored
+            .events
+            .iter()
+            .filter(|event| event.event == "superseded")
+            .collect();
+        assert_eq!(
+            superseded.len(),
+            1,
+            "the supersession is still on the record"
+        );
+        assert_eq!(superseded[0].recorded_at, "2026-09-05T09:00:00Z");
+        let reinstated: Vec<&StoredDecisionEvent> = restored
+            .events
+            .iter()
+            .filter(|event| event.event == "reinstated")
+            .collect();
+        assert_eq!(reinstated.len(), 1);
+        assert_eq!(reinstated[0].recorded_at, "2026-09-05T10:00:00Z");
+        assert!(
+            !reinstated[0].note.is_empty(),
+            "an appended assertion says why it was made"
+        );
+
+        // A fourth run that produces nothing supersedes it again, and the pair
+        // grows rather than flipping a single row back and forth.
+        store
+            .reconcile_decisions(&[], "2026-09-05T11:00:00Z")
+            .unwrap();
+        let gone = store.decision(&first.id).unwrap().unwrap();
+        assert_eq!(gone.status(), "superseded");
+        assert_eq!(
+            gone.events
+                .iter()
+                .map(|event| event.event.as_str())
+                .collect::<Vec<_>>(),
+            ["superseded", "reinstated", "superseded"]
+        );
+    }
+
+    /// The file the owner's machine already carries has the three-value CHECK,
+    /// written by an earlier run of this same code, and `CREATE TABLE IF NOT
+    /// EXISTS` never revisits an installed table. Opening a store must widen it
+    /// in place, keep every row, and do nothing at all on the second pass.
+    #[test]
+    fn opening_a_store_widens_a_three_value_event_check_and_keeps_its_rows() {
+        let dir = std::env::temp_dir().join(format!("finance-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a writable temp directory");
+        let path = dir.join("ledger-check-rebuild.db");
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
+        }
+
+        // The shape as it was shipped before `reinstated` existed, plus one row
+        // under it and the index the batch declares.
+        {
+            let conn = rusqlite::Connection::open(&path).expect("a scratch database");
+            conn.execute_batch(
+                "CREATE TABLE finance_decisions (
+                     id TEXT PRIMARY KEY,
+                     kind TEXT NOT NULL,
+                     subject TEXT NOT NULL,
+                     rung TEXT NOT NULL,
+                     data_class TEXT NOT NULL DEFAULT 'c1',
+                     data_class_rationale TEXT NOT NULL DEFAULT '',
+                     proposal_json TEXT NOT NULL,
+                     evidence_json TEXT NOT NULL,
+                     model_revision TEXT NOT NULL,
+                     proposed_at TEXT NOT NULL
+                 );
+                 CREATE TABLE finance_decision_events (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     decision_id TEXT NOT NULL
+                         REFERENCES finance_decisions(id) ON DELETE CASCADE,
+                     event TEXT NOT NULL
+                         CHECK (event IN ('verdict','outcome','superseded')),
+                     verdict TEXT CHECK (verdict IN ('accepted','rejected')),
+                     note TEXT NOT NULL DEFAULT '',
+                     outcome_json TEXT,
+                     recorded_at TEXT NOT NULL,
+                     CHECK ((event = 'verdict') = (verdict IS NOT NULL)),
+                     UNIQUE (decision_id, event, recorded_at)
+                 );
+                 CREATE INDEX idx_finance_decision_events_decision
+                     ON finance_decision_events(decision_id, recorded_at);
+                 INSERT INTO finance_decisions
+                     (id, kind, subject, rung, proposal_json, evidence_json,
+                      model_revision, proposed_at)
+                 VALUES ('rebalance:asset_class:bond:0555', 'rebalance',
+                         'asset_class:bond', 'rule', '{}', '{}', 'finance-decisions-1',
+                         '2026-09-05T08:00:00Z');
+                 INSERT INTO finance_decision_events
+                     (decision_id, event, verdict, note, recorded_at)
+                 VALUES ('rebalance:asset_class:bond:0555', 'superseded', NULL,
+                         'written under the old shape', '2026-09-05T09:00:00Z');",
+            )
+            .expect("the pre-existing three-value shape");
+            assert!(
+                conn.execute(
+                    "INSERT INTO finance_decision_events
+                        (decision_id, event, recorded_at)
+                     VALUES ('rebalance:asset_class:bond:0555', 'reinstated', '2026-09-05T10:00:00Z')",
+                    [],
+                )
+                .is_err(),
+                "the old CHECK refuses the fourth value, which is what forces the rebuild"
+            );
+        }
+
+        let store = FinanceStore::open(&path).expect("the rebuild runs on open");
+        assert!(store.ping().is_ok(), "the store works after the rebuild");
+
+        let stored = store
+            .decision("rebalance:asset_class:bond:0555")
+            .unwrap()
+            .expect("the proposal survived the rebuild");
+        assert_eq!(stored.events.len(), 1, "the event row survived the rebuild");
+        assert_eq!(stored.events[0].note, "written under the old shape");
+        assert_eq!(stored.status(), "superseded");
+
+        {
+            let conn = rusqlite::Connection::open(&path).expect("the rebuilt database");
+            let ddl: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master
+                     WHERE type = 'table' AND name = 'finance_decision_events'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("the installed shape");
+            assert!(ddl.contains("'reinstated'"), "{ddl}");
+            let index: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'index' AND tbl_name = 'finance_decision_events'
+                       AND name = 'idx_finance_decision_events_decision'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("the index count");
+            assert_eq!(index, 1, "the index survived the rebuild");
+            assert!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE name = 'finance_decision_events_reinstated'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap()
+                    == 0,
+                "the scratch table is gone"
+            );
+        }
+
+        // A second open finds the widened CHECK and does nothing, which is what
+        // makes this safe to leave in the migration for ever.
+        let again = FinanceStore::open(&path).expect("a second pass");
+        let stored = again
+            .decision("rebalance:asset_class:bond:0555")
+            .unwrap()
+            .expect("still there");
+        assert_eq!(stored.events.len(), 1, "the second pass rebuilt nothing");
     }
 }
