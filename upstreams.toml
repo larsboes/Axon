@@ -597,3 +597,39 @@ url = "https://github.com/pascalorg/editor"
 verdict = "inspiration"
 license = "MIT"
 why = "nothing tracks this entry, deliberately, since 2026-08-30: no consumer means no staleness to track. It is the geometry engine behind the interior capability, read while it still lived in the private overlay (it moved here 2026-08-30, PRD Q59): rooms, walls, openings, levels and a browser view, driven over MCP. Adopted rather than rebuilt after it returned 22.700000000000003 m2 for a polygon measured on site at 22,7. What it does NOT provide is the reason the capability exists: its check_collisions is documented as an axis-aligned bounding-box overlap test between item footprints, and every clearance rule this capability enforces is about the space that stays EMPTY — room to walk, to reach, to open a door, to let light past. None of those can be written as an overlap test, so src/clearance.ts is ours and the engine underneath is theirs. CONSUMER LOST 2026-08-30, which is why the verdict is inspiration and not adopt. The TypeScript capability spawned @pascal-app/mcp via bunx and pinned the version in its package.json on purpose -- \"a floating range would let the geometry engine change under a verified room model\". The Rust rewrite links nothing and shells out to nothing: the whole engine is capabilities/interior/src/geometry.rs, an exact Felzenszwalb/Huttenlocher distance transform plus a maximum-bottleneck search, both ours. Nothing in Axon installs this now. What survives is the shape of the read, not the code -- and the 22.700000000000003 above, which is still the reason to prefer integer centimetres to floats for a measured room"
+
+[stooq]
+url = "https://stooq.com/q/d/l/"
+verdict = "reject"
+license = "n/a -- not adopted"
+why = "MEASURED and rejected 2026-09-05, as the first choice for end-of-day equity and fund prices. GET https://stooq.com/q/d/l/?s=spy.us&i=d answered HTTP 200 with a 796-byte HTML body carrying a crypto.subtle.digest(\"SHA-256\", ...) proof-of-work loop at difficulty 4 and a <noscript> line demanding JavaScript -- not CSV. The 200 is the reason this row exists rather than a code comment: a client that checks the status code parses HTML as CSV and writes garbage into an append-only price table nothing can correct. The measurement bought a rule that outlives it: every provider in capabilities/finance/src/price.rs validates the SHAPE of the response body and never its status code, and the recorded body is the unit test for that rule (a_proof_of_work_gate_is_not_a_csv). Re-adopting means a new measurement at that date; the shape check stays either way"
+
+[tradegate]
+url = "https://www.tradegate.de/refresh.php"
+verdict = "reject"
+license = "n/a -- not adopted"
+why = "MEASURED and rejected on the night of 2026-09-03: refresh.php answered with an empty body. A German exchange quote endpoint considered as a European alternative to Yahoo for instruments a US source prices badly. Recorded so the next person to consider it reads a measurement instead of repeating one"
+
+[yahoo-finance-chart]
+url = "https://query1.finance.yahoo.com/v8/finance/chart/"
+verdict = "adopt"
+license = "No published licence for this endpoint. Yahoo's terms govern use and forbid redistribution, so rows stay in the private overlay and the shared database and are never republished -- the demo is seeded from synthetic data and carries no fetched quote"
+why = "Daily adjusted close history per instrument, the only source in this build that can produce the 120 observations capabilities/finance/src/risk.rs needs before it will report a volatility. Unofficial and undocumented. MEASURED 2026-09-05 from a German residential connection: GET /v8/finance/chart/SPY?range=5d&interval=1d answered HTTP 200 with five daily closes and chart.error null, with NO cookie and NO crumb -- so the bare call is the primary path and it is verified live. The EU consent-plus-crumb handshake is implemented as the RETRY path and is unverified live: GET https://query1.finance.yahoo.com/v1/test/getcrumb answered HTTP 429 Too Many Requests both with and without the A3 consent cookie that GET https://fc.yahoo.com sets (that endpoint answers 404 and sets the cookie anyway). FLIP CONDITION, written here rather than remembered: retired the day two consecutive manual runs get a non-200 that a fresh consent-plus-crumb handshake does not fix, or the day Yahoo publishes terms forbidding this use. On retirement the broker provider still prices every holding and the feature degrades to no history rather than breaking. The response carries IEEE doubles, so an exact decimal is CHOSEN at the boundary at four decimal places rather than recovered"
+
+[yfinance]
+url = "https://github.com/ranaroussi/yfinance"
+verdict = "inspiration"
+license = "Apache-2.0"
+why = "Read for one thing only: the sequence that obtains an EU consent cookie from fc.yahoo.com and then a crumb from /v1/test/getcrumb before calling the v8 chart endpoint. No code vendored, no dependency taken, no re-sync path -- the handshake is reimplemented in Rust against reqwest in capabilities/finance/src/price.rs. The row exists because reading an upstream's solution and reimplementing it is an adoption of its design, and this register is where an adopted design is recorded"
+
+[ecb-data-portal]
+url = "https://data.ecb.europa.eu/help/api/data"
+verdict = "adopt"
+license = "ECB reference rates are published for free reuse with attribution; the API output carries no separate licence and the series identifier is reproduced in each stored row"
+why = "Daily euro foreign-exchange reference rates, read as CSV from the SDMX data endpoint into finance_fx_rates. MEASURED 2026-09-05: GET https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A?format=csvdata&lastNObservations=2 answered HTTP 200 with a 31-column header and the rows TIME_PERIOD=2026-09-03 OBS_VALUE=1.1615 and TIME_PERIOD=2026-09-04 OBS_VALUE=1.1622. Read by COLUMN NAME so an inserted column does not shift the parse, and lastNObservations bounds the request. Rates are stored as published -- quote units per one base unit -- and never inverted at write time, because a division is where an exact decimal stops being exact. FX is runway rather than need today: every holding row carries one currency, so nothing reads these rows yet and the table exists so the first foreign holding does not need a migration this crate has no path for"
+
+[frankfurter-api]
+url = "https://frankfurter.dev"
+verdict = "adopt"
+license = "MIT for the server; the underlying data carries the ECB's own attribution"
+why = "The FX fallback when the ECB Data Portal is unreachable, serving the same ECB reference rates over a simpler JSON shape. MEASURED 2026-09-05: GET https://api.frankfurter.dev/v1/latest?base=EUR answered HTTP 200 with date 2026-09-04 and thirty-odd rates. A second path to one fact rather than a second fact, so a row it produces still carries source='ecb' and the fetch row's detail names which door answered -- provenance stays visible without the reader having to reconcile two source names for one published rate. Latest only, never a history: this exists so a stale table gets one more chance to update, not so it becomes the primary series"

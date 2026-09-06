@@ -110,6 +110,13 @@ paths = [
   "/finance/api/import/candidates",
   "/finance/api/import/csv/mappings",
   "/finance/api/import/investments/mappings",
+  # With the query the client always sends: the shim keys on pathname PLUS search
+  # (dashboard/src/lib/demo.ts:54) and the recorder keys on the literal string here
+  # (tools/demo-record.ts:135), so the bare path answers 501 for every real request.
+  # The calendar block above carries the same shape for the same reason.
+  "/finance/api/portfolio?currency=EUR",
+  "/finance/api/decisions?status=open",
+  "/finance/api/prices/status",
 ]
 
 [capability.comms]

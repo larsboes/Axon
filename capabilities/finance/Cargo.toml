@@ -15,6 +15,12 @@ path = "src/lib.rs"
 name = "finance-server"
 path = "src/server.rs"
 
+# The commands that are not the server: a price fetch a timer can run, and the
+# human-readable rebuild of the decision ledger for when the server is down.
+[[bin]]
+name = "finance-cli"
+path = "src/bin/finance-cli.rs"
+
 [dependencies]
 axon-config = { path = "../../libs/axon-config" }
 axon-server = { path = "../../libs/axon-server" }
@@ -36,3 +42,9 @@ axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
 csv = "1.4"
 sha2 = "0.10"
+# The data-class vocabulary, owned by one crate rather than restated per capability.
+# Its own dependencies are serde and serde_json only; calendar and comms already take it.
+content-item = { path = "../../libs/content-item" }
+# The loopback feed lookup and the two networked price providers. The literal is
+# matched to capabilities/trips so the workspace resolves one reqwest.
+reqwest = { version = "0.13", features = ["blocking", "json", "cookies"] }

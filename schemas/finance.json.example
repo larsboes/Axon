@@ -77,6 +77,47 @@
       }
     }
   ],
+  "instruments": [
+    {
+      "instrument": "SYNTH-WORLD",
+      "label": "Synthetic world equity",
+      "asset_class": "equity",
+      "ticker": "SYNTH"
+    }
+  ],
+  "targets": {
+    "currency": "EUR",
+    "contribution_floor_cents": 25000,
+    "price_freshness_days": 4,
+    "risk_free_rate_bp": null,
+    "allocations": [
+      {
+        "id": "synthetic-equity-world",
+        "label": "Synthetic world equity",
+        "scope": "asset_class",
+        "instrument": null,
+        "asset_class": "equity",
+        "target_bp": 7000,
+        "band_bp": 500,
+        "rationale": "Synthetic rationale, one sentence.",
+        "valid_from": "2026-09-01",
+        "valid_until": null
+      },
+      {
+        "id": "synthetic-bonds",
+        "label": "Synthetic bonds",
+        "scope": "asset_class",
+        "instrument": null,
+        "asset_class": "bond",
+        "target_bp": 3000,
+        "band_bp": 500,
+        "rationale": "Synthetic rationale, one sentence.",
+        "valid_from": "2026-09-01",
+        "valid_until": null
+      }
+    ]
+  },
+  "comms_base_url": "http://127.0.0.1:8083",
   "commitments": [
     {
       "id": "synthetic-rent",
