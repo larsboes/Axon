@@ -11,6 +11,7 @@
 //! `body_start` so a future writer has somewhere to splice; nothing here uses
 //! them to write.
 
+pub mod class;
 pub mod graph;
 pub mod lint;
 pub mod names;

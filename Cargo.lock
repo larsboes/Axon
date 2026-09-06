@@ -5633,6 +5633,7 @@ dependencies = [
  "axon-config",
  "axon-server",
  "axum",
+ "content-item",
  "markdown-root",
  "route-manifest",
  "serde",

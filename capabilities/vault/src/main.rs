@@ -1,10 +1,11 @@
 //! `vault` — read an Obsidian vault as data.
 //!
-//! Two verbs today, both read-only:
+//! Four verbs today, all read-only:
 //!
 //! ```text
 //! vault links [--root PATH] [--json] [--dead] [--inbound FOLDER]
 //! vault lint  [--root PATH] [--json] [--carrying KEY]
+//! vault class [--root PATH] [--json] [--only c2] [--list]
 //! ```
 //!
 //! ## Why this exists as a binary rather than a skill
@@ -28,7 +29,7 @@
 
 // The modules live in the library beside this binary, so `vault-server` reads
 // notes through the same loader rather than a second copy of it.
-use vault::{graph, lint, names, note};
+use vault::{class, graph, lint, names, note};
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
@@ -56,7 +57,8 @@ fn main() {
              usage:\n  \
                vault links [--root PATH] [--json] [--dead] [--inbound FOLDER]\n  \
                vault lint  [--root PATH] [--json] [--carrying KEY]\n  \
-               vault names [--root PATH] [--json] [--folder Atlas/People]\n\
+               vault names [--root PATH] [--json] [--folder Atlas/People]\n  \
+               vault class [--root PATH] [--json] [--only c2] [--list]\n\
              \n\
              The root comes from the overlay's config/knowledge.toml unless --root says otherwise."
         );
@@ -204,6 +206,55 @@ fn main() {
                     println!("\nrefused ({}):", reg.refused.len());
                     for r in &reg.refused {
                         println!("  {} — {}", r.note, r.reason);
+                    }
+                }
+            }
+        }
+
+        // Q9a, the reporting half. The rule itself is in
+        // content_item::DataClass::classify_vault_note; this prints what it
+        // decided so the folder defaults can be checked against a real vault
+        // rather than believed.
+        "class" => {
+            let rep = class::report(&notes);
+            let only = flag(&args, "--only");
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rep).unwrap_or_default());
+            } else {
+                for c in content_item::DATA_CLASSES {
+                    let n = rep.counts.get(c).copied().unwrap_or(0);
+                    println!(
+                        "{:<4} {:<8} {:>5}",
+                        c,
+                        content_item::DataClass::new(c, "", "", "").label,
+                        n
+                    );
+                }
+                println!();
+                println!("frontmatter overrides  {}", rep.overridden.len());
+                for o in &rep.overridden {
+                    println!("  {} -> {}", o.id, o.class);
+                }
+                // Refusals first among the things worth acting on: each one is a
+                // note whose author believes it carries a class and which no
+                // human has actually classified.
+                if !rep.refused.is_empty() {
+                    println!("\nrefused declarations ({}):", rep.refused.len());
+                    for r in &rep.refused {
+                        println!("  {} — {}", r.id, r.rationale);
+                    }
+                }
+                if let Some(class) = &only {
+                    let hits: Vec<&class::Classified> =
+                        rep.notes.iter().filter(|n| &n.class == class).collect();
+                    println!("\n{} note(s) at {class}:", hits.len());
+                    for h in hits {
+                        println!("  {} — {}", h.id, h.rationale);
+                    }
+                } else if has(&args, "--list") {
+                    println!();
+                    for n in &rep.notes {
+                        println!("{:<4} {}", n.class, n.id);
                     }
                 }
             }
