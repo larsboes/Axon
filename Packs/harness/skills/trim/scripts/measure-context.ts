@@ -103,7 +103,11 @@ for (const entry of entries) {
     // a bare relative path has no reliable base directory from here.
     for (const raw of line.match(/(?<![A-Za-z0-9._~/-])(?:~\/|\.\/|\/)[A-Za-z0-9._~/-]*[A-Za-z0-9._-]/g) ?? []) {
       const pointer = raw.replace(/[.,;:)]+$/, "");
-      if (!/\.[a-z0-9]{1,5}$|\/$/i.test(pointer)) continue; // needs an extension or a trailing slash
+      // A file (extension), a directory (trailing slash), or a rooted path with at
+      // least two segments — `~/Developer/labs/cal-dedup` is a real pointer and the
+      // extension rule missed every directory reference in the corpus.
+      const segments = pointer.replace(/^~\//, "").split("/").filter(Boolean);
+      if (!/\.[a-z0-9]{1,5}$|\/$/i.test(pointer) && segments.length < 2) continue;
       if (/^\/(usr|bin|etc|var|opt|tmp|dev|proc|Library|System|Applications)\b/.test(pointer)) continue;
       const target = pointer.startsWith("~/")
         ? join(home, pointer.slice(2))
