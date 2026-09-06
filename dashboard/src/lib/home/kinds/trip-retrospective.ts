@@ -22,55 +22,7 @@ import {
   type PendingRetrospectives,
 } from "../../travel/api";
 
-/*
- * MERGE NOTE, 2026-09-05: `decisions.ts` in this directory's parent is owned and created by
- * the dashboard-refresh stream and did not exist when this file was written, so
- * the contract it publishes is mirrored below rather than imported. It is the
- * same vocabulary with the same field names, not a second one.
- *
- * The whole merge is this: delete the block between the two markers and put
- *
- *   import type { DecisionKind, LoadContext, ScoreContext, DataClass } from "../decisions";
- *
- * in its place. Nothing else in this file changes.
- */
-// ── mirrored contract, replace with the import above ────────────────────────
-type DataClass = "c0" | "c1" | "c2" | "c3";
-
-interface ScoreContext {
-  todayKey: string;
-  horizonEndKey: string;
-  nowMs: number;
-  daysUntil(value: string): number;
-  peer<Row>(key: string): readonly Row[];
-}
-
-interface LoadContext extends ScoreContext {
-  signal: AbortSignal;
-}
-
-interface DecisionKind<Source = unknown, Row = unknown> {
-  key: string;
-  band: number;
-  label: string;
-  capability: string | null;
-  lane?: "commitment" | "reading";
-  dependsOn?: readonly string[];
-  view: string;
-  load(ctx: LoadContext): Promise<Source>;
-  rows(source: Source, ctx: ScoreContext): Row[];
-  id(row: Row): string;
-  urgency(row: Row, ctx: ScoreContext): number;
-  href(row: Row): string;
-  external?(row: Row): boolean;
-  whyHere(row: Row, ctx: ScoreContext): string;
-  startOrDueAt(row: Row): string | null;
-  candidateStatus(row: Row): "proposed" | "accepted" | "open";
-  dataClass(row: Row): DataClass | null;
-  processingRoute(row: Row): "local" | "cloud" | null;
-  scoreFactors?(row: Row, ctx: ScoreContext): { label: string; score: number }[];
-}
-// ── end mirrored contract ───────────────────────────────────────────────────
+import type { DecisionKind, LoadContext, ScoreContext, DataClass } from "../decisions";
 
 /** Used only when the response omits the window, which the route does not do.
  *  The number that matters is `source.window_days`, read below and carried onto
