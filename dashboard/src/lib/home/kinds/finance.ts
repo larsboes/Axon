@@ -10,61 +10,15 @@
 // own row.
 //
 // The Home registry's own two modules -- `decisions.ts` and `registry.ts`, in the
-// directory above this one -- belong to the dashboard-refresh stream and neither
-// existed when this was written
-// (2026-09-05). `bun run check` is a build gate, so importing types from a module
-// that does not exist would have failed it. The contract's two shapes are
-// therefore declared locally below, marked, and MUST be deleted the day the
-// registry lands — replace the whole block with:
-//
-//     import type { DataClass, DecisionKind, LoadContext, ScoreContext } from "../decisions";
-//
-// and change nothing else. A local copy of a shared contract is a second
-// vocabulary, which is exactly the mistake this repository keeps refusing; it is
-// here for one night and it is labelled rather than left to be discovered.
+// directory above this one -- belong to the dashboard-refresh stream. They did not
+// exist when this file was written; they do now, and the import below is the contract.
 //
 // Imports are RELATIVE, never `$lib`: the alias lives only in the generated
 // tsconfig and the bun test job runs with no `svelte-kit sync`.
 import { decisions, type Decision } from "../../finance/invest-api";
 import { link } from "../../nav";
 
-// ---- TEMPORARY: delete when the registry's decisions.ts lands one level up ----
-type DataClass = "c0" | "c1" | "c2" | "c3";
-
-interface ScoreContext {
-  todayKey: string;
-  horizonEndKey: string;
-  nowMs: number;
-  daysUntil(value: string): number;
-  peer<Row>(key: string): readonly Row[];
-}
-
-interface LoadContext extends ScoreContext {
-  signal: AbortSignal;
-}
-
-interface DecisionKind<Source = unknown, Row = unknown> {
-  key: string;
-  band: number;
-  label: string;
-  capability: string | null;
-  lane?: "commitment" | "reading";
-  dependsOn?: readonly string[];
-  view: string;
-  load(ctx: LoadContext): Promise<Source>;
-  rows(source: Source, ctx: ScoreContext): readonly Row[];
-  id(row: Row): string;
-  urgency(row: Row, ctx: ScoreContext): number;
-  title(row: Row): string;
-  href?(row: Row): string;
-  whyHere(row: Row, ctx: ScoreContext): string;
-  startOrDueAt(row: Row): string | null;
-  candidateStatus(row: Row): "proposed" | "accepted" | "open";
-  dataClass(row: Row): DataClass | null;
-  processingRoute(row: Row): "local" | "cloud" | null;
-  scoreFactors?(row: Row, ctx: ScoreContext): { label: string; score: number }[];
-}
-// ---- END TEMPORARY ----
+import type { DataClass, DecisionKind, LoadContext, ScoreContext } from "../decisions";
 
 /// PRD §8.1's "Purchase decision" row. NOT a band this kind owns: the PRD gives
 /// 640 to a renewal dated soon and to a budget overrun as well, so a band holds
