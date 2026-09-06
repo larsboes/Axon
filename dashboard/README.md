@@ -18,8 +18,10 @@ primitives, and `src/app.css` is that whole design system. It declares a named t
 a spacing rhythm, three breakpoints and one focus ring, and the classes `.card` /
 `.card-interactive`, `.tag`, `.btn`, `.input` and `.table`. What a class cannot express
 once is a component: `ListRow`, `RowMeta`, `StateLine`, `FactorBars`, `PageTabs` and
-`PageHeader`. Icons are inline SVG in `src/lib/Icon.svelte`, quarried from Lucide (ISC),
-rather than a dependency.
+`PageHeader`. `src/lib/feed/FeedItemRow.svelte` is the feed triage row built on them; Home's
+reading lane renders it today and the `/feed` list is meant to adopt the same component
+rather than keep a second one. Icons are inline SVG in `src/lib/Icon.svelte`, quarried from
+Lucide (ISC), rather than a dependency.
 
 Home's decision ladder is a registry: a kind is one file under `src/lib/home/kinds/` and
 its row one file under `src/lib/home/rows/`, discovered by `import.meta.glob` and joined on

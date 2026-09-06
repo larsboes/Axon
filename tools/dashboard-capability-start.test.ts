@@ -14,6 +14,7 @@ import {
   UTILITY_NAV,
   capabilityForPath,
 } from "../dashboard/src/lib/nav.ts";
+import { createShellStarter } from "../dashboard/src/lib/shell-start.ts";
 
 describe("capabilityForPath names what a page needs running", () => {
   test("the two pages that started nothing now resolve", () => {
@@ -54,17 +55,23 @@ describe("capabilityForPath names what a page needs running", () => {
 });
 
 describe("a start is attempted once, not once per capability poll", () => {
-  /** The shell's guard, reproduced exactly: a set consulted before every start. */
+  /**
+   * The shell's own loop, over the real guard.
+   *
+   * `+layout.svelte` calls `createShellStarter()` and posts to exactly the names it hands
+   * back; only the POST is stubbed here. The previous version of this file defined a
+   * second attempted-set beside the real one, so deleting the guard from the shell left
+   * every assertion below green — the regression the suite is named for could not fail it.
+   */
   function shell() {
-    const attempted = new Set<string>();
+    const claim = createShellStarter();
     const posted: string[] = [];
     return {
       posted,
       open(pathname: string, up: (name: string) => boolean) {
-        for (const name of capabilityForPath(pathname)) {
-          if (attempted.has(name)) continue;
-          attempted.add(name);
-          if (up(name)) continue;
+        // The shell's own predicate: an unknown capability has no start route, and one
+        // that is already up needs none.
+        for (const name of claim(capabilityForPath(pathname), (candidate) => !up(candidate))) {
           posted.push(name);
         }
       },
@@ -98,5 +105,14 @@ describe("a start is attempted once, not once per capability poll", () => {
     s.open("/travel", () => false);
     s.open("/travel", () => false);
     expect(s.posted).toEqual(["transit", "trips"]);
+  });
+
+  test("a name is recorded as attempted even when it was not worth posting", () => {
+    // The shell asks `worthStarting` only about a name it has not seen; a capability that
+    // was up on the first pass must not be posted to when a later poll finds it down,
+    // because the shell is not a supervisor.
+    const claim = createShellStarter();
+    expect(claim(["finance"], () => false)).toEqual([]);
+    expect(claim(["finance"], () => true)).toEqual([]);
   });
 });

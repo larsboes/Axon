@@ -6,6 +6,7 @@
   import Icon from "$lib/Icon.svelte";
   import { capabilities } from "$lib/capabilities.svelte";
   import { PRIMARY_NAV, UTILITY_NAV, capabilityForPath, withoutCapabilities, link } from "$lib/nav";
+  import { createShellStarter } from "$lib/shell-start";
   import { axonStatus } from "$lib/api";
   import SoundscapeDock from "$lib/SoundscapeDock.svelte";
 
@@ -21,12 +22,12 @@
   /**
    * Capabilities this shell has already tried to start, for the lifetime of the tab.
    *
-   * Module-level and never cleared, and both halves are load-bearing. `capabilities`
-   * re-assigns its list every fifteen seconds, so an effect that reads the store would
-   * re-run on every poll; and a capability that failed to start will fail again, so a
-   * retry loop is the failure mode this set exists to prevent.
+   * The guard itself lives in `$lib/shell-start` so that the test can run the real thing:
+   * a set defined here and a copy of it in the test file left the regression it names
+   * unfalsifiable. See shell-start.ts for why the set is written before the POST and never
+   * cleared.
    */
-  const attemptedStarts = new Set<string>();
+  const claimStarts = createShellStarter();
 
   /**
    * Bumped once, when a start POST has actually brought a capability up.
@@ -87,11 +88,11 @@
 
     void (async () => {
       await capabilities.refresh();
-      for (const name of wanted) {
-        if (attemptedStarts.has(name)) continue;
-        attemptedStarts.add(name);
+      const worthStarting = (name: string): boolean => {
         const capability = capabilities.byName(name);
-        if (!capability || capability.up === true) continue;
+        return Boolean(capability) && capability?.up !== true;
+      };
+      for (const name of claimStarts(wanted, worthStarting)) {
         const started = await axonStatus.start(name).then(
           (result) => result.up === true,
           // Swallowed: the page itself reports what it could not read, and a failed start

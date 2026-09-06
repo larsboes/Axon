@@ -75,7 +75,10 @@
       },
       {
         key: "web",
-        icon: "calendar",
+        // `compass`, the glyph the ternary this replaced gave this card: only `calendar`,
+        // `trips` and `feed` were named there and every other key fell through. Sharing
+        // the Calendar card's glyph would also stop telling the two cards apart.
+        icon: "compass",
         title: "Individual web sources",
         role: "Deliberately added event pages with their original evidence",
         count: webEntries.length,

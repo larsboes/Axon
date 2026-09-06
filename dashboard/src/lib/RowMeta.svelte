@@ -13,6 +13,13 @@
    * capability publishes one — mail today — and is silent where none does, rather than
    * guessed: the dashboard owns no data (dashboard/README.md:7-9) and a class it invented
    * would be a false provenance claim.
+   *
+   * The chip names the CLASS ("Private", "Sensitive"), where the page it replaces printed
+   * the word "Redacted" on the same two classes. A deliberate departure from the design,
+   * recorded here rather than left silent: nothing on this row is redacted — a mail row
+   * renders its subject and its snippet in full — so "Redacted" claimed a reduction that
+   * had not happened. The class is the true statement, it is what says where the row may
+   * be processed, and it stays inert on rank either way.
    */
   let {
     whyHere,

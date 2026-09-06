@@ -441,9 +441,10 @@ a.row-title:hover {
   transition: border-color 0.15s ease;
 }
 
-/* `:focus-visible`, not `:focus`: the border still marks the active field for a mouse
- * user, and the shared ring above still reaches a keyboard one. The old rule removed
- * the outline on every focus and put nothing back. */
+/* The border stays on `:focus`, so it marks the active field for a mouse user too; the
+ * ring comes from the shared `:focus-visible` rule above and reaches a keyboard one. What
+ * changed is only what was removed: this rule used to carry `outline: none`, which took
+ * the focus ring off every input and put nothing back. */
 .input:focus {
   border-color: var(--primary);
 }

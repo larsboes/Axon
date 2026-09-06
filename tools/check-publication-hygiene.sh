@@ -10,17 +10,19 @@ cd "$ROOT"
 failed=0
 mac_home="/""Users/"
 linux_home="/""home/"
-# An absolute path starts a path. A repo-relative one does not.
+home_path="(${mac_home}|${linux_home})[A-Za-z0-9._-]+/"
+
+# The repository's own lib/home/ directory is not a home directory.
 #
-# A dashboard import of the form $lib/home/kinds/mail.ts matched the home-directory
-# pattern and was reported as a workstation path: the Home ladder lives under
-# src/lib/home/, and giving it subdirectories was enough to trip this. Requiring the slash
-# to BEGIN a path -- at the start of a line, or after whitespace, a quote, a parenthesis,
-# an equals or a colon -- keeps every real hit, since a real absolute path always appears
-# that way, and drops the class of false positive that any directory named `home` or
-# `Users` produces anywhere in the tree. The markers themselves stay split above for the
-# same reason this comment names no example: the file must not match its own rule.
-path_start="(^|[^A-Za-z0-9._~-])"
+# Home's decision ladder lives under the dashboard's src/lib/home/, and giving it
+# subdirectories made every import specifier below it match the second marker above. The
+# exemption is that ONE shape and nothing else. Narrowing the marker instead -- demanding a
+# non-identifier character before the slash -- also stopped catching two real leaks, since
+# both begin after an identifier character: the a/ and b/ prefixed paths a committed diff
+# or patch file carries, and a workstation path written relative, ../../<marker><name>/.
+# The exemption applies to the verdict only; the candidate list below stays broad, so a
+# file is still opened and read whenever it matches at all.
+repo_home_dir="lib/${linux_home#/}"
 
 while IFS= read -r -d '' path; do
   case "$path" in
@@ -39,13 +41,14 @@ while IFS= read -r path; do
   [ -n "$path" ] || continue
   home_hits="$({ git show ":$path" 2>/dev/null || true; } \
     | LC_ALL=C strings \
-    | grep -E "${path_start}(${mac_home}|${linux_home})[A-Za-z0-9._-]+/" \
+    | grep -E "${home_path}" \
+    | grep -Ev "${repo_home_dir}" \
     | grep -Ev "${linux_home}(agent|runner)/" || true)"
   if [ -n "$home_hits" ]; then
     echo "publication hygiene: tracked blob contains a workstation home path: $path" >&2
     failed=1
   fi
-done < <(git grep --cached -a -l -E "${path_start}(${mac_home}|${linux_home})[A-Za-z0-9._-]+/" || true)
+done < <(git grep --cached -a -l -E "${home_path}" || true)
 
 legacy_tooling_path='~/Developer/'"Tooling"
 # Each marker must be followed by a non-identifier character or end of line, so a name that

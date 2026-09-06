@@ -41,10 +41,13 @@
       weight: factor.weight,
       mark: factor.context?.kind === "trip" ? "map-pin" : undefined,
       rationale: factor.rationale,
+      // The href is /travel, so only a trip context earns one. `kind` is typed open
+      // (`'trip' | string`) and the evaluator emits only "trip" today, so a second kind
+      // would otherwise arrive silently linked to the wrong page. Its label still renders.
       context: factor.context
         ? {
             label: factor.context.label,
-            href: link("/travel"),
+            href: factor.context.kind === "trip" ? link("/travel") : undefined,
             terms: factor.context.matched_terms,
           }
         : null,
@@ -70,10 +73,16 @@
         <p class="rationale">{factor.rationale} · weight {Math.round(factor.weight * 100)}%</p>
       {/if}
       {#if factor.context}
-        <a class="context" href={factor.context.href}>
+        <!-- A link only where there is somewhere to go. A context with no href still
+             names itself; it just does not pretend to be a destination. -->
+        <svelte:element
+          this={factor.context.href ? "a" : "span"}
+          class="context"
+          href={factor.context.href}
+        >
           {factor.context.label}
           {#if factor.context.terms?.length}· {factor.context.terms.join(", ")}{/if}
-        </a>
+        </svelte:element>
       {/if}
     {/snippet}
   </FactorBars>
@@ -141,6 +150,8 @@
 
   .context {
     display: inline-block;
+    /* A non-trip context renders as a <span>, so the colour carries the affordance and
+       the shared link rules do not. */
     margin-top: var(--space-1);
     color: var(--primary);
     font-size: var(--text-2xs);

@@ -33,6 +33,16 @@ const kinds = await Promise.all(
 /** PRD §8.1's own bands, plus 610 for the trip retrospective in §8.2. */
 const PRD_BANDS = new Set([10_000, 900, 800, 700, 640, 630, 620, 610, 600, 550, 540, 500, 490]);
 
+/**
+ * The one declared form for a band the PRD table does not name.
+ *
+ * `BAND <band> EXTENDS PRD <section and row>`, with the same number the kind sets and a
+ * non-empty citation after "PRD". Documented on the band table in
+ * `dashboard/src/lib/home/decisions.ts`.
+ */
+const declaresBand = (source: string, band: number): boolean =>
+  new RegExp(`BAND\\s+${band}\\s+EXTENDS\\s+PRD\\s+\\S`).test(source);
+
 /** Every file under home/, so the import scan covers a helper a kind pulls in too. */
 function sourcesUnder(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -62,16 +72,30 @@ describe("the registry finds every kind by file, not by name", () => {
     expect(missing).toEqual([]);
   });
 
-  test("every band appears in the PRD table", () => {
-    // Bands are NOT unique. PRD:2213 gives 640 to the purchase decision and PRD:3115
-    // routes a doubled month of metered spend to the same band, so a band is a rank and
-    // not a slot. A kind on a band the table does not name has to say which row it
-    // extends, in its own file.
+  test("every band appears in the PRD table, or the file says which row it extends", () => {
+    // Bands are NOT unique. PRD §8.1 gives 640 to the purchase decision and §13.1 routes a
+    // doubled month of metered spend to the same band, so a band is a rank and not a slot.
+    // A kind on a band the table does not name has to say which row it extends, in its own
+    // file, in the declared form.
     const unlisted = kinds
       .filter(({ kind }) => !PRD_BANDS.has(kind.band as number))
-      .filter(({ file }) => !readFileSync(join(KINDS, file), "utf8").includes("PRD"))
+      .filter(
+        ({ file, kind }) =>
+          !declaresBand(readFileSync(join(KINDS, file), "utf8"), kind.band as number),
+      )
       .map(({ file, kind }) => `${file} at band ${String(kind.band)}`);
     expect(unlisted).toEqual([]);
+  });
+
+  test("the escape hatch needs the band number, not the three letters PRD", () => {
+    // The guard above used to exempt any file containing "PRD", and every kind file opens
+    // its doc comment with "PRD §8.1" — so a kind copied from any of them could invent a
+    // band and still pass. Asserted here because a vacuous guard reads exactly like a
+    // working one.
+    expect(declaresBand("// Band 620 — PRD §8.1, a task.", 620)).toBe(false);
+    expect(declaresBand("// BAND 615 EXTENDS PRD §8.1 Task", 615)).toBe(true);
+    expect(declaresBand("// BAND 615 EXTENDS PRD §8.1 Task", 616)).toBe(false);
+    expect(declaresBand("// BAND 615 EXTENDS PRD", 615)).toBe(false);
   });
 
   test("every kind implements the whole attention contract", () => {
