@@ -1,7 +1,10 @@
 pub mod config;
+pub mod cost;
+pub mod finance_client;
 pub mod intent;
 pub mod kiwi;
 pub mod obsidian;
 pub mod projection;
+pub mod retrospective;
 pub mod store;
 pub mod windows;

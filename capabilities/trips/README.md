@@ -72,22 +72,125 @@ the existing plan form; the operator still supplies/reviews the route before sav
 This join remains computed in the dashboard because that is already the documented composition
 edge for Trips, Scouting, and Calendar. It persists no recommendation and reads no foreign store.
 
-HTTP surface on the manifest-declared port:
+HTTP surface on the manifest-declared port. `GET /routes` is the machine-readable
+version and is the one a caller should trust; this list was ten bullets covering
+eleven of the twenty pairs the router served, and is corrected here to all
+twenty-four:
 
-- `GET /health`
+- `GET /health`, `GET /ready`, `GET /routes`
 - `GET|POST /api/plans`
-- `GET /api/plans/:id`
-- `PATCH /api/plans/:id`
-- `DELETE /api/plans/:id`
+- `GET|PATCH|DELETE /api/plans/:id`
 - `POST /api/plans/:id/items`
-- `DELETE /api/plans/:plan_id/items/:item_id`
+- `PATCH|DELETE /api/plans/:plan_id/items/:item_id`
+- `POST /api/plans/:id/outcome` — how one booked stage went against the option it
+  was chosen under
+- `GET /api/plans/:id/cost` — what the trip was meant to cost, what was
+  committed to, and what was actually paid
+- `POST /api/plans/:id/retrospective` — the plan's three-field close-out record
+- `GET /api/retrospectives/pending` — closed trips inside the 45-day window with
+  no record yet: what the dashboard ladder raises
+- `GET /api/retrospectives/summary` — the feed-forward weight, per destination
+- `GET /api/places`
+- `GET /api/flights/search`, `GET /api/flights/grid`, `GET /api/flights/when`,
+  `GET /api/flights/pivot`
 - `GET /api/import/obsidian/scan`
 - `POST /api/import/obsidian`
 - `POST /api/import/obsidian/all`
 
+### The retrospective, and why it is not the outcome route
+
+`POST /api/plans/:id/outcome` and `POST /api/plans/:id/retrospective` answer
+different questions at different grains, and both are kept. The outcome record
+measures ONE booked stage against the option it was chosen under, and it refuses
+a stage with no `selected_option_id` because there is then nothing to compare
+against. The retrospective is per-plan judgement written when the trip is over:
+what it cost, would I do it again, what would I change. Closing the second does
+not close the first.
+
+It is a table rather than a twelfth plan-item type for two reasons that stand
+alone. The summary groups by destination ACROSS plans, which is a query with an
+index rather than a `json_extract` scan of every item row. And the three fields
+are ruled and closed, so `again` earns `CHECK (again IN ('yes','no','maybe'))`
+and `cost_cents` earns INTEGER — neither of which a JSON payload carries. The
+`outcome` payload next door is deliberately open precisely because nobody knew
+its fields yet.
+
+The money is denominated exactly once. `cost_cents` is in the PLAN's `currency`;
+the retrospective carries no currency column, and a plan with none refuses a cost
+with a message naming the fix.
+
+### The cost roll-up
+
+`GET /api/plans/:id/cost` joins three sources and stores nothing. It takes no
+parameters: the window is the plan's own dates, so nobody can ask for a partial
+total.
+
+The sources are kept apart on purpose. **Intent** is `trips_plans.budget_cents`.
+**Committed** is `booking.amount_cents` and `stay.amount_cents` — integer minor
+units with an ISO code beside them. **Offered** is `option_set` and `transport`
+prices, which the schema gives no currency field at all, so they are reported in
+their own block labelled offered-not-paid and are never summed in: adding a float
+of unknown currency to an integer minor-unit sum produces a number that is wrong
+in a way nobody can see. Bookings in two currencies are reported per currency
+with `booked_cents: null` and a stated reason, rather than added. The same rule
+holds at every grain: a stage row and the unattributed row each carry their own
+`currency`, and each answers `booked_cents: null` with its own `reason` when the
+prices attributed to it disagree. A priced item that names no currency on a plan
+that names none either is money in an unknown unit, so it refuses the total
+instead of falling out of it — the headline used to answer a confident `0` while
+that item's money still showed in a stage row.
+
+**Actual** comes from `GET /finance/api/trips/:id/spending` over loopback with a
+3 s timeout, and the response carries **all four** of finance's figures — paid,
+gross out, reimbursed, still owed — rather than one flattened total. On a trip
+with friends those four differ, and that difference is the shared-cost surface.
+When finance does not answer, every figure is null with a named reason and
+`ok: false`. Never `0`. `actuals.currency` carries the unit finance stated, and
+when that disagrees with the plan's the figures are unknown with a reason rather
+than relabelled: they are somebody else's numbers. This is deliberately the opposite of `flight_when`, which
+degrades a dead calendar into "every day free" and says nothing in the body; the
+degrade rule lives in `src/finance_client.rs` so a handler cannot quietly copy
+that.
+
+Attribution to a stage uses `payload.stage_id`, else an `external_id` equal to a
+stage's `selected_option_id`, and otherwise counts the price in `unattributed`.
+There is deliberately no third, date-based guess: a stay spanning three stages has
+no single right answer, and inventing one would hide the gap that block exists to
+show. A stage id is also not durable — `generated_stages` remints ids on a real
+route change — so a missing match is a normal outcome rather than an error.
+
+### Why `by_companion` is not served
+
+`GET /api/retrospectives/summary` publishes a factor per DESTINATION only. The
+companion half was designed and cut, and the reason belongs here rather than in a
+commit message: this server ends its router with `CorsLayer::permissive()` and
+refuses no origin anywhere, while `places` — which owns the companion register —
+layers `refuse_foreign_origins` on its whole router exactly because that register
+is C2. A route keyed by a traveler name, carrying a score and a basis of plan ids
+that resolve to destinations and date ranges, is person + place + date range
+readable cross-origin. The shipped invariant for this same data (places ISA
+PLC-12) is falsified by "a person name in its output".
+
+Three preconditions, recorded so this is a plan and not a rediscovery:
+
+1. an origin refusal shipped on trips;
+2. a key that is the register's person id rather than a raw name;
+3. a class column that a mechanism reads, rather than a label a body asserts
+   about itself.
+
+`by_destination` adds no exposure, because `GET /api/plans` already serves
+`destinations` over the same permissive layer. **Found and not fixed here:**
+`trips_plans.travelers` is *already* served cross-origin by `GET /api/plans`.
+That is a pre-existing defect; this contract declines to amplify it and does not
+pretend to have closed it. It belongs in the next security pass.
+
 Rows live in the shared SQLite file — `AXON_DB_PATH`, else
-`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `trips`, so the two tables
-are `trips_plans` and `trips_plan_items` (libs/axon-store/README.md). No personal station,
+`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `trips`, so the three
+tables are `trips_plans`, `trips_plan_items` and `trips_retrospectives`
+(libs/axon-store/README.md). `trips_retrospectives` is one row per plan —
+`plan_id` is the PRIMARY KEY, so a second POST is a correction rather than a
+second row — with `ON DELETE CASCADE`, which is enforced because
+`PRAGMA foreign_keys = ON` is set per connection. No personal station,
 destination or credential is tracked here.
 
 Obsidian scanning is enabled by `$AXON_PERSONAL_ROOT/config/trips.json`, shaped like

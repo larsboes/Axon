@@ -81,11 +81,21 @@ paths = [
 
 [capability.trips]
 writes = "trips"
-paths = ["/trips/api/plans"]
+paths = [
+  "/trips/api/plans",
+  "/trips/api/retrospectives/pending",
+  "/trips/api/retrospectives/summary",
+]
 # Plan detail pages are per-id and the ids are generated, so they cannot be listed here.
 # The recorder expands this against whatever /trips/api/plans returned: one fixture per
 # plan, no id ever written down. Same mechanism serves any list→detail pair.
-expand = [{ from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}" }]
+expand = [
+  { from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}" },
+  # The cost roll-up is per plan too. With no finance route tagged to a trip in the
+  # demo corpus, the recorded fixture shows the honest degrade -- named nulls and a
+  # reason rather than a confident zero, which is the behaviour worth demonstrating.
+  { from = "/trips/api/plans", id_field = "id", into = "/trips/api/plans/{id}/cost" },
+]
 
 [capability.finance]
 writes = "finance"
@@ -171,6 +181,21 @@ paths = [
 # Comms, Scouting and Transit left this section on 2026-08-20. All three were absent for the
 # same reason — each fetches from somewhere else, and a demo has nowhere else — and all three
 # are here now because `[demo] origin` gives them one.
+
+[absent.places]
+reason = """
+places is absent because its two interesting surfaces cannot be seeded honestly. The map layers \
+are joins over finance transactions, transit legs and the companion register, which is C2 and \
+never leaves the host -- seeding it would mean inventing people. And the seasonality strip on the \
+travel page reads climate normals folded from ten years of real daily observations per place, \
+fetched once from Open-Meteo and cached permanently; a hand-written twelve-month grid would be a \
+fixture wearing a measurement's clothes, which is the one thing this demo does not do.
+
+Its absence is the designed behaviour rather than a failure, and it is worth reading as part of \
+the demonstration: the strip and the map say what is missing instead of drawing an empty grid. \
+Without this block the fetch shim would find no owner for a /places/... path and fall through to \
+a real network request from a static page, which is worse than a stated 503.\
+"""
 
 [absent.punctuality]
 reason = """

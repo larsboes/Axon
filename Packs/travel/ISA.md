@@ -137,6 +137,34 @@ private file, or not verified.
   weekend flag, not only synthetic integers. Evidence: the Saturday 09:00 and Monday
   17:00 cells are asserted by full key, both read back through parquet.
 
+### F3 · Retrospective and cost roll-up (PRD §8.2)
+
+- [x] ISC-10 — the feed-forward summary carries no traveler name, under any query
+  string. Evidence: `the_summary_response_carries_no_traveler_name` builds two
+  plans whose `travelers` are set and asserts neither name appears anywhere in
+  the serialized body (2026-09-05); the route takes no parameters at all, so
+  there is no query string that could ask for one. Same falsifier shape as places
+  ISA PLC-12. Falsifier: a person name in the response.
+- [x] ISC-11 — the cost roll-up reports unknown actuals rather than zero when
+  finance does not answer. Evidence:
+  `the_roll_up_reports_unknown_actuals_when_finance_is_unreachable` asserts all
+  four figures are null, `ok` is false and a reason is carried, and explicitly
+  rejects 0 for each of the four (2026-09-05). This is deliberately the opposite
+  of `flight_when`, which degrades a dead calendar into "every day free" and says
+  nothing in the body. Falsifier: a 0 in any `actuals` figure when finance is
+  unreachable.
+- [x] ISC-12 — the roll-up never adds two currencies, at any grain. Evidence:
+  `mixed_currencies_are_not_summed` posts a EUR booking and a USD stay bound to
+  one stage plus two unbound items, and asserts the headline, the stage row and
+  the unattributed row each answer `booked_cents: null` with their own stated
+  reason, then greps the serialized body for the added figures (2026-09-06). The
+  stage rows previously added across currencies under a headline that refused
+  to, and the card rendered the result under an invented euro sign;
+  `a_priced_item_with_no_currency_refuses_the_total_rather_than_reporting_zero`
+  covers the second half, where an item whose unit could not be resolved fell out
+  of the total and into a stage row. Falsifier: any `booked_cents` in the body
+  that is the sum of amounts with different `currency` values.
+
 ## Not yet specified
 
 In scope, too dim to state as a claim yet.
@@ -144,6 +172,18 @@ In scope, too dim to state as a claim yet.
 - **L1 · one outcome record.** `POST /api/plans/:id/outcome` after the next real trip.
   Not code. Gates L2's transfer-buffer calibration and the independence assumption
   journey reliability currently states rather than corrects.
+- **L3 · the retrospective summary's companion half.** `GET
+  /api/retrospectives/summary` publishes a factor per destination and
+  deliberately not per companion. `trips` ends its router with
+  `CorsLayer::permissive()` and refuses no origin, while `places` — which owns
+  the companion register — layers `refuse_foreign_origins` on its whole router
+  exactly because that register is C2. A route keyed by a traveler name, carrying
+  a score and a basis of plan ids that resolve to destinations and date ranges,
+  is person + place + date range readable cross-origin. Three preconditions, in
+  order: an origin refusal shipped on trips; a key that is the register's person
+  id rather than a raw name; a class column a mechanism reads. Recorded here so
+  this stays a plan rather than a rediscovery. Pre-existing and NOT fixed:
+  `trips_plans.travelers` is already served cross-origin by `GET /api/plans`.
 - **`is_regional` disagrees between the backends, and dbweb looks wrong.** Same RE5
   Bonn→Köln, same search, 2026-08-20: dbnav reports `is_regional: true`, dbweb reports
   `false`. dbweb derives the flag from the `9G` entry in `zugattribute`, which was absent
@@ -178,6 +218,9 @@ In scope, too dim to state as a claim yet.
 | ISC-7 | red-then-green | drop a column from the fixture | `MissingColumn`, then green on revert | cargo | Goal |
 | ISC-8 | command | fold the fixture, assert bucket counts | canceled/skipped exact | cargo | Goal |
 | ISC-9 | command | fold the fixture, assert cell key | hour + weekend exact | cargo | Goal |
+| ISC-10 | command | `cargo test -p trips retrospective::`; grep the body for a traveler name | 0 names | cargo | F3 |
+| ISC-11 | command | `cargo test -p trips cost::`; assert every actuals figure | null, never 0 | cargo | F3 |
+| ISC-12 | command | `cargo test -p trips cost::`; grep the body for a cross-currency sum | 0 hits | cargo | F3 |
 
 ## Anti-claims
 
@@ -190,6 +233,19 @@ In scope, too dim to state as a claim yet.
   punctuality-server, search returns anything other than 200 with a null score.
 - [x] A3 — no new tracking surface. Falsifier: a `TODO.md`, `PLAN.md`, `HANDOFF.md` or
   `ROADMAP.md` appears anywhere under `Packs/travel/`.
+- [x] A4 — no stored trips row reaches a model prompt. This is what a
+  `"data_class": "c1"` string in a response body would only have claimed:
+  `libs/content-item` owns `valid`/`class_rank` and neither trips nor places
+  depends on it, so a hand-written class literal in a JSON body is a label with
+  no mechanism behind it. The mechanism instead is that no path exists.
+  `intent::request_body` is the crate's only prompt builder and it takes a
+  caller-supplied sentence; its one non-test call site is
+  `capabilities/trips/src/bin/trips-cli.rs`, which passes the operator's typed
+  text. Evidence: `rg 'request_body\(' capabilities/trips/src` returns the
+  definition, the unit tests and that one call site (2026-09-05). This matters
+  most for `change_note`, which is C1 by default and C2 when it names a person,
+  and which trips has no classifier to tell apart. Falsifier: any call site
+  passing a value read from the store.
 
 ## Decisions
 

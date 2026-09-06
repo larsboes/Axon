@@ -45,6 +45,34 @@ pub struct CacheEntry {
     pub place_id: Option<String>,
 }
 
+/// One calendar month of a place's climate normal. Every measure is optional
+/// because a provider that reports nothing for a month must store nothing:
+/// a 0.0 that means "not observed" is the failure mode the nullable columns and
+/// `days_observed` exist to prevent (Packs/travel ISA: a guess that looks like a
+/// measurement is worse than a blank).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonthlyNormal {
+    pub month: u32,
+    pub t_max_mean: Option<f64>,
+    pub t_min_mean: Option<f64>,
+    pub rain_days_mean: Option<f64>,
+    pub precipitation_mm_mean: Option<f64>,
+    pub daylight_hours_mean: Option<f64>,
+    pub sunshine_hours_mean: Option<f64>,
+    pub days_observed: i64,
+}
+
+/// What window the twelve rows were folded from, and when. `years_covered` alone
+/// cannot tell 2015-2024 from 1995-2004, so the window is named as well as counted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalsMeta {
+    pub years_covered: i64,
+    pub period_start: String,
+    pub period_end: String,
+    pub source: String,
+    pub fetched_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct PersonPlaceRow {
     pub id: String,
@@ -127,7 +155,7 @@ impl PlacesStore {
         Ok(())
     }
 
-    /// The current shape of the four tables. `places` is declared before the two
+    /// The current shape of the five tables. `places` is declared before the three
     /// that reference it, because a batch executes in order.
     fn run_migration(conn: &Connection, prefix: &str) -> Fallible<()> {
         conn.execute_batch(&format!(
@@ -204,6 +232,39 @@ impl PlacesStore {
             );
             CREATE INDEX IF NOT EXISTS idx_{prefix}_person_places_state
                 ON {prefix}_person_places(state, person);
+
+            -- Climate normals, twelve rows per place (README D5, ISA F4).
+            -- The table IS the cache: permanent by design like the geocode cache
+            -- above, so there is no TTL column and no second cache table. A
+            -- re-fetch is DELETE-then-twelve-INSERTs in one transaction, so a
+            -- partial refresh never leaves a stale eleventh month behind.
+            --
+            -- Every measure is nullable because a provider that reports no
+            -- sunshine duration at some latitude must store NULL, not 0.
+            -- `days_observed` is NOT NULL so a short month is visible rather
+            -- than silently averaged, and `years_covered` alone cannot tell
+            -- 2015-2024 from 1995-2004, which is what the period columns say.
+            -- `best_month` is deliberately not a column: the numbers are data,
+            -- the rule that reads them is code (climate.rs::best_months).
+            CREATE TABLE IF NOT EXISTS {prefix}_climate_normals (
+                place_id TEXT NOT NULL REFERENCES {prefix}_places(id),
+                month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+                t_max_mean REAL,
+                t_min_mean REAL,
+                rain_days_mean REAL,
+                precipitation_mm_mean REAL,
+                daylight_hours_mean REAL,
+                sunshine_hours_mean REAL,
+                days_observed INTEGER NOT NULL,
+                years_covered INTEGER NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                source TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                PRIMARY KEY (place_id, month)
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_climate_normals_fetched
+                ON {prefix}_climate_normals(fetched_at);
             "
         ))?;
         Ok(())
@@ -311,6 +372,120 @@ impl PlacesStore {
             ),
             [],
             row_to_place,
+        )?)
+    }
+
+    /// The twelve stored months for one place, in calendar order. An empty
+    /// vector means "never fetched", which the read routes report as such
+    /// rather than as an empty grid.
+    pub fn climate_get(&self, place_id: &str) -> Fallible<Vec<MonthlyNormal>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn.query_all(
+            &format!(
+                "SELECT month, t_max_mean, t_min_mean, rain_days_mean,
+                        precipitation_mm_mean, daylight_hours_mean,
+                        sunshine_hours_mean, days_observed
+                 FROM {prefix}_climate_normals WHERE place_id = ?1
+                 ORDER BY month"
+            ),
+            params![&place_id],
+            row_to_normal,
+        )?)
+    }
+
+    /// The window and the fetch stamp the stored months came from. `None` when
+    /// the place has no normals, which is the same answer `climate_get` gives.
+    pub fn climate_meta(&self, place_id: &str) -> Fallible<Option<NormalsMeta>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT years_covered, period_start, period_end, source, fetched_at
+                     FROM {prefix}_climate_normals WHERE place_id = ?1
+                     ORDER BY month LIMIT 1"
+                ),
+                params![&place_id],
+                |row| {
+                    Ok(NormalsMeta {
+                        years_covered: row.get(0)?,
+                        period_start: row.get(1)?,
+                        period_end: row.get(2)?,
+                        source: row.get(3)?,
+                        fetched_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Replace a place's normals in one transaction: DELETE, then one INSERT per
+    /// month the fold produced. One transaction because a refresh that failed
+    /// halfway would otherwise leave a place with some months from 2015-2024 and
+    /// some from an older window, which no column could tell apart afterwards.
+    pub fn climate_put(
+        &self,
+        place_id: &str,
+        months: &[MonthlyNormal],
+        meta: &NormalsMeta,
+    ) -> Fallible<usize> {
+        let prefix = self.prefix.clone();
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            &format!("DELETE FROM {prefix}_climate_normals WHERE place_id = ?1"),
+            params![&place_id],
+        )?;
+        {
+            let mut insert = tx.prepare(&format!(
+                "INSERT INTO {prefix}_climate_normals
+                    (place_id, month, t_max_mean, t_min_mean, rain_days_mean,
+                     precipitation_mm_mean, daylight_hours_mean, sunshine_hours_mean,
+                     days_observed, years_covered, period_start, period_end,
+                     source, fetched_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"
+            ))?;
+            for month in months {
+                insert.execute(params![
+                    &place_id,
+                    &month.month,
+                    &month.t_max_mean,
+                    &month.t_min_mean,
+                    &month.rain_days_mean,
+                    &month.precipitation_mm_mean,
+                    &month.daylight_hours_mean,
+                    &month.sunshine_hours_mean,
+                    &month.days_observed,
+                    &meta.years_covered,
+                    &meta.period_start,
+                    &meta.period_end,
+                    &meta.source,
+                    &meta.fetched_at,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(months.len())
+    }
+
+    /// Every place that carries a coordinate, paired with whether it has normals
+    /// stored. The read routes resolve a bare coordinate against exactly this
+    /// list, so "nearest place" means "nearest place that can actually answer".
+    pub fn places_with_climate(&self) -> Fallible<Vec<(Place, bool)>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn.query_all(
+            &format!(
+                "SELECT p.id, p.name, p.kind, p.address, p.city, p.country_code,
+                        p.latitude, p.longitude, p.source, p.external_ref,
+                        EXISTS (SELECT 1 FROM {prefix}_climate_normals c
+                                WHERE c.place_id = p.id) AS has_normals
+                 FROM {prefix}_places p
+                 WHERE p.latitude IS NOT NULL AND p.longitude IS NOT NULL"
+            ),
+            [],
+            |row| Ok((row_to_place(row)?, row.get::<_, i64>(10)? == 1)),
         )?)
     }
 
@@ -515,6 +690,19 @@ fn row_to_place(row: &Row) -> rusqlite::Result<Place> {
         longitude: row.get(7)?,
         source: row.get(8)?,
         external_ref: row.get(9)?,
+    })
+}
+
+fn row_to_normal(row: &Row) -> rusqlite::Result<MonthlyNormal> {
+    Ok(MonthlyNormal {
+        month: row.get(0)?,
+        t_max_mean: row.get(1)?,
+        t_min_mean: row.get(2)?,
+        rain_days_mean: row.get(3)?,
+        precipitation_mm_mean: row.get(4)?,
+        daylight_hours_mean: row.get(5)?,
+        sunshine_hours_mean: row.get(6)?,
+        days_observed: row.get(7)?,
     })
 }
 

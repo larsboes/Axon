@@ -13,11 +13,22 @@
   import PlanEditor from "$lib/travel/PlanEditor.svelte";
   import PlaceField from "$lib/travel/PlaceField.svelte";
   import TripMap, { type MapPoint } from "$lib/travel/TripMap.svelte";
+  import ClimateStrip from "$lib/travel/ClimateStrip.svelte";
+  import CostCard from "$lib/travel/CostCard.svelte";
+  import RetrospectiveForm from "$lib/travel/RetrospectiveForm.svelte";
+  import {
+    climateFor,
+    planCost,
+    type ClimateBatch,
+    type ClimateResult,
+    type PlanCost,
+  } from "$lib/travel/api";
   import {
     loadNearbyPlaces,
     type NearbyPlace,
   } from "$lib/travel/nearby-places";
   import { loadPlaceImage, placeName, type PlaceImage } from "$lib/travel/place-image";
+  import type { Retrospective } from "$lib/api";
   import {
     assessTravelCandidates,
     calendarCandidatesFor,
@@ -27,7 +38,6 @@
     axonStatus,
     calendar,
     comms,
-    finance,
     scouting,
     transit,
     trips,
@@ -41,7 +51,6 @@
     type ScoutingOpportunity,
     type TransportMode,
     type TripPlan,
-    type TripSpendingSummary,
   } from "$lib/api";
 
   const EVENT_ADAPTERS = ["luma", "meetup", "euro_hackathons"];
@@ -121,8 +130,13 @@
   let plannerOpen = $state(false);
   let plannerNotice = $state<string | null>(null);
   let openedPlanFromLink = "";
-  let tripSpending = $state<TripSpendingSummary[]>([]);
-  let tripSpendingRequested = false;
+  // Seasonality for the open plan's destinations, keyed by "lat,lon" exactly as
+  // sent so a result never has to be re-associated with its request.
+  let climate = $state<ClimateBatch | null>(null);
+  // The open plan's close-out record. Held beside `activePlan` rather than on
+  // it, because `activePlan` is typed `TripPlan` and widening it would touch a
+  // declaration another stream is also editing tonight.
+  let planRetrospective = $state<Retrospective | null>(null);
 
   const selected = $derived(results.find((result) => result.place.id === selectedId) ?? null);
   const upcomingPlans = $derived(
@@ -136,23 +150,48 @@
       .sort((a, b) => b.date_end.localeCompare(a.date_end)),
   );
   const viewingPast = $derived(activePlan !== null && activePlan.date_end < todayKey);
-  const money = (cents: number, currency: string | null) =>
-    (cents / 100).toLocaleString("en-GB", { style: "currency", currency: currency ?? "EUR" });
-  const tripCostLine = $derived.by(() => {
-    const plan = activePlan;
-    if (!plan) return null;
-    const spend = tripSpending.find((entry) => entry.trip_id === plan.id) ?? null;
-    const parts: string[] = [];
-    if (plan.budget_cents !== null) {
-      parts.push(`Budget ${money(plan.budget_cents, plan.currency)}`);
+  // The one-line placeholder this replaced summed nothing and said nothing when
+  // finance was down. The roll-up is computed by trips and rendered by CostCard,
+  // which is the trips README's rule: the frontend renders, the backend computes.
+  let planCostRollup = $state<PlanCost | null>(null);
+  /**
+   * Machine proposes, human confirms — and a proposal is one NAMED quantity in a
+   * named unit, which is why the form prints which one it got.
+   *
+   * `personal_cents` when finance answered, else the booked total when the
+   * bookings resolved to a single currency, else nothing. The call site used to
+   * pass a literal null, so the form always said "no proposal" and its whole
+   * prefill branch was dead.
+   */
+  const costProposal = $derived.by(() => {
+    const rollup = planCostRollup;
+    if (!rollup) return null;
+    if (rollup.actuals.ok && rollup.actuals.personal_cents !== null) {
+      return { cents: rollup.actuals.personal_cents, label: "actuals" };
     }
-    if (spend) {
-      parts.push(
-        `${parts.length > 0 ? "spent" : "Spent"} ${money(spend.personal_spending_cents, plan.currency)}`,
-      );
+    if (rollup.booked_cents !== null && rollup.booked_cents > 0 && rollup.by_currency.length === 1) {
+      return { cents: rollup.booked_cents, label: "bookings" };
     }
-    return parts.length > 0 ? parts.join(" · ") : null;
+    return null;
   });
+
+  /**
+   * The result this destination's coordinate was sent under, and nothing else.
+   *
+   * `key` is the `lat,lon` pair exactly as sent, published by the route so a
+   * caller never re-associates a result with its request. Matching on the
+   * MATCHED place's name — and falling back to `results[0]` — rendered one
+   * city's twelve months under another city's heading as soon as a plan carried
+   * a second destination, or as soon as a coordinate resolved to a nearby place
+   * with a different name.
+   */
+  function climateResultFor(place: PlaceRef): ClimateResult | null {
+    if (!climate) return null;
+    if (typeof place.latitude !== "number" || typeof place.longitude !== "number") return null;
+    const key = `${place.latitude},${place.longitude}`;
+    return climate.results.find((result) => result.key === key) ?? null;
+  }
+
   const filteredPlans = $derived(
     planFilter === "upcoming" ? upcomingPlans : planFilter === "past" ? pastPlans : [...upcomingPlans, ...pastPlans],
   );
@@ -595,6 +634,9 @@
       items = [];
       plannerOpen = false;
       plannerNotice = null;
+      // A new plan inherits nothing from the last one that was open.
+      void loadClimate(plan);
+      void loadPlanCost(plan.id);
       await explorePlan(plan);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -603,25 +645,60 @@
     }
   }
 
-  // One fetch per page life, on the first opened plan. Finance being down must not
-  // break travel: the cost line simply stays absent, so failure is swallowed here.
-  async function loadTripSpending(): Promise<void> {
-    if (tripSpendingRequested) return;
-    tripSpendingRequested = true;
+  /**
+   * The plan's own cost roll-up: intent, committed and actual, per plan.
+   *
+   * This replaces a page-wide `finance.tripSpending()` that downloaded the whole
+   * projection to read one number. `finance.tripSpending()` itself stays defined
+   * in `$lib/api` — the demo has a recorded fixture for it and another consumer
+   * may still want it.
+   *
+   * Finance being down is not a failure of this call: trips answers 200 with
+   * `actuals.ok: false` and a reason, and the card prints it.
+   */
+  async function loadPlanCost(planId: string): Promise<void> {
+    planCostRollup = null;
     try {
-      tripSpending = await finance.tripSpending();
+      planCostRollup = await planCost(planId);
     } catch {
-      // Deliberate empty state — tripSpending stays [].
+      // Deliberate empty state — the card stays absent rather than lying.
+    }
+  }
+
+  /**
+   * Normals for every destination that carries a coordinate, in ONE request.
+   *
+   * Failure is swallowed on purpose: places being down or refusing the origin
+   * must not break the trip view, so the strip simply stays absent. It never
+   * degrades into an empty grid — the route distinguishes "no normals yet" from
+   * "no such place" and the component prints whichever it got.
+   */
+  async function loadClimate(plan: TripPlan): Promise<void> {
+    climate = null;
+    const keys = [...plan.destinations]
+      .filter(
+        (place): place is PlaceRef & { latitude: number; longitude: number } =>
+          typeof place.latitude === "number" && typeof place.longitude === "number",
+      )
+      .map((place) => ({ latitude: place.latitude, longitude: place.longitude }));
+    if (keys.length === 0) return;
+    try {
+      await axonStatus.start("places").catch(() => undefined);
+      climate = await climateFor(keys, { from: plan.date_start, to: plan.date_end });
+    } catch {
+      // Deliberate empty state — the strip stays absent rather than lying.
     }
   }
 
   async function openPlan(plan: TripPlan): Promise<void> {
     error = null;
     editingPlan = false;
-    void loadTripSpending();
+    void loadPlanCost(plan.id);
     try {
       const details = await trips.get(plan.id);
       items = details.items;
+      planRetrospective = details.retrospective;
+      void loadClimate(details);
       if (details.date_end < todayKey) {
         activePlan = details;
         selectedId = details.destinations[0]?.id ?? "";
@@ -751,6 +828,12 @@
       const updated = await trips.update(activePlan.id, patch);
       plans = plans.map((plan) => (plan.id === updated.id ? updated : plan));
       editingPlan = false;
+      // Both reads are about the plan that just changed: the destinations decide
+      // which normals the strip shows, and the budget is edited through exactly
+      // this path. Without these the strip kept the previous destinations and the
+      // card kept the previous budget.
+      void loadClimate(updated);
+      void loadPlanCost(updated.id);
       if (updated.date_end < todayKey) {
         activePlan = updated;
         results = [];
@@ -1462,9 +1545,6 @@
         {placeName(activePlan.origin)} · {shortDate(activePlan.date_start)} –
         {shortDate(activePlan.date_end)}
       </p>
-      {#if tripCostLine}
-        <p>{tripCostLine}</p>
-      {/if}
       <div class="trip-meta">
         {#each activePlan.transport_modes as mode (mode)}
           <span>{modeLabel(mode)}</span>
@@ -1555,6 +1635,10 @@
     {/each}
   </section>
 
+  {#if planCostRollup}
+    <CostCard cost={planCostRollup} />
+  {/if}
+
   {#if viewingPast}
     <section class="past-view">
       <TripMap points={mapPoints} />
@@ -1566,6 +1650,14 @@
           <p class="past-intent">{activePlan.interests}</p>
         {/if}
       </div>
+
+      <RetrospectiveForm
+        planId={activePlan.id}
+        currency={activePlan.currency}
+        existing={planRetrospective}
+        proposal={costProposal}
+        onSaved={(row) => (planRetrospective = row)}
+      />
 
       <div class="past-timeline">
         <div class="section-heading">
@@ -1645,6 +1737,17 @@
             </button>
           </div>
         </header>
+
+        {#if climate}
+          {@const found = climateResultFor(selected.place)}
+          {#if found}
+            <ClimateStrip
+              result={found}
+              rule={climate.best_months_rule}
+              attribution={climate.attribution}
+            />
+          {/if}
+        {/if}
 
         {#if selected.anchors.length > 0}
           <section class="calendar-anchors" aria-labelledby="calendar-anchor-heading">
