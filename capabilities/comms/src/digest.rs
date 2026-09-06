@@ -278,11 +278,10 @@ fn source_text(store: &Store, cfg: &Config, source: &str, id: &str) -> Result<Op
 /// construction, so this never reaches a remote target.
 fn calendar_entry_text(cfg: &Config, id: &str) -> Result<Option<SourceText>> {
     let base = cfg.calendar_context.base_url.trim_end_matches('/');
-    let http = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(
-            cfg.calendar_context.timeout_ms,
-        ))
-        .build()?;
+    let http = axon_http::client(
+        axon_http::Purpose::new("comms-digest"),
+        std::time::Duration::from_millis(cfg.calendar_context.timeout_ms),
+    )?;
     let response = http
         .get(format!("{base}/api/content/calendar/{id}"))
         .send()?;

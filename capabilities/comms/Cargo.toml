@@ -39,6 +39,9 @@ name = "comms-mail-model-eval"
 path = "src/mail_model_eval_main.rs"
 
 [dependencies]
+# Outbound HTTP goes through one factory: the user-agent, the timeout and the
+# connection pool are decided there, not at each call site (libs/axon-http).
+axon-http = { path = "../../libs/axon-http" }
 axon-config = { path = "../../libs/axon-config" }
 # The readers this capability used to own, promoted at the second consumer
 # (README.md#schemas-and-dependency-direction). Default features on: this is the

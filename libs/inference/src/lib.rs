@@ -698,10 +698,10 @@ impl ResolvedRole {
         if self.backend.base_url.trim().is_empty() || self.model.trim().is_empty() {
             return false;
         }
-        let client = match reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
-            .build()
-        {
+        let client = match axon_http::client(
+            axon_http::Purpose::new("inference-probe"),
+            std::time::Duration::from_secs(3),
+        ) {
             Ok(client) => client,
             Err(_) => return false,
         };
@@ -791,10 +791,11 @@ impl ResolvedRole {
             return Ok(Vec::new());
         }
         let endpoint = self.rerank_endpoint()?;
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .map_err(|error| format!("client build: {error}"))?;
+        let client = axon_http::client(
+            axon_http::Purpose::new("inference-rerank"),
+            std::time::Duration::from_secs(120),
+        )
+        .map_err(|error| format!("client build: {error}"))?;
         let mut request = client
             .post(&endpoint)
             .json(&self.rerank_request_body(query, documents));
@@ -862,10 +863,11 @@ impl ResolvedRole {
         }
         self.refuse_ungoverned_cloud_call("text to embed")?;
         let endpoint = self.embedding_endpoint();
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .map_err(|error| format!("client build: {error}"))?;
+        let client = axon_http::client(
+            axon_http::Purpose::new("inference-embed"),
+            std::time::Duration::from_secs(120),
+        )
+        .map_err(|error| format!("client build: {error}"))?;
 
         let mut request = client
             .post(&endpoint)

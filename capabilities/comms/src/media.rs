@@ -484,28 +484,29 @@ fn strip_tags(s: &str) -> String {
 /// the URL the caller handed over leaves `302 -> http://169.254.169.254/` as a
 /// complete bypass, so every hop is re-checked and the chain is capped at three.
 fn http_client() -> Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder()
-        .user_agent("AxonComms/0.1")
-        .gzip(true)
-        .timeout(std::time::Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            // `>`, not `>=`: reqwest's `previous()` starts with the initial
-            // URL, which is not a redirection (reqwest-0.12.28
-            // src/redirect.rs:135 says so, and its own `Policy::limited`
-            // compares the same way). With `>=` the error said three and
-            // followed two.
-            if attempt.previous().len() > MAX_REDIRECTS {
-                return attempt.error(CommsError::Other(format!(
-                    "refused: more than {MAX_REDIRECTS} redirects"
-                )));
-            }
-            let next = attempt.url().as_str().to_string();
-            match check_scheme(&next).and_then(|()| check_destination(&next)) {
-                Ok(()) => attempt.follow(),
-                Err(e) => attempt.error(e),
-            }
-        }))
-        .build()?)
+    Ok(axon_http::builder(
+        axon_http::Purpose::new("comms-media"),
+        std::time::Duration::from_secs(30),
+    )
+    .gzip(true)
+    .redirect(reqwest::redirect::Policy::custom(|attempt| {
+        // `>`, not `>=`: reqwest's `previous()` starts with the initial
+        // URL, which is not a redirection (reqwest-0.12.28
+        // src/redirect.rs:135 says so, and its own `Policy::limited`
+        // compares the same way). With `>=` the error said three and
+        // followed two.
+        if attempt.previous().len() > MAX_REDIRECTS {
+            return attempt.error(CommsError::Other(format!(
+                "refused: more than {MAX_REDIRECTS} redirects"
+            )));
+        }
+        let next = attempt.url().as_str().to_string();
+        match check_scheme(&next).and_then(|()| check_destination(&next)) {
+            Ok(()) => attempt.follow(),
+            Err(e) => attempt.error(e),
+        }
+    }))
+    .build()?)
 }
 
 /// Fetch an article: GET the bytes, hand them to the HTML extractor.
@@ -1436,10 +1437,10 @@ pub fn summarize(text: &str, cfg: &Config, data_class: &str) -> SummarizeOutcome
         None
     };
 
-    let http = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-    {
+    let http = match axon_http::client(
+        axon_http::Purpose::new("comms-summarize"),
+        std::time::Duration::from_secs(120),
+    ) {
         Ok(c) => c,
         Err(e) => return SummarizeOutcome::HttpError(e.to_string()),
     };

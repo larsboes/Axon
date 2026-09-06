@@ -63,9 +63,7 @@ fn base_url(variable: &str, port: u16) -> String {
 }
 
 fn client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
+    axon_http::client(axon_http::Purpose::new("trips-upstream"), timeout)
         .map_err(|error| format!("client build: {error}"))
 }
 

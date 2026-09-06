@@ -1115,10 +1115,11 @@ async fn flight_when(Query(params): Query<FlightWhenParams>) -> ApiResponse {
         grid.dedup_by(|later, earlier| later.date == earlier.date);
 
         let entries: Result<Vec<trips::windows::CalendarSpan>, String> = (|| {
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(3))
-                .build()
-                .map_err(|error| error.to_string())?;
+            let client = axon_http::client(
+                axon_http::Purpose::new("trips-calendar"),
+                std::time::Duration::from_secs(3),
+            )
+            .map_err(|error| error.to_string())?;
             let response = client
                 .get(format!(
                     "{}/api/entries?from={date_from}&to={date_to}",

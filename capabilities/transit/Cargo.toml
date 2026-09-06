@@ -29,6 +29,9 @@ name = "transit-server"
 path = "src/server.rs"
 
 [dependencies]
+# Outbound HTTP goes through one factory: the user-agent, the timeout and the
+# connection pool are decided there, not at each call site (libs/axon-http).
+axon-http = { path = "../../libs/axon-http" }
 axon-config = { path = "../../libs/axon-config" }
 # The shared shape of "what a reader got out of a file"
 # (README.md#schemas-and-dependency-direction). This capability is the second

@@ -33,7 +33,6 @@ use crate::source::{SearchQuery, SourceAdapter, SourceError};
 
 const API_BASE: &str = "https://api2.luma.com";
 // Update once Axon goes public (no public GitHub remote yet, see PROJECTS.md).
-const USER_AGENT: &str = "Axon-Scouting/0.1 (+https://github.com/larsboes/Axon)";
 
 /// Last-resort bootstrap map, used only when the live `bootstrap-page` lookup
 /// fails (offline, rate limited). **Known stale**: probed 2026-07-30, only the
@@ -360,10 +359,11 @@ fn non_empty(s: &str) -> Option<String> {
 }
 
 fn fetch_with_headers(url: &str) -> Result<String, SourceError> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| SourceError::Fetch(format!("client build: {e}")))?;
+    let client = axon_http::client(
+        axon_http::Purpose::new("scouting-luma"),
+        crate::http::TIMEOUT,
+    )
+    .map_err(|e| SourceError::Fetch(format!("client build: {e}")))?;
     // The status check that made this adapter honest (#54) now lives in
     // crate::http, so the three siblings that had the same gap share it (#62)
     // instead of carrying three copies that can drift apart.
@@ -393,10 +393,6 @@ impl SourceAdapter for LumaAdapter {
 
     fn rate_limit_per_min(&self) -> u32 {
         20
-    }
-
-    fn user_agent(&self) -> &str {
-        USER_AGENT
     }
 
     fn search(&self, query: &SearchQuery) -> Result<Vec<Opportunity>, SourceError> {

@@ -126,10 +126,11 @@ fn draft(sentence: &str) -> Result<(), String> {
     let model =
         std::env::var("AXON_INTENT_MODEL").unwrap_or_else(|_| "apple-foundationmodel".into());
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("client build: {e}"))?;
+    let client = axon_http::client(
+        axon_http::Purpose::new("trips-cli"),
+        std::time::Duration::from_secs(60),
+    )
+    .map_err(|e| format!("client build: {e}"))?;
     let response = client
         .post(&url)
         .json(&trips::intent::request_body(&model, sentence))

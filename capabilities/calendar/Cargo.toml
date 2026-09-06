@@ -16,6 +16,9 @@ name = "calendar-server"
 path = "src/server.rs"
 
 [dependencies]
+# Outbound HTTP goes through one factory: the user-agent, the timeout and the
+# connection pool are decided there, not at each call site (libs/axon-http).
+axon-http = { path = "../../libs/axon-http" }
 axon-config = { path = "../../libs/axon-config" }
 axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }

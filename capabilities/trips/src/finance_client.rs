@@ -87,9 +87,7 @@ pub fn trip_spending(plan_id: &str) -> Result<TripSpending, Unreachable> {
 /// a test.
 pub fn trip_spending_at(base_url: &str, plan_id: &str) -> Result<TripSpending, Unreachable> {
     let url = format!("{}/api/trips/{}/spending", base_url, urlencode(plan_id));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(TIMEOUT)
-        .build()
+    let client = axon_http::client(axon_http::Purpose::new("trips-finance"), TIMEOUT)
         .map_err(|error| Unreachable::new(format!("finance client: {error}")))?;
     let mut request = client.get(&url);
     // The inbound gate is on every route except /health and /ready, so without

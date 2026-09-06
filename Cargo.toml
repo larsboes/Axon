@@ -14,6 +14,7 @@ members = [
     "capabilities/trips",
     "capabilities/vault",
     "libs/axon-config",
+    "libs/axon-http",
     "libs/axon-server",
     "libs/axon-store",
     "libs/candidate-fingerprint",
@@ -99,7 +100,7 @@ tower-http = "0.5"
 #                             why the object files sit loose on disk instead of in a bundle.
 #
 # The `"*"` glob is the precise tool for this: cargo documents it as overriding "the settings for
-# all dependencies (but not any workspace member)". So the 23 crates in `members` above keep
+# all dependencies (but not any workspace member)". So the crates in `members` above keep
 # `debug = true` and stay fully steppable in lldb, and the dependencies — which nobody steps
 # into — stop paying for it.
 #

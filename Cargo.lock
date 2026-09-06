@@ -567,9 +567,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "axon-http"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+]
+
+[[package]]
 name = "axon-inference"
 version = "0.1.0"
 dependencies = [
+ "axon-http",
  "reqwest",
  "serde",
  "serde_json",
@@ -628,6 +636,7 @@ dependencies = [
 name = "axon-summarize"
 version = "0.1.0"
 dependencies = [
+ "axon-http",
  "reqwest",
  "serde_json",
 ]
@@ -877,6 +886,7 @@ name = "calendar"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-http",
  "axon-server",
  "axon-store",
  "axum",
@@ -1076,6 +1086,7 @@ version = "0.1.0"
 dependencies = [
  "axon-config",
  "axon-extraction",
+ "axon-http",
  "axon-inference",
  "axon-server",
  "axon-store",
@@ -1655,6 +1666,7 @@ name = "finance"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-http",
  "axon-server",
  "axon-store",
  "axum",
@@ -3518,6 +3530,7 @@ name = "places"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-http",
  "axon-server",
  "axon-store",
  "axum",
@@ -3703,6 +3716,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "axon-config",
+ "axon-http",
  "axon-server",
  "axon-store",
  "axum",
@@ -4408,6 +4422,7 @@ name = "scouting"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-http",
  "axon-inference",
  "axon-server",
  "axon-store",
@@ -5376,6 +5391,7 @@ version = "0.1.0"
 dependencies = [
  "axon-config",
  "axon-extraction",
+ "axon-http",
  "axon-server",
  "axon-store",
  "axum",
@@ -5399,6 +5415,7 @@ name = "trips"
 version = "0.1.0"
 dependencies = [
  "axon-config",
+ "axon-http",
  "axon-server",
  "axon-store",
  "axum",

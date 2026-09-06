@@ -723,12 +723,13 @@ pub fn looks_like_html(body: &str) -> bool {
 /// never on the async runtime: a blocking reqwest client driven from a Tokio
 /// worker panics at run time rather than failing to compile.
 pub fn blocking_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .cookie_store(true)
-        .user_agent("axon-finance/1.0 (personal use; https://github.com/larsboes/Axon)")
-        .build()
-        .map_err(|error| format!("client could not be built: {error}"))
+    axon_http::builder(
+        axon_http::Purpose::new("finance-price"),
+        Duration::from_secs(15),
+    )
+    .cookie_store(true)
+    .build()
+    .map_err(|error| format!("client could not be built: {error}"))
 }
 
 // ---------------------------------------------------------------------------

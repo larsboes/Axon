@@ -123,13 +123,14 @@ fn empty(from_cache: bool) -> LoadedTravelContext {
 
 fn fetch(config: &TravelContextConfig) -> Result<Vec<TravelContext>, Box<dyn std::error::Error>> {
     let url = format!("{}/api/plans", config.base_url.trim_end_matches('/'));
-    let plans = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(config.timeout_ms.clamp(250, 10_000)))
-        .build()?
-        .get(url)
-        .send()?
-        .error_for_status()?
-        .json::<Vec<TripPlanResponse>>()?;
+    let plans = axon_http::client(
+        axon_http::Purpose::new("comms-travel"),
+        Duration::from_millis(config.timeout_ms.clamp(250, 10_000)),
+    )?
+    .get(url)
+    .send()?
+    .error_for_status()?
+    .json::<Vec<TripPlanResponse>>()?;
     let today = current_date();
     let mut contexts = plans
         .into_iter()

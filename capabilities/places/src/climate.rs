@@ -426,10 +426,7 @@ pub fn fetch_normals(
 
     let (period_start, period_end, years) = normals_period(today);
     throttle();
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(crate::geocode::USER_AGENT)
-        .timeout(REQUEST_TIMEOUT)
-        .build()?;
+    let client = axon_http::client(axon_http::Purpose::new("places-climate"), REQUEST_TIMEOUT)?;
     // Exactly six parameters, and PLC-13's falsifier is a seventh: the plan's
     // dates, a traveler, an amount and a place name all have nowhere to go here.
     let response = client

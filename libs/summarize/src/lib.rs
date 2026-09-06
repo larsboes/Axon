@@ -683,10 +683,10 @@ pub(crate) fn complete(target: &Target, prompt: &str, max_tokens: u32) -> Outcom
         },
         _ => None,
     };
-    let http = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-    {
+    let http = match axon_http::client(
+        axon_http::Purpose::new("summarize"),
+        Duration::from_secs(120),
+    ) {
         Ok(client) => client,
         Err(error) => return Outcome::HttpError(error.to_string()),
     };
