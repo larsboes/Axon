@@ -404,13 +404,18 @@ export function collectWhyBlocks(
 // partly because the generator *emits* decision paths into ARCHITECTURE.md, so a sweep that
 // excluded the generated file could not see them. Cheap to check, invisible when skipped.
 //
-// A REPO path, not an HTTP one. The dissolved directory was at the repository ROOT, so every
-// real citation of it -- in prose, in a doc, or emitted into ARCHITECTURE.md by the generator --
-// begins the path. An HTTP route always has a segment in front of it. Measured 2026-09-05: the
-// finance capability's route for recomputing investment proposals matched this pattern and
-// failed the gate in four files at once, in Rust, TypeScript and Markdown. The lookbehind
-// excludes a match that follows a slash and nothing else, so a citation at the start of a path
-// is still reported and a mid-path segment is not.
+// A REPO path, not an HTTP one. Measured 2026-09-05: the finance capability's route for
+// recomputing investment proposals matched this pattern and failed the gate in four files at
+// once, in Rust, TypeScript and Markdown.
+//
+// The exclusion is on what an HTTP ROUTE looks like, not on any preceding slash. Excluding
+// every match that follows a slash would also silence `docs/decisions/<slug>`,
+// `./decisions/<slug>` and `Knowledge-Base/decisions/<slug>` -- real citations of a dissolved
+// entry that happen to carry a directory in front of them, which is exactly what this sweep
+// exists to catch. So the three route shapes this repository writes are named instead: a path
+// under `api/`, a path built on a base-URL template, and an absolute http(s) URL.
+const ROUTE_PREFIX = /(api\/|\$\{[^}]*\}\/|https?:\/\/[^\s"'`]*\/)$/;
+
 export function findDanglingDecisionRefs(
   files: Array<{ path: string; text: string }>,
   slugExists: (slug: string) => boolean,
@@ -418,7 +423,8 @@ export function findDanglingDecisionRefs(
   const out: Array<{ file: string; slug: string }> = [];
   const seen = new Set<string>();
   for (const { path, text } of files) {
-    for (const m of text.matchAll(/(?<!\/)decisions\/([a-z0-9][a-z0-9-]*)/g)) {
+    for (const m of text.matchAll(/decisions\/([a-z0-9][a-z0-9-]*)/g)) {
+      if (ROUTE_PREFIX.test(text.slice(Math.max(0, (m.index ?? 0) - 64), m.index ?? 0))) continue;
       const slug = m[1];
       const key = `${path}::${slug}`;
       if (seen.has(key) || slugExists(slug)) continue;

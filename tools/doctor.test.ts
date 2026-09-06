@@ -374,6 +374,23 @@ describe("findDanglingDecisionRefs", () => {
     )).toEqual([{ file: "README.md", slug: "gone" }]);
   });
 
+  test("a citation with a directory in front of it is still a citation", () => {
+    // The narrowing is on what a ROUTE looks like, not on a preceding slash. A
+    // relative or prefixed path is the form a doc, a vault note or a generated
+    // ARCHITECTURE.md line uses, and silencing it would leave the sweep blind to
+    // the case it exists for.
+    expect(findDanglingDecisionRefs(
+      [{ path: "docs/guide.md", text: "See [x](./decisions/gone/README.md)." }], alive,
+    )).toEqual([{ file: "docs/guide.md", slug: "gone" }]);
+    expect(findDanglingDecisionRefs(
+      [{ path: "ARCHITECTURE.md", text: "- `Knowledge-Base/decisions/gone/README.md`" }], alive,
+    )).toEqual([{ file: "ARCHITECTURE.md", slug: "gone" }]);
+    // An absolute URL is a route wherever its host came from.
+    expect(findDanglingDecisionRefs(
+      [{ path: "tools/x.ts", text: "http://127.0.0.1:8084/decisions/run" }], alive,
+    )).toEqual([]);
+  });
+
   test("a citation of a dissolved entry is reported", () => {
     expect(findDanglingDecisionRefs(
       [{ path: "README.md", text: "See `decisions/dissolved-entry/README.md`." }], alive,
