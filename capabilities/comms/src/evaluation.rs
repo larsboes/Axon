@@ -13,9 +13,11 @@ use crate::relevance::{InterestProfile, RelevanceMatch};
 use crate::store::FeedItem;
 use crate::travel::{self, TravelContext};
 
-/// v5 grades content evidence by `content_status` instead of counting field
-/// presence, so every stored evaluation restales and is recomputed.
-pub const EVALUATOR_REVISION: &str = "feed-evaluator-v5-english";
+/// v6 adds the learned feedback factor as a fifth entry in the vector, so every
+/// stored evaluation restales and is recomputed once. Under the split currency
+/// check that is a re-evaluation from stored matches rather than a re-embed,
+/// for every item whose relevance revision has not moved.
+pub const EVALUATOR_REVISION: &str = "feed-evaluator-v6-feedback";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EvaluationFactorContext {
@@ -103,6 +105,7 @@ pub fn context_revision(
     embedding_producer: Option<&str>,
     reranking_producer: Option<&str>,
     travel_revision: &str,
+    feedback_revision: &str,
 ) -> String {
     let mut revisions = profiles
         .iter()
@@ -120,6 +123,10 @@ pub fn context_revision(
         reranking_producer.unwrap_or("semantic")
     ));
     revisions.push(format!("travel:{travel_revision}"));
+    // The learned model's revision is the literal `none` while it is inert, so
+    // accumulating labels does not restale 372 cached evaluations for a factor
+    // that counts for nothing.
+    revisions.push(format!("feedback:{feedback_revision}"));
     revisions.sort();
     revision_hash(&revisions.iter().map(String::as_str).collect::<Vec<_>>())
 }
@@ -198,6 +205,7 @@ pub fn evaluate(
     context_revision: &str,
     travel_contexts: &[TravelContext],
     refused_class: bool,
+    feedback: Option<EvaluationFactor>,
 ) -> FeedEvaluation {
     let interest_score = strongest_match
         .map(|matched| matched.score.clamp(0.0, 1.0))
@@ -278,7 +286,19 @@ pub fn evaluate(
             context: None,
         },
     ];
-    scale_weights(&mut factors, &[]);
+    // The fifth factor. Absent means the model has never been trained; present
+    // and inert means it has been, and is still below its gate -- which the
+    // reader should be able to see, so it renders at weight 0 with its own
+    // rationale rather than vanishing.
+    if let Some(feedback) = feedback {
+        factors.push(feedback);
+    }
+    // `feedback` is a reserved share: active, it takes its stated 0.15 and the
+    // four base factors scale into the remaining 0.85, so 0.45/0.25/0.20/0.10
+    // becomes 0.3825/0.2125/0.17/0.085. The learned signal can move an item at
+    // most 15 points of 100 -- it re-orders inside a band and can never outvote
+    // the TELOS lenses.
+    scale_weights(&mut factors, &["feedback"]);
     let overall_score = factors
         .iter()
         .map(|factor| factor.score * factor.weight)
@@ -494,12 +514,19 @@ mod tests {
     fn context_revision_includes_embedding_vector_space() {
         let profiles = Vec::new();
         assert_ne!(
-            context_revision(&profiles, Some("ollama:nomic-embed-text"), None, "travel"),
+            context_revision(
+                &profiles,
+                Some("ollama:nomic-embed-text"),
+                None,
+                "travel",
+                "none"
+            ),
             context_revision(
                 &profiles,
                 Some("omlx:multilingual-embedding"),
                 None,
-                "travel"
+                "travel",
+                "none"
             )
         );
     }
@@ -507,16 +534,28 @@ mod tests {
     #[test]
     fn context_revision_includes_travel_snapshot() {
         assert_ne!(
-            context_revision(&[], None, None, "travel-one"),
-            context_revision(&[], None, None, "travel-two")
+            context_revision(&[], None, None, "travel-one", "none"),
+            context_revision(&[], None, None, "travel-two", "none")
         );
     }
 
     #[test]
     fn context_revision_includes_reranking_model() {
         assert_ne!(
-            context_revision(&[], Some("omlx:e5"), Some("omlx:reranker-a"), "travel"),
-            context_revision(&[], Some("omlx:e5"), Some("omlx:reranker-b"), "travel")
+            context_revision(
+                &[],
+                Some("omlx:e5"),
+                Some("omlx:reranker-a"),
+                "travel",
+                "none"
+            ),
+            context_revision(
+                &[],
+                Some("omlx:e5"),
+                Some("omlx:reranker-b"),
+                "travel",
+                "none"
+            )
         );
     }
 
@@ -531,7 +570,7 @@ mod tests {
             mode: "semantic".into(),
             profile_revision: "r".into(),
         };
-        let evaluation = evaluate(&item, Some(&matched), "context", &[], false);
+        let evaluation = evaluate(&item, Some(&matched), "context", &[], false, None);
         assert_eq!(evaluation.factors.len(), 4);
         assert!((0.0..=1.0).contains(&evaluation.overall_score));
         assert!(
@@ -642,8 +681,8 @@ mod tests {
             relevance_revision(&[], Some("ollama:bge-m3"), None)
         );
         assert_ne!(
-            context_revision(&[], Some("ollama:bge-m3"), None, "trip-one"),
-            context_revision(&[], Some("ollama:bge-m3"), None, "trip-two")
+            context_revision(&[], Some("ollama:bge-m3"), None, "trip-one", "none"),
+            context_revision(&[], Some("ollama:bge-m3"), None, "trip-two", "none")
         );
         assert_ne!(
             relevance_revision(&[], Some("ollama:bge-m3"), None),
@@ -662,7 +701,7 @@ mod tests {
             mode: "semantic".into(),
             profile_revision: "r".into(),
         };
-        let refused = evaluate(&item, Some(&matched), "context", &[], true);
+        let refused = evaluate(&item, Some(&matched), "context", &[], true, None);
         let interest = refused
             .factors
             .iter()
@@ -684,6 +723,118 @@ mod tests {
         );
         // The explanation must not report a factor that counts for nothing.
         assert!(!refused.explanation.contains("Interest fit"));
+    }
+
+    fn feedback_factor(active: bool) -> EvaluationFactor {
+        EvaluationFactor {
+            key: "feedback".into(),
+            label: "Your decisions".into(),
+            score: if active { 0.8 } else { 0.0 },
+            weight: if active { FEEDBACK_WEIGHT } else { 0.0 },
+            rationale: if active {
+                "Your past decisions: kind:github (+)".into()
+            } else {
+                "Not yet learned: 19 of 50 decisions recorded".into()
+            },
+            context: None,
+        }
+    }
+
+    #[test]
+    fn weights_sum_to_one_in_every_state() {
+        let item = item();
+        let matched = RelevanceMatch {
+            profile_key: "p".into(),
+            profile_label: "Local AI".into(),
+            score: 0.8,
+            rationale: "match".into(),
+            mode: "semantic".into(),
+            profile_revision: "r".into(),
+        };
+        let sum = |evaluation: &FeedEvaluation| -> f64 {
+            evaluation.factors.iter().map(|factor| factor.weight).sum()
+        };
+        let weight_of = |evaluation: &FeedEvaluation, key: &str| -> f64 {
+            evaluation
+                .factors
+                .iter()
+                .find(|factor| factor.key == key)
+                .map(|factor| factor.weight)
+                .unwrap_or(0.0)
+        };
+
+        // Inert: five factors, the fifth at weight 0, the four base weights
+        // unchanged.
+        let inert = evaluate(
+            &item,
+            Some(&matched),
+            "context",
+            &[],
+            false,
+            Some(feedback_factor(false)),
+        );
+        assert_eq!(inert.factors.len(), 5);
+        assert!((sum(&inert) - 1.0).abs() < 1e-9);
+        assert_eq!(weight_of(&inert, "feedback"), 0.0);
+        assert!((weight_of(&inert, "interest") - 0.45).abs() < 1e-9);
+
+        // Active: 0.3825 / 0.2125 / 0.17 / 0.085 / 0.15.
+        let active = evaluate(
+            &item,
+            Some(&matched),
+            "context",
+            &[],
+            false,
+            Some(feedback_factor(true)),
+        );
+        assert!((sum(&active) - 1.0).abs() < 1e-9);
+        assert!((weight_of(&active, "feedback") - 0.15).abs() < 1e-9);
+        assert!((weight_of(&active, "interest") - 0.3825).abs() < 1e-9);
+        assert!((weight_of(&active, "travel") - 0.2125).abs() < 1e-9);
+        assert!((weight_of(&active, "freshness") - 0.17).abs() < 1e-9);
+        assert!((weight_of(&active, "evidence") - 0.085).abs() < 1e-9);
+
+        // Refused, with the learned factor active: the interest factor drops to
+        // zero and the rest still sum to one.
+        let refused = evaluate(
+            &item,
+            Some(&matched),
+            "context",
+            &[],
+            true,
+            Some(feedback_factor(true)),
+        );
+        assert!((sum(&refused) - 1.0).abs() < 1e-9);
+        assert_eq!(weight_of(&refused, "interest"), 0.0);
+        assert!((weight_of(&refused, "feedback") - 0.15).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_explanation_ignores_a_zero_weight_factor() {
+        let item = item();
+        let inert = evaluate(
+            &item,
+            None,
+            "context",
+            &[],
+            false,
+            Some(feedback_factor(false)),
+        );
+        // The inert factor scores 0.0 -- the lowest of the five -- and must not
+        // be reported as the largest deduction.
+        assert!(
+            !inert.explanation.contains("Your decisions"),
+            "{}",
+            inert.explanation
+        );
+    }
+
+    #[test]
+    fn context_revision_includes_the_learned_model() {
+        assert_ne!(
+            context_revision(&[], None, None, "travel", "none"),
+            context_revision(&[], None, None, "travel", "feedback-abc123")
+        );
     }
 
     #[test]

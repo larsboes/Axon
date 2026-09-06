@@ -78,6 +78,274 @@ pub(super) async fn feed_interactions_handler(
     }
 }
 
+/// The learned feedback model as it currently stands, with the vocabulary it
+/// was fitted against.
+///
+/// Loaded from the second `comms_feed_context_snapshots` row rather than a table
+/// of its own: the table is already keyed on `context_kind`, the travel snapshot
+/// is the same shape, and a new table would be a migration for a blob.
+pub(super) struct FeedbackContext {
+    model: comms::feedback::FeedbackModel,
+    space: comms::feedback::FeatureSpace,
+    /// `feedback-<hash>` when active, the literal `none` when not.
+    pub(super) revision: String,
+    /// Which collector source each item arrived from, for the source slot.
+    sources: BTreeMap<String, String>,
+}
+
+impl FeedbackContext {
+    /// The factor for one item. Inert, it renders at weight 0 with the count it
+    /// is short by, because a factor nobody can see is a factor nobody can
+    /// argue with.
+    fn factor(
+        &self,
+        item: &FeedItem,
+        matches: &[RelevanceMatch],
+    ) -> comms::evaluation::EvaluationFactor {
+        if !self.model.active {
+            return self.model.factor(None, comms::evaluation::FEEDBACK_WEIGHT);
+        }
+        let features = comms::feedback::features(
+            &self.space,
+            &comms::feedback::FeatureInput {
+                item,
+                matches,
+                source_id: self.sources.get(&item.id).map(String::as_str),
+            },
+        );
+        self.model
+            .factor(Some(&features), comms::evaluation::FEEDBACK_WEIGHT)
+    }
+}
+
+/// Read the stored model, or report an untrained one.
+///
+/// A stored model whose feature names differ from the ones computed now is stale
+/// by definition — a new TELOS lens or a new feed source changes the vocabulary
+/// — so it is discarded rather than scored against. That is an invalidation rule
+/// rather than a guess about which piece of configuration moved.
+pub(super) fn load_feedback(
+    store: &Store,
+    profiles: &[relevance::InterestProfile],
+) -> FeedbackContext {
+    let sources = store.feed_origin_sources().unwrap_or_default();
+    let declared = {
+        let mut ids = sources.values().cloned().collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+    let space = comms::feedback::FeatureSpace::new(declared, profiles);
+    let stored = store
+        .context_snapshot(FEEDBACK_SNAPSHOT_KIND)
+        .ok()
+        .flatten()
+        .and_then(|snapshot| {
+            serde_json::from_str::<comms::feedback::FeedbackModel>(&snapshot.payload).ok()
+        })
+        .filter(|model| comms::feedback::is_usable(model, &space));
+    let counts = store
+        .training_labels()
+        .map(|training| comms::feedback::SampleCounts {
+            kept: training.labels.iter().filter(|label| label.kept).count(),
+            dismissed: training.labels.iter().filter(|label| !label.kept).count(),
+            total: training.labels.len(),
+            seeded_from_status: training.seeded_from_status,
+            skipped_class: training.skipped_class,
+        })
+        .unwrap_or_default();
+    let model = stored.unwrap_or_else(|| comms::feedback::untrained(&space, counts));
+    let revision = model.revision();
+    FeedbackContext {
+        model,
+        space,
+        revision,
+        sources,
+    }
+}
+
+/// The `context_kind` the learned model is stored under.
+pub(super) const FEEDBACK_SNAPSHOT_KIND: &str = "feedback-model";
+
+#[derive(Debug, Deserialize)]
+pub(super) struct TrainBody {
+    /// Compute and report the gate without writing the snapshot.
+    dry_run: Option<bool>,
+}
+
+/// Refit the learned factor from the ledger.
+///
+/// A full deterministic refit, never an incremental update: ≤372 rows over ~50
+/// features is microseconds, and incremental weights depend on arrival order,
+/// which cannot be rederived from the ledger — that would make the revision
+/// unusable as a cache key, which is the property the snapshot mechanism rests
+/// on.
+pub(super) async fn model_train_handler(Json(body): Json<TrainBody>) -> HttpResponse {
+    let dry_run = body.dry_run.unwrap_or(false);
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let cfg = Config::load();
+        let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
+        let profiles = relevance::load_profiles(&cfg.relevance)?;
+        let context = load_feedback(&store, &profiles);
+        let training = store.training_labels().map_err(|error| error.to_string())?;
+        let ids = training
+            .labels
+            .iter()
+            .map(|label| label.feed_id.clone())
+            .collect::<Vec<_>>();
+        let items = store
+            .feed_items_by_ids(&ids)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect::<BTreeMap<_, _>>();
+        let matches = store
+            .feed_relevance_map(&ids)
+            .map_err(|error| error.to_string())?;
+        let rows = training
+            .labels
+            .iter()
+            .filter_map(|label| {
+                let item = items.get(&label.feed_id)?;
+                let vector = comms::feedback::features(
+                    &context.space,
+                    &comms::feedback::FeatureInput {
+                        item,
+                        matches: matches
+                            .get(&label.feed_id)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        source_id: context.sources.get(&label.feed_id).map(String::as_str),
+                    },
+                );
+                Some(comms::feedback::TrainingRow::from_label(label, vector))
+            })
+            .collect::<Vec<_>>();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs() as i64)
+            .unwrap_or(0);
+        let trained_at = chrono_free_stamp(now);
+        let model = comms::feedback::train(
+            &context.space,
+            &rows,
+            training.skipped_class,
+            now,
+            &trained_at,
+        );
+        let revision = model.revision();
+        if !dry_run {
+            let payload = serde_json::to_string(&model).map_err(|error| error.to_string())?;
+            store
+                .replace_context_snapshot(FEEDBACK_SNAPSHOT_KIND, &revision, &payload)
+                .map_err(|error| error.to_string())?;
+        }
+        // The strongest signals are reported only for a model that HAS signals.
+        // An inert model's weights are all zero, and listing eight zeroes as
+        // "top features" would be the endpoint saying something it cannot mean.
+        Ok(feedback_status(&model, &revision, model.active))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "task failed" })),
+        ),
+    }
+}
+
+/// An ISO-ish day stamp without a date dependency. comms carries no date crate
+/// and the store's own clock writes the durable timestamps; this is a label.
+fn chrono_free_stamp(epoch_seconds: i64) -> String {
+    let days = epoch_seconds / 86_400;
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Days since 1970-01-01 back to a Gregorian date (Howard Hinnant's algorithm,
+/// the inverse of the one `evaluation` already carries).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * shifted_month + 2) / 5 + 1) as u32;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    } as u32;
+    (year + i64::from(month <= 2), month, day)
+}
+
+/// The one shape both the train route and the status endpoint report the model
+/// in, so a reader comparing them is comparing the same fields.
+fn feedback_status(
+    model: &comms::feedback::FeedbackModel,
+    revision: &str,
+    include_features: bool,
+) -> Value {
+    let mut top_features = model
+        .feature_names
+        .iter()
+        .zip(&model.weights)
+        .enumerate()
+        .filter(|(index, _)| *index != 0)
+        .map(|(_, (name, weight))| (name.clone(), *weight))
+        .collect::<Vec<_>>();
+    top_features.sort_by(|left, right| {
+        right
+            .1
+            .abs()
+            .partial_cmp(&left.1.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    json!({
+        "revision": revision,
+        "active": model.active,
+        "gate_reason": model.gate_reason,
+        "feature_revision": model.feature_revision,
+        "feature_count": model.feature_names.len(),
+        "samples": {
+            "kept": model.samples.kept,
+            "dismissed": model.samples.dismissed,
+            "total": model.samples.total,
+            "seeded_from_status": model.samples.seeded_from_status,
+            "skipped_class": model.samples.skipped_class,
+        },
+        "holdout": { "n": model.holdout.n, "auc": model.holdout.auc },
+        "thresholds": {
+            "min_labels": comms::feedback::MIN_LABELS,
+            "min_minority": comms::feedback::MIN_MINORITY,
+            "min_auc": comms::feedback::MIN_AUC,
+            "weight": comms::evaluation::FEEDBACK_WEIGHT,
+        },
+        "trained_at": model.trained_at,
+        // The names include configured source ids and TELOS lens labels, so the
+        // payload is c2: it is served to the local dashboard and never reaches
+        // the published demo, whose recorded path list does not carry this route.
+        "top_features": include_features.then(|| top_features
+            .iter()
+            .take(8)
+            .map(|(name, weight)| json!({ "name": name, "weight": weight }))
+            .collect::<Vec<_>>()),
+    })
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct FeedDataClassBody {
     data_class: String,
@@ -176,11 +444,13 @@ pub(super) fn enrich_many_in_background(ids: Vec<String>) {
         let reranking_role = cfg.reranking_role();
         let reranking_producer = reranking_role.as_ref().map(|role| role.cache_key());
         let travel_context = travel::load(&store, &cfg.travel_context);
+        let feedback = load_feedback(&store, &profiles);
         let context_revision = evaluation::context_revision(
             &profiles,
             embedding_producer.as_deref(),
             reranking_producer.as_deref(),
             &travel_context.revision,
+            &feedback.revision,
         );
         let semantic_available = relevance::embedding_backend_reachable(embedding_role.as_ref());
         items.retain(|item| {
@@ -213,6 +483,7 @@ pub(super) fn enrich_many_in_background(ids: Vec<String>) {
                 &context_revision,
                 &travel_context.contexts,
                 result.refused_class,
+                Some(feedback.factor(item, &result.matches)),
             );
             if let Err(error) = store.replace_feed_evaluation(&evaluated) {
                 eprintln!("ingest: evaluation failed for {}: {error}", item.id);
@@ -395,11 +666,16 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
         let reranking_role = cfg.reranking_role();
         let reranking_producer = reranking_role.as_ref().map(|role| role.cache_key());
         let travel_context = travel::load(&store, &cfg.travel_context);
+        // The learned model is a term in the RANKING revision only. Under the
+        // split currency check a refit therefore re-evaluates from stored
+        // matches and re-embeds nothing.
+        let feedback = load_feedback(&store, &profiles);
         let context_revision = evaluation::context_revision(
             &profiles,
             embedding_producer.as_deref(),
             reranking_producer.as_deref(),
             &travel_context.revision,
+            &feedback.revision,
         );
         let relevance_revision = evaluation::relevance_revision(
             &profiles,
@@ -470,6 +746,7 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
                 &context_revision,
                 &travel_context.contexts,
                 true,
+                Some(feedback.factor(item, &[])),
             );
             if store
                 .replace_feed_evaluation(&evaluated)
@@ -501,6 +778,7 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
                 &context_revision,
                 &travel_context.contexts,
                 scored.refused_class,
+                Some(feedback.factor(item, &scored.matches)),
             );
             if store
                 .replace_feed_evaluation(&evaluated)
@@ -526,6 +804,7 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
                 &context_revision,
                 &travel_context.contexts,
                 false,
+                Some(feedback.factor(item, matches)),
             );
             if store
                 .replace_feed_evaluation(&evaluated)
@@ -660,6 +939,7 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
         // The receipt of the last pass, and the line that would have made the
         // 2026-08-30 degradation visible the day it happened: 525 rows were
         // written lexical in one pass and nothing on the machine said so.
+        let feedback = load_feedback(&store, &profiles);
         let last_pass = store.relevance_pass().map_err(|error| error.to_string())?;
         let last_pass_mode = last_pass
             .as_ref()
@@ -676,7 +956,9 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
                 embedding_producer.as_deref(),
                 reranking_producer.as_deref(),
                 travel_revision,
+                &feedback.revision,
             ),
+            "feedback_model": feedback_status(&feedback.model, &feedback.revision, feedback.model.active),
             "ledger": {
                 "evaluated": summary.evaluated,
                 "reranked": summary.reranked,

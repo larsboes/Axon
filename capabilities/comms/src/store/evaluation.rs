@@ -184,8 +184,17 @@ impl Store {
         )?)
     }
 
-    pub fn replace_travel_context_snapshot(
+    /// Store one revisioned blob under its kind.
+    ///
+    /// Generalised from the travel-only pair, because the learned feedback model
+    /// is the same shape: a bounded, revisioned payload that feeds
+    /// `context_revision`. The table is already keyed on `context_kind`
+    /// (migrations.rs), so a second kind needs no migration at all — which
+    /// matters, because `CREATE TABLE IF NOT EXISTS` never revisits an installed
+    /// table and `axon.db` already holds this one.
+    pub fn replace_context_snapshot(
         &self,
+        kind: &str,
         revision: &str,
         payload: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -194,7 +203,7 @@ impl Store {
             &format!(
                 "INSERT INTO {prefix}_feed_context_snapshots
                     (context_kind, revision, payload, refreshed_at)
-                 VALUES ('travel',?1,?2,{now})
+                 VALUES (?1,?2,?3,{now})
                  ON CONFLICT (context_kind) DO UPDATE SET
                     revision = excluded.revision,
                     payload = excluded.payload,
@@ -202,25 +211,26 @@ impl Store {
                 prefix = self.prefix,
                 now = axon_store::NOW
             ),
-            params![&revision, &payload],
+            params![&kind, &revision, &payload],
         )?;
         Ok(())
     }
 
-    pub fn travel_context_snapshot(
+    pub fn context_snapshot(
         &self,
-    ) -> Result<Option<TravelContextSnapshot>, Box<dyn std::error::Error>> {
+        kind: &str,
+    ) -> Result<Option<ContextSnapshot>, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         Ok(conn
             .query_row(
                 &format!(
                     "SELECT revision, payload, refreshed_at
-                     FROM {}_feed_context_snapshots WHERE context_kind = 'travel'",
+                     FROM {}_feed_context_snapshots WHERE context_kind = ?1",
                     self.prefix
                 ),
-                [],
+                params![&kind],
                 |row| {
-                    Ok(TravelContextSnapshot {
+                    Ok(ContextSnapshot {
                         revision: row.get(0)?,
                         payload: row.get(1)?,
                         refreshed_at: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
@@ -228,5 +238,27 @@ impl Store {
                 },
             )
             .optional()?)
+    }
+
+    /// Two-line delegates, so `travel.rs` does not move for a change that is
+    /// not about travel.
+    pub fn replace_travel_context_snapshot(
+        &self,
+        revision: &str,
+        payload: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.replace_context_snapshot("travel", revision, payload)
+    }
+
+    pub fn travel_context_snapshot(
+        &self,
+    ) -> Result<Option<TravelContextSnapshot>, Box<dyn std::error::Error>> {
+        Ok(self
+            .context_snapshot("travel")?
+            .map(|snapshot| TravelContextSnapshot {
+                revision: snapshot.revision,
+                payload: snapshot.payload,
+                refreshed_at: snapshot.refreshed_at,
+            }))
     }
 }

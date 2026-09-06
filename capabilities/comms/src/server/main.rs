@@ -250,6 +250,12 @@ const ROUTES: &[route_manifest::Route] = &[
         "Record that a feed entry was opened or reopened. Body: {event: opened|reopened, surface}. \
          The decisive verbs (kept, dismissed, unkept) are written by /feed/:id/status and refused here.",
     ),
+    r(
+        "POST",
+        "/feed/model/train",
+        "Refit the learned feedback factor from the interaction ledger. Optional `dry_run` \
+         reports the cold-start gate without writing the model.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -354,7 +360,8 @@ fn build_router(dashboard_origin: &str) -> Router {
         // than a third router: the projection layer below sits on this block
         // and nowhere else, so a route added here is covered by the same
         // sentence that covers every other mutation.
-        .route("/feed/:id/interactions", post(feed_interactions_handler));
+        .route("/feed/:id/interactions", post(feed_interactions_handler))
+        .route("/feed/model/train", post(model_train_handler));
 
     Router::new()
         .merge(read_routes)

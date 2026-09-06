@@ -256,9 +256,11 @@ that backend is unavailable, both sides use the same deterministic lexical vecto
 stored match is labelled `lexical`. Scores are raw ranking signals, not calibrated probabilities.
 
 The Feed's displayed rank is a separate deterministic evaluation, not an LLM judgment.
-`feed-evaluator-v5-english` combines the strongest TELOS match (45%), an explicit upcoming-trip
-match (25%), age since first ingest (20%) and the stored content basis — title, author, summary
-and source text (10%). Travel matching compares item text with destination names and the plan's
+`feed-evaluator-v6-feedback` combines the strongest TELOS match (45%), an explicit upcoming-trip
+match (25%), age since first ingest (20%), the stored content basis — title, author, summary and
+source text (10%) — and, when it has earned the right to count, a fifth factor learned from the
+operator's own decisions (15%, with the four base weights scaling to 0.3825/0.2125/0.17/0.085 so
+the sum stays 1.0). Travel matching compares item text with destination names and the plan's
 declared interests; the winning factor carries the Trip ID, label, dates and matched terms so
 the UI never has to reverse-engineer a prose explanation.
 
@@ -296,6 +298,30 @@ have all stopped must not be held green by a local model answering a drain.
 every item in the window has been seen, printing the mode each page answered in. It is an HTTP
 client against the running server, never a second opener of the database: `Store::open` runs the
 whole migration on every call and two openers deadlock.
+
+**The fifth factor learns from the ledger, and is inert until that is worth doing.**
+L2-regularised logistic regression over an explicit ~50-slot feature vector — kind, source, top
+TELOS lens, lens scores, content_status, freshness bucket, hashed author, hour bucket. **No slot
+carries text**: the author is one of sixteen hash buckets and everything else is a categorical id
+or a number, so a feature vector cannot reconstruct a title. Training obeys the same ladder as a
+prompt: an item that fails `content_item::local_prompt_allowed` contributes no label and no
+feature vector. A full deterministic refit, never an incremental update — identical inputs give
+identical weights, which is what lets the revision be a cache key — stored as a second
+`context_kind = 'feedback-model'` row in the existing `comms_feed_context_snapshots`, with its
+`feature_names` beside its weights: a new lens or a new source changes the vocabulary, and a
+model whose stored names differ from the ones computed now is stale by definition.
+
+The factor renders at **weight 0 with the rationale "not yet learned"** until three measured
+conditions hold — ≥50 labels, ≥10 of the smaller class, held-out AUC ≥0.65 on a time-ordered 30%
+split — and while it is inert its revision is the literal `none`, so accumulating labels does not
+restale cached evaluations for a factor that counts for nothing. What obliges the gate: of the
+19 live labels the keepers are github, youtube and article, and **zero of the 185 stored arXiv
+items has ever been kept**. A model fitted on that learns "arXiv is never kept" and buries the
+largest source in the feed. `POST /feed/model/train` refits and reports the gate; `dry_run`
+reports it without writing. It is gated against a frozen synthetic corpus whose judgement rule
+was written before the trainer ran (`eval/feedback-corpus.json`). Active, the factor names its
+two strongest signed contributions — it may re-rank and must explain itself, and it may never
+write a status.
 
 **Mail has its own evaluator, and it publishes one number with one writer.**
 `comms_triage_evaluations` and `comms_triage_evaluation_factors` mirror the feed's pair column

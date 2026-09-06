@@ -79,6 +79,25 @@
         </small>
       </div>
     {/if}
+    {#if status.feedback_model}
+      <div>
+        <dt>
+          <span class:online={status.feedback_model.active} class="dot"></span>
+          Learned fit
+        </dt>
+        <dd>
+          {status.feedback_model.active
+            ? `AUC ${status.feedback_model.holdout.auc.toFixed(2)}`
+            : "not yet learned"}
+        </dd>
+        <!-- The gate, and how far off it is. Of the live decisions, zero of the
+             185 stored arXiv items has ever been kept — a model fitted on that
+             learns "arXiv is never kept" and buries the largest source, which
+             is why the factor stays at weight 0 until three measured conditions
+             hold. -->
+        <small>{status.feedback_model.gate_reason}</small>
+      </div>
+    {/if}
     {#if status.travel_context}
       <div>
         <dt>

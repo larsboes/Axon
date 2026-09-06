@@ -23,6 +23,7 @@ pub mod config;
 pub mod digest;
 pub mod evaluation;
 pub mod extraction_eval;
+pub mod feedback;
 pub mod google;
 pub mod grounding;
 pub mod intake;

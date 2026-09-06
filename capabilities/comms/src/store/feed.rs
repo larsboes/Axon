@@ -875,6 +875,23 @@ impl Store {
         )?)
     }
 
+    /// Which collector source each item arrived from, for the feature vector's
+    /// source slot. The newest origin wins when an item has several.
+    pub fn feed_origin_sources(
+        &self,
+    ) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let rows = conn.query_all(
+            &format!(
+                "SELECT feed_id, source_id FROM {}_feed_origins ORDER BY last_seen ASC",
+                self.prefix
+            ),
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Stored matches for many items in one query.
     ///
     /// The split currency check re-evaluates from stored matches instead of

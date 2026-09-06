@@ -601,6 +601,18 @@
     }
   }
 
+  /// What "For you" is ranking on right now. The learned factor is inert until
+  /// it clears its gate, and a surface that offers a personalised sort without
+  /// saying that is claiming something it cannot do yet.
+  const forYouHint = $derived.by(() => {
+    const model = modelStatus?.feedback_model;
+    if (!model) return "Ranked by the evaluator's TELOS, travel, freshness and evidence factors.";
+    if (model.active) {
+      return `Ranked by the evaluator, including what your ${model.samples.total} past decisions imply (held-out AUC ${model.holdout.auc.toFixed(2)}).`;
+    }
+    return `Ranked by the evaluator's TELOS, travel, freshness and evidence factors. The learned factor is still inert: ${model.gate_reason}.`;
+  });
+
   function decidedLabel(status: FeedStatus): string {
     return status === "keeper" ? "kept · u to undo" : "dismissed · u to undo";
   }
@@ -1107,8 +1119,15 @@
   </div>
   <div class="segmented">
     <button class:active={order === "recent"} onclick={() => (order = "recent")}>New</button>
-    <button class:active={order === "relevance"} onclick={() => (order = "relevance")}>
+    <button
+      class:active={order === "relevance"}
+      onclick={() => (order = "relevance")}
+      title={forYouHint}
+    >
       For you
+      {#if modelStatus?.feedback_model && !modelStatus.feedback_model.active}
+        <span class="learning mono">learning</span>
+      {/if}
     </button>
   </div>
   <button class="btn" onclick={refreshRelevance} disabled={relevanceBusy}>
@@ -1976,6 +1995,12 @@
      and the decision is one `u` away from being retracted. */
   .entry.decided {
     opacity: 0.55;
+  }
+
+  .learning {
+    margin-left: 0.3rem;
+    font-size: 0.5625rem;
+    color: var(--text-tertiary);
   }
 
   .verdict {
