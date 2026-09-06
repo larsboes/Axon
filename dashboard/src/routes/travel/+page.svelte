@@ -9,8 +9,10 @@
   import RailGroup from "$lib/rail/RailGroup.svelte";
   import RailSection from "$lib/rail/RailSection.svelte";
   import RelatedTools from "$lib/RelatedTools.svelte";
+  import CompanionRail from "$lib/travel/CompanionRail.svelte";
   import JourneyOption from "$lib/travel/JourneyOption.svelte";
   import PlanEditor from "$lib/travel/PlanEditor.svelte";
+  import PlanSearchPanel from "$lib/travel/PlanSearchPanel.svelte";
   import PlaceField from "$lib/travel/PlaceField.svelte";
   import TripMap, { type MapPoint } from "$lib/travel/TripMap.svelte";
   import ClimateStrip from "$lib/travel/ClimateStrip.svelte";
@@ -19,9 +21,11 @@
   import {
     climateFor,
     planCost,
+    planSearch,
     type ClimateBatch,
     type ClimateResult,
     type PlanCost,
+    type RankedCandidate,
   } from "$lib/travel/api";
   import {
     loadNearbyPlaces,
@@ -34,13 +38,16 @@
     calendarCandidatesFor,
     type TravelCandidateAssessment,
   } from "$lib/travel/travel-candidates";
+  import { seedFromCandidate } from "$lib/travel/plan-search";
   import {
     axonStatus,
     calendar,
     comms,
+    places,
     scouting,
     transit,
     trips,
+    type PersonPlaceProposal,
     type CalendarEntry,
     type CalendarCandidateVerdict,
     type Journey,
@@ -204,7 +211,57 @@
   const obsidianPendingCount = $derived(
     obsidianCandidates.filter((candidate) => !candidate.imported_plan_id).length,
   );
-  const travelReviewCount = $derived(travelCandidates.length + obsidianPendingCount);
+  // The companion register's waiting decisions, read-only here. `places` is a
+  // capability the published demo does not have, so its own 503 sentence is
+  // carried into the section rather than a 404 body (demo/demo.toml
+  // [absent.places]).
+  let companionProposals = $state<PersonPlaceProposal[]>([]);
+  let companionLoading = $state(true);
+  let companionNotice = $state<string | null>(null);
+  async function loadCompanionProposals(): Promise<void> {
+    companionLoading = true;
+    try {
+      const answer = await places.proposals();
+      companionProposals = answer.proposals;
+      companionNotice = null;
+    } catch (caught) {
+      companionProposals = [];
+      companionNotice = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      companionLoading = false;
+    }
+  }
+
+  /** Which half of the planner overlay is showing. */
+  let plannerTab = $state<"find" | "new">("new");
+
+  /**
+   * Create the plan the operator chose, then record the whole option space on
+   * it. The plan is never rolled back if adopt fails: deleting a durable row to
+   * hide a transient error is the wrong way round, and adopt is idempotent on
+   * (plan_id, item_type, external_id), so a retry is a correction.
+   */
+  async function createPlanFromCandidate(job: number, candidate: RankedCandidate): Promise<string> {
+    if (!origin) throw new Error("Pick an origin first.");
+    const seed = seedFromCandidate(candidate);
+    const plan = await trips.create({
+      title: placeName(candidate.destination),
+      origin,
+      destinations: [candidate.destination],
+      date_start: seed.startDate,
+      date_end: seed.endDate,
+      interests: interests.trim(),
+      travelers: [],
+      transport_modes: [candidate.mode],
+    });
+    plans = [plan, ...plans];
+    await planSearch.adopt(job, plan.id);
+    return plan.id;
+  }
+
+  const travelReviewCount = $derived(
+    travelCandidates.length + obsidianPendingCount + companionProposals.length,
+  );
   const overviewMapPoints = $derived.by<MapPoint[]>(() =>
     filteredPlans.flatMap((plan) =>
       [plan.origin, ...plan.destinations]
@@ -266,6 +323,7 @@
         plans = [];
       }
       await loadTravelCandidates();
+      await loadCompanionProposals();
     })();
   });
 
@@ -1415,6 +1473,14 @@
             {/if}
           </div>
         </RailSection>
+
+        <RailSection label="Companions" count={companionProposals.length}>
+          <CompanionRail
+            proposals={companionProposals}
+            loading={companionLoading}
+            notice={companionNotice}
+          />
+        </RailSection>
       </RailGroup>
     </Rail>
   </div>
@@ -1433,6 +1499,36 @@
         <p class="planner-notice" aria-live="polite">{plannerNotice}</p>
       {/if}
 
+      <div class="planner-tabs" role="tablist" aria-label="How to start a trip">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={plannerTab === "find"}
+          class:active={plannerTab === "find"}
+          onclick={() => (plannerTab = "find")}>Find a trip</button
+        >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={plannerTab === "new"}
+          class:active={plannerTab === "new"}
+          onclick={() => (plannerTab = "new")}>New trip</button
+        >
+      </div>
+
+      {#if plannerTab === "find"}
+        <PlanSearchPanel
+          {origin}
+          modeOptions={MODE_OPTIONS}
+          onChoose={(seed) => {
+            firstDestination = { ...seed.destination, kind: "city" };
+            startDate = seed.startDate;
+            endDate = seed.endDate;
+            plannerTab = "new";
+          }}
+          onAdopt={createPlanFromCandidate}
+        />
+      {:else}
       <form
         class="planner-form"
         onsubmit={(event) => {
@@ -1519,6 +1615,7 @@
         <span><b>02</b> Transport options for each leg</span>
         <span><b>03</b> Activities, events, and itinerary</span>
       </div>
+      {/if}
     </Overlay>
   {/if}
 
@@ -2488,6 +2585,28 @@
 
   /* The planner is a dialog now — `$lib/Overlay.svelte` carries its frame, so what
    * is left here is the form itself. */
+  .planner-tabs {
+    display: flex;
+    gap: 0.35rem;
+    margin-bottom: 0.9rem;
+  }
+
+  .planner-tabs button {
+    padding: 0.35rem 0.8rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    cursor: pointer;
+  }
+
+  .planner-tabs button.active {
+    border-color: var(--primary);
+    background-color: var(--primary-soft);
+    color: var(--primary);
+  }
+
   .planner-lede {
     margin: -0.5rem 0 1rem;
     color: var(--text-tertiary);

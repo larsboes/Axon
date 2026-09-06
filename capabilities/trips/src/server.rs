@@ -126,7 +126,9 @@ const ROUTES: &[route_manifest::Route] = &[
         "When could I go: every day of a span priced and joined with the calendar. \
          Query: from, to, date_from, date_to (YYYY-MM-DD, span capped at 42 days). \
          Free days rank cheapest-first, then planned, committed last with the \
-         colliding entries named. Costs one Kiwi search per 21 span days.",
+         colliding entries named. An unreachable calendar marks every day \
+         load=unknown and sets calendar/degraded in the reply, rather than \
+         ranking a committed week as free. Costs one Kiwi search per 21 span days.",
     ),
     r(
         "GET",
@@ -173,6 +175,33 @@ const ROUTES: &[route_manifest::Route] = &[
          the basis, never filter on it. by_companion is a sentence rather than data -- see \
          capabilities/trips/README.md for the three preconditions.",
     ),
+    // --- plan search (night-2026-09-03) -----------------------------------
+    route_manifest::Route {
+        method: "POST",
+        path: "/api/plan-search",
+        summary: "Start a multi-constraint destination search. Body: origin, exactly one of \
+                  month (YYYY-MM) or date_window {from,to} (span capped at 42 days), optional \
+                  min_days, budget_cents, currency, modes[], interests, max_candidates \
+                  (default 8, clamped 1-20). Answers 202 with a job number; 503 when ten \
+                  searches already run. A month search with no calendar FAILS rather than \
+                  ranking every day as free.",
+        request_schema: Some(route_manifest::schema_of::<trips::plan_search::PlanSearchRequest>),
+    },
+    r(
+        "GET",
+        "/api/plan-search/:id",
+        "One search's state: running (with since_ms), failed (with error), or done with the \
+         ranked result — reach per source, degraded[], considered/priced/unpriced and the \
+         candidates with their visible score factors. 404 once the job is evicted.",
+    ),
+    route_manifest::Route {
+        method: "POST",
+        path: "/api/plan-search/:id/adopt",
+        summary: "Record a finished search as one option_set item on an existing plan. \
+                  Body: {plan_id}. 400 for an archived plan, 404 for an expired job. \
+                  Money is integer minor units; the payload carries no companion field.",
+        request_schema: Some(route_manifest::schema_of::<AdoptRequest>),
+    },
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -226,7 +255,12 @@ async fn project_after_write(
 ) -> axum::response::Response {
     let mutating = request.method() != axum::http::Method::GET;
     let response = next.run(request).await;
-    if !mutating || !response.status().is_success() {
+    // 202 is excluded because it means no write has COMPLETED yet -- a general
+    // property of the status code, not a per-route list, so this does not
+    // reintroduce the second definition of "which routes mutate" the comment
+    // above warns against. `POST /api/plan-search` answers 202 and would
+    // otherwise cost a listing and thirteen file comparisons per search.
+    if !mutating || !response.status().is_success() || response.status() == StatusCode::ACCEPTED {
         return response;
     }
     let Some(vault) = state.obsidian.clone() else {
@@ -1029,9 +1063,19 @@ fn calendar_base_url() -> String {
 }
 
 /// The fuzzy-timeframe answer: every day of the span priced via the grid,
-/// joined with committed calendar time, ranked free-cheapest-first. The
-/// calendar being down degrades to all-free rather than failing the search --
-/// same contract as punctuality enrichment in transit.
+/// joined with committed calendar time, ranked free-cheapest-first.
+///
+/// A calendar that cannot be reached no longer degrades to all-free. It used
+/// to: `.ok()/.and_then/.unwrap_or_default()` fed an EMPTY entry list into
+/// `day_loads`, which starts every day at `DayLoad::Free`, so a fully committed
+/// week ranked cheapest-first and nothing in the body said the calendar had
+/// never answered. The old doc comment called that deliberate and cited
+/// punctuality enrichment as the precedent; the precedent does not hold,
+/// because transit reports its gap (`unscored_legs`) and this did not. Now the
+/// days come back `DayLoad::Unknown`, the body carries `calendar` and
+/// `degraded`, and the ranking says what it does not know
+/// (Packs/travel/ISA.md: "a guess that looks like a measurement is worse than
+/// a blank").
 async fn flight_when(Query(params): Query<FlightWhenParams>) -> ApiResponse {
     let Some(from_day) = trips::windows::day_number(&params.date_from) else {
         return response(
@@ -1070,27 +1114,55 @@ async fn flight_when(Query(params): Query<FlightWhenParams>) -> ApiResponse {
         grid.sort_by(|a, b| a.date.cmp(&b.date).then(a.price.total_cmp(&b.price)));
         grid.dedup_by(|later, earlier| later.date == earlier.date);
 
-        let entries: Vec<trips::windows::CalendarSpan> = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
-            .build()
-            .ok()
-            .and_then(|c| {
-                c.get(format!(
+        let entries: Result<Vec<trips::windows::CalendarSpan>, String> = (|| {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .map_err(|error| error.to_string())?;
+            let response = client
+                .get(format!(
                     "{}/api/entries?from={date_from}&to={date_to}",
                     calendar_base_url()
                 ))
                 .send()
-                .ok()
-            })
-            .and_then(|r| r.json().ok())
-            .unwrap_or_default();
-        let loads = trips::windows::day_loads(&date_from, &date_to, &entries);
-        Ok::<_, trips::kiwi::KiwiError>(trips::windows::rank(grid, &loads))
+                .map_err(|_| "calendar is not answering".to_string())?;
+            if !response.status().is_success() {
+                return Err(format!("calendar answered {}", response.status().as_u16()));
+            }
+            response
+                .json()
+                .map_err(|_| "unreadable calendar reply".to_string())
+        })();
+        let (loads, calendar) = match &entries {
+            Ok(entries) => (
+                trips::windows::day_loads(&date_from, &date_to, entries),
+                Ok(()),
+            ),
+            Err(reason) => (
+                trips::windows::unknown_loads(&date_from, &date_to),
+                Err(reason.clone()),
+            ),
+        };
+        Ok::<_, trips::kiwi::KiwiError>((trips::windows::rank(grid, &loads), calendar))
     })
     .await;
 
     match result {
-        Ok(Ok(days)) => response(StatusCode::OK, json!({ "days": days })),
+        Ok(Ok((days, calendar))) => response(
+            StatusCode::OK,
+            json!({
+                "days": days,
+                "calendar": match &calendar {
+                    Ok(()) => "ok".to_string(),
+                    Err(reason) => format!("error: {reason}"),
+                },
+                "degraded": if calendar.is_ok() {
+                    Vec::<String>::new()
+                } else {
+                    vec!["calendar".to_string()]
+                },
+            }),
+        ),
         Ok(Err(error)) => response(
             StatusCode::BAD_GATEWAY,
             json!({ "error": error.to_string() }),
@@ -1199,16 +1271,151 @@ async fn flight_pivot(
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let config = Config::load();
-    let state = AppState {
-        database_path: Arc::new(config.database_path),
-        obsidian: config.obsidian,
-        travel: Arc::new(config.travel),
-        export_lock: Arc::new(tokio::sync::Mutex::new(())),
+// ---- plan search (PRD 8.2: "October, under 300 euro, by train") -----------
+
+/// Start a search and answer with its number, not its result.
+///
+/// The composition copies `flight_when`'s shape — bound the window in the
+/// handler, `spawn_blocking`, one timed HTTP call per capability — and
+/// overturns its stated all-free calendar contract: `plan_search::compose`
+/// reports what it reached instead of assuming every day is free.
+async fn plan_search_start(
+    State(state): State<AppState>,
+    Json(body): Json<trips::plan_search::PlanSearchRequest>,
+) -> ApiResponse {
+    let request = match trips::plan_search::validate(body) {
+        Ok(request) => request,
+        Err(error) => return response(StatusCode::BAD_REQUEST, json!({ "error": error })),
     };
-    let app = Router::new()
+    let database_path = state.database_path.clone();
+    let started = trips::jobs::start(move |started| {
+        // Trips' own plan destinations are a candidate source and a local read,
+        // so a database failure fails the job rather than degrading silently.
+        let plan_destinations = TripsStore::open(&database_path)
+            .and_then(|store| store.list_plans())
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .flat_map(|plan| plan.destinations)
+            .map(|destination| trips::plan_search::DestinationCandidate {
+                place_id: destination.id.clone(),
+                destination,
+                sources: vec!["plan".into()],
+            })
+            .collect();
+        let sources = trips::upstream::HttpSources::new(started);
+        trips::plan_search::compose(&request, plan_destinations, &sources)
+    });
+    match started {
+        Ok(job) => response(StatusCode::ACCEPTED, json!({ "job": job })),
+        // Interior's sentence: ten running searches answer a refusal rather
+        // than dropping one silently.
+        Err(error) => response(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": error })),
+    }
+}
+
+/// `{id, state, since_ms | result | error}` — the job's tag is flattened beside
+/// its number so a reader switches on one field.
+#[derive(Serialize)]
+struct JobBody {
+    id: u64,
+    #[serde(flatten)]
+    state: trips::jobs::JobState,
+}
+
+async fn plan_search_status(Path(id): Path<u64>) -> ApiResponse {
+    match trips::jobs::read(id) {
+        Some(state) => response(StatusCode::OK, JobBody { id, state }),
+        None => response(StatusCode::NOT_FOUND, json!({ "error": SEARCH_EXPIRED })),
+    }
+}
+
+/// What a caller is told when the job number is unknown or already evicted.
+/// Never an empty option set, which would read as "the search found nothing".
+const SEARCH_EXPIRED: &str = "that search result has expired — run the search again";
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct AdoptRequest {
+    plan_id: String,
+}
+
+/// Write the whole option space onto a plan the operator already created.
+///
+/// Machine proposes, human confirms: creating the plan stays the explicit
+/// `POST /api/plans`. The refusal for an archived plan happens here rather than
+/// inside `add_item`, whose unconditional `status = 'saved'` would un-archive
+/// the plan as a side effect of recording an option set.
+async fn plan_search_adopt(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+    Json(body): Json<AdoptRequest>,
+) -> ApiResponse {
+    let Some(trips::jobs::JobState::Done { result }) = trips::jobs::read(id) else {
+        return response(StatusCode::NOT_FOUND, json!({ "error": SEARCH_EXPIRED }));
+    };
+    let database_path = state.database_path.clone();
+    let outcome = tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, String)> {
+        let store = TripsStore::open(&database_path)
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        let plan = store
+            .get_plan(&body.plan_id)
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .ok_or((StatusCode::NOT_FOUND, format!("no plan {}", body.plan_id)))?;
+        if plan.plan.status == "archived" {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "that plan is archived — un-archive it before adopting a search".into(),
+            ));
+        }
+        let item = CreatePlanItem {
+            item_type: "option_set".into(),
+            day: None,
+            external_id: trips::plan_search::adopt_external_id(&result.observed_at, id),
+            title: format!(
+                "Plan search: {} option(s), {} priced",
+                result.candidates.len(),
+                result.priced
+            ),
+            payload: trips::plan_search::adopt_payload(&result),
+        };
+        store
+            .add_item(&body.plan_id, &item)
+            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))
+    })
+    .await;
+    match outcome {
+        Ok(Ok(item)) => response(StatusCode::CREATED, item),
+        Ok(Err((status, error))) => response(status, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+/// This capability's name, for the origin guard's env var
+/// (`AXON_TRIPS_ALLOWED_ORIGIN_HOSTS`).
+const CAPABILITY: &str = "trips";
+
+/// The wired router, so a test can drive the real thing rather than a handler.
+///
+/// The origin guard sits below every route on purpose: axum wraps only the
+/// routes registered BEFORE a `.layer()` call (axum 0.7
+/// `src/docs/routing/layer.md`), so a route appended under it would silently
+/// lose the refusal. `a_foreign_origin_cannot_read_a_plan_search_result` drives
+/// this router to prove the ones registered today are covered.
+///
+/// Why trips refuses foreign origins at all, when it did not before: the
+/// plan-search body carries the operator's feasible calendar windows and a
+/// companion hint derived from the C2 register, and `CorsLayer::permissive()`
+/// makes every route above it readable by any page open in the operator's
+/// browser. That is the attack `places` refuses by hand for the same data
+/// (`capabilities/places/src/server.rs`, the `build_router` note). Applying it
+/// to the whole router rather than to the new routes alone also closes an
+/// existing leak: `GET /api/flights/when` returns calendar entry titles in
+/// `collisions` (`trips::windows::rank`). A request with no `Origin` passes, so
+/// `capabilities/calendar`'s server-to-server POST into trips is unaffected.
+fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -1235,15 +1442,34 @@ async fn main() {
         .route("/api/import/obsidian/scan", get(scan_obsidian))
         .route("/api/import/obsidian/all", post(import_all_obsidian))
         .route("/api/import/obsidian", post(import_obsidian))
+        .route("/api/plan-search", post(plan_search_start))
+        .route("/api/plan-search/:id", get(plan_search_status))
+        .route("/api/plan-search/:id/adopt", post(plan_search_adopt))
+        // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the origin guard.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             project_after_write,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state)
+}
+
+#[tokio::main]
+async fn main() {
+    let config = Config::load();
+    let state = AppState {
+        database_path: Arc::new(config.database_path),
+        obsidian: config.obsidian,
+        travel: Arc::new(config.travel),
+        export_lock: Arc::new(tokio::sync::Mutex::new(())),
+    };
     // Loopback via axon_server; the old 0.0.0.0 bind here was never a
     // documented decision and is retired with it.
-    axon_server::serve_local("trips-server", config.port, app).await;
+    axon_server::serve_local("trips-server", config.port, build_router(state)).await;
 }
 
 #[cfg(test)]
@@ -1278,6 +1504,63 @@ mod readiness_tests {
         // The control: liveness is deliberately unaffected, because the process is fine.
         let Json(live) = health().await;
         assert_eq!(live["ok"], true, "liveness must not depend on the database");
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+
+    /// The plan-search body carries the operator's feasible windows and the
+    /// companion hint, and `GET /api/flights/when` has been returning calendar
+    /// entry titles cross-origin since it shipped. This drives the WIRED router,
+    /// because a test of the predicate alone passes even when a route is
+    /// registered below the guard layer (axum 0.7 `routing/layer.md`).
+    #[tokio::test]
+    async fn a_foreign_origin_cannot_read_a_plan_search_result() {
+        let state = AppState {
+            database_path: Arc::new(std::env::temp_dir().join("trips-origin-test.db")),
+            obsidian: None,
+            travel: Arc::new(Default::default()),
+            export_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, build_router(state)).await;
+        });
+        let client = reqwest::Client::new();
+
+        for path in [
+            "/api/plan-search/1",
+            "/api/flights/when?from=FRA&to=OSL&date_from=2026-10-01&date_to=2026-10-08",
+            "/api/plans",
+        ] {
+            let response = client
+                .get(format!("{base}{path}"))
+                .header("Origin", "https://evil.example")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                403,
+                "{path} answered a foreign origin — it is registered below the guard layer"
+            );
+        }
+
+        // The control, and the receipt that calendar's server-to-server POST
+        // into trips is unaffected: a request with no Origin passes the guard.
+        let allowed = client
+            .get(format!("{base}/api/plan-search/1"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            allowed.status(),
+            404,
+            "with no Origin the request must reach the handler, which has no job 1"
+        );
     }
 }
 

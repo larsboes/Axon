@@ -1258,9 +1258,12 @@ pub const ITEM_TYPES: &[&str] = &[
 ///
 /// - `transport` has one producer and one shape, and is the item an agent most
 ///   needs to write, because "hold this connection in the plan" is the request.
-/// - `option_set` is new here and has no existing producer, so its shape can be
-///   fixed from the start. It records the fares that were offered and not taken,
-///   which cannot be recovered later at yesterday's prices.
+/// - `option_set` records the fares that were offered and not taken, which
+///   cannot be recovered later at yesterday's prices. Two writers produce it:
+///   `tools/sparpreis-watch.ts` every 12 hours, in the older float `total_price`
+///   shape, and the plan search in integer minor units. Only `query` and
+///   `options` are common to both, which is why only those two are required —
+///   `schemas/trip-plan.schema.json` describes the rest of each.
 ///
 /// Every other type stays permissive, and that is a statement rather than an
 /// omission: an unmodelled payload is accepted as-is.

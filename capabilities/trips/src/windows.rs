@@ -34,6 +34,14 @@ pub enum DayLoad {
     Planned,
     /// A `committed` entry touches it.
     Committed,
+    /// The calendar was not read, so nothing is known about this day.
+    ///
+    /// Last on purpose. `rank` orders by this enum before price, so an unknown
+    /// day never outranks a day that was measured free — a guess that looks
+    /// like a measurement is worse than a blank (Packs/travel/ISA.md). In
+    /// practice it is all-or-nothing: either the calendar answered for the
+    /// whole span or it answered for none of it.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,6 +114,24 @@ pub fn day_loads(
     days
 }
 
+/// Every day of `[from, to]` marked [`DayLoad::Unknown`], for the answer a
+/// caller gets when the calendar could not be read at all.
+///
+/// The alternative this replaces was `unwrap_or_default()` on the calendar
+/// response, which fed an EMPTY entry list into `day_loads` — and an empty
+/// entry list makes every day `Free`, so a fully committed week ranked
+/// cheapest-first with nothing in the body saying the calendar was never
+/// reached.
+pub fn unknown_loads(from: &str, to: &str) -> Vec<(String, DayLoad, Vec<String>)> {
+    let mut days = Vec::new();
+    let mut day = from.to_string();
+    while day.as_str() <= to {
+        days.push((day.clone(), DayLoad::Unknown, Vec::new()));
+        day = next_day(&day);
+    }
+    days
+}
+
 /// Grid days joined with day loads, ranked: free days cheapest-first, then
 /// planned, committed last -- within each band by price. Days the grid did not
 /// price are absent, which is itself the honest answer for them.
@@ -117,7 +143,11 @@ pub fn rank(grid: Vec<GridDay>, loads: &[(String, DayLoad, Vec<String>)]) -> Vec
                 .iter()
                 .find(|(date, _, _)| *date == g.date)
                 .map(|(_, l, c)| (*l, c.clone()))
-                .unwrap_or((DayLoad::Free, Vec::new()));
+                // A priced day the load table does not cover is unknown, not
+                // free: `day_loads` covers the whole span it was given, so this
+                // branch means the two spans disagree and nobody measured this
+                // day.
+                .unwrap_or((DayLoad::Unknown, Vec::new()));
             WhenDay {
                 date: g.date,
                 price: g.price,
@@ -318,5 +348,25 @@ mod tests {
         assert_eq!(next_day("2026-02-28"), "2026-03-01");
         let n = day_number("2026-08-12").unwrap();
         assert_eq!(iso_of_day_number(n), "2026-08-12");
+    }
+
+    /// The defect this route shipped with: an unreachable calendar produced an
+    /// empty entry list, and an empty entry list makes every day `Free`, so a
+    /// fully committed week ranked cheapest-first and said nothing about it.
+    #[test]
+    fn a_calendar_that_was_never_read_marks_days_unknown_rather_than_free() {
+        let unknown = unknown_loads("2026-10-05", "2026-10-07");
+        assert_eq!(unknown.len(), 3);
+        assert!(unknown.iter().all(|(_, load, _)| *load == DayLoad::Unknown));
+
+        // The same span through the old path — no entries at all — still reads
+        // as free, which is exactly why the caller must not use it when the
+        // read failed.
+        let empty = day_loads("2026-10-05", "2026-10-07", &[]);
+        assert!(empty.iter().all(|(_, load, _)| *load == DayLoad::Free));
+
+        // And an unknown day never outranks a measured free one.
+        assert!(DayLoad::Free < DayLoad::Unknown);
+        assert!(DayLoad::Committed < DayLoad::Unknown);
     }
 }

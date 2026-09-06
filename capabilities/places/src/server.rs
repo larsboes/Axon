@@ -11,10 +11,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, Request, State},
-    http::{header, StatusCode},
-    middleware::{self, Next},
-    response::{IntoResponse, Json, Response},
+    extract::{Path, Query, State},
+    http::StatusCode,
+    middleware,
+    response::Json,
     routing::{get, post},
     Router,
 };
@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use places::config::Config;
 use places::geocode::{GeocodeQuery, Geocoder, StructuredQuery};
-use places::store::{PlacesStore, Review};
+use places::store::{PlacesStore, Review, ReviewOutcome, PRESENCE_RADIUS_KM};
 use places::{layers, today};
 
 const ROUTES: &[route_manifest::Route] = &[
@@ -83,6 +83,14 @@ const ROUTES: &[route_manifest::Route] = &[
         "POST",
         "/api/people/proposals/:id/dismiss",
         "Dismiss one register proposal.",
+    ),
+    r(
+        "GET",
+        "/api/people/presence",
+        "How many known companions are near a coordinate in a window, and for how many days. \
+         Query: latitude, longitude, from, to (YYYY-MM-DD, from <= to) — all four required. \
+         There is NO radius parameter: places owns it (50 km) and echoes it. Confirmed rows \
+         only, and the reply carries no person, no place name, no row id and no confidence.",
     ),
     r(
         "GET",
@@ -677,98 +685,93 @@ async fn review(state: AppState, id: String, decision: Review) -> ApiResponse {
     })
     .await
     {
-        Ok(Ok(true)) => respond(
+        Ok(Ok(ReviewOutcome::Applied)) => respond(
             StatusCode::OK,
             json!({ "ok": true, "state": decision.as_str() }),
         ),
-        Ok(Ok(false)) => respond(
+        Ok(Ok(ReviewOutcome::NoSuchRow)) => respond(
             StatusCode::NOT_FOUND,
             json!({ "error": "no register row with that id" }),
+        ),
+        // 409, never 404: the row exists, and telling a caller it does not
+        // would be a second wrong answer on top of the refused write. The state
+        // found is named so the surface can say which one.
+        Ok(Ok(ReviewOutcome::Refused { state })) => respond(
+            StatusCode::CONFLICT,
+            json!({ "error": "that proposal was already reviewed", "state": state }),
         ),
         Ok(Err(error)) => failed(error),
         Err(_) => failed("task panicked".into()),
     }
 }
 
-/// Is this browser origin allowed to talk to places at all?
-///
-/// The register is C2 (README D4), so places refuses cross-origin browser
-/// access instead of inheriting the siblings' permissive CORS. Refusing the
-/// request — not merely omitting CORS headers — is what also stops a hostile
-/// page's "simple" cross-site POST to the confirm route, which a browser sends
-/// before it ever reads a response header (ISA PLC-7).
-///
-/// A request with no `Origin` header is not a browser cross-origin call
-/// (curl, the vite proxy's own health probes, same-origin GETs) and passes.
-/// With one, the allowed set mirrors how the dashboard itself is reached
-/// (`dashboard/vite.config.ts`, `allowedHosts`): the loopback dev origin, or a
-/// tailnet name.
-///
-/// The tailnet check is a bare `.ts.net` suffix by default, because the
-/// machine's MagicDNS name is a house fact and this repo is public (the same
-/// trade-off vite.config.ts records). Known gap: the suffix also admits
-/// Tailscale Funnel sites — public pages on other people's tailnets, which do
-/// NOT authenticate at this tailnet's layer. Set
-/// `AXON_PLACES_ALLOWED_ORIGIN_HOSTS` (comma-separated exact hosts, from the
-/// overlay) to replace the suffix with the deployment's own names and close
-/// that gap without naming the machine in public code.
-fn origin_allowed(origin: Option<&str>) -> bool {
-    let allowed_hosts = std::env::var("AXON_PLACES_ALLOWED_ORIGIN_HOSTS").ok();
-    origin_allowed_by(origin, allowed_hosts.as_deref())
+#[derive(Deserialize)]
+struct PresenceQuery {
+    latitude: f64,
+    longitude: f64,
+    from: String,
+    to: String,
 }
 
-fn origin_allowed_by(origin: Option<&str>, allowed_hosts: Option<&str>) -> bool {
-    let Some(origin) = origin else { return true };
-    let Some(rest) = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-    else {
-        return false; // "null", file://, extensions — nothing places serves
-    };
-    let authority = rest.split('/').next().unwrap_or(rest);
-    let host = authority
-        .rsplit_once(':')
-        .map_or(authority, |(host, port)| {
-            if port.chars().all(|c| c.is_ascii_digit()) {
-                host
-            } else {
-                authority // no port; the colon was IPv6's
-            }
-        });
-    if matches!(host, "localhost" | "127.0.0.1" | "[::1]") {
-        return true;
-    }
-    match allowed_hosts.map(str::trim).filter(|list| !list.is_empty()) {
-        Some(list) => list
-            .split(',')
-            .map(str::trim)
-            .filter(|allowed| !allowed.is_empty())
-            .any(|allowed| allowed == host),
-        None => host.ends_with(".ts.net"),
-    }
-}
-
-async fn refuse_foreign_origins(request: Request, next: Next) -> Response {
-    let origin = request
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok());
-    if !origin_allowed(origin) {
+/// A count and an overlap. See `PlacesStore::confirmed_presence` for the whole
+/// argument; the short version is that this is the only shape in which the C2
+/// register reaches a planner, and it carries no identity at all.
+///
+/// Registered ABOVE the `.layer()` call in `build_router`, because axum wraps
+/// only the routes added before it.
+async fn people_presence(
+    State(state): State<AppState>,
+    Query(query): Query<PresenceQuery>,
+) -> ApiResponse {
+    if query.from > query.to {
         return respond(
-            StatusCode::FORBIDDEN,
-            json!({ "error": "cross-origin access to places is not allowed" }),
-        )
-        .into_response();
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "from must be on or before to" }),
+        );
     }
-    next.run(request).await
+    let database_path = state.database_path.clone();
+    let (from, to) = (query.from.clone(), query.to.clone());
+    match tokio::task::spawn_blocking(move || {
+        PlacesStore::open(&database_path)
+            .and_then(|store| {
+                store.confirmed_presence(query.latitude, query.longitude, &query.from, &query.to)
+            })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(presence)) => respond(
+            StatusCode::OK,
+            json!({
+                "radius_km": PRESENCE_RADIUS_KM,
+                "from": from,
+                "to": to,
+                "known_companions": presence.known_companions,
+                "overlap_days": presence.overlap_days,
+            }),
+        ),
+        Ok(Err(error)) => respond(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(_) => failed("task panicked".into()),
+    }
 }
 
-pub async fn serve() {
-    let config = Config::load();
-    let state = AppState {
-        database_path: Arc::new(config.database_path),
-    };
-    let app = Router::new()
+/// Which routes the origin guard covers, and the rule that decides it.
+///
+/// The predicate and its doc block live in `libs/axon-server/src/origin.rs`
+/// now, because `trips` needs the same refusal for the plan-search body and a
+/// second copy of a security predicate is drift. What stays here is the wiring
+/// and the reason it is wired this way.
+///
+/// axum applies `Router::layer` only to routes registered BEFORE it (axum 0.7
+/// `src/docs/routing/layer.md`: "Additional routes added after `layer` is
+/// called will not have the middleware added"). Every route this capability
+/// serves must therefore sit above the `.layer()` call in [`build_router`], and
+/// `a_foreign_origin_cannot_read_people_presence` drives the wired router to
+/// prove it — a test of the predicate alone passes with the route unguarded.
+const CAPABILITY: &str = "places";
+
+fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -782,11 +785,23 @@ pub async fn serve() {
         .route("/api/people/proposals", get(list_proposals))
         .route("/api/people/proposals/:id/confirm", post(confirm_proposal))
         .route("/api/people/proposals/:id/dismiss", post(dismiss_proposal))
+        .route("/api/people/presence", get(people_presence))
         .route("/api/places/:id/climate", get(place_climate))
         .route("/api/climate", get(climate))
-        .layer(middleware::from_fn(refuse_foreign_origins))
-        .with_state(state);
-    axon_server::serve_local("places-server", config.port, app).await;
+        // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the C2 guard.
+        .layer(middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
+        .with_state(state)
+}
+
+pub async fn serve() {
+    let config = Config::load();
+    let state = AppState {
+        database_path: Arc::new(config.database_path),
+    };
+    axon_server::serve_local("places-server", config.port, build_router(state)).await;
 }
 
 #[cfg(test)]
@@ -960,58 +975,57 @@ mod tests {
         assert_eq!(Review::Dismissed.as_str(), "dismissed");
     }
 
-    /// The C2 guard (README D4): non-browser callers and the origins the
-    /// dashboard itself is served from pass; every other web origin is refused,
-    /// so a hostile page can neither read the register nor drive the confirm
-    /// route cross-site. Exercised through `origin_allowed_by` so the tests
-    /// never touch process env (the explicit-parameter pattern geocode's
-    /// db_tests use for URLs).
-    #[test]
-    fn foreign_browser_origins_are_refused() {
-        // No Origin header: curl, the runner, same-origin GETs.
-        assert!(origin_allowed_by(None, None));
-        // The dashboard's own origins (dashboard/vite.config.ts allowedHosts).
-        assert!(origin_allowed_by(Some("http://localhost:47117"), None));
-        assert!(origin_allowed_by(Some("http://127.0.0.1:47117"), None));
-        assert!(origin_allowed_by(Some("http://[::1]:47117"), None));
-        assert!(origin_allowed_by(Some("http://localhost"), None));
-        assert!(origin_allowed_by(Some("https://mac.tailnet.ts.net"), None));
-        // Everyone else.
-        assert!(!origin_allowed_by(Some("https://evil.example"), None));
-        assert!(!origin_allowed_by(Some("https://evilts.net"), None));
-        assert!(!origin_allowed_by(
-            Some("https://mac.ts.net.evil.example"),
-            None
-        ));
-        assert!(!origin_allowed_by(
-            Some("http://localhost.evil.example"),
-            None
-        ));
-        assert!(!origin_allowed_by(Some("null"), None));
-        assert!(!origin_allowed_by(Some("file:///tmp/page.html"), None));
-    }
+    /// The router-level proof the two predicate tests (now in
+    /// `libs/axon-server/src/origin.rs`) could not give: a foreign `Origin`
+    /// gets 403 from the WIRED router, so a route registered below the
+    /// `.layer()` call fails here rather than shipping unguarded.
+    ///
+    /// Driven over a real loopback listener rather than through
+    /// `tower::ServiceExt`, which is the pattern `libs/axon-server`'s own
+    /// `http_tests` already use and which needs no new dependency.
+    #[tokio::test]
+    async fn a_foreign_origin_cannot_read_people_presence() {
+        let state = AppState {
+            database_path: Arc::new(std::env::temp_dir().join("places-origin-test.db")),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, build_router(state)).await;
+        });
+        let client = reqwest::Client::new();
 
-    /// With AXON_PLACES_ALLOWED_ORIGIN_HOSTS set, only the named tailnet hosts
-    /// pass: a Funnel page on someone else's tailnet no longer does, which is
-    /// the gap the bare `.ts.net` suffix leaves open.
-    #[test]
-    fn an_explicit_host_list_replaces_the_tailnet_suffix() {
-        let list = Some("mac.tailnet.ts.net, phone.tailnet.ts.net");
-        assert!(origin_allowed_by(Some("https://mac.tailnet.ts.net"), list));
-        assert!(origin_allowed_by(
-            Some("https://phone.tailnet.ts.net"),
-            list
-        ));
-        assert!(!origin_allowed_by(
-            Some("https://evil.other-tailnet.ts.net"),
-            list
-        ));
-        // Loopback stays allowed whatever the list says.
-        assert!(origin_allowed_by(Some("http://localhost:47117"), list));
-        // A blank value means unset, not "allow nothing".
-        assert!(origin_allowed_by(
-            Some("https://mac.tailnet.ts.net"),
-            Some("  ")
-        ));
+        // Every C2 surface, including the one added tonight. The database does
+        // not have to exist: the guard runs before the handler.
+        for path in [
+            "/api/people/presence?latitude=50.0&longitude=8.0&from=2026-10-01&to=2026-10-08",
+            "/api/people/proposals",
+            "/api/layers/people",
+        ] {
+            let response = client
+                .get(format!("{base}{path}"))
+                .header("Origin", "https://evil.example")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                403,
+                "{path} answered a foreign origin — it is registered below the guard layer"
+            );
+        }
+
+        // The control: no Origin header is not a browser cross-origin call, so
+        // the request reaches the handler (which then fails on the database).
+        let allowed = client
+            .get(format!("{base}/api/people/proposals"))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(
+            allowed.status(),
+            403,
+            "a server-to-server caller must not be refused"
+        );
     }
 }

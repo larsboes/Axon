@@ -631,17 +631,45 @@
           "properties": {
             "from": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "The origin as one string (a place name, or an IATA code for a flight search)."
             },
             "to": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "The single destination a search asked about. A multi-destination plan search writes the declared literal \"(multiple)\" here and puts every place in destinations[]; the literal is declared so it is not a magic value invented at a call site."
             },
             "time": {
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "destinations": {
+              "description": "Every destination a multi-destination search ranked. Absent for a single-destination option set.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/placeRef"
+              }
+            },
+            "budget_cents": {
+              "description": "What the search was told to stay under, in integer minor units.",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "currency": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/transportMode"
+              }
             }
           }
         },
@@ -658,6 +686,7 @@
                 "minLength": 1
               },
               "total_price": {
+                "description": "The older float form, in units of `currency`. tools/sparpreis-watch.ts writes it every 12 hours (capabilities/sparpreis-watch/service.toml) and rows in that shape already exist; plan search writes estimated_cost_cents in integer minor units instead. A reader has to accept both.",
                 "type": [
                   "number",
                   "null"
@@ -671,6 +700,73 @@
               },
               "chosen": {
                 "type": "boolean"
+              },
+              "estimated_cost_cents": {
+                "description": "What this option was expected to cost, in integer minor units of `currency`. Null when no fare source could price it.",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "destination": {
+                "$ref": "#/$defs/placeRef"
+              },
+              "window": {
+                "description": "The feasible window this option was priced for. Dates and a calendar verdict only: no calendar entry title crosses this boundary.",
+                "type": "object",
+                "properties": {
+                  "starts_on": {
+                    "type": "string"
+                  },
+                  "ends_before": {
+                    "type": "string"
+                  },
+                  "verdict": {
+                    "type": "string"
+                  }
+                }
+              },
+              "score": {
+                "description": "0..1, the weighted sum of `factors`.",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "factors": {
+                "description": "The visible reasons behind `score`. Same shape as the feed evaluator's factors (capabilities/comms/src/evaluation.rs); weights sum to 1 across the factors that could be measured.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "key",
+                    "score",
+                    "weight"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "score": {
+                      "type": "number"
+                    },
+                    "weight": {
+                      "type": "number"
+                    },
+                    "rationale": {
+                      "type": "string"
+                    }
+                  }
+                }
               }
             }
           }
@@ -681,6 +777,18 @@
             "string",
             "null"
           ]
+        },
+        "revision": {
+          "description": "The scoring revision that produced these scores (capabilities/trips/src/plan_search.rs, PLAN_SEARCH_REVISION). Two option sets are comparable only at the same revision. Optional, not required: the plan-search writer always sets it, and the option_set rows that predate it -- every one tools/sparpreis-watch.ts has written -- carry none.",
+          "type": "string",
+          "minLength": 1
+        },
+        "degraded": {
+          "description": "Every input the search could not measure. A score computed with a factor missing is comparable inside one option set and not across two with different degraded sets.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },

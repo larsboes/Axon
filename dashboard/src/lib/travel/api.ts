@@ -1,44 +1,135 @@
 /**
- * This stream's whole HTTP client: climate normals from places, and the
- * retrospective and cost roll-up from trips.
+ * Travel route functions that are not in the shared client: the plan search and
+ * companions clients, and the climate normals, retrospective and cost roll-up
+ * clients.
  *
- * Why a local `travelRequest` rather than `$lib/api`'s `request`: that helper
- * and `jsonInit` are module-private, and `dashboard/src/lib/api.ts` is a
- * 3400-line file several worktrees are appending to tonight, so exporting them
- * would be an edit in the highest-conflict file in the repo for no behaviour.
- * `ApiError` and `describeFailure` ARE exported and are reused, so the failure
- * text a reader sees is identical to every other page's.
- *
- * FOLLOW-UP, deliberately not done here: hoist `travelRequest` to
- * `$lib/http.ts` and have both call it, once tonight's streams have merged.
+ * `dashboard/README.md` says `src/lib/api.ts` is the one place that knows both
+ * upstream shapes and error shapes; the parallel-work rule says new route
+ * functions go in a per-domain module. Both are kept: `request` and `jsonInit`
+ * are imported from the shared client rather than copied, because
+ * `request` also unwraps a 200 whose body carries `{"error": …}` — that is a
+ * contract, not boilerplate, and a second copy of it is a second place for it
+ * to drift.
  */
 // Relative, not the `$lib` alias: this module is reached from the Home
 // decision-kind modules under `src/lib/home`, which the registry test imports
 // under plain `bun test`, where a Vite alias may not resolve. Same reasoning
 // `tools/dashboard-nav-links.test.ts` records for `nav.ts`.
-import { ApiError, describeFailure, type Retrospective } from "../api";
+import { request, jsonInit } from '../api';
+import type { PlaceRef, Retrospective, TransportMode } from '../api';
 
-export type { Retrospective };
-
-async function travelRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new ApiError(res.status, describeFailure(res.status, body, path));
-  }
-  const text = await res.text();
-  const parsed = text ? JSON.parse(text) : undefined;
-  if (parsed && typeof parsed === "object" && "error" in parsed && parsed.error) {
-    throw new ApiError(res.status, String(parsed.error));
-  }
-  return parsed as T;
+export interface DateWindow {
+  from: string;
+  /** Inclusive, like the trips route's own `date_to`. */
+  to: string;
 }
 
-const jsonBody = (method: string, body: unknown): RequestInit => ({
-  method,
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(body),
-});
+export interface PlanSearchRequest {
+  origin: PlaceRef;
+  /** `YYYY-MM`. Exactly one of `month` and `date_window`. */
+  month?: string;
+  date_window?: DateWindow;
+  min_days?: number;
+  budget_cents?: number;
+  currency?: string;
+  modes?: TransportMode[];
+  interests?: string;
+  max_candidates?: number;
+}
+
+/** One visible reason behind a candidate's score. */
+export interface ScoreFactor {
+  key: string;
+  label: string;
+  score: number;
+  /** Re-normalised across the factors that could be measured; they sum to 1. */
+  weight: number;
+  rationale: string;
+}
+
+export interface FeasibleWindow {
+  starts_on: string;
+  /** Exclusive, as calendar serves it. */
+  ends_before: string;
+  days: string[];
+  verdict: string;
+  days_needing_travel_day: string[];
+}
+
+export interface CandidateEvent {
+  id: string;
+  title: string;
+  starts_at: string | null;
+  url: string;
+  distance_km: number | null;
+}
+
+export interface RankedCandidate {
+  destination: PlaceRef;
+  place_id: string;
+  window: FeasibleWindow;
+  mode: TransportMode;
+  estimated_cost_cents: number | null;
+  currency: string;
+  cost_basis: string;
+  priced_at: string | null;
+  events: CandidateEvent[];
+  season: { month: number; score: number; best_month: number | null } | null;
+  /** `null` when no factor could be measured — not a measured zero. */
+  score: number | null;
+  factors: ScoreFactor[];
+  /**
+   * Name-free by construction: places answers a count and an overlap, and trips
+   * turns that into a sentence. It reaches this page and never the plan.
+   */
+  companion_hint: string | null;
+  why: string[];
+}
+
+/** `"ok"`, `"absent"` or `"error: <reason>"` per upstream. */
+export interface PlanSearchReach {
+  calendar: string;
+  places: string;
+  transit: string;
+  scouting: string;
+  climate: string;
+}
+
+export interface PlanSearchResult {
+  revision: string;
+  window_source: 'calendar' | 'caller';
+  windows: FeasibleWindow[];
+  reach: PlanSearchReach;
+  degraded: string[];
+  considered: number;
+  priced: number;
+  unpriced: number;
+  candidates: RankedCandidate[];
+  observed_at: string;
+}
+
+export type PlanSearchJob =
+  | { id: number; state: 'running'; since_ms: number }
+  | { id: number; state: 'done'; result: PlanSearchResult }
+  | { id: number; state: 'failed'; error: string };
+
+export const planSearch = {
+  start: (body: PlanSearchRequest) =>
+    request<{ job: number }>('/trips/api/plan-search', jsonInit('POST', body)),
+  status: (job: number, signal?: AbortSignal) =>
+    request<PlanSearchJob>(
+      `/trips/api/plan-search/${encodeURIComponent(String(job))}`,
+      signal ? { signal } : undefined,
+    ),
+  /** Writes one `option_set` item onto a plan that already exists. */
+  adopt: (job: number, planId: string) =>
+    request<{ id: string; item_type: string; external_id: string }>(
+      `/trips/api/plan-search/${encodeURIComponent(String(job))}/adopt`,
+      jsonInit('POST', { plan_id: planId }),
+    ),
+};
+
+export type { Retrospective };
 
 // ─── Climate (places) ────────────────────────────────────────────────────────
 
@@ -115,7 +206,7 @@ export function climateFor(
   const search = new URLSearchParams({ at });
   if (window?.from) search.set("from", window.from);
   if (window?.to) search.set("to", window.to);
-  return travelRequest<ClimateBatch>(`/places/api/climate?${search.toString()}`);
+  return request<ClimateBatch>(`/places/api/climate?${search.toString()}`);
 }
 
 // ─── Retrospective (trips) ───────────────────────────────────────────────────
@@ -155,7 +246,7 @@ export interface RetrospectiveSummary {
 
 /** The three fields, and only the three. The server sets `deny_unknown_fields`,
  *  so a fourth is refused by axum's JSON extractor — a 422 with a plain-text
- *  body naming the unknown field, not a silent drop. `travelRequest` surfaces
+ *  body naming the unknown field, not a silent drop. `request` surfaces
  *  either shape. */
 export interface RetrospectiveBody {
   cost_cents: number | null;
@@ -164,16 +255,16 @@ export interface RetrospectiveBody {
 }
 
 export const saveRetrospective = (planId: string, body: RetrospectiveBody) =>
-  travelRequest<Retrospective>(
+  request<Retrospective>(
     `/trips/api/plans/${encodeURIComponent(planId)}/retrospective`,
-    jsonBody("POST", body),
+    jsonInit("POST", body),
   );
 
 export const pendingRetrospectives = () =>
-  travelRequest<PendingRetrospectives>("/trips/api/retrospectives/pending");
+  request<PendingRetrospectives>("/trips/api/retrospectives/pending");
 
 export const retrospectiveSummary = () =>
-  travelRequest<RetrospectiveSummary>("/trips/api/retrospectives/summary");
+  request<RetrospectiveSummary>("/trips/api/retrospectives/summary");
 
 // ─── Cost roll-up (trips) ────────────────────────────────────────────────────
 
@@ -255,4 +346,4 @@ export interface PlanCost {
 }
 
 export const planCost = (planId: string) =>
-  travelRequest<PlanCost>(`/trips/api/plans/${encodeURIComponent(planId)}/cost`);
+  request<PlanCost>(`/trips/api/plans/${encodeURIComponent(planId)}/cost`);

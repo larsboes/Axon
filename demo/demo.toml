@@ -86,6 +86,11 @@ paths = [
   "/trips/api/retrospectives/pending",
   "/trips/api/retrospectives/summary",
 ]
+# Plan search is a POST, and the demo refuses every non-GET with its own sentence, so no
+# job can start and no job id can exist. GET /api/plan-search/:id is therefore deliberately
+# absent from `paths`: it is per-job, and the demo can never hold a job id. The
+# [capability.trips] block already makes the shim own the whole /trips/ prefix, so such a
+# call answers 501 instead of reaching the host.
 # Plan detail pages are per-id and the ids are generated, so they cannot be listed here.
 # The recorder expands this against whatever /trips/api/plans returned: one fixture per
 # plan, no id ever written down. Same mechanism serves any list→detail pair.
@@ -196,15 +201,19 @@ paths = [
 reason = """
 places is absent because its two interesting surfaces cannot be seeded honestly. The map layers \
 are joins over finance transactions, transit legs and the companion register, which is C2 and \
-never leaves the host -- seeding it would mean inventing people. And the seasonality strip on the \
-travel page reads climate normals folded from ten years of real daily observations per place, \
-fetched once from Open-Meteo and cached permanently; a hand-written twelve-month grid would be a \
-fixture wearing a measurement's clothes, which is the one thing this demo does not do.
+never leaves the host (places ISA PLC-8) -- seeding it would mean inventing people, and a made-up \
+person in a made-up city is exactly the shape of the data the rule exists to protect. And the \
+seasonality strip on the travel page reads climate normals folded from ten years of real daily \
+observations per place, fetched once from Open-Meteo and cached permanently; a hand-written \
+twelve-month grid would be a fixture wearing a measurement's clothes, which is the one thing this \
+demo does not do.
 
-Its absence is the designed behaviour rather than a failure, and it is worth reading as part of \
-the demonstration: the strip and the map say what is missing instead of drawing an empty grid. \
-Without this block the fetch shim would find no owner for a /places/... path and fall through to \
-a real network request from a static page, which is worse than a stated 503.\
+The pages still work. The Travel page's "Companions" section renders this sentence in place of \
+the waiting decisions, the strip and the map say what is missing instead of drawing an empty \
+grid, and the map layers places would draw are simply not there. That is the designed behaviour \
+-- absence degrades, it never fails. Without this block the fetch shim would find no owner for a \
+/places/... path and fall through to a real network request from a static page, which is worse \
+than a stated 503.\
 """
 
 [absent.punctuality]
@@ -219,4 +228,3 @@ demonstration: Transit's `reliability` and `delay_risk_score` come back null her
 the capability that measures them is not running. That is the designed behaviour — absence \
 degrades, it never fails — and the demo shows it rather than inventing a number.\
 """
-
