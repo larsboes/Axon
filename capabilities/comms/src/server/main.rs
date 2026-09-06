@@ -29,6 +29,7 @@ use comms::digest;
 use comms::evaluation::{self, EvaluationFactor, FeedEvaluation};
 use comms::google::{self, ThreadAction, ThreadLocation};
 use comms::intake;
+use comms::mail_model::{self, Mode};
 use comms::media;
 use comms::people_registry;
 use comms::provenance::StageProvenance;
@@ -37,7 +38,8 @@ use comms::relevance::{self, RelevanceMatch};
 use comms::sources;
 use comms::store::{
     ClassWrite, CloudDerivativeApproval, CloudDerivativeState, CloudQueueRequest, FeedItem,
-    FeedOrigin, FeedRun, GmailActionJob, OriginSummary, Store, TriageItem,
+    FeedOrigin, FeedRun, GmailActionJob, ModelVerdict, ModelVerdictSummary, OriginSummary, Store,
+    StreamWrite, TriageItem,
 };
 use comms::travel;
 use comms::vault_links;
@@ -230,6 +232,23 @@ const ROUTES: &[route_manifest::Route] = &[
         "/triage/redact",
         "Redact stored review fields of c2 and c3 mail already persisted.",
     ),
+    // mail-llm-rung: the model rung's three. Declared here as well as mounted,
+    // because `undeclared_routes` reads the router's own source.
+    r(
+        "POST",
+        "/triage/classify/refresh",
+        "Run the local model rung over the mail the deterministic rules did not decide. Optional `mode` (shadow, apply) and `limit`. Shadow by default; apply needs the overlay key.",
+    ),
+    r(
+        "GET",
+        "/triage/classify/report",
+        "Agreement between the rules and the model rung, as counts. Optional ?mode=shadow|applied|held.",
+    ),
+    r(
+        "POST",
+        "/triage/classify/revert",
+        "Put the deterministic verdict back on rows the model rung moved. Requires `ids` or `all`.",
+    ),
     r(
         "POST",
         "/vault-links/scan",
@@ -295,7 +314,11 @@ fn build_router(dashboard_origin: &str) -> Router {
         .route("/sources", get(sources_handler))
         .route("/__axon/freshness", get(freshness_handler))
         .route("/triage", get(triage_handler))
-        .route("/triage/sweep/status", get(triage_sweep_status_handler));
+        .route("/triage/sweep/status", get(triage_sweep_status_handler))
+        .route(
+            "/triage/classify/report",
+            get(triage_classify_report_handler),
+        );
 
     // Mutating routes. Still listed apart from the read routes because the two
     // sets differ in what they cost when they run, not because they differ in
@@ -339,7 +362,17 @@ fn build_router(dashboard_origin: &str) -> Router {
         .route("/ingest", post(ingest_handler))
         .route("/vault-links/scan", post(vault_scan_handler))
         .route("/vault-links/import", post(vault_import_handler))
-        .route("/sources/scan", post(source_scan_handler));
+        .route("/sources/scan", post(source_scan_handler))
+        // Appended at the end of the chain on purpose: three streams edit this
+        // router tonight, and a tail append is the hunk git merges.
+        .route(
+            "/triage/classify/refresh",
+            post(triage_classify_refresh_handler),
+        )
+        .route(
+            "/triage/classify/revert",
+            post(triage_classify_revert_handler),
+        );
 
     Router::new()
         .merge(read_routes)
@@ -585,6 +618,8 @@ mod tests {
                 "/feed/0123456789abcdef/data-class",
                 json!({ "data_class": "c0" }),
             ),
+            ("/triage/classify/refresh", json!({ "mode": "shadow" })),
+            ("/triage/classify/revert", json!({ "all": true })),
         ] {
             let response = client
                 .post(format!("{base}{path}"))
@@ -661,7 +696,7 @@ mod tests {
             stream: "aktiv".into(),
             rationale: "Safe fallback.".into(),
             classification_method: content_item::METHOD_DETERMINISTIC.into(),
-            classification_version: "mail-rules-v1".into(),
+            classification_version: comms::rules::MAIL_RULES_VERSION.into(),
             data_class: "c1".into(),
             data_class_rationale: "Mail metadata is Mine by default.".into(),
             data_classification_method: content_item::METHOD_DETERMINISTIC.into(),

@@ -31,17 +31,54 @@ from the private overlay at runtime.
 
 ### Mail classification today
 
-Mail triage is deterministic and local. It does not call an LLM, embedding
-model, or cloud AI service, and it does not produce an importance score. The
-classifier considers only the sender header, subject header, and whether a
-`List-Unsubscribe` header exists. The fetched snippet, Gmail labels, internal
-date, message body, and attachments do not affect the category.
+Mail triage has two rungs, and everything it does stays on this machine. No
+cloud model, no embedding service, no message body, no attachment.
 
-Rules use first-match-wins order: personal rules from the private overlay,
-then generic public heuristics, then the conservative `aktiv` fallback. Every
-proposal stores the rationale, method, and classifier revision. A category
-changed in the dashboard becomes a `human` override and later sweeps preserve
-it. Category ordering in the dashboard is an attention aid, not a hidden score.
+**Rung 1 is deterministic.** It reads the sender header, the subject header and
+whether a `List-Unsubscribe` header exists, and nothing else. First match wins:
+personal rules from the private overlay, then generic public heuristics, then
+the conservative `aktiv` fallback. Every proposal stores its rationale, its
+method, its classifier revision — and, since the model rung exists, which of
+those three rungs actually fired, because that fact cannot be re-derived later.
+
+**Rung 2 is a local model, and it looks only at what rung 1 did not decide.**
+It runs on the threads that reached the `aktiv` fallback, never on a thread a
+rule matched. It reads the sender's **domain** (never the address), the stored
+subject and the stored preview — both already carrying
+`deterministic-entity-redaction-v3` output, because intake redacts before it
+writes. It answers with a category, a self-reported confidence and an urgency
+score, each with a one-line rationale. Four things bound it:
+
+- a `c3` **Secret** mail is refused before a prompt is built and before any
+  model is woken, and the refusal is stored rather than left as an absence;
+- only the light local model may answer. A thread too long for its window is a
+  stored verdict, not a handoff to a bigger model;
+- every call is loopback-only, and a non-loopback endpoint is refused outright;
+- it is **shadow by default**. It writes verdicts to its own table and moves no
+  category until the overlay declares `mail_model.apply` *and* a
+  `mail_model.min_confidence_bp` above zero — a floor of zero would write every
+  disagreement at any self-reported confidence, so the operator names the floor
+  in the same edit that turns writing on. Even then it refuses any proposal that
+  would raise the mail's data class — those are held for a person, because the
+  class change and the redaction that follows it cannot be undone.
+
+The rung is explicit: two routes and a CLI verb, no timer. Run it with
+`comms mail classify --shadow`, read `comms mail classify --report`, then set
+the two overlay keys and run `comms mail classify --apply`. Apply does not ask
+the model again: a stored shadow verdict already carries the answer, so the
+apply pass reads it and writes the category. Undo a bad batch with
+`--revert-all` (`--revert` needs a thread id and refuses to stand in for it),
+which restores the deterministic verdict on the category axis and says in its
+own output what it cannot restore.
+
+A category changed in the dashboard becomes a `human` override and every later
+sweep preserves it, model pass included. A model row survives a deterministic
+resweep, but a rule that actually **fires** takes the row back — so a new
+overlay rule can still correct the model, which a bare method rank would have
+made impossible. Category ordering in the dashboard is an attention aid, not a
+hidden score, and **the urgency score ranks nothing**: it is stored, published
+and displayed, and no surface orders anything by it until the frozen corpus in
+`eval/README.md` carries a measured error bound for it.
 
 Every shared content item also carries one inspectable trust class (Q27).
 `c0` (shown as **Public**) may use local processing and is eligible for
@@ -76,7 +113,10 @@ a proposal reviewable when its subject cannot be read. Both sweep entry points �
 the CLI and the HTTP API — go through one intake path, because a gate only one
 of them uses is a gate over half the traffic. `POST /triage/redact` applies the
 same pass to rows stored before this existed; it is idempotent and reports what
-kind of thing it removed, never the value.
+kind of thing it removed, never the value. It reaches the model rung's stored
+sentences as well: a verdict is redacted against the class its thread held when
+it was written, so a thread that rises to `c2` later has its verdict narrowed by
+whichever path raised it, this route included.
 
 A later sweep cannot undo that. Classification runs the named-person rule
 against the people registry, so a pass with the overlay unmounted answers `c1`

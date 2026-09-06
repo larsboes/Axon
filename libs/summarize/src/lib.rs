@@ -547,6 +547,42 @@ pub fn digest(target: Option<&Target>, text: &str, directive: &Directive, reach:
     complete(target, &prompt, shape.max_tokens())
 }
 
+/// Put one prompt to a resolved target and hand back what came back.
+///
+/// The caller owns the words and the budget; this owns the wire. It exists so
+/// that a capability with a prompt of its own does not reimplement
+/// [`complete`] — which is where the [`LocalGate`] is acquired and where the
+/// per-backend admission lives — and so that [`Reach`] is checked in the same
+/// one place [`digest`] checks it. A policy enforced by each caller separately
+/// is a policy with as many holes as there are callers.
+///
+/// What it deliberately does NOT do: size the prompt against the model's
+/// context window. [`digest`] truncates to `INPUT_CAP` and derives its reply
+/// ceiling from a [`Shape`], but the *window* is a property of the resolved
+/// role, and [`Target`] is deliberately plain data — this lib never learns what
+/// an `InferenceConfig` is. So the budget check lives one frame up, in the
+/// caller that resolved the role, and it is mandatory there: a caller that
+/// reaches `ask` without having asked [`fits_window`] first will be told by the
+/// server, as an error it then has to remember not to count.
+///
+/// `capabilities/comms` reaches this only through `quiet::Rung::Light`, which
+/// `quiet::rung` returns only when `fits_window` said yes, and
+/// `mail_model::tests::ask_is_only_reached_through_a_light_rung` pins it.
+pub fn ask(target: Option<&Target>, prompt: &str, reply_tokens: u32, reach: Reach) -> Outcome {
+    // Same reason `digest` refuses an empty source: a model asked about nothing
+    // answers with confident invention, and the answer would be stored.
+    if prompt.trim().is_empty() {
+        return Outcome::SkippedShort;
+    }
+    let Some(target) = target else {
+        return Outcome::Unconfigured;
+    };
+    if !reach.admits(target) {
+        return Outcome::RemoteRefused;
+    }
+    complete(target, prompt, reply_tokens)
+}
+
 /// The diagram headers a renderer can actually draw. A model asked for "a
 /// diagram" will happily answer with prose, and prose stored in a diagram
 /// column is a render error at the reader rather than a failure here.
@@ -953,6 +989,37 @@ mod tests {
             chart::chart(Some(&cloud), &text, Reach::LoopbackOnly),
             Outcome::RemoteRefused
         );
+        assert_eq!(
+            ask(Some(&cloud), "classify this", 256, Reach::LoopbackOnly),
+            Outcome::RemoteRefused,
+            "`ask` shares digest's refusal, which is the reason it exists here"
+        );
+    }
+
+    /// `ask` refuses the two things it can decide without a request, and stops
+    /// there. The window is the caller's, and its doc comment says so — a test
+    /// that pinned a budget check here would be pinning a check this function
+    /// deliberately does not have.
+    #[test]
+    fn ask_refuses_an_empty_prompt_and_an_absent_target() {
+        assert_eq!(
+            ask(None, "classify this", 256, Reach::LoopbackOnly),
+            Outcome::Unconfigured
+        );
+        let local = Target {
+            endpoint: "http://127.0.0.1:9/v1/chat/completions".into(),
+            model: "m".into(),
+            api_key: None,
+            loopback: true,
+            gate: None,
+        };
+        for empty in ["", "   ", "\n\t "] {
+            assert_eq!(
+                ask(Some(&local), empty, 256, Reach::LoopbackOnly),
+                Outcome::SkippedShort,
+                "an empty prompt must not reach the wire"
+            );
+        }
     }
 
     /// A loopback target is reachable whatever the verdict says: `Reach` is

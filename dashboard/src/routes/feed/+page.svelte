@@ -5,6 +5,9 @@
   import EvaluationBreakdown from "$lib/feed/EvaluationBreakdown.svelte";
   import FeedNav from "$lib/feed/FeedNav.svelte";
   import ModelStatus from "$lib/feed/ModelStatus.svelte";
+  import ClassifierPanel from "$lib/mail/ClassifierPanel.svelte";
+  import ModelProposal from "$lib/mail/ModelProposal.svelte";
+  import { mailClassificationReport, type TriageClassifyReport } from "$lib/mail/api";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
   import {
@@ -87,8 +90,9 @@
   let mailBusy = $state<string | null>(null);
   let mailJobBusy = $state<string | null>(null);
   let mailActionError = $state<string | null>(null);
-  let confirmingBulkAction = $state<GmailAction | null>(null);
+  let confirmingBulkAction = $state<GmailAction | "categorize" | null>(null);
   let bulkCategory = $state<MailCategory>("aktiv");
+  let classifyReport = $state<TriageClassifyReport | null>(null);
   let bulkDataClass = $state<DataClass>("c1");
   let syncingMail = $state(false);
   let reconcilingMail = $state(false);
@@ -101,6 +105,11 @@
   let scoringNotice = $state<string | null>(null);
   let classifyingMailData = $state(false);
   let dataClassNotice = $state<string | null>(null);
+  let redactionNotice = $state<string | null>(null);
+  /** The two categories that raise a mail's data class by name alone, so
+   *  setting one also permanently redacts the stored subject and preview.
+   *  `content_item::mail_others_reason` is what rules it in comms. */
+  const CLASS_RAISING_CATEGORIES: MailCategory[] = ["belege", "steuern"];
   let loading = $state(true);
   let offline = $state(false);
   let busy = $state<string | null>(null);
@@ -247,12 +256,16 @@
       if (view === "mail") {
         // Freshness is allowed to fail on its own: an older comms without the
         // status route should still show the board, not an offline page.
-        const [proposals, status] = await Promise.all([
+        // The classification report fails on its own, like the freshness call
+        // above it: an older comms without the route must still show the board.
+        const [proposals, status, report] = await Promise.all([
           comms.triage(),
           comms.triageSweepStatus().catch(() => null),
+          mailClassificationReport().catch(() => null),
         ]);
         triage = proposals;
         sweepStatus = status;
+        classifyReport = report;
         offline = false;
         return;
       }
@@ -642,6 +655,13 @@
         [...selectedMail].filter((id) => !succeeded.has(id)),
       );
       confirmingBulkAction = null;
+      // The half of this write that cannot be undone. The capability counts it;
+      // saying nothing here left a permanent redaction invisible at the button
+      // that caused it.
+      redactionNotice =
+        result.narrowed > 0
+          ? `${result.narrowed} stored subject(s) and preview(s) were permanently redacted, because the class this set does not admit them.`
+          : null;
       if (result.failures.length > 0) {
         mailActionError = `${result.succeeded.length} updated; ${result.failures.length} failed.`;
       }
@@ -745,6 +765,7 @@
     {#if reconcileNotice}<p class="context-note mail-notice">{reconcileNotice}</p>{/if}
     {#if scoringNotice}<p class="context-note mail-notice">{scoringNotice}</p>{/if}
     {#if dataClassNotice}<p class="context-note mail-notice">{dataClassNotice}</p>{/if}
+    {#if redactionNotice}<p class="context-note mail-notice">{redactionNotice}</p>{/if}
 
     {#if selectedMail.size > 0}
       <section class="bulk-bar card" aria-label="Bulk mail actions">
@@ -755,7 +776,18 @@
               <option value={category}>{mailCategoryLabel(category)}</option>
             {/each}
           </select>
-          <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("categorize")}>Apply category</button>
+          <!-- A confirm step for the two categories that raise the data class:
+               that write also redacts the stored subject and preview, and a
+               resweep cannot put them back. Archive and Trash confirm because
+               they move a thread; this one confirms because it destroys text. -->
+          <button
+            class="btn"
+            disabled={mailBusy === "bulk"}
+            onclick={() =>
+              CLASS_RAISING_CATEGORIES.includes(bulkCategory)
+                ? (confirmingBulkAction = "categorize")
+                : applyBulkMailAction("categorize")}
+          >Apply category</button>
         </div>
         <div class="bulk-category">
           <select bind:value={bulkDataClass} aria-label="Bulk data class">
@@ -778,9 +810,15 @@
         {#if confirmingBulkAction}
           <div class="bulk-confirm" role="alert">
             <span>
-              {confirmingBulkAction === "trash"
-                ? `Move ${selectedMail.size} selected threads to Gmail Trash?`
-                : `Archive ${selectedMail.size} selected threads in Axon and Gmail?`}
+              {#if confirmingBulkAction === "categorize"}
+                Set {mailCategoryLabel(bulkCategory)} on {selectedMail.size} selected threads? That
+                raises them to Others and permanently redacts the stored subject and preview. A
+                later sweep cannot put them back.
+              {:else if confirmingBulkAction === "trash"}
+                Move {selectedMail.size} selected threads to Gmail Trash?
+              {:else}
+                Archive {selectedMail.size} selected threads in Axon and Gmail?
+              {/if}
             </span>
             <button class="btn" onclick={() => (confirmingBulkAction = null)}>Cancel</button>
             <button
@@ -797,22 +835,7 @@
     {/if}
 
     {#if classifierOpen}
-      <aside class="classifier card" aria-label="Mail classification method">
-        <div>
-          <p class="eyebrow mono">Current method</p>
-          <h2>Deterministic rules · local · no AI</h2>
-        </div>
-        <dl>
-          <div><dt>Category inputs</dt><dd>Sender, subject, and whether List-Unsubscribe exists.</dd></div>
-          <div><dt>Category method</dt><dd>Private rules first, generic heuristics second, then Active as the safe fallback.</dd></div>
-          <div><dt>Relevance inputs</dt><dd>Sender, subject, and Gmail snippet compared with configured TELOS lenses.</dd></div>
-          <div><dt>Relevance method</dt><dd>Loopback embedding and reranking only; unavailable local models fall back to labelled lexical similarity.</dd></div>
-          <div><dt>Never sent</dt><dd>Message bodies and attachments are not fetched. Mail scoring rejects non-loopback model endpoints.</dd></div>
-          <div><dt>TELOS boundary</dt><dd>Scoring reads TELOS. Categories and bulk decisions never rewrite TELOS files.</dd></div>
-          <div><dt>Corrections</dt><dd>A category you set here becomes a human override and survives later sweeps.</dd></div>
-          <div><dt>Data classes</dt><dd>Public may use approved cloud roles; Mine needs a reviewed pseudonymized derivative; Others and Secret never reach a cloud model, refused by the derivative builder, the tier check, the dispatch re-check against the row's current class, and the database constraint alike. Secret is refused local prompts too, by the same gate the labels are derived from — nothing summarizes, diagrams or charts it.</dd></div>
-        </dl>
-      </aside>
+      <ClassifierPanel report={classifyReport} />
     {/if}
 
     {#if visibleMail.length === 0}
@@ -894,6 +917,11 @@
                       {/if}
                     </a>
                   </div>
+                  <ModelProposal
+                    item={proposal}
+                    label={(category) => MAIL_CATEGORY_LABEL[category]}
+                    onaccept={() => void load()}
+                  />
                   {#if proposal.gmail_sync_status === "attention"}
                     <div class="mail-job-actions" aria-label="Gmail action recovery">
                       <span>Automatic retries stopped after five attempts.</span>
@@ -1452,38 +1480,6 @@
 
   .bulk-confirm span {
     flex: 1;
-  }
-
-  .classifier {
-    padding: 1rem;
-    margin-bottom: 1rem;
-  }
-
-  .classifier h2 {
-    margin: 0.15rem 0 0.85rem;
-    color: var(--text-primary);
-    font-size: 0.9rem;
-  }
-
-  .classifier dl {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
-    gap: 0.85rem 1.25rem;
-    margin: 0;
-  }
-
-  .classifier dt {
-    color: var(--text-tertiary);
-    font-family: var(--font-mono);
-    font-size: 0.625rem;
-    text-transform: uppercase;
-  }
-
-  .classifier dd {
-    margin: 0.2rem 0 0;
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    line-height: 1.45;
   }
 
   .mail-board {

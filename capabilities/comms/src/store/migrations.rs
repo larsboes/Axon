@@ -333,6 +333,121 @@ impl Store {
                 ON {prefix}_content_cloud_derivatives(approved_at DESC);
             CREATE INDEX IF NOT EXISTS idx_{prefix}_content_cloud_jobs_queued
                 ON {prefix}_content_cloud_jobs(queued_at ASC) WHERE status = 'queued';
+
+            -- mail-llm-rung 2026-09-03 ---------------------------------------
+            -- Appended as one delimited block at the END of the batch: the feed
+            -- personalization stream edits the same function on the same night.
+
+            -- Which deterministic rung decided one thread's stream, and what it
+            -- decided. `decided_by`, not `rung`: `crate::quiet::Rung` already
+            -- owns that word in this crate for the inference ladder.
+            --
+            -- A table rather than a column on {prefix}_triage_items, because
+            -- CREATE TABLE IF NOT EXISTS is a no-op against the installed table
+            -- and a new column would need the swap_in_rebuilt_table dance below.
+            -- ON DELETE CASCADE covers the Trash purge with no new retention
+            -- mechanism (`PRAGMA foreign_keys = ON` is set per connection in
+            -- libs/axon-store).
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_rules (
+                triage_id TEXT PRIMARY KEY
+                    REFERENCES {prefix}_triage_items(id) ON DELETE CASCADE,
+                decided_by TEXT NOT NULL
+                    CHECK (decided_by IN ('config_rule','heuristic','fallback')),
+                stream TEXT NOT NULL
+                    CHECK (stream IN ('aktiv','issue','feed','werbung','belege','steuern','sonstiges')),
+                rationale TEXT NOT NULL,
+                rules_version TEXT NOT NULL DEFAULT 'mail-rules-v1',
+                decided_at TEXT NOT NULL DEFAULT ({now})
+            );
+
+            -- One backfill, deliberately, against this file's own rule that the
+            -- backfills are gone (see run_migration's doc comment). That rule
+            -- says every backfill described rows written before a COLUMN
+            -- existed, and there are none. These rows were written before this
+            -- TABLE existed, and the rationale literals partition them exactly:
+            -- measured on a copy of the live file 2026-09-05, fallback 102,
+            -- heuristic 111, config_rule 24, total 237. The four heuristic
+            -- literals are `rules::classify`'s own, and
+            -- `the_backfill_literals_match_the_classifier` asserts the two lists
+            -- still agree. INSERT OR IGNORE makes a re-run free.
+            INSERT OR IGNORE INTO {prefix}_triage_rules
+                (triage_id, decided_by, stream, rationale)
+            SELECT id,
+                   CASE
+                     WHEN rationale = 'No rule matched; kept active as the conservative default.'
+                       THEN 'fallback'
+                     WHEN rationale IN (
+                       'List-Unsubscribe plus a shopping signal in the subject; classified as advertising.',
+                       'List-Unsubscribe plus a development or technology signal in the subject; classified as a Feed newsletter.',
+                       'A no-reply sender plus a receipt or invoice signal in the subject; classified as a receipt.',
+                       'List-Unsubscribe is present, but no specific rule matched; classified as other.'
+                     ) THEN 'heuristic'
+                     ELSE 'config_rule'
+                   END,
+                   stream, rationale
+              FROM {prefix}_triage_items
+             WHERE classification_method = 'deterministic';
+
+            -- UNLIKE {prefix}_gmail_action_jobs, which states that no message
+            -- content is copied into it, this table DOES hold message-derived
+            -- text: `rationale` and `urgency_rationale` are a model's sentences
+            -- about a subject and a snippet, and `last_error` can carry a word
+            -- the model invented or a message the local server returned. All
+            -- three are redacted before insert against `redaction_class` = the
+            -- higher of the row's class and the class the PROPOSED stream
+            -- implies, so an escalation at confirm time cannot leave them
+            -- under-redacted; `last_error` is capped harder still, because
+            -- nothing reads it for content (mail_model::stored_error).
+            --
+            -- An escalation that arrives LATER — a human moving the row to
+            -- belege, a resweep the people registry escalates — is remediated
+            -- by `narrow_model_verdict`, which every path that narrows the
+            -- item's own review fields now also runs.
+            --
+            -- `agree` is deliberately NOT a column: it is rule_stream =
+            -- model_stream, derived in the report, and a stored copy would be a
+            -- second place for it to be wrong.
+            --
+            -- `state` carries no CHECK, following {prefix}_content_digests. The
+            -- vocabulary is enumerated by
+            -- `mail_model::tests::every_stored_state_is_in_the_documented_set`
+            -- instead, because it is the union of `summarize::Outcome::state()`
+            -- and four states this rung owns, and a CHECK here would drift from
+            -- that enum silently.
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_model_verdicts (
+                triage_id TEXT PRIMARY KEY
+                    REFERENCES {prefix}_triage_items(id) ON DELETE CASCADE,
+                mode TEXT NOT NULL CHECK (mode IN ('shadow','applied','held')),
+                state TEXT NOT NULL,
+                rule_decided_by TEXT NOT NULL
+                    CHECK (rule_decided_by IN ('config_rule','heuristic','fallback')),
+                rule_stream TEXT NOT NULL
+                    CHECK (rule_stream IN ('aktiv','issue','feed','werbung','belege','steuern','sonstiges')),
+                model_stream TEXT
+                    CHECK (model_stream IS NULL OR model_stream IN ('aktiv','issue','feed','werbung','belege','steuern','sonstiges')),
+                confidence_bp INTEGER
+                    CHECK (confidence_bp IS NULL OR confidence_bp BETWEEN 0 AND 10000),
+                urgency_bp INTEGER
+                    CHECK (urgency_bp IS NULL OR urgency_bp BETWEEN 0 AND 10000),
+                rationale TEXT,
+                urgency_rationale TEXT,
+                redactions INTEGER NOT NULL DEFAULT 0 CHECK (redactions >= 0),
+                data_class TEXT NOT NULL CHECK (data_class IN ('c0','c1','c2','c3')),
+                redaction_class TEXT NOT NULL CHECK (redaction_class IN ('c0','c1','c2','c3')),
+                producer TEXT NOT NULL,
+                item_revision TEXT NOT NULL,
+                prompt_revision TEXT NOT NULL DEFAULT 'mail-stream-v1-english',
+                classification_version TEXT NOT NULL DEFAULT 'mail-model-v1',
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                last_error TEXT,
+                next_attempt TEXT,
+                held_reason TEXT,
+                applied_at TEXT,
+                decided_at TEXT NOT NULL DEFAULT ({now})
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_triage_model_state
+                ON {prefix}_triage_model_verdicts(state);
+            -- end mail-llm-rung 2026-09-03 -----------------------------------
             ",
             prefix = prefix,
             now = axon_store::NOW,

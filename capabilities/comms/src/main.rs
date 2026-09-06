@@ -7,6 +7,7 @@
 //!   comms keep <id> | dismiss <id>            set feed item status
 //!   comms summarize --pending                 retry missing summaries
 //!   comms export-sources [--dry-run]          reconcile the feed library with the vault
+//!   comms mail classify [--shadow|--apply]    the local model classification rung
 //!   comms --help
 //!
 //! `sweep` is strictly read-only against Gmail either way -- `--dry-run` only
@@ -16,6 +17,7 @@
 use std::collections::BTreeMap;
 
 use comms::config::Config;
+use comms::mail_model::{self, Mode};
 use comms::store::Store;
 use comms::{google, intake, media, normalize};
 
@@ -59,6 +61,14 @@ fn print_help() {
     println!("       [--dry-run]                CURRENT feed source declarations. Lowering a");
     println!("                                  class is a human act, so the rationale is");
     println!("                                  required and is stored on every row it changes.");
+    println!("  mail classify [--shadow]        run the local model rung over the mail the");
+    println!("       [--apply] [--limit N]      deterministic rules did not decide. Shadow by");
+    println!("       [--report]                 default: it writes verdicts and moves no");
+    println!("       [--revert <id>]            category. --apply needs mail_model.apply and a");
+    println!("       [--revert-all]             non-zero min_confidence_bp in the overlay, and");
+    println!("                                  never raises a data class. It writes the stored");
+    println!("                                  shadow verdicts rather than asking again.");
+    println!("                                  --limit defaults to mail_model.limit, else 200.");
     println!("  --help, -h                      show this help");
     println!("\nThis CLI's Gmail sweep is READ-ONLY. Archive, Trash and the Waiting label require an explicit authenticated dashboard action.");
 }
@@ -83,6 +93,7 @@ fn main() {
         "normalize" => cmd_normalize(&args, &cfg),
         "export-sources" => cmd_export_sources(&args, &cfg),
         "reclassify-feed" => cmd_reclassify_feed(&args, &cfg),
+        "mail" => cmd_mail(&args, &cfg),
         other => {
             eprintln!("error: unknown command '{other}'\n");
             print_help();
@@ -145,7 +156,7 @@ fn cmd_sweep(args: &[String], cfg: &Config) {
         redacted += usize::from(intake.redaction_count() > 0);
 
         if let Some(st) = &store {
-            match st.upsert_triage(&intake.item) {
+            match st.upsert_triage_with_rules(&intake.item, &intake.verdict()) {
                 Ok(true) => persisted_new += 1,
                 Ok(false) => {}
                 Err(e) => eprintln!("  warning: could not persist {id}: {e}"),
@@ -732,4 +743,185 @@ fn cmd_export_sources(args: &[String], cfg: &Config) {
     for path in &report.refused {
         println!("  refused, this file is not comms' to write: {path}");
     }
+}
+
+// -- mail classify -------------------------------------------------------
+
+/// `comms mail classify` — the model rung's operator surface.
+///
+/// Explicit only. There is no timer: an unattended local-model drain is what
+/// made this machine hot once already, and the category axis writes a decision
+/// rather than a derived field.
+fn cmd_mail(args: &[String], cfg: &Config) {
+    if args.get(2).map(String::as_str) != Some("classify") {
+        eprintln!("error: usage: comms mail classify [--shadow|--apply] [--limit N] [--report] [--revert <id>|--revert-all]\n");
+        std::process::exit(2);
+    }
+    let store = open_store(cfg);
+
+    // `--revert` with nothing after it used to fall through to `None`, which is
+    // the argument that reverts EVERY model-written row — the same shape the
+    // HTTP route refuses with a 400. The two surfaces answer alike now (review,
+    // 2026-09-05).
+    if args.iter().any(|a| a == "--revert") && arg_after(args, "--revert").is_none() {
+        eprintln!("error: --revert needs a thread id. To revert every model-written row, say --revert-all.");
+        std::process::exit(2);
+    }
+    if args.iter().any(|a| a == "--revert-all") || args.iter().any(|a| a == "--revert") {
+        let ids: Option<Vec<String>> = arg_after(args, "--revert").map(|id| vec![id.clone()]);
+        match store.revert_model_streams(ids.as_deref()) {
+            Ok((reverted, not_model, no_rules)) => {
+                println!("reverted {reverted} row(s) to their deterministic verdict");
+                println!("skipped: {not_model} not model-written, {no_rules} with no rules row");
+                println!(
+                    "the data class and any narrowing this rung caused are NOT restored — \
+                     the class update is escalation-only and the narrowing is not a delete"
+                );
+            }
+            Err(error) => {
+                eprintln!("error: could not revert: {error}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
+    if args.iter().any(|a| a == "--report") {
+        print_classify_report(cfg, &store);
+        return;
+    }
+
+    let requested = if args.iter().any(|a| a == "--apply") {
+        Mode::Apply
+    } else {
+        Mode::Shadow
+    };
+    let mode = match mail_model::apply_allowed(cfg.mail_model.as_ref(), requested) {
+        Ok(mode) => mode,
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(2);
+        }
+    };
+    // The overlay's `mail_model.limit` is the default when `--limit` is absent.
+    let limit = mail_model::pass_limit(
+        cfg.mail_model.as_ref(),
+        arg_after(args, "--limit").and_then(|value| value.parse().ok()),
+    );
+    let min_confidence_bp = cfg
+        .mail_model
+        .as_ref()
+        .map_or(0, |section| i64::from(section.min_confidence_bp));
+
+    println!(
+        "comms mail classify — {} mode, limit {limit}, producer {}",
+        mode.as_str(),
+        mail_model::producer(cfg)
+    );
+    let started = std::time::Instant::now();
+    let receipt = match mail_model::run_pass(cfg, &store, mode, limit, min_confidence_bp) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            eprintln!("error: the pass failed: {error}");
+            std::process::exit(2);
+        }
+    };
+    println!(
+        "\nreviewed {} · eligible {} · prompted {} · refused as Secret {} · over window {}",
+        receipt.reviewed,
+        receipt.eligible,
+        receipt.prompted,
+        receipt.refused_c3,
+        receipt.over_window
+    );
+    println!(
+        "unparseable {} · outside the vocabulary {} · other errors {}",
+        receipt.unparseable, receipt.invalid_stream, receipt.errors
+    );
+    println!(
+        "agreed (nothing written) {} · disagreed {} · applied {} · held as class-raising {} · below confidence {}",
+        receipt.agreed_no_write,
+        receipt.disagreed,
+        receipt.applied,
+        receipt.held_class_escalation,
+        receipt.below_confidence
+    );
+    if receipt.awaiting_apply > 0 {
+        // Counted before this pass acted, so in apply mode it is the total this
+        // pass found rather than what it left behind.
+        println!(
+            "{} stored disagreement(s) had no category write yet; this pass applied {}",
+            receipt.awaiting_apply, receipt.applied
+        );
+    }
+    println!("wall time {:.1}s", started.elapsed().as_secs_f64());
+    print_classify_report(cfg, &store);
+}
+
+/// The agreement table, the state counts and the receipt line.
+///
+/// Built from `model_verdict_summaries`, whose SELECT list cannot carry a
+/// subject, a snippet or a rationale — so this output is safe to paste.
+fn print_classify_report(cfg: &Config, store: &Store) {
+    let summaries = match store.model_verdict_summaries(None) {
+        Ok(summaries) => summaries,
+        Err(error) => {
+            eprintln!("error: could not read the verdicts: {error}");
+            std::process::exit(2);
+        }
+    };
+    if summaries.is_empty() {
+        println!("\nno verdicts stored yet — run `comms mail classify --shadow` first");
+        return;
+    }
+
+    println!("\nrule stream\tn\tagree\tagree%\tmodel proposed");
+    for (rule_stream, n, agree, model_streams) in mail_model::agreement(&summaries) {
+        let mut streams: Vec<(String, usize)> = model_streams.into_iter().collect();
+        streams.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        let rendered: Vec<String> = streams
+            .iter()
+            .map(|(stream, count)| format!("{stream} {count}"))
+            .collect();
+        println!(
+            "{rule_stream}\t{n}\t{agree}\t{:.1}%\t{}",
+            agree as f64 * 100.0 / n as f64,
+            rendered.join(", ")
+        );
+    }
+
+    let mut states: BTreeMap<String, usize> = BTreeMap::new();
+    let mut classes: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut held: BTreeMap<String, usize> = BTreeMap::new();
+    for summary in &summaries {
+        *states.entry(summary.state.clone()).or_default() += 1;
+        let entry = classes.entry(summary.data_class.clone()).or_default();
+        entry.0 += 1;
+        if summary.model_stream.is_some() {
+            entry.1 += 1;
+        }
+        if let Some(reason) = &summary.held_reason {
+            *held.entry(reason.clone()).or_default() += 1;
+        }
+    }
+    println!("\nstate\tn");
+    for (state, n) in &states {
+        println!("{state}\t{n}");
+    }
+    println!("\ndata class\tverdicts\tanswered");
+    for (class, (n, answered)) in &classes {
+        println!("{class}\t{n}\t{answered}");
+    }
+    if !held.is_empty() {
+        println!("\nheld for a human\tn");
+        for (reason, n) in &held {
+            println!("{reason}\t{n}");
+        }
+    }
+    println!(
+        "\nproducer {} · prompt {} · classifier {} · cloud calls 0",
+        mail_model::producer(cfg),
+        mail_model::MAIL_MODEL_PROMPT_REVISION,
+        mail_model::MAIL_MODEL_VERSION
+    );
 }

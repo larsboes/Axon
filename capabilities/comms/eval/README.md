@@ -167,3 +167,56 @@ exposes no `/v1/rerank`, and Ollama is what holds the local roles now.
 backend is oMLX, and its record stands as the evidence it was. That record also carries why the
 question was reopened at all: the configured oMLX backend is absent from the host, so ranking had
 been falling back to the deterministic `lexical` control.
+
+## Mail stream classification (the local model rung)
+
+`comms-mail-model-eval` decides whether the local model rung may move a category
+at all. **It makes no model call.** It joins a frozen corpus of hand-written
+labels to the verdicts a shadow pass already stored, keyed by triage id, so
+re-scoring is free and the number is the same every run. All the model time
+lives in the pass, which has its own receipt and its own bounded retry; the
+scoring stays pure, and drift between the two is impossible because the runner
+builds no prompt. That is the same property that makes the redaction gate above
+a gate rather than a report.
+
+The corpus is **not in this repository**. It holds real mail, so it lives in the
+private overlay at `config/comms-mail-stream-shadow.json` beside
+`comms-redaction-shadow.json`, with the companion
+`comms-mail-stream-shadow.md` holding the write-up — the same `.json` + `.md`
+pair the redaction and relevance corpora already use. The shape, with synthetic
+fixtures only, is `schemas/comms-mail-stream-shadow.example.json`. The runner
+takes the corpus path as `argv[1]`; the in-repo default path deliberately does
+not exist.
+
+```sh
+comms mail classify --shadow          # fill the verdict table, ~2s per thread
+cargo run --bin comms-mail-model-eval -- "$AXON_PERSONAL_ROOT/config/comms-mail-stream-shadow.json"
+```
+
+**What it measures.** Model agreement against the labels, split by language,
+because one English prompt over a mixed mailbox is exactly the assumption that
+deserves a number. The **control** needs no model either: every fixture the rung
+sees is a fallback row, so the deterministic classifier answered `aktiv` for all
+of them, and its agreement is simply the share of labels reading `aktiv` —
+computable from the corpus before anything runs. Then the **false eviction rate**
+from `aktiv`, which is the one failure here that costs a decision: every applied
+write is an eviction, and a correctly-`aktiv` mail moved out of `aktiv`
+disappears from the operator's ladder. Then the **urgency band error**, mapping
+the model's continuous 0–10000 self-report onto the corpus's four ordinal bands.
+
+**What the first run's job is.** To find out what the number IS. Three of the
+four acceptance thresholds ship `null`, and they stay null until the first run
+has been read — a threshold invented before the measurement is a number chosen
+to be met, the same discipline that set the redaction corpus's
+`minimum_recall_percent` after its second measurement. `max_false_eviction_percent`
+is different in kind and carries a value from the start, because it is a stated
+policy judgement rather than a measurement. The flip from shadow to live also
+needs model agreement at least ten points above the control; the ten is a
+judgement, recorded and reversible.
+
+A fixture whose stored verdict is missing, or was reached against a different
+subject, sender domain, class or prompt, is **skipped with a named reason**
+rather than scored — an all-skipped corpus is a FAIL, never a perfect score. The
+output prints fixture ids, stream names and counts, and never a subject, a
+preview or a rationale: unlike the redaction runner, whose leaked value IS the
+finding, the finding here is a category.
