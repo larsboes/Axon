@@ -55,15 +55,21 @@ score, each with a one-line rationale. Four things bound it:
   stored verdict, not a handoff to a bigger model;
 - every call is loopback-only, and a non-loopback endpoint is refused outright;
 - it is **shadow by default**. It writes verdicts to its own table and moves no
-  category until the overlay declares `mail_model.apply`, and even then it
-  refuses any proposal that would raise the mail's data class — those are held
-  for a person, because the class change and the redaction that follows it
-  cannot be undone.
+  category until the overlay declares `mail_model.apply` *and* a
+  `mail_model.min_confidence_bp` above zero — a floor of zero would write every
+  disagreement at any self-reported confidence, so the operator names the floor
+  in the same edit that turns writing on. Even then it refuses any proposal that
+  would raise the mail's data class — those are held for a person, because the
+  class change and the redaction that follows it cannot be undone.
 
 The rung is explicit: two routes and a CLI verb, no timer. Run it with
-`comms mail classify --shadow`, read `comms mail classify --report`, and undo a
-bad batch with `--revert-all`, which restores the deterministic verdict on the
-category axis and says in its own output what it cannot restore.
+`comms mail classify --shadow`, read `comms mail classify --report`, then set
+the two overlay keys and run `comms mail classify --apply`. Apply does not ask
+the model again: a stored shadow verdict already carries the answer, so the
+apply pass reads it and writes the category. Undo a bad batch with
+`--revert-all` (`--revert` needs a thread id and refuses to stand in for it),
+which restores the deterministic verdict on the category axis and says in its
+own output what it cannot restore.
 
 A category changed in the dashboard becomes a `human` override and every later
 sweep preserves it, model pass included. A model row survives a deterministic
@@ -107,7 +113,10 @@ a proposal reviewable when its subject cannot be read. Both sweep entry points �
 the CLI and the HTTP API — go through one intake path, because a gate only one
 of them uses is a gate over half the traffic. `POST /triage/redact` applies the
 same pass to rows stored before this existed; it is idempotent and reports what
-kind of thing it removed, never the value.
+kind of thing it removed, never the value. It reaches the model rung's stored
+sentences as well: a verdict is redacted against the class its thread held when
+it was written, so a thread that rises to `c2` later has its verdict narrowed by
+whichever path raised it, this route included.
 
 A later sweep cannot undo that. Classification runs the named-person rule
 against the people registry, so a pass with the overlay unmounted answers `c1`

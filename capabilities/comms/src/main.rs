@@ -62,10 +62,13 @@ fn print_help() {
     println!("                                  class is a human act, so the rationale is");
     println!("                                  required and is stored on every row it changes.");
     println!("  mail classify [--shadow]        run the local model rung over the mail the");
-    println!("       [--apply] [--limit N=200]  deterministic rules did not decide. Shadow by");
+    println!("       [--apply] [--limit N]      deterministic rules did not decide. Shadow by");
     println!("       [--report]                 default: it writes verdicts and moves no");
-    println!("       [--revert <id>]            category. --apply needs mail_model.apply in the");
-    println!("       [--revert-all]             overlay, and never raises a data class.");
+    println!("       [--revert <id>]            category. --apply needs mail_model.apply and a");
+    println!("       [--revert-all]             non-zero min_confidence_bp in the overlay, and");
+    println!("                                  never raises a data class. It writes the stored");
+    println!("                                  shadow verdicts rather than asking again.");
+    println!("                                  --limit defaults to mail_model.limit, else 200.");
     println!("  --help, -h                      show this help");
     println!("\nThis CLI's Gmail sweep is READ-ONLY. Archive, Trash and the Waiting label require an explicit authenticated dashboard action.");
 }
@@ -756,6 +759,14 @@ fn cmd_mail(args: &[String], cfg: &Config) {
     }
     let store = open_store(cfg);
 
+    // `--revert` with nothing after it used to fall through to `None`, which is
+    // the argument that reverts EVERY model-written row — the same shape the
+    // HTTP route refuses with a 400. The two surfaces answer alike now (review,
+    // 2026-09-05).
+    if args.iter().any(|a| a == "--revert") && arg_after(args, "--revert").is_none() {
+        eprintln!("error: --revert needs a thread id. To revert every model-written row, say --revert-all.");
+        std::process::exit(2);
+    }
     if args.iter().any(|a| a == "--revert-all") || args.iter().any(|a| a == "--revert") {
         let ids: Option<Vec<String>> = arg_after(args, "--revert").map(|id| vec![id.clone()]);
         match store.revert_model_streams(ids.as_deref()) {
@@ -792,9 +803,11 @@ fn cmd_mail(args: &[String], cfg: &Config) {
             std::process::exit(2);
         }
     };
-    let limit = arg_after(args, "--limit")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(200);
+    // The overlay's `mail_model.limit` is the default when `--limit` is absent.
+    let limit = mail_model::pass_limit(
+        cfg.mail_model.as_ref(),
+        arg_after(args, "--limit").and_then(|value| value.parse().ok()),
+    );
     let min_confidence_bp = cfg
         .mail_model
         .as_ref()
@@ -833,6 +846,14 @@ fn cmd_mail(args: &[String], cfg: &Config) {
         receipt.held_class_escalation,
         receipt.below_confidence
     );
+    if receipt.awaiting_apply > 0 {
+        // Counted before this pass acted, so in apply mode it is the total this
+        // pass found rather than what it left behind.
+        println!(
+            "{} stored disagreement(s) had no category write yet; this pass applied {}",
+            receipt.awaiting_apply, receipt.applied
+        );
+    }
     println!("wall time {:.1}s", started.elapsed().as_secs_f64());
     print_classify_report(cfg, &store);
 }

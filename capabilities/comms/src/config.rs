@@ -264,8 +264,13 @@ pub struct MailModelConfig {
     /// The blunt floor below which a disagreement is not written. The model's
     /// confidence is self-reported and uncalibrated: this is a policy
     /// threshold, not a probability, and the corpus is what sets it.
+    ///
+    /// Zero is not a floor, so `apply = true` beside a zero here is refused by
+    /// `mail_model::apply_allowed` rather than silently writing everything.
     pub min_confidence_bp: u32,
-    /// How many threads one pass may prompt.
+    /// How many threads one pass may act on when the caller names no limit.
+    /// Read through `mail_model::pass_limit`, which both the CLI and
+    /// `POST /triage/classify/refresh` go through.
     pub limit: usize,
 }
 

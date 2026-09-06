@@ -359,6 +359,14 @@ pub struct ModelWrite {
     pub stream_changed: bool,
 }
 
+/// What one remediation write did: the item's review fields, and the model
+/// verdict's own two sentences, which the same class governs.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RedactWrite {
+    pub changed: bool,
+    pub verdict_narrowed: bool,
+}
+
 /// What a human category change did to the row and to the two columns the
 /// class governs.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -1302,13 +1310,17 @@ pub(crate) mod db_tests {
         assert!(store
             .refresh_triage_data_class("thread:escalated", &escalated)
             .unwrap());
-        assert!(store
-            .redact_triage_review_fields(
-                "thread:escalated",
-                Some("Re: [person], next week"),
-                Some("[person] asked about the schedule"),
-            )
-            .unwrap());
+        assert!(
+            store
+                .redact_triage_review_fields(
+                    "thread:escalated",
+                    "c2",
+                    Some("Re: [person], next week"),
+                    Some("[person] asked about the schedule"),
+                )
+                .unwrap()
+                .changed
+        );
 
         // The next sweep, registry absent: c1, and a *newer* message's raw
         // Gmail metadata.
@@ -1988,6 +2000,149 @@ pub(crate) mod db_tests {
             full["thread:summary"].rationale.as_deref(),
             Some("ZZTOPSECRETTOKEN")
         );
+    }
+
+    /// A machine write onto the category axis has to leave a trace. The stamp
+    /// is derived in SQL from the mode, so it is in the same format and off the
+    /// same clock as every other stamp in the file.
+    #[test]
+    fn an_applied_verdict_carries_the_stamp_of_the_write() {
+        let store = open_test_store("triage_verdict_applied_at");
+        seed_fallback(&store, "thread:stamped");
+        let mut verdict = mk_verdict("thread:stamped", "werbung", "c1", "c1");
+        store.upsert_model_verdict(&verdict).unwrap();
+        assert!(
+            store.model_verdicts().unwrap()["thread:stamped"]
+                .applied_at
+                .is_none(),
+            "a shadow verdict moved nothing, so it is stamped with nothing"
+        );
+
+        assert!(store.apply_model_stream(&verdict).unwrap().stream_changed);
+        verdict.mode = "applied".into();
+        store.upsert_model_verdict(&verdict).unwrap();
+        let stamped = store.model_verdicts().unwrap()["thread:stamped"]
+            .applied_at
+            .clone()
+            .expect("an applied verdict carries a stamp");
+        assert!(stamped.ends_with("+00:00"), "got {stamped}");
+
+        // Re-storing it does not restamp: the write happened once.
+        let mut again = store.model_verdicts().unwrap()["thread:stamped"].clone();
+        again.state = "generated".into();
+        store.upsert_model_verdict(&again).unwrap();
+        assert_eq!(
+            store.model_verdicts().unwrap()["thread:stamped"]
+                .applied_at
+                .as_deref(),
+            Some(stamped.as_str())
+        );
+
+        // And a revert clears it, because the write it recorded was undone.
+        store.revert_model_streams(None).unwrap();
+        assert!(store.model_verdicts().unwrap()["thread:stamped"]
+            .applied_at
+            .is_none());
+    }
+
+    /// The gap a later escalation used to leave. A verdict's two sentences are
+    /// model text about the mail, redacted once against the class the row held
+    /// at prompt time; a row that rises to `c2` afterwards left them behind at
+    /// `c1`, and neither the human path nor `POST /triage/redact` reached them.
+    #[test]
+    fn an_escalation_narrows_the_stored_verdict_too() {
+        let store = open_test_store("triage_verdict_escalation");
+        seed_fallback(&store, "thread:escalate");
+        let mut verdict = mk_verdict("thread:escalate", "aktiv", "c1", "c1");
+        verdict.rationale = Some("It quotes DE89370400440532013000 as the account.".into());
+        verdict.urgency_rationale = Some("It asks for DE89370400440532013000 today.".into());
+        store.upsert_model_verdict(&verdict).unwrap();
+
+        let write = store
+            .set_triage_data_class("thread:escalate", "c2", None)
+            .unwrap();
+        assert!(write.changed);
+
+        let stored = store.model_verdicts().unwrap();
+        let after = &stored["thread:escalate"];
+        assert!(
+            !after.rationale.as_deref().unwrap().contains("DE8937040044"),
+            "the verdict still holds what c2 exists to hide: {:?}",
+            after.rationale
+        );
+        assert!(!after
+            .urgency_rationale
+            .as_deref()
+            .unwrap()
+            .contains("DE8937040044"));
+        assert_eq!(
+            after.redaction_class, "c2",
+            "the class the text was narrowed against moves with the row"
+        );
+        assert_eq!(
+            after.data_class, "c1",
+            "the class at PROMPT time is a receipt and does not move"
+        );
+    }
+
+    /// A class that refuses prompts outright loses the sentences rather than
+    /// narrowing them: the rung would never have produced them for a `c3` row.
+    #[test]
+    fn an_escalation_to_secret_drops_the_verdict_text() {
+        let store = open_test_store("triage_verdict_secret");
+        seed_fallback(&store, "thread:secret");
+        let verdict = mk_verdict("thread:secret", "aktiv", "c1", "c1");
+        store.upsert_model_verdict(&verdict).unwrap();
+
+        store
+            .set_triage_data_class("thread:secret", "c3", None)
+            .unwrap();
+
+        let stored = store.model_verdicts().unwrap();
+        assert_eq!(stored["thread:secret"].rationale, None);
+        assert_eq!(stored["thread:secret"].urgency_rationale, None);
+        assert_eq!(stored["thread:secret"].redaction_class, "c3");
+    }
+
+    /// The remediation route reaches the verdict as well as the item, on a row
+    /// whose subject a sweep already cleaned. That row is exactly the one a
+    /// `changed`-only loop skipped.
+    #[test]
+    fn the_remediation_write_narrows_a_verdict_on_an_already_clean_row() {
+        let store = open_test_store("triage_redact_reaches_verdict");
+        seed_fallback(&store, "thread:remediate");
+        let mut verdict = mk_verdict("thread:remediate", "aktiv", "c1", "c1");
+        verdict.rationale = Some("Sent from DE89370400440532013000.".into());
+        store.upsert_model_verdict(&verdict).unwrap();
+        // The class rises by a route that does not narrow, the way a row
+        // predating the gate got here.
+        store
+            .refresh_triage_data_class(
+                "thread:remediate",
+                &content_item::DataClass::new(
+                    "c2",
+                    crate::intake::KNOWN_PERSON_RATIONALE,
+                    content_item::METHOD_DETERMINISTIC,
+                    content_item::MAIL_CLASSIFIER_VERSION,
+                ),
+            )
+            .unwrap();
+
+        let write = store
+            .redact_triage_review_fields("thread:remediate", "c2", Some("SALE"), Some("snippet"))
+            .unwrap();
+        assert!(write.verdict_narrowed, "the verdict was in scope");
+        assert!(!store.model_verdicts().unwrap()["thread:remediate"]
+            .rationale
+            .as_deref()
+            .unwrap()
+            .contains("DE8937040044"));
+
+        // Run it twice and the second run reports nothing left to do.
+        let again = store
+            .redact_triage_review_fields("thread:remediate", "c2", Some("SALE"), Some("snippet"))
+            .unwrap();
+        assert!(!again.verdict_narrowed);
     }
 
     #[test]

@@ -823,6 +823,7 @@ pub(super) async fn triage_redact_handler(Json(body): Json<TriageRedactBody>) ->
         let reviewed = items.len();
         let mut in_scope = 0usize;
         let mut changed = 0usize;
+        let mut verdicts_narrowed = 0usize;
         let mut entity_types: BTreeMap<&'static str, usize> = BTreeMap::new();
         let mut digests = Vec::new();
 
@@ -835,25 +836,38 @@ pub(super) async fn triage_redact_handler(Json(body): Json<TriageRedactBody>) ->
                 continue;
             };
             in_scope += 1;
-            if !remediation.changed {
+            if remediation.changed {
+                for finding in &remediation.redactions {
+                    *entity_types.entry(finding.entity_type).or_default() += finding.count;
+                }
+                if let Some(digest) = remediation.audit_digest.clone() {
+                    digests.push(json!({ "id": item.id, "digest": digest }));
+                }
+            }
+            if dry_run {
+                if remediation.changed {
+                    changed += 1;
+                }
                 continue;
             }
-            for finding in &remediation.redactions {
-                *entity_types.entry(finding.entity_type).or_default() += finding.count;
-            }
-            if let Some(digest) = remediation.audit_digest.clone() {
-                digests.push(json!({ "id": item.id, "digest": digest }));
-            }
-            if dry_run
-                || store
-                    .redact_triage_review_fields(
-                        &item.id,
-                        remediation.subject.as_deref(),
-                        remediation.snippet.as_deref(),
-                    )
-                    .map_err(|error| error.to_string())?
-            {
+            // Called for every in-scope row, not only for a row whose subject
+            // still holds something: a row swept clean can still carry a model
+            // verdict written while its class was lower, and that verdict's
+            // two sentences are review fields of the same kind (review,
+            // 2026-09-05).
+            let write = store
+                .redact_triage_review_fields(
+                    &item.id,
+                    &item.data_class,
+                    remediation.subject.as_deref(),
+                    remediation.snippet.as_deref(),
+                )
+                .map_err(|error| error.to_string())?;
+            if remediation.changed && write.changed {
                 changed += 1;
+            }
+            if write.verdict_narrowed {
+                verdicts_narrowed += 1;
             }
         }
 
@@ -861,6 +875,10 @@ pub(super) async fn triage_redact_handler(Json(body): Json<TriageRedactBody>) ->
             "reviewed": reviewed,
             "in_scope": in_scope,
             "changed": changed,
+            // Model verdicts whose stored sentences this run narrowed to the
+            // row's current class. Separate from `changed`, which counts the
+            // items: the two tables can need remediation independently.
+            "verdicts_narrowed": verdicts_narrowed,
             "dry_run": dry_run,
             "entity_types": entity_types,
             "audit": digests,
@@ -1003,7 +1021,7 @@ pub(super) async fn triage_classify_refresh_handler(
         Ok(mode) => mode,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
     };
-    let limit = body.limit.unwrap_or(200).clamp(1, 500);
+    let requested_limit = body.limit;
 
     let result = tokio::task::spawn_blocking(move || -> Result<Value, (StatusCode, String)> {
         let cfg = Config::load();
@@ -1011,6 +1029,10 @@ pub(super) async fn triage_classify_refresh_handler(
             .map_err(|error| (StatusCode::CONFLICT, error))?;
         let store = Store::open(&cfg.database_path)
             .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        // The overlay's `mail_model.limit` is the default when the request
+        // names none. Decided in `mail_model` so the CLI and this route cannot
+        // disagree about it.
+        let limit = mail_model::pass_limit(cfg.mail_model.as_ref(), requested_limit);
         let min_confidence_bp = cfg
             .mail_model
             .as_ref()
@@ -1020,8 +1042,14 @@ pub(super) async fn triage_classify_refresh_handler(
         let (registry_state, registry_names) = people_registry_receipt();
         Ok(json!({
             "mode": receipt.mode,
+            "limit": limit,
             "reviewed": receipt.reviewed,
             "eligible": receipt.eligible,
+            // Threads a previous shadow pass already answered, still carrying a
+            // disagreement nothing has written. In shadow this is the size of
+            // the decision waiting for the operator; in apply it is what this
+            // pass acted on without prompting anything.
+            "awaiting_apply": receipt.awaiting_apply,
             "prompted": receipt.prompted,
             "refused_c3": receipt.refused_c3,
             "over_window": receipt.over_window,
@@ -1091,58 +1119,22 @@ pub(super) async fn triage_classify_report_handler(
         // Named `candidates`, not `eligible`: the refresh receipt's `eligible`
         // is how many rows were DUE this run, and two fields of one name
         // meaning two things is the drift a report gets read wrong by. This is
-        // the coarse set the rung may look at at all.
+        // the coarse set the rung may look at at all. Counted in SQL, because
+        // reading a hundred subjects to call `.len()` on them is the opposite
+        // of what this route promises.
         let candidates = store
-            .model_rung_candidates()
-            .map_err(|error| error.to_string())?
-            .len();
+            .model_rung_candidate_count()
+            .map_err(|error| error.to_string())?;
+        let by_classification_method = store
+            .triage_classification_methods()
+            .map_err(|error| error.to_string())?;
 
-        let by_rule_stream: Vec<Value> = mail_model::agreement(&summaries)
-            .into_iter()
-            .map(|(rule_stream, n, agree, model_streams)| {
-                let mut streams: Vec<(String, usize)> = model_streams.into_iter().collect();
-                streams
-                    .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-                json!({
-                    "rule_stream": rule_stream,
-                    "n": n,
-                    "agree": agree,
-                    "agree_percent": percent(agree, n),
-                    "model_streams": streams
-                        .into_iter()
-                        .map(|(stream, n)| json!({ "stream": stream, "n": n }))
-                        .collect::<Vec<_>>(),
-                })
-            })
-            .collect();
-
-        Ok(json!({
-            "verdicts": summaries.len(),
-            "candidates": candidates,
-            "by_rule_stream": by_rule_stream,
-            "by_state": tally(summaries.iter().map(|row| row.state.clone()))
-                .into_iter()
-                .map(|(state, n)| json!({ "state": state, "n": n }))
-                .collect::<Vec<_>>(),
-            // What a receipt proves "no Secret mail was prompted" from: the
-            // class at prompt time, beside how many of that class produced an
-            // answer rather than a refusal.
-            "by_data_class": by_data_class(&summaries),
-            "held": tally(
-                summaries
-                    .iter()
-                    .filter_map(|row| row.held_reason.clone()),
-            )
-            .into_iter()
-            .map(|(reason, n)| json!({ "reason": reason, "n": n }))
-            .collect::<Vec<_>>(),
-            "confidence_bp": spread(summaries.iter().filter_map(|row| row.confidence_bp)),
-            "urgency_bp": urgency_spread(&summaries),
-            "apply_enabled": cfg.mail_model.as_ref().is_some_and(|section| section.apply),
-            "producer": mail_model::producer(&cfg),
-            "prompt_revision": mail_model::MAIL_MODEL_PROMPT_REVISION,
-            "cloud_calls": 0,
-        }))
+        Ok(report_body(
+            &summaries,
+            candidates,
+            &by_classification_method,
+            &cfg,
+        ))
     })
     .await;
 
@@ -1157,6 +1149,73 @@ pub(super) async fn triage_classify_report_handler(
             Json(json!({ "error": "task failed" })),
         ),
     }
+}
+
+/// The report body, as one pure function over what the two store queries
+/// answered.
+///
+/// A function rather than a `json!` inside the handler, so the test that pins
+/// "this body quotes no mail content" can run the thing the route serves. The
+/// test used to rebuild the body itself, which meant a new key carrying mail
+/// text would have left it green (review, 2026-09-05).
+fn report_body(
+    summaries: &[ModelVerdictSummary],
+    candidates: usize,
+    by_classification_method: &[(String, usize)],
+    cfg: &Config,
+) -> Value {
+    let by_rule_stream: Vec<Value> = mail_model::agreement(summaries)
+        .into_iter()
+        .map(|(rule_stream, n, agree, model_streams)| {
+            let mut streams: Vec<(String, usize)> = model_streams.into_iter().collect();
+            streams.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+            json!({
+                "rule_stream": rule_stream,
+                "n": n,
+                "agree": agree,
+                "agree_percent": percent(agree, n),
+                "model_streams": streams
+                    .into_iter()
+                    .map(|(stream, n)| json!({ "stream": stream, "n": n }))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    json!({
+        "verdicts": summaries.len(),
+        "candidates": candidates,
+        "by_rule_stream": by_rule_stream,
+        "by_state": tally(summaries.iter().map(|row| row.state.clone()))
+            .into_iter()
+            .map(|(state, n)| json!({ "state": state, "n": n }))
+            .collect::<Vec<_>>(),
+        // What actually classified this mailbox, counted where the rows are.
+        // The dashboard panel that shows it used to derive it in Svelte, which
+        // is arithmetic the frontend does not do.
+        "by_classification_method": by_classification_method
+            .iter()
+            .map(|(method, n)| json!({ "method": method, "n": n }))
+            .collect::<Vec<_>>(),
+        // What a receipt proves "no Secret mail was prompted" from: the
+        // class at prompt time, beside how many of that class produced an
+        // answer rather than a refusal.
+        "by_data_class": by_data_class(summaries),
+        "held": tally(
+            summaries
+                .iter()
+                .filter_map(|row| row.held_reason.clone()),
+        )
+        .into_iter()
+        .map(|(reason, n)| json!({ "reason": reason, "n": n }))
+        .collect::<Vec<_>>(),
+        "confidence_bp": spread(summaries.iter().filter_map(|row| row.confidence_bp)),
+        "urgency_bp": urgency_spread(summaries),
+        "apply_enabled": cfg.mail_model.as_ref().is_some_and(|section| section.apply),
+        "producer": mail_model::producer(cfg),
+        "prompt_revision": mail_model::MAIL_MODEL_PROMPT_REVISION,
+        "cloud_calls": 0,
+    })
 }
 
 /// The urgency numbers, plus how many verdicts carry one and whether anything
@@ -1205,10 +1264,13 @@ fn by_data_class(summaries: &[ModelVerdictSummary]) -> Vec<Value> {
         rows.push(json!({
             "data_class": class,
             "n": of_class.len(),
+            // The same predicate the pass receipt counts `prompted` with. An
+            // `unconfigured` row never reached the wire, and counting it here
+            // inflated the one number this route calls a prompting receipt
+            // (review, 2026-09-05).
             "prompted": of_class
                 .iter()
-                .filter(|row| row.state != digest::LOCAL_REFUSED
-                    && row.state != digest::SKIPPED_OVER_WINDOW)
+                .filter(|row| mail_model::was_prompted(&row.state))
                 .count(),
         }));
     }
@@ -1520,6 +1582,167 @@ mod tests {
         );
     }
 
+    /// The rollout the feature documents: measure in shadow, read the corpus,
+    /// set `mail_model.apply`, run apply. It used to move nothing — a stored
+    /// `generated` verdict makes the row not due, `run_pass` only ever touched
+    /// due rows, so apply found nothing to do (review, 2026-09-05).
+    ///
+    /// Nothing here prompts: the stored verdict IS the answer, which is also
+    /// why this test can run on a machine with no local model.
+    #[test]
+    fn apply_writes_the_verdict_an_earlier_shadow_pass_stored() {
+        let store = test_store("classify_apply_stored");
+        store
+            .upsert_triage_with_rules(
+                &stored_row("thread:apply", "20% off everything", "Shop the sale."),
+                &comms::rules::Verdict {
+                    stream: "aktiv".into(),
+                    rationale: "No rule matched; kept active as the conservative default.".into(),
+                    decided_by: comms::rules::DecidedBy::Fallback,
+                },
+            )
+            .unwrap();
+        let cfg = Config {
+            database_path: std::env::temp_dir()
+                .join(format!("comms-server-test-{}", std::process::id()))
+                .join("classify_apply_stored.db"),
+            ..Config::load()
+        };
+        // What a shadow pass on this machine leaves behind, written by hand so
+        // the test does not need a model: the current producer, the current
+        // prompt revision, and the revision of this row.
+        let row = store.get_triage("thread:apply").unwrap().unwrap();
+        let verdict = ModelVerdict {
+            triage_id: "thread:apply".into(),
+            mode: "shadow".into(),
+            state: "generated".into(),
+            rule_decided_by: "fallback".into(),
+            rule_stream: "aktiv".into(),
+            model_stream: Some("werbung".into()),
+            confidence_bp: Some(9_500),
+            urgency_bp: Some(0),
+            rationale: Some("It advertises a sale.".into()),
+            urgency_rationale: Some("Nothing is asked.".into()),
+            redactions: 0,
+            data_class: row.data_class.clone(),
+            redaction_class: row.data_class.clone(),
+            producer: mail_model::producer(&cfg),
+            item_revision: mail_model::item_revision(
+                mail_model::sender_domain(row.from_addr.as_deref().unwrap_or_default()).as_deref(),
+                row.subject.as_deref().unwrap_or_default(),
+                row.snippet.as_deref().unwrap_or_default(),
+                &row.data_class,
+            ),
+            prompt_revision: mail_model::MAIL_MODEL_PROMPT_REVISION.into(),
+            classification_version: mail_model::MAIL_MODEL_VERSION.into(),
+            attempts: 0,
+            last_error: None,
+            next_attempt: None,
+            held_reason: None,
+            applied_at: None,
+        };
+        store.upsert_model_verdict(&verdict).unwrap();
+
+        // A second shadow pass still writes nothing, and says how much is
+        // waiting.
+        let shadow = mail_model::run_pass(&cfg, &store, Mode::Shadow, 200, 9_000)
+            .expect("a second shadow pass");
+        assert_eq!(shadow.eligible, 0, "the question was already answered");
+        assert_eq!(shadow.awaiting_apply, 1);
+        assert_eq!(shadow.applied, 0);
+        assert_eq!(
+            store.get_triage("thread:apply").unwrap().unwrap().stream,
+            "aktiv"
+        );
+
+        let applied =
+            mail_model::run_pass(&cfg, &store, Mode::Apply, 200, 9_000).expect("an apply pass");
+        assert_eq!(applied.prompted, 0, "apply re-asks nothing");
+        assert_eq!(applied.awaiting_apply, 1);
+        assert_eq!(applied.disagreed, 1);
+        assert_eq!(applied.applied, 1);
+
+        let moved = store.get_triage("thread:apply").unwrap().unwrap();
+        assert_eq!(moved.stream, "werbung");
+        assert_eq!(moved.classification_method, "model");
+        let stored = store.model_verdicts().unwrap();
+        assert_eq!(stored["thread:apply"].mode, "applied");
+        assert!(
+            stored["thread:apply"].applied_at.is_some(),
+            "a machine write onto the category axis leaves a stamp"
+        );
+
+        // And it does not run twice: the applied row is no longer a candidate.
+        let again = mail_model::run_pass(&cfg, &store, Mode::Apply, 200, 9_000)
+            .expect("a third pass changes nothing");
+        assert_eq!(again.reviewed, 0);
+        assert_eq!(again.applied, 0);
+    }
+
+    /// The floor is a policy threshold, and a pass below it writes nothing.
+    #[test]
+    fn a_stored_verdict_below_the_floor_is_counted_and_not_written() {
+        let store = test_store("classify_apply_floor");
+        store
+            .upsert_triage_with_rules(
+                &stored_row("thread:floor", "20% off everything", "Shop the sale."),
+                &comms::rules::Verdict {
+                    stream: "aktiv".into(),
+                    rationale: "No rule matched; kept active as the conservative default.".into(),
+                    decided_by: comms::rules::DecidedBy::Fallback,
+                },
+            )
+            .unwrap();
+        let cfg = Config {
+            database_path: std::env::temp_dir()
+                .join(format!("comms-server-test-{}", std::process::id()))
+                .join("classify_apply_floor.db"),
+            ..Config::load()
+        };
+        let row = store.get_triage("thread:floor").unwrap().unwrap();
+        store
+            .upsert_model_verdict(&ModelVerdict {
+                triage_id: "thread:floor".into(),
+                mode: "shadow".into(),
+                state: "generated".into(),
+                rule_decided_by: "fallback".into(),
+                rule_stream: "aktiv".into(),
+                model_stream: Some("werbung".into()),
+                confidence_bp: Some(4_000),
+                urgency_bp: Some(0),
+                rationale: None,
+                urgency_rationale: None,
+                redactions: 0,
+                data_class: row.data_class.clone(),
+                redaction_class: row.data_class.clone(),
+                producer: mail_model::producer(&cfg),
+                item_revision: mail_model::item_revision(
+                    mail_model::sender_domain(row.from_addr.as_deref().unwrap_or_default())
+                        .as_deref(),
+                    row.subject.as_deref().unwrap_or_default(),
+                    row.snippet.as_deref().unwrap_or_default(),
+                    &row.data_class,
+                ),
+                prompt_revision: mail_model::MAIL_MODEL_PROMPT_REVISION.into(),
+                classification_version: mail_model::MAIL_MODEL_VERSION.into(),
+                attempts: 0,
+                last_error: None,
+                next_attempt: None,
+                held_reason: None,
+                applied_at: None,
+            })
+            .unwrap();
+
+        let receipt =
+            mail_model::run_pass(&cfg, &store, Mode::Apply, 200, 9_000).expect("an apply pass");
+        assert_eq!(receipt.below_confidence, 1);
+        assert_eq!(receipt.applied, 0);
+        assert_eq!(
+            store.get_triage("thread:floor").unwrap().unwrap().stream,
+            "aktiv"
+        );
+    }
+
     /// The report body is meant to be pasteable into a decision record. The
     /// store method behind it cannot select a rationale, and this pins that the
     /// handler adds no second path to one.
@@ -1563,29 +1786,16 @@ mod tests {
             })
             .unwrap();
 
+        // The handler's own body, not a rebuild of it: a rebuild would stay
+        // green the day the route grows a key that carries mail text, which is
+        // the one thing this test claims to pin (review, 2026-09-05).
         let summaries = store.model_verdict_summaries(None).unwrap();
-        let body = json!({
-            "by_rule_stream": mail_model::agreement(&summaries)
-                .into_iter()
-                .map(|(rule_stream, n, agree, _)| json!({
-                    "rule_stream": rule_stream,
-                    "n": n,
-                    "agree": agree,
-                    "agree_percent": percent(agree, n),
-                }))
-                .collect::<Vec<_>>(),
-            "by_state": tally(summaries.iter().map(|row| row.state.clone()))
-                .into_iter()
-                .map(|(state, n)| json!({ "state": state, "n": n }))
-                .collect::<Vec<_>>(),
-            "by_data_class": by_data_class(&summaries),
-            "held": tally(summaries.iter().filter_map(|row| row.held_reason.clone()))
-                .into_iter()
-                .map(|(reason, n)| json!({ "reason": reason, "n": n }))
-                .collect::<Vec<_>>(),
-            "confidence_bp": spread(summaries.iter().filter_map(|row| row.confidence_bp)),
-            "urgency_bp": urgency_spread(&summaries),
-        })
+        let body = report_body(
+            &summaries,
+            store.model_rung_candidate_count().unwrap(),
+            &store.triage_classification_methods().unwrap(),
+            &Config::load(),
+        )
         .to_string();
 
         for token in [

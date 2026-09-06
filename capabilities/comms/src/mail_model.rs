@@ -71,6 +71,45 @@ pub const INVALID_STREAM: &str = "invalid_stream";
 /// A model rationale is a line in a review card, not an essay.
 pub const MAX_RATIONALE_CHARS: usize = 300;
 
+/// How much of a model-supplied failure detail is worth storing in
+/// `last_error`.
+///
+/// Shorter than a rationale on purpose. A category name is one word and a
+/// transport error is a status line; anything longer is the model or the local
+/// server having echoed the mail back, and `last_error` is the one column on
+/// this table a reader does not read for content. It is redacted as well as
+/// capped — see [`stored_error`].
+pub const MAX_ERROR_CHARS: usize = 80;
+
+/// The states a thread can only be in because a request reached the model.
+///
+/// `prompted` is a privacy receipt: the CLI prints it beside "refused as
+/// Secret", so it has to count requests that were issued rather than answers
+/// that were usable. A timeout, an HTTP error and a capacity abort are all
+/// produced after `summarize::ask` has sent the request
+/// (`libs/summarize/src/lib.rs`), so they belong here; `local_refused`,
+/// `skipped_over_window`, `unconfigured` and `remote_refused` are all decided
+/// before anything is sent, so they do not.
+pub const PROMPTED_STATES: [&str; 8] = [
+    "generated",
+    "http_error",
+    "model_error",
+    "capacity_aborted",
+    "empty_response",
+    "timeout",
+    UNPARSEABLE,
+    INVALID_STREAM,
+];
+
+/// Whether a verdict in this state means a request was put to the model.
+///
+/// One predicate, because the pass receipt and the report's `by_data_class`
+/// both answer the same question and a second copy is how they came to
+/// disagree (review, 2026-09-05).
+pub fn was_prompted(state: &str) -> bool {
+    PROMPTED_STATES.contains(&state)
+}
+
 /// Every state this rung can write, which is the constraint the column does not
 /// carry — `{prefix}_triage_model_verdicts.state` has no CHECK, following
 /// `{prefix}_content_digests`. `every_stored_state_is_in_the_documented_set`
@@ -139,6 +178,18 @@ pub fn apply_allowed(
 ) -> std::result::Result<Mode, String> {
     match (requested, section) {
         (Mode::Shadow, _) => Ok(Mode::Shadow),
+        // A floor of zero writes every disagreement the model reports at any
+        // self-reported confidence, including zero — the opposite of what the
+        // key's own doc comment promises. The field defaults to 0 because a
+        // number invented here would be as arbitrary as that one, so the
+        // operator states the floor in the same edit that turns writing on
+        // (review, 2026-09-05).
+        (Mode::Apply, Some(section)) if section.apply && section.min_confidence_bp == 0 => Err(
+            "apply is refused: mail_model.apply is true but mail_model.min_confidence_bp is 0, \
+             which would write every disagreement at any confidence — set the floor the frozen \
+             corpus measured"
+                .into(),
+        ),
         (Mode::Apply, Some(section)) if section.apply => Ok(Mode::Apply),
         (Mode::Apply, Some(_)) => Err(
             "apply is refused: the overlay's comms.json declares mail_model.apply = false".into(),
@@ -150,6 +201,27 @@ pub fn apply_allowed(
         ),
     }
 }
+
+/// How many threads one pass may act on.
+///
+/// The order is: what the caller asked for, else what the overlay's
+/// `mail_model.limit` says, else 200. Read here rather than in each entry
+/// point, because both of them hard-coded their own 200 and the declared
+/// overlay key was read nowhere (review, 2026-09-05). Clamped, so neither an
+/// unbounded pass nor a zero-length one is reachable from a request body.
+pub fn pass_limit(section: Option<&MailModelConfig>, requested: Option<usize>) -> usize {
+    requested
+        .or_else(|| section.map(|section| section.limit))
+        .unwrap_or(DEFAULT_PASS_LIMIT)
+        .clamp(1, MAX_PASS_LIMIT)
+}
+
+/// The pass size an operator gets without asking for one.
+pub const DEFAULT_PASS_LIMIT: usize = 200;
+
+/// The most one pass may act on however it is asked. A local model at roughly
+/// two seconds a thread makes a larger number a wait, not a feature.
+pub const MAX_PASS_LIMIT: usize = 500;
 
 /// The domain of a From header, lowercased, with the display name and the local
 /// part dropped.
@@ -266,22 +338,28 @@ struct RawAnswer {
 ///
 /// Defensive by necessity: `afm-server` rejects unsupported request parameters
 /// with a 400, so there is no `response_format` and no JSON mode to lean on.
-/// The whole correctness of the structured output rests here. Fences are
-/// stripped the way `summarize::extract_mermaid` strips them, then the first
-/// balanced brace span is taken, because a model that adds a sentence before
-/// its JSON has still answered.
+/// The whole correctness of the structured output rests here.
+///
+/// Two candidate spans are tried, in this order: the first balanced brace span
+/// of the answer as it arrived, then the one inside a fence. The raw answer
+/// comes first because stripping the fence first threw away a well-formed
+/// answer that happened to be FOLLOWED by a fenced example — the reply parsed
+/// as `unparseable`, which is retryable, so it cost three prompts and left the
+/// thread with no proposal (review, 2026-09-05). A fenced answer still parses
+/// either way: a fence carries no braces of its own.
 pub fn parse(answer: &str) -> std::result::Result<Answer, ParseFailure> {
-    let body = strip_fence(answer);
-    let span = brace_span(body).ok_or(ParseFailure::Unparseable)?;
-    let raw: RawAnswer = serde_json::from_str(span).map_err(|_| ParseFailure::Unparseable)?;
+    let raw = [brace_span(answer), brace_span(strip_fence(answer))]
+        .into_iter()
+        .flatten()
+        .filter_map(|span| serde_json::from_str::<RawAnswer>(span).ok())
+        // An object with no `stream` is not this rung's answer, whatever else
+        // it deserialized into — so the second span still gets its turn.
+        .find(|raw| !raw.stream.trim().is_empty())
+        .ok_or(ParseFailure::Unparseable)?;
 
     let stream = raw.stream.trim().to_ascii_lowercase();
     if !rules::STREAMS.contains(&stream.as_str()) {
-        return Err(if stream.is_empty() {
-            ParseFailure::Unparseable
-        } else {
-            ParseFailure::InvalidStream(stream)
-        });
+        return Err(ParseFailure::InvalidStream(stream));
     }
     Ok(Answer {
         stream,
@@ -301,6 +379,23 @@ fn clamp_bp(value: Option<f64>) -> i64 {
 
 fn cap(value: &str) -> String {
     value.trim().chars().take(MAX_RATIONALE_CHARS).collect()
+}
+
+/// What `last_error` may hold: short, and redacted against the row's class.
+///
+/// The two values that reach this column are both model-derived. An invalid
+/// stream is whatever word the model invented, and a transport detail is
+/// whatever the local server said — a server that echoes the prompt back in an
+/// error body puts mail text in it. Before this, `last_error` was the one
+/// model-derived column that skipped `redact_review_field`, which contradicted
+/// the DDL comment on the table (review, 2026-09-05).
+fn stored_error(detail: &str, data_class: &str) -> String {
+    let short: String = detail.trim().chars().take(MAX_ERROR_CHARS).collect();
+    if !content_item::redact_before_persistence(data_class) {
+        return short;
+    }
+    let mut findings: Vec<RedactionFinding> = Vec::new();
+    redact_review_field(Some(&short), &mut findings).unwrap_or_default()
 }
 
 /// Drop a ```json (or ``` or ```JSON) fence, keeping the body.
@@ -474,7 +569,9 @@ pub fn classify_one(cfg: &Config, candidate: &ModelCandidate) -> ModelVerdict {
         Outcome::Ok(answer) => answer.clone(),
         other => {
             verdict.state = other.state().into();
-            verdict.last_error = other.error_detail().map(cap);
+            verdict.last_error = other
+                .error_detail()
+                .map(|detail| stored_error(detail, &candidate.data_class));
             verdict.attempts = i64::from(other.retryable());
             return verdict;
         }
@@ -484,6 +581,7 @@ pub fn classify_one(cfg: &Config, candidate: &ModelCandidate) -> ModelVerdict {
         Err(failure) => {
             verdict.state = failure.state().into();
             if let ParseFailure::InvalidStream(named) = &failure {
+                let named = stored_error(named, &candidate.data_class);
                 verdict.last_error = Some(format!("the model named '{named}'"));
             }
             verdict.attempts = i64::from(failure == ParseFailure::Unparseable);
@@ -528,6 +626,11 @@ pub struct PassReceipt {
     pub mode: String,
     pub reviewed: usize,
     pub eligible: usize,
+    /// Threads carrying a current shadow verdict that disagrees with the rule,
+    /// counted as this pass FOUND them. Counted in both modes: in shadow it is
+    /// what the pass leaves for an operator to decide on, and in apply it is
+    /// what this pass then acted on, up to `limit`.
+    pub awaiting_apply: usize,
     pub prompted: usize,
     pub refused_c3: usize,
     pub over_window: usize,
@@ -555,9 +658,19 @@ fn held_reason(from_class: &str, to_class: &str) -> String {
 /// drain cost, and the category axis writes a decision rather than a derived
 /// field.
 ///
-/// `limit` bounds how many threads are PROMPTED, not how many are read: the
-/// staleness comparison needs the `item_revision` and SQL cannot compute it, so
-/// the coarse candidate query is answered first and the cap applied after.
+/// `limit` bounds how many threads one pass ACTS on — prompts in the first
+/// loop, writes in the second — not how many are read: the staleness comparison
+/// needs the `item_revision` and SQL cannot compute it, so the coarse candidate
+/// query is answered first and the cap applied after.
+///
+/// Two loops, because a pass has two kinds of work. The first asks the threads
+/// that are due. The second writes the threads a PREVIOUS pass already
+/// answered: `is_due` calls a current `generated` verdict done, and it is right
+/// — the question was asked and answered — but what is still outstanding on
+/// such a row in apply mode is the write. Without the second loop the whole
+/// documented rollout (measure in shadow, read the corpus, set
+/// `mail_model.apply`, run apply) moved nothing at all, because every row it
+/// wanted to move had stopped being due (review, 2026-09-05).
 pub fn run_pass(
     cfg: &Config,
     store: &Store,
@@ -578,10 +691,15 @@ pub fn run_pass(
         .map_err(|error| error.to_string())?;
     receipt.reviewed = candidates.len();
 
-    let due: Vec<ModelCandidate> = candidates
-        .into_iter()
-        .filter(|candidate| is_due(candidate, &producer))
-        .collect();
+    let mut due: Vec<ModelCandidate> = Vec::new();
+    let mut answered: Vec<ModelCandidate> = Vec::new();
+    for candidate in candidates {
+        if is_due(&candidate, &producer) {
+            due.push(candidate);
+        } else if awaits_apply(&candidate) {
+            answered.push(candidate);
+        }
+    }
     receipt.eligible = due.len();
 
     for candidate in due.into_iter().take(limit) {
@@ -594,56 +712,121 @@ pub fn run_pass(
                 verdict.attempts = stored.attempts.saturating_add(1);
             }
         }
+        // A request was issued, whatever came back. Counted from the state
+        // rather than beside each branch, so the receipt and the report's
+        // `by_data_class` answer this question the same way.
+        if was_prompted(&verdict.state) {
+            receipt.prompted += 1;
+        }
         match verdict.state.as_str() {
-            "generated" => receipt.prompted += 1,
+            "generated" => {}
             state if state == digest::LOCAL_REFUSED => receipt.refused_c3 += 1,
             state if state == digest::SKIPPED_OVER_WINDOW => receipt.over_window += 1,
-            UNPARSEABLE => {
-                receipt.prompted += 1;
-                receipt.unparseable += 1;
-            }
-            INVALID_STREAM => {
-                receipt.prompted += 1;
-                receipt.invalid_stream += 1;
-            }
+            UNPARSEABLE => receipt.unparseable += 1,
+            INVALID_STREAM => receipt.invalid_stream += 1,
             _ => receipt.errors += 1,
         }
         receipt.redactions += verdict.redactions;
 
-        if let Some(proposed) = verdict.model_stream.clone() {
-            if proposed == verdict.rule_stream {
-                // Re-stamping an unchanged verdict as method='model' would
-                // erase the true fact that a rule decided it.
-                receipt.agreed_no_write += 1;
-            } else {
-                receipt.disagreed += 1;
-                let escalates = content_item::class_rank(&verdict.redaction_class)
-                    > content_item::class_rank(&verdict.data_class);
-                if escalates {
-                    verdict.mode = "held".into();
-                    verdict.held_reason =
-                        Some(held_reason(&verdict.data_class, &verdict.redaction_class));
-                    receipt.held_class_escalation += 1;
-                } else if mode == Mode::Apply {
-                    if verdict.confidence_bp.unwrap_or_default() < min_confidence_bp {
-                        receipt.below_confidence += 1;
-                    } else {
-                        let write = store
-                            .apply_model_stream(&verdict)
-                            .map_err(|error| error.to_string())?;
-                        if write.stream_changed {
-                            verdict.mode = "applied".into();
-                            receipt.applied += 1;
-                        }
-                    }
-                }
-            }
+        settle(store, &mut verdict, mode, min_confidence_bp, &mut receipt)?;
+        store
+            .upsert_model_verdict(&verdict)
+            .map_err(|error| error.to_string())?;
+    }
+
+    // The rows an earlier pass already answered. Nothing here is prompted: the
+    // stored verdict IS the answer, and asking again would spend a second
+    // prompt to reach the same one. Read in one query rather than per row, the
+    // way the reader contract does it — and not read at all when there is
+    // nothing to read it for, because this is the one query in the pass that
+    // returns the model's own sentences.
+    if answered.is_empty() {
+        return Ok(receipt);
+    }
+    let stored = store.model_verdicts().map_err(|error| error.to_string())?;
+    let mut written = 0usize;
+    for candidate in answered {
+        let Some(verdict) = stored.get(&candidate.id) else {
+            continue;
+        };
+        let Some(proposed) = verdict.model_stream.as_deref() else {
+            continue;
+        };
+        if proposed == verdict.rule_stream {
+            // Agreement leaves nothing outstanding, in either mode.
+            continue;
         }
+        receipt.awaiting_apply += 1;
+        if mode != Mode::Apply || written >= limit {
+            continue;
+        }
+        written += 1;
+        let mut verdict = verdict.clone();
+        settle(store, &mut verdict, mode, min_confidence_bp, &mut receipt)?;
         store
             .upsert_model_verdict(&verdict)
             .map_err(|error| error.to_string())?;
     }
     Ok(receipt)
+}
+
+/// What one verdict does to the category axis, and what the receipt records.
+///
+/// Written once because two loops decide it: the verdicts a prompt just
+/// produced, and the stored ones an apply pass acts on without prompting. A
+/// second copy of the escalation guard is how one of them would come to be
+/// missing it.
+fn settle(
+    store: &Store,
+    verdict: &mut ModelVerdict,
+    mode: Mode,
+    min_confidence_bp: i64,
+    receipt: &mut PassReceipt,
+) -> std::result::Result<(), String> {
+    let Some(proposed) = verdict.model_stream.clone() else {
+        return Ok(());
+    };
+    if proposed == verdict.rule_stream {
+        // Re-stamping an unchanged verdict as method='model' would erase the
+        // true fact that a rule decided it.
+        receipt.agreed_no_write += 1;
+        return Ok(());
+    }
+    receipt.disagreed += 1;
+    let escalates = content_item::class_rank(&verdict.redaction_class)
+        > content_item::class_rank(&verdict.data_class);
+    if escalates {
+        verdict.mode = "held".into();
+        verdict.held_reason = Some(held_reason(&verdict.data_class, &verdict.redaction_class));
+        receipt.held_class_escalation += 1;
+    } else if mode == Mode::Apply {
+        if verdict.confidence_bp.unwrap_or_default() < min_confidence_bp {
+            receipt.below_confidence += 1;
+        } else {
+            let write = store
+                .apply_model_stream(verdict)
+                .map_err(|error| error.to_string())?;
+            if write.stream_changed {
+                verdict.mode = "applied".into();
+                receipt.applied += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether an apply pass could write this thread without prompting anything.
+///
+/// A stored verdict that is not due is either terminal or waiting out a
+/// backoff. Only one of those shapes has an outstanding write: a `generated`
+/// verdict still marked `shadow`. `held` is excluded deliberately — that is a
+/// class-raising proposal a machine may not apply, and `apply_model_stream`
+/// refuses it anyway.
+fn awaits_apply(candidate: &ModelCandidate) -> bool {
+    candidate
+        .stored
+        .as_ref()
+        .is_some_and(|stored| stored.state == "generated" && stored.mode == Mode::Shadow.as_str())
 }
 
 /// Whether this thread is due to be asked.
@@ -863,6 +1046,11 @@ mod tests {
                 r#""urgency_rationale""#,
                 r#""extra_key": {"nested": 1}, "urgency_rationale""#,
             ),
+            // A fence AFTER the answer, and a fence in the prose before it.
+            // Both used to read as `unparseable`, which is retryable — so a
+            // well-formed answer cost three prompts and ended with no proposal.
+            format!("{object}\n```\nfor example\n```"),
+            format!("I would call this an ```issue```.\n{object}"),
         ] {
             assert_eq!(parse(&wrapped), Ok(expected.clone()), "failed on {wrapped}");
         }
@@ -871,6 +1059,34 @@ mod tests {
             Err(ParseFailure::Unparseable)
         );
         assert_eq!(parse(""), Err(ParseFailure::Unparseable));
+    }
+
+    /// `last_error` was the one model-derived column that skipped
+    /// `redact_review_field`, which contradicted the DDL comment on the table.
+    /// Both values that reach it come from outside this machine's code: a word
+    /// the model invented, and a message the local server returned.
+    #[test]
+    fn a_stored_error_is_capped_and_redacted_against_the_class() {
+        let long = "Rechnung von Erika Mustermann, Konto DE89370400440532013000, faellig heute";
+        let capped = stored_error(long, "c1");
+        assert!(
+            capped.chars().count() <= MAX_ERROR_CHARS,
+            "got {} chars",
+            capped.chars().count()
+        );
+
+        let redacted = stored_error(long, "c2");
+        assert!(
+            !redacted.contains("DE89370400440532013000"),
+            "a c2 row stored the account verbatim: {redacted}"
+        );
+        assert!(
+            redacted.chars().count() <= MAX_ERROR_CHARS,
+            "got {redacted}"
+        );
+        // c3 is refused before a prompt is built, so the only way text reaches
+        // this column on one is a transport failure — redacted the same way.
+        assert!(!stored_error(long, "c3").contains("DE89370400440532013000"));
     }
 
     #[test]
@@ -995,6 +1211,7 @@ mod tests {
         let off = MailModelConfig::default();
         let on = MailModelConfig {
             apply: true,
+            min_confidence_bp: 7_000,
             ..MailModelConfig::default()
         };
         assert_eq!(apply_allowed(None, Mode::Shadow), Ok(Mode::Shadow));
@@ -1005,6 +1222,49 @@ mod tests {
         assert!(error.contains("mail_model"), "got {error}");
         let error = apply_allowed(Some(&off), Mode::Apply).expect_err("apply=false refuses");
         assert!(error.contains("mail_model.apply"), "got {error}");
+    }
+
+    /// Turning writing on without naming a floor writes every disagreement at
+    /// any self-reported confidence, including zero — which is the opposite of
+    /// what the key's own doc comment promises. The operator states the floor in
+    /// the same edit that turns writing on.
+    #[test]
+    fn apply_is_refused_until_the_confidence_floor_is_named() {
+        let no_floor = MailModelConfig {
+            apply: true,
+            min_confidence_bp: 0,
+            ..MailModelConfig::default()
+        };
+        let error =
+            apply_allowed(Some(&no_floor), Mode::Apply).expect_err("a zero floor refuses apply");
+        assert!(error.contains("min_confidence_bp"), "got {error}");
+        // Shadow is unaffected: it writes no category at all.
+        assert_eq!(
+            apply_allowed(Some(&no_floor), Mode::Shadow),
+            Ok(Mode::Shadow)
+        );
+
+        let floor = MailModelConfig {
+            apply: true,
+            min_confidence_bp: 1,
+            ..MailModelConfig::default()
+        };
+        assert_eq!(apply_allowed(Some(&floor), Mode::Apply), Ok(Mode::Apply));
+    }
+
+    /// The overlay key is the default, the caller wins over it, and neither can
+    /// ask for an unbounded pass.
+    #[test]
+    fn the_overlay_limit_is_the_default_and_the_caller_overrides_it() {
+        let section = MailModelConfig {
+            limit: 25,
+            ..MailModelConfig::default()
+        };
+        assert_eq!(pass_limit(Some(&section), None), 25);
+        assert_eq!(pass_limit(Some(&section), Some(3)), 3);
+        assert_eq!(pass_limit(None, None), DEFAULT_PASS_LIMIT);
+        assert_eq!(pass_limit(None, Some(0)), 1);
+        assert_eq!(pass_limit(None, Some(100_000)), MAX_PASS_LIMIT);
     }
 
     /// One current producer, so staleness is an equality. A stored verdict from

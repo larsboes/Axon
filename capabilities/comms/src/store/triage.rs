@@ -372,7 +372,7 @@ impl Store {
         else {
             return Ok(StreamWrite::default());
         };
-        let narrowed = narrow_review_fields(
+        let narrowed = narrow_stored_material(
             &transaction,
             &self.prefix,
             id,
@@ -462,7 +462,7 @@ impl Store {
                 &id,
             ],
         )?;
-        let narrowed = narrow_review_fields(
+        let narrowed = narrow_stored_material(
             &transaction,
             &self.prefix,
             id,
@@ -557,7 +557,7 @@ impl Store {
         else {
             return Ok(ClassWrite::default());
         };
-        let narrowed = narrow_review_fields(
+        let narrowed = narrow_stored_material(
             &transaction,
             &self.prefix,
             id,
@@ -590,28 +590,42 @@ impl Store {
         )
     }
 
-    /// Overwrite a stored row's review fields with their redacted form.
+    /// Overwrite a stored row's review fields with their redacted form, and
+    /// narrow the model verdict the same class governs.
     ///
     /// Deliberately the only write that narrows these two columns, and
     /// deliberately not a delete: the proposal, its decision and its Gmail
     /// identity all stay reviewable — only the material that should never have
     /// been persisted goes. A resweep cannot undo it, because the sweep now
     /// redacts before it writes (see `intake`).
+    ///
+    /// `data_class` is a parameter because this is the route that exists to
+    /// remediate persisted `c2` and `c3` review fields, and a model verdict's
+    /// two sentences are review fields of exactly that kind. Both writes commit
+    /// together: a route whose whole contract is "run it twice and the second
+    /// run reports zero" must not be able to finish half of one row.
     pub fn redact_triage_review_fields(
         &self,
         id: &str,
+        data_class: &str,
         subject: Option<&str>,
         snippet: Option<&str>,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
-        let conn = self.conn()?;
-        let affected = conn.execute(
+    ) -> Result<RedactWrite, Box<dyn std::error::Error>> {
+        let mut conn = self.conn()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let affected = transaction.execute(
             &format!(
                 "UPDATE {}_triage_items SET subject = ?1, snippet = ?2 WHERE id = ?3",
                 self.prefix
             ),
             params![&subject, &snippet, &id],
         )?;
-        Ok(affected > 0)
+        let verdict_narrowed = narrow_model_verdict(&transaction, &self.prefix, id, data_class)?;
+        transaction.commit()?;
+        Ok(RedactWrite {
+            changed: affected > 0,
+            verdict_narrowed,
+        })
     }
 
     // -- the model rung -----------------------------------------------------
@@ -683,6 +697,56 @@ impl Store {
         )?)
     }
 
+    /// What classified the open mailbox, as counts per method.
+    ///
+    /// Largest first, then by name, so a heading a human compares against
+    /// yesterday's does not reshuffle. The same `status` filter the board uses,
+    /// so the number beside "Current method" counts the rows on screen.
+    ///
+    /// In SQL rather than in the dashboard: frontend renders, backend computes.
+    pub fn triage_classification_methods(
+        &self,
+    ) -> Result<Vec<(String, usize)>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        Ok(conn.query_all(
+            &format!(
+                "SELECT classification_method, COUNT(*) AS n
+                   FROM {}_triage_items
+                  WHERE status IN ('proposed','approved')
+                  GROUP BY classification_method
+                  ORDER BY n DESC, classification_method ASC",
+                self.prefix
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get::<_, i64>(1)?.max(0) as usize)),
+        )?)
+    }
+
+    /// How many threads the rung may look at at all, without reading one.
+    ///
+    /// The same three filters as [`Store::model_rung_candidates`], and it
+    /// exists because the report only ever wanted the number: the report route
+    /// states that the query behind it must be unable to return mail text, and
+    /// counting rows by materialising every `from_addr`, `subject` and
+    /// `snippet` undercut its own guarantee (review, 2026-09-05).
+    pub fn model_rung_candidate_count(&self) -> Result<usize, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let count: i64 = conn.query_row(
+            &format!(
+                "SELECT COUNT(*)
+                   FROM {prefix}_triage_items i
+                   JOIN {prefix}_triage_rules r ON r.triage_id = i.id
+                  WHERE r.decided_by = 'fallback'
+                    AND i.classification_method = 'deterministic'
+                    AND i.status IN ('proposed','approved')",
+                prefix = self.prefix
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as usize)
+    }
+
     /// Store one verdict, replacing whatever this thread carried.
     ///
     /// Whole-row replacement rather than a partial update: a row with a new
@@ -690,7 +754,9 @@ impl Store {
     /// and the report reads both columns.
     ///
     /// `next_attempt` is DB-owned and the struct's value is ignored on write,
-    /// the way `TriageItem`'s `status` and `first_seen` are. The deadline is
+    /// and `applied_at` is derived here too: a verdict stored as `applied`
+    /// carries the stamp of the write that moved the category, unless it
+    /// already had one. The deadline is
     /// derived here from the state and the attempt count, in the canonical
     /// stamp format the column's other values are in — `axon_store::now_offset`
     /// exists because `datetime('now','+1 minute')` renders 19 characters into
@@ -711,6 +777,17 @@ impl Store {
             cap = MAX_MODEL_VERDICT_ATTEMPTS,
             offset = axon_store::now_offset("'+' || MIN(?18 + 1, 5) || ' minutes'"),
         );
+        // ?2 is the mode. `applied_at` is DB-owned for the same reason
+        // `next_attempt` is: a machine write onto the category axis has to
+        // leave a stamp, and a stamp assembled in Rust would be a second
+        // clock and a second format in one column. The struct's value is kept
+        // when it has one, so re-storing an applied verdict does not restamp
+        // it, and `revert_model_streams` clearing the column still means what
+        // it says (review, 2026-09-05).
+        let applied_arm = format!(
+            "CASE WHEN ?2 = 'applied' THEN COALESCE(?21,{now}) ELSE ?21 END",
+            now = axon_store::NOW
+        );
         let conn = self.conn()?;
         conn.execute(
             &format!(
@@ -721,7 +798,7 @@ impl Store {
                      classification_version, attempts, last_error, next_attempt, held_reason,
                      applied_at, decided_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,
-                         {backoff_arm},?20,?21,{now})
+                         {backoff_arm},?20,{applied_arm},{now})
                  ON CONFLICT (triage_id) DO UPDATE SET
                      mode = excluded.mode,
                      state = excluded.state,
@@ -748,6 +825,7 @@ impl Store {
                 prefix = self.prefix,
                 now = axon_store::NOW,
                 backoff_arm = backoff_arm,
+                applied_arm = applied_arm,
             ),
             params![
                 &verdict.triage_id,
@@ -1809,6 +1887,97 @@ fn narrow_review_fields(
     conn.execute(
         &format!("UPDATE {prefix}_triage_items SET subject = ?1, snippet = ?2 WHERE id = ?3"),
         params![&remediation.subject, &remediation.snippet, &id],
+    )?;
+    Ok(true)
+}
+
+/// Narrow everything this database holds about one mail to what its class
+/// admits: the item's two review fields, and the model verdict's two sentences.
+///
+/// One function rather than two calls at each site, because the second table is
+/// exactly the one three callers forgot.
+fn narrow_stored_material(
+    conn: &Connection,
+    prefix: &str,
+    id: &str,
+    data_class: &str,
+    subject: Option<&str>,
+    snippet: Option<&str>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let narrowed = narrow_review_fields(conn, prefix, id, data_class, subject, snippet)?;
+    // Judged on its own: a row whose subject was already clean can still carry
+    // a verdict written while the row sat at a lower class.
+    narrow_model_verdict(conn, prefix, id, data_class)?;
+    Ok(narrowed)
+}
+
+/// Narrow one thread's stored model verdict to what the item's class NOW
+/// admits, on a connection the caller owns.
+///
+/// The second half of a narrowing, and it was missing. `rationale` and
+/// `urgency_rationale` are model sentences about the mail, redacted once
+/// against the class the row held when the verdict was stored. A row whose
+/// class later rises — a human moving it to `belege`, the people registry
+/// escalating it on a resweep — left those sentences behind at the old class,
+/// and neither `narrow_review_fields` nor `POST /triage/redact` reached them,
+/// because both only ever wrote `{prefix}_triage_items` (review, 2026-09-05).
+///
+/// `data_class` on the verdict row is left alone on purpose: it is the class at
+/// PROMPT time, which is what a receipt proves "no Secret mail was prompted"
+/// from. `redaction_class` is the one that says what the stored text was
+/// narrowed against, so that is the one this moves.
+///
+/// A class that refuses prompts outright loses the text rather than narrowing
+/// it: the rung would never have produced these sentences for a `c3` row, and
+/// keeping a redacted derivative of a mail the gate now refuses would be the
+/// gap in a smaller form.
+fn narrow_model_verdict(
+    conn: &Connection,
+    prefix: &str,
+    id: &str,
+    data_class: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some((rationale, urgency_rationale, redaction_class)): Option<(
+        Option<String>,
+        Option<String>,
+        String,
+    )> = conn
+        .query_row(
+            &format!(
+                "SELECT rationale, urgency_rationale, redaction_class
+                   FROM {prefix}_triage_model_verdicts WHERE triage_id = ?1"
+            ),
+            params![&id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    if crate::content_item::class_rank(data_class)
+        <= crate::content_item::class_rank(&redaction_class)
+    {
+        return Ok(false);
+    }
+    let (rationale, urgency_rationale) = if crate::content_item::local_prompt_allowed(data_class) {
+        let mut findings = Vec::new();
+        (
+            crate::cloud_derivative::redact_review_field(rationale.as_deref(), &mut findings),
+            crate::cloud_derivative::redact_review_field(
+                urgency_rationale.as_deref(),
+                &mut findings,
+            ),
+        )
+    } else {
+        (None, None)
+    };
+    conn.execute(
+        &format!(
+            "UPDATE {prefix}_triage_model_verdicts
+                SET rationale = ?1, urgency_rationale = ?2, redaction_class = ?3
+              WHERE triage_id = ?4"
+        ),
+        params![&rationale, &urgency_rationale, &data_class, &id],
     )?;
     Ok(true)
 }

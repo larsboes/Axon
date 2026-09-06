@@ -391,10 +391,18 @@ impl Store {
             -- UNLIKE {prefix}_gmail_action_jobs, which states that no message
             -- content is copied into it, this table DOES hold message-derived
             -- text: `rationale` and `urgency_rationale` are a model's sentences
-            -- about a subject and a snippet. They are redacted before insert
-            -- against `redaction_class` = the higher of the row's class and the
-            -- class the PROPOSED stream implies, so an escalation at confirm
-            -- time cannot leave them under-redacted.
+            -- about a subject and a snippet, and `last_error` can carry a word
+            -- the model invented or a message the local server returned. All
+            -- three are redacted before insert against `redaction_class` = the
+            -- higher of the row's class and the class the PROPOSED stream
+            -- implies, so an escalation at confirm time cannot leave them
+            -- under-redacted; `last_error` is capped harder still, because
+            -- nothing reads it for content (mail_model::stored_error).
+            --
+            -- An escalation that arrives LATER — a human moving the row to
+            -- belege, a resweep the people registry escalates — is remediated
+            -- by `narrow_model_verdict`, which every path that narrows the
+            -- item's own review fields now also runs.
             --
             -- `agree` is deliberately NOT a column: it is rule_stream =
             -- model_stream, derived in the report, and a stored copy would be a
