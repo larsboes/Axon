@@ -1018,6 +1018,16 @@
     },
     {
       "from": "interior",
+      "to": "markdown-root",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/interior/Cargo.toml"
+      ]
+    },
+    {
+      "from": "interior",
       "to": "route-manifest",
       "kinds": [
         "cargo-dep"
