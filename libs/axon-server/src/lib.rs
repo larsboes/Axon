@@ -26,6 +26,8 @@ use std::net::SocketAddr;
 mod auth;
 /// The browser-origin refusal two capabilities apply to C2 surfaces.
 pub mod origin;
+/// The identity `tailscale serve` proves, for the caller that cannot hold a secret.
+pub mod tailnet;
 
 pub use auth::{authenticated, token_from_file, InboundAuth};
 

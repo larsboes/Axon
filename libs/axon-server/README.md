@@ -30,6 +30,42 @@ serving them when no token is configured. comms is the reason it exists: `POST /
 fetches an attacker-chosen URL, and a page open in the operator's own browser is already
 inside the loopback boundary, so `127.0.0.1` was never what contained that route.
 
+### The tailnet identity gate
+
+A shared secret cannot reach the caller the tailnet exists to serve. A browser on the
+phone loads the built SPA and issues relative fetches; giving that page the token means
+shipping the deployment's secret into a bundle and every cache that touches it. So the
+phone gets in on an identity instead.
+
+`<overlay>/config/deployment.env` declares `AXON_TAILNET_OPERATOR=<login>` — a **value**,
+not a file reference, because a login is not a credential. It appears in the tailnet admin
+console, in `tailscale status`, and in the header of every request that arrives.
+
+| Declared operator | `Tailscale-User-Login` | Outcome |
+|---|---|---|
+| no | anything | header ignored, the token rule alone decides |
+| yes | absent | the token rule alone decides — a direct loopback caller |
+| yes | the operator | served, without a token |
+| yes | anyone else | `401` |
+
+**Why the header can be trusted: the proxy overwrites it.** Measured against tailscale
+1.102.3 on 2026-09-06 — a request carrying `Tailscale-User-Login: attacker@evil.example`
+and `X-Forwarded-For: 9.9.9.9` reached the backend as the authenticated node's own login
+and 100.x address. A client cannot inject an identity through `tailscale serve`; it can
+only fail to have one.
+
+**What it does not do.** It does not change the loopback trust model — a process on this
+machine can write any header, so the identity means something only for requests the proxy
+created, and a local process already reaches `127.0.0.1:<port>` directly. And it never
+satisfies `refuse_without_token`: a route that opts into that wants the secret, not a
+name.
+
+**The failure it is exposed to, and what catches it.** Reconfigure `tailscale serve` as a
+raw TCP forward and no identity header is injected, every tailnet request becomes
+indistinguishable from a loopback one, and this gate silently stops gating with every
+process healthy and every test green. doctor's **Tailnet identity gate** section fails on
+exactly that shape, and on funnel being on at all (PRD N3).
+
 ### Token sourcing: one token for the deployment
 
 `<overlay>/config/deployment.env` declares `AXON_INBOUND_TOKEN_FILE=<path>` and the token
@@ -126,6 +162,11 @@ also constructs its own `axum::serve` or `TcpListener::bind`. It lives in doctor
 than a repo gate because half the servers it has to cover are in the overlay, outside this
 repo, and a gate that globs Axon alone would report a clean policy while an overlay server
 binds the LAN (README.md#documentation-stays-owned-and-current, same reasoning as the decision path-rot sweep).
+
+The identity gate's other half is not in this repository at all: it is the shape of
+`tailscale serve` on the host. doctor's **Tailnet identity gate** section is what reads
+it, because a declaration whose truth lives outside the tree is the one that rots
+unobserved (PRD §13, the pattern recorded four times).
 
 ## Build boundary
 

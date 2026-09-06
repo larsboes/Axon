@@ -1572,6 +1572,71 @@ const CHECKS: Check[] = [
     },
   },
 
+  // Tailnet identity gate. `AXON_TAILNET_OPERATOR` says "admit this login from the
+  // tailnet", and the thing that makes that statement true is not in this repository:
+  // it is the shape of `tailscale serve`. An HTTPS web handler authenticates the peer
+  // and injects `Tailscale-User-Login`, overwriting whatever the client sent (measured
+  // against tailscale 1.102.3, 2026-09-06). A raw TCP forward injects nothing.
+  //
+  // So a serve config switched from web to TCP turns every tailnet request into
+  // something the gate cannot distinguish from a loopback one, and libs/axon-server
+  // falls through to the token rule — which on this deployment is no rule at all. The
+  // gate would stop gating, silently, with every process still healthy and every test
+  // still green. That is the exact failure shape PRD §13 records four times over, so
+  // the declaration gets a checker rather than a sentence.
+  {
+    name: "Tailnet identity gate (AXON_TAILNET_OPERATOR)",
+    run(ctx) {
+      if (!ctx.overlayPath || !existsSync(ctx.overlayPath)) return ctx.warn("no overlay — cannot read deployment.env");
+      const envPath = join(ctx.overlayPath, "config", "deployment.env");
+      if (!existsSync(envPath)) return ctx.ok("no deployment.env — no tailnet gate declared");
+      const declared = readFileSync(envPath, "utf8")
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l.startsWith("AXON_TAILNET_OPERATOR="))
+        ?.slice("AXON_TAILNET_OPERATOR=".length)
+        .trim();
+      if (!declared) {
+        // Not a failure. The undeclared deployment is the one that predates this gate,
+        // and libs/axon-server ignores the identity header entirely in that state.
+        return ctx.ok("no operator declared — the identity header is ignored, not trusted");
+      }
+
+      const serve = Bun.spawnSync({ cmd: ["tailscale", "serve", "status", "--json"], stdout: "pipe", stderr: "pipe" });
+      if (!serve.success) return ctx.bad(`operator declared but 'tailscale serve status' failed — the gate depends on a proxy this machine cannot describe`);
+      let config: any;
+      try {
+        config = JSON.parse(serve.stdout.toString() || "{}");
+      } catch {
+        return ctx.bad("operator declared but 'tailscale serve status --json' did not parse");
+      }
+
+      // A TCP forward is the dangerous shape: it proxies bytes and injects no identity,
+      // so the gate sees every tailnet caller as a local one.
+      const tcp = Object.entries(config.TCP ?? {}).filter(([, v]: any) => !v?.HTTPS);
+      const webHandlers = Object.values(config.Web ?? {}).flatMap((host: any) => Object.entries(host?.Handlers ?? {}));
+      const proxied = webHandlers.filter(([, h]: any) => typeof h?.Proxy === "string");
+
+      if (proxied.length === 0) {
+        return ctx.bad(`operator '${declared}' is declared but 'tailscale serve' publishes no HTTPS web handler — nothing injects an identity header, so the gate admits every tailnet caller as loopback`);
+      }
+      for (const [port] of tcp) {
+        ctx.bad(`'tailscale serve' forwards raw TCP on ${port} — a TCP forward injects no identity header, so the gate cannot see who is calling`);
+      }
+      if (tcp.length === 0) {
+        ctx.ok(`operator '${declared}', ${proxied.length} HTTPS web handler(s) — identity is injected and overwritten by the proxy`);
+      }
+
+      // Funnel is the internet, which PRD N3 refuses outright. Serve's own status
+      // distinguishes them, and this is the one place that reads it.
+      const funnel = Bun.spawnSync({ cmd: ["tailscale", "funnel", "status"], stdout: "pipe", stderr: "pipe" });
+      const funnelText = funnel.stdout.toString();
+      if (funnelText.includes("Funnel on")) {
+        ctx.bad("'tailscale funnel' is on — PRD N3 refuses internet exposure; the identity gate covers the tailnet, not the public internet");
+      }
+    },
+  },
+
   // Data freshness — the check that would have caught a nine-day outage (PRD D13).
   //
   // Every other check here verifies a DECLARATION: the manifest is well formed, the unit matches
