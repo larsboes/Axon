@@ -53,7 +53,10 @@
                 class:planned={entry.commitment !== "committed"}
               ></i>
               <strong>{entry.title}</strong>
-              <small>{entry.location ? `${entryTime(entry)} · ${entry.location}` : entryTime(entry)}</small>
+              <small>
+                <span class="when">{entryTime(entry)}</span>
+                {#if entry.location}<span class="where">{entry.location}</span>{/if}
+              </small>
             </a>
           </li>
         {/each}
@@ -134,9 +137,16 @@
     white-space: nowrap;
   }
 
-  /* A venue line runs to a full street address, so it truncates rather than
+  /* Two facts, separated by space rather than by a middle dot. "all day · Telekom,
+     Bonn" made the reader parse a punctuation mark to find the boundary the layout can
+     state outright — and the same dot was doing that job in 166 places across the app.
+     The time is the fixed-width half, so it gets the tabular figures.
+
+     A venue line runs to a full street address, so it truncates rather than
      stretching the title column it sits beside. */
   .entries small {
+    display: flex;
+    gap: var(--space-4);
     overflow: hidden;
     max-width: 22rem;
     color: var(--text-tertiary);

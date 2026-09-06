@@ -3,7 +3,7 @@
   import Icon from "../../Icon.svelte";
   import ListRow from "../../ListRow.svelte";
   import RowMeta from "../../RowMeta.svelte";
-  import { dateLabel, metaLine } from "../format";
+  import { dateLabel, metaParts } from "../format";
   import type { DecisionRowProps } from "../decisions";
   import type { CalendarSource } from "../kinds/calendar";
 
@@ -49,12 +49,9 @@
   {#snippet mark()}<span class="event"><Icon name="ticket" size={15} /></span>{/snippet}
 
   <span class="row-kind">
-    {metaLine(
-      "Calendar opportunity",
-      dateLabel(row.starts_at),
-      row.location,
-      row.source === "web" && "added deliberately",
-    )}
+    {#each metaParts( "Calendar opportunity", dateLabel(row.starts_at), row.location, row.source === "web" && "added deliberately", ) as part}<span
+      >{part}</span
+    >{/each}
   </span>
   <a class="row-title" {href}>{row.title}</a>
   {#if row.notes}<p class="row-text">{row.notes}</p>{/if}

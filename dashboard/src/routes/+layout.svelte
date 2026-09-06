@@ -276,13 +276,27 @@
     padding-bottom: var(--soundscape-dock-height, 0px);
   }
 
+  /* The one surface the whole page passes under, so it is the one that most has to read
+   * as glass. Was `blur(12px)` with no saturation and no prefix: Safari is the browser
+   * this is read in and needed the prefix, and blur without saturate desaturates whatever
+   * scrolls behind it into fog. */
   header {
     position: sticky;
     top: 0;
     z-index: 50;
     background-color: var(--header-bg);
-    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border-bottom: 1px solid var(--header-border);
+  }
+
+  /* Translucent only while there is something behind it to see. At the top of the page
+     the bar sits on flat background and the blur has nothing to do, so it goes opaque and
+     loses its border — the rule appears as the page starts moving under it. */
+  @supports not (backdrop-filter: blur(1px)) {
+    header {
+      background-color: var(--card-bg);
+    }
   }
 
   /* `min(100%, …)` rather than a bare cap: below --shell-max the shell IS the viewport,

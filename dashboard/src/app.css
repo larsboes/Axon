@@ -21,44 +21,148 @@
  *   phone  38rem · tablet 48rem · rail 64rem
  */
 
+
+/* The typeface, self-hosted. `upstreams.toml [ibm-plex]` carries the audit.
+ *
+ * `font-display: swap` so text is readable from the first paint on a cold cache: the
+ * fallback metrics below are close enough that the swap is not a jolt. `unicode-range`
+ * is what makes the latin-ext half free -- the browser fetches it only when a character
+ * in that range actually appears, so German costs nothing extra (ae/oe/ue and sz all sit
+ * in latin) and a Polish place name pays for itself.
+ *
+ * No CDN link. N3 refuses internet exposure and this surface is reached over the tailnet,
+ * where a fonts.googleapis.com request is both a third party and a round trip that may
+ * not resolve at all.
+ */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-400-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-500-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-500-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-600-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-600-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-400-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 :root {
-  --page-bg: #f4f4f5;
+  /* The neutrals are WARM, which the old header comment claimed and the values did not
+   * deliver: #f4f4f5 and #18181b are cool zinc. Warm greys, and deliberately nowhere near
+   * cream -- #f4f2ef puts 5 points between red and blue where the generated-page default
+   * (#f4f1ea, with a serif and a terracotta accent) puts 10. The page is the darker plane
+   * and the card is the sheet on it, which is the relationship the depth scale below
+   * depends on. */
+  --page-bg: #f4f2ef;
   --card-bg: #ffffff;
-  --card-border: #e4e4e7;
-  --card-border-hover: #d4d4d8;
-  --card-shadow: 0 1px 2px rgb(0 0 0 / 4%), 0 1px 4px rgb(0 0 0 / 6%);
-  --card-shadow-hover: 0 4px 16px rgb(0 0 0 / 8%);
-  --surface: #fafafa;
-  --text-primary: #18181b;
-  --text-secondary: #52525b;
+  --card-border: #e6e3de;
+  --card-border-hover: #d8d4cd;
+  --card-shadow: 0 1px 2px rgb(28 26 21 / 4%), 0 1px 4px rgb(28 26 21 / 5%);
+  --card-shadow-hover: 0 4px 16px rgb(28 26 21 / 8%);
+  --surface: #faf9f7;
+  --text-primary: #1b1a17;
+  --text-secondary: #56534d;
 
   /* Was #a1a1aa: 2.56:1 on a card and 2.33:1 on the page, an AA failure carrying the
    * meta line on every ladder row. 5.26:1 on a card and 4.79:1 on the page — both
    * halves clear 4.5:1, which the old value did against neither. */
-  --text-tertiary: #6b6b76;
-  --text-inverse: #fafafa;
+  --text-tertiary: #6c6862;
+  --text-inverse: #faf9f7;
   --primary: #0e7490;
   --primary-hover: #155e75;
   --primary-soft: rgb(14 116 144 / 8%);
   --accent: #d97706;
   --accent-soft: rgb(217 119 6 / 8%);
-  --success: #16a34a;
-  --success-soft: rgb(22 163 74 / 8%);
+  --success: #147f3c;
+  --success-soft: rgb(20 127 60 / 8%);
   --warning: #d97706;
   --warning-soft: rgb(217 119 6 / 8%);
 
   /* Warning as TEXT. --warning is 3.19:1 on white: fine for a fill or an icon, an AA
    * failure for a word. It stays as it is because 14 files outside this pass use it as
    * a colour; anything this pass writes uses the ink token. */
-  --warning-ink: #b45309;
-  --danger: #dc2626;
-  --danger-soft: rgb(220 38 38 / 8%);
+  --warning-ink: #b35208;
+  --danger: #d82222;
+  --danger-soft: rgb(216 34 34 / 8%);
   --header-bg: rgb(255 255 255 / 85%);
-  --header-border: #e4e4e7;
+  --header-border: #e6e3de;
   --input-bg: #ffffff;
-  --input-border: #d4d4d8;
-  --nav-inactive: #71717a;
-  --nav-hover: #18181b;
+  --input-border: #d8d4cd;
+  --nav-inactive: #6c6862;
+  --nav-hover: #1b1a17;
+
+  /* GLASS. A pane with something behind it, which is why it is four tokens and not a
+   * class sprinkled on cards: a card has nothing behind it, so frosting one is
+   * decoration. These belong to the header, the sticky rail, Overlay and the dock --
+   * the surfaces that actually float over the sheet.
+   *
+   * `saturate` is the half that makes it read as glass rather than as fog: blur alone
+   * washes the colour out of what is behind, and pushing saturation back up is what a
+   * real pane does to the light through it. */
+  --glass-bg: rgb(255 255 255 / 72%);
+  --glass-blur: blur(20px) saturate(180%);
+  --glass-border: rgb(255 255 255 / 70%);
+  --glass-shadow: 0 1px 2px rgb(28 26 21 / 5%), 0 8px 32px rgb(28 26 21 / 8%);
 
   /* Type scale and shell width are independent on purpose.
    *
@@ -78,16 +182,27 @@
   --font-size-root: 110%;
   --shell-max: 2200px; /* wide enough to be edge-to-edge on a normal display; a cap for ultrawides, not a target */
 
-  --radius: 10px;
+  /* RADIUS IS ELEVATION. One radius on everything regardless of hierarchy is the
+   * templated default; here the number says how far off the page a thing sits. Flat on
+   * the sheet takes the small end, a floating pane takes the large one, so the rounding
+   * carries the same information the shadow does instead of decorating alongside it.
+   *
+   *   sm  inline chips, tags, the things printed ON a surface
+   *   md  controls -- buttons, inputs: objects you touch, but flush
+   *   lg  sheet sections: grouped, still part of the page
+   *   xl  panes that float: the rail, Overlay, the dock
+   */
   --radius-sm: 6px;
-  --radius-md: 8px;
-
-  /* Referenced at four call sites and declared at none until now, so three of them
-     rendered square while every other card was 10px rounded. */
-  --radius-lg: 14px;
-  --font-sans: -apple-system, blinkmacsystemfont, "Segoe UI", roboto, oxygen, ubuntu,
-    cantarell, sans-serif;
-  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", monospace;
+  --radius-md: 10px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  /* One family, three weights, and a mono that earns its place on the numerals rather
+   * than on small labels. The system stack rendered as SF on both devices that read this
+   * surface and carried no identity of its own. */
+  --font-sans: "IBM Plex Sans", -apple-system, blinkmacsystemfont, "Segoe UI", roboto,
+    sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
 
   /* Type. One modular step per name, in rem so every step rides --font-size-root.
    * --text-base is the body size the app already had; the scale is built around it
@@ -125,15 +240,15 @@
 
   /* A structural line, one step stronger than --card-border, for a rule that separates
      rather than encloses. */
-  --rule: #d4d4d8;
+  --rule: #d8d4cd;
 
   /* The ladder's spine: a severity ramp, not a categorical set. Four tones over
    * thirteen bands, because a reader distinguishes four and not thirteen. It is never
    * the only channel — a band break also carries its name in words. */
   --band-alarm: #dc2626;
-  --band-now: #b45309;
+  --band-now: #b35208;
   --band-owed: #0e7490;
-  --band-offer: #a1a1aa;
+  --band-offer: #8a867f;
 
   /* Replaces a literal that was hardcoded into the Home stylesheet. */
   --kind-event: #be185d;
@@ -147,19 +262,22 @@
 }
 
 :root.dark {
-  --page-bg: #09090b;
-  --card-bg: #18181b;
-  --card-border: #27272a;
-  --card-border-hover: #3f3f46;
-  --card-shadow: 0 1px 2px rgb(0 0 0 / 30%);
-  --card-shadow-hover: 0 4px 16px rgb(0 0 0 / 50%);
-  --surface: #27272a;
-  --text-primary: #fafafa;
-  --text-secondary: #a1a1aa;
+  /* Not #09090b. Glass needs something behind it to be glass, and a pure-black page
+   * blurs to pure black -- the header would have read as a flat panel. Warm, and lifted
+   * far enough off zero that the blur has colour to carry. */
+  --page-bg: #121211;
+  --card-bg: #1c1b19;
+  --card-border: #2e2c29;
+  --card-border-hover: #45423d;
+  --card-shadow: 0 1px 2px rgb(0 0 0 / 40%);
+  --card-shadow-hover: 0 4px 16px rgb(0 0 0 / 55%);
+  --surface: #2a2825;
+  --text-primary: #f7f6f4;
+  --text-secondary: #a8a49c;
 
   /* Was #71717a: 3.67:1 on a dark card. 5.18:1 now. */
-  --text-tertiary: #8a8a94;
-  --text-inverse: #09090b;
+  --text-tertiary: #918d85;
+  --text-inverse: #121211;
   --primary: #22d3ee;
   --primary-hover: #67e8f9;
   --primary-soft: rgb(34 211 238 / 10%);
@@ -172,20 +290,26 @@
   --warning-ink: #fbbf24;
   --danger: #f87171;
   --danger-soft: rgb(248 113 113 / 10%);
-  --header-bg: rgb(9 9 11 / 85%);
-  --header-border: #27272a;
+  --header-bg: rgb(18 18 17 / 80%);
+  --header-border: #2e2c29;
   --input-bg: rgb(255 255 255 / 4%);
-  --input-border: #3f3f46;
-  --nav-inactive: #8a8a94;
-  --nav-hover: #fafafa;
+  --input-border: #45423d;
+  --nav-inactive: #918d85;
+  --nav-hover: #f7f6f4;
+
+  /* The light edge inverts: on a dark pane it is a white hairline at low alpha, which is
+     the highlight a real edge catches rather than a border drawn around it. */
+  --glass-bg: rgb(28 27 25 / 72%);
+  --glass-border: rgb(255 255 255 / 10%);
+  --glass-shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 32px rgb(0 0 0 / 45%);
 
   /* Theme-dependent half of the additions above. Every other new token is a
      measurement (a size, a duration) and is declared once. */
-  --rule: #3f3f46;
+  --rule: #45423d;
   --band-alarm: #f87171;
   --band-now: #fbbf24;
   --band-owed: #22d3ee;
-  --band-offer: #52525b;
+  --band-offer: #6c6862;
   --kind-event: #f472b6;
 }
 
@@ -226,6 +350,20 @@ code,
   font-family: var(--font-mono);
 }
 
+/* Lining tabular figures, for a column of numbers that has to stack.
+ *
+ * This is the whole argument for shipping a mono: Home's date column reads
+ * `15 Sep / 16 Sep / 18 Sep / 7 Oct`, and under proportional digits the `1`s are
+ * narrower than the `7`, so the column does not align. `font-variant-numeric` fixes the
+ * alignment without the mono's width, which is the better answer wherever the numbers
+ * sit inside prose; `.mono` stays for the cases that want the face too.
+ *
+ * Not a small-label style. A monospace face used to make labels look technical is the
+ * generated-page tell; used to align a column of figures it is doing arithmetic. */
+.tnum {
+  font-variant-numeric: tabular-nums lining;
+}
+
 /* Keyboard focus, everywhere, at specificity 0.
  *
  * `:where()` so a component that must draw its own ring still wins without an
@@ -237,6 +375,41 @@ code,
 }
 
 /* The primitives. Anything more specific belongs in the component that needs it. */
+
+/* A pane that floats over the sheet.
+ *
+ * Deliberately NOT a variant of .card. A card sits on the page and has nothing behind
+ * it, so blurring one frosts a solid colour and costs a compositor layer to do it --
+ * that is the decoration this class exists to keep OUT of the content. .glass is for the
+ * four surfaces something actually passes under: the header bar, the sticky rail,
+ * Overlay and the dock.
+ *
+ * `-webkit-` first because Safari is the browser this surface is read in, on the Mac and
+ * over the tailnet on the phone, and it still needs the prefix.
+ *
+ * The `@supports` fallback is not politeness: with backdrop-filter unavailable a 72%
+ * background is a translucent panel with text showing through it, which is unreadable
+ * rather than merely plainer. The fallback goes opaque. */
+.glass {
+  background-color: var(--glass-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+/* The lit top edge. A pane catches light on the edge facing it, and one hairline does
+   more for the illusion than any amount of extra blur. */
+.glass-lit {
+  border-top-color: var(--glass-border);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .glass {
+    background-color: var(--card-bg);
+  }
+}
 
 .card {
   background-color: var(--card-bg);
@@ -302,7 +475,13 @@ code,
  * These are three global classes rather than a copy inside each of the ten row
  * components, because a row's title and its meta line are the one place where a drift of
  * a sixteenth of a rem is visible: the rows sit directly on top of each other. */
+/* Parts, spaced. `metaParts` hands this the facts and the gap separates them — the
+   middle dot that used to sit between them made the reader parse punctuation to find a
+   boundary the layout can simply state. */
 .row-kind {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
   color: var(--text-tertiary);
   font-size: var(--text-2xs);
   line-height: var(--leading-normal);

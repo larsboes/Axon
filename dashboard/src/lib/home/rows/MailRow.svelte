@@ -3,7 +3,7 @@
   import Icon from "../../Icon.svelte";
   import ListRow from "../../ListRow.svelte";
   import RowMeta from "../../RowMeta.svelte";
-  import { metaLine, relativeDate } from "../format";
+  import { metaParts, relativeDate } from "../format";
   import type { MailRow } from "../kinds/mail";
   import type { DecisionRowProps } from "../decisions";
 
@@ -31,11 +31,9 @@
   {#snippet mark()}<Icon name="mail" size={15} />{/snippet}
 
   <span class="row-kind">
-    {metaLine(
-      "Mail",
-      row.from_addr ?? "unknown sender",
-      row.internal_date ? relativeDate(row.internal_date) : null,
-    )}
+    {#each metaParts( "Mail", row.from_addr ?? "unknown sender", row.internal_date ? relativeDate(row.internal_date) : null, ) as part}<span
+      >{part}</span
+    >{/each}
   </span>
   <a class="row-title" {href}>{row.subject ?? "(no subject)"}</a>
   {#if row.snippet}<p class="row-text">{row.snippet}</p>{/if}

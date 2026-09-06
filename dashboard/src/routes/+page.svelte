@@ -83,10 +83,13 @@
   /// is the better surface, so the list links out instead.
   const READING_PREVIEW = 6;
 
-  const viewHeadings: Record<HomeView, { kicker: string; title: string }> = {
-    now: { kicker: "Focus", title: "Up next" },
-    locations: { kicker: "Places", title: "By location" },
-    sources: { kicker: "Inputs", title: "Sources" },
+  /* Titles only. Each view used to carry a kicker above its heading — "Focus" over "Up
+   * next", "Places" over "By location" — and the kicker never said anything the heading
+   * and the tab strip beside it did not already say. A label above a label is chrome. */
+  const viewHeadings: Record<HomeView, { title: string }> = {
+    now: { title: "Up next" },
+    locations: { title: "By location" },
+    sources: { title: "Sources" },
   };
 
   const scoreContext = $derived<ScoreContext>({
@@ -384,7 +387,6 @@
            modes of the page. -->
       <div class="section-head">
         <div>
-          <span class="section-kicker">{viewHeadings[homeView].kicker}</span>
           <h2>{viewHeadings[homeView].title}</h2>
         </div>
         <nav class="home-views" aria-label="Home view">
@@ -519,7 +521,6 @@
       <section class="side-section">
         <div class="section-head compact">
           <div>
-            <span class="section-kicker">Start</span>
             <h2>Quick actions</h2>
           </div>
         </div>
@@ -546,7 +547,6 @@
         <section class="side-section continue">
           <div class="section-head compact">
             <div>
-              <span class="section-kicker">Projects</span>
               <h2>Continue working</h2>
             </div>
             <a class="small-link" href={link("/projects")}>All</a>
@@ -670,12 +670,6 @@
      tracked-out all-caps line above every heading is template chrome, and Home carried
      five of them: the date and four section kickers. */
   .date,
-  .section-kicker {
-    margin: 0 0 var(--space-1);
-    color: var(--primary);
-    font-size: var(--text-2xs);
-    font-weight: 600;
-  }
 
   h1 {
     max-width: 48rem;
@@ -785,9 +779,6 @@
     align-items: center;
   }
 
-  .section-head .section-kicker {
-    margin-bottom: 0.15rem;
-  }
 
   h2 {
     margin: 0;
@@ -961,10 +952,41 @@
     cursor: pointer;
   }
 
+  /* The rail is the page's one floating pane, so it is the one surface here that gets
+   * glass. Everything to its left is the sheet: opaque, hairline-ruled, and read rather
+   * than looked at. Frosting the content too would cost legibility on the half of the
+   * page that has the words in it, and buy an effect over a solid colour that has
+   * nothing behind it to show through.
+   *
+   * Sticky is what earns it: the sheet passes underneath while this stays. */
   aside {
     display: flex;
     flex-direction: column;
-    gap: 2rem;
+    gap: var(--space-6);
+  }
+
+  @media (width >= 50rem) {
+    aside {
+      position: sticky;
+      top: calc(var(--header-stack) + var(--space-3));
+      max-height: calc(100vh - var(--header-stack) - var(--space-6));
+      padding: var(--space-6) var(--space-5);
+      overflow-y: auto;
+      background-color: var(--glass-bg);
+      border: 1px solid var(--card-border);
+      border-top-color: var(--glass-border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--glass-shadow);
+      -webkit-backdrop-filter: var(--glass-blur);
+      backdrop-filter: var(--glass-blur);
+    }
+
+    /* Translucency without the blur is text over text. */
+    @supports not (backdrop-filter: blur(1px)) {
+      aside {
+        background-color: var(--card-bg);
+      }
+    }
   }
 
   .side-section {
@@ -1089,12 +1111,13 @@
     gap: 0.45rem;
   }
 
+  /* Sentence case. All-caps is the commonest label tell, and at 0.65rem it also costs
+     legibility — capitals lose the ascender/descender shapes a reader scans by. */
   .mc-mem-label {
     flex-shrink: 0;
     color: var(--text-tertiary);
-    font-size: 0.65rem;
-    font-weight: 600;
-    text-transform: uppercase;
+    font-size: var(--text-2xs);
+    font-weight: 500;
   }
 
   .mc-bar {
@@ -1215,9 +1238,27 @@
     background: var(--warning);
   }
 
+  /* The main lane is CAPPED, not proportional.
+   *
+   * It was `minmax(0, 2.2fr)` against a 2200px shell, so on this display a calendar row
+   * ran about 1600px: "15 Sep · AI Barcamp" at one end, "all day · Telekom, Bonn" at the
+   * other, and a void between them that the eye has to cross to pair the two. A fraction
+   * of an ultrawide is not a measure. 68rem is wider than --measure because these are
+   * structured rows rather than prose — a date, a title and a venue, each in its own
+   * column — but it is bounded, which is the part that was missing.
+   *
+   * The width that stops going to the lane goes to the rail and then to the gutters. */
   @media (width >= 50rem) {
     .workspace {
-      grid-template-columns: minmax(0, 2.2fr) minmax(15rem, 0.8fr);
+      grid-template-columns: minmax(0, 2.2fr) minmax(17rem, 0.8fr);
+
+      /* The cap goes on the GRID, not on the tracks. Capping the first track with
+       * `minmax(0, 68rem)` plus `justify-content: center` sized both tracks to their
+       * content instead of to the container — the columns collapsed and the page grew
+       * to 15,460px. Bounding the container leaves `fr` doing what `fr` does. */
+      max-width: 96rem;
+      margin-inline: auto;
+      width: 100%;
     }
   }
 

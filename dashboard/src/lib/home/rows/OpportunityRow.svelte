@@ -3,7 +3,7 @@
   import Icon from "../../Icon.svelte";
   import ListRow from "../../ListRow.svelte";
   import RowMeta from "../../RowMeta.svelte";
-  import { dateLabel, metaLine } from "../format";
+  import { dateLabel, metaParts } from "../format";
   import type { DecisionRowProps } from "../decisions";
   import type { OpportunitySource } from "../kinds/opportunity";
 
@@ -37,7 +37,9 @@
   {#snippet mark()}<Icon name="compass" size={15} />{/snippet}
 
   <span class="row-kind">
-    {metaLine("Opportunity", row.starts_at ? dateLabel(row.starts_at) : null, row.city)}
+    {#each metaParts("Opportunity", row.starts_at ? dateLabel(row.starts_at) : null, row.city) as part}<span
+      >{part}</span
+    >{/each}
   </span>
   <a class="row-title" {href} target="_blank" rel="noreferrer">{row.title}</a>
 

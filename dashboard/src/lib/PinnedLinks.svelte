@@ -26,8 +26,7 @@
 {#if links.length > 0}
   <section class="pinned">
     <div class="head">
-      <span class="kicker">Pinned</span>
-      <h2>Links</h2>
+      <h2>Pinned links</h2>
     </div>
     <ul>
       {#each links as pinned (pinned.url)}
@@ -44,22 +43,19 @@
 {/if}
 
 <style>
+  /* No box. This sits inside the rail, which is already a pane with a border and a
+     radius of its own, so a bordered card here drew a second frame around a group that
+     was already framed. A rule and the section's own spacing separate it — the same
+     device every other rail section uses. */
   .pinned {
-    border: 1px solid var(--card-border);
-    border-radius: 10px;
-    padding: 0.9rem 1rem;
+    padding-top: var(--space-5);
+    border-top: 1px solid var(--card-border);
   }
   .head {
     display: flex;
     flex-direction: column;
     gap: 0.1rem;
     margin-bottom: 0.5rem;
-  }
-  .kicker {
-    font-size: 0.7rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--text-tertiary, #888);
   }
   h2 {
     font-size: 0.95rem;

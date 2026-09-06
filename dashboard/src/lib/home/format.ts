@@ -41,7 +41,13 @@ export function sentenceCase(value: string): string {
   return value.charAt(0).toLocaleUpperCase("en-GB") + value.slice(1);
 }
 
-/** The one place the row's meta line is assembled, so no row invents a fourth separator. */
-export function metaLine(...parts: (string | null | undefined | false)[]): string {
-  return parts.filter(Boolean).join(" · ");
+/** The one place the row's meta line is assembled, so no row invents a fourth separator.
+ *
+ * Returns the PARTS. It used to join them with " · ", which put a character between two
+ * facts where the layout can put space — and the same middle dot was doing that job in
+ * 166 places across the app, which is what made every meta line read the same as every
+ * other generated one. `.row-kind` spaces them now, so the separator is a gap that can be
+ * tuned per surface rather than a glyph baked into a string. */
+export function metaParts(...parts: (string | null | undefined | false)[]): string[] {
+  return parts.filter(Boolean) as string[];
 }

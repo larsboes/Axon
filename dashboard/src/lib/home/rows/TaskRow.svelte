@@ -3,7 +3,7 @@
   import Icon from "../../Icon.svelte";
   import ListRow from "../../ListRow.svelte";
   import RowMeta from "../../RowMeta.svelte";
-  import { dateLabel, metaLine } from "../format";
+  import { dateLabel, metaParts } from "../format";
   import type { DecisionRowProps } from "../decisions";
 
   let { row, id, current, tone, href, whyHere }: DecisionRowProps<Task> = $props();
@@ -15,7 +15,9 @@
   {#snippet mark()}<Icon name="check" size={15} />{/snippet}
 
   <span class="row-kind">
-    {metaLine("Task", row.due ? `due ${dateLabel(row.due)}` : null, ...row.projects)}
+    {#each metaParts("Task", row.due ? `due ${dateLabel(row.due)}` : null, ...row.projects) as part}<span
+      >{part}</span
+    >{/each}
     {#if overdue}<span class="overdue">overdue</span>{/if}
   </span>
   <!-- The title links to the note, because the note IS the task. There is no in-page

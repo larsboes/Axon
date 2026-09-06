@@ -4,7 +4,7 @@
   import Icon from "../../Icon.svelte";
   import ListRow from "../../ListRow.svelte";
   import RowMeta from "../../RowMeta.svelte";
-  import { metaLine, relativeDate } from "../format";
+  import { metaParts, relativeDate } from "../format";
   import type { DecisionRowProps } from "../decisions";
 
   let { row, id, current, tone, whyHere }: DecisionRowProps<HostWatchFinding> = $props();
@@ -20,7 +20,7 @@
 <ListRow {id} {current} {tone}>
   {#snippet mark()}<span class="alarm"><Icon name="alert" size={15} /></span>{/snippet}
 
-  <span class="row-kind">{metaLine("Host", `first seen ${relativeDate(row.first_seen)}`)}</span>
+  <span class="row-kind">{#each metaParts("Host", `first seen ${relativeDate(row.first_seen)}`) as part}<span>{part}</span>{/each}</span>
   <span class="row-title">{row.title}</span>
   <!-- Four lines and pre-wrap, not the one-line clamp every other row uses: the note is
        what to run to look at the condition and what to run if it is stuck. It is the

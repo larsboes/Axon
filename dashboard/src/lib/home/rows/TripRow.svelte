@@ -4,7 +4,7 @@
   import Icon from "../../Icon.svelte";
   import ListRow from "../../ListRow.svelte";
   import RowMeta from "../../RowMeta.svelte";
-  import { dateLabel, metaLine } from "../format";
+  import { dateLabel, metaParts } from "../format";
   import type { DecisionRowProps } from "../decisions";
 
   let {
@@ -23,7 +23,7 @@
 <ListRow {id} {current} {tone} {href}>
   {#snippet mark()}<Icon name="map-pin" size={15} />{/snippet}
 
-  <span class="row-kind">{metaLine("Travel", dateLabel(row.date_start), where)}</span>
+  <span class="row-kind">{#each metaParts("Travel", dateLabel(row.date_start), where) as part}<span>{part}</span>{/each}</span>
   <a class="row-title" {href}>{row.title}</a>
 
   {#snippet meta()}<RowMeta {whyHere} {candidateStatus} />{/snippet}
