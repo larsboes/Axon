@@ -6,13 +6,48 @@ impl Store {
     /// Store the complete evaluation and its factors atomically. The factor
     /// table is normalized so future trip/deadline factors can be added without
     /// a schema migration or an opaque JSON payload.
+    ///
+    /// `Ok(false)` means the tier gate refused the write: a `deterministic`
+    /// producer never overwrites a stored `model` row.
     pub fn replace_feed_evaluation(
         &self,
         evaluation: &FeedEvaluation,
     ) -> Result<bool, Box<dyn std::error::Error>> {
+        self.write_feed_evaluation(evaluation, true)
+    }
+
+    /// Store a class refusal, past the tier gate.
+    ///
+    /// A refusal is a withdrawal, not a weaker producer, so it must not lose to
+    /// the row it withdraws. `provenance::ranking_tier` maps the refusal's
+    /// `unscored` mode to `deterministic`, so escalating an already-scored item
+    /// to c3 used to leave its model-derived score, rationale and factors
+    /// exactly where they were while the pass reported `refused_class: 1` --
+    /// the gate reported a refusal the database never took.
+    pub fn replace_feed_evaluation_refusal(
+        &self,
+        evaluation: &FeedEvaluation,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        self.write_feed_evaluation(evaluation, false)
+    }
+
+    fn write_feed_evaluation(
+        &self,
+        evaluation: &FeedEvaluation,
+        enforce_tier: bool,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let transaction = conn.transaction()?;
         let tier = provenance::ranking_tier(&evaluation.mode);
+        let gate = if enforce_tier {
+            format!(
+                "WHERE CASE excluded.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                       CASE {prefix}_feed_evaluations.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END",
+                prefix = self.prefix
+            )
+        } else {
+            String::new()
+        };
         let affected = transaction.execute(
             &format!(
                 "INSERT INTO {prefix}_feed_evaluations
@@ -28,8 +63,7 @@ impl Store {
                     evaluator_revision = excluded.evaluator_revision,
                     tier = excluded.tier,
                     evaluated_at = {now}
-                 WHERE CASE excluded.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
-                       CASE {prefix}_feed_evaluations.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END",
+                 {gate}",
                 prefix = self.prefix,
                 now = axon_store::NOW
             ),
@@ -184,8 +218,17 @@ impl Store {
         )?)
     }
 
-    pub fn replace_travel_context_snapshot(
+    /// Store one revisioned blob under its kind.
+    ///
+    /// Generalised from the travel-only pair, because the learned feedback model
+    /// is the same shape: a bounded, revisioned payload that feeds
+    /// `context_revision`. The table is already keyed on `context_kind`
+    /// (migrations.rs), so a second kind needs no migration at all — which
+    /// matters, because `CREATE TABLE IF NOT EXISTS` never revisits an installed
+    /// table and `axon.db` already holds this one.
+    pub fn replace_context_snapshot(
         &self,
+        kind: &str,
         revision: &str,
         payload: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -194,7 +237,7 @@ impl Store {
             &format!(
                 "INSERT INTO {prefix}_feed_context_snapshots
                     (context_kind, revision, payload, refreshed_at)
-                 VALUES ('travel',?1,?2,{now})
+                 VALUES (?1,?2,?3,{now})
                  ON CONFLICT (context_kind) DO UPDATE SET
                     revision = excluded.revision,
                     payload = excluded.payload,
@@ -202,25 +245,26 @@ impl Store {
                 prefix = self.prefix,
                 now = axon_store::NOW
             ),
-            params![&revision, &payload],
+            params![&kind, &revision, &payload],
         )?;
         Ok(())
     }
 
-    pub fn travel_context_snapshot(
+    pub fn context_snapshot(
         &self,
-    ) -> Result<Option<TravelContextSnapshot>, Box<dyn std::error::Error>> {
+        kind: &str,
+    ) -> Result<Option<ContextSnapshot>, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         Ok(conn
             .query_row(
                 &format!(
                     "SELECT revision, payload, refreshed_at
-                     FROM {}_feed_context_snapshots WHERE context_kind = 'travel'",
+                     FROM {}_feed_context_snapshots WHERE context_kind = ?1",
                     self.prefix
                 ),
-                [],
+                params![&kind],
                 |row| {
-                    Ok(TravelContextSnapshot {
+                    Ok(ContextSnapshot {
                         revision: row.get(0)?,
                         payload: row.get(1)?,
                         refreshed_at: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
@@ -228,5 +272,154 @@ impl Store {
                 },
             )
             .optional()?)
+    }
+
+    /// Two-line delegates, so `travel.rs` does not move for a change that is
+    /// not about travel.
+    pub fn replace_travel_context_snapshot(
+        &self,
+        revision: &str,
+        payload: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.replace_context_snapshot("travel", revision, payload)
+    }
+
+    pub fn travel_context_snapshot(
+        &self,
+    ) -> Result<Option<TravelContextSnapshot>, Box<dyn std::error::Error>> {
+        Ok(self
+            .context_snapshot("travel")?
+            .map(|snapshot| TravelContextSnapshot {
+                revision: snapshot.revision,
+                payload: snapshot.payload,
+                refreshed_at: snapshot.refreshed_at,
+            }))
+    }
+}
+
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use crate::evaluation;
+    use crate::mail_evaluation;
+    use crate::store::db_tests::{mk_triage, open_test_store};
+
+    fn semantic_match() -> RelevanceMatch {
+        RelevanceMatch {
+            profile_key: "lens".into(),
+            profile_label: "Career & Visibility".into(),
+            score: 0.9,
+            rationale: "match".into(),
+            mode: "semantic".into(),
+            profile_revision: "revision".into(),
+        }
+    }
+
+    /// The defect the tier gate created for the class gate.
+    ///
+    /// `provenance::ranking_tier` maps the refusal's `unscored` mode to
+    /// `deterministic`, so escalating an item that already carried a `model`
+    /// row to c3 lost both writes: `replace_feed_relevance(id, &[])` computed a
+    /// `deterministic` incoming tier and deleted nothing, and
+    /// `replace_feed_evaluation` was refused by the same rule. The pass then
+    /// reported `refused_class: 1` over a row nothing had been removed from,
+    /// and every later pass failed identically. A refusal is a withdrawal, not
+    /// a weaker producer.
+    #[test]
+    fn escalating_a_model_scored_feed_item_to_c3_withdraws_its_score() {
+        let store = open_test_store("evaluation_c3_withdraws_feed");
+        let mut item = FeedItem::new("https://example.com/withdrawn", "news", "article");
+        item.title = Some("A Title".into());
+        item.summary = Some("A summary".into());
+        store.upsert_feed(&item).expect("the fixture stores");
+
+        let matched = semantic_match();
+        assert!(store
+            .replace_feed_relevance(&item.id, std::slice::from_ref(&matched))
+            .expect("the matches store"));
+        let scored = evaluation::evaluate(&item, Some(&matched), "context", &[], false, None);
+        assert!(store
+            .replace_feed_evaluation(&scored)
+            .expect("the model-tier evaluation stores"));
+
+        store
+            .set_feed_data_class(&item.id, "c3", Some("a human lowered it"))
+            .expect("the escalation lands");
+
+        // The write the refusal branch used to make, and why `clear_` exists:
+        // an empty replacement is a `deterministic` producer and loses.
+        assert!(!store
+            .replace_feed_relevance(&item.id, &[])
+            .expect("the tier gate answers"));
+
+        // Exactly what the refusal branch of `relevance_refresh_handler` runs.
+        let cleared = store
+            .clear_feed_relevance(&item.id)
+            .expect("the withdrawal runs");
+        assert_eq!(cleared, 1, "the derived match must actually be deleted");
+        let refusal = evaluation::evaluate(&item, None, "context", &[], true, None);
+        assert!(store
+            .replace_feed_evaluation_refusal(&refusal)
+            .expect("the refusal writes"));
+
+        let stored = store
+            .feed_evaluation(&item.id)
+            .expect("the evaluation reads")
+            .expect("a refusal is a row, not an absence");
+        assert_eq!(stored.mode, "unscored");
+        assert!(!stored.explanation.contains("Interest fit"));
+        assert!(store
+            .feed_relevance_map(&[item.id.clone()])
+            .expect("the map reads")
+            .get(&item.id)
+            .map(Vec::is_empty)
+            .unwrap_or(true));
+
+        // And the refusal is final: no reachable embedder can upgrade it, so a
+        // second pass must leave it alone rather than rewrite it forever.
+        assert!(evaluation::refusal_is_current(
+            Some(&stored),
+            &evaluation::item_revision(&item),
+            "context"
+        ));
+    }
+
+    #[test]
+    fn escalating_a_model_scored_mail_to_c3_withdraws_its_score() {
+        let store = open_test_store("evaluation_c3_withdraws_mail");
+        let mut item = mk_triage("thread:withdrawn", "aktiv");
+        item.internal_date_text = Some("2026-09-04 08:00:00+00:00".into());
+        store.upsert_triage(&item).expect("the fixture stores");
+
+        let matched = semantic_match();
+        store
+            .replace_triage_relevance(&item.id, std::slice::from_ref(&matched))
+            .expect("the matches store");
+        let scored = mail_evaluation::evaluate(&item, Some(&matched), None, "context", false);
+        assert!(store
+            .replace_triage_evaluation(&scored)
+            .expect("the model-tier evaluation stores"));
+
+        item.data_class = "c3".into();
+        let refusal = mail_evaluation::evaluate(&item, None, None, "context", true);
+        assert!(
+            store
+                .replace_triage_evaluation_refusal(&refusal)
+                .expect("the refusal writes"),
+            "a class refusal must not lose to the model row it withdraws"
+        );
+        let stored = store
+            .triage_evaluation(&item.id)
+            .expect("the evaluation reads")
+            .expect("a refusal is a row");
+        assert_eq!(stored.mode, "unscored");
+        // The measured defect: a refused mail must never outscore one that was
+        // actually read.
+        assert!(stored.overall_score <= scored.overall_score);
+        assert!(mail_evaluation::refusal_is_current(
+            Some(&stored),
+            &mail_evaluation::item_revision(&item),
+            "context"
+        ));
     }
 }

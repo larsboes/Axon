@@ -69,6 +69,14 @@ fn print_help() {
     println!("                                  never raises a data class. It writes the stored");
     println!("                                  shadow verdicts rather than asking again.");
     println!("                                  --limit defaults to mail_model.limit, else 200.");
+    println!("  relevance backfill              re-score stored feed items through the running");
+    println!("       [--days N=3650]            server, page by page, until every item in the");
+    println!("       [--batch N=100] [--max N]  window has been seen. Drains rows that were");
+    println!("       [--force]                  written lexical while the embedding role was");
+    println!("                                  down. Only the full 3650-day window can mark");
+    println!("                                  the corpus complete. Needs comms-server up: it");
+    println!("                                  is an HTTP client, not a second opener of the");
+    println!("                                  database.");
     println!("  --help, -h                      show this help");
     println!("\nThis CLI's Gmail sweep is READ-ONLY. Archive, Trash and the Waiting label require an explicit authenticated dashboard action.");
 }
@@ -94,6 +102,7 @@ fn main() {
         "export-sources" => cmd_export_sources(&args, &cfg),
         "reclassify-feed" => cmd_reclassify_feed(&args, &cfg),
         "mail" => cmd_mail(&args, &cfg),
+        "relevance" => cmd_relevance(&args, &cfg),
         other => {
             eprintln!("error: unknown command '{other}'\n");
             print_help();
@@ -324,7 +333,7 @@ fn cmd_set_status(args: &[String], cfg: &Config, status: &str) {
     // staying in it. That is the outcome the comms doctrine exists to prevent
     // — the Information lane of the comms doctrine: a kept mail becomes a distilled statement in
     // the system that owns it, never a second copy of the mail.
-    match store.set_feed_status(id, status) {
+    match store.set_feed_status(id, status, "cli") {
         Ok(true) => {
             println!("{id} -> {status}");
             if status == "keeper" {
@@ -923,5 +932,121 @@ fn print_classify_report(cfg: &Config, store: &Store) {
         mail_model::producer(cfg),
         mail_model::MAIL_MODEL_PROMPT_REVISION,
         mail_model::MAIL_MODEL_VERSION
+    );
+}
+
+// -- relevance -----------------------------------------------------------
+
+/// Re-score the stored feed through the running server, page by page.
+///
+/// An HTTP client, deliberately not a store opener. `Store::open` runs the
+/// whole migration on every call and two openers on one SQLite file deadlock —
+/// `tools/feed-sweep.ts` records that reason, and comms is `autostart = true`,
+/// so a server answering is the expected state rather than a precondition this
+/// verb has to arrange.
+fn cmd_relevance(args: &[String], cfg: &Config) {
+    let Some(verb) = args.get(2).filter(|value| !value.starts_with("--")) else {
+        eprintln!(
+            "error: usage: comms relevance backfill [--days N] [--batch N] [--max N] [--force]"
+        );
+        std::process::exit(1);
+    };
+    if verb != "backfill" {
+        eprintln!("error: unknown relevance verb '{verb}' -- the only verb is `backfill`");
+        std::process::exit(1);
+    }
+    // Ten years, not one. The route's window is the corpus-completion test:
+    // `POST /feed/relevance/refresh` only marks the relevance revision complete
+    // for a pass that asked for the widest window (server/feed.rs
+    // `FULL_WINDOW_DAYS`), and a bare `backfill` that asked for 365 both left
+    // older rows unreachable and could not finish the chain. The design
+    // (/tmp/axon-night/designs/feed-personalization.md) specifies 3650.
+    let days: i32 = arg_after(args, "--days")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3650);
+    let batch: usize = arg_after(args, "--batch")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 500);
+    let max: Option<usize> = arg_after(args, "--max").and_then(|value| value.parse().ok());
+    let force = args.iter().any(|value| value == "--force");
+
+    let base = format!("http://127.0.0.1:{}", cfg.port);
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("error: could not build an HTTP client: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut offset = 0usize;
+    let mut considered = 0usize;
+    let mut rescored = 0usize;
+    let mut reused = 0usize;
+    let mut refused = 0usize;
+    let mut last_mode;
+    loop {
+        let mut request =
+            client
+                .post(format!("{base}/feed/relevance/refresh"))
+                .json(&serde_json::json!({
+                    "days": days,
+                    "limit": batch,
+                    "offset": offset,
+                    "force": force,
+                }));
+        if let Some(secret) = cfg.api_secret.as_deref() {
+            request = request.header("X-Axon-Token", secret);
+        }
+        let response = match request.send() {
+            Ok(response) => response,
+            Err(error) => {
+                eprintln!("error: comms is not answering on {base} ({error})");
+                eprintln!("       start it first -- this verb re-scores through the server.");
+                std::process::exit(1);
+            }
+        };
+        if !response.status().is_success() {
+            eprintln!("error: {base} answered HTTP {}", response.status());
+            std::process::exit(1);
+        }
+        let page: serde_json::Value = match response.json() {
+            Ok(page) => page,
+            Err(error) => {
+                eprintln!("error: could not read the page ({error})");
+                std::process::exit(1);
+            }
+        };
+        let count = |key: &str| page[key].as_u64().unwrap_or(0) as usize;
+        considered += count("considered");
+        rescored += count("rescored");
+        reused += count("reused_relevance");
+        refused += count("refused_class");
+        last_mode = page["embedding"]["mode"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        println!(
+            "  offset {offset:>5}: considered {}, re-scored {}, re-evaluated {}, refused {}, mode {last_mode}",
+            count("considered"),
+            count("rescored"),
+            count("reused_relevance"),
+            count("refused_class"),
+        );
+        if let Some(class) = page["embedding"]["error_class"].as_str() {
+            println!("               embedding fell back: {class}");
+        }
+        let has_more = page["has_more"].as_bool().unwrap_or(false);
+        offset += batch;
+        if !has_more || max.is_some_and(|cap| considered >= cap) {
+            break;
+        }
+    }
+    println!(
+        "backfill finished: {considered} considered, {rescored} re-scored, {reused} re-evaluated from stored matches, {refused} refused by class; last mode {last_mode}"
     );
 }

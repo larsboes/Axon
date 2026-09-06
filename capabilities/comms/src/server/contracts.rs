@@ -284,6 +284,20 @@ pub(super) struct TriageOut {
     /// "I replied and I'm blocked" indistinguishable from "Axon dismissed it".
     pub(super) waiting: bool,
     pub(super) waiting_since: Option<String>,
+    /// The mail evaluator's `overall_score` in basis points, 0..=10000 — the
+    /// unit `places_person_places.confidence_bp` already uses (PRD Q73).
+    ///
+    /// ONE writer, one meaning: `mail_evaluation::overall_bp` and nothing else.
+    /// The model rung's urgency is not a second number on this field; it arrives
+    /// as the `urgency` factor's input and moves the score THROUGH the
+    /// evaluator, so the explanation stays whole. `null` means the mail has no
+    /// stored evaluation yet, which is deliberately not the same as 0.
+    ///
+    /// Placed here, next to `waiting_since`, and not at the end of the struct:
+    /// the mail-llm-rung stream appends its own field after `relevance`, and the
+    /// two designs agreed on this placement so both additions merge.
+    pub(super) score_bp: Option<i32>,
+    pub(super) evaluated_at: Option<String>,
     pub(super) first_seen: String,
     pub(super) last_seen: String,
     pub(super) relevance: Vec<RelevanceOut>,
@@ -346,6 +360,7 @@ impl TriageOut {
     pub(super) fn from_store(
         item: TriageItem,
         relevance: Vec<RelevanceMatch>,
+        score: Option<(f64, String)>,
         model: Option<ModelVerdict>,
     ) -> Self {
         Self {
@@ -373,6 +388,10 @@ impl TriageOut {
             gmail_sync_error: item.gmail_sync_error,
             waiting: item.waiting,
             waiting_since: item.waiting_since,
+            score_bp: score
+                .as_ref()
+                .map(|(overall, _)| mail_evaluation::overall_bp(*overall)),
+            evaluated_at: score.map(|(_, at)| at),
             first_seen: item.first_seen,
             last_seen: item.last_seen,
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
@@ -487,7 +506,11 @@ impl ContentItemOut {
         }
     }
 
-    pub(super) fn from_mail(item: TriageItem, relevance: Vec<RelevanceMatch>) -> Self {
+    pub(super) fn from_mail(
+        item: TriageItem,
+        relevance: Vec<RelevanceMatch>,
+        evaluation: Option<FeedEvaluation>,
+    ) -> Self {
         let created_at = item
             .internal_date_text
             .clone()
@@ -529,7 +552,10 @@ impl ContentItemOut {
             processing_policy,
             cloud_processing: CloudDerivativeState::not_prepared(),
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
-            evaluation: None,
+            // No longer hardcoded None. A mail now carries the same factor
+            // breakdown the feed does, including the zero-weight refusal factor
+            // that says a c3 row was not read by a model.
+            evaluation: evaluation.map(EvaluationOut::from),
             processing: Vec::new(),
             origins: Vec::new(),
             digest: None,

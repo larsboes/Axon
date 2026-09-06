@@ -123,11 +123,19 @@ instead of embedding it, so each SvelteKit site owns its own navigation and stor
 
 ## Client
 
-All access goes through `src/lib/api.ts` (`transit`, `trips`, `scouting`, `wikimedia`,
-`axonStatus`, `comms`). Components must not call `fetch` directly: the
-client is the one place that knows upstream shapes.
+One client module per domain, and no component calls `fetch`. `src/lib/api.ts` holds the
+shared clients (`transit`, `trips`, `scouting`, `wikimedia`, `axonStatus`, `comms`); a domain
+that needs calls of its own puts them in `src/lib/<domain>/api.ts` — `src/lib/feed/api.ts` is
+the first. The rule that matters is unchanged: a component never knows an upstream shape, and
+a client module is the only place that does.
 
-That includes error shapes. Every capability server answers a failure as
+The split is a merge rule, not a taste. `src/lib/api.ts` is over three thousand lines and is
+appended to by several concurrent branches, so a domain adding two calls adds a file instead
+of a hunk in the middle of everyone else's.
+
+Error shaping stays central wherever the module lives. A domain module imports `ApiError` and
+`describeFailure` from `$lib/api` rather than re-deriving them, so a reader gets the same
+sentence whichever module made the call. Every capability server answers a failure as
 `{"error": "..."}`, so `request()` unwraps that field before throwing; without it the feed's
 paste box showed a reader the raw JSON on a 404, and so would every other call site.
 

@@ -95,10 +95,15 @@ axes, so a proposal that would raise it is held for a person.
 Personal relevance is a Feed annotation, not a new ownership boundary. Comms scores an item
 against explicitly configured TELOS focus notes, stores the matches separately from the item
 and labels whether the comparison was semantic or a lexical fallback. The dashboard can sort
-by a revisioned deterministic evaluation whose visible factors currently cover TELOS fit,
-freshness and content basis. Only missing or changed item/profile/evaluator revisions are
-recomputed. `/feed/[id]` remains one dynamic reader for every item instead of generating one
-application page per link.
+by a revisioned deterministic evaluation whose visible factors cover TELOS fit, upcoming
+travel, freshness, content basis, and — once it has enough evidence to be worth anything — what
+the operator's own keeps and dismissals imply. That fifth factor is learned from an append-only
+interaction ledger, is capped at fifteen points of a hundred, renders at weight 0 with "not yet
+learned" until it clears a stated gate, and never writes a decision of its own. What must be
+re-embedded and what must merely be re-ranked are two separate revisions, so a changed ranking
+input re-evaluates from stored matches instead of calling a model again. Mail is evaluated the
+same way, on its own factors, and publishes one score. `/feed/[id]` remains one dynamic reader
+for every item instead of generating one application page per link.
 
 The dashboard presents passive intake and active discovery as two views of the same `/feed`
 workspace: **Inbox** reads Comms, while **Discover** starts and reads Scouting. This is a UI

@@ -29,6 +29,7 @@ use comms::digest;
 use comms::evaluation::{self, EvaluationFactor, FeedEvaluation};
 use comms::google::{self, ThreadAction, ThreadLocation};
 use comms::intake;
+use comms::mail_evaluation;
 use comms::mail_model::{self, Mode};
 use comms::media;
 use comms::people_registry;
@@ -259,6 +260,21 @@ const ROUTES: &[route_manifest::Route] = &[
         "/vault-links/import",
         "Link scanned vault notes to their entries.",
     ),
+    // feed-personalization 2026-09-03. Appended rather than filed beside the
+    // other /feed rows: a second stream appends to this table tonight, and one
+    // region is one conflict.
+    r(
+        "POST",
+        "/feed/:id/interactions",
+        "Record that a feed entry was opened or reopened. Body: {event: opened|reopened, surface}. \
+         The decisive verbs (kept, dismissed, unkept) are written by /feed/:id/status and refused here.",
+    ),
+    r(
+        "POST",
+        "/feed/model/train",
+        "Refit the learned feedback factor from the interaction ledger. Optional `dry_run` \
+         reports the cold-start gate without writing the model.",
+    ),
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -372,7 +388,13 @@ fn build_router(dashboard_origin: &str) -> Router {
         .route(
             "/triage/classify/revert",
             post(triage_classify_revert_handler),
-        );
+        )
+        // feed-personalization 2026-09-03, on the EXISTING write set rather
+        // than a third router: the projection layer below sits on this block
+        // and nowhere else, so a route added here is covered by the same
+        // sentence that covers every other mutation.
+        .route("/feed/:id/interactions", post(feed_interactions_handler))
+        .route("/feed/model/train", post(model_train_handler));
 
     Router::new()
         .merge(read_routes)
@@ -390,6 +412,14 @@ fn build_router(dashboard_origin: &str) -> Router {
 /// the one state the mechanism exists to prevent; two mutations landing together
 /// must not interleave inside one file.
 static EXPORT_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+/// "The library has changed since the last export finished."
+///
+/// One flag rather than a queue: the export is a full re-projection of
+/// `feed_library()`, so two pending exports and one pending export produce
+/// byte-identical folders. See `project_library_after_write` for the ordering
+/// that makes coalescing safe.
+static EXPORT_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Re-project the feed library into the vault after any successful write.
 ///
@@ -421,26 +451,40 @@ async fn project_library_after_write(
     let Some(root) = Config::load().obsidian_root else {
         return response;
     };
+    // Mark the library dirty BEFORE queuing, so a writer can never be the one
+    // whose change is missed: whoever holds the lock next sees the flag.
+    EXPORT_DIRTY.store(true, Ordering::SeqCst);
     tokio::spawn(async move {
         let _held = EXPORT_LOCK.get_or_init(Default::default).lock().await;
-        let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
-            let root = markdown_root::MarkdownRoot::declare(root).map_err(|e| e.to_string())?;
-            let cfg = Config::load();
-            let store = Store::open(&cfg.database_path).map_err(|e| e.to_string())?;
-            let saved = store.feed_library().map_err(|e| e.to_string())?;
-            comms::projection::export_all(&root, &saved).map_err(|e| e.to_string())
-        })
-        .await;
-        match outcome {
-            Ok(Ok(report)) => {
-                for path in &report.refused {
-                    eprintln!("comms: vault projection refused, somebody else owns {path}");
+        // Coalescing, not throttling. Keyboard triage turns one glance into a
+        // burst of presses, and `feed_library()` reads the same whole set every
+        // time — so N presses cost one export, and the LAST press is always
+        // exported. The flag is cleared before the read and re-checked after
+        // it: a write that lands mid-export sets it again and buys one more
+        // pass, which is why this drops a redundant export and never the last
+        // one. A task that finds the flag already clear exits having done
+        // nothing, because someone else has just exported the state it wanted.
+        while EXPORT_DIRTY.swap(false, Ordering::SeqCst) {
+            let root = root.clone();
+            let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
+                let root = markdown_root::MarkdownRoot::declare(root).map_err(|e| e.to_string())?;
+                let cfg = Config::load();
+                let store = Store::open(&cfg.database_path).map_err(|e| e.to_string())?;
+                let saved = store.feed_library().map_err(|e| e.to_string())?;
+                comms::projection::export_all(&root, &saved).map_err(|e| e.to_string())
+            })
+            .await;
+            match outcome {
+                Ok(Ok(report)) => {
+                    for path in &report.refused {
+                        eprintln!("comms: vault projection refused, somebody else owns {path}");
+                    }
                 }
+                Ok(Err(error)) => eprintln!(
+                    "comms: vault projection failed ({error}); the rows are safe, the folder is stale — run `comms export-sources`"
+                ),
+                Err(error) => eprintln!("comms: vault projection task failed ({error})"),
             }
-            Ok(Err(error)) => eprintln!(
-                "comms: vault projection failed ({error}); the rows are safe, the folder is stale — run `comms export-sources`"
-            ),
-            Err(error) => eprintln!("comms: vault projection task failed ({error})"),
         }
     });
     response
@@ -656,12 +700,41 @@ mod tests {
         );
     }
 
+    /// Both scoring paths, not just mail.
+    ///
+    /// The feed's own gate is `content_item::local_prompt_allowed`, which
+    /// admits c2 -- and `POST /feed/:id/data-class` accepts any class in the
+    /// vocabulary, so a c2 feed item is reachable. PRD §6.2b: C2 may only reach
+    /// a cloud model after a ladder pass has reduced it to C1, and an embedding
+    /// of `item_document` is the stored title, author and content verbatim. So
+    /// `relevance_refresh_handler`, `enrich_many_in_background` and
+    /// `evaluation_status_handler` resolve the two roles through this filter,
+    /// exactly as `triage_relevance_handler` already did.
     #[test]
-    fn mail_relevance_accepts_only_loopback_model_endpoints() {
+    fn every_relevance_path_accepts_only_loopback_model_endpoints() {
         assert!(loopback_inference_url("http://127.0.0.1:8000/v1"));
         assert!(loopback_inference_url("http://localhost:11434"));
         assert!(loopback_inference_url("http://[::1]:8000/v1"));
         assert!(!loopback_inference_url("https://api.example.com/v1"));
+        assert!(!loopback_inference_url("https://embeddings.example.com"));
+
+        // The source is the check: every `embedding_role()`/`reranking_role()`
+        // resolution in the two feed handlers and the status endpoint carries
+        // the filter, so a cloud-hosted role is never handed to `score_items`.
+        let feed = include_str!("feed.rs");
+        let resolutions =
+            feed.matches(".embedding_role()").count() + feed.matches(".reranking_role()").count();
+        let filtered = feed
+            .matches("loopback_inference_url(&role.backend.base_url)")
+            .count();
+        assert_eq!(
+            resolutions, filtered,
+            "every role resolution in server/feed.rs must be filtered to loopback"
+        );
+        assert!(
+            resolutions >= 6,
+            "expected six resolutions, got {resolutions}"
+        );
     }
 
     #[test]
@@ -716,7 +789,8 @@ mod tests {
             last_seen: "2026-08-04 09:31:00+02".into(),
         };
 
-        let value = serde_json::to_value(ContentItemOut::from_mail(item, Vec::new())).unwrap();
+        let value =
+            serde_json::to_value(ContentItemOut::from_mail(item, Vec::new(), None)).unwrap();
         assert_eq!(value["schema_version"], "content-item-v2");
         assert_eq!(value["source"], "mail");
         assert_eq!(value["kind"], "mail");
@@ -733,6 +807,91 @@ mod tests {
         assert!(value["mail"]["gmail_location"].is_null());
         assert!(value["mail"]["gmail_sync_status"].is_null());
         assert!(value["evaluation"].is_null());
+    }
+
+    /// A stored mail, built here because the lib's test fixtures are not
+    /// visible from a binary target.
+    fn triage_fixture(id: &str) -> TriageItem {
+        TriageItem {
+            id: id.into(),
+            from_addr: Some("sender@example.com".into()),
+            subject: Some("A useful subject".into()),
+            snippet: Some("A bounded Gmail preview.".into()),
+            internal_date_ms: None,
+            internal_date_text: Some("2026-09-04 09:30:00+02".into()),
+            stream: "aktiv".into(),
+            rationale: "Safe fallback.".into(),
+            classification_method: content_item::METHOD_DETERMINISTIC.into(),
+            classification_version: "mail-rules-v1".into(),
+            data_class: "c1".into(),
+            data_class_rationale: "Mail metadata is Mine by default.".into(),
+            data_classification_method: content_item::METHOD_DETERMINISTIC.into(),
+            data_classification_version: content_item::MAIL_CLASSIFIER_VERSION.into(),
+            status: "proposed".into(),
+            gmail_action: None,
+            gmail_action_at: None,
+            purge_after: None,
+            gmail_location: None,
+            gmail_observed_at: None,
+            gmail_sync_status: None,
+            gmail_sync_action: None,
+            gmail_sync_error: None,
+            waiting: false,
+            waiting_since: None,
+            first_seen: "2026-09-04 09:31:00+02".into(),
+            last_seen: "2026-09-04 09:31:00+02".into(),
+        }
+    }
+
+    /// One writer, one meaning, and one shape on the wire.
+    #[test]
+    fn score_bp_is_basis_points_and_absent_is_null() {
+        let item = triage_fixture("thread-bp");
+
+        let unscored =
+            serde_json::to_value(TriageOut::from_store(item.clone(), Vec::new(), None, None))
+                .unwrap();
+        assert!(
+            unscored["score_bp"].is_null(),
+            "a mail with no evaluation is null, not zero -- 0 is a real score"
+        );
+        assert!(unscored["evaluated_at"].is_null());
+
+        let scored = serde_json::to_value(TriageOut::from_store(
+            item,
+            Vec::new(),
+            Some((0.6234, "2026-09-05 21:00:00+00:00".into())),
+            None,
+        ))
+        .unwrap();
+        assert_eq!(scored["score_bp"], 6234);
+        assert_eq!(scored["evaluated_at"], "2026-09-05 21:00:00+00:00");
+    }
+
+    /// The mail reader's `evaluation` used to be hardcoded null. It carries the
+    /// factor breakdown now, in the same shape the feed uses.
+    #[test]
+    fn a_mail_carries_its_factor_breakdown() {
+        let item = triage_fixture("thread-factors");
+        let evaluation = mail_evaluation::evaluate(&item, None, None, "context", false);
+        let value = serde_json::to_value(ContentItemOut::from_mail(
+            item,
+            Vec::new(),
+            Some(evaluation),
+        ))
+        .unwrap();
+        assert!(!value["evaluation"].is_null());
+        assert_eq!(
+            value["evaluation"]["evaluator_revision"],
+            mail_evaluation::MAIL_EVALUATOR_REVISION
+        );
+        let keys = value["evaluation"]["factors"]
+            .as_array()
+            .expect("factors")
+            .iter()
+            .map(|factor| factor["key"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["interest", "category", "age", "urgency"]);
     }
 
     #[tokio::test]

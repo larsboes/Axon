@@ -448,6 +448,99 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_{prefix}_triage_model_state
                 ON {prefix}_triage_model_verdicts(state);
             -- end mail-llm-rung 2026-09-03 -----------------------------------
+
+            -- feed-personalization 2026-09-03 ---------------------------------
+            -- Appended as one block at the end of the batch rather than beside
+            -- the tables it belongs with: a second stream edits this same file
+            -- tonight, and one delimited region is one merge conflict instead
+            -- of three. Order still holds -- every table referenced here is
+            -- declared above.
+
+            -- What the operator did with a feed item, and when. The status
+            -- column it complements is a mutable enum with no history, which
+            -- is why the vault projection cannot render a saved date
+            -- (projection.rs) and why nothing learned could ever decay.
+            --
+            -- One writer per verb. `kept`, `dismissed` and `unkept` are
+            -- written only by `set_feed_status`, in the same transaction as
+            -- the UPDATE, so a decision can neither be lost nor counted twice.
+            -- `POST /feed/:id/interactions` refuses those three with 400 and
+            -- accepts `opened` and `reopened` only. One row per status CHANGE:
+            -- `set_feed_status` reads the stored status inside the same
+            -- transaction and writes nothing when the press does not move it,
+            -- because an UPDATE to the value a column already holds still
+            -- reports one row affected.
+            --
+            -- Reading the label: an item's label is its most recent row whose
+            -- event is in ('kept','dismissed'), retracted by a later `unkept`.
+            --
+            -- `shared` ships with no writer on purpose, and `home` has none
+            -- until the Home surface passes its own name to
+            -- `POST /feed/:id/status` (the route already takes `surface`).
+            -- SQLite has no alterable constraint, so widening this CHECK later
+            -- costs the table-rebuild dance this file documents below;
+            -- declaring a value now is free.
+            CREATE TABLE IF NOT EXISTS {prefix}_feed_interactions (
+                interaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                feed_id TEXT NOT NULL REFERENCES {prefix}_feed_items(id) ON DELETE CASCADE,
+                event TEXT NOT NULL
+                    CHECK (event IN ('opened','kept','dismissed','reopened','unkept','shared')),
+                -- Where the press happened. No content and no text: ids and
+                -- verbs only, which is what keeps this row c1 and keeps it
+                -- trainable.
+                surface TEXT NOT NULL DEFAULT 'api'
+                    CHECK (surface IN ('inbox','reader','library','home','cli','api')),
+                occurred_at TEXT NOT NULL DEFAULT ({now})
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_feed_interactions_item
+                ON {prefix}_feed_interactions(feed_id, occurred_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_feed_interactions_time
+                ON {prefix}_feed_interactions(occurred_at DESC);
+
+            -- Mail's own evaluation, deliberately the same nine columns as
+            -- {prefix}_feed_evaluations. Same currency check, same tier gate,
+            -- same contract type, against a different table -- because the feed
+            -- evaluator reads a FeedItem and a trip snapshot, and a triage row
+            -- has neither.
+            --
+            -- `mode = 'unscored'` is the c3 refusal state, and it is why the
+            -- refusal cannot live on {prefix}_triage_relevance: that table's
+            -- mode CHECK admits only reranked, semantic and lexical.
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_evaluations (
+                triage_id TEXT PRIMARY KEY REFERENCES {prefix}_triage_items(id) ON DELETE CASCADE,
+                overall_score REAL NOT NULL CHECK (overall_score BETWEEN 0 AND 1),
+                explanation TEXT NOT NULL,
+                mode TEXT NOT NULL CHECK (mode IN ('reranked','semantic','lexical','unscored')),
+                item_revision TEXT NOT NULL,
+                context_revision TEXT NOT NULL,
+                evaluator_revision TEXT NOT NULL,
+                tier TEXT NOT NULL DEFAULT 'legacy'
+                    CHECK (tier IN ('legacy','deterministic','model','human')),
+                evaluated_at TEXT NOT NULL DEFAULT ({now})
+            );
+
+            -- Mail-shaped factors: interest, category, age, and a reserved
+            -- urgency slot the model rung fills. There is no correspondent
+            -- factor, and that is a ruling rather than an omission -- the people
+            -- registry is asked per token of subject and snippet, never over the
+            -- sender field (PRD Q72 rule 2).
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_evaluation_factors (
+                triage_id TEXT NOT NULL
+                    REFERENCES {prefix}_triage_evaluations(triage_id) ON DELETE CASCADE,
+                factor_key TEXT NOT NULL,
+                label TEXT NOT NULL,
+                score REAL NOT NULL CHECK (score BETWEEN 0 AND 1),
+                weight REAL NOT NULL CHECK (weight BETWEEN 0 AND 1),
+                rationale TEXT NOT NULL,
+                context_json TEXT,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (triage_id, factor_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_triage_evaluations_score
+                ON {prefix}_triage_evaluations(overall_score DESC);
+            -- end feed-personalization 2026-09-03 -----------------------------
             ",
             prefix = prefix,
             now = axon_store::NOW,
