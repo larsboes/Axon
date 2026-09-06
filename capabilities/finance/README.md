@@ -50,12 +50,14 @@ math remains unbuilt, which is now stated as the absence it is.
   The personal share remains on the expense account; money fronted for others posts
   to `assets:receivable:shared`. A linked repayment settles that receivable and is
   never projected as income or negative spending.
-- `/finance` has Overview, Planning, Transactions and Subscriptions. Personal result,
-  external cash movement, category composition, purpose/trip summaries, the table
-  and the constrained flow explorer all use the same Rust
-  projection. Transactions starts with largest-first categorization review and a
-  trip-first allocation workspace: Trips owns the plan and dates, while Finance loads
-  that window and reviews each transaction's personal share. Internal transfers are
+- `/finance` has Overview, Planning, Transactions, Investments and Subscriptions.
+  Personal result, external cash movement, category composition, purpose/trip
+  summaries, the table and the constrained flow explorer all use the same Rust
+  projection. Investments loads on demand and puts the decision inbox above the
+  position table, so the tab opens on the question rather than on a valuation.
+  Transactions starts with largest-first categorization review and a trip-first
+  allocation workspace: Trips owns the plan and dates, while Finance loads that
+  window and reviews each transaction's personal share. Internal transfers are
   excluded by default.
 - Planning uses medians from complete months, private behavior rules and dated
   commitments to project monthly spending and savings. Exceptional trip spending is
@@ -184,9 +186,10 @@ stored as a second source of truth.
 
 ## A price is an observation, never a correction
 
-`finance_prices` holds what a source said an instrument was worth on a day, and nothing
-else. Three consequences follow, and each is a rule the code enforces rather than a
-convention:
+PRD Q81 (2026-09-05) rules the providers; `capabilities/finance-prices/README.md` is the
+job that runs them. `finance_prices` holds what a source said an instrument was worth on a
+day, and nothing else. Three consequences follow, and each is a rule the code enforces
+rather than a convention:
 
 **A fetched price is never written back into the reviewed holdings snapshot.**
 `validate_source_snapshot` recomputes the file's content hash over `latest_unit_price`,
@@ -219,11 +222,15 @@ price. **It is not a return and it is not P&L**, and the UI does not call it eit
 
 ## Two rungs: the rules propose, the model explains
 
-Principle 1 made structural. Rung 1 is three rules in `src/decision.rs`: drift beyond an
-allocation's band emits `rebalance`, a median monthly result above the configured floor
-emits `contribute`, and a lump-sum renewal dated in that month emits `review`. Every
-proposal carries `rung = "rule"` and `every_proposal_names_its_rung_and_none_is_model` is
-the test that keeps it so.
+PRD Q82 (2026-09-05) rules this shape; Principle 1 made structural rather than
+documentary. Rung 1 is three rules in `src/decision.rs`. Drift beyond an allocation's band
+emits `rebalance` — for an instrument target **and** for an asset-class target, which a
+live fixture proved was not the same code path: the first pass walked positions only, and
+a 60/40 policy showing a 3,407 bp drift minted nothing. A median monthly result above the
+configured floor emits `contribute`. A lump-sum renewal dated in the month a contribution
+is proposed for emits `review`, because a yearly charge reaches the median as one twelfth
+of itself while the cash leaves whole. Every proposal carries `rung = "rule"` and
+`every_proposal_names_its_rung_and_none_is_model` is the test that keeps it so.
 
 Rung 2 is `src/risk.rs`: annualised volatility, pairwise correlation, portfolio volatility
 and long-only minimum-variance and max-Sharpe weights over a hand-rolled Cholesky. It is
@@ -238,6 +245,14 @@ non-positive pivot *is* the guard, so the solver and the refusal are one code pa
 sale of a real position is a different order of claim from proposing a rebalance.
 
 ## The decision ledger appends; it never updates
+
+PRD Q80 (2026-09-05) rules this table. Its rows are **c1** — the §6.1 definition governs,
+and a proposal about my own allocation names no third party. `data_class` carries **no
+CHECK**, deliberately: the vocabulary belongs to `libs/content-item` and has been renamed
+once already, and a constraint over somebody else's vocabulary is a table rebuild waiting to
+happen. `content_item::valid()` runs at every write site instead. `kind` and `rung` do carry
+CHECKs, because those are closed sets this capability owns — and the rebuild one of them
+cost is recorded two paragraphs below.
 
 `finance_decisions` holds the proposal and `finance_decision_events` holds everything
 afterwards — the verdict, the outcome, the supersession, the reinstatement — as appended
@@ -265,6 +280,18 @@ and the migration pays it.
 
 Accepting a proposal records a decision and moves no money: no journal entry, no holdings
 snapshot, no order.
+
+**A verdict is not accepted on trust.** `POST /api/decisions/:id/verdict` re-runs the rules
+inside its own blocking closure and answers **409 with the current proposal id** unless the
+run still mints the id being answered, so a stale inbox cannot record an answer to numbers
+that have moved. That recompute is handed an empty feed list: the id hashes kind, subject
+and buckets and never the evidence, so comms being unreachable may not refuse a verdict.
+
+Evidence itself fails closed. `item_is_quotable` copies a feed item's title and URL into a
+c1 row only when comms states a class no stricter than the row's own, and drops every item
+whose class is unstated. `GET /comms/feed` did not state one until 2026-09-06, so the
+decision inbox shipped with **no feed evidence at all**; the list now carries `data_class`
+and the block fills as items arrive. That was a stated, accepted state, never an oversight.
 
 The human-readable copy is written on the WRITE path, not by a CLI verb. The verdict
 handler re-renders `<overlay>/data/finance/decisions/YYYY-MM.md` in the same request that

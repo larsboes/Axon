@@ -100,8 +100,8 @@ twenty-four:
 
 `GET /routes` is the current list; the names above are the ones worth knowing by heart.
 
-**Foreign origins are refused.** Since 2026-09-05 every route here answers 403 to a browser
-whose `Origin` is not one the dashboard is served from, using the shared predicate in
+**Foreign origins are refused.** Since 2026-09-05 (PRD Q91) every route here answers 403 to a
+browser whose `Origin` is not one the dashboard is served from, using the shared predicate in
 `libs/axon-server/src/origin.rs` (set `AXON_TRIPS_ALLOWED_ORIGIN_HOSTS` to name the
 deployment's hosts). The reason is the plan-search body: it carries the operator's feasible
 calendar windows and a companion hint, and `CorsLayer::permissive()` made every route above
@@ -113,6 +113,7 @@ routes added before it.
 
 ### The retrospective, and why it is not the outcome route
 
+PRD Q84 (2026-09-05) rules the retrospective, the roll-up and the feed-forward weight below.
 `POST /api/plans/:id/outcome` and `POST /api/plans/:id/retrospective` answer
 different questions at different grains, and both are kept. The outcome record
 measures ONE booked stage against the option it was chosen under, and it refuses
@@ -161,10 +162,22 @@ with friends those four differ, and that difference is the shared-cost surface.
 When finance does not answer, every figure is null with a named reason and
 `ok: false`. Never `0`. `actuals.currency` carries the unit finance stated, and
 when that disagrees with the plan's the figures are unknown with a reason rather
-than relabelled: they are somebody else's numbers. This is deliberately the opposite of `flight_when`, which
-degrades a dead calendar into "every day free" and says nothing in the body; the
-degrade rule lives in `src/finance_client.rs` so a handler cannot quietly copy
-that.
+than relabelled: they are somebody else's numbers. The degrade rule lives in
+`src/finance_client.rs` so a handler cannot quietly copy a softer one.
+
+`flight_when` used to be the counter-example here, degrading an unreachable calendar
+into "every day free" with nothing in the body saying so. It no longer does: since
+2026-09-05 those days come back `DayLoad::Unknown`, sort behind every measured band,
+and the reply carries `calendar` and `degraded` (PRD Q91).
+
+**The mechanism is done and the inputs are empty, which is the honest state to record.**
+Measured 2026-09-05 against a copy of the live database: 0 of 13 plans carry a budget,
+0 `booking` items exist, and 0 of 1,338 finance projection rows carry a trip id. So every
+headline figure this route publishes is unknown for every live plan today, and the actuals
+block was proven against a stub and against a closed port rather than against finance.
+Budget input now reaches the wire end to end — the field, `PATCH /api/plans/:id`,
+`schemas/trip-plan.schema.json`, and clearing as well as setting — so the first half is
+data entry. The second half is allocation, which is a finance task and not a trips one.
 
 Attribution to a stage uses `payload.stage_id`, else an `external_id` equal to a
 stage's `selected_option_id`, and otherwise counts the price in `unattributed`.
@@ -177,26 +190,28 @@ route change — so a missing match is a normal outcome rather than an error.
 
 `GET /api/retrospectives/summary` publishes a factor per DESTINATION only. The
 companion half was designed and cut, and the reason belongs here rather than in a
-commit message: this server ends its router with `CorsLayer::permissive()` and
-refuses no origin anywhere, while `places` — which owns the companion register —
-layers `refuse_foreign_origins` on its whole router exactly because that register
-is C2. A route keyed by a traveler name, carrying a score and a basis of plan ids
-that resolve to destinations and date ranges, is person + place + date range
-readable cross-origin. The shipped invariant for this same data (places ISA
-PLC-12) is falsified by "a person name in its output".
+commit message: a route keyed by a traveler name, carrying a score and a basis of
+plan ids that resolve to destinations and date ranges, is person + place + date
+range readable by any page in the operator's browser. `places` — which owns the
+companion register — layers `refuse_foreign_origins` on its whole router exactly
+because that register is C2, and the shipped invariant for this same data (places
+ISA PLC-12) is falsified by "a person name in its output".
 
-Three preconditions, recorded so this is a plan and not a rediscovery:
+Three preconditions, recorded so this is a plan and not a rediscovery. **The first
+is met as of 2026-09-05** and the other two are not:
 
-1. an origin refusal shipped on trips;
+1. ~~an origin refusal shipped on trips~~ — done, see *Foreign origins are refused*
+   above. It was the load-bearing one: until then this router ended in
+   `CorsLayer::permissive()` and refused no origin anywhere;
 2. a key that is the register's person id rather than a raw name;
 3. a class column that a mechanism reads, rather than a label a body asserts
    about itself.
 
-`by_destination` adds no exposure, because `GET /api/plans` already serves
-`destinations` over the same permissive layer. **Found and not fixed here:**
-`trips_plans.travelers` is *already* served cross-origin by `GET /api/plans`.
-That is a pre-existing defect; this contract declines to amplify it and does not
-pretend to have closed it. It belongs in the next security pass.
+**Found and not fixed here:** `trips_plans.travelers` is *already* served by
+`GET /api/plans`. The origin refusal narrows who can ask, and it does not close
+the defect — a traveler name is still in a response body this capability has no
+class column for. This contract declines to amplify it and does not pretend to
+have closed it.
 
 Rows live in the shared SQLite file — `AXON_DB_PATH`, else
 `$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `trips`, so the three
@@ -208,9 +223,15 @@ second row — with `ON DELETE CASCADE`, which is enforced because
 destination or credential is tracked here.
 
 The plan-search result is deliberately **not** a table. It is a §6.2 derived aggregate, C1:
-it holds a companion COUNT and never a register row, it lives in an in-process job map
-capped at ten, and it is never persisted and never projected. What is worth keeping becomes
-durable only through `POST /api/plan-search/:id/adopt`, which writes one `option_set` row.
+it holds a companion COUNT and never a register row, and it is never persisted and never
+projected. What is worth keeping becomes durable only through
+`POST /api/plan-search/:id/adopt`, which writes one `option_set` row in integer minor units.
+`schemas/trip-plan.schema.json` is **extended** for it rather than merely cited, because the
+projection stamps its name into every projected vault file's frontmatter — so the revision,
+the degradation list, the query destinations and the per-option cost, score and factor fields
+are declared there rather than written past it. `revision` is declared optional: making it
+required would have retroactively invalidated the twelve `option_set` rows already in the live
+database and every row the 12-hourly fare watcher writes.
 
 Obsidian scanning is enabled by `$AXON_PERSONAL_ROOT/config/trips.json`, shaped like
 [`schemas/trips.json.example`](../../schemas/trips.json.example). The scanner stays inside
@@ -225,12 +246,29 @@ Until 2026-09-05 there was one way to start a trip: a form needing an origin pic
 `transit.suggest`, destinations, dates and modes typed field by field, so "Somewhere warm in
 October, under 300 euro, by train" had no entry point at all.
 
-`POST /api/plan-search` is that entry point, as a form rather than as a sentence. It answers
-202 with a job number because fares take seconds each; the job composes calendar's feasible
-windows, the place registry, scouting's opportunities, transit's fares and — when it exists
-— climate, then ranks candidates on four visible factors (`budget_fit` 0.35, `feasibility`
-0.30, `season` 0.20, `events` 0.15) in the shape the feed evaluator publishes, revisioned as
-`plan-search-v1`.
+`POST /api/plan-search` is that entry point, as a form rather than as a sentence (PRD Q91,
+2026-09-05). It answers 202 with a job number because fares take seconds each; the job
+composes calendar's feasible windows, the place registry, scouting's opportunities, transit's
+fares and — when it exists — climate, then ranks candidates on four visible factors
+(`budget_fit` 0.35, `feasibility` 0.30, `season` 0.20, `events` 0.15) in the shape the feed
+evaluator publishes, revisioned as `plan-search-v1`. A fifth slot, `retrospective`, is
+declared and not computed; taking it bumps the revision to `plan-search-v2`, which is what
+having one is for.
+
+The job map is in-process, capped at `MAX_JOBS = 10`, evicts only finished jobs and carries
+`JOB_DEADLINE_S = 180` — `capabilities/interior`'s shape, for its stated reason: a ranked
+option space is a list of proposals rather than a fact about the trip, so it may die with the
+process. A panicking search finishes its own entry as failed, because ten panics wedged this
+route at 503 until a restart. The window taken is the **best feasible** one — ranked by
+verdict band, then by fewer days needing a travel day, then earlier — rather than the first
+the calendar happened to list.
+
+Measured 2026-09-05: one live search considered 40 destinations, shortlisted 8 for pricing and
+finished in 5 seconds against the 180-second deadline. The opportunity table held 6 rows
+starting that day or later, so the events factor contributes close to nothing today — declared
+rather than pretended. Transit's HAFAS client carries a 15 s timeout and no inter-request
+pause, so the job keeps a 250 ms cadence itself (`src/upstream.rs`, `FARE_PAUSE`) and reports
+`priced` against `considered`.
 
 Two rules make the ranking readable. A factor that could **not be measured is absent** from
 `factors[]` and the remaining weights re-normalise to 1, so no number in the response is a
@@ -279,6 +317,31 @@ worries:
 So neither the dates nor the self-report is trusted. The check decides and rewrites
 `unresolved` to match, which is the whole shape of this: the model proposes words, a
 deterministic path decides what survives. A prompt is not a validation layer.
+
+## Gear is deferred whole, and the deferral is the ruling
+
+Pack lists were built on 2026-09-05 and **reverted before the merge** (`815750c`),
+because `interior_item` cannot carry them (PRD Q92).
+Measured 2026-09-05: that table holds 47 rows, all furniture (29 `piece`, 18
+`slot`), its `kind` column carries `CHECK (kind IN ('piece','slot'))`, and it has
+**no column** for `weight_g`, `category`, `packable`, `waterproof`, `quick_dry`,
+`pack_location` or `trip_types`. Every pack list therefore answered a null weight
+with a stated reason, which is honest and useless.
+
+Shipping the tables anyway would have frozen a half-shape in a database this repo
+has no versioned migration path to reshape, and the live file already carries two
+empty pack tables that no merged commit put there — a worktree release build
+replaced a supervised binary and its migration ran against the real database
+(`CONTRIBUTING.md`, *Validate the changed boundary*). The order is
+recorded rather than the feature: extend `interior_item` with the seven columns
+first, then restore the reviewed pack half from history (`7ee96ea`, `c44690a`),
+whose DDL was reviewed and reached no database. The import verb stays a proposal
+reader when it returns — measured 2026-09-05 it read 65 overlay notes, of which 61
+carried all seven fields across 13 distinct trip types, and its apply arm refuses
+by naming the missing columns. That measurement is also why `template_key` will be
+free text over the notes' own vocabulary rather than a template table: a template
+is a filter over attributes the data already carries, and a second copy of a filter
+drifts.
 
 ## Why a capability
 
