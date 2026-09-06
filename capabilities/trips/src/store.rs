@@ -106,6 +106,19 @@ pub struct CreatePlan {
     pub source: Option<PlanSource>,
 }
 
+/// Present-and-null becomes `Some(None)`; an absent key stays `None`.
+///
+/// Copied from `capabilities/calendar/src/model.rs:162-168`, which needed the
+/// same distinction for the same reason: a PATCH that cannot express "clear it"
+/// makes a field write-once by accident.
+fn present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct UpdatePlan {
     pub title: Option<String>,
@@ -122,8 +135,28 @@ pub struct UpdatePlan {
     /// What the trip is meant to cost, in minor units. Finance keeps every
     /// actual cent and already tags postings with an `axon-trip-id`; this is the
     /// intention those actuals get compared against, which had no home at all.
-    pub budget_cents: Option<i64>,
-    pub currency: Option<String>,
+    ///
+    /// `Option<Option<_>>` so an omitted key ("leave it alone") and an explicit
+    /// JSON null ("clear it") are different edits: with a plain `Option` a
+    /// budget could be set and never removed, and the editor sends null for an
+    /// empty field. Same shape and same reason as `UpdateEntry.location`
+    /// (capabilities/calendar/src/model.rs:183-190).
+    #[serde(
+        default,
+        deserialize_with = "present_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub budget_cents: Option<Option<i64>>,
+    /// Clearable for the same reason, and it matters more: `currency` gates
+    /// whether a retrospective may record a cost at all
+    /// (`put_retrospective`), so a wrong one that cannot be removed is a
+    /// wrong unit on every cost that follows.
+    #[serde(
+        default,
+        deserialize_with = "present_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub currency: Option<Option<String>>,
     /// The `updated_at` the caller believes it is editing. Omitted keeps the old
     /// last-write-wins behaviour, so nothing that already works breaks.
     ///
@@ -827,8 +860,10 @@ impl TripsStore {
             }
         });
         let cover_image_url = input.cover_image_url.clone().or(current.cover_image_url);
-        let budget_cents = input.budget_cents.or(current.budget_cents);
-        let currency = input.currency.clone().or(current.currency);
+        // `unwrap_or`, not `or`: the outer Some is "the caller said something",
+        // and what it said may be null.
+        let budget_cents = input.budget_cents.unwrap_or(current.budget_cents);
+        let currency = input.currency.clone().unwrap_or(current.currency);
         if budget_cents.is_some_and(|cents| cents < 0) {
             return Err("budget_cents must not be negative".into());
         }
@@ -1172,8 +1207,9 @@ impl TripsStore {
     }
 }
 
-/// Read back positionally by `row_to_plan`, so the order is the contract. One
-/// declaration because four statements select it and a fifth returns it.
+/// Read back positionally by the two statements above, whose select list is the
+/// contract: `plan_id, cost_cents, currency, again, change_note, filled_at`, and
+/// the currency comes from the JOINed plan rather than from a column of its own.
 fn row_to_retrospective(row: &Row) -> rusqlite::Result<Retrospective> {
     Ok(Retrospective {
         plan_id: row.get(0)?,
@@ -1185,6 +1221,8 @@ fn row_to_retrospective(row: &Row) -> rusqlite::Result<Retrospective> {
     })
 }
 
+/// Read back positionally by `row_to_plan`, so the order is the contract. One
+/// declaration because four statements select it and a fifth returns it.
 const PLAN_COLUMNS: &str = "id,title,origin,destinations,date_start,date_end,interests,status,
      travelers,transport_modes,stages,cover_image_url,source_kind,source_ref,
      created_at,updated_at,budget_cents,currency";
@@ -1700,8 +1738,8 @@ mod db_tests {
                 &plan.id,
                 &UpdatePlan {
                     title: Some("Renamed".into()),
-                    budget_cents: Some(120_000),
-                    currency: Some("EUR".into()),
+                    budget_cents: Some(Some(120_000)),
+                    currency: Some(Some("EUR".into())),
                     expected_updated_at: Some(plan.updated_at.clone()),
                     ..Default::default()
                 },
@@ -1711,6 +1749,75 @@ mod db_tests {
         assert_eq!(updated.title, "Renamed");
         assert_eq!(updated.budget_cents, Some(120_000));
         assert_eq!(updated.currency.as_deref(), Some("EUR"));
+    }
+
+    /// A budget that can be set and never removed is a defect the editor can
+    /// reach in two clicks: the form sends `null` for an empty field. Omitting
+    /// the key still leaves the stored value alone, which is the other half of
+    /// the same contract.
+    #[test]
+    fn a_budget_and_a_currency_can_be_cleared_and_an_omitted_key_leaves_them() {
+        let store = open_test_store("budget_clear");
+        let plan = store.create_plan(&a_plan()).unwrap();
+
+        let set = store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    budget_cents: Some(Some(120_000)),
+                    currency: Some(Some("EUR".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .expect("the plan exists");
+        assert_eq!(set.budget_cents, Some(120_000));
+
+        // An unrelated edit must not touch either field.
+        let renamed = store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    title: Some("Renamed".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .expect("the plan exists");
+        assert_eq!(renamed.budget_cents, Some(120_000));
+        assert_eq!(renamed.currency.as_deref(), Some("EUR"));
+
+        // A present null clears. This is what an emptied field sends.
+        let cleared = store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    budget_cents: Some(None),
+                    currency: Some(None),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .expect("the plan exists");
+        assert_eq!(cleared.budget_cents, None);
+        assert_eq!(cleared.currency, None);
+    }
+
+    /// Present-and-null and absent are different edits on the wire too, not only
+    /// in Rust: the handler reads this shape straight off the request body.
+    #[test]
+    fn an_omitted_budget_and_a_null_budget_deserialize_differently() {
+        let omitted: UpdatePlan = serde_json::from_str(r#"{"title":"x"}"#).unwrap();
+        assert_eq!(omitted.budget_cents, None);
+        assert_eq!(omitted.currency, None);
+
+        let cleared: UpdatePlan =
+            serde_json::from_str(r#"{"budget_cents":null,"currency":null}"#).unwrap();
+        assert_eq!(cleared.budget_cents, Some(None));
+        assert_eq!(cleared.currency, Some(None));
+
+        let set: UpdatePlan = serde_json::from_str(r#"{"budget_cents":9900}"#).unwrap();
+        assert_eq!(set.budget_cents, Some(Some(9_900)));
     }
 
     /// `ON CONFLICT (plan_id,item_type,external_id)` — the same item saved
@@ -2032,7 +2139,7 @@ mod db_tests {
             .update_plan(
                 &plan.id,
                 &UpdatePlan {
-                    currency: Some("EUR".into()),
+                    currency: Some(Some("EUR".into())),
                     ..Default::default()
                 },
             )

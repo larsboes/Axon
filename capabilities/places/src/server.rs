@@ -424,29 +424,35 @@ async fn climate(State(state): State<AppState>, Query(query): Query<ClimateBatch
         };
         let mut results = Vec::with_capacity(keys.len());
         for key in &keys {
-            let resolution = if by_id {
-                store
-                    .place(key)
-                    .map_err(|e| e.to_string())?
-                    .map(|place| ("id", place, None))
+            // Err carries the reason this key has no place, and every reason is
+            // about what the caller actually sent: an unparsable pair is told so
+            // rather than being told the registry is empty near a coordinate it
+            // never sent.
+            let resolution: Result<(&str, places::store::Place, Option<f64>), String> = if by_id {
+                match store.place(key).map_err(|e| e.to_string())? {
+                    Some(place) => Ok(("id", place, None)),
+                    None => Err("no place with that id".to_string()),
+                }
             } else {
                 match parse_pair(key) {
+                    None => Err("not a lat,lon pair".to_string()),
                     Some((latitude, longitude)) => {
                         match places::climate::resolve_at(&registry, latitude, longitude) {
                             places::climate::Resolution::Registry { place, distance_km } => {
-                                Some(("registry", place, Some(distance_km)))
+                                Ok(("registry", place, Some(distance_km)))
                             }
                             places::climate::Resolution::Nearest { place, distance_km } => {
-                                Some(("nearest", place, Some(distance_km)))
+                                Ok(("nearest", place, Some(distance_km)))
                             }
-                            places::climate::Resolution::Unmatched { .. } => None,
+                            // The refusal is built where the radius is, so the
+                            // sentence and the constant cannot drift.
+                            places::climate::Resolution::Unmatched { reason } => Err(reason),
                         }
                     }
-                    None => None,
                 }
             };
             let entry = match resolution {
-                Some((resolved_by, place, distance_km)) => {
+                Ok((resolved_by, place, distance_km)) => {
                     let mut body = climate_body(&store, &place.id, &in_window)?;
                     let object = body.as_object_mut().expect("an object");
                     object.insert("key".into(), json!(key));
@@ -455,18 +461,11 @@ async fn climate(State(state): State<AppState>, Query(query): Query<ClimateBatch
                     object.insert("reason".into(), Value::Null);
                     body
                 }
-                None => json!({
+                Err(reason) => json!({
                     "key": key,
                     "resolved_by": Value::Null,
                     "matched_place": Value::Null,
-                    "reason": if by_id {
-                        "no place with that id".to_string()
-                    } else {
-                        format!(
-                            "no registered place with normals within {:.0} km",
-                            places::climate::CLIMATE_MATCH_RADIUS_KM
-                        )
-                    },
+                    "reason": reason,
                     "source": Value::Null,
                     "period": Value::Null,
                     "fetched_at": Value::Null,
@@ -900,6 +899,38 @@ mod tests {
                 "the 400 names both forms: {body}"
             );
         }
+    }
+
+    /// A key that never parsed is not a key with no match nearby. Telling a
+    /// caller "no registered place with normals within 60 km" about a typo sends
+    /// it looking for the wrong bug.
+    #[tokio::test]
+    async fn a_malformed_pair_is_told_it_is_malformed() {
+        let state = AppState {
+            database_path: Arc::new(scratch_database("climate-malformed")),
+        };
+        let (status, Json(body)) = climate(
+            State(state),
+            Query(ClimateBatch {
+                place_ids: None,
+                at: Some("abc;52.52,13.40".into()),
+                from: None,
+                to: None,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["results"][0]["key"], "abc");
+        assert_eq!(body["results"][0]["reason"], "not a lat,lon pair");
+        // The second key parses, and answers on its own terms.
+        assert_eq!(body["results"][1]["key"], "52.52,13.40");
+        assert!(
+            body["results"][1]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("60 km"),
+            "an empty registry still answers with the distance sentence: {body}"
+        );
     }
 
     #[test]

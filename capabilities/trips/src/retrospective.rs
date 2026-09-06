@@ -152,11 +152,19 @@ pub fn summary(rows: &[Retrospective], plans: &[TripPlan]) -> Summary {
         };
         // Basis points against the intent, when both halves exist. A plan with
         // no budget contributes a score and no overrun, rather than a zero.
+        //
+        // Widened to i128 for the multiply: `cost_cents` is a request-supplied
+        // i64 that only has to be non-negative (store::put_retrospective), so
+        // `(cost - budget) * 10_000` overflows i64 for a large posted cost —
+        // silently in release, and as a panic inside spawn_blocking in debug.
         let overrun = plan
             .budget_cents
             .filter(|budget| *budget > 0)
             .zip(row.cost_cents)
-            .map(|(budget, cost)| (cost - budget) * 10_000 / budget);
+            .and_then(|(budget, cost)| {
+                let basis_points = (cost as i128 - budget as i128) * 10_000 / budget as i128;
+                i64::try_from(basis_points).ok()
+            });
         for destination in &plan.destinations {
             let key = normalize_place_name(&destination.name);
             if key.is_empty() {
@@ -299,6 +307,20 @@ mod tests {
         let summary = summary(&rows, &plans);
         assert_eq!(summary.by_destination[0].median_overrun_bp, Some(3_000));
         assert_eq!(summary.by_destination[0].basis, vec!["p1", "p2"]);
+    }
+
+    /// `cost_cents` is whatever the caller posted, checked only for being
+    /// non-negative, so the basis-point multiply has to survive an i64 that
+    /// large. In i64 this wrapped; in a debug build it panicked inside
+    /// `spawn_blocking` and the summary route answered 500.
+    #[test]
+    fn an_absurd_posted_cost_does_not_overflow_the_overrun() {
+        let plans = vec![plan("p1", "Lisbon", &[], Some(1))];
+        let rows = vec![retrospective("p1", "yes", Some(i64::MAX))];
+        let summary = summary(&rows, &plans);
+        assert_eq!(summary.by_destination[0].n, 1);
+        // The ratio does not fit an i64, so it is absent rather than wrong.
+        assert_eq!(summary.by_destination[0].median_overrun_bp, None);
     }
 
     /// The assertion the privacy ruling earns. Two plans whose `travelers` are

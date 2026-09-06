@@ -28,6 +28,10 @@ use crate::store::PlanDetails;
 pub struct Actuals {
     pub ok: bool,
     pub reason: Option<String>,
+    /// The unit finance stated for these five figures, and null when it stated
+    /// none. Carried rather than assumed: the card used to render them under the
+    /// PLAN's currency, which is a claim about somebody else's numbers.
+    pub currency: Option<String>,
     pub personal_cents: Option<i64>,
     pub gross_cash_outflow_cents: Option<i64>,
     pub reimbursed_cents: Option<i64>,
@@ -60,13 +64,20 @@ pub struct ByStage {
     pub sequence: usize,
     pub origin: String,
     pub destination: String,
-    pub booked_cents: i64,
+    /// Null, exactly like the top-level total, when the items on this stage do
+    /// not agree on a currency. `currency` then carries none and `reason` says
+    /// which disagreement it was.
+    pub booked_cents: Option<i64>,
+    pub currency: Option<String>,
+    pub reason: Option<String>,
     pub item_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Unattributed {
-    pub booked_cents: i64,
+    pub booked_cents: Option<i64>,
+    pub currency: Option<String>,
+    pub reason: Option<String>,
     pub item_count: usize,
 }
 
@@ -112,12 +123,82 @@ fn currency_of(payload: &Value) -> Option<String> {
         .filter(|code| !code.is_empty())
 }
 
+/// What one priced item says its unit is: its own currency, else the plan's.
+///
+/// One function, so the total, the per-stage rows and the unattributed row all
+/// read the same answer. They used to disagree: the total skipped an item whose
+/// unit it could not resolve while the stage rows added it anyway.
+fn unit_of(payload: &Value, plan_currency: Option<&String>) -> Option<String> {
+    currency_of(payload).or_else(|| plan_currency.cloned())
+}
+
+const NO_UNIT: &str = "a priced item carries no currency and the plan carries none either";
+
+/// A running total that refuses to add two units.
+///
+/// The module docstring's rule — adding a figure of unknown currency to an
+/// integer minor-unit sum produces a number that is wrong in a way nobody can
+/// see — applies to a stage row exactly as it applies to the headline. The first
+/// item that disagrees, or that carries no unit at all, turns the total into
+/// `None` and records why.
+#[derive(Debug, Default)]
+struct Tally {
+    cents: i64,
+    currency: Option<String>,
+    reason: Option<String>,
+    item_count: usize,
+}
+
+impl Tally {
+    fn add(&mut self, amount: i64, unit: Option<String>) {
+        self.item_count += 1;
+        let Some(unit) = unit else {
+            self.refuse(NO_UNIT.to_string());
+            return;
+        };
+        match &self.currency {
+            None => {
+                self.currency = Some(unit);
+                self.cents += amount;
+            }
+            Some(held) if *held == unit => self.cents += amount,
+            Some(held) => self.refuse(format!(
+                "prices are in {held} and {unit}; two units are never added"
+            )),
+        }
+    }
+
+    /// First reason wins: it names the disagreement a reader can act on, and a
+    /// later one adds no information.
+    fn refuse(&mut self, reason: String) {
+        if self.reason.is_none() {
+            self.reason = Some(reason);
+        }
+    }
+
+    fn total(&self) -> Option<i64> {
+        self.reason.is_none().then_some(self.cents)
+    }
+
+    /// The unit the total is in, and none once the total is refused: a currency
+    /// beside a null figure would read as a claim about a number nobody has.
+    fn unit(&self) -> Option<String> {
+        self.reason
+            .is_none()
+            .then(|| self.currency.clone())
+            .flatten()
+    }
+}
+
 /// Roll one plan up. Pure: the caller decides whether finance was asked.
 pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable>) -> CostRollup {
     let plan = &details.plan;
 
     // ── committed prices, grouped by their own stated currency ──────────────
     let mut by_currency: Vec<ByCurrency> = Vec::new();
+    // A price whose unit cannot be resolved is counted, not dropped. Dropping it
+    // is how the headline answered a confident 0 for a plan that had money on it.
+    let mut unitless_items = 0_usize;
     for item in details
         .items
         .iter()
@@ -129,7 +210,8 @@ pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable
         // A price with no currency is attributed to the plan's currency when the
         // plan has one, and is otherwise unusable — never silently added to a
         // sum in a different unit.
-        let Some(code) = currency_of(&item.payload).or_else(|| plan.currency.clone()) else {
+        let Some(code) = unit_of(&item.payload, plan.currency.as_ref()) else {
+            unitless_items += 1;
             continue;
         };
         match by_currency.iter_mut().find(|row| row.currency == code) {
@@ -146,16 +228,28 @@ pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable
     }
     by_currency.sort_by(|a, b| a.currency.cmp(&b.currency));
 
-    let (booked_cents, booked_reason) = match by_currency.len() {
-        0 => (Some(0), None),
-        1 => (Some(by_currency[0].booked_cents), None),
-        _ => (
+    let mut refusals: Vec<String> = Vec::new();
+    if by_currency.len() > 1 {
+        refusals.push(format!(
+            "bookings are in {} currencies; they are reported per currency rather than added",
+            by_currency.len()
+        ));
+    }
+    if unitless_items > 0 {
+        refusals.push(if unitless_items == 1 {
+            format!("{NO_UNIT}, so it is not in this total")
+        } else {
+            format!("{unitless_items} priced items carry no currency and the plan carries none either, so they are not in this total")
+        });
+    }
+    let (booked_cents, booked_reason) = if refusals.is_empty() {
+        // Zero committed IS a measurement when nothing priced is on the plan.
+        (
+            Some(by_currency.first().map_or(0, |row| row.booked_cents)),
             None,
-            Some(format!(
-                "bookings are in {} currencies; they are reported per currency rather than added",
-                by_currency.len()
-            )),
-        ),
+        )
+    } else {
+        (None, Some(refusals.join("; ")))
     };
 
     // The trip's currency: the plan's own if it has one, else the single
@@ -203,22 +297,12 @@ pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable
     }
 
     // ── attribution to a stage ───────────────────────────────────────────────
-    let mut by_stage: Vec<ByStage> = plan
+    let mut stage_tallies: Vec<(&crate::store::TripStage, Tally)> = plan
         .stages
         .iter()
-        .map(|stage| ByStage {
-            stage_id: stage.id.clone(),
-            sequence: stage.sequence,
-            origin: stage.origin.name.clone(),
-            destination: stage.destination.name.clone(),
-            booked_cents: 0,
-            item_count: 0,
-        })
+        .map(|stage| (stage, Tally::default()))
         .collect();
-    let mut unattributed = Unattributed {
-        booked_cents: 0,
-        item_count: 0,
-    };
+    let mut unattributed_tally = Tally::default();
     for item in details
         .items
         .iter()
@@ -227,6 +311,7 @@ pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable
         let Some(amount) = cents(&item.payload) else {
             continue;
         };
+        let unit = unit_of(&item.payload, plan.currency.as_ref());
         // Two bindings, in order, and no third. A date-based guess is
         // deliberately absent: a stay that spans three stages has no single
         // right answer, and inventing one hides the gap this block exists to
@@ -244,24 +329,77 @@ pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable
                     })
                     .map(|stage| stage.id.clone())
             });
-        match stage_id.and_then(|id| by_stage.iter_mut().find(|row| row.stage_id == id)) {
-            Some(row) => {
-                row.booked_cents += amount;
-                row.item_count += 1;
-            }
-            None => {
-                unattributed.booked_cents += amount;
-                unattributed.item_count += 1;
-            }
+        match stage_id
+            .and_then(|id| stage_tallies.iter_mut().find(|(stage, _)| stage.id == id))
+            .map(|(_, tally)| tally)
+        {
+            Some(tally) => tally.add(amount, unit),
+            None => unattributed_tally.add(amount, unit),
         }
     }
+    let by_stage: Vec<ByStage> = stage_tallies
+        .into_iter()
+        .map(|(stage, tally)| ByStage {
+            stage_id: stage.id.clone(),
+            sequence: stage.sequence,
+            origin: stage.origin.name.clone(),
+            destination: stage.destination.name.clone(),
+            booked_cents: tally.total(),
+            currency: tally.unit(),
+            reason: tally.reason.clone(),
+            item_count: tally.item_count,
+        })
+        .collect();
+    let unattributed = Unattributed {
+        booked_cents: unattributed_tally.total(),
+        currency: unattributed_tally.unit(),
+        reason: unattributed_tally.reason.clone(),
+        item_count: unattributed_tally.item_count,
+    };
 
     // ── actuals, or four nulls and a reason ──────────────────────────────────
+    let unknown_actuals = |reason: String| {
+        (
+            Actuals {
+                ok: false,
+                reason: Some(reason.clone()),
+                currency: None,
+                personal_cents: None,
+                gross_cash_outflow_cents: None,
+                reimbursed_cents: None,
+                outstanding_cents: None,
+                posting_count: None,
+            },
+            Source {
+                source: "finance",
+                ok: false,
+                reason: Some(reason),
+            },
+        )
+    };
     let (actuals, finance_source) = match spending {
+        // Finance answering in another unit than the plan is not an answer to
+        // this plan's question. Relabelling those figures with the plan's
+        // currency is the one thing this module exists to refuse.
+        Ok(spending)
+            if currency
+                .as_deref()
+                .zip(spending.currency.as_deref())
+                .is_some_and(|(plan_code, finance_code)| {
+                    !plan_code.eq_ignore_ascii_case(finance_code)
+                }) =>
+        {
+            let plan_code = currency.clone().unwrap_or_default();
+            let finance_code = spending.currency.clone().unwrap_or_default();
+            unknown_actuals(format!(
+                "finance reports this trip in {finance_code} and the plan is in {plan_code}; the figures are not comparable"
+            ))
+        }
         Ok(spending) => (
             Actuals {
                 ok: true,
                 reason: None,
+                currency: spending.currency.clone(),
                 personal_cents: Some(spending.personal_spending_cents),
                 gross_cash_outflow_cents: Some(spending.gross_cash_outflow_cents),
                 reimbursed_cents: Some(spending.reimbursed_cents),
@@ -274,22 +412,7 @@ pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable
                 reason: None,
             },
         ),
-        Err(Unreachable { reason }) => (
-            Actuals {
-                ok: false,
-                reason: Some(reason.clone()),
-                personal_cents: None,
-                gross_cash_outflow_cents: None,
-                reimbursed_cents: None,
-                outstanding_cents: None,
-                posting_count: None,
-            },
-            Source {
-                source: "finance",
-                ok: false,
-                reason: Some(reason),
-            },
-        ),
+        Err(Unreachable { reason }) => unknown_actuals(reason),
     };
 
     CostRollup {
@@ -402,6 +525,7 @@ mod tests {
             reimbursed_cents: 150,
             outstanding_cents: 0,
             expense_posting_count: 4,
+            currency: Some("EUR".into()),
         }
     }
 
@@ -455,23 +579,38 @@ mod tests {
         }
     }
 
+    /// Two units are never added — and the rule holds at every grain, not only
+    /// at the headline. The stage rows and the unattributed row used to add them
+    /// anyway, under a headline that refused to: this fixture now carries the
+    /// stages whose absence let that through.
     #[test]
     fn mixed_currencies_are_not_summed() {
         let rolled = roll_up(
             &details(
                 None,
                 None,
-                Vec::new(),
+                vec![stage("stage:1", 0, None)],
                 vec![
                     item(
                         "booking",
                         "b1",
-                        json!({"provider":"p","order_ref":"r","amount_cents":12_000,"currency":"EUR"}),
+                        json!({"provider":"p","order_ref":"r","amount_cents":12_000,"currency":"EUR","stage_id":"stage:1"}),
                     ),
                     item(
                         "stay",
                         "s1",
-                        json!({"check_in":"2026-01-01","check_out":"2026-01-03","latitude":0,"longitude":0,"amount_cents":9_000,"currency":"USD"}),
+                        json!({"check_in":"2026-01-01","check_out":"2026-01-03","latitude":0,"longitude":0,"amount_cents":9_000,"currency":"USD","stage_id":"stage:1"}),
+                    ),
+                    // Bound to no stage, and in two units again.
+                    item(
+                        "booking",
+                        "b2",
+                        json!({"provider":"p","order_ref":"r","amount_cents":4_000,"currency":"USD"}),
+                    ),
+                    item(
+                        "booking",
+                        "b3",
+                        json!({"provider":"p","order_ref":"r","amount_cents":1_000,"currency":"EUR"}),
                     ),
                 ],
             ),
@@ -481,9 +620,123 @@ mod tests {
         assert!(rolled.booked_reason.is_some());
         assert_eq!(rolled.by_currency.len(), 2);
         assert_eq!(rolled.by_currency[0].currency, "EUR");
-        assert_eq!(rolled.by_currency[0].booked_cents, 12_000);
+        assert_eq!(rolled.by_currency[0].booked_cents, 13_000);
         assert_eq!(rolled.by_currency[1].currency, "USD");
+        assert_eq!(rolled.by_currency[1].booked_cents, 13_000);
         assert_eq!(rolled.currency, None, "no single currency to report");
+
+        // 12000 EUR + 9000 USD is not 21000 of anything.
+        assert_eq!(rolled.by_stage[0].booked_cents, None);
+        assert_eq!(rolled.by_stage[0].currency, None);
+        assert_eq!(rolled.by_stage[0].item_count, 2);
+        let stage_reason = rolled.by_stage[0].reason.clone().expect("a stated reason");
+        assert!(
+            stage_reason.contains("EUR") && stage_reason.contains("USD"),
+            "the reason names both units: {stage_reason}"
+        );
+        assert_eq!(rolled.unattributed.booked_cents, None);
+        assert_eq!(rolled.unattributed.currency, None);
+        assert_eq!(rolled.unattributed.item_count, 2);
+        assert!(rolled.unattributed.reason.is_some());
+
+        // The added figure must not reach the wire under any name.
+        let body = serde_json::to_string(&serde_json::to_value(&rolled).unwrap()).unwrap();
+        for wrong in [21_000, 5_000, 26_000] {
+            assert!(
+                !body.contains(&wrong.to_string()),
+                "an added cross-currency figure ({wrong}) reached the wire"
+            );
+        }
+    }
+
+    /// A booking that names no currency on a plan that names none either is
+    /// money in an unknown unit. It used to fall out of the headline (leaving a
+    /// confident `0` with no reason) and into the stage rows at the same time.
+    #[test]
+    fn a_priced_item_with_no_currency_refuses_the_total_rather_than_reporting_zero() {
+        let rolled = roll_up(
+            &details(
+                None,
+                None,
+                vec![stage("stage:1", 0, None)],
+                vec![item(
+                    "booking",
+                    "b1",
+                    json!({"provider":"p","order_ref":"r","amount_cents":45_000,"stage_id":"stage:1"}),
+                )],
+            ),
+            Ok(spending()),
+        );
+        assert_eq!(
+            rolled.booked_cents, None,
+            "a 0 here reads as 'nothing booked'"
+        );
+        let reason = rolled.booked_reason.clone().expect("a stated reason");
+        assert!(
+            reason.contains("no currency"),
+            "the reason names the gap: {reason}"
+        );
+        assert!(rolled.by_currency.is_empty());
+        assert_eq!(rolled.by_stage[0].booked_cents, None);
+        assert_eq!(rolled.by_stage[0].item_count, 1);
+        assert!(rolled.by_stage[0].reason.is_some());
+    }
+
+    /// The same item on a plan that DOES carry a currency is denominated by the
+    /// plan and counts normally — the inheritance rule the retrospective relies on.
+    #[test]
+    fn a_priced_item_with_no_currency_inherits_the_plans() {
+        let rolled = roll_up(
+            &details(
+                Some("EUR"),
+                None,
+                vec![stage("stage:1", 0, None)],
+                vec![item(
+                    "booking",
+                    "b1",
+                    json!({"provider":"p","order_ref":"r","amount_cents":45_000,"stage_id":"stage:1"}),
+                )],
+            ),
+            Ok(spending()),
+        );
+        assert_eq!(rolled.booked_cents, Some(45_000));
+        assert_eq!(rolled.booked_reason, None);
+        assert_eq!(rolled.by_stage[0].booked_cents, Some(45_000));
+        assert_eq!(rolled.by_stage[0].currency.as_deref(), Some("EUR"));
+    }
+
+    /// A figure in another unit is not this plan's figure. The card renders the
+    /// actuals under a currency, so relabelling them would be a false claim about
+    /// somebody else's numbers.
+    #[test]
+    fn finance_answering_in_another_currency_is_unknown_rather_than_relabelled() {
+        let rolled = roll_up(
+            &details(Some("GBP"), None, Vec::new(), Vec::new()),
+            Ok(spending()),
+        );
+        assert!(!rolled.actuals.ok);
+        assert_eq!(rolled.actuals.personal_cents, None);
+        assert_eq!(rolled.actuals.currency, None);
+        let reason = rolled.actuals.reason.clone().expect("a stated reason");
+        assert!(
+            reason.contains("EUR") && reason.contains("GBP"),
+            "the reason names both units: {reason}"
+        );
+    }
+
+    /// Finance stating no currency is not a disagreement: the figures are carried
+    /// and the card shows them without inventing a unit for them.
+    #[test]
+    fn finance_stating_no_currency_still_answers() {
+        let mut answer = spending();
+        answer.currency = None;
+        let rolled = roll_up(
+            &details(Some("EUR"), None, Vec::new(), Vec::new()),
+            Ok(answer),
+        );
+        assert!(rolled.actuals.ok);
+        assert_eq!(rolled.actuals.personal_cents, Some(100));
+        assert_eq!(rolled.actuals.currency, None);
     }
 
     #[test]
@@ -551,9 +804,10 @@ mod tests {
             Ok(spending()),
         );
         assert_eq!(rolled.booked_cents, Some(8_700));
-        assert_eq!(rolled.by_stage[0].booked_cents, 3_000);
-        assert_eq!(rolled.by_stage[1].booked_cents, 5_000);
-        assert_eq!(rolled.unattributed.booked_cents, 700);
+        assert_eq!(rolled.by_stage[0].booked_cents, Some(3_000));
+        assert_eq!(rolled.by_stage[0].currency.as_deref(), Some("EUR"));
+        assert_eq!(rolled.by_stage[1].booked_cents, Some(5_000));
+        assert_eq!(rolled.unattributed.booked_cents, Some(700));
         assert_eq!(rolled.unattributed.item_count, 1);
     }
 

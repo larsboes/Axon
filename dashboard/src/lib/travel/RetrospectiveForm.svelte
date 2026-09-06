@@ -35,23 +35,39 @@
     { id: "no", label: "No" },
   ];
 
-  const centsToInput = (cents: number | null): string =>
-    cents === null ? "" : (cents / 100).toFixed(2);
+  const centsToAmount = (cents: number | null): number | null =>
+    cents === null ? null : cents / 100;
 
   let initializedFor = $state("");
-  let cost = $state("");
+  // A NUMBER, because `bind:value` on `<input type="number">` coerces to
+  // `number | null` (svelte's `is_numberlike_input` -> `to_number`), and an
+  // empty field is null rather than "". Held as a string this threw
+  // `cost.trim is not a function` the moment the box was touched, and the
+  // retrospective could not be filed at all.
+  let cost = $state<number | null>(null);
   let again = $state<RetrospectiveBody["again"]>("maybe");
   let changeNote = $state("");
   let saving = $state(false);
   let error = $state<string | null>(null);
+  /** Set on the first keystroke in the cost box. A proposal never overwrites a
+   *  figure a human has already touched. */
+  let costTouched = $state(false);
 
   $effect(() => {
-    if (initializedFor === planId) return;
-    initializedFor = planId;
-    cost = centsToInput(existing?.cost_cents ?? proposal?.cents ?? null);
-    again = existing?.again ?? "maybe";
-    changeNote = existing?.change_note ?? "";
-    error = null;
+    const proposed = centsToAmount(existing?.cost_cents ?? proposal?.cents ?? null);
+    if (initializedFor !== planId) {
+      initializedFor = planId;
+      costTouched = false;
+      cost = proposed;
+      again = existing?.again ?? "maybe";
+      changeNote = existing?.change_note ?? "";
+      error = null;
+      return;
+    }
+    // The proposal arrives AFTER this form mounts — the cost roll-up is a second
+    // request the page fires beside the plan read — so the prefill has to be
+    // applied when it lands, not only when the plan changes.
+    if (!costTouched) cost = proposed;
   });
 
   const costHint = $derived(
@@ -65,14 +81,18 @@
   );
 
   async function submit(): Promise<void> {
+    // `!(cost >= 0)` and not `cost < 0`: a half-typed entry reaches this as NaN.
+    if (cost !== null && !(cost >= 0)) {
+      error = "A cost is a number, and never negative.";
+      return;
+    }
     saving = true;
     error = null;
     try {
-      const trimmed = cost.trim();
       const row = await saveRetrospective(planId, {
         // Euros in, integer minor units out. A price in floating point is a
         // price that eventually disagrees with the receipt.
-        cost_cents: trimmed === "" ? null : Math.round(Number(trimmed) * 100),
+        cost_cents: cost === null ? null : Math.round(cost * 100),
         again,
         change_note: changeNote.trim(),
       });
@@ -112,6 +132,7 @@
         min="0"
         inputmode="decimal"
         bind:value={cost}
+        oninput={() => (costTouched = true)}
         disabled={currency === null}
         placeholder={currency === null ? "—" : "0.00"}
       />

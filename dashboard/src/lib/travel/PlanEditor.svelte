@@ -38,10 +38,13 @@
   let interests = $state("");
   let travelers = $state("");
   let transportModes = $state<TransportMode[]>([]);
-  // Held as text so an empty field means "no budget" rather than 0. Euros in,
-  // integer minor units out -- a price in floating point is a price that
-  // eventually disagrees with the receipt.
-  let budget = $state("");
+  // A NUMBER, because `bind:value` on `<input type="number">` coerces to
+  // `number | null` (svelte/src/internal/client/dom/elements/bindings/input.js:
+  // `is_numberlike_input` -> `to_number`), and an empty field is null rather
+  // than "". Holding it as a string typechecked and threw at runtime the moment
+  // anybody touched the field. Euros in, integer minor units out -- a price in
+  // floating point is a price that eventually disagrees with the receipt.
+  let budget = $state<number | null>(null);
   let currency = $state("EUR");
   let validation = $state<string | null>(null);
   let deleteArmed = $state(false);
@@ -57,7 +60,7 @@
     interests = plan.interests;
     travelers = plan.travelers.join(", ");
     transportModes = [...plan.transport_modes];
-    budget = plan.budget_cents === null ? "" : (plan.budget_cents / 100).toFixed(2);
+    budget = plan.budget_cents === null ? null : plan.budget_cents / 100;
     currency = plan.currency ?? "EUR";
     validation = null;
     deleteArmed = false;
@@ -99,8 +102,9 @@
       validation = "Currency is a three-letter ISO code, e.g. EUR.";
       return;
     }
-    const budgetText = budget.trim();
-    if (budgetText !== "" && !(Number(budgetText) >= 0)) {
+    // `!(budget >= 0)` and not `budget < 0`: a half-typed entry reaches this as
+    // NaN, which fails every comparison.
+    if (budget !== null && !(budget >= 0)) {
       validation = "A budget is a number, and never negative.";
       return;
     }
@@ -121,7 +125,9 @@
       // which is why no plan carries one. `currency` is load-bearing twice: it
       // denominates the budget AND gates whether a retrospective may record a
       // cost at all.
-      budget_cents: budgetText === "" ? null : Math.round(Number(budgetText) * 100),
+      // An emptied field sends an explicit null, which `update_plan` reads as
+      // "clear it" rather than as "not supplied".
+      budget_cents: budget === null ? null : Math.round(budget * 100),
       currency: code,
     });
   }

@@ -15,13 +15,24 @@
    */
   let { cost }: { cost: PlanCost } = $props();
 
-  const money = (cents: number | null, currency: string | null): string =>
-    cents === null
-      ? "unknown"
-      : (cents / 100).toLocaleString("en-GB", {
-          style: "currency",
-          currency: currency ?? "EUR",
+  /**
+   * A currency symbol is a claim, not formatting.
+   *
+   * The server answers `currency: null` when neither the plan nor a single
+   * booking currency resolved, so a symbol here would assert a unit the backend
+   * deliberately refused to assert. The figure is then printed bare and the card
+   * says once, below the headline, that the unit is unknown.
+   */
+  const money = (cents: number | null, currency: string | null): string => {
+    if (cents === null) return "unknown";
+    const amount = cents / 100;
+    return currency !== null && /^[A-Z]{3}$/.test(currency)
+      ? amount.toLocaleString("en-GB", { style: "currency", currency })
+      : amount.toLocaleString("en-GB", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
         });
+  };
 
   const actualFigures = $derived([
     { label: "Paid", value: cost.actuals.personal_cents },
@@ -29,6 +40,12 @@
     { label: "Reimbursed", value: cost.actuals.reimbursed_cents },
     { label: "Still owed", value: cost.actuals.outstanding_cents },
   ]);
+
+  const anyFigure = $derived(
+    cost.planned_cents !== null ||
+      cost.booked_cents !== null ||
+      actualFigures.some((figure) => figure.value !== null),
+  );
 </script>
 
 <section class="cost card" aria-labelledby="cost-title">
@@ -51,6 +68,13 @@
     </div>
   </dl>
 
+  {#if cost.currency === null && anyFigure}
+    <p class="note">
+      Figures are shown without a unit: this trip carries no currency. Set one in
+      the trip editor.
+    </p>
+  {/if}
+
   {#if cost.by_currency.length > 1}
     <ul class="currencies">
       {#each cost.by_currency as row (row.currency)}
@@ -69,7 +93,7 @@
           <div>
             <dt>{figure.label}</dt>
             <dd class:unknown={figure.value === null}>
-              {money(figure.value, cost.currency)}
+              {money(figure.value, cost.actuals.currency ?? cost.currency)}
             </dd>
           </div>
         {/each}
@@ -80,20 +104,37 @@
     {/if}
   </div>
 
+  <!-- Two lists, not one: money bound to no stage is the gap this block exists
+       to show, and no stage carrying items is exactly when it is most likely.
+       Nesting it inside the stage guard hid the only case that occurs today. -->
   {#if cost.by_stage.some((stage) => stage.item_count > 0)}
     <ul class="stages">
       {#each cost.by_stage.filter((stage) => stage.item_count > 0) as stage (stage.stage_id)}
         <li>
           <span>{stage.origin} → {stage.destination}</span>
-          <span>{money(stage.booked_cents, cost.currency)}</span>
+          <span>{money(stage.booked_cents, stage.currency ?? cost.currency)}</span>
+          {#if stage.reason}
+            <small>{stage.reason}</small>
+          {/if}
         </li>
       {/each}
-      {#if cost.unattributed.item_count > 0}
-        <li class="unattributed">
-          <span>Not bound to a stage · {cost.unattributed.item_count} items</span>
-          <span>{money(cost.unattributed.booked_cents, cost.currency)}</span>
-        </li>
-      {/if}
+    </ul>
+  {/if}
+
+  {#if cost.unattributed.item_count > 0}
+    <ul class="stages">
+      <li class="unattributed">
+        <span>
+          Not bound to a stage · {cost.unattributed.item_count}
+          {cost.unattributed.item_count === 1 ? "item" : "items"}
+        </span>
+        <span>
+          {money(cost.unattributed.booked_cents, cost.unattributed.currency ?? cost.currency)}
+        </span>
+        {#if cost.unattributed.reason}
+          <small>{cost.unattributed.reason}</small>
+        {/if}
+      </li>
     </ul>
   {/if}
 
@@ -174,8 +215,15 @@
 
   .stages li {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     gap: 0.75rem;
+  }
+
+  /* A refused total's reason takes its own line under the row it explains. */
+  .stages li small {
+    flex-basis: 100%;
+    color: var(--text-tertiary);
   }
 
   .stages li.unattributed {

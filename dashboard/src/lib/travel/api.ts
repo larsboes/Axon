@@ -153,8 +153,10 @@ export interface RetrospectiveSummary {
   by_companion: string;
 }
 
-/** The three fields, and only the three. The server sets
- *  `deny_unknown_fields`, so a fourth is a 400 rather than a silent drop. */
+/** The three fields, and only the three. The server sets `deny_unknown_fields`,
+ *  so a fourth is refused by axum's JSON extractor — a 422 with a plain-text
+ *  body naming the unknown field, not a silent drop. `travelRequest` surfaces
+ *  either shape. */
 export interface RetrospectiveBody {
   cost_cents: number | null;
   again: "yes" | "no" | "maybe";
@@ -188,6 +190,10 @@ export const retrospectiveSummary = () =>
 export interface CostActuals {
   ok: boolean;
   reason: string | null;
+  /** The unit FINANCE stated for these figures, which is not automatically the
+   *  plan's. When the two disagree the figures are null with a reason rather
+   *  than relabelled. */
+  currency: string | null;
   personal_cents: number | null;
   gross_cash_outflow_cents: number | null;
   reimbursed_cents: number | null;
@@ -206,7 +212,11 @@ export interface CostByStage {
   sequence: number;
   origin: string;
   destination: string;
-  booked_cents: number;
+  /** Null when the items on this stage do not agree on a currency — the same
+   *  refusal the headline makes, at the grain a stage row is read at. */
+  booked_cents: number | null;
+  currency: string | null;
+  reason: string | null;
   item_count: number;
 }
 
@@ -235,7 +245,12 @@ export interface PlanCost {
   selected_options: SelectedOptions;
   by_currency: CostByCurrency[];
   by_stage: CostByStage[];
-  unattributed: { booked_cents: number; item_count: number };
+  unattributed: {
+    booked_cents: number | null;
+    currency: string | null;
+    reason: string | null;
+    item_count: number;
+  };
   sources: CostSource[];
 }
 

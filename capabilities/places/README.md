@@ -148,10 +148,15 @@ confirm route cross-site.
   fill a sequence from repeated keys. A bare coordinate resolves in three steps
   and the response names the step it used: `registry` (a registry row at the
   same coordinate to four decimals — the row `backfill travelers` minted from
-  the same `f64` a trips destination carries), then `nearest` (the nearest place
-  carrying normals within 60 km, with `distance_km` reported), then a stated
-  refusal. 60 km is an assumption, not a measurement, which is why the distance
-  is in every response.
+  the same `f64` a trips destination carries — **carrying normals**), then
+  `nearest` (the nearest place carrying normals within 60 km, with `distance_km`
+  reported), then the exact row anyway so the empty state names the right place,
+  then a stated refusal. The normals test in the first step is what makes the
+  city-only fetch policy safe: a `station` or `venue` row is served from a city
+  within 60 km, and a registry step that short-circuited on it left exactly those
+  destinations with a permanently empty strip. 60 km is an assumption, not a
+  measurement, which is why the distance is in every response. A key that is not
+  a `lat,lon` pair is told `not a lat,lon pair`, never the distance sentence.
 
 ## Decision, 2026-09-05
 

@@ -132,14 +132,22 @@ prices, which the schema gives no currency field at all, so they are reported in
 their own block labelled offered-not-paid and are never summed in: adding a float
 of unknown currency to an integer minor-unit sum produces a number that is wrong
 in a way nobody can see. Bookings in two currencies are reported per currency
-with `booked_cents: null` and a stated reason, rather than added.
+with `booked_cents: null` and a stated reason, rather than added. The same rule
+holds at every grain: a stage row and the unattributed row each carry their own
+`currency`, and each answers `booked_cents: null` with its own `reason` when the
+prices attributed to it disagree. A priced item that names no currency on a plan
+that names none either is money in an unknown unit, so it refuses the total
+instead of falling out of it — the headline used to answer a confident `0` while
+that item's money still showed in a stage row.
 
 **Actual** comes from `GET /finance/api/trips/:id/spending` over loopback with a
 3 s timeout, and the response carries **all four** of finance's figures — paid,
 gross out, reimbursed, still owed — rather than one flattened total. On a trip
 with friends those four differ, and that difference is the shared-cost surface.
 When finance does not answer, every figure is null with a named reason and
-`ok: false`. Never `0`. This is deliberately the opposite of `flight_when`, which
+`ok: false`. Never `0`. `actuals.currency` carries the unit finance stated, and
+when that disagrees with the plan's the figures are unknown with a reason rather
+than relabelled: they are somebody else's numbers. This is deliberately the opposite of `flight_when`, which
 degrades a dead calendar into "every day free" and says nothing in the body; the
 degrade rule lives in `src/finance_client.rs` so a handler cannot quietly copy
 that.

@@ -291,20 +291,31 @@ impl Resolution {
     }
 }
 
-/// Registry hit first, then nearest-with-normals, then a stated refusal.
+/// The exact registry row when it can answer, then nearest-with-normals, then
+/// the exact row anyway, then a stated refusal.
 ///
-/// The registry step deliberately ignores whether the row carries normals: an
-/// exact-coordinate row IS the place the caller means, and answering "no normals
-/// yet, run the fetch verb" about the right place beats answering with a
-/// different city 40 km away.
+/// The order is the whole rule. An exact-coordinate row IS the place the caller
+/// means, so it answers first — but only when it carries normals. Only cities
+/// are fetched by default (`main.rs`; a venue's climate is its city's climate
+/// and 134 venue coordinates are not worth egressing), and the reason that is
+/// safe is precisely that a station or a venue is served from a city within
+/// 60 km. A registry step that short-circuits on a row with no normals defeats
+/// its own justification: it hands back an empty strip for exactly the rows the
+/// default fetch skips, and tells the operator to run the command that skips
+/// them.
+///
+/// The exact row still wins over nothing (step 3), so the empty state names the
+/// right place, and a distance match is always reported as `nearest` with its
+/// distance, so a wrong 60 km match is visible rather than silent.
 pub fn resolve_at(places: &[(Place, bool)], latitude: f64, longitude: f64) -> Resolution {
     let same = |a: f64, b: f64| format!("{a:.4}") == format!("{b:.4}");
-    if let Some((place, _)) = places.iter().find(|(place, _)| {
+    let exact = places.iter().find(|(place, _)| {
         place
             .latitude
             .zip(place.longitude)
             .is_some_and(|(lat, lon)| same(lat, latitude) && same(lon, longitude))
-    }) {
+    });
+    if let Some((place, true)) = exact {
         return Resolution::Registry {
             place: place.clone(),
             distance_km: 0.0,
@@ -328,10 +339,18 @@ pub fn resolve_at(places: &[(Place, bool)], latitude: f64, longitude: f64) -> Re
                 distance_km,
             }
         }
-        _ => Resolution::Unmatched {
-            reason: format!(
-                "no registered place with normals within {CLIMATE_MATCH_RADIUS_KM:.0} km"
-            ),
+        // Nothing carries normals nearby. The exact row is still the right place
+        // to name, and the strip's empty state names the fetch verb for it.
+        _ => match exact {
+            Some((place, _)) => Resolution::Registry {
+                place: place.clone(),
+                distance_km: 0.0,
+            },
+            None => Resolution::Unmatched {
+                reason: format!(
+                    "no registered place with normals within {CLIMATE_MATCH_RADIUS_KM:.0} km"
+                ),
+            },
         },
     }
 }
@@ -621,9 +640,9 @@ mod tests {
     #[test]
     fn a_matching_coordinate_resolves_to_the_registry_row_before_any_distance_search() {
         // The registry row sits at the exact coordinate a trips PlaceRef carries
-        // and has NO normals; a different place 5 km away has them.
+        // and HAS normals, so no distance search happens at all.
         let places = vec![
-            (place("exact", 48.208_49, 16.372_08), false),
+            (place("exact", 48.208_49, 16.372_08), true),
             (place("nearer_with_normals", 48.250_00, 16.372_08), true),
         ];
         let resolution = resolve_at(&places, 48.208_49, 16.372_08);
@@ -633,6 +652,28 @@ mod tests {
             Resolution::Registry { distance_km, .. } => assert_eq!(distance_km, 0.0),
             other => panic!("expected a registry hit, got {other:?}"),
         }
+    }
+
+    /// The station case, measured on live shapes: a plan destination whose exact
+    /// registry row is a `station`, which the default fetch verb never covers.
+    /// Short-circuiting on it left that destination with a permanently empty
+    /// strip; the city 5 km away is the answer the fetch policy assumes.
+    #[test]
+    fn an_exact_row_without_normals_yields_to_a_nearby_one_that_has_them() {
+        let places = vec![
+            (place("exact_station", 48.208_49, 16.372_08), false),
+            (place("city_with_normals", 48.250_00, 16.372_08), true),
+        ];
+        let resolution = resolve_at(&places, 48.208_49, 16.372_08);
+        assert_eq!(resolution.resolved_by(), Some("nearest"));
+        assert_eq!(resolution.place().unwrap().id, "city_with_normals");
+
+        // With nothing else in range the exact row is still named, so the empty
+        // state is about the right place rather than about a refusal.
+        let alone = vec![(place("exact_station", 48.208_49, 16.372_08), false)];
+        let fallback = resolve_at(&alone, 48.208_49, 16.372_08);
+        assert_eq!(fallback.resolved_by(), Some("registry"));
+        assert_eq!(fallback.place().unwrap().id, "exact_station");
     }
 
     #[test]

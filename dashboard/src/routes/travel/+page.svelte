@@ -16,7 +16,13 @@
   import ClimateStrip from "$lib/travel/ClimateStrip.svelte";
   import CostCard from "$lib/travel/CostCard.svelte";
   import RetrospectiveForm from "$lib/travel/RetrospectiveForm.svelte";
-  import { climateFor, planCost, type ClimateBatch, type PlanCost } from "$lib/travel/api";
+  import {
+    climateFor,
+    planCost,
+    type ClimateBatch,
+    type ClimateResult,
+    type PlanCost,
+  } from "$lib/travel/api";
   import {
     loadNearbyPlaces,
     type NearbyPlace,
@@ -148,6 +154,44 @@
   // finance was down. The roll-up is computed by trips and rendered by CostCard,
   // which is the trips README's rule: the frontend renders, the backend computes.
   let planCostRollup = $state<PlanCost | null>(null);
+  /**
+   * Machine proposes, human confirms — and a proposal is one NAMED quantity in a
+   * named unit, which is why the form prints which one it got.
+   *
+   * `personal_cents` when finance answered, else the booked total when the
+   * bookings resolved to a single currency, else nothing. The call site used to
+   * pass a literal null, so the form always said "no proposal" and its whole
+   * prefill branch was dead.
+   */
+  const costProposal = $derived.by(() => {
+    const rollup = planCostRollup;
+    if (!rollup) return null;
+    if (rollup.actuals.ok && rollup.actuals.personal_cents !== null) {
+      return { cents: rollup.actuals.personal_cents, label: "actuals" };
+    }
+    if (rollup.booked_cents !== null && rollup.booked_cents > 0 && rollup.by_currency.length === 1) {
+      return { cents: rollup.booked_cents, label: "bookings" };
+    }
+    return null;
+  });
+
+  /**
+   * The result this destination's coordinate was sent under, and nothing else.
+   *
+   * `key` is the `lat,lon` pair exactly as sent, published by the route so a
+   * caller never re-associates a result with its request. Matching on the
+   * MATCHED place's name — and falling back to `results[0]` — rendered one
+   * city's twelve months under another city's heading as soon as a plan carried
+   * a second destination, or as soon as a coordinate resolved to a nearby place
+   * with a different name.
+   */
+  function climateResultFor(place: PlaceRef): ClimateResult | null {
+    if (!climate) return null;
+    if (typeof place.latitude !== "number" || typeof place.longitude !== "number") return null;
+    const key = `${place.latitude},${place.longitude}`;
+    return climate.results.find((result) => result.key === key) ?? null;
+  }
+
   const filteredPlans = $derived(
     planFilter === "upcoming" ? upcomingPlans : planFilter === "past" ? pastPlans : [...upcomingPlans, ...pastPlans],
   );
@@ -590,6 +634,9 @@
       items = [];
       plannerOpen = false;
       plannerNotice = null;
+      // A new plan inherits nothing from the last one that was open.
+      void loadClimate(plan);
+      void loadPlanCost(plan.id);
       await explorePlan(plan);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -781,6 +828,12 @@
       const updated = await trips.update(activePlan.id, patch);
       plans = plans.map((plan) => (plan.id === updated.id ? updated : plan));
       editingPlan = false;
+      // Both reads are about the plan that just changed: the destinations decide
+      // which normals the strip shows, and the budget is edited through exactly
+      // this path. Without these the strip kept the previous destinations and the
+      // card kept the previous budget.
+      void loadClimate(updated);
+      void loadPlanCost(updated.id);
       if (updated.date_end < todayKey) {
         activePlan = updated;
         results = [];
@@ -1602,7 +1655,7 @@
         planId={activePlan.id}
         currency={activePlan.currency}
         existing={planRetrospective}
-        proposal={null}
+        proposal={costProposal}
         onSaved={(row) => (planRetrospective = row)}
       />
 
@@ -1686,9 +1739,7 @@
         </header>
 
         {#if climate}
-          {@const found = climate.results.find(
-            (result) => result.matched_place?.name === selected.city,
-          ) ?? climate.results[0]}
+          {@const found = climateResultFor(selected.place)}
           {#if found}
             <ClimateStrip
               result={found}

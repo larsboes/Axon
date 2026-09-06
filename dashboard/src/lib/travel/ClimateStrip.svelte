@@ -51,6 +51,12 @@
     <p class="empty">
       {#if result.reason}
         {result.reason}.
+      {:else if result.matched_place}
+        <!-- The bare verb fetches `kind = 'city'` rows only (places main.rs), so
+             for a station or a venue it is the id that makes the instruction
+             true. Naming the place also says which one has nothing. -->
+        No normals for {result.matched_place.name} yet — run
+        <code>places-server climate fetch --place {result.matched_place.id}</code>.
       {:else}
         No normals for this place yet — run <code>places-server climate fetch</code>.
       {/if}

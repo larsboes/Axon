@@ -153,6 +153,17 @@ private file, or not verified.
   of `flight_when`, which degrades a dead calendar into "every day free" and says
   nothing in the body. Falsifier: a 0 in any `actuals` figure when finance is
   unreachable.
+- [x] ISC-12 — the roll-up never adds two currencies, at any grain. Evidence:
+  `mixed_currencies_are_not_summed` posts a EUR booking and a USD stay bound to
+  one stage plus two unbound items, and asserts the headline, the stage row and
+  the unattributed row each answer `booked_cents: null` with their own stated
+  reason, then greps the serialized body for the added figures (2026-09-06). The
+  stage rows previously added across currencies under a headline that refused
+  to, and the card rendered the result under an invented euro sign;
+  `a_priced_item_with_no_currency_refuses_the_total_rather_than_reporting_zero`
+  covers the second half, where an item whose unit could not be resolved fell out
+  of the total and into a stage row. Falsifier: any `booked_cents` in the body
+  that is the sum of amounts with different `currency` values.
 
 ## Not yet specified
 
@@ -209,6 +220,7 @@ In scope, too dim to state as a claim yet.
 | ISC-9 | command | fold the fixture, assert cell key | hour + weekend exact | cargo | Goal |
 | ISC-10 | command | `cargo test -p trips retrospective::`; grep the body for a traveler name | 0 names | cargo | F3 |
 | ISC-11 | command | `cargo test -p trips cost::`; assert every actuals figure | null, never 0 | cargo | F3 |
+| ISC-12 | command | `cargo test -p trips cost::`; grep the body for a cross-currency sum | 0 hits | cargo | F3 |
 
 ## Anti-claims
 

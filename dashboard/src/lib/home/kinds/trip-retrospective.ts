@@ -72,11 +72,16 @@ interface DecisionKind<Source = unknown, Row = unknown> {
 }
 // ── end mirrored contract ───────────────────────────────────────────────────
 
-/** The window the capability publishes, used only to shape urgency. Read from
- *  the response rather than restated, so the two cannot drift. */
-const DEFAULT_WINDOW_DAYS = 45;
+/** Used only when the response omits the window, which the route does not do.
+ *  The number that matters is `source.window_days`, read below and carried onto
+ *  each row — `urgency` is handed a row and no source, so the value has to
+ *  travel with the row or it is restated here and drifts. */
+const FALLBACK_WINDOW_DAYS = 45;
 
-const kind: DecisionKind<PendingRetrospectives, PendingRetrospective> = {
+/** A pending row plus the window it was measured against. */
+type PendingRow = PendingRetrospective & { window_days: number };
+
+const kind: DecisionKind<PendingRetrospectives, PendingRow> = {
   key: "trip-retrospective",
   band: 610,
   label: "Trip retrospectives",
@@ -88,9 +93,16 @@ const kind: DecisionKind<PendingRetrospectives, PendingRetrospective> = {
   // a judgement the capability owns, not one the caller narrows.
   load: () => pendingRetrospectives(),
 
-  rows: (source: PendingRetrospectives) => source.pending,
+  rows: (source: PendingRetrospectives) =>
+    source.pending.map((row) => ({
+      ...row,
+      // From the response, not from a constant here: the 45 days live in
+      // `capabilities/trips/src/store.rs::pending_retrospectives` and changing
+      // them there must move this ramp with them.
+      window_days: source.window_days > 0 ? source.window_days : FALLBACK_WINDOW_DAYS,
+    })),
 
-  id: (row: PendingRetrospective) => row.plan_id,
+  id: (row: PendingRow) => row.plan_id,
 
   /**
    * Rises as the window runs out, saturating at its end.
@@ -99,21 +111,21 @@ const kind: DecisionKind<PendingRetrospectives, PendingRetrospective> = {
    * and is not urgent, while one at day 44 is the last chance before the prompt
    * expires and the answer stops being a memory.
    */
-  urgency: (row: PendingRetrospective) => {
-    const window = DEFAULT_WINDOW_DAYS;
+  urgency: (row: PendingRow) => {
+    const window = row.window_days;
     const elapsed = Math.max(0, Math.min(row.days_since_close, window));
     return Math.round((999 * elapsed) / window);
   },
 
-  href: (row: PendingRetrospective) => link(`/travel?plan=${encodeURIComponent(row.plan_id)}`),
+  href: (row: PendingRow) => link(`/travel?plan=${encodeURIComponent(row.plan_id)}`),
 
-  whyHere: (row: PendingRetrospective) =>
+  whyHere: (row: PendingRow) =>
     row.destinations.length > 0
       ? `Back from ${row.destinations.join(", ")} ${row.days_since_close} days ago; no retrospective yet`
       : `Closed ${row.days_since_close} days ago; no retrospective yet`,
 
   /** The trip's end date: the moment that made this a decision. */
-  startOrDueAt: (row: PendingRetrospective) => row.date_end,
+  startOrDueAt: (row: PendingRow) => row.date_end,
 
   candidateStatus: () => "open",
 
