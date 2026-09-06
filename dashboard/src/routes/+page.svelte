@@ -3,6 +3,7 @@
   import { goto } from "$app/navigation";
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
+  import { createBandDisclosure } from "$lib/home/band-disclosure.svelte";
   import StateLine from "$lib/StateLine.svelte";
   import {
     axonStatus,
@@ -136,9 +137,34 @@
   const reading = $derived(decisions.filter((d) => d.kind.lane === "reading"));
 
   const visibleReading = $derived(showAll ? reading : reading.slice(0, READING_PREVIEW));
-  const visibleDecisions = $derived<Decision[]>(
-    showReading ? [...commitments, ...visibleReading] : commitments,
+
+  /// The ladder, grouped by the band each row already carries. Order is the sort
+  /// order — `commitments` is ranked, so the first group is the most urgent band
+  /// that has anything in it, and that is the one that opens on a first visit.
+  const bands = $derived.by(() => {
+    const groups: { label: string; tone: string; rows: Decision[] }[] = [];
+    for (const decision of commitments) {
+      const label = bandLabel(decision.kind.band);
+      const last = groups[groups.length - 1];
+      if (last?.label === label) last.rows.push(decision);
+      else groups.push({ label, tone: bandTone(decision.kind.band), rows: [decision] });
+    }
+    return groups;
+  });
+
+  const leadingBand = $derived(bands[0]?.label ?? "");
+  const disclosure = createBandDisclosure();
+  const openBands = $derived(
+    bands.filter((band) => disclosure.isOpen(band.label, leadingBand)),
   );
+
+  /// Only rows the reader can actually see. J/K must not walk into a collapsed
+  /// band and move focus to something that is not on screen — the cursor sets real
+  /// DOM focus, so an off-screen target scrolls the page to nothing.
+  const visibleDecisions = $derived<Decision[]>([
+    ...openBands.flatMap((band) => band.rows),
+    ...(showReading ? visibleReading : []),
+  ]);
 
   const readingToday = $derived(
     reading.filter((d) => today.getTime() - new Date(d.startOrDueAt ?? 0).getTime() < 86_400_000)
@@ -409,19 +435,38 @@
            focusable descendants and every row here holds a title link and up to three
            buttons, so the cursor moves real DOM focus onto the row instead — which is
            also what makes the selection audible to a screen reader. -->
-      <ul class="queue" role="list" aria-busy={loading}>
-        {#each commitments as decision, index (decision.key)}
-          {@const previous = commitments[index - 1]}
-          {#if !previous || previous.kind.band !== decision.kind.band}
-            {#if index > 0 || commitments.some((other) => other.kind.band !== decision.kind.band)}
-              <li class="band-break tone-{bandTone(decision.kind.band)}" aria-hidden="true">
-                <span>{bandLabel(decision.kind.band)}</span>
-              </li>
+      <!-- One band open, the rest counted. The band break used to be a decorative
+           `aria-hidden` rule between rows; it is the control now, which is why it is a
+           real <button> with aria-expanded rather than a <li> with a label in it. -->
+      <div class="ladder" aria-busy={loading}>
+        {#each bands as band (band.label)}
+          {@const open = disclosure.isOpen(band.label, leadingBand)}
+          <section class="band tone-{band.tone}">
+            <h3>
+              <button
+                type="button"
+                class="band-summary"
+                aria-expanded={open}
+                aria-controls="band-{band.tone}"
+                onclick={() => disclosure.toggle(band.label, leadingBand)}
+              >
+                <span class="chevron" class:open aria-hidden="true">
+                  <Icon name="chevron" size={12} />
+                </span>
+                <span class="band-name">{band.label}</span>
+                <span class="band-count">{band.rows.length}</span>
+              </button>
+            </h3>
+            {#if open}
+              <ul id="band-{band.tone}" class="queue" role="list">
+                {#each band.rows as decision (decision.key)}
+                  {@render decisionRow(decision)}
+                {/each}
+              </ul>
             {/if}
-          {/if}
-          {@render decisionRow(decision)}
+          </section>
         {/each}
-      </ul>
+      </div>
 
       <!-- Loading is a state, and it is the only one that renders. When every kind has
            settled and nothing is owed, the queue shows nothing at all: PRD §8.1 rules that
@@ -880,41 +925,86 @@
    * The spine on each row is two pixels of colour and nothing else; this is what makes it
    * mean something, and it is why no band is ever identified by colour alone. Suppressed
    * when the ladder holds a single band, where a heading over every row says nothing. */
-  .band-break {
+  /* The band summary. It was a decorative rule with a label; it is the control now,
+     so it has to look pressable without becoming a button-shaped object: full-bleed
+     hit area, the tone mark where each row's spine already sits, and the count doing
+     the work a "14 more" link would otherwise do. */
+  .band-summary {
     display: flex;
     align-items: center;
     gap: var(--space-3);
-    padding: var(--space-4) var(--space-4) var(--space-2) 0;
+    width: 100%;
+    padding: var(--space-4) var(--space-2) var(--space-3) 0;
+    border: 0;
+    background: transparent;
     color: var(--text-tertiary);
+    font: inherit;
     font-size: var(--text-2xs);
-    list-style: none;
+    text-align: left;
+    cursor: pointer;
   }
 
-  .band-break::after {
-    content: "";
-    flex: 1;
-    height: 1px;
-    background: var(--rule);
+  .band h3 {
+    margin: 0;
+    font-size: inherit;
+    font-weight: inherit;
   }
 
-  /* The break's mark sits on the queue's own left edge, exactly where each row's spine
-     does, so the two read as one device rather than two. */
-  .band-break span {
+  .band + .band {
+    border-top: 1px solid var(--rule);
+  }
+
+  .band-name {
     position: relative;
+    flex: 1;
     padding-left: var(--space-4);
+    color: var(--text-secondary);
   }
 
-  .band-break span::before {
+  /* The tone mark. Never the only channel — the name is right beside it, which is
+     the rule Q87 set when four tones had to carry thirteen bands. */
+  .band-name::before {
     content: "";
     position: absolute;
     inset: 0.1em auto 0.1em 0;
     width: 2px;
   }
 
-  .band-break.tone-alarm span::before { background: var(--band-alarm); }
-  .band-break.tone-now span::before { background: var(--band-now); }
-  .band-break.tone-owed span::before { background: var(--band-owed); }
-  .band-break.tone-offer span::before { background: var(--band-offer); }
+  .band-summary:hover .band-name,
+  .band-summary:hover .band-count {
+    color: var(--text-primary);
+  }
+
+  .band-count {
+    min-width: 1.5rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums lining;
+    text-align: center;
+  }
+
+  .chevron {
+    display: flex;
+    color: var(--text-tertiary);
+    transition: transform var(--motion-fast) ease;
+  }
+
+  .chevron.open {
+    transform: rotate(90deg);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chevron {
+      transition: none;
+    }
+  }
+
+  .band.tone-alarm .band-name::before { background: var(--band-alarm); }
+  .band.tone-now .band-name::before { background: var(--band-now); }
+  .band.tone-owed .band-name::before { background: var(--band-owed); }
+  .band.tone-offer .band-name::before { background: var(--band-offer); }
 
   .show-all {
     display: flex;
