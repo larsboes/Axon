@@ -169,11 +169,15 @@ export function warm(): void {
   void boot().catch(() => {});
 }
 
+const EMPTY_GLYPHS: ReadonlySet<string> = new Set();
+
 /**
  * The one thing left for MapLibre to ask us at request time: is this glyph range vendored?
  *
- * Only two of Noto Sans' ~300 ranges are (`static/basemap/LICENSE.md`), so a Cyrillic, Greek
- * or CJK label is rewritten to the upstream host and renders slowly rather than not at all.
+ * Four Latin ranges are (`static/basemap/LICENSE.md`), and `tools/fetch-basemap` also strips the
+ * `name:nonlatin` half of every label, so in practice nothing should miss. This stays because
+ * "should" is not "does": a style refresh that reintroduced the two-script label form would
+ * otherwise draw a labelless map, and a slow label is a much better failure than a missing one.
  * Every other URL in the style is already absolute and correct by the time it gets here.
  *
  * Pure and exported so `tools/dashboard-basemap.test.ts` can assert the fallback without a
@@ -186,8 +190,6 @@ export function basemapUrl(url: string, vendoredGlyphKeys: ReadonlySet<string>):
   if (vendoredGlyphKeys.has(`${decodeURIComponent(encodedStack)}/${range}`)) return url;
   return `${UPSTREAM_FONTS}/${encodedStack}/${range}.pbf`;
 }
-
-const EMPTY_GLYPHS: ReadonlySet<string> = new Set();
 
 function transformRequest(url: string): RequestParameters | undefined {
   const rewritten = basemapUrl(url, vendoredGlyphs ?? EMPTY_GLYPHS);
@@ -278,7 +280,11 @@ export async function lease(host: HTMLElement, options: LeaseOptions = {}): Prom
     host.appendChild(canvasHost);
     map = new maplibregl.Map({
       container: canvasHost,
-      style,
+      // A fresh copy per Map. MapLibre normalises and annotates the style spec it is handed,
+      // and this module keeps ONE parsed style for the whole session -- so handing the same
+      // object to a second Map would hand it one the first had already rewritten. The clone
+      // costs a fraction of a millisecond against a 980 KB library load.
+      style: structuredClone(style),
       center: options.center ?? DEFAULT_CENTER,
       zoom: options.zoom ?? DEFAULT_ZOOM,
       cooperativeGestures: true,
@@ -288,7 +294,14 @@ export async function lease(host: HTMLElement, options: LeaseOptions = {}): Prom
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
   }
 
-  await styleReady(map);
+  try {
+    await styleReady(map);
+  } catch (cause) {
+    // The map is unusable and nothing else holds it. Without this it stays alive off-screen,
+    // holding a WebGL context a browser only grants ~16 of, for the rest of the session.
+    map.remove();
+    throw cause;
+  }
 
   // Everything this lease added, so `release` can undo exactly that and leave the 111
   // basemap layers alone.
@@ -421,7 +434,11 @@ export async function lease(host: HTMLElement, options: LeaseOptions = {}): Prom
 /** GeoJSON as MapLibre's own setData accepts it, without importing the whole geojson type. */
 type GeoJSONSourceData = Parameters<GeoJSONSource["setData"]>[0];
 
-/** How many instances are parked. Used by the tests; nothing in the UI reads it. */
+/**
+ * How many instances are parked. Nothing in the shell reads it; it exists so the pool's one
+ * real claim -- that a route change reuses an instance instead of building one -- can be
+ * checked from a console against the running app, which is the only place it is observable.
+ */
 export function parkedCount(): number {
   return parked.length;
 }

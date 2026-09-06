@@ -68,7 +68,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 124
+        "nodes": 128
       }
     },
     {
@@ -1855,7 +1855,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 13188,
+    "nodes": 13192,
     "external": 11,
     "stale": [],
     "unmatched": [

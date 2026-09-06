@@ -24,13 +24,26 @@ const LAZY_CHUNK_LIMIT_BYTES = 1_200_000;
 // `total` bounds the library across every chunk Rollup splits it into, measured with ~5%
 // headroom so an upstream bump that doubles something has to be looked at. It is a
 // footprint bound, not a per-load one, and the two differ by a lot for Mermaid: MapLibre
-// arrives as one real chunk of 0.98 MB (v6.4.1; it was ~1.05 MB on v5), while Mermaid self-splits by diagram type across 52
+// arrives as one real chunk of 0.98 MB (v6.4.1; it was ~1.05 MB on v5) plus a 0.46 MB worker,
+// while Mermaid self-splits by diagram type across 52
 // chunks totalling 2.57 MB, of which a reader pulls the ~1.3 MB core plus only the diagram
 // types actually on the page. What bounds any single download is LAZY_CHUNK_LIMIT_BYTES
 // above; this bounds the library growing while nobody is watching.
+//
+// `assets` is why a footprint bound has to name more than modules. Vite builds a worker in a
+// SEPARATE Rollup pass and emits the result as an asset, so its modules never appear in any
+// `chunk.modules` of this bundle and `match` cannot see them. MapLibre's worker is 0.46 MB --
+// a third of the library -- and it went completely unmeasured the day it started being built.
+// A budget with a third of its subject invisible is worse than no budget, because it reads
+// green.
 const LAZY_VENDORS = [
-  { label: "MapLibre", match: ["/maplibre-gl/"], total: 1_100_000 },
-  { label: "Mermaid", match: ["/mermaid/", "/@mermaid-js/"], total: 2_700_000 },
+  {
+    label: "MapLibre",
+    match: ["/maplibre-gl/"],
+    assets: [/maplibre-gl-worker.*\.js$/],
+    total: 1_530_000,
+  },
+  { label: "Mermaid", match: ["/mermaid/", "/@mermaid-js/"], assets: [], total: 2_700_000 },
 ];
 
 interface RegistryEntry {
@@ -142,7 +155,22 @@ function bundleGuard(): Plugin {
           );
         }
 
-        const bytes = owned.reduce((total, chunk) => total + sizeOf(chunk), 0);
+        // Chunks the module matcher found, plus separately-built assets it structurally cannot.
+        const assetBytes = Object.values(bundle)
+          .filter(
+            (output) =>
+              output.type === "asset" && vendor.assets.some((re) => re.test(output.fileName)),
+          )
+          .reduce(
+            (total, output) =>
+              total + Buffer.byteLength((output as { source: string | Uint8Array }).source),
+            0,
+          );
+        const workerChunkBytes = allChunks
+          .filter((chunk) => vendor.assets.some((re) => re.test(chunk.fileName)))
+          .reduce((total, chunk) => total + sizeOf(chunk), 0);
+        const bytes =
+          owned.reduce((total, chunk) => total + sizeOf(chunk), 0) + assetBytes + workerChunkBytes;
         if (bytes > vendor.total) {
           this.error(
             `${vendor.label} bundles total ${bytes} bytes; the limit is ${vendor.total}.`,

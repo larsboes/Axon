@@ -197,8 +197,13 @@ async function refresh(): Promise<void> {
   console.log(`upstream fallback for any range outside ${VENDORED_RANGES.join(", ")}: ${UPSTREAM_ORIGIN}`);
 }
 
-/** The gate: the vendored set exists and matches its own manifest. Cheap enough for doctor,
- *  and it fails on the one thing a reader cannot see -- a file that never landed. */
+/** Does the vendored set on disk match its own manifest?
+ *
+ *  Not a repository gate and deliberately not wired into `tools/doctor`. These files are
+ *  committed, so a checkout always has them and the check could never fire there; doctor is
+ *  about the machine, not the tree. `tools/dashboard-basemap.test.ts` is the real gate and it
+ *  runs in CI. This flag is for the one moment neither covers -- immediately after a refresh,
+ *  before the result is committed, when a half-written fetch is actually possible. */
 function check(): number {
   const manifestPath = join(OUT_DIR, "manifest.json");
   if (!existsSync(manifestPath)) {
