@@ -74,6 +74,12 @@ demo/overlay/config/comms.json
 # ISIN or a real allocation reaches the public repo with no gitignore to catch it, and
 # tools/check-site-payload.sh matches neither pattern.
 demo/overlay/config/finance.json
+# Everything tools/demo-up and tools/demo-seed generate UNDER the demo overlay's data root,
+# which since the decision ledger includes demo/overlay/data/finance/decisions/YYYY-MM.md:
+# `tools/demo-seed.ts` posts /decisions/run and the export lands wherever AXON_PERSONAL_ROOT
+# points, which during a demo run is this directory. `git ls-files demo/overlay` returns one
+# file and this is what keeps it that way.
+demo/overlay/data/
 
 # Agent worktrees created by Claude Code isolation (not repository content)
 .claude/worktrees/

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { page } from "$app/state";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
   import FinanceDashboard from "$lib/finance/FinanceDashboard.svelte";
@@ -17,8 +18,17 @@
     type WritebackResult,
   } from "$lib/api";
 
-  type View = "overview" | "planning" | "transactions" | "subscriptions" | "investments";
-  let view = $state<View>("overview");
+  // The tab order, and the union derived from it: two lists would drift, and the
+  // one that drifted would be the one a deep link is checked against.
+  const VIEWS = ["overview", "planning", "transactions", "investments", "subscriptions"] as const;
+  type View = (typeof VIEWS)[number];
+
+  // Home's decision row links to /finance?view=investments, so the query has to
+  // land on the tab it names -- a link that opens a different tab is a link that
+  // did not work. Seeded ONCE rather than $derived: the tabs below write `view`,
+  // and a derived value would snap back to the URL on the next click.
+  const requestedView = page.url.searchParams.get("view");
+  let view = $state<View>(VIEWS.find((candidate) => candidate === requestedView) ?? "overview");
 
   // The date picker is the point of this page rather than a convenience on it. A
   // subscription's price is an append-only series, so "what am I paying" and "what
@@ -391,8 +401,8 @@
 />
 
 <nav aria-label="Finance views">
-  {#each ["overview", "planning", "transactions", "investments", "subscriptions"] as item (item)}
-    <button class:active={view === item} onclick={() => view = item as View}>{item}</button>
+  {#each VIEWS as item (item)}
+    <button class:active={view === item} onclick={() => view = item}>{item}</button>
   {/each}
 </nav>
 

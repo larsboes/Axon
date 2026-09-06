@@ -3,6 +3,12 @@
 // WRITTEN AHEAD OF ITS REGISTRY, and the one thing to fix on merge is at the top
 // of this file.
 //
+// Its row component ships beside it at `../rows/FinanceRow.svelte`, which is the
+// name `view` below resolves to. That is not optional: the registry throws on a
+// view name it cannot resolve and Home calls it inside a snippet with no
+// boundary, so a kind without its row takes the whole page down rather than its
+// own row.
+//
 // The Home registry's own two modules -- `decisions.ts` and `registry.ts`, in the
 // directory above this one -- belong to the dashboard-refresh stream and neither
 // existed when this was written
