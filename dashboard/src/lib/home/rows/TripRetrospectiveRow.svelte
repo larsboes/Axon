@@ -15,14 +15,17 @@
     whyHere,
     candidateStatus,
   }: DecisionRowProps<PendingRetrospective> = $props();
-
   const where = $derived(row.destinations.join(" → "));
+
+
+
+  const kind = $derived(metaParts("Retrospective", dateLabel(row.date_end), where));
 </script>
 
 <ListRow {id} {current} {tone} {href}>
   {#snippet mark()}<Icon name="history" size={15} />{/snippet}
 
-  <span class="row-kind">{#each metaParts("Retrospective", dateLabel(row.date_end), where) as part}<span>{part}</span>{/each}</span>
+  <span class="row-kind">{#each kind as part}<span>{part}</span>{/each}</span>
   <a class="row-title" {href}>{row.title}</a>
 
   {#snippet meta()}<RowMeta {whyHere} {candidateStatus} />{/snippet}

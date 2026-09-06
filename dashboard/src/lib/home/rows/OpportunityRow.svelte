@@ -19,6 +19,9 @@
     candidateStatus,
   }: DecisionRowProps<ScoutingOpportunity, OpportunitySource> = $props();
 
+
+
+  const kind = $derived(metaParts("Opportunity", row.starts_at ? dateLabel(row.starts_at) : null, row.city));
   /// A decided opportunity leaves the kind's source, not just the ladder. Locations lists
   /// every opportunity still `new` and Sources counts them, so hiding it from the queue
   /// alone left the page showing a call the operator had already made two tabs over. The
@@ -37,7 +40,7 @@
   {#snippet mark()}<Icon name="compass" size={15} />{/snippet}
 
   <span class="row-kind">
-    {#each metaParts("Opportunity", row.starts_at ? dateLabel(row.starts_at) : null, row.city) as part}<span
+    {#each kind as part}<span
       >{part}</span
     >{/each}
   </span>

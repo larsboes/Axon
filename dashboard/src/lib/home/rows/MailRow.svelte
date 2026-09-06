@@ -20,6 +20,9 @@
     candidateStatus,
   }: DecisionRowProps<MailRow, MailRow[]> = $props();
 
+
+
+  const kind = $derived(metaParts("Mail", row.from_addr ?? "unknown sender", row.internal_date ? relativeDate(row.internal_date) : null));
   const dismiss = () =>
     act(() => comms.setTriageStatus(row.id, "dismissed").then(() => undefined), {
       dismiss: true,
@@ -31,7 +34,7 @@
   {#snippet mark()}<Icon name="mail" size={15} />{/snippet}
 
   <span class="row-kind">
-    {#each metaParts( "Mail", row.from_addr ?? "unknown sender", row.internal_date ? relativeDate(row.internal_date) : null, ) as part}<span
+    {#each kind as part}<span
       >{part}</span
     >{/each}
   </span>
