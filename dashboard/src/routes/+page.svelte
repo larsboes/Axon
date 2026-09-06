@@ -1241,8 +1241,8 @@
   /* The main lane is CAPPED, not proportional.
    *
    * It was `minmax(0, 2.2fr)` against a 2200px shell, so on this display a calendar row
-   * ran about 1600px: "15 Sep · AI Barcamp" at one end, "all day · Telekom, Bonn" at the
-   * other, and a void between them that the eye has to cross to pair the two. A fraction
+   * ran about 1600px: the date at one end and the venue at the other, with a void
+   * between them that the eye has to cross to pair the two. A fraction
    * of an ultrawide is not a measure. 68rem is wider than --measure because these are
    * structured rows rather than prose — a date, a title and a venue, each in its own
    * column — but it is bounded, which is the part that was missing.

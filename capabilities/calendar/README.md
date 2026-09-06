@@ -552,8 +552,8 @@ of entries that can all move. Turning one into a real `trips.plan` remains a
 deliberate act: Calendar calls Trips' public HTTP API and records the result in
 its own idempotence ledger; it never writes into Trips' store directly.
 
-Sources write venue lines (`Telekom, Bonn`; `Sparkassen Innovation Hub, Grüner
-Deich 15, 20097 Hamburg`), not bare cities, and two rules read them differently
+Sources write venue lines (`Nordwerk, Bonn`; `Beispiel Innovation Hub,
+Musterdeich 15, 20097 Hamburg`), not bare cities, and two rules read them differently
 on purpose:
 
 - **The clustering key is the city**, via `city_of` — the segment carrying a
