@@ -162,10 +162,11 @@ async fn main() {
         return;
     }
 
-    // Beide brauchen keine Wohnung: das Inventar ueberlebt jede.
-    if cmd == "import" || cmd == "inventory" {
+    // Diese drei brauchen keine Wohnung: das Inventar ueberlebt jede.
+    if cmd == "import" || cmd == "inventory" || cmd == "vault-writeback" {
         let code = match cmd {
             "import" => inventory_import(&argv),
+            "vault-writeback" => vault_writeback(),
             _ => inventory_show(),
         };
         std::process::exit(code);
@@ -714,6 +715,66 @@ fn inventory_import(argv: &[String]) -> i32 {
 }
 
 /// Was da ist, was fehlt, und was das Fehlende kostet.
+/// `interior vault-writeback` — die Reparaturhaelfte der Bruecke.
+///
+/// Existiert aus dem Grund, den `comms export-sources` fuer sich nennt: ein Vault, der nicht
+/// eingehaengt war, oder ein iCloud-Ordner, der noch nicht heruntergeladen war, hinterlaesst
+/// stillen Verzug, und beides ist mit einem Lauf hiervon behoben — **mit gestopptem Server**,
+/// was der Zustand ist, in dem ein Vault-Problem ueblicherweise bearbeitet wird.
+///
+/// Der Befehl existiert ausserdem, weil `trips` denselben in seiner Fehlermeldung nennt und
+/// nicht baut: `service.toml` erzeugt dort nur `--bin trips-server`, und `which trips` findet
+/// nichts. Ein Reparaturweg, den die Fehlermeldung nennt und die Maschine nicht hat, ist keiner.
+fn vault_writeback() -> i32 {
+    let st = match interior::store::Store::open(&axon_config::database_path()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{}", red(&format!("Datenbank nicht erreichbar: {e}")));
+            return 2;
+        }
+    };
+    let rows = match st.catalogue() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{}", red(&format!("Katalog laedt nicht: {e}")));
+            return 2;
+        }
+    };
+    let Some(ergebnis) = interior::obsidian::writeback(&rows) else {
+        eprintln!(
+            "{}",
+            red("keine Vault-Wurzel erklaert: obsidian.root in <overlay>/config/interior.json setzen")
+        );
+        return 2;
+    };
+    let report = match ergebnis {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{}", red(&e.to_string()));
+            return 1;
+        }
+    };
+    for pfad in &report.seeded {
+        println!("  {} {pfad}", green("angelegt:"));
+    }
+    for pfad in &report.written {
+        println!("  {} {pfad}", green("Region neu:"));
+    }
+    if !report.unchanged.is_empty() {
+        println!("  {}", dim(&format!("{} unveraendert", report.unchanged.len())));
+    }
+    for pfad in &report.conflicts {
+        eprintln!("  {} {pfad}", yellow("von Hand geaendert, nichts geschrieben:"));
+    }
+    // Ein Konflikt ist kein Fehlschlag des Laufs, aber er ist auch nicht "fertig": er verlangt
+    // eine menschliche Entscheidung, und ein Exit 0 wuerde das einem Scheduler verschweigen.
+    if report.conflicts.is_empty() {
+        0
+    } else {
+        1
+    }
+}
+
 fn inventory_show() -> i32 {
     use interior::store::State;
     let store = match interior::store::Store::open(&axon_config::database_path()) {

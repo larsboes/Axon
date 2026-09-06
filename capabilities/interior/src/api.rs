@@ -194,6 +194,11 @@ const ROUTES: &[route_manifest::Route] = &[
         "Ein Stueck aendern. Nimmt die Item-Form, die /api/inventory liefert.",
     ),
     r(
+        "POST",
+        "/api/vault/writeback",
+        "Jeden Slot als Notiz im Vault fuehren: einmal saeen, danach nur die Axon-Region.",
+    ),
+    r(
         "PUT",
         "/api/placements/:flat/:item",
         "Ein Stueck in dieser Wohnung platzieren. Body: {x, y, rot}.",
@@ -309,6 +314,33 @@ async fn api_inventory() -> Result<impl IntoResponse, (StatusCode, String)> {
         )
         .collect();
     Ok(Json(out))
+}
+
+/// Jeden Slot in den Vault schreiben.
+///
+/// Antwortet 200 auch dann, wenn ein Konflikt aufgetreten ist: ein Konflikt heisst, dass ein
+/// Mensch die Region angefasst hat, und das ist ein Zustand des Vaults, kein Fehler dieses
+/// Aufrufs. Er steht namentlich im Ergebnis, damit der Aufrufer ihn sieht, ohne im Log zu suchen.
+///
+/// 501 statt 500, wenn keine Vault-Wurzel erklaert ist: ein Host ohne Vault hat nichts falsch
+/// gemacht, er kann diesen Weg nur nicht gehen.
+async fn api_vault_writeback() -> Result<impl IntoResponse, (StatusCode, String)> {
+    let rows = store()?.catalogue().map_err(boom)?;
+    let Some(ergebnis) = crate::obsidian::writeback(&rows) else {
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "keine Vault-Wurzel erklaert: obsidian.root in <overlay>/config/interior.json setzen"
+                .to_string(),
+        ));
+    };
+    let report = ergebnis.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "ok": report.conflicts.is_empty(),
+        "seeded": report.seeded,
+        "written": report.written,
+        "unchanged": report.unchanged,
+        "conflicts": report.conflicts,
+    })))
 }
 
 /// Der offene Bedarf, und was er in Monatssalden kostet — die Naht zwischen `interior` und
@@ -910,6 +942,7 @@ pub async fn serve(flat: &str, port: u16) {
         .route("/api/wishlist", get(api_wishlist))
         .route("/api/placements/:flat", get(api_placements))
         .route("/api/items", post(api_post_item))
+        .route("/api/vault/writeback", post(api_vault_writeback))
         .route("/api/items/:id", put(api_put_item).patch(api_patch_item))
         .route(
             "/api/items/:id/state",
