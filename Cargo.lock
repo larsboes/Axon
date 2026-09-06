@@ -2487,6 +2487,7 @@ dependencies = [
  "axon-server",
  "axon-store",
  "axum",
+ "markdown-root",
  "rayon",
  "route-manifest",
  "rusqlite",
