@@ -4,8 +4,9 @@
 //! evaluator reads a `FeedItem` and a trip snapshot, and a triage row has
 //! neither. What it shares is everything that makes a stored evaluation
 //! trustworthy — the same nine columns, the same currency check, the same tier
-//! gate, the same normalized factor table, and the same rule that a factor which
-//! cannot be computed carries weight 0 while the rest scale to 1.0.
+//! gate, the same normalized factor table, and the same rule that a factor whose
+//! producer has not run carries weight 0 while the rest scale to 1.0 (a class
+//! refusal excepted: it is never rescaled).
 //!
 //! Three factors, and one reserved slot:
 //!
@@ -116,6 +117,21 @@ pub fn is_current(
     })
 }
 
+/// Whether a stored class refusal may be left alone. Same rule and same reason
+/// as [`evaluation::refusal_is_current`], against this evaluator's revision.
+pub fn refusal_is_current(
+    stored: Option<&FeedEvaluation>,
+    item_revision: &str,
+    context_revision: &str,
+) -> bool {
+    stored.is_some_and(|evaluation| {
+        evaluation.mode == "unscored"
+            && evaluation.item_revision == item_revision
+            && evaluation.context_revision == context_revision
+            && evaluation.evaluator_revision == MAIL_EVALUATOR_REVISION
+    })
+}
+
 /// What the model rung published about one mail, when it has run.
 ///
 /// The rung stores urgency in a column or table it owns; this reads it as the
@@ -134,9 +150,11 @@ pub struct UrgencySignal {
 ///
 /// `refused_class` is the c3 state: the item reached no model and no lexical
 /// scorer, so the interest factor carries weight 0 with a rationale that says
-/// so, and category, age and urgency scale to 1.0 between them. That is how a
-/// refused mail stays ranked on what is left instead of being dumped to the
-/// bottom of its band by a zero it never earned.
+/// so, and the remaining factors keep their stated shares. The weights of a
+/// refused mail sum to 0.45, not to 1.0, and that is the point -- a refusal is
+/// missing evidence, so the mail is ranked on what is left rather than
+/// promoted above every mail that was actually read. See
+/// `evaluation::scale_weights` for what the rescaled version measured.
 pub fn evaluate(
     item: &TriageItem,
     strongest_match: Option<&RelevanceMatch>,
@@ -240,7 +258,14 @@ pub fn evaluate(
     // `urgency` is a reserved share: it keeps its stated 0.25 and the other
     // three scale into the remaining 0.75, rather than every factor taking an
     // equal quarter of 1.25.
-    evaluation::scale_weights(&mut factors, &["urgency"]);
+    //
+    // A refusal is never rescaled. Redistributing the refused 0.55 into
+    // `category` and `age` -- 1.0 and ~0.6 for an `aktiv` thread -- scored every
+    // c3 mail above every mail that was read; see `evaluation::scale_weights`
+    // for the measurement. A refused mail keeps 0.30/0.15 and caps at 0.45.
+    if !refused_class {
+        evaluation::scale_weights(&mut factors, &["urgency"]);
+    }
 
     let overall_score = factors
         .iter()
@@ -290,7 +315,18 @@ pub fn evaluate(
 /// so a reader comparing two ranked surfaces is comparing the same kind of
 /// number.
 pub fn score_bp(evaluation: &FeedEvaluation) -> i32 {
-    (evaluation.overall_score.clamp(0.0, 1.0) * 10_000.0).round() as i32
+    overall_bp(evaluation.overall_score)
+}
+
+/// The conversion itself, for the one caller that holds the score without the
+/// evaluation around it.
+///
+/// `TriageOut::from_store` reads `(overall, evaluated_at)` out of a grouped
+/// query rather than a `FeedEvaluation`, and used to restate the clamp and the
+/// rounding inline -- two copies of one rule, free to drift, under a doc comment
+/// naming this module as the single writer.
+pub fn overall_bp(overall: f64) -> i32 {
+    (overall.clamp(0.0, 1.0) * 10_000.0).round() as i32
 }
 
 #[cfg(test)]
@@ -361,12 +397,36 @@ mod tests {
             assert!((0.0..=1.0).contains(&evaluation.overall_score));
         }
 
-        // A refusal costs the interest factor its weight and nothing else.
+        // A refusal costs the interest factor its weight and withholds the
+        // share rather than redistributing it: 0.30 + 0.15, never 1.0.
         let refused = evaluate(&mail("aktiv", "c3"), None, None, "context", true);
         assert_eq!(weight_of(&refused, "interest"), 0.0);
-        assert!((weights_sum(&refused) - 1.0).abs() < 1e-9);
+        assert!((weights_sum(&refused) - 0.45).abs() < 1e-9);
+        assert!((weight_of(&refused, "category") - CATEGORY_WEIGHT).abs() < 1e-9);
+        assert!((weight_of(&refused, "age") - AGE_WEIGHT).abs() < 1e-9);
         assert_eq!(refused.mode, "unscored");
         assert!(!refused.explanation.contains("Interest fit"));
+    }
+
+    /// The defect this rule exists to prevent, measured on a copy of the live
+    /// database on 2026-09-06: with the refused share rescaled into `category`
+    /// and `age`, all 11 c3 threads scored 0.863..0.990 while the best mail
+    /// anybody had actually read reached 0.702, so Home's mail band was led by
+    /// the eleven most sensitive threads on the machine.
+    #[test]
+    fn a_refused_mail_never_outranks_a_mail_that_was_read() {
+        let item = mail("aktiv", "c1");
+        // The weakest scored mail there is: an `aktiv` thread that arrived
+        // today and matched a lens at 0.0.
+        let scored = evaluate(&item, Some(&matched(0.0)), None, "context", false);
+        let refused = evaluate(&mail("aktiv", "c3"), None, None, "context", true);
+        assert!(
+            refused.overall_score <= scored.overall_score,
+            "refused {} must not beat scored {}",
+            refused.overall_score,
+            scored.overall_score
+        );
+        assert!(refused.overall_score <= 0.45);
     }
 
     #[test]

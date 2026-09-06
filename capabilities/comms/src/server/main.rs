@@ -665,12 +665,41 @@ mod tests {
         );
     }
 
+    /// Both scoring paths, not just mail.
+    ///
+    /// The feed's own gate is `content_item::local_prompt_allowed`, which
+    /// admits c2 -- and `POST /feed/:id/data-class` accepts any class in the
+    /// vocabulary, so a c2 feed item is reachable. PRD §6.2b: C2 may only reach
+    /// a cloud model after a ladder pass has reduced it to C1, and an embedding
+    /// of `item_document` is the stored title, author and content verbatim. So
+    /// `relevance_refresh_handler`, `enrich_many_in_background` and
+    /// `evaluation_status_handler` resolve the two roles through this filter,
+    /// exactly as `triage_relevance_handler` already did.
     #[test]
-    fn mail_relevance_accepts_only_loopback_model_endpoints() {
+    fn every_relevance_path_accepts_only_loopback_model_endpoints() {
         assert!(loopback_inference_url("http://127.0.0.1:8000/v1"));
         assert!(loopback_inference_url("http://localhost:11434"));
         assert!(loopback_inference_url("http://[::1]:8000/v1"));
         assert!(!loopback_inference_url("https://api.example.com/v1"));
+        assert!(!loopback_inference_url("https://embeddings.example.com"));
+
+        // The source is the check: every `embedding_role()`/`reranking_role()`
+        // resolution in the two feed handlers and the status endpoint carries
+        // the filter, so a cloud-hosted role is never handed to `score_items`.
+        let feed = include_str!("feed.rs");
+        let resolutions =
+            feed.matches(".embedding_role()").count() + feed.matches(".reranking_role()").count();
+        let filtered = feed
+            .matches("loopback_inference_url(&role.backend.base_url)")
+            .count();
+        assert_eq!(
+            resolutions, filtered,
+            "every role resolution in server/feed.rs must be filtered to loopback"
+        );
+        assert!(
+            resolutions >= 6,
+            "expected six resolutions, got {resolutions}"
+        );
     }
 
     #[test]

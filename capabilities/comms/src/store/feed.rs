@@ -362,7 +362,9 @@ impl Store {
     /// operator did so.
     ///
     /// The UPDATE and exactly one row in `{prefix}_feed_interactions` commit
-    /// together. This route is the only writer of the three decisive verbs —
+    /// together, and a press that does not move the status writes neither: one
+    /// ledger row per status CHANGE, not per POST. This route is the only
+    /// writer of the three decisive verbs —
     /// `POST /feed/:id/interactions` refuses them — because two paths writing
     /// one decision double every count the learned factor is gated on, and the
     /// transactional write is the one that cannot be lost.
@@ -393,16 +395,36 @@ impl Store {
         };
         let mut conn = self.conn()?;
         let transaction = conn.transaction()?;
-        let affected = transaction.execute(
+        // Read inside the transaction rather than keying the ledger off the
+        // UPDATE's row count: an UPDATE that sets a column to the value it
+        // already holds still reports one row affected, so a second press of
+        // `u` or `d` on the same entry appended a decision that never happened
+        // and over-counted the ledger the learned factor is gated on. `None`
+        // here is a missing item and the route answers 404; `Some` equal to the
+        // incoming status is a no-op and writes nothing.
+        let current = transaction
+            .query_row(
+                &format!(
+                    "SELECT status FROM {}_feed_items WHERE id = ?1",
+                    self.prefix
+                ),
+                params![&id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(current) = current else {
+            return Ok(false);
+        };
+        if current == status {
+            return Ok(true);
+        }
+        transaction.execute(
             &format!(
                 "UPDATE {}_feed_items SET status = ?1 WHERE id = ?2",
                 self.prefix
             ),
             params![&status, &id],
         )?;
-        if affected == 0 {
-            return Ok(false);
-        }
         super::feedback::insert_interaction(&transaction, &self.prefix, id, event, surface)?;
         transaction.commit()?;
         Ok(true)
@@ -941,6 +963,30 @@ impl Store {
             map.entry(feed_id).or_default().push(matched);
         }
         Ok(map)
+    }
+
+    /// Delete every stored match for one item, past the tier gate.
+    ///
+    /// The withdrawal half of [`Store::replace_feed_relevance`], and separate
+    /// from it on purpose. `replace_feed_relevance(id, &[])` computes an
+    /// incoming tier of `deterministic` from an empty match set, so on an item
+    /// that already carried a `model`-tier evaluation it returned `Ok(false)`
+    /// and deleted nothing -- which is how a c3 escalation left three stored
+    /// matches in place while the pass reported `refused_class: 1`. An empty set
+    /// cannot simply be made to delete: a pass that found no lens match would
+    /// then wipe good semantic rows. So the caller says which it means.
+    ///
+    /// Returns the number of rows removed, so a receipt can report a withdrawal
+    /// that actually happened.
+    pub fn clear_feed_relevance(&self, feed_id: &str) -> Result<usize, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        Ok(conn.execute(
+            &format!(
+                "DELETE FROM {}_feed_relevance WHERE feed_id = ?1",
+                self.prefix
+            ),
+            params![&feed_id],
+        )?)
     }
 
     /// Replace every profile result for one item in one transaction. Removed

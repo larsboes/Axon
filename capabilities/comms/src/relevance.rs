@@ -69,8 +69,9 @@ pub struct ScoringOutcome {
     /// The strongest mode any item actually got: `reranked`, `semantic`,
     /// `lexical`, or `unscored` when there was nothing to score.
     pub mode: &'static str,
-    /// A stable class, never a provider message: `embedding-unreachable`,
-    /// `embedding-failed` or `no-profiles`.
+    /// A stable class, never a provider message: `embedding-unreachable` or
+    /// `embedding-failed`. `None` for a machine that has simply declared no
+    /// TELOS lens -- that is a configuration and `profile_count` reports it.
     pub error_class: Option<&'static str>,
     /// Embedding calls attempted and how many of them fell back. One failure
     /// now costs one chunk, not the pass.
@@ -231,11 +232,18 @@ pub fn score_items(
         })
         .collect::<Vec<_>>();
 
+    // No declared lens is a configuration, not a failure, and `load_profiles`
+    // says so in the same words: it is the ordinary state of a fresh install, of
+    // CI and of every worktree. Reporting it as an `error_class` made
+    // `record_relevance_pass` grow `consecutive_failures` on every pass forever
+    // and made the dashboard's dot red beside the words "lexical fallback" on a
+    // machine that never attempted an embedding. The count is reported instead:
+    // `profile_count` is already in every receipt and in the status endpoint.
     if profiles.is_empty() {
         return ScoringOutcome {
             items: scored,
             mode: "unscored",
-            error_class: Some("no-profiles"),
+            error_class: None,
             chunks: 0,
             chunks_failed: 0,
         };

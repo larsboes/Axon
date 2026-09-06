@@ -60,11 +60,13 @@ fn print_help() {
     println!("                                  class is a human act, so the rationale is");
     println!("                                  required and is stored on every row it changes.");
     println!("  relevance backfill              re-score stored feed items through the running");
-    println!("       [--days N] [--batch N]     server, page by page, until every item in the");
-    println!("       [--max N] [--force]        window has been seen. Drains rows that were");
-    println!("                                  written lexical while the embedding role was");
-    println!("                                  down. Needs comms-server up: it is an HTTP");
-    println!("                                  client, not a second opener of the database.");
+    println!("       [--days N=3650]            server, page by page, until every item in the");
+    println!("       [--batch N=100] [--max N]  window has been seen. Drains rows that were");
+    println!("       [--force]                  written lexical while the embedding role was");
+    println!("                                  down. Only the full 3650-day window can mark");
+    println!("                                  the corpus complete. Needs comms-server up: it");
+    println!("                                  is an HTTP client, not a second opener of the");
+    println!("                                  database.");
     println!("  --help, -h                      show this help");
     println!("\nThis CLI's Gmail sweep is READ-ONLY. Archive, Trash and the Waiting label require an explicit authenticated dashboard action.");
 }
@@ -761,9 +763,15 @@ fn cmd_relevance(args: &[String], cfg: &Config) {
         eprintln!("error: unknown relevance verb '{verb}' -- the only verb is `backfill`");
         std::process::exit(1);
     }
+    // Ten years, not one. The route's window is the corpus-completion test:
+    // `POST /feed/relevance/refresh` only marks the relevance revision complete
+    // for a pass that asked for the widest window (server/feed.rs
+    // `FULL_WINDOW_DAYS`), and a bare `backfill` that asked for 365 both left
+    // older rows unreachable and could not finish the chain. The design
+    // (/tmp/axon-night/designs/feed-personalization.md) specifies 3650.
     let days: i32 = arg_after(args, "--days")
         .and_then(|value| value.parse().ok())
-        .unwrap_or(365);
+        .unwrap_or(3650);
     let batch: usize = arg_after(args, "--batch")
         .and_then(|value| value.parse().ok())
         .unwrap_or(100)

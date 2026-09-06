@@ -214,14 +214,60 @@ pub(super) async fn triage_relevance_handler(
             .iter()
             .map(|item| item.id.clone())
             .collect::<Vec<_>>();
-        let triage = all_triage
+        let embedding_role = cfg
+            .embedding_role()
+            .filter(|role| loopback_inference_url(&role.backend.base_url));
+        let reranking_role = cfg
+            .reranking_role()
+            .filter(|role| loopback_inference_url(&role.backend.base_url));
+        // Resolved before the page is picked, because the currency check needs
+        // it and the currency check now decides what the page IS.
+        let mail_context_revision = mail_evaluation::context_revision(
+            &profiles,
+            embedding_role
+                .as_ref()
+                .map(|role| role.cache_key())
+                .as_deref(),
+            reranking_role
+                .as_ref()
+                .map(|role| role.cache_key())
+                .as_deref(),
+        );
+        let semantic_available = relevance::embedding_backend_reachable(embedding_role.as_ref());
+
+        // The limit bounds the WORK, not the head of a fixed list. `list_triage`
+        // orders by `internal_date DESC`, so taking the first `limit` rows and
+        // asking about currency afterwards embedded the same newest 200 mails on
+        // every pass and left the 26 oldest scorable mails permanently unscored,
+        // while the receipt reported `skipped_current: 200` as if the corpus
+        // were finished.
+        let mut skipped_current = 0usize;
+        let mut stale = Vec::new();
+        for item in all_triage
             .into_iter()
             .filter(|item| item.status == "proposed" || item.status == "approved")
             .filter(|item| content_item::local_prompt_allowed(&item.data_class))
-            .take(limit)
-            .collect::<Vec<_>>();
-        let scorable = triage.clone();
-        let items = triage
+        {
+            let stored = store.triage_evaluation(&item.id).ok().flatten();
+            let item_revision = mail_evaluation::item_revision(&item);
+            if mail_evaluation::is_current(
+                stored.as_ref(),
+                &item_revision,
+                &mail_context_revision,
+                semantic_available,
+            ) {
+                skipped_current += 1;
+            } else {
+                stale.push(item);
+            }
+        }
+        // What this pass could not reach. Reported so an operator can see that
+        // the corpus is not finished rather than inferring it from a count that
+        // happens to equal the limit.
+        let unreached = stale.len().saturating_sub(limit);
+        stale.truncate(limit);
+        let scorable = stale;
+        let items = scorable
             .iter()
             .map(|proposal| {
                 let mut item = FeedItem::new(
@@ -248,12 +294,6 @@ pub(super) async fn triage_relevance_handler(
                 item
             })
             .collect::<Vec<_>>();
-        let embedding_role = cfg
-            .embedding_role()
-            .filter(|role| loopback_inference_url(&role.backend.base_url));
-        let reranking_role = cfg
-            .reranking_role()
-            .filter(|role| loopback_inference_url(&role.backend.base_url));
         let outcome = relevance::score_items(
             &items,
             &profiles,
@@ -277,7 +317,8 @@ pub(super) async fn triage_relevance_handler(
         // whatever a previous ungated pass derived from it: 15 stored rows over
         // 11 c3 mails go on the first gated pass. Written as a deletion rather
         // than left alone, because a stored score is a claim about content the
-        // gate says no model may read.
+        // gate says no model may read. `replace_triage_relevance` carries no
+        // tier gate, so unlike the feed's an empty set really does delete.
         for id in &refused_ids {
             store
                 .replace_triage_relevance(id, &[])
@@ -289,33 +330,9 @@ pub(super) async fn triage_relevance_handler(
         // so it extends this route rather than earning a second one — the
         // loopback role filter already sits here and a new route would restate
         // it.
-        let mail_context_revision = mail_evaluation::context_revision(
-            &profiles,
-            embedding_role
-                .as_ref()
-                .map(|role| role.cache_key())
-                .as_deref(),
-            reranking_role
-                .as_ref()
-                .map(|role| role.cache_key())
-                .as_deref(),
-        );
-        let semantic_available = relevance::embedding_backend_reachable(embedding_role.as_ref());
         let mut evaluated = 0usize;
-        let mut skipped_current = 0usize;
         let mut refused_lower_tier = 0usize;
         for (item, scored_item) in scorable.iter().zip(&outcome.items) {
-            let stored = store.triage_evaluation(&item.id).ok().flatten();
-            let item_revision = mail_evaluation::item_revision(item);
-            if mail_evaluation::is_current(
-                stored.as_ref(),
-                &item_revision,
-                &mail_context_revision,
-                semantic_available,
-            ) {
-                skipped_current += 1;
-                continue;
-            }
             let evaluation = mail_evaluation::evaluate(
                 item,
                 scored_item.matches.first(),
@@ -339,10 +356,26 @@ pub(super) async fn triage_relevance_handler(
         // rationale that says why. An item with no evaluation is
         // indistinguishable from one nobody has reached yet.
         for item in &refused_items {
+            let item_revision = mail_evaluation::item_revision(item);
+            let stored = store.triage_evaluation(&item.id).ok().flatten();
+            // A stored refusal at this revision is final. `is_current` cannot
+            // say so, because it reads `unscored` as stale whenever an embedder
+            // answers -- and no embedder can ever upgrade a refusal.
+            if mail_evaluation::refusal_is_current(
+                stored.as_ref(),
+                &item_revision,
+                &mail_context_revision,
+            ) {
+                skipped_current += 1;
+                continue;
+            }
             let evaluation =
                 mail_evaluation::evaluate(item, None, None, &mail_context_revision, true);
+            // Past the tier gate: a refusal withdraws a model-derived score, and
+            // a withdrawal that loses to the score it withdraws leaves the score
+            // on the surface forever.
             if store
-                .replace_triage_evaluation(&evaluation)
+                .replace_triage_evaluation_refusal(&evaluation)
                 .map_err(|error| error.to_string())?
             {
                 evaluated += 1;
@@ -350,11 +383,13 @@ pub(super) async fn triage_relevance_handler(
                 refused_lower_tier += 1;
             }
         }
-
         Ok(json!({
             "scored": scored,
             "evaluated": evaluated,
             "skipped_current": skipped_current,
+            // Scorable mails this pass could not reach inside `limit`. Non-zero
+            // means the corpus is not finished and another pass is owed.
+            "unreached": unreached,
             "refused_class": refused_class,
             "refused_lower_tier": refused_lower_tier,
             "profile_count": profiles.len(),

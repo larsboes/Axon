@@ -350,15 +350,21 @@ impl Store {
             -- written only by `set_feed_status`, in the same transaction as
             -- the UPDATE, so a decision can neither be lost nor counted twice.
             -- `POST /feed/:id/interactions` refuses those three with 400 and
-            -- accepts `opened` and `reopened` only.
+            -- accepts `opened` and `reopened` only. One row per status CHANGE:
+            -- `set_feed_status` reads the stored status inside the same
+            -- transaction and writes nothing when the press does not move it,
+            -- because an UPDATE to the value a column already holds still
+            -- reports one row affected.
             --
             -- Reading the label: an item's label is its most recent row whose
             -- event is in ('kept','dismissed'), retracted by a later `unkept`.
             --
-            -- `shared` ships with no writer on purpose. SQLite has no
-            -- alterable constraint, so widening this CHECK later costs the
-            -- table-rebuild dance this file documents below; declaring a value
-            -- now is free.
+            -- `shared` ships with no writer on purpose, and `home` has none
+            -- until the Home surface passes its own name to
+            -- `POST /feed/:id/status` (the route already takes `surface`).
+            -- SQLite has no alterable constraint, so widening this CHECK later
+            -- costs the table-rebuild dance this file documents below;
+            -- declaring a value now is free.
             CREATE TABLE IF NOT EXISTS {prefix}_feed_interactions (
                 interaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 feed_id TEXT NOT NULL REFERENCES {prefix}_feed_items(id) ON DELETE CASCADE,

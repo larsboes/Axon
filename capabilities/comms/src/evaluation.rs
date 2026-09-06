@@ -35,7 +35,10 @@ pub struct EvaluationFactor {
     pub label: String,
     /// Normalized value in the closed interval 0..=1.
     pub score: f64,
-    /// Share of the overall score. All factors for this revision sum to 1.
+    /// Share of the overall score. All factors for this revision sum to 1,
+    /// except on a class refusal, where the refused factor's share is withheld
+    /// rather than redistributed and the sum is deliberately below 1
+    /// (`scale_weights`).
     pub weight: f64,
     pub rationale: String,
     pub context: Option<EvaluationFactorContext>,
@@ -156,6 +159,28 @@ pub fn is_current(
     })
 }
 
+/// Whether a stored class REFUSAL may be left alone.
+///
+/// [`is_current`] treats `unscored` as stale whenever an embedding role answers,
+/// because a row written while the embedder was down should drain on the next
+/// pass. A class refusal is the opposite case: no reachable embedder can ever
+/// upgrade it, so that rule rewrote every c3 row and every one of its factor
+/// rows on every pass, forever. The three revision terms still decide currency,
+/// so a moved lens, a changed item or a new evaluator revision still restales
+/// the refusal.
+pub fn refusal_is_current(
+    stored: Option<&FeedEvaluation>,
+    item_revision: &str,
+    context_revision: &str,
+) -> bool {
+    stored.is_some_and(|evaluation| {
+        evaluation.mode == "unscored"
+            && evaluation.item_revision == item_revision
+            && evaluation.context_revision == context_revision
+            && evaluation.evaluator_revision == EVALUATOR_REVISION
+    })
+}
+
 /// The share the learned feedback factor takes when it is active.
 ///
 /// Taste, not measurement, which is why it is a named constant reported by
@@ -165,11 +190,22 @@ pub const FEEDBACK_WEIGHT: f64 = 0.15;
 
 /// The one weight rule, stated once and reused by both evaluators.
 ///
-/// **A factor that cannot be computed carries weight 0, and the remaining
-/// factors scale so the sum stays 1.0.** That is what lets a class refusal, or
-/// an inert learned factor, or an urgency the model rung has not published,
-/// leave the arithmetic whole instead of dumping the item to the bottom of its
-/// band by a zero it never earned.
+/// **A factor whose producer has not run yet carries weight 0, and the
+/// remaining factors scale so the sum stays 1.0.** That is what lets an inert
+/// learned factor, or an urgency the model rung has not published, leave the
+/// arithmetic whole instead of dumping the item to the bottom of its band by a
+/// zero it never earned.
+///
+/// **A class refusal is not that case, and callers must not rescale it.** A
+/// refusal is missing evidence, not a free pass. Measured on a copy of the live
+/// database: rescaling a refused mail's `interest` share into `category` and
+/// `age` -- 1.0 and ~0.6 for an `aktiv` thread -- put all 11 c3 mails at
+/// 0.863..0.990 against a maximum of 0.702 for every mail that was actually
+/// read, so the eleven threads the class ladder forbids a model to read led the
+/// band. Both evaluators therefore skip this call when `refused_class` is true:
+/// the refused factor keeps weight 0, every other factor keeps its stated
+/// share, the sum stays deliberately below 1.0, and a refused row can never
+/// outrank a scored row whose other factors are identical.
 ///
 /// `reserved_keys` names the factors whose weight is a fixed share rather than a
 /// share of the base — `feedback` on the feed, `urgency` on mail. Those keep
@@ -298,7 +334,14 @@ pub fn evaluate(
     // becomes 0.3825/0.2125/0.17/0.085. The learned signal can move an item at
     // most 15 points of 100 -- it re-orders inside a band and can never outvote
     // the TELOS lenses.
-    scale_weights(&mut factors, &["feedback"]);
+    //
+    // A refusal is never rescaled: the item keeps 0.25/0.20/0.10 (plus the
+    // learned share when it is active) and caps below what the same item would
+    // have scored with an interest match, which is the whole rule in
+    // `scale_weights`.
+    if !refused_class {
+        scale_weights(&mut factors, &["feedback"]);
+    }
     let overall_score = factors
         .iter()
         .map(|factor| factor.score * factor.weight)
@@ -691,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_factor_carries_weight_zero_and_the_rest_rescale() {
+    fn a_refused_factor_carries_weight_zero_and_the_rest_are_not_rescaled() {
         let item = item();
         let matched = RelevanceMatch {
             profile_key: "p".into(),
@@ -710,19 +753,47 @@ mod tests {
         assert_eq!(interest.weight, 0.0);
         assert!(interest.rationale.contains("never read by a model"));
         assert_eq!(refused.mode, "unscored");
+        // The refused share is withheld, not redistributed: 0.25 + 0.20 + 0.10.
         assert!(
             (refused
                 .factors
                 .iter()
                 .map(|factor| factor.weight)
                 .sum::<f64>()
-                - 1.0)
+                - 0.55)
                 .abs()
                 < 1e-9,
-            "the weights still sum to one with a factor at zero"
+            "a refusal withholds the refused share instead of handing it to the survivors"
         );
         // The explanation must not report a factor that counts for nothing.
         assert!(!refused.explanation.contains("Interest fit"));
+    }
+
+    /// The rule the rescaled version broke, pinned.
+    ///
+    /// A refused c3 item and a scored item with identical travel, freshness and
+    /// evidence: the refusal must never come out on top, because the only
+    /// difference between them is evidence the class ladder forbade reading.
+    #[test]
+    fn a_refused_item_never_outranks_a_scored_item_with_the_same_other_factors() {
+        let item = item();
+        let matched = RelevanceMatch {
+            profile_key: "p".into(),
+            profile_label: "Local AI".into(),
+            score: 0.0,
+            rationale: "match".into(),
+            mode: "semantic".into(),
+            profile_revision: "r".into(),
+        };
+        // The weakest possible scored item: a real interest match at 0.0.
+        let scored = evaluate(&item, Some(&matched), "context", &[], false, None);
+        let refused = evaluate(&item, None, "context", &[], true, None);
+        assert!(
+            refused.overall_score <= scored.overall_score,
+            "refused {} must not beat scored {}",
+            refused.overall_score,
+            scored.overall_score
+        );
     }
 
     fn feedback_factor(active: bool) -> EvaluationFactor {
@@ -741,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn weights_sum_to_one_in_every_state() {
+    fn weights_sum_to_one_in_every_state_a_refusal_does_not_reach() {
         let item = item();
         let matched = RelevanceMatch {
             profile_key: "p".into(),
@@ -795,7 +866,9 @@ mod tests {
         assert!((weight_of(&active, "evidence") - 0.085).abs() < 1e-9);
 
         // Refused, with the learned factor active: the interest factor drops to
-        // zero and the rest still sum to one.
+        // zero and its 0.45 is withheld rather than handed to the survivors, so
+        // the sum is 0.25 + 0.20 + 0.10 + 0.15 and every other factor keeps the
+        // share it would have had.
         let refused = evaluate(
             &item,
             Some(&matched),
@@ -804,9 +877,10 @@ mod tests {
             true,
             Some(feedback_factor(true)),
         );
-        assert!((sum(&refused) - 1.0).abs() < 1e-9);
+        assert!((sum(&refused) - 0.70).abs() < 1e-9);
         assert_eq!(weight_of(&refused, "interest"), 0.0);
         assert!((weight_of(&refused, "feedback") - 0.15).abs() < 1e-9);
+        assert!((weight_of(&refused, "travel") - 0.25).abs() < 1e-9);
     }
 
     #[test]

@@ -109,8 +109,12 @@ impl Store {
         Ok(true)
     }
 
-    /// How many of each verb the ledger holds. The gate reports this, so a
-    /// reader can check the cold-start claim against the table itself.
+    /// How many of each verb the ledger holds.
+    ///
+    /// `GET /feed/evaluation/status` reports it as `interactions`, beside the
+    /// gate's own `samples`, so a reader can check the cold-start claim against
+    /// the table itself -- and so `opened` and `reopened`, which no training
+    /// label reads, reach a surface at all.
     pub fn interaction_counts(&self) -> Result<InteractionCounts, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         let rows = conn.query_all(
@@ -316,6 +320,40 @@ mod db_tests {
         assert!(!store
             .set_feed_status("missing", "keeper", "api")
             .expect("an unknown id is not an error"));
+    }
+
+    /// One row per status CHANGE, not per POST.
+    ///
+    /// The Inbox binds `u` and `d` unconditionally, so a second press on a row
+    /// that is already in that status used to append a decision that never
+    /// happened: an UPDATE that writes the value a column already holds still
+    /// reports one row affected. `training_labels` survived it -- it takes the
+    /// most recent decisive row -- but `interaction_counts`, which the status
+    /// endpoint now reports, counted the press twice.
+    #[test]
+    fn a_repeated_identical_status_writes_no_second_ledger_row() {
+        let store = open_test_store("feedback_repeat_no_row");
+        let id = stored_item(&store, "https://example.com/repeat", None);
+
+        assert!(store.set_feed_status(&id, "keeper", "inbox").unwrap());
+        assert!(store.set_feed_status(&id, "keeper", "inbox").unwrap());
+        assert!(store.set_feed_status(&id, "keeper", "reader").unwrap());
+        assert_eq!(events(&store, &id), vec!["kept".to_string()]);
+
+        // The status still reads back, and a real change still writes its row.
+        assert_eq!(
+            store.get_feed_status(&id).unwrap().as_deref(),
+            Some("keeper")
+        );
+        assert!(store.set_feed_status(&id, "new", "inbox").unwrap());
+        assert_eq!(
+            events(&store, &id),
+            vec!["kept".to_string(), "unkept".to_string()]
+        );
+        // A row that never moved from `new` records nothing at all.
+        let untouched = stored_item(&store, "https://example.com/untouched", None);
+        assert!(store.set_feed_status(&untouched, "new", "inbox").unwrap());
+        assert!(events(&store, &untouched).is_empty());
     }
 
     #[test]

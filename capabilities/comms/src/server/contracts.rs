@@ -284,19 +284,23 @@ pub(super) struct TriageOut {
     /// "I replied and I'm blocked" indistinguishable from "Axon dismissed it".
     pub(super) waiting: bool,
     pub(super) waiting_since: Option<String>,
-    pub(super) first_seen: String,
-    pub(super) last_seen: String,
-    pub(super) relevance: Vec<RelevanceOut>,
     /// The mail evaluator's `overall_score` in basis points, 0..=10000 — the
     /// unit `places_person_places.confidence_bp` already uses (PRD Q73).
     ///
-    /// ONE writer, one meaning: `mail_evaluation::score_bp` and nothing else.
+    /// ONE writer, one meaning: `mail_evaluation::overall_bp` and nothing else.
     /// The model rung's urgency is not a second number on this field; it arrives
     /// as the `urgency` factor's input and moves the score THROUGH the
     /// evaluator, so the explanation stays whole. `null` means the mail has no
     /// stored evaluation yet, which is deliberately not the same as 0.
+    ///
+    /// Placed here, next to `waiting_since`, and not at the end of the struct:
+    /// the mail-llm-rung stream appends its own field after `relevance`, and the
+    /// two designs agreed on this placement so both additions merge.
     pub(super) score_bp: Option<i32>,
     pub(super) evaluated_at: Option<String>,
+    pub(super) first_seen: String,
+    pub(super) last_seen: String,
+    pub(super) relevance: Vec<RelevanceOut>,
 }
 
 impl TriageOut {
@@ -306,10 +310,6 @@ impl TriageOut {
         score: Option<(f64, String)>,
     ) -> Self {
         Self {
-            score_bp: score
-                .as_ref()
-                .map(|(overall, _)| (overall.clamp(0.0, 1.0) * 10_000.0).round() as i32),
-            evaluated_at: score.map(|(_, at)| at),
             id: item.id,
             from_addr: item.from_addr,
             subject: item.subject,
@@ -334,6 +334,10 @@ impl TriageOut {
             gmail_sync_error: item.gmail_sync_error,
             waiting: item.waiting,
             waiting_since: item.waiting_since,
+            score_bp: score
+                .as_ref()
+                .map(|(overall, _)| mail_evaluation::overall_bp(*overall)),
+            evaluated_at: score.map(|(_, at)| at),
             first_seen: item.first_seen,
             last_seen: item.last_seen,
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),

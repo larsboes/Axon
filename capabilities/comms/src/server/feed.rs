@@ -439,9 +439,17 @@ pub(super) fn enrich_many_in_background(ids: Vec<String>) {
                 return;
             }
         };
-        let embedding_role = cfg.embedding_role();
+        // Loopback only; see `relevance_refresh_handler` for why. The producers
+        // feed `context_revision`, so a role this pass would refuse must not
+        // reach the revision either -- otherwise every stored evaluation reads
+        // as stale against a role that is never used.
+        let embedding_role = cfg
+            .embedding_role()
+            .filter(|role| loopback_inference_url(&role.backend.base_url));
         let embedding_producer = embedding_role.as_ref().map(|role| role.cache_key());
-        let reranking_role = cfg.reranking_role();
+        let reranking_role = cfg
+            .reranking_role()
+            .filter(|role| loopback_inference_url(&role.backend.base_url));
         let reranking_producer = reranking_role.as_ref().map(|role| role.cache_key());
         let travel_context = travel::load(&store, &cfg.travel_context);
         let feedback = load_feedback(&store, &profiles);
@@ -567,6 +575,10 @@ struct PassCursor {
     mode: String,
     completed: String,
     progress_revision: String,
+    /// The `days` window the chain in progress is running with. Pages of a
+    /// chain must all ask the same window, or `progress_end` compares offsets
+    /// into two different lists.
+    progress_days: i32,
     progress_end: usize,
 }
 
@@ -581,21 +593,42 @@ impl PassCursor {
             .rsplit_once(':')
             .map(|(revision, end)| (revision.to_string(), end.parse().unwrap_or(0)))
             .unwrap_or_default();
+        // A cursor written before the window was recorded carries no `@`, and
+        // reads as window 0 -- which no pass matches, so its chain simply
+        // restarts at offset 0 instead of being extended by a different window.
+        let (progress_revision, progress_days) = progress_revision
+            .rsplit_once('@')
+            .map(|(revision, days)| (revision.to_string(), days.parse().unwrap_or(0)))
+            .unwrap_or((progress_revision, 0));
         Self {
             mode,
             completed,
             progress_revision,
+            progress_days,
             progress_end,
         }
     }
 
     fn render(&self) -> String {
         format!(
-            "{}|{}|{}:{}",
-            self.mode, self.completed, self.progress_revision, self.progress_end
+            "{}|{}|{}@{}:{}",
+            self.mode,
+            self.completed,
+            self.progress_revision,
+            self.progress_days,
+            self.progress_end
         )
     }
 }
+
+/// The widest window the route admits, and the only one that can mark the
+/// corpus complete.
+///
+/// Widened from 365. A backfill has to be able to reach the whole corpus --
+/// `comms relevance backfill` and the nightly sweep both ask for ten years --
+/// and a window that cannot cover the store makes the oldest rows permanently
+/// unreachable, which is the same defect as the ids-after-LIMIT bug.
+const FULL_WINDOW_DAYS: i32 = 3650;
 
 /// Re-score and re-evaluate a bounded window of the feed.
 ///
@@ -613,11 +646,7 @@ impl PassCursor {
 ///   stored matches cleared, and gets a refusal evaluation.
 pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> HttpResponse {
     let days = body.days.unwrap_or(90);
-    // Widened from 365. A backfill has to be able to reach the whole corpus --
-    // `comms relevance backfill` and the nightly sweep both ask for ten years --
-    // and a window that cannot cover the store makes the oldest rows permanently
-    // unreachable, which is the same defect as the ids-after-LIMIT bug.
-    if !(1..=3650).contains(&days) {
+    if !(1..=FULL_WINDOW_DAYS).contains(&days) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "days must be between 1 and 3650" })),
@@ -661,9 +690,22 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
             .collect::<Vec<_>>();
         let has_more = requested.is_empty() && items.len() == limit;
 
-        let embedding_role = cfg.embedding_role();
+        // Loopback only, the same filter `triage_relevance_handler` applies to
+        // the same two roles. The class gate here is
+        // `content_item::local_prompt_allowed`, which admits c2 -- and c2 is
+        // exactly the class PRD §6.2b says may reach a cloud model only after a
+        // ladder pass has reduced it to c1. `POST /feed/:id/data-class` accepts
+        // any class in the vocabulary, so a c2 feed item is reachable, and
+        // `item_document` joins title, author and content. A non-loopback role
+        // is therefore not used at all and the pass answers lexical, which the
+        // receipt reports.
+        let embedding_role = cfg
+            .embedding_role()
+            .filter(|role| loopback_inference_url(&role.backend.base_url));
         let embedding_producer = embedding_role.as_ref().map(|role| role.cache_key());
-        let reranking_role = cfg.reranking_role();
+        let reranking_role = cfg
+            .reranking_role()
+            .filter(|role| loopback_inference_url(&role.backend.base_url));
         let reranking_producer = reranking_role.as_ref().map(|role| role.cache_key());
         let travel_context = travel::load(&store, &cfg.travel_context);
         // The learned model is a term in the RANKING revision only. Under the
@@ -733,12 +775,30 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
 
         let refused_class = refused.len();
         let mut refused_lower_tier = 0usize;
+        let mut refused_matches_cleared = 0usize;
         let mut written = 0usize;
         for item in &refused {
+            let item_revision = evaluation::item_revision(item);
+            let stored_evaluation = store.feed_evaluation(&item.id).ok().flatten();
+            // A refusal that is already stored at this revision is left alone.
+            // The ordinary currency check cannot say so -- it reads `unscored`
+            // as stale whenever an embedding role answers -- which rewrote every
+            // c3 row and its factors on every pass.
+            if evaluation::refusal_is_current(
+                stored_evaluation.as_ref(),
+                &item_revision,
+                &context_revision,
+            ) {
+                skipped_current += 1;
+                continue;
+            }
             // The rows already derived from a refused item are removed, not
-            // left to be read as a score nobody may have.
-            store
-                .replace_feed_relevance(&item.id, &[])
+            // left to be read as a score nobody may have. `clear_` and not
+            // `replace_..(&[])`: the tier gate refuses an empty replacement over
+            // a `model` row, so the escalation of an already-scored item left
+            // its matches exactly where they were.
+            refused_matches_cleared += store
+                .clear_feed_relevance(&item.id)
                 .map_err(|error| error.to_string())?;
             let evaluated = evaluation::evaluate(
                 item,
@@ -748,8 +808,10 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
                 true,
                 Some(feedback.factor(item, &[])),
             );
+            // Past the tier gate: a refusal withdraws a score, and a withdrawal
+            // that loses to the score it withdraws is not a withdrawal.
             if store
-                .replace_feed_evaluation(&evaluated)
+                .replace_feed_evaluation_refusal(&evaluated)
                 .map_err(|error| error.to_string())?
             {
                 written += 1;
@@ -822,17 +884,29 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
             outcome.mode.to_string()
         };
         if requested.is_empty() {
-            // The chain only extends from a page that continues it, and only a
-            // chain that reached the end marks the corpus done.
+            // The chain only extends from a page that continues it, at the same
+            // window, and only a chain that reached the end of the WIDEST window
+            // marks the corpus done.
+            //
+            // `!has_more` alone was not that test. A pass with `days: 1` reaches
+            // the end of its own window after 20 of 372 items and used to stamp
+            // the current relevance revision on the whole corpus; the 352 rows
+            // whose matches came from the retired vector space then read as
+            // current forever. Reproduced, and reachable: `comms relevance
+            // backfill` and `tools/feed-sweep.ts` both send a window, and a
+            // window that holds fewer rows than `limit` finishes immediately.
             let extends = offset == 0
                 || (cursor.progress_revision == relevance_revision
+                    && cursor.progress_days == days
                     && cursor.progress_end == offset);
             if extends {
                 cursor.progress_revision = relevance_revision.clone();
+                cursor.progress_days = days;
                 cursor.progress_end = offset + considered;
-                if !has_more {
+                if !has_more && days >= FULL_WINDOW_DAYS {
                     cursor.completed = relevance_revision.clone();
                     cursor.progress_revision = String::new();
+                    cursor.progress_days = 0;
                     cursor.progress_end = 0;
                 }
             }
@@ -856,6 +930,7 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
             "reused_relevance": reused_relevance,
             "refused_class": refused_class,
             "refused_lower_tier": refused_lower_tier,
+            "refused_matches_cleared": refused_matches_cleared,
             "missing_ids": missing_ids,
             "profile_count": profiles.len(),
             "mode": mode,
@@ -903,9 +978,17 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
         // moved is a fault, and now says so instead of reporting zero lenses as
         // if that were a configuration.
         let profiles = relevance::load_profiles(&cfg.relevance)?;
-        let embedding_role = cfg.embedding_role();
+        // Loopback only; see `relevance_refresh_handler` for why. The producers
+        // feed `context_revision`, so a role this pass would refuse must not
+        // reach the revision either -- otherwise every stored evaluation reads
+        // as stale against a role that is never used.
+        let embedding_role = cfg
+            .embedding_role()
+            .filter(|role| loopback_inference_url(&role.backend.base_url));
         let embedding_producer = embedding_role.as_ref().map(|role| role.cache_key());
-        let reranking_role = cfg.reranking_role();
+        let reranking_role = cfg
+            .reranking_role()
+            .filter(|role| loopback_inference_url(&role.backend.base_url));
         let reranking_producer = reranking_role.as_ref().map(|role| role.cache_key());
         let summarization_role = cfg.summarization_role();
         let summary_producer_revision = media::summary_producer_revision(&cfg);
@@ -940,6 +1023,12 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
         // 2026-08-30 degradation visible the day it happened: 525 rows were
         // written lexical in one pass and nothing on the machine said so.
         let feedback = load_feedback(&store, &profiles);
+        // The ledger's own counters. `samples` below counts what the TRAINER
+        // could label; this counts what the table holds, which is the only way
+        // `opened` and `reopened` -- verbs no label reads -- reach a surface.
+        let interactions = store
+            .interaction_counts()
+            .map_err(|error| error.to_string())?;
         let last_pass = store.relevance_pass().map_err(|error| error.to_string())?;
         let last_pass_mode = last_pass
             .as_ref()
@@ -959,6 +1048,15 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
                 &feedback.revision,
             ),
             "feedback_model": feedback_status(&feedback.model, &feedback.revision, feedback.model.active),
+            "interactions": {
+                "opened": interactions.opened,
+                "kept": interactions.kept,
+                "dismissed": interactions.dismissed,
+                "reopened": interactions.reopened,
+                "unkept": interactions.unkept,
+                "shared": interactions.shared,
+                "total": interactions.total,
+            },
             "ledger": {
                 "evaluated": summary.evaluated,
                 "reranked": summary.reranked,

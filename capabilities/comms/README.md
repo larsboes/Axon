@@ -264,16 +264,29 @@ the sum stays 1.0). Travel matching compares item text with destination names an
 declared interests; the winning factor carries the Trip ID, label, dates and matched terms so
 the UI never has to reverse-engineer a prose explanation.
 
-One rule governs every factor that cannot be computed: **it carries weight 0 and the others
-scale so the sum stays 1.0.** That is how an item the class ladder refuses is still ranked, on
-age and content basis, instead of being dumped to the bottom by a zero it never earned.
+One rule governs every factor whose producer has not run: **it carries weight 0 and the others
+scale so the sum stays 1.0.** That is how an inert learned factor, or an urgency the model rung
+has not published, leaves the arithmetic whole instead of dumping the item to the bottom of its
+band by a zero it never earned.
+
+**A class refusal is not that case, and is never rescaled.** The refused share is withheld, not
+handed to the survivors, so a refused item's weights sum to less than 1.0 on purpose. Rescaling
+it promoted exactly what the class ladder forbids: measured on a copy of the live database, a
+refused mail kept only `category` (a constant 1.0 on the `aktiv` band) and `age`, so all eleven
+c3 threads scored 0.863-0.990 while the best mail anybody had actually read reached 0.702. A
+refusal is missing evidence, not a free pass, and a refused row can never outrank a scored row
+whose other factors are identical.
 
 **Nothing the class ladder refuses is scored, by either path.** `score_items` asks
 `content_item::local_prompt_allowed` before it builds the embedding batch, and a refused item
 is excluded from the lexical fallback too — one rule instead of two, because a lexical score is
 still a content-derived number rendered in a rationale on a surface. A refused item is stored
 as a refusal: an evaluation at `mode = 'unscored'` with a zero-weight interest factor reading
-"Not scored: c3 is never read by a model", and its stored matches deleted. This is not
+"Not scored: c3 is never read by a model", and its stored matches deleted. Both writes go past
+the tier gate, because a refusal is a withdrawal rather than a weaker producer: the refusal's
+`unscored` mode ranks `deterministic`, so escalating an already-scored item to c3 otherwise left
+its model-derived score, its rationale and its matches exactly where they were while the pass
+reported the refusal. This is not
 hypothetical for mail: the triage scoring path built a synthetic `FeedItem` and never copied
 the triage row's class, so `FeedItem::new` stamped the undeclared default — literally `c1` —
 and every c3 mail was embedded, sender address included.
@@ -294,8 +307,11 @@ body of `GET /__axon/freshness`, which answers "is data still reaching this capa
 `local-inference` is excluded from that query for the same reason: a machine whose collectors
 have all stopped must not be held green by a local model answering a drain.
 
-`comms relevance backfill [--days N] [--batch N] [--max N] [--force]` pages that route until
-every item in the window has been seen, printing the mode each page answered in. It is an HTTP
+`comms relevance backfill [--days N=3650] [--batch N=100] [--max N] [--force]` pages that route
+until every item in the window has been seen, printing the mode each page answered in. Only a
+chain that ran the full 3650-day window marks the corpus complete at the current relevance
+revision: a narrower pass reaches the end of its own window after a handful of rows, and stamping
+the corpus done from there left every row it never saw reading as current forever. It is an HTTP
 client against the running server, never a second opener of the database: `Store::open` runs the
 whole migration on every call and two openers deadlock.
 
@@ -329,7 +345,8 @@ for column — same currency check, same tier gate, same normalized factor table
 mail-shaped factors: TELOS interest 0.55 from the rows `POST /triage/relevance/refresh` already
 stores, category 0.30 from the `rules` stream, age 0.15 reusing the Feed's own freshness curve,
 and a reserved **urgency 0.25** that the LLM model rung fills. Until that rung publishes one,
-urgency carries weight 0 and the other three scale to 1.0. There is **no correspondent factor**:
+urgency carries weight 0 and the other three scale to 1.0 — except on a class refusal, which is
+never rescaled, so a refused mail caps at 0.45 and cannot outrank a mail that was read. There is **no correspondent factor**:
 `is_known_person` compares one whitespace-free token, so it is false for every address, and
 Q72 rule 2 already settled that the registry is asked per token of subject and snippet, never
 over the sender. Said plainly: on the `aktiv` band the category factor is a constant, so
@@ -354,7 +371,11 @@ by a later `unkept`. **One writer per verb**: `set_feed_status` writes `kept`, `
 `unkept` inside the same transaction as the UPDATE, and `POST /feed/:id/interactions` refuses
 those three with a 400 naming the status route, accepting only `opened` and `reopened`. Two
 paths writing one decision would double every count in a table whose whole justification is
-that it can be read by hand. `shared` ships with no writer on purpose: SQLite has no alterable
+that it can be read by hand — and so would one path writing a decision that never happened, so
+one row means one status *change*: `set_feed_status` reads the stored status inside the same
+transaction and writes nothing when the press does not move it. `GET /feed/evaluation/status`
+reports the ledger's own counters as `interactions`, which is where `opened` and `reopened` —
+verbs no training label reads — reach a surface. `shared` ships with no writer on purpose: SQLite has no alterable
 constraint, so widening that CHECK later costs a table rebuild, and declaring the value now is
 free. A row carries ids and verbs — no content, no text.
 

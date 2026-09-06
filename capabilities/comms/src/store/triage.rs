@@ -1229,9 +1229,37 @@ impl Store {
         &self,
         evaluation: &FeedEvaluation,
     ) -> Result<bool, Box<dyn std::error::Error>> {
+        self.write_triage_evaluation(evaluation, true)
+    }
+
+    /// Store a class refusal, past the tier gate. Same rule and same reason as
+    /// [`Store::replace_feed_evaluation_refusal`]: escalating a scored mail to
+    /// c3 must withdraw the model-derived score, and a refusal that loses to the
+    /// row it withdraws leaves the score on the surface forever.
+    pub fn replace_triage_evaluation_refusal(
+        &self,
+        evaluation: &FeedEvaluation,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        self.write_triage_evaluation(evaluation, false)
+    }
+
+    fn write_triage_evaluation(
+        &self,
+        evaluation: &FeedEvaluation,
+        enforce_tier: bool,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
         let transaction = conn.transaction()?;
         let tier = provenance::ranking_tier(&evaluation.mode);
+        let gate = if enforce_tier {
+            format!(
+                "WHERE CASE excluded.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
+                       CASE {prefix}_triage_evaluations.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END",
+                prefix = self.prefix
+            )
+        } else {
+            String::new()
+        };
         let affected = transaction.execute(
             &format!(
                 "INSERT INTO {prefix}_triage_evaluations
@@ -1247,8 +1275,7 @@ impl Store {
                     evaluator_revision = excluded.evaluator_revision,
                     tier = excluded.tier,
                     evaluated_at = {now}
-                 WHERE CASE excluded.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END >=
-                       CASE {prefix}_triage_evaluations.tier WHEN 'human' THEN 30 WHEN 'model' THEN 20 WHEN 'deterministic' THEN 10 ELSE 0 END",
+                 {gate}",
                 prefix = self.prefix,
                 now = axon_store::NOW
             ),
