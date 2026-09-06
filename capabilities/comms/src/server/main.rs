@@ -843,6 +843,31 @@ mod tests {
         }
     }
 
+    /// The list states a class for every item, under the exact key finance reads.
+    ///
+    /// `item_is_quotable` (`capabilities/finance/src/server.rs`) fails closed on a
+    /// missing `data_class`, so a rename or a drop here would not break a test in
+    /// finance -- it would silently empty the decision inbox's feed evidence, which
+    /// is what happened before this field existed. Asserting the serialized key,
+    /// not the struct field, is what makes that renaming visible.
+    #[test]
+    fn a_listed_feed_item_states_the_class_finance_filters_on() {
+        let mut item = FeedItem::new("https://example.com/an-article", "news", "article");
+        item.title = Some("A synthetic article".into());
+        item.day = "2026-09-06".into();
+        item.created_at = "2026-09-06 09:00:00+00:00".into();
+
+        // The undeclared default: an item nobody classified is c1, not absent.
+        let listed =
+            serde_json::to_value(FeedListItem::from_store(item.clone(), None, None, None)).unwrap();
+        assert_eq!(listed["data_class"], "c1");
+
+        item.declare_class(&DataClass::declared_by_source("c0", "A published article."));
+        let public =
+            serde_json::to_value(FeedListItem::from_store(item, None, None, None)).unwrap();
+        assert_eq!(public["data_class"], "c0");
+    }
+
     /// One writer, one meaning, and one shape on the wire.
     #[test]
     fn score_bp_is_basis_points_and_absent_is_null() {

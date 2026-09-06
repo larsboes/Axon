@@ -158,6 +158,20 @@ pub(super) struct FeedListItem {
     pub(super) day: String,
     pub(super) created_at: String,
     pub(super) status: String,
+    /// What this item is worth protecting: `c0`, `c1`, `c2` or `c3`.
+    ///
+    /// On the LIST, not only on the reader, because the one consumer that needs
+    /// it reads the list: finance's `item_is_quotable`
+    /// (`capabilities/finance/src/server.rs`) copies a feed item's title and URL
+    /// into a `c1` decision row only when comms states a class no stricter than
+    /// that row's own, and it fails CLOSED. While this field was absent, every
+    /// item was dropped and a decision shipped with no reading attached. The
+    /// alternative -- finance guessing a class -- is the defect the guard exists
+    /// to prevent.
+    ///
+    /// Never absent: the store reads back `c1`/`legacy` for an item nobody
+    /// classified, so this states a class for every row.
+    pub(super) data_class: String,
     pub(super) relevance: Option<RelevanceOut>,
     pub(super) evaluation: Option<EvaluationOut>,
 }
@@ -193,6 +207,7 @@ impl FeedListItem {
             day: item.day,
             created_at: item.created_at,
             status: item.status,
+            data_class: item.data_class,
             relevance: relevance.map(RelevanceOut::from),
             evaluation: evaluation.map(EvaluationOut::from),
         }
