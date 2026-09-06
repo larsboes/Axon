@@ -691,6 +691,85 @@ mod db_tests {
         assert_eq!(store.decisions(Some("open")).unwrap().len(), 1);
     }
 
+    /// A drift that leaves its band and comes back. The proposal id is a hash
+    /// over BUCKETED numbers, so the third run mints the id the first run wrote;
+    /// with `INSERT OR IGNORE` alone the supersession from run two survived it
+    /// and the proposal the engine is producing right now could never reach the
+    /// inbox again, while the run reported `unchanged` and success.
+    #[test]
+    fn a_proposal_a_later_run_produces_again_is_open_again() {
+        let store = store("ledger-reopen");
+        let first = proposal("rebalance:asset_class:bond:0111", "asset_class:bond");
+        let moved = proposal("rebalance:asset_class:bond:0222", "asset_class:bond");
+        store
+            .reconcile_decisions(std::slice::from_ref(&first), "2026-09-05T08:00:00Z")
+            .unwrap();
+        let second = store
+            .reconcile_decisions(std::slice::from_ref(&moved), "2026-09-05T09:00:00Z")
+            .unwrap();
+        assert_eq!((second.proposed, second.superseded), (1, 1));
+        assert_eq!(
+            store.decision(&first.id).unwrap().unwrap().status(),
+            "superseded"
+        );
+        let third = store
+            .reconcile_decisions(std::slice::from_ref(&first), "2026-09-05T10:00:00Z")
+            .unwrap();
+        assert_eq!(
+            (
+                third.proposed,
+                third.unchanged,
+                third.reopened,
+                third.superseded
+            ),
+            (0, 0, 1, 1),
+            "the re-minted proposal is reopened and the replacement is superseded"
+        );
+        let restored = store.decision(&first.id).unwrap().unwrap();
+        assert_eq!(restored.status(), "open");
+        assert_eq!(restored.proposal, first, "the row itself is unmodified");
+        assert!(
+            restored.events.is_empty(),
+            "the withdrawn supersession is the only row a run may remove"
+        );
+        let open = store.decisions(Some("open")).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].proposal.id, first.id);
+        // And the reopened proposal can be superseded again, which a presence
+        // test on the supersession event would have made impossible.
+        let fourth = store
+            .reconcile_decisions(std::slice::from_ref(&moved), "2026-09-05T11:00:00Z")
+            .unwrap();
+        assert_eq!((fourth.reopened, fourth.superseded), (1, 1));
+        assert_eq!(
+            store.decision(&first.id).unwrap().unwrap().status(),
+            "superseded"
+        );
+    }
+
+    /// A human's answer is not withdrawn by a rule. A proposal that was rejected
+    /// and is produced again stays rejected: the verdict was given on these exact
+    /// numbers, and re-asking would be the ledger forgetting.
+    #[test]
+    fn a_rerun_does_not_reopen_a_proposal_a_human_answered() {
+        let store = store("ledger-reopen-verdict");
+        let row = proposal("rebalance:instrument:SYN-G:0099", "instrument:SYN-G");
+        store
+            .reconcile_decisions(std::slice::from_ref(&row), "2026-09-05T08:00:00Z")
+            .unwrap();
+        store
+            .append_decision_event(&row.id, &verdict("2026-09-05T09:00:00Z"))
+            .unwrap();
+        let again = store
+            .reconcile_decisions(std::slice::from_ref(&row), "2026-09-05T10:00:00Z")
+            .unwrap();
+        assert_eq!((again.unchanged, again.reopened), (1, 0));
+        assert_eq!(
+            store.decision(&row.id).unwrap().unwrap().status(),
+            "accepted"
+        );
+    }
+
     /// Two runs on two connections against one file. The guard is `BEGIN
     /// IMMEDIATE` in the store, which an in-process mutex could not give: the
     /// CLI is a second process.

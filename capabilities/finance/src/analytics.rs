@@ -532,7 +532,7 @@ pub fn dashboard(rows: &[TransactionRow], filter: &AnalyticsFilter) -> Dashboard
         portfolio_values: Vec::new(),
         shared_expenses,
         purpose_spending,
-        trip_spending: trip_spending.clone(),
+        trip_spending,
     }
 }
 

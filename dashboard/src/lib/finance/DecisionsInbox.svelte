@@ -12,6 +12,11 @@
   let failures = $state<Record<string, string>>({});
   let moved = $state<Record<string, boolean>>({});
   let runError = $state<string | null>(null);
+  // The ledger row is the durable fact and the month file is the copy, so a
+  // verdict whose copy could not be written answers 200 with a named warning
+  // rather than an error. Shown, because a copy that silently did not happen is
+  // the failure Principle 8 exists to prevent.
+  let exportWarning = $state<string | null>(null);
 
   async function verdict(decision: Decision, value: "accepted" | "rejected") {
     const note = (notes[decision.id] ?? "").trim();
@@ -22,11 +27,12 @@
     busy = decision.id;
     failures = { ...failures, [decision.id]: "" };
     try {
-      await recordVerdict(decision.id, {
+      const recorded = await recordVerdict(decision.id, {
         expected_proposal_id: decision.id,
         verdict: value,
         note,
       });
+      exportWarning = recorded.warning ?? null;
       await onchanged();
     } catch (cause) {
       // A 409 is not an error the reader caused: the numbers moved under them
@@ -80,6 +86,7 @@
       <button onclick={recompute} disabled={busy !== null}>Recompute</button>
     </div>
     {#if runError}<p class="failure">{runError}</p>{/if}
+    {#if exportWarning}<p class="warning">{exportWarning}</p>{/if}
 
     <ul>
       {#each decisions as decision (decision.id)}
@@ -190,6 +197,12 @@
   button { padding: .3rem .6rem; border: 1px solid var(--card-border); border-radius: var(--radius-sm); background: var(--surface); color: inherit; font: inherit; font-size: .72rem; cursor: pointer; }
   button.primary { border-color: var(--primary); background: var(--primary); color: var(--text-inverse); }
   button:disabled { opacity: .55; cursor: default; }
+  .warning {
+    margin: 0 0 0.5rem;
+    font-size: 0.8rem;
+    color: var(--warning);
+  }
+
   .failure { color: var(--danger); }
   .moved { color: var(--warning); }
 </style>

@@ -324,6 +324,18 @@ impl FinanceStore {
             -- which is what keeps a same-day corrected verdict from hitting the
             -- UNIQUE tuple; two verdicts inside one second are answered as a
             -- named 409 rather than a 500.
+            --
+            -- One exception to append-only, and it is bounded to one event type:
+            -- `reconcile_decisions` DELETES a `superseded` row when a later run
+            -- produces that proposal again. A verdict and an outcome are facts
+            -- about the world and are never removed; a supersession is an
+            -- assertion by a run -- the run that produced this no longer produces
+            -- it -- and only a later run can withdraw it. It cannot be withdrawn
+            -- by appending a fourth event type instead: `event` carries a CHECK,
+            -- SQLite cannot alter one, and this crate has no table-rebuild path
+            -- (the migration doc comment above) -- measured 2026-09-06, this
+            -- table already exists with these three values in a database this
+            -- code must keep working against.
             CREATE TABLE IF NOT EXISTS {prefix}_decision_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 decision_id TEXT NOT NULL
@@ -1244,6 +1256,40 @@ impl FinanceStore {
             ids
         };
         let mut outcome = DecisionRunOutcome::default();
+        // Withdraw the supersession of anything this run produces again, BEFORE
+        // the insert loop, so a proposal the current run produces is open by
+        // definition.
+        //
+        // The proposal id is a hash over BUCKETED numbers (decision.rs), so a
+        // drift that crosses a band edge and comes back into the same 10 bp
+        // bucket re-mints the id the ledger already carries. `INSERT OR IGNORE`
+        // alone then dropped the row, the earlier `superseded` event survived,
+        // and the proposal stayed invisible to the human FOR EVER -- no later run
+        // can mint a different id for it -- while the run reported `unchanged`
+        // and success. Reproduced end to end 2026-09-05: three runs left two live
+        // rebalance proposals unreachable while the engine's own dry run still
+        // produced both.
+        //
+        // Deleting is bounded to this one event type and this one condition, and
+        // the DDL comment carries the rule. A proposal a human has answered is
+        // never touched: the verdict was given on these exact numbers.
+        let mut reopened: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for proposal in minted {
+            let removed = transaction.execute(
+                &format!(
+                    "DELETE FROM {prefix}_decision_events
+                     WHERE decision_id = ?1
+                       AND event = 'superseded'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM {prefix}_decision_events AS answered
+                           WHERE answered.decision_id = ?1 AND answered.event = 'verdict')"
+                ),
+                params![&proposal.id],
+            )?;
+            if removed > 0 {
+                reopened.insert(proposal.id.as_str());
+            }
+        }
         for id in &open_ids {
             if minted.iter().any(|proposal| &proposal.id == id) {
                 continue;
@@ -1285,6 +1331,8 @@ impl FinanceStore {
             )?;
             if changed == 1 {
                 outcome.proposed += 1;
+            } else if reopened.contains(proposal.id.as_str()) {
+                outcome.reopened += 1;
             } else {
                 outcome.unchanged += 1;
             }
@@ -1299,6 +1347,10 @@ impl FinanceStore {
 pub struct DecisionRunOutcome {
     pub proposed: usize,
     pub unchanged: usize,
+    /// Already in the ledger, superseded by an earlier run, and produced again by
+    /// this one. Counted apart from `unchanged` because the row moved back into
+    /// the human's inbox, which is a different fact from "nothing happened".
+    pub reopened: usize,
     pub superseded: usize,
 }
 
@@ -1341,6 +1393,9 @@ impl StoredDecision {
         if let Some(verdict) = self.latest_verdict() {
             return verdict.verdict.as_deref().unwrap_or("open");
         }
+        // A supersession the current run withdrew is not here to be read:
+        // `reconcile_decisions` removes it in the same transaction that
+        // re-produces the proposal, so a presence test is the whole rule.
         if self.events.iter().any(|event| event.event == "superseded") {
             return "superseded";
         }

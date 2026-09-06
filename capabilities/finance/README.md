@@ -265,12 +265,14 @@ against a configuration that is not the one being tested.
 
 ## Configuration
 
-The eight tables live in the shared SQLite file — `AXON_DB_PATH`, else
+The thirteen tables live in the shared SQLite file — `AXON_DB_PATH`, else
 `$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `finance`, so they are
 `finance_subscriptions`, `finance_price_points`, `finance_state_changes`,
 `finance_transaction_candidates`, `finance_transaction_projection`,
-`finance_holding_projection`, `finance_holding_projection_state` and
-`finance_holding_projection_sources` (`libs/axon-store/README.md`). PRD Q45
+`finance_holding_projection`, `finance_holding_projection_state`,
+`finance_holding_projection_sources`, `finance_prices`, `finance_fx_rates`,
+`finance_price_fetches`, `finance_decisions` and `finance_decision_events`
+(`libs/axon-store/README.md`). PRD Q45
 (2026-08-27) moved them there from a Postgres schema, and the path is a deployment
 fact rather than a capability one: `$AXON_FINANCE_DATABASE_URL` is gone, because a
 file per capability would drop the join `capabilities/places` builds its spend layer

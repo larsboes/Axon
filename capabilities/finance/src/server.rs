@@ -183,7 +183,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "POST",
         "/api/decisions/:id/verdict",
-        "Record a human verdict. Body: expected_proposal_id, verdict (accepted|rejected), note (required on rejected). Records a decision and moves no money.",
+        "Record a human verdict. Body: expected_proposal_id, verdict (accepted|rejected), note (required on rejected). 409 when a recompute no longer mints this id. Records a decision and moves no money.",
     ),
     r(
         "GET",
@@ -203,6 +203,11 @@ const fn r(
 async fn routes() -> Json<Value> {
     Json(route_manifest::manifest("finance", ROUTES))
 }
+
+/// The reporting currency when nothing narrows it, matching
+/// `config::default_currency` (config.rs:57). Named here because three handlers
+/// now fall back to it and a literal in each is three places to disagree.
+const DEFAULT_CURRENCY: &str = "EUR";
 
 #[derive(Clone)]
 struct AppState {
@@ -1814,9 +1819,12 @@ struct StatusQuery {
 
 #[derive(Debug, Deserialize)]
 struct VerdictRequest {
-    /// The id the client believed it was answering. Re-derived server-side and
-    /// compared, exactly as `confirm_investments` re-runs the preview rather than
-    /// trusting the token it was handed.
+    /// The id the client believed it was answering. It must agree with the path
+    /// segment, and that is all this field can prove: both halves come from the
+    /// same caller. The gate that catches numbers which have moved is the
+    /// recompute inside `record_verdict`, which re-runs the rules the way
+    /// `confirm_investments` re-runs `preview_csv` rather than trusting the token
+    /// it was handed.
     expected_proposal_id: String,
     verdict: String,
     #[serde(default)]
@@ -2021,11 +2029,21 @@ async fn list_decisions(
 
 /// The one thing here nothing can re-derive.
 ///
-/// The gate copies `confirm_investments`: the client's `expected_proposal_id`
-/// must equal the id it is answering, and a mismatch is a 409 that names the
-/// current id rather than a silently recorded verdict on the wrong numbers. A
-/// rejection needs a note, mirroring the required reason on an append-only price
-/// point -- a rejection with no reason is a decision nobody can read a year later.
+/// The gate copies `confirm_investments` (:377-395), which re-runs `preview_csv`
+/// rather than trusting the token it was handed: the rules are run again here and
+/// the verdict is refused with a 409 unless the run STILL mints the id being
+/// answered. Comparing the request body's `expected_proposal_id` to the path
+/// segment is not that gate -- both come from the same client, so it can only
+/// catch a malformed request, and it is answered as a 400 for what it is.
+///
+/// The recompute is handed an empty feed list on purpose: `decision::proposal_id`
+/// hashes the kind, the subject and the bucketed numbers and never the evidence
+/// (decision.rs:589), so the gate needs no loopback call to comms and cannot
+/// refuse a verdict because an unrelated capability is down.
+///
+/// A rejection needs a note, mirroring the required reason on an append-only
+/// price point -- a rejection with no reason is a decision nobody can read a year
+/// later.
 ///
 /// Accepting appends one row and writes the month file. It never writes the
 /// journal, never writes the holdings snapshot and never places an order.
@@ -2036,11 +2054,10 @@ async fn record_verdict(
 ) -> ApiResponse {
     if request.expected_proposal_id != id {
         return response(
-            StatusCode::CONFLICT,
+            StatusCode::BAD_REQUEST,
             json!({
                 "ok": false,
-                "error": "the numbers moved since this was proposed",
-                "current_proposal_id": id,
+                "error": "expected_proposal_id must be the id in the path",
             }),
         );
     }
@@ -2056,16 +2073,36 @@ async fn record_verdict(
             json!({ "ok": false, "error": "a note is required for a rejected proposal" }),
         );
     }
-    let database_path = state.database_path.clone();
+    let config = state.investment_config();
     let overlay_root = state.overlay_root.clone();
     let recorded_at = now_timestamp();
+    let as_of = today();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
+        let store = FinanceStore::open(&config.database_path).map_err(|error| error.to_string())?;
         let Some(stored) = store.decision(&id).map_err(|error| error.to_string())? else {
             return Err("__not_found__".into());
         };
         if stored.status() != "open" {
             return Err(format!("__closed__{}", stored.status()));
+        }
+        // Re-derive before recording. The numbers behind a proposal move on every
+        // new price observation, and a verdict recorded against numbers that have
+        // moved is the one failure this ledger cannot repair afterwards.
+        let currency =
+            serde_json::from_str::<finance::decision::Proposal>(&stored.proposal.proposal_json)
+                .map(|proposal| proposal.currency)
+                .unwrap_or_else(|_| DEFAULT_CURRENCY.to_string());
+        let (minted, _) =
+            finance::decision::recompute(&store, &config, &[], &as_of, &recorded_at, &currency)?;
+        if !minted.iter().any(|candidate| candidate.id == id) {
+            let current = minted
+                .iter()
+                .find(|candidate| {
+                    candidate.proposal.kind == stored.proposal.kind
+                        && candidate.proposal.subject == stored.proposal.subject
+                })
+                .map(|candidate| candidate.id.clone());
+            return Err(format!("__moved__{}", current.unwrap_or_default()));
         }
         let event = finance::store::StoredDecisionEvent {
             event: "verdict".into(),
@@ -2080,11 +2117,26 @@ async fn record_verdict(
         {
             return Err("__collision__".into());
         }
+        // The event row is committed by here, so an export failure can no longer
+        // be answered as a failed request: a 500 would tell the reader their
+        // verdict did not land while the ledger already holds it, and their retry
+        // would be answered "this proposal is already rejected". The durable fact
+        // is the row; the month file is the copy, and a failure to write the copy
+        // is named in the response rather than swallowed or promoted to an error.
+        let mut warning: Option<String> = None;
         let exported = match overlay_root.as_deref() {
             Some(root) => {
                 let month = finance::clock::month_of(&stored.proposal.proposed_at[..10])
                     .unwrap_or_else(|| recorded_at[..7].to_string());
-                Some(finance::decision::export_month(&store, root, &month)?)
+                match finance::decision::export_month(&store, root, &month) {
+                    Ok(path) => Some(path),
+                    Err(error) => {
+                        warning = Some(format!(
+                            "the verdict is recorded; the month file could not be written: {error}"
+                        ));
+                        None
+                    }
+                }
             }
             None => None,
         };
@@ -2094,6 +2146,7 @@ async fn record_verdict(
             "status": request.verdict,
             "recorded_at": recorded_at,
             "exported_to": exported,
+            "warning": warning,
         }))
     })
     .await
@@ -2103,10 +2156,27 @@ async fn record_verdict(
             StatusCode::NOT_FOUND,
             json!({ "ok": false, "error": "no proposal with that id" }),
         ),
+        // The gate cannot run without the snapshot the rules read, and a verdict
+        // recorded with the gate skipped is the failure the gate exists for.
+        Ok(Err(error)) if error.starts_with("no reviewed holdings snapshot") => no_holdings(),
         Ok(Err(error)) if error == "__collision__" => response(
             StatusCode::CONFLICT,
             json!({ "ok": false, "error": "a verdict for this proposal was just recorded" }),
         ),
+        Ok(Err(error)) if error.starts_with("__moved__") => {
+            let current = &error["__moved__".len()..];
+            response(
+                StatusCode::CONFLICT,
+                json!({
+                    "ok": false,
+                    "error": "the numbers moved since this was proposed",
+                    // Null when the rules no longer produce this subject at all,
+                    // which is a different fact from "here is the new id" and is
+                    // not worth an invented id to hide.
+                    "current_proposal_id": (!current.is_empty()).then(|| current.to_string()),
+                }),
+            )
+        }
         Ok(Err(error)) if error.starts_with("__closed__") => response(
             StatusCode::CONFLICT,
             json!({
@@ -2145,12 +2215,39 @@ async fn run_decisions(
             &currency,
         )?;
         if dry_run {
+            // Classified against the ledger, read-only, exactly as
+            // `reconcile_decisions` classifies it while writing. Reporting
+            // `proposed: minted.len()` made a dry run and the wet run that
+            // follows it answer different numbers for one unchanged state, which
+            // is the one thing a preview must never do.
+            let ledger = store.decisions(None).map_err(|error| error.to_string())?;
+            let mut counts = finance::store::DecisionRunOutcome::default();
+            for proposal in &minted {
+                match ledger
+                    .iter()
+                    .find(|stored| stored.proposal.id == proposal.id)
+                {
+                    None => counts.proposed += 1,
+                    Some(stored) if stored.status() == "superseded" => counts.reopened += 1,
+                    Some(_) => counts.unchanged += 1,
+                }
+            }
+            counts.superseded = ledger
+                .iter()
+                .filter(|stored| stored.status() == "open")
+                .filter(|stored| {
+                    !minted
+                        .iter()
+                        .any(|proposal| proposal.id == stored.proposal.id)
+                })
+                .count();
             return Ok(json!({
                 "ok": true,
                 "dry_run": true,
-                "proposed": minted.len(),
-                "unchanged": 0,
-                "superseded": 0,
+                "proposed": counts.proposed,
+                "unchanged": counts.unchanged,
+                "reopened": counts.reopened,
+                "superseded": counts.superseded,
                 "proposals": minted.iter().map(|minted| &minted.proposal).collect::<Vec<_>>(),
                 "caveats": caveats,
             }));
@@ -2166,6 +2263,7 @@ async fn run_decisions(
             "dry_run": false,
             "proposed": outcome.proposed,
             "unchanged": outcome.unchanged,
+            "reopened": outcome.reopened,
             "superseded": outcome.superseded,
             "caveats": caveats,
         }))
@@ -2185,8 +2283,23 @@ async fn run_decisions(
 /// with no reading attached, while a proposal that never got made because comms
 /// was down is a decision lost to an unrelated service.
 ///
-/// Only `id`, `title`, `url` and `day` are read. That bound is the class ruling
-/// made structural -- see `decision::FeedEvidence`.
+/// Only `id`, `title`, `url` and `day` are read, and only from an item comms
+/// classifies at or below `c1`. Four fields is a bound on VOLUME; the bound the
+/// doctrine asks for is on CLASS, and it is not this call site's to choose:
+/// `comms_feed_items.data_class` admits all four classes and comms serves
+/// `POST /feed/:id/data-class` so a human can raise one (capabilities/comms/src/
+/// server/main.rs:324). A title raised to c2 because it names a person, copied
+/// into a `c1` decision row, is a de-escalation no human asked for --
+/// `content_item::admit_reclassification` (libs/content-item/src/lib.rs:393)
+/// admits that only from a human with a rationale.
+///
+/// It fails CLOSED: an item whose class comms does not state is dropped, not
+/// assumed public. `GET /feed` does not carry `data_class` today, so this
+/// currently drops every item and proposals are minted with no feed evidence,
+/// which the design already names as an acceptable state ("a proposal with no
+/// feed items is a proposal with no reading attached"). The one-line comms change
+/// that restores the evidence is recorded for the merge reviewer; guessing a
+/// class here is the alternative, and a guessed class is the defect.
 fn read_feed_items(base_url: &str) -> Vec<finance::decision::FeedEvidence> {
     if base_url.is_empty() {
         return Vec::new();
@@ -2206,6 +2319,7 @@ fn read_feed_items(base_url: &str) -> Vec<finance::decision::FeedEvidence> {
     };
     items
         .iter()
+        .filter(|item| item_is_quotable(item))
         .filter_map(|item| {
             Some(finance::decision::FeedEvidence {
                 id: item.get("id")?.as_str()?.to_string(),
@@ -2217,6 +2331,25 @@ fn read_feed_items(base_url: &str) -> Vec<finance::decision::FeedEvidence> {
         .collect()
 }
 
+/// May this item's title and URL be copied into a `c1` row?
+///
+/// Only when comms states a class and that class is no stricter than the row's
+/// own. `class_rank` is the single home of the ordering
+/// (libs/content-item/src/lib.rs:350); comparing the strings here would be a
+/// second copy of the vocabulary.
+fn item_is_quotable(item: &Value) -> bool {
+    let Some(stated) = item.get("data_class").and_then(Value::as_str) else {
+        return false;
+    };
+    let (Some(stated), Some(row)) = (
+        content_item::class_rank(stated),
+        content_item::class_rank(finance::decision::DATA_CLASS),
+    ) else {
+        return false;
+    };
+    stated <= row
+}
+
 /// The per-trip slice, so a caller does not download the whole projection to read
 /// one object.
 ///
@@ -2226,13 +2359,22 @@ fn read_feed_items(base_url: &str) -> Vec<finance::decision::FeedEvidence> {
 /// empty state is the caller's to render.
 async fn trip_spending(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
     let database_path = state.database_path.clone();
+    // The configured reporting currency, never a literal: the response labels the
+    // four figures with the currency they were filtered on, and a caller that
+    // relabels them with a plan's own currency would print a wrong unit the first
+    // time a plan is not in this one.
+    let currency = state
+        .targets
+        .as_deref()
+        .map(|targets| targets.currency.clone())
+        .unwrap_or_else(|| DEFAULT_CURRENCY.to_string());
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
         let rows = store
             .transaction_projection()
             .map_err(|error| error.to_string())?;
         let filter = AnalyticsFilter {
-            currency: Some("EUR".into()),
+            currency: Some(currency.clone()),
             ..AnalyticsFilter::default()
         };
         let summaries = analytics::trip_spending(&rows, &filter);
@@ -2249,7 +2391,7 @@ async fn trip_spending(State(state): State<AppState>, Path(id): Path<String>) ->
             });
         let mut value = serde_json::to_value(&summary).map_err(|error| error.to_string())?;
         if let Some(object) = value.as_object_mut() {
-            object.insert("currency".into(), json!("EUR"));
+            object.insert("currency".into(), json!(currency));
         }
         Ok(value)
     })
@@ -2496,6 +2638,129 @@ mod tests {
         assert!(!is_reviewed_expense_account("expenses:food:uncategorized"));
         assert!(!is_reviewed_expense_account("income:salary"));
         assert!(!is_reviewed_expense_account("assets:bank:checking"));
+    }
+
+    /// A state with nothing configured, pointed at one scratch database. Every
+    /// field the verdict route reads is here; the rest are the empty defaults the
+    /// other handler tests already use.
+    fn state_on(database: std::path::PathBuf) -> AppState {
+        AppState {
+            database_path: Arc::new(database),
+            obsidian: None,
+            journal: None,
+            commitments: Arc::new(Vec::new()),
+            planning: Arc::new(PlanningConfig::default()),
+            csv_mappings: Arc::new(Vec::new()),
+            investment_csv_mappings: Arc::new(Vec::new()),
+            investment_snapshot: None,
+            balance_snapshot: None,
+            journal_write: Arc::new(std::sync::Mutex::new(())),
+            projection_write: Arc::new(std::sync::Mutex::new(())),
+            balance_write: Arc::new(std::sync::Mutex::new(())),
+            instruments: Arc::new(Vec::new()),
+            targets: None,
+            comms_base_url: Arc::new(String::new()),
+            overlay_root: None,
+        }
+    }
+
+    fn scratch_database(name: &str) -> std::path::PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("finance-server-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("{name}.db"));
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
+        }
+        path
+    }
+
+    /// The three refusals that happen before anything is written, and the one
+    /// that is NOT a 409: a body whose `expected_proposal_id` disagrees with the
+    /// path is a malformed request from one client, not evidence that the numbers
+    /// moved. Both fields come from the same caller, so the comparison can only
+    /// ever catch the caller contradicting itself -- the gate that catches moved
+    /// numbers is the recompute inside the closure.
+    #[tokio::test]
+    async fn a_verdict_is_refused_before_it_is_recorded() {
+        let database = scratch_database("verdict-gate");
+        let mismatched = record_verdict(
+            State(state_on(database.clone())),
+            Path("rebalance:instrument:SYN-A:0011".into()),
+            Json(VerdictRequest {
+                expected_proposal_id: "rebalance:instrument:SYN-A:0022".into(),
+                verdict: "accepted".into(),
+                note: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(mismatched.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            mismatched.1 .0["error"],
+            "expected_proposal_id must be the id in the path"
+        );
+
+        let unnamed = record_verdict(
+            State(state_on(database.clone())),
+            Path("rebalance:instrument:SYN-A:0011".into()),
+            Json(VerdictRequest {
+                expected_proposal_id: "rebalance:instrument:SYN-A:0011".into(),
+                verdict: "maybe".into(),
+                note: "synthetic".into(),
+            }),
+        )
+        .await;
+        assert_eq!(unnamed.0, StatusCode::UNPROCESSABLE_ENTITY);
+
+        let unexplained = record_verdict(
+            State(state_on(database.clone())),
+            Path("rebalance:instrument:SYN-A:0011".into()),
+            Json(VerdictRequest {
+                expected_proposal_id: "rebalance:instrument:SYN-A:0011".into(),
+                verdict: "rejected".into(),
+                note: "   ".into(),
+            }),
+        )
+        .await;
+        assert_eq!(unexplained.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            unexplained.1 .0["error"],
+            "a note is required for a rejected proposal"
+        );
+
+        // And an id the ledger does not carry is a 404 rather than a recorded
+        // verdict against nothing.
+        let unknown = record_verdict(
+            State(state_on(database)),
+            Path("rebalance:instrument:SYN-A:0011".into()),
+            Json(VerdictRequest {
+                expected_proposal_id: "rebalance:instrument:SYN-A:0011".into(),
+                verdict: "accepted".into(),
+                note: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(unknown.0, StatusCode::NOT_FOUND);
+        assert_eq!(unknown.1 .0["error"], "no proposal with that id");
+    }
+
+    /// The class bound on feed evidence is on the CLASS, not on the field count.
+    /// An item comms does not classify is dropped rather than assumed public, and
+    /// an item comms classifies above the row's own `c1` is dropped whatever its
+    /// four fields say.
+    #[test]
+    fn only_an_item_comms_classifies_at_or_below_the_row_is_quotable() {
+        let at_class = json!({ "id": "a", "title": "t", "url": "u", "day": "2026-09-05",
+                               "data_class": "c1" });
+        let public = json!({ "id": "b", "data_class": "c0" });
+        let stricter = json!({ "id": "c", "data_class": "c2" });
+        let unstated = json!({ "id": "d", "title": "t", "url": "u", "day": "2026-09-05" });
+        let unknown = json!({ "id": "e", "data_class": "confidential" });
+        assert!(item_is_quotable(&at_class));
+        assert!(item_is_quotable(&public));
+        assert!(!item_is_quotable(&stricter));
+        assert!(!item_is_quotable(&unstated));
+        assert!(!item_is_quotable(&unknown));
     }
 
     #[tokio::test]

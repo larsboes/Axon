@@ -223,6 +223,10 @@ export interface VerdictResult {
   status: string;
   recorded_at: string;
   exported_to: string | null;
+  /** Set when the verdict was recorded and its month file could not be written.
+   *  The row is the durable fact and the file is the copy, so this is a 200 with
+   *  a named partial success rather than a 500 on a verdict that already landed. */
+  warning?: string | null;
 }
 
 export const portfolio = (currency = "EUR", signal?: AbortSignal) =>
@@ -243,9 +247,11 @@ export const priceStatus = (signal?: AbortSignal) =>
 export const runDecisions = (dryRun = false) =>
   request<DecisionRunResult>("/finance/api/decisions/run", jsonInit("POST", { dry_run: dryRun }));
 
-/** `expectedProposalId` is re-derived server-side and compared. A mismatch is a
- *  409 carrying the current id, never a silently recorded verdict on numbers
- *  that have moved. */
+/** The server re-runs the rules and refuses with a 409 unless they still mint
+ *  the id being answered; the 409 carries the current id, or null when the rules
+ *  no longer produce that subject at all. `expected_proposal_id` itself only has
+ *  to agree with the path -- both come from here, so a disagreement is this
+ *  client contradicting itself and is answered as a 400. */
 export const recordVerdict = (
   id: string,
   body: { expected_proposal_id: string; verdict: "accepted" | "rejected"; note: string },
