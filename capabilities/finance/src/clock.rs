@@ -13,11 +13,7 @@
 
 /// Today as an ISO date, from the wall clock, with no date dependency.
 pub fn today() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    civil_from_days(secs / 86_400)
+    civil_date::today()
 }
 
 /// Now as second-granular RFC3339.
@@ -40,38 +36,22 @@ pub fn now_timestamp() -> String {
     )
 }
 
-/// Days since the Unix epoch as an ISO date (Howard Hinnant's algorithm, public
-/// domain).
+/// Days since the Unix epoch as an ISO date.
 pub fn civil_from_days(days: i64) -> String {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-    format!("{year:04}-{m:02}-{d:02}")
+    civil_date::iso_of_unix_day(days)
 }
 
 /// An ISO date as days since the Unix epoch, or `None` when the string is not a
-/// real date. The inverse of [`civil_from_days`].
+/// **real** date. The inverse of [`civil_from_days`].
+///
+/// Stricter than `civil_date::unix_day_of_iso`, which checks shape rather than the
+/// calendar: the gate below is what refuses 2026-02-29, and it is the reason this
+/// wrapper still exists after the arithmetic moved out.
 pub fn iso_day(value: &str) -> Option<i64> {
     if !valid_iso_date(value) {
         return None;
     }
-    let year = value[0..4].parse::<i64>().ok()?;
-    let month = value[5..7].parse::<i64>().ok()?;
-    let day = value[8..10].parse::<i64>().ok()?;
-    let adjusted_year = year - i64::from(month <= 2);
-    let era = adjusted_year.div_euclid(400);
-    let year_of_era = adjusted_year - era * 400;
-    let shifted_month = month + if month > 2 { -3 } else { 9 };
-    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    Some(era * 146_097 + day_of_era - 719_468)
+    civil_date::unix_day_of_iso(value)
 }
 
 /// Whether a string is a real calendar date in `YYYY-MM-DD`. February 30th is

@@ -18,6 +18,7 @@ members = [
     "libs/axon-server",
     "libs/axon-store",
     "libs/candidate-fingerprint",
+    "libs/civil-date",
     "libs/content-item",
     "libs/extraction",
     "libs/inference",

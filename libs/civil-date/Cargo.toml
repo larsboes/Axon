@@ -1,0 +1,17 @@
+[package]
+name = "civil-date"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Howard Hinnant's civil-from-days pair, written once. No dependencies, which is the reason four capabilities had copied it instead of sharing one."
+publish = false
+
+[lib]
+name = "civil_date"
+path = "src/lib.rs"
+
+# No dependencies, on purpose. Four capabilities wrote this algorithm out by hand
+# rather than take chrono, and every one of them said so in a comment. A shared
+# home that arrived with a date dependency would undo the thing they were buying.
+[dependencies]

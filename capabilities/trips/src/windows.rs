@@ -198,51 +198,32 @@ fn next_day(iso: &str) -> String {
 }
 
 /// Days since an arbitrary fixed epoch for `window_centers` arithmetic.
+///
+/// One behaviour change from the copy this replaced: a month outside 1..=12 or a
+/// day outside 1..=31 is now `None` rather than a well-formed nonsense number.
+/// Every caller here already had the `None` path — `store.rs:740`,
+/// `plan_search.rs:170` and `:173` all early-return on it — so the refusal reaches
+/// them instead of a date 1,900 years off.
 pub fn day_number(iso: &str) -> Option<i64> {
-    let mut parts = iso.split('-');
-    let y: i64 = parts.next()?.parse().ok()?;
-    let m: i64 = parts.next()?.parse().ok()?;
-    let d: i64 = parts.next()?.parse().ok()?;
-    // Howard Hinnant's days-from-civil, the standard branchless form.
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146097 + doe)
+    civil_date::day_number_of_iso(iso)
 }
 
 /// The day number of 1970-01-01.
 ///
 /// `day_number`'s epoch is proleptic year 0, not Unix — its own doc comment says
-/// "an arbitrary fixed epoch", and it is arbitrary. Anything converting a wall
-/// clock into this scale must add this, and the one that did not was off by
-/// nearly two thousand years while still returning a well-formed date, which is
-/// the failure mode a named constant exists to prevent.
-pub const UNIX_EPOCH_DAY: i64 = 719_468;
+/// "an arbitrary fixed epoch", and it is arbitrary. The constant, the scale and
+/// the failure it prevents now live in `libs/civil-date`; this re-export is what
+/// the rest of this module and its tests read.
+pub use civil_date::UNIX_EPOCH_DAY;
 
 /// Today as an ISO date from the wall clock, UTC, on `day_number`'s scale.
 pub fn today() -> String {
-    let unix_days = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| (since.as_secs() / 86_400) as i64)
-        .unwrap_or_default();
-    iso_of_day_number(UNIX_EPOCH_DAY + unix_days)
+    civil_date::today()
 }
 
 /// `day_number`'s inverse.
 pub fn iso_of_day_number(z: i64) -> String {
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = (mp + 2) % 12 + 1;
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
+    civil_date::iso_of_day_number(z)
 }
 
 #[cfg(test)]
@@ -259,6 +240,13 @@ mod epoch_tests {
         assert_eq!(iso_of_day_number(UNIX_EPOCH_DAY + 20_697), "2026-09-01");
         // A raw Unix day count parses as a date and is not one.
         assert_eq!(iso_of_day_number(20_697), "0056-10-30");
+    }
+
+    #[test]
+    fn a_month_out_of_range_is_refused_rather_than_converted() {
+        assert_eq!(day_number("2026-13-01"), None);
+        assert_eq!(day_number("2026-09-32"), None);
+        assert_eq!(day_number("not a date"), None);
     }
 
     #[test]

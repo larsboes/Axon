@@ -16,6 +16,9 @@ name = "calendar-server"
 path = "src/server.rs"
 
 [dependencies]
+# Howard Hinnant's civil-from-days pair, shared rather than copied. No
+# dependencies of its own, which is why the four copies existed.
+civil-date = { path = "../../libs/civil-date" }
 # Outbound HTTP goes through one factory: the user-agent, the timeout and the
 # connection pool are decided there, not at each call site (libs/axon-http).
 axon-http = { path = "../../libs/axon-http" }

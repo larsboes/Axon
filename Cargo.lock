@@ -890,6 +890,7 @@ dependencies = [
  "axon-server",
  "axon-store",
  "axum",
+ "civil-date",
  "content-item",
  "markdown-root",
  "reqwest",
@@ -1039,6 +1040,10 @@ dependencies = [
  "crypto-common 0.2.2",
  "inout 0.2.2",
 ]
+
+[[package]]
+name = "civil-date"
+version = "0.1.0"
 
 [[package]]
 name = "cmake"
@@ -1671,6 +1676,7 @@ dependencies = [
  "axon-store",
  "axum",
  "candidate-fingerprint",
+ "civil-date",
  "content-item",
  "csv",
  "markdown-root",
@@ -3535,6 +3541,7 @@ dependencies = [
  "axon-store",
  "axum",
  "candidate-fingerprint",
+ "civil-date",
  "csv",
  "reqwest",
  "route-manifest",
@@ -5419,6 +5426,7 @@ dependencies = [
  "axon-server",
  "axon-store",
  "axum",
+ "civil-date",
  "markdown-root",
  "reqwest",
  "route-manifest",
