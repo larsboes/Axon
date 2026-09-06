@@ -1,5 +1,5 @@
 <script lang="ts">
-  /** What actually classified this mailbox, derived from the rows on screen.
+  /** What actually classified this mailbox, counted by the capability.
    *
    *  The panel this replaces hardcoded "Deterministic rules · local · no AI" and
    *  "Private rules first, generic heuristics second, then Active as the safe
@@ -8,10 +8,9 @@
    *  false about the row beside it is worse than one that says nothing. So the
    *  heading is the live distribution of `classification_method`, and the model
    *  rung's entry names its producer, its refusal and whether it may write. */
-  import type { TriageItem } from "$lib/api";
   import type { TriageClassifyReport } from "./api";
 
-  let { items, report }: { items: TriageItem[]; report: TriageClassifyReport | null } = $props();
+  let { report }: { report: TriageClassifyReport | null } = $props();
 
   const METHOD_LABEL: Record<string, string> = {
     deterministic: "deterministic rules",
@@ -20,18 +19,15 @@
     legacy: "rows classified before the rules existed",
   };
 
-  const methods = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const item of items) {
-      counts.set(item.classification_method, (counts.get(item.classification_method) ?? 0) + 1);
-    }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  });
+  // The distribution arrives counted and ordered from `GET
+  // /triage/classify/report`. Frontend renders, backend computes: this used to
+  // tally `classification_method` over the rows on screen, which is arithmetic.
+  const methods = $derived(report?.by_classification_method ?? []);
 
   const heading = $derived(
     methods.length === 0
       ? "No mail classified yet"
-      : methods.map(([method, n]) => `${n} by ${METHOD_LABEL[method] ?? method}`).join(" · ")
+      : methods.map((row) => `${row.n} by ${METHOD_LABEL[row.method] ?? row.method}`).join(" · ")
   );
 
   const verdicts = $derived(report?.verdicts ?? 0);

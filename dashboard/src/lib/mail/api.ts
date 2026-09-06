@@ -6,7 +6,7 @@
  *  `GET /triage` and a type-only import cycle to move one field would cost more
  *  than it saves.
  */
-import { jsonInit, request, type TriageItem, type TriageModelVerdict } from '../api';
+import { jsonInit, request, type MailCategory, type TriageModelVerdict } from '../api';
 
 export type { TriageModelVerdict };
 
@@ -15,8 +15,14 @@ export type { TriageModelVerdict };
  *  cannot select them. */
 export interface MailClassifyPass {
   mode: string;
+  /** How many threads this pass was allowed to act on: the request's own limit,
+   *  else the overlay's `mail_model.limit`, else 200. */
+  limit: number;
   reviewed: number;
   eligible: number;
+  /** Stored disagreements with no category write yet. What a shadow pass leaves
+   *  for the operator to decide on, and what an apply pass then acts on. */
+  awaiting_apply: number;
   prompted: number;
   refused_c3: number;
   over_window: number;
@@ -50,6 +56,8 @@ export interface TriageClassifyReport {
   candidates: number;
   by_rule_stream: MailStreamAgreement[];
   by_state: { state: string; n: number }[];
+  /** What actually classified the open mailbox, counted by the capability. */
+  by_classification_method: { method: string; n: number }[];
   by_data_class: { data_class: string; n: number; prompted: number }[];
   held: { reason: string; n: number }[];
   confidence_bp: { min: number | null; median: number | null; max: number | null };
@@ -98,36 +106,19 @@ export function agreementRows(report: TriageClassifyReport | null): MailStreamAg
 
 /** Whether this verdict is worth showing an Accept button for.
  *
- *  Only a real disagreement: a model that agreed with the rule has nothing to
- *  accept, and re-stamping the row `human` would erase the true fact that a rule
- *  decided it. */
-export function proposesAChange(verdict: TriageModelVerdict | null | undefined): boolean {
+ *  Only a real disagreement, and it is measured against the category the row
+ *  HOLDS — not against `rule_stream`, which is the deterministic verdict frozen
+ *  at prompt time and is never rewritten. Comparing with the frozen one kept the
+ *  card offering "Accept Advertising" after the accept had already happened
+ *  (review, 2026-09-05). */
+export function proposesAChange(
+  verdict: TriageModelVerdict | null | undefined,
+  current: MailCategory
+): boolean {
   return Boolean(
     verdict &&
       verdict.state === 'generated' &&
       verdict.model_stream &&
-      verdict.model_stream !== verdict.rule_stream
+      verdict.model_stream !== current
   );
-}
-
-/** Home's priority for one mail proposal.
- *
- *  Exported for the Home decision registry to import; nothing in this stream
- *  calls it, and that is deliberate rather than an oversight. `+page.svelte` is
- *  the dashboard-refresh stream's file.
- *
- *  With `urgencyValidated` false — which is what `GET /triage/classify/report`
- *  answers today and will until the frozen corpus carries a measured urgency
- *  band error — this returns exactly today's `550 + (recent ? 30 : 0)`, byte for
- *  byte. The urgency term is capped at 39 so the band can never reach 620, which
- *  is the task band above it.
- */
-export function mailHomePriority(item: TriageItem, urgencyValidated: boolean): number {
-  const recent = item.internal_date
-    ? Date.now() - new Date(item.internal_date).getTime() < 172_800_000
-    : false;
-  const base = 550 + (recent ? 30 : 0);
-  if (!urgencyValidated) return base;
-  const urgency = item.model?.urgency_bp ?? 0;
-  return base + Math.round((Math.min(Math.max(urgency, 0), 10_000) / 10_000) * 39);
 }

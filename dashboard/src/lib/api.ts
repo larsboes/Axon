@@ -52,9 +52,6 @@ export function describeFailure(status: number, body: string, path: string): str
   return capability ? `${capability}: request failed (${status})` : `Request failed (${status})`;
 }
 
-/** Exported so a stream-owned client module under `lib/<domain>/api.ts` gets the
- *  ApiError shape, the describeFailure text and the embedded-error unwrap rather
- *  than reimplementing all three. */
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
@@ -2012,6 +2009,10 @@ export interface TriageBulkResult {
   succeeded: string[];
   failures: Array<{ id: string; error: string }>;
   gmail_changed: boolean;
+  /** Rows whose stored subject and snippet this batch permanently redacted,
+   *  because the category it set on them raises the data class. Zero for every
+   *  action except `categorize` into `belege` or `steuern`. */
+  narrowed: number;
 }
 
 export interface GmailMaintenanceResult {
@@ -2532,7 +2533,7 @@ export const comms = {
       jsonInit('POST', { status }),
     ),
   setTriageCategory: (id: string, stream: MailCategory) =>
-    request<void>(
+    request<{ ok: boolean; narrowed: boolean }>(
       `/comms/triage/${encodeURIComponent(id)}/stream`,
       jsonInit('POST', { stream }),
     ),

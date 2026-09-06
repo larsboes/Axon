@@ -16,7 +16,9 @@
   } = $props();
 
   const verdict = $derived(item.model ?? null);
-  const changes = $derived(proposesAChange(verdict));
+  // Against the category the row holds, so an accepted proposal stops offering
+  // an Accept button for a change already made.
+  const changes = $derived(proposesAChange(verdict, item.stream));
   /** A held verdict is one apply refused because it would raise the data class.
    *  Accepting it is a one-way decision on two axes, so the button says so. */
   const held = $derived(verdict?.mode === "held");

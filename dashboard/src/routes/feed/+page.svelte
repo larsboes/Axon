@@ -90,7 +90,7 @@
   let mailBusy = $state<string | null>(null);
   let mailJobBusy = $state<string | null>(null);
   let mailActionError = $state<string | null>(null);
-  let confirmingBulkAction = $state<GmailAction | null>(null);
+  let confirmingBulkAction = $state<GmailAction | "categorize" | null>(null);
   let bulkCategory = $state<MailCategory>("aktiv");
   let classifyReport = $state<TriageClassifyReport | null>(null);
   let bulkDataClass = $state<DataClass>("c1");
@@ -105,6 +105,11 @@
   let scoringNotice = $state<string | null>(null);
   let classifyingMailData = $state(false);
   let dataClassNotice = $state<string | null>(null);
+  let redactionNotice = $state<string | null>(null);
+  /** The two categories that raise a mail's data class by name alone, so
+   *  setting one also permanently redacts the stored subject and preview.
+   *  `content_item::mail_others_reason` is what rules it in comms. */
+  const CLASS_RAISING_CATEGORIES: MailCategory[] = ["belege", "steuern"];
   let loading = $state(true);
   let offline = $state(false);
   let busy = $state<string | null>(null);
@@ -650,6 +655,13 @@
         [...selectedMail].filter((id) => !succeeded.has(id)),
       );
       confirmingBulkAction = null;
+      // The half of this write that cannot be undone. The capability counts it;
+      // saying nothing here left a permanent redaction invisible at the button
+      // that caused it.
+      redactionNotice =
+        result.narrowed > 0
+          ? `${result.narrowed} stored subject(s) and preview(s) were permanently redacted, because the class this set does not admit them.`
+          : null;
       if (result.failures.length > 0) {
         mailActionError = `${result.succeeded.length} updated; ${result.failures.length} failed.`;
       }
@@ -753,6 +765,7 @@
     {#if reconcileNotice}<p class="context-note mail-notice">{reconcileNotice}</p>{/if}
     {#if scoringNotice}<p class="context-note mail-notice">{scoringNotice}</p>{/if}
     {#if dataClassNotice}<p class="context-note mail-notice">{dataClassNotice}</p>{/if}
+    {#if redactionNotice}<p class="context-note mail-notice">{redactionNotice}</p>{/if}
 
     {#if selectedMail.size > 0}
       <section class="bulk-bar card" aria-label="Bulk mail actions">
@@ -763,7 +776,18 @@
               <option value={category}>{mailCategoryLabel(category)}</option>
             {/each}
           </select>
-          <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("categorize")}>Apply category</button>
+          <!-- A confirm step for the two categories that raise the data class:
+               that write also redacts the stored subject and preview, and a
+               resweep cannot put them back. Archive and Trash confirm because
+               they move a thread; this one confirms because it destroys text. -->
+          <button
+            class="btn"
+            disabled={mailBusy === "bulk"}
+            onclick={() =>
+              CLASS_RAISING_CATEGORIES.includes(bulkCategory)
+                ? (confirmingBulkAction = "categorize")
+                : applyBulkMailAction("categorize")}
+          >Apply category</button>
         </div>
         <div class="bulk-category">
           <select bind:value={bulkDataClass} aria-label="Bulk data class">
@@ -786,9 +810,15 @@
         {#if confirmingBulkAction}
           <div class="bulk-confirm" role="alert">
             <span>
-              {confirmingBulkAction === "trash"
-                ? `Move ${selectedMail.size} selected threads to Gmail Trash?`
-                : `Archive ${selectedMail.size} selected threads in Axon and Gmail?`}
+              {#if confirmingBulkAction === "categorize"}
+                Set {mailCategoryLabel(bulkCategory)} on {selectedMail.size} selected threads? That
+                raises them to Others and permanently redacts the stored subject and preview. A
+                later sweep cannot put them back.
+              {:else if confirmingBulkAction === "trash"}
+                Move {selectedMail.size} selected threads to Gmail Trash?
+              {:else}
+                Archive {selectedMail.size} selected threads in Axon and Gmail?
+              {/if}
             </span>
             <button class="btn" onclick={() => (confirmingBulkAction = null)}>Cancel</button>
             <button
@@ -805,7 +835,7 @@
     {/if}
 
     {#if classifierOpen}
-      <ClassifierPanel items={triage} report={classifyReport} />
+      <ClassifierPanel report={classifyReport} />
     {/if}
 
     {#if visibleMail.length === 0}

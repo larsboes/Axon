@@ -63,6 +63,7 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
   let mailCategory = $state<MailCategory>("aktiv");
+  let redactionNotice = $state<string | null>(null);
   let selectedDataClass = $state<DataClass>("c1");
   let confirmingGmailAction = $state<GmailAction | null>(null);
   let cloudPreview = $state<CloudDerivativePreview | null>(null);
@@ -546,12 +547,38 @@
     }
   }
 
+  /** The two categories that raise a mail's data class by name alone, so
+   *  setting one also permanently redacts the stored subject and preview.
+   *  `content_item::mail_others_reason` is what rules it in comms. */
+  const CLASS_RAISING_CATEGORIES: MailCategory[] = ["belege", "steuern"];
+
   async function setMailCategory(category: MailCategory): Promise<void> {
     if (!entry?.mail || entry.source !== "mail" || busy || category === entry.mail.category) return;
+    // Asked before the write, because the write cannot be undone: moving a mail
+    // to Tax or Receipts raises it to Others, and the stored subject and preview
+    // are redacted in the same transaction.
+    if (
+      CLASS_RAISING_CATEGORIES.includes(category) &&
+      !window.confirm(
+        "Tax and Receipts are Others: this also raises the data class and permanently redacts the stored subject and preview. A later sweep cannot put them back. Continue?",
+      )
+    ) {
+      mailCategory = entry.mail.category;
+      return;
+    }
     busy = true;
     error = null;
+    redactionNotice = null;
     try {
-      await comms.setTriageCategory(entry.id, category);
+      const write = await comms.setTriageCategory(entry.id, category);
+      if (write.narrowed) {
+        redactionNotice =
+          "The stored subject and preview were permanently redacted: the class this category sets does not admit them.";
+        // Reloaded rather than patched, because the row on screen still holds
+        // the text the write just removed.
+        await loadEntry();
+        return;
+      }
       entry.mail.category = category;
       entry.mail.rationale = "Category set manually in Axon.";
       entry.mail.classification_method = "human";
@@ -994,6 +1021,7 @@
                human writes in Obsidian. The mail keeps its own lane — category,
                archive, trash — and the hand-off to an action is a note, not a
                row this page can create. -->
+          {#if redactionNotice}<p class="mail-redaction-notice">{redactionNotice}</p>{/if}
           <label class="mail-category">
             <span>Category</span>
             <select
@@ -1984,6 +2012,12 @@
     color: var(--text-tertiary);
     cursor: default;
     opacity: 0.75;
+  }
+
+  .mail-redaction-notice {
+    margin: 0 0 0.5rem;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
   }
 
   .mail-category {
