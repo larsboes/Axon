@@ -15,9 +15,9 @@ path = "src/main.rs"
 axon-config = { path = "../../libs/axon-config" }
 axon-server = { path = "../../libs/axon-server" }
 route-manifest = { path = "../../libs/route-manifest" }
-axum = "0.7"
-tokio = { version = "1", features = ["full"] }
+axum.workspace = true
+tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tower-http = { version = "0.5", features = ["fs"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tower-http = { workspace = true, features = ["fs"] }

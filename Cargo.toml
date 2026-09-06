@@ -38,6 +38,50 @@ edition = "2021"
 rust-version = "1.96"
 license = "MIT"
 
+# One version per crate, for the crates more than one member declares.
+#
+# Before this table, 24 members each wrote their own version requirement for axum, tokio,
+# reqwest, rusqlite, serde, serde_json, thiserror, tower-http, sha2 and toml. A Dependabot
+# bump was a 24-file edit, and the requirements had already drifted apart in two places
+# (serde and serde_json were written as both "1" and "1.0"; thiserror as "1.0" and "2.0").
+#
+# The split between this table and the members: **the version lives here, the features live
+# with the member that needs them.** Where every member asked for the same features, they
+# moved here too, and the member reads `dep.workspace = true`:
+#
+#   rusqlite  ["bundled"]                    — all ten members, no exception
+#   chrono    default-features = false,      — one member (libs/station-time), whole spec
+#             ["std", "clock"]
+#
+# Where the feature sets differ the entry carries the version only, and the member writes
+# `dep = { workspace = true, features = [...] }` with the list it had before. That is
+# reqwest (five distinct sets across twelve declarations), tokio (three), tower-http (two:
+# "cors" for the API servers, "fs" for the two that serve a bundle) and serde ("derive" in
+# eighteen members, bare in libs/axon-store, whose narrow dependency surface is deliberate).
+#
+# Not a bump: no requirement here resolves to a different version than it did before, and
+# Cargo.lock is unchanged. Q77 says roll on the latest, hold nothing — so raising a floor is
+# Dependabot's job on its own commit, not a side effect of this one. Measured with
+# `cargo tree -d --workspace`: 99 duplicated version entries across 44 packages before this
+# change and 99 after, because every second version in that list arrives transitively
+# (tower-http 0.6 and tower 0.5 through reqwest 0.13 and axum 0.7, toml 1.1 and thiserror 2.0
+# through xberg). Unification of declarations cannot remove a duplicate a dependency requires.
+#
+# capabilities/interior stays out of the `thiserror` entry: it is on 2.0 while six members are
+# on 1.0, and moving either way would be a version change. It says so at its own declaration.
+[workspace.dependencies]
+axum = "0.7"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+reqwest = "0.13"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = "1.0"
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "1.0"
+tokio = "1"
+toml = "0.8"
+tower-http = "0.5"
+
 # Dependencies carry no debug info; workspace crates keep all of it.
 #
 # Measured 2026-08-29, before this stanza existed: `target/debug` was 44 GB, of which `deps/`

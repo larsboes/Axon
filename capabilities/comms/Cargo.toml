@@ -55,26 +55,26 @@ content-item = { path = "../../libs/content-item" }
 # the ownership check.
 markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-reqwest = { version = "0.13", features = ["json", "gzip", "blocking", "query", "form"] }
-thiserror = "1.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+reqwest = { workspace = true, features = ["json", "gzip", "blocking", "query", "form"] }
+thiserror.workspace = true
 # The database, after PRD Q45 retired Postgres. Bundled so the deployment does not
 # depend on whichever SQLite the host ships; upstreams.toml [rusqlite] has the
 # measurement that settled it. Blocking, matching reqwest's "blocking" feature --
 # the `comms` CLI path carries no async runtime, only comms-server does. The pool
 # stays (axon-store owns it): 43 handlers here call `Store::open`.
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite.workspace = true
 # feed_items PK is the sha256 of the canonical URL (store::feed_id). sha2 is
 # already in the root workspace's resolved Cargo.lock (transitive today), so this
 # reuses a pinned dep rather than hand-rolling SHA-256.
-sha2 = "0.10"
+sha2.workspace = true
 # Gmail returns message bodies base64url-encoded, and the digest path is the
 # first thing here that reads one. Already resolved in the root Cargo.lock
 # (transitive today), so naming it reuses a pinned dep rather than hand-rolling
 # a decoder -- the same reasoning as sha2 above.
 base64 = "0.22"
 # comms-server only:
-tokio = { version = "1", features = ["full"] }
-axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
+tokio = { workspace = true, features = ["full"] }
+axum.workspace = true
+tower-http = { workspace = true, features = ["cors"] }

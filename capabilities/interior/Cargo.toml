@@ -27,12 +27,15 @@ route-manifest = { path = "../../libs/route-manifest" }
 # Das Inventar sind Zeilen (PRD Q58/B25). Eine Datei fuer alle Capabilities, `interior_`
 # als Praefix — libs/axon-store/README.md hat das Warum.
 axon-store = { path = "../../libs/axon-store" }
-rusqlite = { version = "0.40", features = ["bundled"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-toml = "0.8"
-tokio = { version = "1", features = ["full"] }
-axum = "0.7"
+rusqlite.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+toml.workspace = true
+tokio = { workspace = true, features = ["full"] }
+axum.workspace = true
+# Not `thiserror.workspace = true`: the workspace entry is "1.0", which six members share,
+# and this crate is the only one on 2.0. Inheriting would downgrade it; raising the table
+# would bump the other six. Both are version changes, which belong on a Dependabot commit.
 thiserror = "2.0"
 # Der eigentliche Hebel der Suche: die Kandidaten sind voneinander unabhaengig.
 rayon = "1"

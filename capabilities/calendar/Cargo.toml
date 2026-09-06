@@ -22,13 +22,13 @@ axon-store = { path = "../../libs/axon-store" }
 content-item = { path = "../../libs/content-item" }
 markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 # The database, after PRD Q45 retired Postgres. Bundled so the deployment does not
 # depend on whichever SQLite the host ships; upstreams.toml [rusqlite] has the
 # measurement that settled it.
-rusqlite = { version = "0.40", features = ["bundled"] }
-tokio = { version = "1", features = ["full"] }
-axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
-reqwest = { version = "0.13", features = ["json", "gzip", "blocking", "query", "form"] }
+rusqlite.workspace = true
+tokio = { workspace = true, features = ["full"] }
+axum.workspace = true
+tower-http = { workspace = true, features = ["cors"] }
+reqwest = { workspace = true, features = ["json", "gzip", "blocking", "query", "form"] }
