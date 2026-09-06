@@ -25,7 +25,8 @@ Copy this checklist and track progress:
 - [ ] 3. Pick a preset, or compose a council
 - [ ] 4. Collect the evidence the members need
 - [ ] 5. Run the rounds
-- [ ] 6. Write the synthesis
+- [ ] 6. Check every round with the clerk
+- [ ] 7. Write the synthesis
 ```
 
 **1 — State the decision.** Write the question the council answers and the options on the table.
@@ -59,11 +60,16 @@ Never launch the same brief twice. Identical members agree, and agreement carrie
 and put it in every member prompt. A member that has to guess produces an unverified claim, and
 step 6 discards it.
 
-**5 — Run the rounds.** Read `references/rounds.md` for the per-round prompts. Launch every member
-of one round in a single message, each as a separate Agent call with
-`subagent_type: "general-purpose"`. Print each round before the next round starts.
+**5 — Run the rounds.** Read `references/rounds.md` for the per-round prompts and the subagent
+type each member runs as. Launch every member of one round in a single message, one Agent call
+each. Print each round before the next round starts.
 
-**6 — Write the synthesis.** Read `references/output-format.md`. The synthesis ends with one
+**6 — Check every round with the clerk.** Launch `council-clerk` on the round text as soon as the
+round is printed. It resolves every citation the members wrote and reports the claims the evidence
+does not support. Apply its verdicts to the transcript before the next round runs, so round 2
+challenges a corrected round 1. `references/rounds.md` carries the clerk prompt.
+
+**7 — Write the synthesis.** Read `references/output-format.md`. The synthesis ends with one
 recommendation and the minority position, named and attributed to the member who holds it.
 
 ## Evidence rule
@@ -77,13 +83,24 @@ A council member states a position. The evidence rule decides which of its claim
 - A claim with no pointer is marked `[unverified]` in the transcript, at the claim.
 - Keep the marked claim. Do not delete it and do not repair it. A load-bearing claim that nobody
   can check is itself a finding, and the synthesis reports it as one.
+- A member marks its own claims, so a member that wants to win simply does not mark them. The
+  `council-clerk` agent in step 6 is what makes the rule real: it re-reads every pointer and
+  returns `resolves`, `narrower`, `contradicted`, `missing` or `uncited` per claim. The clerk's
+  verdict overrides the member's own mark, in both directions.
 
 ## Error handling
 
 - **Every member agrees in round 1.** Say so, stop, and report the agreement. A debate with no
   disagreement is a receipt, not a deliberation.
-- **A member cites a file that does not exist.** Drop the claim. Name the member and the path in
-  the synthesis.
+- **A member cites a file that does not exist.** The clerk returns `missing`. Drop the claim, and
+  name the member and the path in the synthesis.
+- **The clerk returns `narrower` or `contradicted`.** Keep the claim, annotate it in the transcript
+  with what the source actually says, and let the next round argue against the corrected version.
+  A member whose evidence says less than it claimed is a finding the synthesis reports.
+- **The harness has no `council-*` subagent types.** They ship in this Pack's `agents/` directory
+  and only a harness with native subagents installs them. Fall back to `general-purpose` for every
+  member and for the clerk, and paste the read-only contract into each prompt: read only, never
+  edit, cite or mark, return the round text alone.
 - **A member argues a position it was not given.** Keep the argument and record the drift. Do not
   re-run the member to make it stay in role.
 - **The caller wants an attack, not a comparison.** Stop and use `red-team`.

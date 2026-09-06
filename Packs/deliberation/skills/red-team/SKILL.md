@@ -36,8 +36,9 @@ supply the argument it left implicit, and use its best evidence. Attacking a pro
 made weaker proves nothing.
 
 **3 — Attack.** Read `references/lenses.md` and run each lens against every claim. Run the lenses
-as parallel `general-purpose` subagents, one lens per agent, when the proposal is longer than a
-page or the claims need files read. Run them inline otherwise.
+as parallel `red-team-lens` subagents, one lens per agent, when the proposal is longer than a page
+or the claims need files read. Run them inline otherwise. A lens reads files; it never runs a
+command and never edits one, so any measurement it is allowed to cite has to be in its prompt.
 
 **4 — Rank.** Sort every surviving finding into `fatal`, `structural`, `cost` or `cosmetic`.
 Discard anything that only restates a claim in a hostile tone. Volume is not signal.

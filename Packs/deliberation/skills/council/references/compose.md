@@ -23,15 +23,22 @@ Worked example:
 Design the roles around this decision, not from a list of job titles. Four angles cover most
 decisions, and each one has to be filled by somebody who would really hold it:
 
-| Angle | The member argues from |
-|---|---|
-| Owner | Having built or run this kind of thing: what actually ships |
-| Sceptic | The failure mode: what breaks and who notices |
-| Cost realist | What it costs to build, run and reverse |
-| Outside evidence | Precedent, measurement, and what other people found |
+| Angle | The member argues from | `subagent_type` |
+|---|---|---|
+| Owner | Having built or run this kind of thing: what actually ships | `council-owner` |
+| Sceptic | The failure mode: what breaks and who notices | `council-skeptic` |
+| Cost realist | What it costs to build, run and reverse | `council-cost` |
+| Outside evidence | Precedent, measurement, and what other people found | `council-evidence` |
+
+The four types are the four angles. Each one carries the read-only contract and the evidence rule;
+the brief you write carries everything that makes this council different from the last one. Write
+the brief first and pick the type from the angle it landed on — not the other way round, which
+produces four members who each argue their job title.
 
 Add a fifth member when one option has nobody who would defend it. An option with no advocate
-loses for the wrong reason.
+loses for the wrong reason. A fifth member has no matching type: launch it as `general-purpose`
+and paste the contract into its prompt — read only, never edit, cite or mark, return the round text
+alone.
 
 ## Rules
 

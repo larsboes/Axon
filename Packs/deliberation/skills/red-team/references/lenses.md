@@ -5,8 +5,14 @@ defect. Run all six. Six lenses that disagree beat thirty that repeat each other
 this skill was adapted from ran 32 agents in four types, and the extra copies produced volume to
 rank rather than defects to fix.
 
-Run one lens per `general-purpose` subagent, all in a single message, when the proposal is longer
-than a page or the claims need files read. Run them inline otherwise.
+Run one lens per `red-team-lens` subagent, all in a single message, when the proposal is longer
+than a page or the claims need files read. Run them inline otherwise. `red-team-lens` ships in this
+Pack's `agents/` directory: it is one agent type used six times, because the lenses differ by the
+question in the prompt, not by the contract around it. That contract is read-only tools, the
+evidence rule, "never invent a failure", and "return nothing when the proposal survives your lens".
+
+A harness with no native subagents has no such type. Use `general-purpose` and paste those four
+rules into each lens prompt.
 
 Give every lens the same input: the atomic claim list, the steelman, the evidence gathered, and
 its own brief below.
