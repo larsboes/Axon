@@ -28,6 +28,10 @@ markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["full"] }
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# `#[tokio::main]`, `#[tokio::test]` and one `spawn_blocking`, nothing else.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 axum.workspace = true
 tower-http = { workspace = true, features = ["cors"] }

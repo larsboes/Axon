@@ -75,6 +75,16 @@ sha2.workspace = true
 # a decoder -- the same reasoning as sha2 above.
 base64 = "0.22"
 # comms-server only:
-tokio = { workspace = true, features = ["full"] }
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# `time` for the ingest tickers (`interval`, `interval_at`), `sync` for EXPORT_LOCK's
+# `tokio::sync::Mutex`, `net` for the `TcpListener` the server tests bind.
+# This list is what comms asks for, not what it resolves to: `axon-extraction` above is
+# taken with its default `xberg` rung on, and that rung declares `tokio = full` for a
+# stated reason (libs/extraction/Cargo.toml). So comms still builds tokio with all 19
+# features while the other twelve capabilities now land between 11 and 16. Trimming here
+# is still worth writing down: it says what this crate would need on its own.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync", "net"] }
 axum.workspace = true
 tower-http = { workspace = true, features = ["cors"] }

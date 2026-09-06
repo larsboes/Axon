@@ -31,7 +31,11 @@ rusqlite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 toml.workspace = true
-tokio = { workspace = true, features = ["full"] }
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# `fs` for api_media's `canonicalize`/`metadata`/`read`, which must not block the runtime.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
 axum.workspace = true
 # Not `thiserror.workspace = true`: the workspace entry is "1.0", which six members share,
 # and this crate is the only one on 2.0. Inheriting would downgrade it; raising the table

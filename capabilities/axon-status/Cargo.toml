@@ -21,7 +21,12 @@ axon-store = { path = "../../libs/axon-store" }
 axon-server = { path = "../../libs/axon-server" }
 route-manifest = { path = "../../libs/route-manifest" }
 axum.workspace = true
-tokio = { workspace = true, features = ["full"] }
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# `process` for the systemd/launchd probes in registry.rs and backup.rs, `time` for the
+# poll interval. Rest: `#[tokio::main]` plus `spawn`/`spawn_blocking`.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "time"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 reqwest = { workspace = true, features = ["json", "stream", "query", "form"] }

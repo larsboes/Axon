@@ -37,7 +37,11 @@ serde_json.workspace = true
 # depend on whichever SQLite the host ships; upstreams.toml [rusqlite] has the
 # measurement that settled it.
 rusqlite.workspace = true
-tokio = { workspace = true, features = ["full"] }
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# `#[tokio::main]`, `#[tokio::test]` and 27 `spawn_blocking` store reads, nothing else.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 axum.workspace = true
 tower-http = { workspace = true, features = ["cors"] }
 csv = "1.4"

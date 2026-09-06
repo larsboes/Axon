@@ -48,6 +48,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 # punctuality-server only. Same versions capabilities/transit pins for transit-server.
-tokio = { workspace = true, features = ["full"] }
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# `#[tokio::main]` and four `spawn_blocking` store reads, nothing else.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 axum.workspace = true
 tower-http = { workspace = true, features = ["cors"] }

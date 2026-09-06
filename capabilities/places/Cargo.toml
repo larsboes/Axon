@@ -31,7 +31,12 @@ serde_json.workspace = true
 # measurement that settled it. Blocking, driven from spawn_blocking, same as every
 # store-owning capability.
 rusqlite.workspace = true
-tokio = { workspace = true, features = ["full"] }
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# `rt-multi-thread` for the explicit `Runtime::new()` in main.rs as well as the tests,
+# `net` for the `TcpListener` the server tests bind.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
 axum.workspace = true
 # Raw Amex export parsing for `backfill amex`; the same crate finance's import
 # pipeline uses, so quoting and embedded newlines behave identically.

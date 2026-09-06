@@ -16,7 +16,12 @@ axon-config = { path = "../../libs/axon-config" }
 axon-server = { path = "../../libs/axon-server" }
 route-manifest = { path = "../../libs/route-manifest" }
 axum.workspace = true
-tokio = { workspace = true, features = ["full"] }
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# `time` for the tick `interval` and `timeout_at`, `sync` for the broadcast channel the
+# SSE stream fans out on.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

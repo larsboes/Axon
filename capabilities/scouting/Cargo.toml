@@ -45,6 +45,10 @@ rusqlite.workspace = true
 # README's "Extending it"), just sourced from a sibling capability's crate
 # instead of a new HTTP client written inline.
 transit = { version = "0.1.0", path = "../transit" }
-tokio = { workspace = true, features = ["full"] }
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# Two `#[tokio::main]` binaries and seven `spawn_blocking` store reads, nothing else.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 axum.workspace = true
 tower-http = { workspace = true, features = ["cors"] }
