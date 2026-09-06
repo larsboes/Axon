@@ -46,6 +46,16 @@
   // rather than left to render a page of error cards (#168).
   const demo = $derived(data?.demo ?? null);
   const missing = $derived(new Set(Object.keys(demo?.absent ?? {})));
+  // Pointing at a map route is enough intent to start its ~1 MB library and the vendored
+  // style. Fire-and-forget, idempotent, and a miss costs a download the user did not make —
+  // which is why it hangs off hover and focus rather than off page load.
+  let mapWarmed = false;
+  function warmMap(item: { warmsMap?: true }): void {
+    if (!item.warmsMap || mapWarmed) return;
+    mapWarmed = true;
+    void import("$lib/map/surface").then((surface) => surface.warm());
+  }
+
   const primary = $derived(withoutCapabilities(PRIMARY_NAV, missing));
   const utility = $derived(withoutCapabilities(UTILITY_NAV, missing));
 
@@ -170,6 +180,8 @@
             class:active={isActive(item.href)}
             href={link(item.href)}
             aria-current={isActive(item.href) ? "page" : undefined}
+            onmouseenter={() => warmMap(item)}
+            onfocus={() => warmMap(item)}
           >
             <Icon name={item.icon as never} size={14} />
             {item.label}
@@ -229,6 +241,8 @@
           class:active={isActive(item.href)}
           href={link(item.href)}
           aria-current={isActive(item.href) ? "page" : undefined}
+          onmouseenter={() => warmMap(item)}
+          onfocus={() => warmMap(item)}
           onclick={() => (menuOpen = false)}
         >
           <Icon name={item.icon as never} />
@@ -242,6 +256,8 @@
           class:active={isActive(item.href)}
           href={link(item.href)}
           aria-current={isActive(item.href) ? "page" : undefined}
+          onmouseenter={() => warmMap(item)}
+          onfocus={() => warmMap(item)}
           onclick={() => (menuOpen = false)}
         >
           <Icon name={item.icon as never} />

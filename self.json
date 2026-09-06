@@ -172,8 +172,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 104,
-        "nodes": 628
+        "files": 102,
+        "nodes": 623
       }
     },
     {
@@ -1577,6 +1577,10 @@
       "verdict": "inspiration"
     },
     {
+      "name": "ibm-plex",
+      "verdict": "adopt"
+    },
+    {
       "name": "lifeos",
       "verdict": "inspiration"
     },
@@ -1838,6 +1842,8 @@
     "nodes": 11700,
     "external": 10,
     "stale": [
+      "dashboard/src/lib/map/MapView.svelte",
+      "dashboard/src/lib/travel/TripMap.svelte",
       "tools/storage.test.ts",
       "tools/storage.ts"
     ],
