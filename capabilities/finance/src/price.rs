@@ -591,11 +591,23 @@ pub fn parse_yahoo_chart(
         .get("chart")
         .ok_or_else(|| "JSON with no chart object".to_string())?;
     if let Some(error) = chart.get("error").filter(|error| !error.is_null()) {
-        let description = error
-            .get("description")
+        // The provider's `code` and never its `description`. The description is
+        // free text from the response body, and `{prefix}_price_fetches.detail`
+        // states that it never holds a response body (store.rs, the DDL comment
+        // above the table) because a provider page can contain anything and this
+        // table is backed up. A code is a short token from a closed set; it is
+        // still provider-supplied, so it is bounded here as well as at the write.
+        let code = error
+            .get("code")
             .and_then(|value| value.as_str())
-            .unwrap_or("an unnamed error");
-        return Err(format!("the chart carried an error: {description}"));
+            .filter(|code| {
+                code.len() <= 40
+                    && code.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || " -_.".contains(character)
+                    })
+            })
+            .unwrap_or("unnamed");
+        return Err(format!("the chart carried an error, code {code}"));
     }
     let result = chart
         .get("result")
@@ -734,11 +746,23 @@ pub struct FetchRun {
 }
 
 impl FetchRun {
-    /// True when at least one target produced a row. The CLI's exit status: a
-    /// run in which every target refused is a failure worth a non-zero exit,
-    /// while one refusal among twelve successes is not.
+    /// True when at least one attempt reached its provider. The CLI's exit
+    /// status, and it counts ATTEMPTS rather than rows on purpose: every write
+    /// here is idempotent (`UNIQUE (instrument, observed_on, source)`), so the
+    /// normal nightly outcome is a run that succeeds and writes nothing --
+    /// `broker` re-reads the same reviewed date, a market provider re-reads a
+    /// weekend, an offline host writes nothing at all. Keyed on `written > 0`
+    /// this made `tools/service-runner.sh` return non-zero and systemd mark the
+    /// oneshot unit failed on a run in which nothing was wrong.
+    ///
+    /// A run with no targets is a success: nothing was asked of it. A host with
+    /// no instruments configured has no fetch to fail, and its staleness is
+    /// visible on `GET /api/prices/status`, not in an exit code.
     pub fn succeeded(&self) -> bool {
-        self.written > 0
+        if self.attempted == 0 {
+            return true;
+        }
+        self.refused + self.errored < self.attempted
     }
 }
 
@@ -1063,7 +1087,19 @@ mod tests {
         let body = r#"{"chart":{"result":null,"error":{"code":"Not Found",
             "description":"No data found, symbol may be delisted"}}}"#;
         let error = parse_yahoo_chart(body, "SYN-A", "now").expect_err("an error");
-        assert!(error.contains("delisted"), "{error}");
+        // The provider's short CODE reaches `{prefix}_price_fetches.detail`, and
+        // its free-text description does not: that column's own DDL comment says
+        // it never holds a response body, and the table is backed up.
+        assert!(error.contains("Not Found"), "{error}");
+        assert!(!error.contains("delisted"), "{error}");
+    }
+
+    #[test]
+    fn a_yahoo_error_code_that_is_free_text_is_not_quoted_at_all() {
+        let body = r#"{"chart":{"result":null,"error":{"code":"<script>alert(1)</script>",
+            "description":"anything at all"}}}"#;
+        let error = parse_yahoo_chart(body, "SYN-A", "now").expect_err("an error");
+        assert_eq!(error, "the chart carried an error, code unnamed");
     }
 
     #[test]

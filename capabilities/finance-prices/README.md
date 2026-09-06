@@ -51,8 +51,16 @@ per provider, which is what a human actually reads.
 
 A per-instrument refusal — no configured ticker, a gate page, a body that is not
 the contract — writes a `finance_price_fetches` row with `status = 'refused'` and
-a named reason, and the run continues. The exit status is non-zero only when no
-target anywhere produced a row.
+a named reason, and the run continues. The exit status is non-zero only when
+every attempt refused or errored.
+
+It is not keyed on rows written, and that is the difference between a job that
+reports its own health and one that cries every night: every write here is
+idempotent (`UNIQUE (instrument, observed_on, source)`), so a run that finds
+nothing new is the normal outcome — `broker` re-reads the same reviewed date, a
+market provider re-reads a weekend, an offline host writes nothing at all. A run
+with no targets at all is a success too: nothing was asked of it, and the
+staleness it leaves is visible on `GET /finance/api/prices/status`.
 
 ## Running it by hand
 

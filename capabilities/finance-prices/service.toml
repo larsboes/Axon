@@ -16,6 +16,13 @@ name     = "finance-prices"
 # the server was up -- which is the opposite of what an unattended nightly job is for.
 command  = ["target/release/finance-cli", "prices", "fetch"]
 
+# Declared here because nothing else builds this binary: capabilities/finance/service.toml
+# builds `--bin finance-server` only, and `tools/service-runner.sh:440` skips `maybe_build`
+# entirely for a manifest with no `build`. Without this line the timer execs a path that
+# exists on no machine but the one where it was compiled by hand, every 24h, and a job with
+# no port and no health_path fails where nobody is looking.
+build    = ["cargo", "build", "--locked", "--release", "--bin", "finance-cli"]
+
 # Daily. The sources publish once a day and no faster: the ECB publishes one reference
 # rate per currency per working day, and Yahoo's daily bar closes once. Anything shorter
 # would re-fetch the same observation, which the UNIQUE tuple on finance_prices makes

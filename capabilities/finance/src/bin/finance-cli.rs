@@ -22,19 +22,20 @@ use finance::store::FinanceStore;
 
 const USAGE: &str = "\
 Usage:
-  finance prices fetch                     fetch from every registered provider
-  finance prices fetch --provider broker   fetch from one provider
-  finance prices fetch --dry-run           print what would be written, touch nothing
-  finance prices status                    per-instrument freshness and the last fetch per provider
-  finance decisions run                    recompute proposals and reconcile the ledger
-  finance decisions run --dry-run          print the proposals, write nothing
-  finance decisions export                 re-render every month file from the ledger
-  finance decisions export --month 2026-09 re-render one month
+  finance-cli prices fetch                     fetch from every registered provider
+  finance-cli prices fetch --provider broker   fetch from one provider
+  finance-cli prices fetch --dry-run           print what would be written, touch nothing
+  finance-cli prices status                    per-instrument freshness and the last fetch per provider
+  finance-cli decisions run                    recompute proposals and reconcile the ledger
+  finance-cli decisions run --dry-run          print the proposals, write nothing
+  finance-cli decisions export                 re-render every month file from the ledger
+  finance-cli decisions export --month 2026-09 re-render one month
 
 prices fetch writes one finance_prices row per new observation and one
 finance_price_fetches row per attempt, successful or not. A per-instrument
-refusal is recorded and never fatal; the exit status is non-zero only when no
-target produced a row.
+refusal is recorded and never fatal, and a re-fetch that finds nothing new is
+the normal outcome rather than a failure: the exit status is non-zero only when
+every attempt refused or errored.
 
 decisions export re-renders <overlay>/data/finance/decisions/YYYY-MM.md, which
 the server already writes on every verdict. This is the copy you can take by
@@ -230,8 +231,8 @@ fn run_decisions(rest: &[&str]) -> Result<bool, String> {
     }
     let outcome = finance::decision::run(&store, &minted, &proposed_at, overlay_root().as_deref())?;
     println!(
-        "{} proposed, {} unchanged, {} superseded",
-        outcome.proposed, outcome.unchanged, outcome.superseded
+        "{} proposed, {} unchanged, {} reopened, {} superseded",
+        outcome.proposed, outcome.unchanged, outcome.reopened, outcome.superseded
     );
     Ok(true)
 }
