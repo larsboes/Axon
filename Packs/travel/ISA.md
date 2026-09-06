@@ -174,16 +174,18 @@ In scope, too dim to state as a claim yet.
   journey reliability currently states rather than corrects.
 - **L3 · the retrospective summary's companion half.** `GET
   /api/retrospectives/summary` publishes a factor per destination and
-  deliberately not per companion. `trips` ends its router with
-  `CorsLayer::permissive()` and refuses no origin, while `places` — which owns
-  the companion register — layers `refuse_foreign_origins` on its whole router
-  exactly because that register is C2. A route keyed by a traveler name, carrying
-  a score and a basis of plan ids that resolve to destinations and date ranges,
-  is person + place + date range readable cross-origin. Three preconditions, in
-  order: an origin refusal shipped on trips; a key that is the register's person
-  id rather than a raw name; a class column a mechanism reads. Recorded here so
-  this stays a plan rather than a rediscovery. Pre-existing and NOT fixed:
-  `trips_plans.travelers` is already served cross-origin by `GET /api/plans`.
+  deliberately not per companion. A route keyed by a traveler name, carrying a
+  score and a basis of plan ids that resolve to destinations and date ranges, is
+  person + place + date range in one body, and `places` — which owns the
+  companion register — layers `refuse_foreign_origins` on its whole router
+  exactly because that register is C2. Three preconditions, in order: an origin
+  refusal shipped on trips; a key that is the register's person id rather than a
+  raw name; a class column a mechanism reads. **The first is met** — trips
+  layered the shared predicate on 2026-09-05 (PRD Q91,
+  `capabilities/trips/README.md`), where its router had ended in
+  `CorsLayer::permissive()`. The other two are not. Pre-existing and NOT fixed:
+  `trips_plans.travelers` is still served by `GET /api/plans`, to any caller the
+  origin guard admits.
 - **`is_regional` disagrees between the backends, and dbweb looks wrong.** Same RE5
   Bonn→Köln, same search, 2026-08-20: dbnav reports `is_regional: true`, dbweb reports
   `false`. dbweb derives the flag from the `9G` entry in `zugattribute`, which was absent

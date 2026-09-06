@@ -41,9 +41,13 @@ the conservative `aktiv` fallback. Every proposal stores its rationale, its
 method, its classifier revision — and, since the model rung exists, which of
 those three rungs actually fired, because that fact cannot be re-derived later.
 
-**Rung 2 is a local model, and it looks only at what rung 1 did not decide.**
-It runs on the threads that reached the `aktiv` fallback, never on a thread a
-rule matched. It reads the sender's **domain** (never the address), the stored
+**Rung 2 is a local model, and it looks only at what rung 1 did not decide**
+(PRD Q85, 2026-09-05). It runs on the threads that reached the `aktiv` fallback,
+never on a thread a rule matched. Measured on a copy of the live store 2026-09-05:
+102 of 237 proposals sat at that fallback, all 102 carrying the fallback rationale
+verbatim, and the `issue` column the dashboard labels *Action* held zero rows —
+*does this mail ask something of me* is not a substring, which is the justification
+for climbing at all. It reads the sender's **domain** (never the address), the stored
 subject and the stored preview — both already carrying
 `deterministic-entity-redaction-v3` output, because intake redacts before it
 writes. It answers with a category, a self-reported confidence and an urgency
@@ -76,9 +80,14 @@ sweep preserves it, model pass included. A model row survives a deterministic
 resweep, but a rule that actually **fires** takes the row back — so a new
 overlay rule can still correct the model, which a bare method rank would have
 made impossible. Category ordering in the dashboard is an attention aid, not a
-hidden score, and **the urgency score ranks nothing**: it is stored, published
-and displayed, and no surface orders anything by it until the frozen corpus in
-`eval/README.md` carries a measured error bound for it.
+hidden score, and **the urgency score ranks nothing yet**: it is stored, published
+and displayed, and the evaluator's reserved urgency factor reads it through
+`mail_evaluation::urgency_from_verdict` behind one gate,
+`mail_evaluation::URGENCY_VALIDATED`. That constant stays `false` until the frozen
+corpus in `eval/README.md` carries a measured urgency-band error, so turning it on
+is a source edit a reviewer sees rather than an overlay value that reorders the
+ladder silently. A stored `urgency_bp` with no rationale beside it counts as absent:
+a weighted bar the reader cannot check is what this evaluator exists not to render.
 
 Every shared content item also carries one inspectable trust class (Q27).
 `c0` (shown as **Public**) may use local processing and is eligible for
@@ -340,8 +349,9 @@ window for a factor weighted 0.10. A stored `lexical` row is also stale while an
 is reachable, which drains rows written during an outage over ordinary passes rather than
 needing a force flag.
 
-**A pass records a receipt, and the receipt is not a delivery.** `POST /feed/relevance/refresh`
-writes a `relevance-pass` row into `comms_source_state` with the mode that actually answered,
+**A pass records a receipt, and the receipt is not a delivery** (PRD Q90, 2026-09-05).
+`POST /feed/relevance/refresh` writes a `relevance-pass` row into `comms_source_state` with
+the mode that actually answered,
 the counters and an error class — and never `last_success_at`, because that column is the whole
 body of `GET /__axon/freshness`, which answers "is data still reaching this capability".
 `local-inference` is excluded from that query for the same reason: a machine whose collectors
@@ -355,9 +365,10 @@ the corpus done from there left every row it never saw reading as current foreve
 client against the running server, never a second opener of the database: `Store::open` runs the
 whole migration on every call and two openers deadlock.
 
-**The fifth factor learns from the ledger, and is inert until that is worth doing.**
-L2-regularised logistic regression over an explicit ~50-slot feature vector — kind, source, top
-TELOS lens, lens scores, content_status, freshness bucket, hashed author, hour bucket. **No slot
+**The fifth factor learns from the ledger, and is inert until that is worth doing**
+(PRD Q88, 2026-09-05). L2-regularised logistic regression over an explicit ~50-slot feature
+vector — kind, source, top TELOS lens, lens scores, content_status, freshness bucket, hashed
+author, hour bucket. **No slot
 carries text**: the author is one of sixteen hash buckets and everything else is a categorical id
 or a number, so a feature vector cannot reconstruct a title. Training obeys the same ladder as a
 prompt: an item that fails `content_item::local_prompt_allowed` contributes no label and no
@@ -379,18 +390,24 @@ was written before the trainer ran (`eval/feedback-corpus.json`). Active, the fa
 two strongest signed contributions — it may re-rank and must explain itself, and it may never
 write a status.
 
-**Mail has its own evaluator, and it publishes one number with one writer.**
-`comms_triage_evaluations` and `comms_triage_evaluation_factors` mirror the feed's pair column
-for column — same currency check, same tier gate, same normalized factor table — with
-mail-shaped factors: TELOS interest 0.55 from the rows `POST /triage/relevance/refresh` already
-stores, category 0.30 from the `rules` stream, age 0.15 reusing the Feed's own freshness curve,
-and a reserved **urgency 0.25** that the LLM model rung fills. Until that rung publishes one,
-urgency carries weight 0 and the other three scale to 1.0 — except on a class refusal, which is
-never rescaled, so a refused mail caps at 0.45 and cannot outrank a mail that was read. There is **no correspondent factor**:
-`is_known_person` compares one whitespace-free token, so it is false for every address, and
-Q72 rule 2 already settled that the registry is asked per token of subject and snippet, never
-over the sender. Said plainly: on the `aktiv` band the category factor is a constant, so
-ordering there is carried by interest, age and — when it exists — urgency.
+**Mail has its own evaluator, and it publishes one number with one writer**
+(PRD Q89, 2026-09-05). `comms_triage_evaluations` and `comms_triage_evaluation_factors`
+mirror the feed's pair column for column — same currency check, same tier gate, same
+normalized factor table — with mail-shaped factors: TELOS interest 0.55 from the rows
+`POST /triage/relevance/refresh` already stores, category 0.30 from the `rules` stream,
+age 0.15 reusing the Feed's own freshness curve,
+and a reserved **urgency 0.25** the LLM model rung fills through
+`mail_evaluation::urgency_from_verdict`. It stays at weight 0 while
+`URGENCY_VALIDATED` is false, and the other three scale to 1.0 — except on a class refusal,
+which is never rescaled, so a refused mail caps at 0.45 and cannot outrank a mail that was
+read. A refusal passes no urgency whatever the rung once stored: a c3 mail reached no model,
+and a refusal exists to withdraw a model-derived number rather than to carry one forward.
+
+There is **no correspondent factor**: `is_known_person` compares one whitespace-free token,
+so it is false for every address, and Q72 rule 2 already settled that the registry is asked
+per token of subject and snippet, never over the sender. Said plainly: on the `aktiv` band
+the category factor is a constant, so ordering there is carried by interest, age and — when
+it exists — urgency.
 
 `TriageOut` gains `score_bp`, the evaluator's `overall_score` in basis points (0..=10000, the
 unit the companion register uses per Q73), and `evaluated_at`. **One writer**: this evaluator.
@@ -842,7 +859,15 @@ continues to cross `spawn_blocking` inside the owning workflow.
 
 Routes:
 
-- `GET /feed?stream=&days=&include_dismissed=` → feed items (no `transcript`)
+- `GET /feed?stream=&days=&include_dismissed=` → feed items (no `transcript`). Each item
+  states its `data_class` since 2026-09-06, because the one consumer that needs it reads the
+  LIST: finance's `item_is_quotable` fails closed and drops every item whose class is
+  unstated, so its decision inbox carried no feed evidence at all until this field existed.
+  A row nobody classified answers `c1`, the undeclared default, never an absence. The test
+  asserts the SERIALIZED key, since a rename here would break nothing in finance — it would
+  silently empty the evidence again. The LIST only: `FeedFullItem`, which `GET /feed/:id` and
+  `POST /ingest` answer with, still states no class, so a caller that builds a list row from
+  an ingest response has none to carry (`dashboard/README.md`).
 - `GET /feed/:id` → one reader item incl. `transcript`, every stored TELOS relevance match,
   the factorized evaluation and Vault provenance
 - `GET /content/:source/:id` where source is `feed` or `mail` → the shared versioned

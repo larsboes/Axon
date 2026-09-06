@@ -94,7 +94,7 @@ into trips), and a browser always sends one on a cross-origin request.
 |---|---|
 | Allowed by default | `localhost`, `127.0.0.1`, `[::1]`, any `*.ts.net` host |
 | Env var | `AXON_<CAPABILITY>_ALLOWED_ORIGIN_HOSTS` — comma-separated exact hosts, which **replaces** the `.ts.net` suffix and closes the Tailscale Funnel gap |
-| Applied by | `places` (the companion register, README D4 / ISA PLC-7) and `trips` (the plan-search body carries the operator's feasible windows and a companion hint under `CorsLayer::permissive()`) |
+| Applied by | `places` (the companion register, README D4 / ISA PLC-7) and, since 2026-09-05, `trips` (the plan-search body carries the operator's feasible windows and a companion hint; its router had ended in `CorsLayer::permissive()`, which made every route above it readable cross-origin) |
 
 ```rust
 .layer(axum::middleware::from_fn_with_state(
@@ -112,8 +112,9 @@ therefore drives its **wired** `Router` with a foreign `Origin` in its own test 
 `trips::server::origin_tests::a_foreign_origin_cannot_read_a_plan_search_result`.
 
 This module was moved out of `capabilities/places/src/server.rs` on 2026-09-05, when a
-second capability needed it. A second copy of a security predicate is drift; one home is
-the point.
+second capability needed it (PRD Q91). A second copy of a security predicate is drift; one
+home is the point. Applying it to the whole trips router closed an existing leak as a side
+effect: `GET /api/flights/when` had been serving calendar entry titles cross-origin.
 
 ## What actually enforces this
 
@@ -134,5 +135,8 @@ and every consumer. `cargo tree` is what exposes the architectural edge.
 
 ## Consumers
 
-Every capability server: `scout-server`, `comms-server`, `transit-server`,
-`trips-server`, `punctuality-server`, `calendar-server`, `axon-status`.
+Every capability server. Measured 2026-09-06, twelve capabilities declare the path
+dependency: `comms-server`, `calendar-server`, `axon-status`, `finance-server`,
+`interior`, `places-server`, `soundscape`, `transit-server`, `punctuality-server`,
+`scout-server`, `trips-server` and `vault-server`. `cargo tree` is the current answer;
+this list is a snapshot.

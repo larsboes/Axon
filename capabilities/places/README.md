@@ -72,7 +72,15 @@ principal's call from measured options.
   overlay, the table is never seeded into `axon_demo`, and its rows never reach a
   cloud model raw.
 
-  Three additions, 2026-09-05.
+  PRD Q92 (2026-09-05) ruled the register's surfaces. Measured that day: 19
+  proposed rows across 15 people, all with coordinates, 13 carrying both dates,
+  none reviewed. The review UI already ships at `dashboard/src/routes/map/`,
+  against the proposal routes in `src/server.rs`, and the Travel page adds a
+  **read-only** Companions rail listing the waiting proposals with their date
+  ranges — which the map card drops, and which is what makes a proposal
+  actionable for a trip. One review surface, two places to see it.
+
+  Three additions to this decision came with it.
 
   **A planner reads an aggregate, never a row.** `GET /api/people/presence`
   answers `{radius_km, from, to, known_companions, overlap_days}` — how many
@@ -202,7 +210,7 @@ catch a route that lands below it.
 
 ## Decision, 2026-09-05
 
-- **D5 — Climate normals live here, as a fifth table.** PRD §8.2 asks for
+- **D5 — Climate normals live here, as a fifth table** (PRD Q83). §8.2 asks for
   seasonality per place per month, and it had no owner anywhere. `places` owns
   it because `places_places` is the only table in the repo where a place has
   both a durable id and a coordinate, and because `places` already owns the

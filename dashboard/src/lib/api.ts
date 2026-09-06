@@ -1542,6 +1542,20 @@ interface FeedEntryBase {
 }
 
 export interface FeedEntry extends FeedEntryBase {
+  /** What this item is worth protecting, as `GET /comms/feed` states it since 2026-09-06.
+   *  An unclassified row answers `c1`, the undeclared default, so the LIST never omits it.
+   *
+   *  Optional all the same, and the `?` is the contract gap rather than caution: comms'
+   *  `FeedFullItem` -- what `POST /ingest` and `GET /feed/:id` answer with -- carries no
+   *  class, so `toListEntry` in `routes/feed/+page.svelte` builds a list row from a detail
+   *  that has none. A reader must therefore treat `undefined` as "not stated" and fail
+   *  closed, the way finance's `item_is_quotable` already does. It stops being optional the
+   *  day the detail contract states one too.
+   *
+   *  On `FeedEntry` and not on `FeedEntryBase` for the same reason, and because the shared
+   *  reader (`ContentItemDetail`) carries the richer `ContentDataClass` shape under this
+   *  exact name -- one name for two shapes is how a component comes to read the wrong one. */
+  data_class?: DataClass;
   relevance: FeedRelevance | null;
   evaluation: FeedEvaluation | null;
 }

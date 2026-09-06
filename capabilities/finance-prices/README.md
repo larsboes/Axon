@@ -30,6 +30,31 @@ machine with no internet. It writes one observation per run, which is also its
 limit — a history built only from `broker` grows one point per night, and the
 risk model needs 120 before it will say anything.
 
+## A 200 is not a price
+
+Every provider validates the **shape of the body**, never the status code, and the
+measurement is what ruled it (PRD Q81, 2026-09-05). Stooq — the first choice — answered
+`GET /q/d/l/` with **HTTP 200** and a 796-byte HTML body carrying a
+`crypto.subtle.digest` proof-of-work loop. A client that trusts the 200 parses that
+HTML as CSV and writes garbage into an append-only table. Tradegate's `refresh.php`
+answered empty. Both carry `verdict = "reject"` rows in `upstreams.toml`, so the
+measurement outlives the memory of it, and the recorded page is the unit test for the
+rule.
+
+Yahoo's v8 chart endpoint answered **200 bare** from this connection — no cookie, no
+crumb — and returned 502 daily adjusted closes per instrument. The EU consent-plus-crumb
+handshake therefore ships as the *retry* path and is recorded **unverified live**:
+`/v1/test/getcrumb` answered 429 with and without the `A3` cookie, and the flip condition
+lives in the `upstreams.toml` row rather than in anyone's memory. On retirement `broker`
+still prices every holding. The ECB Data Portal CSV answered 200 with a 31-column header
+read **by column name**, so an inserted column cannot shift the parse.
+
+One general rule came out of that, and it cost a lockfile entry to learn: **a rate limit
+measured once is a measurement of the minute.** Yahoo answered 429 to a single probe hours
+before the 200 above, that reading was carried forward as a property of the endpoint, and
+the whole handshake was designed around a refusal that had already stopped happening.
+Re-measure before designing around a refusal, and record which of the two you hold.
+
 ## Why this shape: a job manifest rather than a field on finance
 
 `tools/check-service-tomls.sh` refuses `autostart` and `schedule` in one
@@ -37,6 +62,11 @@ manifest — a service and a periodic job are opposite claims about one process 
 and `capabilities/finance/service.toml` declares `autostart`. So the schedule
 cannot live there. `capabilities/feed-sweep/service.toml` is the precedent and
 states the same argument for the same reason.
+
+That manifest also declares its **own** `build`. `capabilities/finance/service.toml`
+builds `finance-server` only, and `tools/service-runner.sh` skips `maybe_build`
+entirely for a manifest that declares none, so without that line the nightly job would
+exec a path that exists on no machine but the one where it was compiled by hand.
 
 ## Why no freshness contract yet
 
@@ -73,9 +103,10 @@ finance-cli prices status                   # what is fresh and what is not
 
 ## Verifying it without writing into anything real
 
-`AXON_DB_PATH` isolates the database and **nothing else**. Two of this
-capability's outputs are files whose location comes from configuration, so they
-land in the real overlay and the real vault whatever the database path says:
+`AXON_DB_PATH` isolates the database and **nothing else** — the repo-wide rule and its
+cost are in `CONTRIBUTING.md`. Two of this capability's outputs are files whose location
+comes from configuration, so they land in the real overlay and the real vault whatever
+the database path says:
 
 | what | where it goes | how to redirect it |
 | --- | --- | --- |
