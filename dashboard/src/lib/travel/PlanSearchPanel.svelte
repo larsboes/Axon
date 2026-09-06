@@ -3,7 +3,7 @@
    * "October, under 300 €, by train" — the form and the ranked answer.
    *
    * The page renders and does not compute: every number here comes from the
-   * response, and the only arithmetic is formatting (`money`, `factorPercent`).
+   * response, and the only arithmetic is formatting (`money`, `factorScorePercent`).
    * The score factors are shown rather than summarised, because a rank nobody
    * can inspect is a rank nobody can disagree with, and a factor that could not
    * be measured is ABSENT from the list rather than shown as a neutral middle.
@@ -15,7 +15,7 @@
   import {
     coverageNotice,
     degradedNotice,
-    factorPercent,
+    factorScorePercent,
     money,
     pollJob,
     seedFromCandidate,
@@ -39,9 +39,29 @@
     onAdopt: ((job: number, candidate: RankedCandidate) => Promise<string>) | null;
   } = $props();
 
-  const thisMonth = new Date().toISOString().slice(0, 7);
+  /**
+   * Next month, not this one. A month search expands to that month's first and
+   * last day, so opening the panel on the 20th and pressing Find would search a
+   * window that mostly already happened.
+   */
+  const nextMonth = (() => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+      .toISOString()
+      .slice(0, 7);
+  })();
 
-  let month = $state(thisMonth);
+  /**
+   * A month or an explicit window — the two shapes the route accepts, and it
+   * refuses both at once. They are not the same search: a month with no
+   * calendar FAILS, because a month has no dates until the calendar names the
+   * feasible ones, while an explicit window degrades, reports
+   * `window_source: "caller"` and drops the feasibility factor.
+   */
+  let windowMode = $state<"month" | "dates">("month");
+  let month = $state(nextMonth);
+  let dateFrom = $state("");
+  let dateTo = $state("");
   let budgetEuros = $state<number | null>(300);
   let modes = $state<TransportMode[]>(["train"]);
   let interests = $state("");
@@ -66,6 +86,10 @@
       error = "Pick an origin first — a fare needs somewhere to start.";
       return;
     }
+    if (windowMode === "dates" && !(dateFrom && dateTo)) {
+      error = "Give both dates, or search by month instead.";
+      return;
+    }
     running = true;
     error = null;
     adoptError = null;
@@ -74,7 +98,8 @@
     try {
       const started = await planSearch.start({
         origin,
-        month,
+        // Exactly one of the two; the route answers 400 for both or neither.
+        ...(windowMode === "month" ? { month } : { date_window: { from: dateFrom, to: dateTo } }),
         budget_cents: budgetEuros === null ? undefined : Math.round(budgetEuros * 100),
         currency: "EUR",
         modes,
@@ -132,10 +157,42 @@
   }}
 >
   <div class="fields">
-    <label>
-      <span>Month</span>
-      <input class="input" type="month" bind:value={month} />
-    </label>
+    <fieldset class="mode-field">
+      <legend>When</legend>
+      <div>
+        <button
+          type="button"
+          class:active={windowMode === "month"}
+          aria-pressed={windowMode === "month"}
+          onclick={() => (windowMode = "month")}
+        >
+          A month
+        </button>
+        <button
+          type="button"
+          class:active={windowMode === "dates"}
+          aria-pressed={windowMode === "dates"}
+          onclick={() => (windowMode = "dates")}
+        >
+          Exact dates
+        </button>
+      </div>
+    </fieldset>
+    {#if windowMode === "month"}
+      <label>
+        <span>Month</span>
+        <input class="input" type="month" bind:value={month} />
+      </label>
+    {:else}
+      <label>
+        <span>From</span>
+        <input class="input" type="date" bind:value={dateFrom} />
+      </label>
+      <label>
+        <span>To (inclusive)</span>
+        <input class="input" type="date" bind:value={dateTo} />
+      </label>
+    {/if}
     <label>
       <span>Budget (EUR, one way)</span>
       <input class="input" type="number" min="1" step="10" bind:value={budgetEuros} />
@@ -222,7 +279,7 @@
             {#each candidate.factors as factor (factor.key)}
               <li>
                 <span class="factor-label">{factor.label}</span>
-                <span class="bar"><i style="width: {factorPercent(factor)}%"></i></span>
+                <span class="bar"><i style="width: {factorScorePercent(factor)}%"></i></span>
                 <span class="factor-why">{factor.rationale}</span>
               </li>
             {/each}

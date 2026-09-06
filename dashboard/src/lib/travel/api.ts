@@ -69,7 +69,8 @@ export interface RankedCandidate {
   priced_at: string | null;
   events: CandidateEvent[];
   season: { month: number; score: number; best_month: number | null } | null;
-  score: number;
+  /** `null` when no factor could be measured — not a measured zero. */
+  score: number | null;
   factors: ScoreFactor[];
   /**
    * Name-free by construction: places answers a count and an overlap, and trips
@@ -121,99 +122,3 @@ export const planSearch = {
       jsonInit('POST', { plan_id: planId }),
     ),
 };
-
-export interface PackItem {
-  item_ref: string;
-  label: string;
-  packed: boolean;
-  note: string | null;
-  /** `null` when interior could not be reached — not the same as "gone". */
-  resolved: boolean | null;
-  pack_location: string | null;
-  weight_g: number | null;
-}
-
-export interface PackList {
-  id: string;
-  name: string;
-  stage_destination_id: string | null;
-  stage_sequence: number | null;
-  /** `lost` when the destination this list was bound to has left the plan. */
-  stage_binding: 'trip' | 'place' | 'lost';
-  template_key: string | null;
-  items: PackItem[];
-  missing: { item_ref: string | null; label: string; why: string }[];
-  packed_count: number;
-  total_count: number;
-  total_weight_g: number | null;
-}
-
-export interface PackView {
-  lists: PackList[];
-  interior_reachable: boolean;
-  unresolved_items: string[];
-  stage: string | null;
-  missing_for_stage: { item_ref: string | null; label: string; why: string }[];
-  /** False until `interior_item` carries the seven gear columns. */
-  gear_attributes: boolean;
-  gear_attributes_reason: string;
-}
-
-const planPath = (planId: string) => `/trips/api/plans/${encodeURIComponent(planId)}/pack`;
-
-export const pack = {
-  list: (planId: string, stage?: string, signal?: AbortSignal) =>
-    request<PackView>(
-      stage ? `${planPath(planId)}?stage=${encodeURIComponent(stage)}` : planPath(planId),
-      signal ? { signal } : undefined,
-    ),
-  create: (
-    planId: string,
-    body: {
-      name: string;
-      stage_destination_id?: string | null;
-      stage_sequence?: number | null;
-      template_key?: string | null;
-    },
-  ) => request<{ id: string; name: string }>(planPath(planId), jsonInit('POST', body)),
-  remove: (planId: string, listId: string) =>
-    request<{ ok: boolean }>(`${planPath(planId)}/${encodeURIComponent(listId)}`, {
-      method: 'DELETE',
-    }),
-  /** Replaces the list's items. One PUT, so the page and the row cannot disagree. */
-  putItems: (
-    planId: string,
-    listId: string,
-    items: { item_ref: string; packed: boolean; note?: string | null }[],
-  ) =>
-    request<{ ok: boolean; count: number }>(
-      `${planPath(planId)}/${encodeURIComponent(listId)}/items`,
-      jsonInit('PUT', { items }),
-    ),
-};
-
-/**
- * A count and an overlap window. No person, no place name, no row id, no
- * confidence, and no caller-chosen radius — places owns the radius and echoes
- * it. This is the only shape in which the companion register reaches a planner.
- */
-export interface Presence {
-  radius_km: number;
-  from: string;
-  to: string;
-  known_companions: number;
-  overlap_days: number;
-}
-
-export const presence = (
-  latitude: number,
-  longitude: number,
-  from: string,
-  to: string,
-  signal?: AbortSignal,
-) =>
-  request<Presence>(
-    `/places/api/people/presence?latitude=${latitude}&longitude=${longitude}` +
-      `&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-    signal ? { signal } : undefined,
-  );

@@ -85,8 +85,6 @@ HTTP surface on the manifest-declared port:
 - `POST /api/import/obsidian`
 - `POST /api/import/obsidian/all`
 - `POST /api/plan-search` · `GET /api/plan-search/:id` · `POST /api/plan-search/:id/adopt`
-- `GET /api/plans/:id/pack` · `POST /api/plans/:id/pack` ·
-  `DELETE /api/plans/:id/pack/:list_id` · `PUT /api/plans/:id/pack/:list_id/items`
 
 `GET /routes` is the current list; the names above are the ones worth knowing by heart.
 
@@ -102,9 +100,9 @@ routes must be registered above the `.layer()` call in `build_router`: axum wrap
 routes added before it.
 
 Rows live in the shared SQLite file — `AXON_DB_PATH`, else
-`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `trips`, so the tables are
-`trips_plans`, `trips_plan_items`, `trips_pack_lists` and `trips_pack_list_items`
-(libs/axon-store/README.md). No personal station, destination or credential is tracked here.
+`$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `trips`, so the two tables
+are `trips_plans` and `trips_plan_items` (libs/axon-store/README.md). No personal station,
+destination or credential is tracked here.
 
 The plan-search result is deliberately **not** a table. It is a §6.2 derived aggregate, C1:
 it holds a companion COUNT and never a register row, it lives in an in-process job map
@@ -133,11 +131,18 @@ windows, the place registry, scouting's opportunities, transit's fares and — w
 
 Two rules make the ranking readable. A factor that could **not be measured is absent** from
 `factors[]` and the remaining weights re-normalise to 1, so no number in the response is a
-guess wearing a measurement's clothes; `degraded[]` names every input that was missing, and
-scores are comparable inside one response and not across two. And a **month search with no
-calendar fails** — "a month search needs feasible windows" — because calendar → transit is
-the load-bearing order; an explicit `date_window` degrades instead, reports
-`window_source: "caller"` and drops the feasibility factor.
+guess wearing a measurement's clothes; a candidate with no measurable factor at all carries
+`score: null` rather than a zero nobody can tell apart from a measurement. `degraded[]` names
+every input that was missing, and scores are comparable inside one response and not across
+two. And a **month search with no calendar fails** — "a month search needs feasible windows"
+— because calendar → transit is the load-bearing order; an explicit `date_window` degrades
+instead, reports `window_source: "caller"` and drops the feasibility factor.
+
+The one fare source behind this route is transit, which prices rail. A search for a mode it
+cannot price is **not** priced with a rail fare: no fare probe is made, `degraded[]` says
+"no fare source covers &lt;mode&gt; in this search", and every candidate comes back
+`cost_basis: "unpriced"`. Flights are priced by `GET /api/flights/search`, which is a
+different route with a different upstream.
 
 The sentence front door is still the CLI below.
 

@@ -120,7 +120,7 @@ That includes error shapes. Every capability server answers a failure as
 paste box showed a reader the raw JSON on a 404, and so would every other call site.
 
 Since 2026-09-05 a domain may keep its own route functions in `src/lib/<domain>/api.ts`
-(`src/lib/travel/api.ts` is the first), so that parallel work on different domains does not
+(`src/lib/travel/api.ts` is one), so that parallel work on different domains does not
 queue behind one 3500-line file. What does **not** move is the contract: `request`,
 `jsonInit` and `ApiError` stay in `src/lib/api.ts` and are imported, never copied — copying
 `request` would copy the 200-with-`{"error": …}` unwrap above, which is the half of this

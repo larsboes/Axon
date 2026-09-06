@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { PlanSearchJob, PlanSearchResult } from "../src/lib/travel/api";
 import {
+  POLL_DEADLINE_MS,
   coverageNotice,
   degradedNotice,
   money,
@@ -80,7 +81,20 @@ describe("pollJob", () => {
     });
     expect(outcome.state).toBe("timeout");
     expect(asked).toBeLessThanOrEqual(7);
-    expect(outcome.state === "timeout" && outcome.error).toContain("still running");
+    expect(outcome.state === "timeout" && outcome.error).toContain("past its own budget");
+  });
+
+  /**
+   * The page must give up AFTER the server would have, never before. The
+   * server's budget is 180 s (`jobs.rs`, JOB_DEADLINE_S) and it is checked at
+   * the top of the pricing loop and of the companion-hint loop, so the last
+   * probe of each can start just inside it: two 5 s station lookups, a 20 s
+   * fare search and two 250 ms pauses, then one 2 s presence read
+   * (`upstream.rs`). Below that sum the panel calls a live job timed out.
+   */
+  test("the deadline outlasts the server's own worst case", () => {
+    const serverWorstCaseMs = (180 + 5 + 5 + 20 + 0.5 + 2) * 1000;
+    expect(POLL_DEADLINE_MS).toBeGreaterThanOrEqual(serverWorstCaseMs);
   });
 
   test("a rejected status ends the poll rather than retrying an expired job", async () => {

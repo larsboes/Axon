@@ -342,7 +342,11 @@ pub struct RankedCandidate {
     pub priced_at: Option<String>,
     pub events: Vec<CandidateEvent>,
     pub season: Option<SeasonScore>,
-    pub score: f64,
+    /// `None` when NO factor could be measured. A `0.0` there would read as a
+    /// measured worst candidate, which is the same defect as a neutral 0.5 for
+    /// an absent factor (`Packs/travel/ISA.md`: a guess that looks like a
+    /// measurement is worse than a blank).
+    pub score: Option<f64>,
     pub factors: Vec<ScoreFactor>,
     /// Name-free by construction. C2 never leaves places as a row: this is
     /// derived from a count and an overlap, it reaches the browser, and it is
@@ -385,6 +389,24 @@ pub const NO_CALENDAR_FOR_A_MONTH: &str =
 
 /// What a search says when it stopped pricing because its budget ran out.
 pub const PRICING_BUDGET_SPENT: &str = "pricing budget exhausted";
+
+/// What a search says when the budget ran out before the companion hints.
+pub const COMPANION_HINTS_CUT: &str = "companion hints skipped: the search spent its budget first";
+
+/// The transport modes the fare source behind this search can price.
+///
+/// `HttpSources::price` asks transit's `/api/suggest` and `/api/search`, which
+/// are rail. Flights are priced by `crate::kiwi` on a different route and no
+/// coach, ferry or car fare exists in this repository at all, so anything else
+/// would be a rail fare wearing another mode's name.
+pub fn transit_prices(mode: &TransportMode) -> bool {
+    matches!(mode, TransportMode::Train)
+}
+
+/// What `degraded[]` and the `why` lines say about a mode nothing can price.
+pub fn no_fare_source_for(mode: &TransportMode) -> String {
+    format!("no fare source covers {} in this search", mode_slug(mode))
+}
 
 /// Every upstream the composition reads, behind one trait.
 ///
@@ -467,17 +489,12 @@ pub fn compose(
             )
         }
     };
-    if windows.is_empty() {
+    let Some(window) = best_window(&windows).cloned() else {
         return Err(format!(
             "no feasible window of at least {} day(s) between {} and {}",
             request.min_days, request.from, request.to
         ));
-    }
-    let window = windows
-        .iter()
-        .find(|w| w.verdict != "conflicts")
-        .unwrap_or(&windows[0])
-        .clone();
+    };
 
     // 2. Candidates. Every source that answers contributes; one that does not
     //    is named rather than assumed empty.
@@ -494,6 +511,10 @@ pub fn compose(
     let opportunities = opportunities_result.as_ref().ok();
 
     let mut candidates = merge_candidates(cities_result.unwrap_or_default(), plan_destinations);
+    // The origin is not a destination. Left in, a Berlin -> Berlin candidate is
+    // ranked, takes one of the few fare probes and comes back unpriced anyway,
+    // because `price` answers `Ok(None)` when both ends resolve to one station.
+    candidates.retain(|candidate| !is_origin(&request.origin, candidate));
     if candidates.is_empty() {
         return Err(
             "no destination candidates — places, the plan list and scouting all came back empty"
@@ -525,26 +546,34 @@ pub fn compose(
     let climate = climate_result.unwrap_or_default();
 
     // 5. Fares, one per shortlisted candidate, until the deadline is spent.
+    //    Only for a mode the fare source actually covers: a rail fare labelled
+    //    `mode: "flight"` measures the wrong thing under the right name.
+    let mode = request.mode();
+    let priceable = transit_prices(&mode);
     let mut priced_cents: HashMap<String, Option<i64>> = HashMap::new();
     let mut price_errors: HashMap<String, String> = HashMap::new();
     let mut transit_asked = false;
     let mut transit_failed: Option<String> = None;
     let mut budget_spent = false;
-    for candidate in &candidates {
-        if sources.deadline_spent() {
-            budget_spent = true;
-            break;
-        }
-        transit_asked = true;
-        match sources.price(&request.origin, candidate, &window.starts_on) {
-            Ok(cents) => {
-                priced_cents.insert(candidate.place_id.clone(), cents);
+    if priceable {
+        for candidate in &candidates {
+            if sources.deadline_spent() {
+                budget_spent = true;
+                break;
             }
-            Err(reason) => {
-                transit_failed.get_or_insert_with(|| reason.clone());
-                price_errors.insert(candidate.place_id.clone(), reason);
+            transit_asked = true;
+            match sources.price(&request.origin, candidate, &window.starts_on) {
+                Ok(cents) => {
+                    priced_cents.insert(candidate.place_id.clone(), cents);
+                }
+                Err(reason) => {
+                    transit_failed.get_or_insert_with(|| reason.clone());
+                    price_errors.insert(candidate.place_id.clone(), reason);
+                }
             }
         }
+    } else {
+        degraded.push(no_fare_source_for(&mode));
     }
     reach.transit = match (&transit_failed, transit_asked) {
         (Some(reason), _) => format!("error: {reason}"),
@@ -559,16 +588,30 @@ pub fn compose(
     }
 
     // 6. The companion hint. A count and an overlap, never a row.
+    //    `to` is INCLUSIVE on the places route (its `from`/`to` are both, and
+    //    its span arithmetic adds one), while `ends_before` is exclusive as
+    //    calendar serves it, so the window's last day is what goes on the wire.
+    //    Passing `ends_before` asks about one day too many and the hint
+    //    over-reports a seven-day window as eight.
+    let presence_to = inclusive_end(&window.ends_before);
     let mut hints: HashMap<String, String> = HashMap::new();
     let mut presence_failed = false;
+    let mut hints_cut = false;
     for candidate in &candidates {
+        // The same budget the pricing loop keeps. Without it a search that has
+        // already spent 180 s can add up to `max_candidates` more calls, and
+        // the page gives up on a job that is still alive.
+        if sources.deadline_spent() {
+            hints_cut = true;
+            break;
+        }
         let (Some(latitude), Some(longitude)) = (
             candidate.destination.latitude,
             candidate.destination.longitude,
         ) else {
             continue;
         };
-        match sources.presence(latitude, longitude, &window.starts_on, &window.ends_before) {
+        match sources.presence(latitude, longitude, &window.starts_on, &presence_to) {
             Ok((0, _)) => {}
             Ok((people, overlap_days)) => {
                 hints.insert(
@@ -581,6 +624,9 @@ pub fn compose(
     }
     if presence_failed && !degraded.iter().any(|d| d == "places") {
         degraded.push("companion register".into());
+    }
+    if hints_cut {
+        degraded.push(COMPANION_HINTS_CUT.into());
     }
 
     let observed_at = sources.observed_at();
@@ -606,7 +652,7 @@ pub fn compose(
                 destination: candidate.destination.clone(),
                 place_id: candidate.place_id.clone(),
                 window: window.clone(),
-                mode: request.mode(),
+                mode: mode.clone(),
                 estimated_cost_cents: cost,
                 currency: request.currency.clone(),
                 cost_basis: if cost.is_some() {
@@ -624,6 +670,7 @@ pub fn compose(
                     cost,
                     request.budget_cents,
                     &request.currency,
+                    &mode,
                     price_errors.get(&candidate.place_id).map(String::as_str),
                     budget_spent && !priced_cents.contains_key(&candidate.place_id),
                     &factors,
@@ -714,8 +761,16 @@ pub fn merge_candidates(
                 }
                 // A place with coordinates beats one without: distance is what
                 // the events factor and the presence read both need.
-                if existing.destination.latitude.is_none() {
+                if existing.destination.latitude.is_none()
+                    && candidate.destination.latitude.is_some()
+                {
                     existing.destination = candidate.destination;
+                    // The id and the destination are one fact. Keeping the
+                    // first candidate's id here wrote `options[].id` into the
+                    // adopted payload naming a place no `destination` in the
+                    // same payload has, and that payload is projected into the
+                    // operator's vault verbatim.
+                    existing.place_id = existing.destination.id.clone();
                 }
             }
             None => {
@@ -745,7 +800,13 @@ pub fn events_near(
             let Some(starts_at) = event.starts_at.as_deref() else {
                 continue;
             };
-            let day = &starts_at[..10.min(starts_at.len())];
+            // `get`, never a byte slice. `starts_at` is external text from
+            // whatever feed scouting read, and `&starts_at[..10]` panics inside
+            // a multi-byte character -- which used to take the whole job with
+            // it, and `jobs::open` never evicts a job that is still `Running`.
+            let Some(day) = starts_at.get(..10).filter(|day| is_iso_day(day)) else {
+                continue;
+            };
             if day < window.starts_on.as_str() || day >= window.ends_before.as_str() {
                 continue;
             }
@@ -899,21 +960,24 @@ pub fn factors(inputs: &ScoringInputs) -> Vec<ScoreFactor> {
     factors
 }
 
-pub fn weighted_score(factors: &[ScoreFactor]) -> f64 {
+/// The weighted sum, or `None` when there was nothing to weigh.
+///
+/// A candidate whose every factor was dropped is unscored, not worst: a reader
+/// cannot tell a computed `0.0` from a blank one, and the rest of this file
+/// drops what it could not measure rather than filling it in.
+pub fn weighted_score(factors: &[ScoreFactor]) -> Option<f64> {
+    if factors.is_empty() {
+        return None;
+    }
     let score = factors
         .iter()
         .map(|f| f.score.clamp(0.0, 1.0) * f.weight)
         .sum::<f64>()
         .clamp(0.0, 1.0);
-    // A candidate with no measurable factor at all scores zero, and it must
-    // serialise as `0.0`. Negative zero is a real f64 that survives `clamp`
-    // (`-0.0 == 0.0`, so clamp returns self) and reaches a response body as
-    // `-0.0`, which reads as a bug.
-    if score == 0.0 {
-        0.0
-    } else {
-        score
-    }
+    // Negative zero is a real f64 that survives `clamp` (`-0.0 == 0.0`, so
+    // clamp returns self) and reaches a response body as `-0.0`, which reads
+    // as a bug.
+    Some(if score == 0.0 { 0.0 } else { score })
 }
 
 /// Priced candidates first, then by score.
@@ -926,7 +990,13 @@ pub fn rank(candidates: &mut [RankedCandidate]) {
         a.estimated_cost_cents
             .is_none()
             .cmp(&b.estimated_cost_cents.is_none())
-            .then(b.score.total_cmp(&a.score))
+            // An unscored candidate sorts last inside its band, for the same
+            // reason an unpriced one does: nobody measured it.
+            .then(
+                b.score
+                    .unwrap_or(f64::NEG_INFINITY)
+                    .total_cmp(&a.score.unwrap_or(f64::NEG_INFINITY)),
+            )
             .then(
                 a.estimated_cost_cents
                     .unwrap_or(i64::MAX)
@@ -942,6 +1012,7 @@ fn why(
     cost: Option<i64>,
     budget_cents: Option<i64>,
     currency: &str,
+    mode: &TransportMode,
     price_error: Option<&str>,
     cut_by_deadline: bool,
     factors: &[ScoreFactor],
@@ -952,7 +1023,16 @@ fn why(
             "{} over the budget",
             money(cost - budget, currency)
         )),
-        (Some(cost), _) => why.push(format!("{} one way by train", money(cost, currency))),
+        // The mode the fare was priced for, not a hardcoded one: the response
+        // carries `mode` too, and the two must not contradict each other.
+        (Some(cost), _) => why.push(format!(
+            "{} one way by {}",
+            money(cost, currency),
+            mode_slug(mode)
+        )),
+        (None, _) if !transit_prices(mode) => {
+            why.push(format!("not priced: {}", no_fare_source_for(mode)))
+        }
         (None, _) if cut_by_deadline => {
             why.push("not priced: the search spent its pricing budget first".into())
         }
@@ -989,6 +1069,66 @@ fn exclusive_end(inclusive: &str) -> String {
         .unwrap_or_else(|| inclusive.to_string())
 }
 
+/// [`exclusive_end`]'s inverse: the window's last day, for a route that counts
+/// its `to` inclusively.
+fn inclusive_end(exclusive: &str) -> String {
+    crate::windows::day_number(exclusive)
+        .map(|day| crate::windows::iso_of_day_number(day - 1))
+        .unwrap_or_else(|| exclusive.to_string())
+}
+
+/// True for a `YYYY-MM-DD` this file can compare as text.
+fn is_iso_day(day: &str) -> bool {
+    crate::windows::day_number(day).is_some()
+}
+
+/// The window a search runs in: the best one calendar offered, not the first.
+///
+/// The ordering is `windows::rank`'s own rule, load band before anything else:
+/// `free`, then a compromise, then a window with a conflict; inside a band the
+/// one that costs fewer travel days, then the earlier start. Taking the first
+/// window whose verdict was not `conflicts` let a `needs-travel-day` window
+/// that happened to come first cost every candidate 0.75 of its feasibility
+/// score while a `free` window sat in the same response.
+pub fn best_window(windows: &[FeasibleWindow]) -> Option<&FeasibleWindow> {
+    windows.iter().min_by(|a, b| {
+        verdict_band(a)
+            .cmp(&verdict_band(b))
+            .then(
+                a.days_needing_travel_day
+                    .len()
+                    .cmp(&b.days_needing_travel_day.len()),
+            )
+            .then(a.starts_on.cmp(&b.starts_on))
+    })
+}
+
+/// Calendar's verdicts as an order. An unrecognised or empty verdict sits
+/// between a measured compromise and a measured conflict: the caller's own
+/// unchecked window carries an empty verdict, and it is the only window in that
+/// case anyway.
+fn verdict_band(window: &FeasibleWindow) -> u8 {
+    match window.verdict.as_str() {
+        "free" => 0,
+        "needs-travel-day" => 1,
+        "conflicts" => 3,
+        _ => 2,
+    }
+}
+
+/// Whether a candidate names the place the search starts from.
+///
+/// By id or by name, because the two sources that offer candidates mint their
+/// own ids: the operator's own origin reaches this function under the id they
+/// typed and under the registry's.
+fn is_origin(origin: &PlaceRef, candidate: &DestinationCandidate) -> bool {
+    let same_id = !origin.id.trim().is_empty()
+        && (origin.id == candidate.place_id || origin.id == candidate.destination.id);
+    let same_name = !origin.name.trim().is_empty()
+        && origin.name.trim().to_lowercase() == candidate.destination.name.trim().to_lowercase();
+    same_id || same_name
+}
+
 /// Great-circle distance in kilometres. See [`EVENT_RADIUS_KM`] for why this is
 /// a copy rather than a dependency.
 pub fn haversine_km(a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -1003,11 +1143,11 @@ pub fn haversine_km(a: (f64, f64), b: (f64, f64)) -> f64 {
 
 /// The one durable thing a search can produce: an `option_set` payload.
 ///
-/// Money is integer minor units. `option_set` had no producer in this repo
-/// before tonight (`store.rs`, the `DECLARED_PAYLOADS` doc block), so this is
-/// its first writer and the vocabulary is settled here;
-/// `schemas/trip-plan.schema.json` records that the older float `total_price`
-/// has no writer.
+/// Money is integer minor units, which is this writer's whole vocabulary. It is
+/// not the only writer of an `option_set` row: `tools/sparpreis-watch.ts` posts
+/// one every 12 hours (`capabilities/sparpreis-watch/service.toml`) carrying the
+/// older float `total_price` and no `revision`, and rows in that shape already
+/// exist. `schemas/trip-plan.schema.json` describes both.
 ///
 /// Carries NO companion field and NO calendar title, because
 /// `projection.rs` writes this payload verbatim into a fenced JSON block in the
@@ -1120,6 +1260,10 @@ mod tests {
         fare_cents: Option<i64>,
         deadline_after: usize,
         priced: std::cell::RefCell<Vec<String>>,
+        /// The `(from, to)` every presence read was asked for, so a test can
+        /// check the window that went on the wire rather than the one in the
+        /// response.
+        presence_asked: std::cell::RefCell<Vec<(String, String)>>,
     }
 
     impl Default for Stub {
@@ -1132,6 +1276,7 @@ mod tests {
                 fare_cents: Some(4200),
                 deadline_after: usize::MAX,
                 priced: std::cell::RefCell::new(Vec::new()),
+                presence_asked: std::cell::RefCell::new(Vec::new()),
             }
         }
     }
@@ -1163,7 +1308,10 @@ mod tests {
             self.priced.borrow_mut().push(destination.place_id.clone());
             Ok(self.fare_cents)
         }
-        fn presence(&self, _: f64, _: f64, _: &str, _: &str) -> Result<(u32, u32), String> {
+        fn presence(&self, _: f64, _: f64, from: &str, to: &str) -> Result<(u32, u32), String> {
+            self.presence_asked
+                .borrow_mut()
+                .push((from.to_string(), to.to_string()));
             Ok((0, 0))
         }
         fn deadline_spent(&self) -> bool {
@@ -1175,6 +1323,14 @@ mod tests {
     }
 
     fn request(month: Option<&str>, window: Option<(&str, &str)>) -> ValidRequest {
+        request_by(month, window, vec![TransportMode::Train])
+    }
+
+    fn request_by(
+        month: Option<&str>,
+        window: Option<(&str, &str)>,
+        modes: Vec<TransportMode>,
+    ) -> ValidRequest {
         validate(PlanSearchRequest {
             origin: place("place:home", "Home", 50.1, 8.7),
             month: month.map(str::to_string),
@@ -1185,7 +1341,7 @@ mod tests {
             min_days: Some(3),
             budget_cents: Some(30_000),
             currency: None,
-            modes: vec![TransportMode::Train],
+            modes,
             interests: String::new(),
             max_candidates: Some(8),
         })
@@ -1260,7 +1416,7 @@ mod tests {
                             (total - 1.0).abs() < 1e-9,
                             "weights summed to {total} for {factors:?}"
                         );
-                        let score = weighted_score(&factors);
+                        let score = weighted_score(&factors).expect("a measured factor scores");
                         assert!((0.0..=1.0).contains(&score), "score out of range: {score}");
                     }
                 }
@@ -1283,7 +1439,7 @@ mod tests {
                 priced_at: None,
                 events: Vec::new(),
                 season: None,
-                score: 0.99,
+                score: Some(0.99),
                 factors: Vec::new(),
                 companion_hint: None,
                 why: Vec::new(),
@@ -1299,7 +1455,7 @@ mod tests {
                 priced_at: None,
                 events: Vec::new(),
                 season: None,
-                score: 0.10,
+                score: Some(0.10),
                 factors: Vec::new(),
                 companion_hint: None,
                 why: Vec::new(),
@@ -1414,8 +1570,12 @@ mod tests {
     /// The fields `schemas/trip-plan.schema.json` declares for
     /// `$defs.optionSetPayload`, checked here because `DECLARED_PAYLOADS` in
     /// the store validates top-level keys only.
+    ///
+    /// Presence of each declared field, not validation: nothing in this
+    /// workspace validates a document against a JSON Schema, and a test named
+    /// for a guarantee it does not give is worse than no test.
     #[test]
-    fn the_adopted_payload_validates_against_the_declared_schema() {
+    fn the_adopted_payload_carries_every_declared_field() {
         let stub = Stub::default();
         let result = compose(&request(Some("2026-10"), None), Vec::new(), &stub)
             .expect("a month search with a calendar composes");
@@ -1442,6 +1602,10 @@ mod tests {
             );
         }
         assert_eq!(payload["query"]["to"], "(multiple)");
+        // Declared but not required, because the rows tools/sparpreis-watch.ts
+        // has been writing since before this route carry none. This writer
+        // always sets it.
+        assert_eq!(payload["revision"], PLAN_SEARCH_REVISION);
         let option = &payload["options"][0];
         assert!(option.get("estimated_cost_cents").is_some());
         assert!(
@@ -1517,6 +1681,189 @@ mod tests {
         })
         .expect("a clamped max_candidates is not an error");
         assert_eq!(clamped.max_candidates, MAX_MAX_CANDIDATES);
+    }
+
+    /// The best window, not the first one calendar happened to list. A
+    /// `needs-travel-day` window ahead of a `free` one used to cost every
+    /// candidate three quarters of its feasibility score, with nothing in the
+    /// body saying a better window was in the same answer.
+    #[test]
+    fn a_free_window_beats_a_compromise_the_calendar_listed_first() {
+        let compromised = FeasibleWindow {
+            starts_on: "2026-10-01".into(),
+            ends_before: "2026-10-08".into(),
+            days: Vec::new(),
+            verdict: "needs-travel-day".into(),
+            days_needing_travel_day: (1..=7).map(|d| format!("2026-10-0{d}")).collect(),
+        };
+        let stub = Stub {
+            calendar: Ok(vec![compromised, free_window()]),
+            ..Default::default()
+        };
+        let result = compose(&request(Some("2026-10"), None), Vec::new(), &stub)
+            .expect("a month search with a calendar composes");
+        let candidate = &result.candidates[0];
+        assert_eq!(candidate.window.verdict, "free");
+        assert_eq!(candidate.window.starts_on, "2026-10-05");
+        let feasibility = candidate
+            .factors
+            .iter()
+            .find(|f| f.key == "feasibility")
+            .expect("a measured window is scored");
+        assert_eq!(feasibility.score, 1.0);
+        // Both windows are still reported; only the one used is chosen.
+        assert_eq!(result.windows.len(), 2);
+    }
+
+    /// A scouting feed's `starts_at` is external text. Slicing it at byte 10
+    /// panicked inside a multi-byte character, and a panicked job stayed
+    /// `Running` for ever because `jobs::open` never evicts one.
+    #[test]
+    fn an_event_start_that_is_not_an_iso_day_is_skipped_rather_than_panicking() {
+        let candidates = vec![candidate("place:a", "Aachen")];
+        let at = candidates[0].destination.clone();
+        let event = |id: &str, starts_at: &str| CandidateEvent {
+            id: id.into(),
+            title: "An opportunity".into(),
+            starts_at: Some(starts_at.into()),
+            url: String::new(),
+            latitude: at.latitude,
+            longitude: at.longitude,
+            distance_km: None,
+        };
+        let opportunities = vec![
+            event("evt:umlaut", "2026-10-0\u{dc}T00:00"),
+            event("evt:short", "2026"),
+            event("evt:good", "2026-10-06T18:00:00Z"),
+        ];
+        let found = events_near(&candidates, &opportunities, &free_window());
+        let ids: Vec<&str> = found["place:a"].iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["evt:good"]);
+    }
+
+    /// places counts its `to` inclusively; calendar's `ends_before` is
+    /// exclusive. Sending the exclusive end asked about one day too many, and
+    /// the hint read "for 8 days of this window" for a seven-day window.
+    #[test]
+    fn the_presence_read_asks_about_the_windows_last_day_and_no_further() {
+        let stub = Stub::default();
+        let _ = compose(&request(Some("2026-10"), None), Vec::new(), &stub)
+            .expect("a month search with a calendar composes");
+        let asked = stub.presence_asked.borrow();
+        assert_eq!(
+            asked.as_slice(),
+            [("2026-10-05".to_string(), "2026-10-11".to_string())],
+            "the window is 2026-10-05 up to but not including 2026-10-12"
+        );
+    }
+
+    /// The id and the destination are one fact. When the second source's place
+    /// wins because it has coordinates, its id has to win too, or
+    /// `options[].id` in the adopted payload names a place no `destination` in
+    /// the same payload has.
+    #[test]
+    fn a_merged_candidate_keeps_its_id_and_its_destination_together() {
+        let without_coordinates = DestinationCandidate {
+            place_id: "place:berlin".into(),
+            destination: PlaceRef {
+                id: "place:berlin".into(),
+                name: "Berlin".into(),
+                kind: PlaceKind::City,
+                address: None,
+                latitude: None,
+                longitude: None,
+            },
+            sources: vec!["plan".into()],
+        };
+        let with_coordinates = DestinationCandidate {
+            place_id: "obsidian-place:berlin".into(),
+            destination: place("obsidian-place:berlin", "Berlin", 52.5, 13.4),
+            sources: vec!["places".into()],
+        };
+        let merged = merge_candidates(vec![without_coordinates], vec![with_coordinates]);
+        assert_eq!(merged.len(), 1, "one name, one candidate");
+        assert!(merged[0].destination.latitude.is_some());
+        assert_eq!(
+            merged[0].place_id, merged[0].destination.id,
+            "the candidate's id must name the destination it carries"
+        );
+        assert_eq!(merged[0].sources.len(), 2);
+    }
+
+    /// A rail fare must not be reported as a flight. The only fare source in
+    /// this search is transit, so a mode it cannot price is left unpriced and
+    /// said so, rather than priced with somebody else's fare.
+    #[test]
+    fn a_mode_no_fare_source_covers_is_left_unpriced_and_named() {
+        let stub = Stub::default();
+        let result = compose(
+            &request_by(Some("2026-10"), None, vec![TransportMode::Flight]),
+            Vec::new(),
+            &stub,
+        )
+        .expect("a month search with a calendar composes");
+        assert!(stub.priced.borrow().is_empty(), "transit was never asked");
+        assert_eq!(result.reach.transit, "absent");
+        assert!(result
+            .degraded
+            .iter()
+            .any(|d| d == &no_fare_source_for(&TransportMode::Flight)));
+        let candidate = &result.candidates[0];
+        assert_eq!(candidate.mode, TransportMode::Flight);
+        assert_eq!(candidate.estimated_cost_cents, None);
+        assert_eq!(candidate.cost_basis, "unpriced");
+        assert!(
+            candidate.why.iter().any(|w| w.contains("no fare source")),
+            "{:?}",
+            candidate.why
+        );
+        assert!(
+            !candidate.why.iter().any(|w| w.contains("by train")),
+            "a flight search must not be explained with a rail fare: {:?}",
+            candidate.why
+        );
+    }
+
+    /// A trip from Berlin to Berlin is not an answer, and it used to take one
+    /// of the few fare probes.
+    #[test]
+    fn the_origin_is_not_offered_as_its_own_destination() {
+        let stub = Stub {
+            cities: Ok(vec![
+                candidate("place:home", "Home"),
+                candidate("place:a", "Aachen"),
+                // The same origin under the id another source minted for it.
+                candidate("obsidian-place:home", "home"),
+            ]),
+            ..Default::default()
+        };
+        let result = compose(&request(Some("2026-10"), None), Vec::new(), &stub)
+            .expect("a month search with a calendar composes");
+        assert_eq!(result.considered, 1);
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].place_id, "place:a");
+    }
+
+    /// A candidate nothing could be measured about carries no score, rather
+    /// than a `0.0` a reader cannot tell apart from a measured worst.
+    #[test]
+    fn a_candidate_with_no_measurable_factor_is_unscored_rather_than_zero() {
+        assert_eq!(weighted_score(&[]), None);
+        let stub = Stub {
+            calendar: Err("connection refused".into()),
+            opportunities: Err("connection refused".into()),
+            fare_cents: None,
+            ..Default::default()
+        };
+        let result = compose(
+            &request(None, Some(("2026-10-05", "2026-10-11"))),
+            Vec::new(),
+            &stub,
+        )
+        .expect("an explicit window needs no calendar");
+        let candidate = &result.candidates[0];
+        assert!(candidate.factors.is_empty());
+        assert_eq!(candidate.score, None);
     }
 
     /// The hint says how many and how long, and never who.

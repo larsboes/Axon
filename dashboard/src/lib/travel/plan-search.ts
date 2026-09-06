@@ -15,12 +15,17 @@ export const POLL_INTERVAL_MS = 1500;
 /**
  * When the poller gives up.
  *
- * The server's own budget is `JOB_DEADLINE_S = 180` measured from job start
+ * The server's budget is `JOB_DEADLINE_S = 180` measured from job start
  * (`capabilities/trips/src/jobs.rs`), and a job that spends it still finishes
- * `done`. This is that plus the slack for one last poll, so the page stops
- * after the server would have, never before.
+ * `done`. It is checked at the TOP of the pricing loop and of the
+ * companion-hint loop, so the last probe of each may START just inside the
+ * budget and then run to its own timeout: two 5 s station lookups, a 20 s fare
+ * search and two 250 ms pauses, then one 2 s presence read
+ * (`capabilities/trips/src/upstream.rs`). 180 + 30.5 + 2, rounded up, is the
+ * number below. The page must stop after the server would have and never
+ * before, or it reports a job that is still alive as timed out.
  */
-export const POLL_DEADLINE_MS = 195_000;
+export const POLL_DEADLINE_MS = 215_000;
 
 export interface PollTimedOut {
   id: number;
@@ -65,7 +70,7 @@ export async function pollJob(job: number, options: PollOptions): Promise<PollOu
       return {
         id: job,
         state: 'timeout',
-        error: 'the search is still running after three minutes — open it again in a moment',
+        error: 'the search has run past its own budget — open it again in a moment',
       };
     }
     await sleep(interval);
@@ -80,8 +85,12 @@ export function money(cents: number | null, currency: string): string {
   return `${whole}.${String(rest).padStart(2, '0')} ${currency}`;
 }
 
-/** A factor's weight as a percentage, for the bar's width. */
-export const factorPercent = (factor: ScoreFactor): number =>
+/**
+ * How well the candidate did on one factor, as a percentage, for the bar's
+ * width. The factor's WEIGHT — how much it counts — is `factor.weight`, and the
+ * bar does not show it.
+ */
+export const factorScorePercent = (factor: ScoreFactor): number =>
   Math.round(Math.max(0, Math.min(1, factor.score)) * 100);
 
 /**

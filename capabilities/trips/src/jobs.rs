@@ -42,6 +42,13 @@ pub const JOB_DEADLINE_S: u64 = 180;
 /// What the eleventh caller is told.
 pub const ALL_JOBS_BUSY: &str = "ten plan searches are already running — wait for one to finish";
 
+/// What a caller is told when the search itself panicked.
+///
+/// The panic is already on the process's standard error with its location; the
+/// body carries no detail because a panic message is an internal string and a
+/// response body is not the place to publish one.
+pub const JOB_PANICKED: &str = "the search stopped on an internal error";
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum JobState {
@@ -143,7 +150,15 @@ where
         .started_at(id)
         .unwrap_or_else(Instant::now);
     tokio::task::spawn_blocking(move || {
-        let outcome = work(started);
+        // A panic inside `work` must still finish the entry. `open` refuses to
+        // evict a job that is still `Running` — deliberately, because a running
+        // job has a writer behind it — so a panicked job would hold its slot
+        // for the life of the process, and ten of them would answer every new
+        // search 503 until a restart. `AssertUnwindSafe` is honest here:
+        // nothing the closure touched is read again afterwards, and the whole
+        // outcome is discarded.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(started)))
+            .unwrap_or_else(|_| Err(JOB_PANICKED.to_string()));
         jobs().lock().expect("job map").finish(id, outcome);
     });
     Ok(id)
@@ -194,6 +209,26 @@ mod tests {
         let eleventh = jobs.open().expect("a finished job makes room");
         assert!(jobs.read(1).is_none(), "the finished job should be evicted");
         assert!(jobs.read(eleventh).is_some());
+    }
+
+    /// A job whose work panicked is `Failed`, and its slot comes back. Before
+    /// this, ten panicking searches wedged `POST /api/plan-search` at 503 until
+    /// the process was restarted, because a `Running` entry is never evicted.
+    #[tokio::test]
+    async fn a_panicking_search_fails_the_job_and_frees_its_slot() {
+        let id = start(|_| panic!("the search hit a bad byte")).expect("a job opens");
+        // `spawn_blocking` runs on another thread; wait for the entry to leave
+        // `Running` rather than for a fixed duration.
+        for _ in 0..200 {
+            if !matches!(read(id), Some(JobState::Running { .. })) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        match read(id) {
+            Some(JobState::Failed { reason }) => assert_eq!(reason, JOB_PANICKED),
+            other => panic!("a panicked job must be Failed, not {other:?}"),
+        }
     }
 
     /// A number a reader can tell apart from "no job": ids ascend from 1.

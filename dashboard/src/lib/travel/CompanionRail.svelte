@@ -75,6 +75,37 @@
 </a>
 
 <style>
+  /* The three rail lines below are a copy of the ones in
+   * `src/routes/travel/+page.svelte` (the "Shared by both rail sections" block),
+   * kept here because Svelte scopes a component's CSS to that component: the
+   * page's rules carry the page's scope class and never reach these elements,
+   * so without the copy the hint, the notice and the empty line render as
+   * unstyled paragraphs inside a styled rail. `src/app.css` would be the one
+   * home for them, and it belongs to another stream tonight; a local copy is
+   * the smaller merge. */
+  .rail-hint {
+    margin: 0 0 0.4rem;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+
+  .rail-notice {
+    margin: 0 0 0.4rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: var(--primary-soft);
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.4;
+  }
+
+  .rail-empty {
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: 0.78rem;
+  }
+
   .companion-list {
     display: flex;
     flex-direction: column;
@@ -119,10 +150,16 @@
     color: var(--text-tertiary);
   }
 
+  /* Sized like the other rails' action button, for the same reason. */
   .rail-action {
     display: inline-flex;
+    width: 100%;
     align-items: center;
+    justify-content: center;
     gap: 0.35rem;
+    margin-top: 0.5rem;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.72rem;
     text-decoration: none;
   }
 </style>

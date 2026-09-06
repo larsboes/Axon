@@ -223,6 +223,11 @@ pub fn day_number(iso: &str) -> Option<i64> {
 pub const UNIX_EPOCH_DAY: i64 = 719_468;
 
 /// Today as an ISO date from the wall clock, UTC, on `day_number`'s scale.
+///
+/// Nothing in this crate calls it yet. It is here in the exact form
+/// `night/travel-season-cost` adds it, together with [`UNIX_EPOCH_DAY`], so the
+/// two branches merge on one hunk instead of two conflicting ones. Delete both
+/// or neither.
 pub fn today() -> String {
     let unix_days = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

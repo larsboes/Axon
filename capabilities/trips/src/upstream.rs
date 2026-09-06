@@ -45,6 +45,11 @@ const SCOUTING_TIMEOUT: Duration = Duration::from_secs(5);
 const SUGGEST_TIMEOUT: Duration = Duration::from_secs(5);
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Keys per climate request. The producer's own bound (`MAX_CLIMATE_KEYS` in
+/// `capabilities/places/src/server.rs`), kept here so a shortlist longer than
+/// eight is chunked rather than refused.
+const CLIMATE_BATCH_KEYS: usize = 8;
+
 /// Transit's own fan-out cadence, kept by the caller. See the module note.
 const FARE_PAUSE: Duration = Duration::from_millis(250);
 
@@ -255,12 +260,20 @@ impl Sources for HttpSources {
             .collect())
     }
 
-    /// The batch form, one call per search.
+    /// The batch form, chunked at the producer's own bound.
     ///
-    /// The climate surface belongs to another stream and is optional by
-    /// construction: any non-200, including the 404 a deployment without it
-    /// answers, sets `reach.climate = "absent"`, drops the season factor and
-    /// re-normalises the rest. The search is correct with zero climate calls.
+    /// The climate surface is optional by construction: any non-200, including
+    /// the 404 a deployment without it answers, sets `reach.climate` to the
+    /// failure, drops the season factor and re-normalises the rest. The search
+    /// is correct with zero climate calls.
+    ///
+    /// It is chunked because the producer refuses more than
+    /// `MAX_CLIMATE_KEYS` = 8 keys per request (`capabilities/places`, handler
+    /// `climate`) while this search shortlists up to [`MAX_MAX_CANDIDATES`]
+    /// = 20. One oversized call would answer 400 and lose the factor for every
+    /// candidate.
+    ///
+    /// [`MAX_MAX_CANDIDATES`]: crate::plan_search::MAX_MAX_CANDIDATES
     fn climate(
         &self,
         place_ids: &[String],
@@ -269,13 +282,17 @@ impl Sources for HttpSources {
         if place_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let url = format!(
-            "{}/api/climate?place_ids={}&month={month}",
-            base_url("AXON_PLACES_URL", 8093),
-            urlencode(&place_ids.join(","))
-        );
-        let body = get_json(&url, CLIMATE_TIMEOUT)?;
-        Ok(parse_climate(&body, month))
+        let mut found = HashMap::new();
+        for chunk in place_ids.chunks(CLIMATE_BATCH_KEYS) {
+            let url = format!(
+                "{}/api/climate?place_ids={}",
+                base_url("AXON_PLACES_URL", 8093),
+                urlencode(&chunk.join(","))
+            );
+            let body = get_json(&url, CLIMATE_TIMEOUT)?;
+            found.extend(parse_climate(&body, month)?);
+        }
+        Ok(found)
     }
 
     fn price(
@@ -349,66 +366,65 @@ impl Sources for HttpSources {
     }
 }
 
-/// Read a climate answer without knowing its exact shape.
+/// Read the climate batch answer.
 ///
-/// The producer is another stream's route and its body is not agreed yet, so
-/// this reads the two shapes the contract can plausibly take — a per-month
-/// `score`, or a `best_months` list — and produces nothing at all when it
-/// recognises neither. Producing nothing drops the season factor, which is the
-/// correct outcome for an input that was not measured.
-pub fn parse_climate(body: &Value, month: u32) -> HashMap<String, SeasonScore> {
-    let rows: Vec<&Value> = body
+/// One shape, the producer's: `{best_months_rule, attribution, results:[{key,
+/// resolved_by, matched_place, months:[{month, best_month, ...}]}]}`
+/// (`capabilities/places/src/server.rs`, handler `climate`). `key` is the id
+/// this search asked about and the id the rest of the search keys by, so it is
+/// preferred over `matched_place.id`, which is the place the producer resolved
+/// it to.
+///
+/// A month the normals do not name as best is not scored zero: "not the best
+/// month" is not "unbearable". It is scored low enough to lose to a best month
+/// and high enough to stay in the ranking, and the rationale names which month
+/// is best.
+///
+/// `Err` when the body is not that shape at all, rather than an empty map. A
+/// 200 nobody can read must not look like a measured answer with no season in
+/// it: `reach.climate` would say "ok" while the 0.20-weight factor silently
+/// vanished from every candidate. A place the producer has no normals for
+/// answers `months: []`, which is an absent measurement and stays absent.
+pub fn parse_climate(body: &Value, month: u32) -> Result<HashMap<String, SeasonScore>, String> {
+    let rows = body["results"]
         .as_array()
-        .map(|rows| rows.iter().collect())
-        .or_else(|| {
-            ["climate", "normals", "places"]
-                .iter()
-                .find_map(|key| body.get(*key).and_then(Value::as_array))
-                .map(|rows| rows.iter().collect())
-        })
-        .unwrap_or_default();
+        .ok_or_else(|| "unreadable reply: no results[]".to_string())?;
 
     let mut found = HashMap::new();
     for row in rows {
-        let Some(place_id) = row["place_id"].as_str().or_else(|| row["id"].as_str()) else {
+        let Some(place_id) = row["key"]
+            .as_str()
+            .or_else(|| row["matched_place"]["id"].as_str())
+        else {
             continue;
         };
-        let best_months: Vec<u32> = row["best_months"]
-            .as_array()
-            .map(|months| {
-                months
-                    .iter()
-                    .filter_map(Value::as_u64)
-                    .map(|m| m as u32)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let best_month = best_months.first().copied();
-        let score = if let Some(score) = row["score"].as_f64() {
-            score
-        } else if !best_months.is_empty() {
-            // A month the normals do not name as best is not scored zero:
-            // "not the best month" is not "unbearable". It is scored low
-            // enough to lose to a best month and high enough to stay in the
-            // ranking, and the rationale names which months are best.
-            if best_months.contains(&month) {
-                1.0
-            } else {
-                0.3
-            }
-        } else {
+        let months: &[Value] = row["months"].as_array().map_or(&[], Vec::as_slice);
+        let Some(asked_for) = months
+            .iter()
+            .find(|entry| entry["month"].as_u64() == Some(u64::from(month)))
+        else {
             continue;
+        };
+        let best_month = months
+            .iter()
+            .find(|entry| entry["best_month"].as_bool() == Some(true))
+            .and_then(|entry| entry["month"].as_u64())
+            .map(|best| best as u32);
+        let score = if asked_for["best_month"].as_bool() == Some(true) {
+            1.0
+        } else {
+            0.3
         };
         found.insert(
             place_id.to_string(),
             SeasonScore {
                 month,
-                score: score.clamp(0.0, 1.0),
+                score,
                 best_month,
             },
         );
     }
-    found
+    Ok(found)
 }
 
 /// Percent-encode a query value. Place names carry spaces, commas and umlauts.
@@ -477,25 +493,62 @@ mod tests {
         );
     }
 
-    /// The climate contract is not agreed, so the reader is tolerant in what it
-    /// accepts and silent when it recognises nothing.
+    /// The producer's real envelope, read by `key` and scored from
+    /// `months[].best_month`. Written against the body
+    /// `capabilities/places`' `GET /api/climate` handler builds.
     #[test]
-    fn a_climate_answer_it_cannot_read_produces_no_season_factor() {
-        assert!(parse_climate(&json!({"error": "not found"}), 10).is_empty());
-        assert!(parse_climate(&json!({"climate": [{"place_id": "p1"}]}), 10).is_empty());
+    fn a_climate_batch_is_read_by_the_key_the_search_asked_about() {
+        let body = json!({
+            "best_months_rule": "...",
+            "attribution": "...",
+            "results": [
+                {
+                    "key": "place:lisbon",
+                    "resolved_by": "id",
+                    "matched_place": { "id": "place:lisbon-registry", "name": "Lisbon" },
+                    "reason": null,
+                    "months": [
+                        { "month": 6, "best_month": true, "in_window": false },
+                        { "month": 10, "best_month": true, "in_window": true },
+                    ],
+                },
+                {
+                    "key": "place:oslo",
+                    "resolved_by": "id",
+                    "matched_place": { "id": "place:oslo", "name": "Oslo" },
+                    "reason": null,
+                    "months": [
+                        { "month": 6, "best_month": true, "in_window": false },
+                        { "month": 10, "best_month": false, "in_window": true },
+                    ],
+                },
+                // A registered place with no normals yet. An absent
+                // measurement stays absent rather than scoring zero.
+                { "key": "place:nowhere", "resolved_by": "id", "months": [] },
+                // A key the producer could not resolve at all.
+                { "key": "place:unknown", "resolved_by": null, "matched_place": null,
+                  "reason": "no place with that id", "months": [] },
+            ],
+        });
+        let scored = parse_climate(&body, 10).expect("the producer's shape is readable");
+        assert_eq!(scored["place:lisbon"].score, 1.0);
+        assert_eq!(scored["place:lisbon"].month, 10);
+        assert_eq!(scored["place:lisbon"].best_month, Some(6));
+        assert!(scored["place:oslo"].score < scored["place:lisbon"].score);
+        assert!(!scored.contains_key("place:nowhere"));
+        assert!(!scored.contains_key("place:unknown"));
+        assert_eq!(scored.len(), 2);
+    }
 
-        let scored = parse_climate(&json!({"climate": [{"place_id": "p1", "score": 0.8}]}), 10);
-        assert_eq!(scored["p1"].score, 0.8);
-        assert_eq!(scored["p1"].month, 10);
-
-        let by_best = parse_climate(
-            &json!([{"place_id": "p2", "best_months": [10, 6]},
-                    {"place_id": "p3", "best_months": [6]}]),
-            10,
-        );
-        assert_eq!(by_best["p2"].score, 1.0);
-        assert!(by_best["p3"].score < by_best["p2"].score);
-        assert_eq!(by_best["p3"].best_month, Some(6));
+    /// A 200 in a shape this reader does not know is an error, not an empty
+    /// map: `reach.climate` saying "ok" while every season factor silently
+    /// vanished is the failure a reader cannot see.
+    #[test]
+    fn a_climate_answer_it_cannot_read_is_an_error_rather_than_a_silent_blank() {
+        let error = parse_climate(&json!({"error": "not found"}), 10)
+            .expect_err("a body with no results[] is unreadable");
+        assert!(error.contains("unreadable"), "{error}");
+        assert!(parse_climate(&json!({"climate": [{"place_id": "p1"}]}), 10).is_err());
     }
 
     /// A failure reason goes into a response body, so it carries no URL.
