@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import {
   adoptPack,
   deployPack,
+  reconcileUnit,
+  packUnits as unitsOf,
   getStatuses,
   packUnits,
   readState,
@@ -196,5 +198,50 @@ describe("ownership is a claim on a destination", () => {
     writeManifest("rival", ["demo-skill"]);
     writeSkill("rival", "demo-skill", "a different body");
     expect(() => deployPack(config, "rival")).toThrow("already owned by Pack 'demo'");
+  });
+});
+
+describe("reconcileUnit", () => {
+  // The accept path: an edit made to a deployed copy is worth keeping, the source
+  // has just been updated FROM the destination, and the ledger still reports a
+  // drift that no longer exists. sync refuses in that state and deploy would
+  // overwrite the very edit being kept, so re-recording needs its own verb.
+  function trimmedUnit() {
+    return unitsOf(config, "demo").find((u) => u.key === "demo-skill")!;
+  }
+
+  test("re-records when the destination matches the source again", () => {
+    deployPack(config, "demo");
+    const unit = trimmedUnit();
+    const edited = "---\nname: demo-skill\ndescription: does a thing\n---\n\nedited at the destination\n";
+    writeFileSync(join(unit.destination, "SKILL.md"), edited);
+    expect(getStatuses(config, "demo")[0].status).toBe("drifted");
+
+    // What `accept` does: copy the destination back over the source.
+    writeFileSync(join(root, "Axon", "Packs", "demo", "skills", "demo-skill", "SKILL.md"), edited);
+
+    expect(reconcileUnit(config, "demo", unit)).toBe("✓ demo-skill re-recorded");
+    expect(getStatuses(config, "demo")[0].status).toBe("current");
+  });
+
+  test("refuses while the destination still differs", () => {
+    deployPack(config, "demo");
+    const unit = trimmedUnit();
+    writeFileSync(join(unit.destination, "SKILL.md"), "only at the destination\n");
+    expect(() => reconcileUnit(config, "demo", unit)).toThrow("refusing to re-record");
+  });
+
+  test("refuses an accepted edit that broke the skill", () => {
+    deployPack(config, "demo");
+    const unit = trimmedUnit();
+    const broken = "no frontmatter at all\n";
+    writeFileSync(join(unit.destination, "SKILL.md"), broken);
+    writeFileSync(join(root, "Axon", "Packs", "demo", "skills", "demo-skill", "SKILL.md"), broken);
+    expect(() => reconcileUnit(config, "demo", unit)).toThrow();
+  });
+
+  test("refuses a unit this Pack does not own", () => {
+    const unit = trimmedUnit();
+    expect(() => reconcileUnit(config, "demo", unit)).toThrow("not owned by Pack 'demo'");
   });
 });

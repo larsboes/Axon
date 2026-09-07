@@ -595,6 +595,39 @@ export function adoptPack(config: DeployConfig, pack: string): string[] {
 }
 
 /**
+ * Re-record a unit whose destination is byte-identical to its source.
+ *
+ * The case: an operator edited a deployed copy, the edit was worth keeping, and
+ * the source has just been updated FROM the destination. Source and destination
+ * now agree, but the ledger still holds the old digest and reports drift that no
+ * longer exists. `deploy` would copy (pointlessly) and `sync` refuses outright,
+ * because it sees a destination that differs from the digest it recorded.
+ *
+ * Refuses unless the two really are identical, so this can never be used to make
+ * a ledger claim something the disk does not support.
+ */
+export function reconcileUnit(config: DeployConfig, pack: string, unit: Unit): string {
+  const state = readState(config);
+  const record = state.packs[pack]?.skills[unit.key];
+  if (!record) throw new Error(`${unit.key}: not owned by Pack '${pack}'`);
+  if (!existsSync(unit.destination)) throw new Error(`${unit.key}: ${unit.destination} does not exist`);
+  const files = desiredFiles(config, pack, unit);
+  // Validate before recording. An edit accepted from a destination can have
+  // broken the frontmatter, and a ledger that records a broken skill as current
+  // is worse than one that reports drift.
+  validateUnit(config, files, unit, `${pack}/${unit.key}`);
+  const wanted = digestFiles(files);
+  const installed = digestTree(config, unit.destination);
+  if (wanted !== installed) {
+    throw new Error(`${unit.key}: destination still differs from the Pack source; refusing to re-record`);
+  }
+  if (record.installedDigest === wanted && record.desiredDigest === wanted) return `= ${unit.key} (already recorded)`;
+  recordUnit(config, state, pack, unit, wanted);
+  writeState(config, state);
+  return `✓ ${unit.key} re-recorded`;
+}
+
+/**
  * The destination a recorded unit occupies. Rebuilt from the key rather than
  * stored, so a ledger written before the tree convention existed still resolves.
  */
