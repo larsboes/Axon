@@ -318,30 +318,30 @@ So neither the dates nor the self-report is trusted. The check decides and rewri
 `unresolved` to match, which is the whole shape of this: the model proposes words, a
 deterministic path decides what survives. A prompt is not a validation layer.
 
-## Gear is deferred whole, and the deferral is the ruling
+## Gear waited for a column, and the wait is the record
 
-Pack lists were built on 2026-09-05 and **reverted before the merge** (`815750c`),
-because `interior_item` cannot carry them (PRD Q92).
-Measured 2026-09-05: that table holds 47 rows, all furniture (29 `piece`, 18
-`slot`), its `kind` column carries `CHECK (kind IN ('piece','slot'))`, and it has
-**no column** for `weight_g`, `category`, `packable`, `waterproof`, `quick_dry`,
-`pack_location` or `trip_types`. Every pack list therefore answered a null weight
-with a stated reason, which is honest and useless.
+Pack lists were built on 2026-09-05 and **reverted before the merge** (`815750c`), because
+`interior_item` could not carry them (PRD Q92). Measured that day: 47 rows, all furniture
+(29 `piece`, 18 `slot`), `CHECK (kind IN ('piece','slot'))`, and **no column** for
+`weight_g`, `category`, `packable`, `waterproof`, `quick_dry`, `pack_location` or
+`trip_types`. Every pack list answered a null weight with a stated reason, which is honest
+and useless. Shipping the two tables anyway would have frozen a half-shape in a database
+this repo has no versioned migration path to reshape — and the live file already carries two
+empty pack tables no merged commit put there, from a worktree release build whose migration
+ran against the real database (`CONTRIBUTING.md`, *Validate the changed boundary*).
 
-Shipping the tables anyway would have frozen a half-shape in a database this repo
-has no versioned migration path to reshape, and the live file already carries two
-empty pack tables that no merged commit put there — a worktree release build
-replaced a supervised binary and its migration ran against the real database
-(`CONTRIBUTING.md`, *Validate the changed boundary*). The order is
-recorded rather than the feature: extend `interior_item` with the seven columns
-first, then restore the reviewed pack half from history (`7ee96ea`, `c44690a`),
-whose DDL was reviewed and reached no database. The import verb stays a proposal
-reader when it returns — measured 2026-09-05 it read 65 overlay notes, of which 61
-carried all seven fields across 13 distinct trip types, and its apply arm refuses
-by naming the missing columns. That measurement is also why `template_key` will be
-free text over the notes' own vocabulary rather than a template table: a template
-is a filter over attributes the data already carries, and a second copy of a filter
-drifts.
+**Both halves landed on 2026-09-07 (B51), in the order the deferral named.** Interior's
+`interior_item` took the seven columns and `kind` accepts `gear`
+(`capabilities/interior/src/store.rs`), then the reviewed pack half came back from history.
+`trips gear import` is still a proposal reader by default and now writes with `--apply`,
+through interior's own `POST /api/items` and never SQL, though both capabilities open the
+same file: that handler answers 409 for an id it already has, so a re-run is idempotent
+without this side tracking anything.
+
+Measured 2026-09-05 and unchanged since: the import read 65 overlay notes, 61 carrying all
+seven fields across 13 distinct trip types. That measurement is why `template_key` is free
+text over the notes' own vocabulary rather than a template table — a template is a filter
+over attributes the data already carries, and a second copy of a filter drifts.
 
 ## Why a capability
 
