@@ -16,7 +16,10 @@ claim by claim, in the order the members wrote them.
 For every factual claim in the round:
 
 1. **Find the pointer.** A pointer is a file path, a path with a line number, a quoted command
-   output, a quoted figure with a named source, or a named document.
+   output, a quoted figure with a named source, or a named document. Two pointers are not files:
+   `[brief]` marks a claim about the decision or the options, and `[evidence]` marks a quotation
+   from the evidence pack. Both are in your prompt. Check them against what the prompt supplied —
+   never against the repository, where that text was never written.
 2. **Resolve it.** Read the file. Read the line. Find the figure in the source named.
 3. **Compare the claim to what you found.** The question is not "does the file exist". It is "does
    this text support the claim the member built on it".
@@ -30,6 +33,9 @@ Assign exactly one verdict per claim:
 | `contradicted` | The pointer exists and says something the claim contradicts |
 | `missing` | The path, line or figure does not exist |
 | `uncited` | The claim carries no pointer at all |
+
+A `[brief]` or `[evidence]` claim that matches what the prompt supplied is `resolves`. Searching
+the repository for it and reporting `missing` is the error this row exists to prevent.
 
 A claim the member already marked `[unverified]` is still reported, with verdict `uncited`. The
 mark is honest, not exempt.

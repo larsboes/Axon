@@ -37,6 +37,17 @@ A member cannot run a command and cannot fetch a page. It reads files. Everythin
 allowed to cite has to arrive in the prompt, which is what step 4 of the skill is for. A member
 that needs a measurement nobody took names the command and marks the claim `[unverified]`.
 
+Two pointers exist that are not file paths, and every member prompt has to say so, because a clerk
+that cannot resolve them reports honest arguments as uncited:
+
+- `[brief]` — a claim about the decision, the options or another member's brief. That text is in
+  the prompt and nowhere on disk.
+- `[evidence]` — a claim quoting the evidence pack the orchestrator supplied.
+
+The clerk is given both, so it can check a `[brief]` or `[evidence]` claim against what was
+actually supplied rather than searching the repository for a sentence that was never written to a
+file. The first real run of this council lost one otherwise-sound argument to exactly that gap.
+
 ## QUICK — one round
 
 Round instruction:
@@ -48,6 +59,7 @@ Give your position on the decision from your role.
 - Write 40 to 60 words.
 - State one concern or one recommendation, not both.
 - Cite a file, a line, a measurement or a quoted figure for every factual claim.
+- Write [brief] or [evidence] when the claim is about the decision or the supplied evidence.
 - Write [unverified] after any claim you cannot cite.
 ```
 
