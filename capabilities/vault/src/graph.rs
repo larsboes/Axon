@@ -110,6 +110,17 @@ fn targets_in(text: &str, body_start: usize) -> Vec<(String, bool)> {
     out
 }
 
+/// `targets_in`, for the one other module that needs the same parse.
+///
+/// `people::linked_basenames` counts journal backlinks and must count exactly what the link
+/// checker counts — a second wikilink parser would drift from this one within a week.
+pub fn targets_for_test(text: &str, body_start: usize) -> Vec<String> {
+    targets_in(text, body_start)
+        .into_iter()
+        .map(|(target, _)| target)
+        .collect()
+}
+
 /// Does this target look like it names a note at all?
 fn note_shaped(target: &str) -> bool {
     if target.starts_with('^') {
