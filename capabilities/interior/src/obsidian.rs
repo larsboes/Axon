@@ -265,7 +265,7 @@ pub fn write_all(
         quelle,
     })?;
 
-    for (_, (item, zustand)) in katalog.iter() {
+    for (item, zustand) in katalog.values() {
         if item.kind != Kind::Slot {
             continue;
         }
