@@ -13,12 +13,12 @@
   import PageHeader from "$lib/PageHeader.svelte";
   import { feedPersonalization, type FeedStatusExtras } from "$lib/feed/api";
   import {
-    clampAfterDecision,
-    isTypingTarget,
-    next as nextRow,
-    prev as prevRow,
+    clampToSelectable,
+    shouldIgnoreKey,
+    nextSelectable as nextRow,
+    prevSelectable as prevRow,
     type CursorRow,
-  } from "$lib/feed/list-cursor";
+  } from "$lib/list-cursor.svelte";
   import {
     axonStatus,
     comms,
@@ -126,7 +126,7 @@
   let relevanceNotice = $state<string | null>(null);
   let modelStatus = $state<(CommsEvaluationStatus & Partial<FeedStatusExtras>) | null>(null);
   // Keyboard triage state. The cursor is an index into `flatRows`; the page owns
-  // it, and `$lib/feed/list-cursor` owns the arithmetic.
+  // it, and `$lib/list-cursor.svelte` owns the arithmetic, shared with Home.
   let cursorIndex = $state(-1);
   let legendOpen = $state(true);
   // A decided row is greyed in place and leaves on the next load. Removing it
@@ -306,7 +306,7 @@
   // leaving. Without this the cursor lands on a header or past the end and the
   // next keystroke does nothing.
   $effect(() => {
-    const clamped = clampAfterDecision(cursorRows, cursorIndex < 0 ? 0 : cursorIndex);
+    const clamped = clampToSelectable(cursorRows, cursorIndex < 0 ? 0 : cursorIndex);
     if (cursorIndex >= 0 && clamped !== cursorIndex) cursorIndex = clamped;
   });
 
@@ -337,11 +337,11 @@
    * `j`/`k` move, because Home already owns that pair as movement and two pages
    * disagreeing about `k` is worse than one letter moving. `s` keeps, `d`
    * dismisses, `o` opens, `e` explains, `u` undoes. The typing guard is
-   * `isTypingTarget`, lifted from Home so the paste box and the mail search
-   * still take letters.
+   * `shouldIgnoreKey`, the shared module's own, so the paste box and the mail
+   * search still take letters and Home cannot drift from this page.
    */
   function onKeydown(event: KeyboardEvent): void {
-    if (view !== "inbox" || isTypingTarget(event)) return;
+    if (view !== "inbox" || shouldIgnoreKey(event)) return;
     if (event.key === "?") {
       legendOpen = !legendOpen;
       event.preventDefault();
