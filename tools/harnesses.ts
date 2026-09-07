@@ -139,6 +139,38 @@ const MARK: Record<string, string> = {
 function status(): void {
   const selected = positional[1];
   const harnesses = selectedHarnesses();
+  if (has("json")) {
+    // The machine-readable shape any surface reads — a dashboard panel, a doctor
+    // section, a hook. Emitted by the same code path as the table so the two can
+    // never disagree about what is deployed.
+    console.log(
+      JSON.stringify(
+        {
+          measuredAt: new Date().toISOString(),
+          harnesses: HARNESSES.map((h) => ({
+            id: h.id,
+            label: h.label,
+            installed: isInstalled(h),
+            model: h.model,
+            marker: h.marker,
+            destination: h.model === "materialized" ? h.config().destination : null,
+            cli: h.cli,
+            // Reported for EVERY harness, installed or not. Reading is free and an
+            // absent harness holding deployed copies is the exact condition this
+            // tool exists to surface — three Packs sat in ~/.agents/skills for an
+            // uninstalled Codex, and a report that skipped absent harnesses would
+            // have hidden them the same way the adapters did.
+            units: statusesFor(h, selected).map((row) => ({ pack: row.pack, skill: row.skill, status: row.status, detail: row.detail })),
+            unowned: foreignAt(h),
+          })),
+          unsupported: UNSUPPORTED,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
   if (!harnesses.length) {
     console.log("no harness is installed; nothing to compare");
     return;
@@ -171,6 +203,21 @@ function status(): void {
     console.log(`  ${key.split("/").slice(1).join("/").padEnd(width - 2)}${cells.join("")}`);
   }
   console.log("\n· current   o outdated   D drifted   M missing   C collision   ! invalid   (blank) not deployed");
+
+  // An absent harness holding deployed copies is invisible in the matrix above,
+  // because the matrix only shows harnesses that are installed. It is also the
+  // condition this tool was written for, so it gets its own line.
+  for (const harness of HARNESSES) {
+    if (isInstalled(harness) || harness.model !== "materialized") continue;
+    const deployed = statusesFor(harness).filter((row) => row.status !== "not-deployed");
+    if (!deployed.length) continue;
+    const packs = [...new Set(deployed.map((row) => row.pack))].sort();
+    console.log(
+      `\n${harness.label} is NOT installed (no ${harness.marker}), and ${deployed.length} units from ${packs.length} Pack(s) are deployed at ${harness.config().destination}:`,
+    );
+    console.log(`  ${packs.join(", ")}`);
+    console.log(`  Nothing on this machine reads them. Remove: ${harness.cli} remove ${packs.join(" ")}`);
+  }
 
   for (const h of harnesses) {
     const strays = foreignAt(h);
@@ -395,7 +442,7 @@ function accept(): void {
 const HELP = `tools/harnesses — Packs across every agent harness at once.
 
   list                                  which harnesses exist, and which are installed here
-  status [<pack>]                       one matrix: every Pack skill x every harness
+  status [<pack>] [--json]              one matrix: every Pack skill x every harness
   drift [<pack>] [--diff]               per-file detail for anything that drifted
   sync <pack>|--all                     one-way Axon -> harness (installed harnesses only)
   promote <skill> --pack <p> [--from h] bring a harness-level skill Axon does not own into a Pack
