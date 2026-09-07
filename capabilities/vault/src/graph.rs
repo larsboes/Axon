@@ -63,6 +63,10 @@ pub struct LinkReport {
     pub links_in_frontmatter: usize,
     pub links_in_body: usize,
     pub links_resolved: usize,
+    /// Of the resolved, how many name a file that is not a note — a PDF, an image, a `.base`.
+    /// Reported rather than merged: a reader who sees the resolved count rise wants to know
+    /// what started resolving.
+    pub links_to_files: usize,
     pub links_dead: usize,
     /// Dead links whose target looks like a note, excluding block refs, `.base`
     /// embeds and bare numbers. The number a migration is judged on.
@@ -124,7 +128,15 @@ fn key(s: &str) -> String {
     s.to_lowercase()
 }
 
-pub fn report(notes: &[Note], include_dead: bool) -> LinkReport {
+/// The link report.
+///
+/// `attachments` are the vault's non-note files as root-relative ids — PDFs, images, `.base`
+/// and `.canvas`. A wikilink may name any of them, and a checker that only knows notes calls
+/// every such link dead: measured on the operator's vault on 2026-09-07, that was **685 of
+/// 9,362** reported dead links, including every Base a hub note embeds. They resolve here and
+/// are counted separately, because "resolved to a note" and "resolved to a file" are different
+/// facts and the second one is the one a reader is surprised by.
+pub fn report(notes: &[Note], attachments: &[String], include_dead: bool) -> LinkReport {
     // Two indexes, because a link may name either identity.
     let mut by_basename: HashMap<String, Vec<usize>> = HashMap::new();
     let mut by_id: HashMap<String, usize> = HashMap::new();
@@ -151,6 +163,17 @@ pub fn report(notes: &[Note], include_dead: bool) -> LinkReport {
     let mut dead: Vec<DeadLink> = Vec::new();
     let mut distinct_dead: HashMap<String, ()> = HashMap::new();
 
+    // The same two identities, for files that are not notes. An extension is NOT trimmed: a
+    // link to `Dokumente.base` names that file and not a note called `Dokumente`.
+    let mut attachment_by_path: HashMap<String, ()> = HashMap::new();
+    let mut attachment_by_name: HashMap<String, usize> = HashMap::new();
+    for id in attachments {
+        attachment_by_path.insert(key(id), ());
+        let base = id.rsplit('/').next().unwrap_or(id);
+        *attachment_by_name.entry(key(base)).or_default() += 1;
+    }
+
+    let mut links_to_files = 0usize;
     let mut in_fm = 0usize;
     for n in notes {
         for (target, frontmatter) in targets_in(&n.text, n.body_start) {
@@ -175,8 +198,20 @@ pub fn report(notes: &[Note], include_dead: bool) -> LinkReport {
                     .and_then(|v| (v.len() == 1).then(|| v[0]))
             });
 
+            let file_hit = hit.is_none() && {
+                let base = target.rsplit('/').next().unwrap_or(&target);
+                attachment_by_path.contains_key(&key(&target))
+                    // An ambiguous basename is not a resolution, the same rule the note index
+                    // above applies: two files with one name mean the link names neither.
+                    || attachment_by_name.get(&key(base)) == Some(&1)
+            };
+
             match hit {
                 Some(_) => resolved += 1,
+                None if file_hit => {
+                    resolved += 1;
+                    links_to_files += 1;
+                }
                 None => {
                     if path_form {
                         path_form_dead += 1;
@@ -206,6 +241,7 @@ pub fn report(notes: &[Note], include_dead: bool) -> LinkReport {
         links_in_frontmatter: in_fm,
         links_in_body: total - in_fm,
         links_resolved: resolved,
+        links_to_files,
         links_dead: total - resolved,
         dead_note_shaped,
         path_form_total,
@@ -241,4 +277,69 @@ pub fn inbound(notes: &[Note], folder: &str) -> Vec<String> {
     let mut out: Vec<String> = hits.into_keys().collect();
     out.sort();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(id: &str, body: &str) -> Note {
+        Note {
+            id: id.to_string(),
+            basename: id
+                .rsplit('/')
+                .next()
+                .unwrap_or(id)
+                .trim_end_matches(".md")
+                .to_string(),
+            folder: id.split('/').next().unwrap_or("").to_string(),
+            text: body.to_string(),
+            body_start: 0,
+            fields: Default::default(),
+            raw_frontmatter: None,
+            path: std::path::PathBuf::from(id),
+        }
+    }
+
+    /// The 2026-09-07 finding, as a test: a hub note embeds a Base, and the checker called it
+    /// dead. 1,330 of 9,362 reported dead links on the operator's vault were this.
+    #[test]
+    fn a_link_to_a_base_or_a_pdf_resolves_when_the_file_exists() {
+        let notes = vec![note(
+            "Atlas/Documents/Documents.md",
+            "![[Resources/Bases/Dokumente.base]] and [[Abiturzeugnis.pdf]]",
+        )];
+        let attachments = vec![
+            "Resources/Bases/Dokumente.base".to_string(),
+            "Atlas/Documents/Bildung/Schule/Abiturzeugnis.pdf".to_string(),
+        ];
+        let report = report(&notes, &attachments, true);
+        assert_eq!((report.links_dead, report.links_to_files), (0, 2));
+        assert!(report.dead.is_empty());
+    }
+
+    #[test]
+    fn a_file_that_is_not_there_is_still_dead() {
+        let notes = vec![note("A.md", "[[Missing.pdf]]")];
+        let report = report(&notes, &[], true);
+        assert_eq!(report.links_dead, 1);
+    }
+
+    /// The same rule the note index applies: two files with one name resolve neither, because
+    /// a link that could mean either means nothing checkable.
+    #[test]
+    fn an_ambiguous_attachment_basename_does_not_resolve() {
+        let notes = vec![note("A.md", "[[Scan.pdf]]")];
+        let attachments = vec!["One/Scan.pdf".to_string(), "Two/Scan.pdf".to_string()];
+        assert_eq!(report(&notes, &attachments, true).links_dead, 1);
+    }
+
+    /// An extension is part of an attachment's name and is not trimmed. `Dokumente.base` and a
+    /// note called `Dokumente` are different targets, and Obsidian treats them that way.
+    #[test]
+    fn an_attachment_extension_is_part_of_its_name() {
+        let notes = vec![note("A.md", "[[Dokumente]]")];
+        let attachments = vec!["Resources/Bases/Dokumente.base".to_string()];
+        assert_eq!(report(&notes, &attachments, true).links_dead, 1);
+    }
 }

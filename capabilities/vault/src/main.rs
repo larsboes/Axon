@@ -94,7 +94,20 @@ fn main() {
                 return;
             }
 
-            let rep = graph::report(&notes, has(&args, "--dead"));
+            // The vault's non-note files, so a link to a PDF, an image or a Base resolves
+            // instead of reading as dead. Ids, not paths, because that is what a wikilink in
+            // path form carries.
+            let attachments: Vec<String> = root
+                .files_recursive()
+                .map(|files| {
+                    files
+                        .iter()
+                        .filter(|path| path.extension().and_then(|e| e.to_str()) != Some("md"))
+                        .filter_map(|path| root.relative_id(path))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let rep = graph::report(&notes, &attachments, has(&args, "--dead"));
             if json {
                 println!("{}", serde_json::to_string_pretty(&rep).unwrap_or_default());
             } else {
@@ -103,6 +116,7 @@ fn main() {
                 println!("  in frontmatter       {}", rep.links_in_frontmatter);
                 println!("  in body              {}", rep.links_in_body);
                 println!("  resolved             {}", rep.links_resolved);
+                println!("    to a non-note file {}", rep.links_to_files);
                 println!("  dead                 {}", rep.links_dead);
                 println!("  dead, note-shaped    {}", rep.dead_note_shaped);
                 println!("  distinct dead targets {}", rep.distinct_dead_targets);
