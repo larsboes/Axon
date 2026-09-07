@@ -1264,6 +1264,42 @@ export interface HostWatchFinding {
   last_seen: string;
 }
 
+/** One Pack skill (or the agents/ tree) as one harness currently holds it. */
+export interface PackUnitView {
+  pack: string;
+  skill: string;
+  /** current · outdated · drifted · missing · collision · invalid · not-deployed · migration-required */
+  status: string;
+  detail?: string;
+}
+
+/** A directory at a harness skill root that no Pack ledger claims. */
+export interface PackStrayView {
+  name: string;
+  /** `copy` is a promote candidate; `external` and `symlink` are owned by another installer. */
+  kind: "copy" | "external" | "symlink";
+  detail?: string;
+}
+
+export interface HarnessView {
+  id: string;
+  label: string;
+  installed: boolean;
+  /** `materialized` copies and can drift; `registry` reads the Pack source in place. */
+  model: "materialized" | "registry";
+  marker: string;
+  destination: string | null;
+  cli: string;
+  units: PackUnitView[];
+  unowned: PackStrayView[];
+}
+
+export interface PacksView {
+  measuredAt: string;
+  harnesses: HarnessView[];
+  unsupported: { id: string; label: string; why: string }[];
+}
+
 export const axonStatus = {
   health: () => request<AxonStatusHealth>('/axon-status/api/axon-status/health'),
   capabilities: () => request<CapabilityView[]>('/axon-status/api/axon-status/capabilities'),
@@ -1287,6 +1323,11 @@ export const axonStatus = {
       '/axon-status/api/axon-status/host-watch',
       signal ? { signal } : undefined,
     ).then((response) => response.findings),
+  /** Every Pack skill against every agent harness. Served here rather than by `packs`
+   *  itself because that capability is `kind = "data"`: it owns the deployment ledgers and
+   *  nothing starts, so it has no port. Same reason as `hostWatch()` above. */
+  packs: (signal?: AbortSignal) =>
+    request<PacksView>('/axon-status/api/axon-status/packs', signal ? { signal } : undefined),
   start: (name: string, signal?: AbortSignal) =>
     request<{ name: string; up: boolean; detail: string }>(
       `/axon-status/api/axon-status/capabilities/${encodeURIComponent(name)}/start`,

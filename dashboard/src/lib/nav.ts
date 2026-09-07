@@ -87,6 +87,7 @@ export const UTILITY_NAV: NavItem[] = [
   { href: "/systems", label: "Systems", icon: "server", capability: "axon-status" },
   { href: "/capabilities", label: "Capabilities", icon: "boxes", capability: "axon-status" },
   { href: "/self", label: "Self-model", icon: "compass", capability: "axon-status" },
+  { href: "/packs", label: "Packs", icon: "boxes", capability: "axon-status" },
 ];
 
 /**
