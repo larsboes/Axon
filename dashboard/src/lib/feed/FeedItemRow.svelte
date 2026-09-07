@@ -112,7 +112,9 @@
   {#snippet mark()}<Icon name="feed" size={15} />{/snippet}
 
   <span class="row-kind">
-    {kindLabel}{#if entry.author} · {entry.author}{/if}{#if entry.relevance} · matches {entry.relevance.profile_label}{/if}
+    <!-- The separator is written as an expression, not as literal text: Svelte trims the
+         leading whitespace of a block, so ` · ` inside `{#if}` renders as `GitHub· llvm`. -->
+    {kindLabel}{#if entry.author}{" · "}{entry.author}{/if}{#if entry.relevance}{" · matches "}{entry.relevance.profile_label}{/if}
   </span>
   <a class="row-title" {href} onclick={() => onopen?.()}>{entry.title ?? entry.url}</a>
 
