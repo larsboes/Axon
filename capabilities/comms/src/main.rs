@@ -74,6 +74,11 @@ fn print_help() {
     println!("                                  fallback row, `label` and `urgency_band` EMPTY.");
     println!("                                  Fill both by hand BEFORE reading any model");
     println!("                                  output. Refuses to overwrite without --force.");
+    println!("  digest corpus --out <path>      write the judgement skeleton for the frozen");
+    println!("       [--per-producer N]         digest-quality corpus: N generated digests per");
+    println!("       [--force]                  rung, `faithful` and `useful_band` EMPTY. The");
+    println!("                                  gate is the unfaithful rate; usefulness is");
+    println!("                                  reported and does not gate (PRD D16).");
     println!("  relevance backfill              re-score stored feed items through the running");
     println!("       [--days N=3650]            server, page by page, until every item in the");
     println!("       [--batch N=100] [--max N]  window has been seen. Drains rows that were");
@@ -107,6 +112,7 @@ fn main() {
         "export-sources" => cmd_export_sources(&args, &cfg),
         "reclassify-feed" => cmd_reclassify_feed(&args, &cfg),
         "mail" => cmd_mail(&args, &cfg),
+        "digest" => cmd_digest(&args, &cfg),
         "relevance" => cmd_relevance(&args, &cfg),
         other => {
             eprintln!("error: unknown command '{other}'\n");
@@ -760,6 +766,132 @@ fn cmd_export_sources(args: &[String], cfg: &Config) {
 }
 
 // -- mail classify -------------------------------------------------------
+
+/// `comms digest corpus` — the judgement skeleton for the digest-quality corpus (D16).
+///
+/// Balanced across producers on purpose: the question the corpus exists to answer is whether
+/// the 4B rung is as good as the 9B was and whether a public-tier provider is better than
+/// either, and a sample drawn from the whole table would be whatever the ladder happened to
+/// route most. `--per-producer` caps each rung, and the first N of each in the store's own
+/// stable order — never a random draw, so a re-export from an unchanged database is the same
+/// file.
+///
+/// Judgements are `null` here, and `comms-digest-eval` refuses a corpus that still has one.
+fn cmd_digest(args: &[String], cfg: &Config) {
+    if args.get(2).map(String::as_str) != Some("corpus") {
+        eprintln!("error: usage: comms digest corpus --out <path> [--per-producer N] [--force]\n");
+        std::process::exit(2);
+    }
+    let Some(out) = arg_after(args, "--out") else {
+        eprintln!("error: usage: comms digest corpus --out <path> [--per-producer N] [--force]");
+        std::process::exit(2);
+    };
+    let path = std::path::Path::new(out);
+    if path.exists() && !args.iter().any(|a| a == "--force") {
+        eprintln!("error: {out} exists. Refusing to overwrite hand-written judgements — pass --force if that is what you mean.");
+        std::process::exit(2);
+    }
+    let per_producer: usize = arg_after(args, "--per-producer")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20);
+
+    let store = open_store(cfg);
+    let digests = match store.generated_digests() {
+        Ok(digests) => digests,
+        Err(error) => {
+            eprintln!("error: could not read the digests: {error}");
+            std::process::exit(2);
+        }
+    };
+
+    let mut per: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut fixtures: Vec<serde_json::Value> = Vec::new();
+    for digest in &digests {
+        let taken = per.entry(digest.producer.clone()).or_default();
+        if *taken >= per_producer {
+            continue;
+        }
+        *taken += 1;
+        fixtures.push(serde_json::json!({
+            "source": digest.source,
+            "item_id": digest.item_id,
+            "producer": digest.producer,
+            "shape": digest.shape,
+            "source_chars": digest.source_chars,
+            "generated_at": digest.generated_at,
+            // The judgement is made against the SOURCE, so the fixture carries where to read
+            // it rather than an excerpt: faithfulness judged against the first 500 characters
+            // of an article is not faithfulness.
+            "read_the_source_at": match digest.source.as_str() {
+                "feed" => format!("/feed/{}", digest.item_id),
+                "mail" => format!("/feed?view=mail#{}", digest.item_id),
+                other => format!("{other}:{}", digest.item_id),
+            },
+            "digest_text": digest.text.clone().unwrap_or_default(),
+            "faithful": serde_json::Value::Null,
+            "useful_band": serde_json::Value::Null,
+            "note": ""
+        }));
+    }
+
+    let corpus = serde_json::json!({
+        "_doc": "The frozen digest-quality corpus (PRD D16). It quotes real articles and real \
+                 mail: this file belongs in the private overlay and never in the repository. \
+                 Read by comms-digest-eval, which makes zero model calls.",
+        "_method": "Written by `comms digest corpus`, balanced across producers. For each row, \
+                    read the SOURCE at read_the_source_at, then write `faithful` — does every \
+                    claim in the digest follow from it — and `useful_band` 0-3, where 0 says \
+                    nothing the title did not and 3 means the source was not needed. Judge \
+                    before comparing rungs: knowing which model wrote a digest is exactly the \
+                    thing that makes a judgement unusable.",
+        "_gate": "The unfaithful rate, and only that. A digest that asserts what its source does \
+                  not support is read instead of the article and nothing downstream can catch \
+                  it. Usefulness is reported per producer and never gates: thin but true is a \
+                  preference, confident and false is a defect.",
+        "acceptance": {
+            "_why": "max_unfaithful_percent is a policy judgement and carries a value from the \
+                     first run, like max_false_eviction_percent in the mail corpus. \
+                     minimum_useful_percent is null until the first run has been read.",
+            "max_unfaithful_percent": 2.0,
+            "minimum_useful_percent": serde_json::Value::Null
+        },
+        "fixtures": fixtures
+    });
+
+    let body = match serde_json::to_string_pretty(&corpus) {
+        Ok(body) => body,
+        Err(error) => {
+            eprintln!("error: could not serialise the corpus: {error}");
+            std::process::exit(2);
+        }
+    };
+    if let Err(error) = std::fs::write(path, body + "\n") {
+        eprintln!("error: could not write {out}: {error}");
+        std::process::exit(2);
+    }
+    println!(
+        "{} fixture(s) written to {out}, from {} generated digest(s) across {} rung(s)",
+        fixtures_len(&corpus),
+        digests.len(),
+        per.len()
+    );
+    for (producer, taken) in &per {
+        println!("  {taken}\t{producer}");
+    }
+    println!("faithful and useful_band are null. comms-digest-eval REFUSES a corpus with an");
+    println!("unjudged row, so a half-filled file cannot be read as a pass.");
+}
+
+/// The fixture count of a built corpus value. A helper rather than a second `len()` on the
+/// vector, because the vector is moved into the JSON above and the printed number must be the
+/// number that was written.
+fn fixtures_len(corpus: &serde_json::Value) -> usize {
+    corpus
+        .get("fixtures")
+        .and_then(|value| value.as_array())
+        .map(Vec::len)
+        .unwrap_or_default()
+}
 
 /// `comms mail corpus` — the labelling skeleton for the frozen corpus (B49).
 ///

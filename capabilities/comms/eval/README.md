@@ -232,3 +232,39 @@ rather than scored — an all-skipped corpus is a FAIL, never a perfect score. T
 output prints fixture ids, stream names and counts, and never a subject, a
 preview or a rationale: unlike the redaction runner, whose leaked value IS the
 finding, the finding here is a category.
+
+## Digest quality (the summarize ladder)
+
+`comms-digest-eval` is the gate `libs/summarize` did not have. PRD D16 recorded what its
+absence cost: on 2026-08-30 the strong local rung became a 4B where it had been a 9B, and
+Cohere entered the roster as a third public-tier provider, and **neither quality change could
+be measured**. Both were taken on availability and cost alone, and a ladder whose steps are
+unmeasured is an ordering nobody has checked.
+
+Built on the redaction shadow's shape, the third of these corpora to use it:
+
+```sh
+comms digest corpus --out "$AXON_PERSONAL_ROOT/config/comms-digest-quality.json"
+#   N generated digests per rung (default 20), `faithful` and `useful_band` null.
+#   Read the SOURCE for each row, then judge. Refuses to overwrite without --force.
+cargo run --bin comms-digest-eval -- "$AXON_PERSONAL_ROOT/config/comms-digest-quality.json"
+```
+
+**One metric decides: the unfaithful rate.** A digest asserting what its source does not
+support is read instead of the article, and nothing downstream can catch it.
+`max_unfaithful_percent` carries 2.0 from the start because it is a policy judgement rather
+than a measurement — the same distinction `max_false_eviction_percent` carries in the mail
+corpus. `minimum_useful_percent` is null until the first run has been read.
+
+**Usefulness is reported per producer and never gates.** Thin but true is a preference;
+confident and false is a defect. A `useful_band` nobody wrote is absent from the mean rather
+than counted as a zero.
+
+The sample is **balanced across producers**, not drawn from the whole table: the question is
+which rung is better, and an unbalanced sample answers which rung ran most. The rows come in
+the store's own stable order, so a re-export from an unchanged database is the same file.
+
+A fixture is **skipped with a named reason** when the store holds no digest for it, when the
+text changed since it was judged, or when a different rung wrote it — and an all-skipped
+corpus prints `FAIL — nothing was scored`, never a 0%. The runner refuses a corpus with any
+unjudged row.
