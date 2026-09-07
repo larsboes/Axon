@@ -1437,12 +1437,17 @@ fn interior_base_url() -> String {
     std::env::var("AXON_INTERIOR_URL").unwrap_or_else(|_| "http://127.0.0.1:8092".to_string())
 }
 
-/// `item_ref` -> label, or `None` when interior could not be reached.
+/// `item_ref` -> the item, or `None` when interior could not be reached.
 ///
 /// `None` is a third state, not an empty index: "interior is down" and "the
 /// item was deleted" would otherwise look identical, and only one of them is
 /// something the operator should act on.
-fn interior_index() -> Option<std::collections::HashMap<String, String>> {
+///
+/// Every field below is read with a fallback rather than a `?`: a deployment whose interior
+/// predates B51 answers without the seven columns, and a pack list that refuses to render
+/// there would be a worse answer than one that renders labels and says the attributes are
+/// absent.
+fn interior_index() -> Option<std::collections::HashMap<String, trips::pack::InventoryItem>> {
     let body: Value = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
@@ -1457,9 +1462,27 @@ fn interior_index() -> Option<std::collections::HashMap<String, String>> {
             .iter()
             .filter_map(|row| {
                 let item = row.get("item")?;
+                let flag = |key: &str| item[key].as_bool();
                 Some((
                     item["id"].as_str()?.to_string(),
-                    item["label"].as_str().unwrap_or_default().to_string(),
+                    trips::pack::InventoryItem {
+                        label: item["label"].as_str().unwrap_or_default().to_string(),
+                        weight_g: item["weight_g"].as_i64(),
+                        category: item["category"].as_str().map(str::to_string),
+                        pack_location: item["pack_location"].as_str().map(str::to_string),
+                        packable: flag("packable"),
+                        waterproof: flag("waterproof"),
+                        quick_dry: flag("quick_dry"),
+                        trip_types: item["trip_types"]
+                            .as_array()
+                            .map(|values| {
+                                values
+                                    .iter()
+                                    .filter_map(|value| value.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    },
                 ))
             })
             .collect(),

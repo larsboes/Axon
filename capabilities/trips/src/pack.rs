@@ -22,15 +22,18 @@
 //! trips' migration behind interior's. The shape follows `interior_placement`,
 //! which binds the same way for the same reason.
 //!
-//! ## What is honestly not here yet
+//! ## The attributes arrived on 2026-09-07
 //!
-//! `interior_item` has no `weight_g`, `category`, `packable`, `waterproof`,
-//! `quick_dry`, `pack_location` or `trip_types` column, and its `kind` is
-//! `CHECK (kind IN ('piece','slot'))`. So a resolved item has a label and
-//! nothing a pack list would sort by, `total_weight_g` is null, and
-//! `gear_attributes` reports `false` with the reason. `crate::gear` proposes
-//! the rows that would fill those columns and refuses to write them until the
-//! columns exist.
+//! Until B51, `interior_item` had no `weight_g`, `category`, `packable`,
+//! `waterproof`, `quick_dry`, `pack_location` or `trip_types` column and a
+//! `kind` that forced every gear row to claim it was furniture, so a resolved
+//! item was a label and `gear_attributes` reported `false` with that reason.
+//! The columns exist now, `kind` accepts `gear`, and this file reads them off
+//! interior's own inventory contract.
+//!
+//! **A total is never a guess.** `total_weight_g` sums the weights that are
+//! there and `weights_missing` counts the items that have none, because a sum
+//! over an incomplete list, printed alone, is a number a reader will trust.
 
 use std::collections::HashMap;
 
@@ -282,12 +285,28 @@ pub fn replace_items(
 /// What the page renders. Every derived number is computed here, because the
 /// frontend renders and does not compute.
 ///
+/// One interior item, as a pack list needs it.
+///
+/// A struct rather than the `id -> label` map this took until 2026-09-07, because a pack list
+/// sorts by pack location and adds up weights, and neither is a label.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InventoryItem {
+    pub label: String,
+    pub weight_g: Option<i64>,
+    pub category: Option<String>,
+    pub pack_location: Option<String>,
+    pub packable: Option<bool>,
+    pub waterproof: Option<bool>,
+    pub quick_dry: Option<bool>,
+    pub trip_types: Vec<String>,
+}
+
 /// `inventory` is `None` when interior could not be reached, which is a
 /// different state from "the item is not there" and is reported as such.
 pub fn render(
     lists: &[PackListRow],
     stages: &[TripStage],
-    inventory: Option<&HashMap<String, String>>,
+    inventory: Option<&HashMap<String, InventoryItem>>,
     stage_filter: Option<&str>,
 ) -> Value {
     let mut unresolved: Vec<String> = Vec::new();
@@ -314,10 +333,13 @@ pub fn render(
         let mut items = Vec::new();
         let mut missing = Vec::new();
         let mut packed_count = 0usize;
+        let mut total_weight_g: i64 = 0;
+        let mut weights_missing = 0usize;
         for item in &list.items {
             let resolved = inventory.map(|index| index.contains_key(&item.item_ref));
-            let label = inventory
-                .and_then(|index| index.get(&item.item_ref).cloned())
+            let known = inventory.and_then(|index| index.get(&item.item_ref));
+            let label = known
+                .map(|found| found.label.clone())
                 .unwrap_or_else(|| item.item_ref.clone());
             if resolved == Some(false) && !unresolved.contains(&item.item_ref) {
                 unresolved.push(item.item_ref.clone());
@@ -339,16 +361,25 @@ pub fn render(
                 }
                 missing.push(entry);
             }
+            match known.and_then(|found| found.weight_g) {
+                Some(grams) => total_weight_g += grams,
+                // Counted, not defaulted to zero: "weighs nothing" and "was never weighed"
+                // are different facts and only one of them is in the database.
+                None => weights_missing += 1,
+            }
             items.push(json!({
                 "item_ref": item.item_ref,
                 "label": label,
                 "packed": item.packed,
                 "note": item.note,
                 "resolved": resolved,
-                // interior_item carries no column for either. Null with a
-                // stated reason, never a zero that reads as a measurement.
-                "pack_location": Value::Null,
-                "weight_g": Value::Null,
+                "pack_location": known.and_then(|found| found.pack_location.clone()),
+                "weight_g": known.and_then(|found| found.weight_g),
+                "category": known.and_then(|found| found.category.clone()),
+                "packable": known.and_then(|found| found.packable),
+                "waterproof": known.and_then(|found| found.waterproof),
+                "quick_dry": known.and_then(|found| found.quick_dry),
+                "trip_types": known.map(|found| found.trip_types.clone()).unwrap_or_default(),
             }));
         }
         if binding == "lost" {
@@ -374,7 +405,8 @@ pub fn render(
             "missing": missing,
             "packed_count": packed_count,
             "total_count": list.items.len(),
-            "total_weight_g": Value::Null,
+            "total_weight_g": total_weight_g,
+            "weights_missing": weights_missing,
         }));
     }
 
@@ -384,14 +416,16 @@ pub fn render(
         "unresolved_items": unresolved,
         "stage": stage_filter,
         "missing_for_stage": missing_for_stage,
-        // Stated rather than implied: a pack list cannot sort by weight or
-        // pack location until `interior_item` carries those columns, and every
-        // weight above is null for that reason and not because nobody weighed
-        // anything.
-        "gear_attributes": false,
-        "gear_attributes_reason":
-            "interior_item has no weight_g, category, packable, waterproof, quick_dry, \
-             pack_location or trip_types column yet, so an item resolves to a label only",
+        // True since B51 (2026-09-07). Kept as a field rather than removed: a consumer
+        // written against the old answer must be able to see that it changed, and a client
+        // reading a live deployment that has not migrated yet still gets a truthful `false`
+        // when interior answers without the columns.
+        "gear_attributes": inventory.is_some(),
+        "gear_attributes_reason": if inventory.is_some() {
+            Value::Null
+        } else {
+            json!("interior could not be reached, so no item resolved to more than its id")
+        },
     })
 }
 
@@ -505,7 +539,7 @@ mod tests {
             .is_empty());
         assert_eq!(unreachable["lists"][0]["items"][0]["resolved"], Value::Null);
 
-        let index: HashMap<String, String> = HashMap::new();
+        let index: HashMap<String, InventoryItem> = HashMap::new();
         let reachable = render(
             &[list("Always", None, &[("item:ghost", false)])],
             &[],
@@ -520,23 +554,68 @@ mod tests {
         );
     }
 
-    /// Every weight is null with a reason, because the column it would come
-    /// from does not exist. A zero would read as "weighed nothing".
+    /// With interior unreachable, nothing is known and the flag says so. This test asserted
+    /// the opposite until B51 — that every weight was null because the COLUMN did not exist —
+    /// and it is the same contract from the other side: a null weight always carries a reason.
     #[test]
-    fn weights_are_null_with_a_stated_reason_rather_than_zero() {
+    fn an_unreachable_interior_knows_no_weights_and_says_why() {
         let rendered = render(
             &[list("Always", None, &[("item:x", true)])],
             &[],
             None,
             None,
         );
-        assert_eq!(rendered["lists"][0]["total_weight_g"], Value::Null);
         assert_eq!(rendered["lists"][0]["items"][0]["weight_g"], Value::Null);
         assert_eq!(rendered["gear_attributes"], false);
         assert!(rendered["gear_attributes_reason"]
             .as_str()
             .unwrap()
-            .contains("weight_g"));
+            .contains("interior could not be reached"));
+    }
+
+    /// A total sums what is there and counts what is not. The number alone would be read as
+    /// the weight of the list, and it is the weight of the part that has been weighed.
+    #[test]
+    fn a_total_says_how_much_of_the_list_it_covers() {
+        let mut index: HashMap<String, InventoryItem> = HashMap::new();
+        index.insert(
+            "item:tent".to_string(),
+            InventoryItem {
+                label: "Tent".into(),
+                weight_g: Some(1_850),
+                pack_location: Some("rucksack".into()),
+                category: Some("schlafen".into()),
+                trip_types: vec!["hiking".into()],
+                ..InventoryItem::default()
+            },
+        );
+        index.insert(
+            "item:socks".to_string(),
+            InventoryItem {
+                label: "Socks".into(),
+                ..InventoryItem::default()
+            },
+        );
+        let rendered = render(
+            &[list(
+                "Always",
+                None,
+                &[("item:tent", true), ("item:socks", true)],
+            )],
+            &[],
+            Some(&index),
+            None,
+        );
+        let first = &rendered["lists"][0];
+        assert_eq!(first["total_weight_g"], 1_850);
+        assert_eq!(first["weights_missing"], 1);
+        assert_eq!(first["items"][0]["pack_location"], "rucksack");
+        assert_eq!(first["items"][0]["trip_types"][0], "hiking");
+        // Present and null, not absent: a consumer must be able to tell "never weighed" from
+        // "this build does not report weights".
+        assert!(first["items"][1]["weight_g"].is_null());
+        assert_eq!(rendered["gear_attributes"], true);
+        assert!(rendered["gear_attributes_reason"].is_null());
     }
 }
 

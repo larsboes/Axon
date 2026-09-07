@@ -338,6 +338,13 @@ through interior's own `POST /api/items` and never SQL, though both capabilities
 same file: that handler answers 409 for an id it already has, so a re-run is idempotent
 without this side tracking anything.
 
+`GET /api/plans/:id/pack` carries the attributes now rather than nulls with a reason:
+`weight_g`, `pack_location`, `category`, `packable`, `waterproof`, `quick_dry` and
+`trip_types` per item, and per list a `total_weight_g` **beside a `weights_missing` count** —
+a sum over an incomplete list, printed alone, is a number a reader will trust.
+`gear_attributes` stays in the body rather than being removed: a client reading a deployment
+whose interior predates B51 still gets a truthful `false`.
+
 Measured 2026-09-05 and unchanged since: the import read 65 overlay notes, 61 carrying all
 seven fields across 13 distinct trip types. That measurement is why `template_key` is free
 text over the notes' own vocabulary rather than a template table — a template is a filter
