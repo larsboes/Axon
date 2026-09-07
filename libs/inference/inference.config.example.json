@@ -15,6 +15,12 @@
       "api": "openai",
       "base_url": "https://api.example.com/v1",
       "api_key_file": "~/path/to/provider-key"
+    },
+    "_comment_peer-example": "A backend on hardware the operator owns, reached over the tailnet (PRD Q39). provided_by names the systems.local.toml id of the HOST, and trust is the intersection of that name with `owner = \"self\"` on the same entry -- naming a host is not trusting it, and [nvidia-nim] lives in the same file. tools/lib/external-ref.sh resolves the pair and service-runner.sh exports the result as AXON_INFERENCE_TRUSTED_PEERS. Without the declaration this backend is an https non-loopback endpoint, which is a cloud provider needing a reviewed policy -- which is exactly what Q39 says a `tailscale cert` peer would wrongly become.",
+    "peer-example": {
+      "api": "ollama",
+      "base_url": "https://host.example.ts.net:11434",
+      "provided_by": "host-example"
     }
   },
   "_comment_roles": "A role names the backend, the model on it, and that model's input conventions. The prefixes are not decoration: multilingual-e5 expects 'query: ' and 'passage: ', nomic-embed-text expects 'search_query: ' and 'search_document: ', and sending the wrong ones costs retrieval quality without raising anything. Reranking uses the OpenAI-compatible backend's Cohere/Jina-style /rerank endpoint.",
