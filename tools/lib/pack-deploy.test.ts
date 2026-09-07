@@ -9,13 +9,15 @@
 // Run: bun test tools/lib/pack-deploy.test.ts
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   adoptPack,
   deployPack,
   reconcileUnit,
+  syncPack,
+  withStateLock,
   packUnits as unitsOf,
   getStatuses,
   packUnits,
@@ -243,5 +245,60 @@ describe("reconcileUnit", () => {
   test("refuses a unit this Pack does not own", () => {
     const unit = trimmedUnit();
     expect(() => reconcileUnit(config, "demo", unit)).toThrow("not owned by Pack 'demo'");
+  });
+});
+
+describe("the ledger lock", () => {
+  // writeState is atomic, so no reader sees half a file — that was never the race.
+  // Every mutator reads the whole ledger once and writes it back one or more times,
+  // so two overlapping processes each hold a pre-other snapshot and the last writer
+  // erases the other's rows. The skill stays on disk with no ledger entry: an
+  // unowned collision that only a hand-run adopt can repair.
+  function lockPath(): string {
+    return `${config.stateFile}.lock`;
+  }
+
+  test("the lock is released after a successful mutation", () => {
+    deployPack(config, "demo");
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("the lock is released after a failed mutation", () => {
+    expect(() => syncPack(config, "demo")).toThrow("not deployed");
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("a live holder is refused rather than overwritten", () => {
+    mkdirSync(dirname(config.stateFile), { recursive: true });
+    // pid 1 is alive on every POSIX host and is not us; kill(1, 0) answers EPERM,
+    // which the holder check reads as alive on purpose.
+    writeFileSync(lockPath(), JSON.stringify({ pid: 1, at: new Date().toISOString() }));
+    process.env.AXON_PACK_LOCK_WAIT_MS = "10";
+    try {
+      expect(() => deployPack(config, "demo")).toThrow("ledger is locked by pid 1");
+    } finally {
+      delete process.env.AXON_PACK_LOCK_WAIT_MS;
+      rmSync(lockPath(), { force: true });
+    }
+  });
+
+  test("a lock whose holder is gone is stolen, not waited on", () => {
+    mkdirSync(dirname(config.stateFile), { recursive: true });
+    // A pid that cannot exist: the holder crashed and left the file behind. Without
+    // the steal, one killed process would break the tool until somebody found the
+    // lock file by hand.
+    writeFileSync(lockPath(), JSON.stringify({ pid: 2147483646, at: new Date().toISOString() }));
+    expect(deployPack(config, "demo")).toContain("✓ demo-skill deployed");
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("it is re-entrant, because activateProfile calls the mutators it wraps", () => {
+    let inner = "";
+    const outer = withStateLock(config, () => {
+      inner = withStateLock(config, () => "reached");
+      return "done";
+    });
+    expect([outer, inner]).toEqual(["done", "reached"]);
+    expect(existsSync(lockPath())).toBe(false);
   });
 });
