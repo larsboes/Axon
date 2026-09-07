@@ -761,10 +761,16 @@ fn vault_writeback() -> i32 {
         println!("  {} {pfad}", green("Region neu:"));
     }
     if !report.unchanged.is_empty() {
-        println!("  {}", dim(&format!("{} unveraendert", report.unchanged.len())));
+        println!(
+            "  {}",
+            dim(&format!("{} unveraendert", report.unchanged.len()))
+        );
     }
     for pfad in &report.conflicts {
-        eprintln!("  {} {pfad}", yellow("von Hand geaendert, nichts geschrieben:"));
+        eprintln!(
+            "  {} {pfad}",
+            yellow("von Hand geaendert, nichts geschrieben:")
+        );
     }
     // Ein Konflikt ist kein Fehlschlag des Laufs, aber er ist auch nicht "fertig": er verlangt
     // eine menschliche Entscheidung, und ein Exit 0 wuerde das einem Scheduler verschweigen.

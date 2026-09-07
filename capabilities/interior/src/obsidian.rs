@@ -220,10 +220,7 @@ fn saat(item: &Item, zustand: Option<State>) -> String {
     out.push_str("---\n");
     out.push_str("type: interior-slot\n");
     out.push_str(&format!("axon_interior_id: \"{}\"\n", item.id));
-    out.push_str(&format!(
-        "summary: \"{}\"\n",
-        item.label.replace('"', "'")
-    ));
+    out.push_str(&format!("summary: \"{}\"\n", item.label.replace('"', "'")));
     out.push_str("status: offen\n");
     out.push_str("---\n\n");
     out.push_str(&format!("# {}\n\n", item.label));
@@ -290,10 +287,12 @@ pub fn write_all(
             pfad: pfad.clone(),
             quelle,
         })?;
-        let (aktualisiert, ausgang) = region::apply(&original, &spec, &render_block(item, *zustand))
-            .map_err(|quelle| Fehler::Region {
-                pfad: pfad.clone(),
-                quelle,
+        let (aktualisiert, ausgang) =
+            region::apply(&original, &spec, &render_block(item, *zustand)).map_err(|quelle| {
+                Fehler::Region {
+                    pfad: pfad.clone(),
+                    quelle,
+                }
             })?;
 
         match ausgang {
@@ -339,7 +338,9 @@ pub fn vault_root() -> Option<PathBuf> {
 }
 
 /// `write_all` gegen die erklaerte Wurzel, oder `None`, wenn keine erklaert ist.
-pub fn writeback(katalog: &BTreeMap<String, (Item, Option<State>)>) -> Option<Result<Report, Fehler>> {
+pub fn writeback(
+    katalog: &BTreeMap<String, (Item, Option<State>)>,
+) -> Option<Result<Report, Fehler>> {
     let root_pfad = vault_root()?;
     Some(
         MarkdownRoot::declare(root_pfad)
@@ -413,7 +414,10 @@ mod tests {
         it.begruendung = Some("Ein zweiter Stuhl ist eine Garderobe mit Beinen.".into());
         let text = saat(&it, Some(State::Wanted));
         assert!(text.contains("Garderobe mit Beinen"), "got: {text}");
-        assert!(!text.contains("axon:begin"), "die Saat rendert keine Region");
+        assert!(
+            !text.contains("axon:begin"),
+            "die Saat rendert keine Region"
+        );
         assert!(text.contains("axon_interior_id: \"stuhl\""), "got: {text}");
     }
 
@@ -431,11 +435,17 @@ mod tests {
         katalog.insert("tisch_bestand".into(), (piece, Some(State::Owned)));
         katalog.insert(
             "vorhang".into(),
-            (slot("vorhang", "Vorhang Terrassentuer"), Some(State::Wanted)),
+            (
+                slot("vorhang", "Vorhang Terrassentuer"),
+                Some(State::Wanted),
+            ),
         );
 
         let report = write_all(&root, &katalog).unwrap();
-        assert_eq!(report.seeded, vec!["Atlas/Interior/Vorhang Terrassentuer.md"]);
+        assert_eq!(
+            report.seeded,
+            vec!["Atlas/Interior/Vorhang Terrassentuer.md"]
+        );
         assert!(!dir.join(DIR).join("Tisch vorhanden.md").exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -452,7 +462,10 @@ mod tests {
         let mut katalog: BTreeMap<String, (Item, Option<State>)> = BTreeMap::new();
         katalog.insert(
             "vorhang".into(),
-            (slot("vorhang", "Vorhang Terrassentuer"), Some(State::Wanted)),
+            (
+                slot("vorhang", "Vorhang Terrassentuer"),
+                Some(State::Wanted),
+            ),
         );
 
         let erst = write_all(&root, &katalog).unwrap();
@@ -477,19 +490,28 @@ mod tests {
         let mut katalog: BTreeMap<String, (Item, Option<State>)> = BTreeMap::new();
         katalog.insert(
             "vorhang".into(),
-            (slot("vorhang", "Vorhang Terrassentuer"), Some(State::Wanted)),
+            (
+                slot("vorhang", "Vorhang Terrassentuer"),
+                Some(State::Wanted),
+            ),
         );
         write_all(&root, &katalog).unwrap();
 
         let pfad = dir.join(DIR).join("Vorhang Terrassentuer.md");
         let mit_prosa = std::fs::read_to_string(&pfad)
             .unwrap()
-            .replace("# Vorhang Terrassentuer", "# Vorhang Terrassentuer\n\nMein eigener Satz.")
+            .replace(
+                "# Vorhang Terrassentuer",
+                "# Vorhang Terrassentuer\n\nMein eigener Satz.",
+            )
             .replace("wanted", "von Hand veraendert");
         std::fs::write(&pfad, &mit_prosa).unwrap();
 
         let report = write_all(&root, &katalog).unwrap();
-        assert_eq!(report.conflicts, vec!["Atlas/Interior/Vorhang Terrassentuer.md"]);
+        assert_eq!(
+            report.conflicts,
+            vec!["Atlas/Interior/Vorhang Terrassentuer.md"]
+        );
         let danach = std::fs::read_to_string(&pfad).unwrap();
         assert_eq!(danach, mit_prosa, "nichts wurde geschrieben");
         assert!(danach.contains("Mein eigener Satz."));
