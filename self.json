@@ -400,7 +400,11 @@
     },
     {
       "name": "packs",
-      "kind": "capability"
+      "kind": "capability",
+      "service": {
+        "kind": "data",
+        "requires": []
+      }
     },
     {
       "name": "people-registry",
