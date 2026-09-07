@@ -189,9 +189,21 @@ takes the corpus path as `argv[1]`; the in-repo default path deliberately does
 not exist.
 
 ```sh
+comms mail corpus --out "$AXON_PERSONAL_ROOT/config/comms-mail-stream-shadow.json"
+#   one fixture per fallback row, `label` and `urgency_band` EMPTY. Fill both by hand,
+#   in one pass, BEFORE the next line runs. Refuses to overwrite without --force.
 comms mail classify --shadow          # fill the verdict table, ~2s per thread
 cargo run --bin comms-mail-model-eval -- "$AXON_PERSONAL_ROOT/config/comms-mail-stream-shadow.json"
 ```
+
+`comms mail corpus` writes the skeleton and nothing else — no verdict is read while it runs,
+so a labeller cannot be shown the answer they are meant to write. The one field it guesses is
+`language`, from an umlaut or a German function word, and the corpus's own `_method` says so;
+the split by language is what makes one English prompt over a mixed mailbox measurable, and
+121 blank language fields would cost the labeller a judgement they can make faster by
+correcting one. `evaluate_file` **refuses** a corpus with any empty `label`, naming the
+count: an empty label scored as a stream name disagrees with every verdict, and a half-filled
+corpus would report a low agreement that reads like a measurement of the model.
 
 **What it measures.** Model agreement against the labels, split by language,
 because one English prompt over a mixed mailbox is exactly the assumption that
