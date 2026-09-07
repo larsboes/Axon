@@ -16,6 +16,7 @@
     id,
     role = "listitem",
     current = false,
+    dimmed = false,
     tone = "none",
     href,
     mark,
@@ -28,6 +29,10 @@
     role?: "listitem" | "article";
     /** The keyboard cursor is on this row. Announced as `aria-current`, not selected. */
     current?: boolean;
+    /** The row is spent — decided, expired, superseded — and stays in place greyed.
+     *  Visual only: the content is still read, because a reader who cannot see the
+     *  opacity must still be told what the row says. */
+    dimmed?: boolean;
     /** The band's spine segment. `none` draws no spine at all. */
     tone?: "alarm" | "now" | "owed" | "offer" | "none";
     /** The row's primary destination. Renders a stretched hit area behind the content,
@@ -46,6 +51,7 @@
   {role}
   class="row tone-{tone}"
   class:current
+  class:dimmed
   class:linked={href !== undefined}
   tabindex="-1"
   aria-current={current ? "true" : undefined}
@@ -67,6 +73,10 @@
 </svelte:element>
 
 <style>
+  .row.dimmed {
+    opacity: 0.55;
+  }
+
   .row {
     position: relative;
     display: grid;

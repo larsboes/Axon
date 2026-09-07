@@ -12,6 +12,7 @@
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
   import { feedPersonalization, type FeedStatusExtras } from "$lib/feed/api";
+  import FeedItemRow from "$lib/feed/FeedItemRow.svelte";
   import {
     clampToSelectable,
     shouldIgnoreKey,
@@ -48,16 +49,6 @@
     { value: "media", label: "Media" },
   ];
   const RANGES = [7, 30, 90];
-  const KIND_LABEL: Record<string, string> = {
-    youtube: "YouTube",
-    instagram: "Instagram",
-    podcast: "Podcast",
-    article: "Article",
-    mail: "Mail",
-    github: "GitHub",
-    arxiv: "arXiv",
-    reddit: "Reddit",
-  };
   const MAIL_CATEGORY_LABEL: Record<MailCategory, string> = {
     aktiv: "Active",
     issue: "Action",
@@ -1303,91 +1294,46 @@
   </ul>
 {/if}
 
-<!-- The row markup is inline on purpose. The dashboard-refresh stream owns
-     `$lib/feed/FeedItemRow.svelte` and that file has not merged; adding a second
-     shared row component for the same list is the merge outcome nobody wants, so
-     this stays here until the primitive exists and then moves onto it whole. -->
 {#snippet entryCard(e: FeedEntry, selected: boolean)}
-          <li
-            class="card entry"
-            id={rowDomId(e.id)}
-            class:selected
-            class:decided={decided.has(e.id)}
-            aria-current={selected ? "true" : undefined}
-          >
-            <div class="row">
-              <a class="title" href={link(`/feed/${e.id}`)}>
-                <span class="kind tag mono">{KIND_LABEL[e.kind] ?? e.kind}</span>
-                <span class="text">{e.title ?? e.url}</span>
-              </a>
-              <div class="acts">
-                {#if decided.has(e.id)}
-                  <span class="verdict mono">{decidedLabel(decided.get(e.id)!)}</span>
-                  <button class="btn" onclick={() => setStatus(e.id, "new", "inbox")}>Undo</button>
-                {:else}
-                  <a
-                    class="btn"
-                    href={e.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="Original"
-                    onclick={() => feedPersonalization.recordInteraction(e.id, "opened", "inbox")}
-                  >
-                    <Icon name="external" size={13} />
-                  </a>
-                  {#if busy === e.id}
-                    <span class="btn"><Icon name="loader" size={13} /></span>
-                  {:else}
-                    <button
-                      class="btn"
-                      class:kept={e.status === "keeper"}
-                      onclick={() =>
-                        setStatus(e.id, e.status === "keeper" ? "new" : "keeper", "inbox")}
-                      aria-label="Keep"
-                    >
-                      <Icon name="check" size={13} />
-                    </button>
-                    <button
-                      class="btn"
-                      onclick={() => setStatus(e.id, "dismissed", "inbox")}
-                      aria-label="Dismiss"
-                    >
-                      <Icon name="close" size={13} />
-                    </button>
-                  {/if}
-                {/if}
-              </div>
-            </div>
-
-            {#if e.author}<p class="meta mono">{e.author}</p>{/if}
-            {#if e.evaluation}
-              <div class="evaluation-compact">
-                <EvaluationBreakdown
-                  evaluation={e.evaluation}
-                  compact={!expandedEvaluations.has(e.id)}
-                />
-              </div>
-            {:else if e.relevance}
-              <p class="relevance">
-                <span>{e.relevance.profile_label}</span>
-                <span class="mono">{e.relevance.score.toFixed(2)}</span>
-                <span class="method">{e.relevance.mode}</span>
-              </p>
-            {/if}
-            {#if e.summary}
-              <p class="preview">{e.summary}</p>
-            {:else if e.digest_preview}
-              <!-- No summary of its own: past the on-device window, so the enrichment drain left
-                   it and the digest drain took it through the cloud instead. Showing the digest's
-                   opening rather than an empty card, labelled so the two are not confused. -->
-              <p class="preview">{e.digest_preview}</p>
-              <p class="muted from-digest">from the digest</p>
-            {:else if ingested === e.id}
-              <p class="muted pending">
-                <Icon name="loader" size={12} /> Summary is running — it will appear after the next load.
-              </p>
-            {/if}
-          </li>
+  <FeedItemRow
+    entry={e}
+    id={rowDomId(e.id)}
+    current={selected}
+    tone="none"
+    busy={busy === e.id}
+    decided={decided.get(e.id) === "keeper"
+      ? "keeper"
+      : decided.has(e.id)
+        ? "dismissed"
+        : null}
+    undoHint="u to undo"
+    onkeep={() => setStatus(e.id, e.status === "keeper" ? "new" : "keeper", "inbox")}
+    ondismiss={() => setStatus(e.id, "dismissed", "inbox")}
+    onundo={() => setStatus(e.id, "new", "inbox")}
+    onexternal={() => feedPersonalization.recordInteraction(e.id, "opened", "inbox")}
+  >
+    {#snippet detail()}
+      {#if e.evaluation}
+        <div class="evaluation-compact">
+          <EvaluationBreakdown
+            evaluation={e.evaluation}
+            compact={!expandedEvaluations.has(e.id)}
+          />
+        </div>
+      {:else if e.relevance}
+        <p class="relevance">
+          <span>{e.relevance.profile_label}</span>
+          <span class="mono">{e.relevance.score.toFixed(2)}</span>
+          <span class="method">{e.relevance.mode}</span>
+        </p>
+      {/if}
+      {#if ingested === e.id && !e.summary && !e.digest_preview}
+        <p class="muted pending">
+          <Icon name="loader" size={12} /> Summary is running — it will appear after the next load.
+        </p>
+      {/if}
+    {/snippet}
+  </FeedItemRow>
 {/snippet}
 
 {/if}
@@ -1553,10 +1499,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-  }
-
-  .entry {
-    padding: 0.75rem;
   }
 
   .mail-toolbar {
@@ -1747,11 +1689,6 @@
   .card-select input {
     margin: 0;
     accent-color: var(--primary);
-  }
-
-  .from-digest {
-    font-size: 0.75rem;
-    margin-top: 0.15rem;
   }
 
   .proposal-summary {
@@ -1992,80 +1929,10 @@
     gap: 0.35rem;
   }
 
-  .entry.selected {
-    border-color: var(--primary);
-    box-shadow: inset 2px 0 0 var(--primary);
-  }
-
-  /* Greyed in place, not removed: the cursor stays where the operator left it
-     and the decision is one `u` away from being retracted. */
-  .entry.decided {
-    opacity: 0.55;
-  }
-
   .learning {
     margin-left: 0.3rem;
     font-size: 0.5625rem;
     color: var(--text-tertiary);
-  }
-
-  .verdict {
-    align-self: center;
-    font-size: 0.625rem;
-    color: var(--text-tertiary);
-  }
-
-  .row {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem;
-  }
-
-  .title {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    flex: 1;
-    min-width: 0;
-    padding: 0;
-    border: 0;
-    background: none;
-    font: inherit;
-    text-align: left;
-    color: inherit;
-    cursor: pointer;
-    text-decoration: none;
-  }
-
-  .title:hover .text {
-    color: var(--primary);
-  }
-
-  .title .text {
-    font-size: 0.875rem;
-    font-weight: 500;
-  }
-
-  .kind {
-    flex-shrink: 0;
-    font-size: 0.5625rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  .acts {
-    display: flex;
-    gap: 0.15rem;
-    flex-shrink: 0;
-  }
-
-  .acts .btn {
-    padding: 0.3rem;
-  }
-
-  .acts .kept {
-    color: var(--success);
   }
 
   .meta {
@@ -2092,18 +1959,6 @@
 
   .relevance .method {
     color: var(--text-tertiary);
-  }
-
-  .preview {
-    display: -webkit-box;
-    overflow: hidden;
-    margin: 0.45rem 0 0;
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    line-height: 1.45;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
   }
 
   .lead {

@@ -32,6 +32,11 @@
    * `dataClass` is not passed and is not guessed. `FeedEntry` carries no class field while
    * the `ContentItem` detail shape does, so the chip cannot render honestly until comms
    * publishes a class on the list contract.
+   *
+   * Two of the props below exist because /feed's inbox moved onto this row on 2026-09-07
+   * and had them: a decided row greys in place instead of leaving, and the inbox shows the
+   * full evaluation breakdown where Home shows factor bars. Both follow `meta`'s rule —
+   * the caller replaces a default only where it knows more.
    */
   let {
     entry,
@@ -40,10 +45,15 @@
     busy = false,
     dense = false,
     tone = "offer",
+    decided = null,
+    undoHint,
     meta,
+    detail,
     onkeep,
     ondismiss,
     onopen,
+    onexternal,
+    onundo,
   }: {
     entry: FeedEntry;
     /** Stable DOM id for the keyboard cursor. */
@@ -54,12 +64,21 @@
     /** Inbox density: no factor bars, no preview line. */
     dense?: boolean;
     tone?: "alarm" | "now" | "owed" | "offer" | "none";
+    /** The row has been decided and is greyed in place. Its actions become one Undo. */
+    decided?: "keeper" | "dismissed" | null;
+    /** Appended to the verdict, e.g. a keyboard hint. Only where one exists. */
+    undoHint?: string;
     /** Replaces the default provenance line — used where the caller knows more. */
     meta?: Snippet;
+    /** Replaces the default factor bars — same rule as `meta`. */
+    detail?: Snippet;
     onkeep?: () => void;
     ondismiss?: () => void;
     /** Called when the row's title is activated by something other than a click. */
     onopen?: () => void;
+    /** Called when the original-source link is activated. */
+    onexternal?: () => void;
+    onundo?: () => void;
   } = $props();
 
   const href = $derived(link(`/feed/${encodeURIComponent(entry.id)}`));
@@ -87,7 +106,9 @@
   );
 </script>
 
-<ListRow {id} {current} {tone}>
+<ListRow {id} {current} {tone} dimmed={decided !== null}>
+  <!-- Greyed in place, not removed: the cursor stays where the operator left it and the
+       decision is one keystroke away from being retracted. -->
   {#snippet mark()}<Icon name="feed" size={15} />{/snippet}
 
   <span class="row-kind">
@@ -105,7 +126,9 @@
     {/if}
   {/if}
 
-  {#if !dense && factors.length > 0}
+  {#if detail}
+    <div class="detail">{@render detail()}</div>
+  {:else if !dense && factors.length > 0}
     <div class="factors"><FactorBars {factors} compact weighted /></div>
   {/if}
 
@@ -114,6 +137,12 @@
   {/snippet}
 
   {#snippet actions()}
+    {#if decided}
+      <span class="verdict mono">
+        {decided === "keeper" ? "kept" : "dismissed"}{undoHint ? ` · ${undoHint}` : ""}
+      </span>
+      {#if onundo}<button class="btn" type="button" onclick={() => onundo()}>Undo</button>{/if}
+    {:else}
     <a class="btn" {href}>Read</a>
     {#if onkeep}
       <button
@@ -125,7 +154,15 @@
         {#if busy}<Icon name="loader" size={13} />{:else if entry.status === "keeper"}Kept{:else}Keep{/if}
       </button>
     {/if}
-    <a class="btn" href={entry.url} target="_blank" rel="noreferrer" aria-label="Original" title="Original">
+    <a
+      class="btn"
+      href={entry.url}
+      target="_blank"
+      rel="noreferrer"
+      aria-label="Original"
+      title="Original"
+      onclick={() => onexternal?.()}
+    >
       <Icon name="external" size={13} />
     </a>
     {#if ondismiss}
@@ -140,16 +177,24 @@
         <Icon name="close" size={13} />
       </button>
     {/if}
+    {/if}
   {/snippet}
 </ListRow>
 
 <style>
+  .detail,
   .factors {
     margin-top: var(--space-2);
     max-width: 34rem;
   }
 
   .from-digest {
+    color: var(--text-tertiary);
+    font-size: var(--text-2xs);
+  }
+
+  .verdict {
+    align-self: center;
     color: var(--text-tertiary);
     font-size: var(--text-2xs);
   }
