@@ -51,7 +51,7 @@ jobs:
       # Fetched artifacts: the crates.io registry and any git dependencies. Keyed
       # on the lockfile that determines them, so it is saved exactly when they change.
       - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -65,7 +65,7 @@ jobs:
       # here would leave the cache frozen at the last dependency bump and never
       # pick up day-to-day compilation.
       - name: Cache cargo target
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
           key: cargo-target-${{ runner.os }}-${{ github.sha }}

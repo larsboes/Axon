@@ -86,7 +86,7 @@ jobs:
         run: tools/self check
 
       - name: Cache cargo registry
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -96,7 +96,7 @@ jobs:
             cargo-registry-${{ runner.os }}-
 
       - name: Cache cargo target
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
         with:
           path: target
           key: cargo-target-${{ runner.os }}-${{ github.sha }}
