@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use serde::Serialize;
@@ -175,7 +175,7 @@ const ROUTES: &[route_manifest::Route] = &[
          the basis, never filter on it. by_companion is a sentence rather than data -- see \
          capabilities/trips/README.md for the three preconditions.",
     ),
-    // --- plan search (night-2026-09-03) -----------------------------------
+    // --- plan search and pack lists (night-2026-09-03) --------------------
     route_manifest::Route {
         method: "POST",
         path: "/api/plan-search",
@@ -201,6 +201,34 @@ const ROUTES: &[route_manifest::Route] = &[
                   Body: {plan_id}. 400 for an archived plan, 404 for an expired job. \
                   Money is integer minor units; the payload carries no companion field.",
         request_schema: Some(route_manifest::schema_of::<AdoptRequest>),
+    },
+    r(
+        "GET",
+        "/api/plans/:id/pack",
+        "Pack lists for a plan, with what is still missing computed server-side. Optional \
+         ?stage=<destination place id> adds missing_for_stage over that leg's list plus \
+         every whole-trip list. interior_reachable distinguishes an unreachable inventory \
+         from a deleted item.",
+    ),
+    route_manifest::Route {
+        method: "POST",
+        path: "/api/plans/:id/pack",
+        summary: "Create a pack list. Body: {name, stage_destination_id?, stage_sequence?, \
+                  template_key?}. The binding is the stage's DESTINATION place id, because \
+                  a stage id is a pure function of position.",
+        request_schema: Some(route_manifest::schema_of::<trips::pack::CreatePackList>),
+    },
+    r(
+        "DELETE",
+        "/api/plans/:id/pack/:list_id",
+        "Delete one pack list and its items.",
+    ),
+    route_manifest::Route {
+        method: "PUT",
+        path: "/api/plans/:id/pack/:list_id/items",
+        summary: "Replace a pack list's items. Body: {items:[{item_ref, packed, note?}]}. \
+                  item_ref holds an interior_item.id as a soft reference with no foreign key.",
+        request_schema: Some(route_manifest::schema_of::<trips::pack::PutPackItems>),
     },
 ];
 
@@ -1393,6 +1421,189 @@ async fn plan_search_adopt(
     }
 }
 
+// ---- pack lists ----------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct PackQuery {
+    /// The `PlaceRef.id` of a stage destination. With it, `missing_for_stage`
+    /// covers that leg's list plus every whole-trip list.
+    #[serde(default)]
+    stage: Option<String>,
+}
+
+/// Where interior serves its inventory. Same hardcoded-sibling-port shape, and
+/// the same caveat, as `calendar_base_url` above.
+fn interior_base_url() -> String {
+    std::env::var("AXON_INTERIOR_URL").unwrap_or_else(|_| "http://127.0.0.1:8092".to_string())
+}
+
+/// `item_ref` -> the item, or `None` when interior could not be reached.
+///
+/// `None` is a third state, not an empty index: "interior is down" and "the
+/// item was deleted" would otherwise look identical, and only one of them is
+/// something the operator should act on.
+///
+/// Every field below is read with a fallback rather than a `?`: a deployment whose interior
+/// predates B51 answers without the seven columns, and a pack list that refuses to render
+/// there would be a worse answer than one that renders labels and says the attributes are
+/// absent.
+fn interior_index() -> Option<std::collections::HashMap<String, trips::pack::InventoryItem>> {
+    let body: Value = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()?
+        .get(format!("{}/api/inventory", interior_base_url()))
+        .send()
+        .ok()?
+        .json()
+        .ok()?;
+    Some(
+        body.as_array()?
+            .iter()
+            .filter_map(|row| {
+                let item = row.get("item")?;
+                let flag = |key: &str| item[key].as_bool();
+                Some((
+                    item["id"].as_str()?.to_string(),
+                    trips::pack::InventoryItem {
+                        label: item["label"].as_str().unwrap_or_default().to_string(),
+                        weight_g: item["weight_g"].as_i64(),
+                        category: item["category"].as_str().map(str::to_string),
+                        pack_location: item["pack_location"].as_str().map(str::to_string),
+                        packable: flag("packable"),
+                        waterproof: flag("waterproof"),
+                        quick_dry: flag("quick_dry"),
+                        trip_types: item["trip_types"]
+                            .as_array()
+                            .map(|values| {
+                                values
+                                    .iter()
+                                    .filter_map(|value| value.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    },
+                ))
+            })
+            .collect(),
+    )
+}
+
+async fn list_pack(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<PackQuery>,
+) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = TripsStore::open(&database_path).map_err(|error| error.to_string())?;
+        let plan = store
+            .get_plan(&id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("no plan {id}"))?;
+        let lists = trips::pack::lists_for_plan(&store, &id).map_err(|error| error.to_string())?;
+        let index = interior_index();
+        Ok(trips::pack::render(
+            &lists,
+            &plan.plan.stages,
+            index.as_ref(),
+            query.stage.as_deref(),
+        ))
+    })
+    .await
+    {
+        Ok(Ok(body)) => response(StatusCode::OK, body),
+        Ok(Err(error)) => response(StatusCode::NOT_FOUND, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn create_pack_list(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<trips::pack::CreatePackList>,
+) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    match tokio::task::spawn_blocking(move || {
+        TripsStore::open(&database_path)
+            .and_then(|store| trips::pack::create_list(&store, &id, &input))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(list)) => response(
+            StatusCode::CREATED,
+            json!({
+                "id": list.id,
+                "name": list.name,
+                "stage_destination_id": list.stage_destination_id,
+                "stage_sequence": list.stage_sequence,
+                "template_key": list.template_key,
+            }),
+        ),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn delete_pack_list(
+    State(state): State<AppState>,
+    Path((id, list_id)): Path<(String, String)>,
+) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    match tokio::task::spawn_blocking(move || {
+        TripsStore::open(&database_path)
+            .and_then(|store| trips::pack::delete_list(&store, &id, &list_id))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(true)) => response(StatusCode::OK, json!({ "ok": true })),
+        Ok(Ok(false)) => response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "no pack list with that id on this plan" }),
+        ),
+        Ok(Err(error)) => response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
+async fn put_pack_items(
+    State(state): State<AppState>,
+    Path((id, list_id)): Path<(String, String)>,
+    Json(input): Json<trips::pack::PutPackItems>,
+) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    let count = input.items.len();
+    match tokio::task::spawn_blocking(move || {
+        TripsStore::open(&database_path)
+            .and_then(|store| trips::pack::replace_items(&store, &id, &list_id, &input.items))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(true)) => response(StatusCode::OK, json!({ "ok": true, "count": count })),
+        Ok(Ok(false)) => response(
+            StatusCode::NOT_FOUND,
+            json!({ "error": "no pack list with that id on this plan" }),
+        ),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
 /// This capability's name, for the origin guard's env var
 /// (`AXON_TRIPS_ALLOWED_ORIGIN_HOSTS`).
 const CAPABILITY: &str = "trips";
@@ -1446,6 +1657,9 @@ fn build_router(state: AppState) -> Router {
         .route("/api/plan-search", post(plan_search_start))
         .route("/api/plan-search/:id", get(plan_search_status))
         .route("/api/plan-search/:id/adopt", post(plan_search_adopt))
+        .route("/api/plans/:id/pack", get(list_pack).post(create_pack_list))
+        .route("/api/plans/:id/pack/:list_id", delete(delete_pack_list))
+        .route("/api/plans/:id/pack/:list_id/items", put(put_pack_items))
         // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the origin guard.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

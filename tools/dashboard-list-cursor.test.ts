@@ -13,7 +13,11 @@ import { describe, expect, test } from "bun:test";
 import {
   INTERACTIVE,
   clampIndex,
+  clampToSelectable,
+  nextSelectable,
+  prevSelectable,
   shouldIgnoreKey,
+  type CursorRow,
 } from "../dashboard/src/lib/list-cursor.svelte.ts";
 
 /** A keydown whose target reports the `closest()` answer the test wants. */
@@ -78,5 +82,58 @@ describe("the index clamps rather than running off the list", () => {
 
   test("a list that shrinks under the cursor pulls it back to the last row", () => {
     expect(clampIndex(7, 3)).toBe(2);
+  });
+});
+
+describe("a list whose rows are not all selectable", () => {
+  // The Feed's shape: a collector-run header, then its items. Merged into this module on
+  // 2026-09-07 from `$lib/feed/list-cursor`, which held the same arithmetic beside a
+  // second copy of the guard above and had no test of its own.
+  const rows: CursorRow[] = [
+    { kind: "header", id: "h1" },
+    { kind: "item", id: "a" },
+    { kind: "item", id: "b" },
+    { kind: "header", id: "h2" },
+    { kind: "item", id: "c" },
+  ];
+
+  test("moving down steps over a header", () => {
+    expect(nextSelectable(rows, 2)).toBe(4);
+  });
+
+  test("moving down stops on the last item rather than wrapping", () => {
+    expect(nextSelectable(rows, 4)).toBe(4);
+  });
+
+  test("moving up steps over a header and stops on the first item", () => {
+    expect(prevSelectable(rows, 4)).toBe(2);
+    expect(prevSelectable(rows, 1)).toBe(1);
+  });
+
+  test("an unplaced cursor lands on the first item, in both directions", () => {
+    expect(nextSelectable(rows, -1)).toBe(1);
+    expect(prevSelectable(rows, 0)).toBe(1);
+  });
+
+  test("a cursor left on a header after a reload moves forward to an item", () => {
+    expect(clampToSelectable(rows, 3)).toBe(4);
+  });
+
+  test("a cursor past the end comes back to the last item", () => {
+    expect(clampToSelectable(rows, 99)).toBe(4);
+  });
+
+  test("a trailing header falls back to the item before it", () => {
+    expect(clampToSelectable([...rows, { kind: "header", id: "h3" }], 5)).toBe(4);
+  });
+
+  test("an empty list parks at -1, because no row can hold the cursor", () => {
+    // Deliberately not clampIndex's 0: there is no row 0 to select, and the page reads
+    // this value back as "nothing selected".
+    expect(clampToSelectable([], 3)).toBe(-1);
+  });
+
+  test("a list of headers alone selects nothing", () => {
+    expect(clampToSelectable([{ kind: "header", id: "h1" }], 0)).toBe(-1);
   });
 });

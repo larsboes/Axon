@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
+// Moved onto the shared cursor on 2026-09-07 (B52). `$lib/feed/list-cursor` held a second copy
+// of this arithmetic and a second copy of the typing guard; both live in `$lib/list-cursor.svelte`
+// now, and this file keeps its scenario — the Inbox's real row shape — against the merged module,
+// so the merge is checked by the test that would have caught it breaking.
 import {
-  clampAfterDecision,
-  isTypingTarget,
-  next,
-  prev,
+  clampToSelectable as clampAfterDecision,
+  shouldIgnoreKey as isTypingTarget,
+  nextSelectable as next,
+  prevSelectable as prev,
   type CursorRow,
-} from "../src/lib/feed/list-cursor";
+} from "../src/lib/list-cursor.svelte";
 
 /** Three day groups, two of which hold a collector run. The Inbox used to
  *  collapse a run of two or more into ONE clickable line, so 185 arXiv items
