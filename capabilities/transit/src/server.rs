@@ -458,17 +458,25 @@ mod origin_tests {
         })
     }
 
-    async fn answer(method: &str, path: &str, origin: Option<&str>) -> StatusCode {
+    async fn respond(method: &str, path: &str, origin: Option<&str>) -> (StatusCode, String) {
         let mut request = Request::builder().method(method).uri(path);
         if let Some(origin) = origin {
             request = request.header("origin", origin);
         }
-        router()
+        let response = router()
             .await
             .oneshot(request.body(Body::empty()).unwrap())
             .await
-            .expect("the router answers")
-            .status()
+            .expect("the router answers");
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("a body");
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    async fn answer(method: &str, path: &str, origin: Option<&str>) -> StatusCode {
+        respond(method, path, origin).await.0
     }
 
     #[tokio::test]
@@ -482,8 +490,16 @@ mod origin_tests {
         }
     }
 
-    /// The other half. 400 is `handle_extract_ticket`'s own answer to an empty
-    /// body, so the request reached a handler rather than the guard.
+    /// The other half, with the query string the route requires.
+    ///
+    /// Without `?file_name=`, this asked for 400 and got the `Query` extractor's
+    /// rejection — "Failed to deserialize query string: missing field
+    /// `file_name`" — which is a rejection before the handler, not the handler's
+    /// answer. It still told a refusal from an admission, because the guard
+    /// answers 403, but it was not the thing the comment claimed to have proved.
+    /// With the file name supplied, the 400 is `handle_extract_ticket`'s own
+    /// sentence about an empty body, and the body is asserted so the control
+    /// cannot drift back to an extractor rejection unnoticed.
     #[tokio::test]
     async fn the_dashboard_and_a_non_browser_caller_still_reach_the_handler() {
         for origin in [
@@ -491,10 +507,16 @@ mod origin_tests {
             Some("http://localhost:47117"),
             Some("https://mac.tailnet.ts.net"),
         ] {
+            let (status, body) =
+                respond("POST", "/api/tickets/extract?file_name=ticket.pdf", origin).await;
             assert_eq!(
-                answer("POST", "/api/tickets/extract", origin).await,
+                status,
                 StatusCode::BAD_REQUEST,
                 "the guard refused a caller it must admit: {origin:?}"
+            );
+            assert!(
+                body.contains("the ticket file's bytes"),
+                "400 came from somewhere other than the handler: {body}"
             );
         }
     }
