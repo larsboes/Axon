@@ -103,7 +103,7 @@
   .attribution,
   .empty {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
   }
 

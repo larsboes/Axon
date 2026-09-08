@@ -372,3 +372,26 @@ export function generateWouldDropCode(
   if (graphPresent) return false;
   return (committedUnits ?? []).some((u) => u.code !== undefined);
 }
+
+/**
+ * Whether `tools/self generate` would bake a stale code graph into the artifact.
+ *
+ * A `stale` entry is a path the graph still holds a node for and the tree no longer has
+ * (classifyPath, "stale"). Every per-unit `code` count in the same run was rolled up from
+ * that graph, so the counts describe a tree that is one edit behind — and `generate` used to
+ * write the staleness down as a field and report success.
+ *
+ * That is not a cosmetic field. On 2026-09-07 a session ran `generate` to clear doctor's
+ * self-model check, got `graph.stale: ["dashboard/src/lib/feed/list-cursor.ts"]` back for a
+ * module that had been deleted, and read the unchanged verdict as a different fault; the fix
+ * was `graphify update .` first, and regenerating then moved every per-unit count with it
+ * (commit 55c71a0). Recording a known-wrong measurement and exiting 0 is the shape of the
+ * sixth silent failure: an instrument answering confidently about the wrong tree.
+ *
+ * So the default is refusal, not a warning line nobody reads. `--allow-stale` exists for the
+ * case a rebuild cannot clear — a node for a path that genuinely will not come back — and it
+ * says so on the way past.
+ */
+export function generateWouldBakeStaleGraph(stale: string[] | undefined): boolean {
+  return (stale ?? []).length > 0;
+}

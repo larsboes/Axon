@@ -169,7 +169,7 @@
 {/if}
 
 <style>
-  .hint { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: 0.75rem; line-height: 1.45; }
+  .hint { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: var(--text-xs); line-height: 1.45; }
   .range { display: flex; gap: 0.4rem; margin-bottom: 0.5rem; }
   .range label { flex: 1; min-width: 0; display: grid; gap: 0.2rem; color: var(--text-tertiary); font-size: 0.68rem; }
   input { width: 100%; box-sizing: border-box; padding: 0.25rem 0.35rem; border: 1px solid var(--input-border); border-radius: var(--radius-sm); background-color: var(--input-bg); color: var(--text-primary); font: inherit; font-size: 0.72rem; }
@@ -181,7 +181,7 @@
   .draft { padding: 0.6rem 0; border-top: 1px solid var(--card-border); }
   .draft-topline { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; flex-wrap: wrap; }
   .draft-topline strong { min-width: 0; overflow-wrap: anywhere; }
-  .draft-topline strong { font-size: 0.8125rem; font-weight: 600; }
+  .draft-topline strong { font-size: var(--text-sm); font-weight: 600; }
   .draft p { margin: 0.15rem 0 0; color: var(--text-secondary); font-size: 0.72rem; }
   .commitment { padding: 0.1rem 0.35rem; border-radius: var(--radius-sm); background-color: var(--surface); color: var(--text-secondary); font-size: 0.65rem; white-space: nowrap; }
   .commitment.planned { color: var(--warning-ink); background-color: var(--warning-soft); }

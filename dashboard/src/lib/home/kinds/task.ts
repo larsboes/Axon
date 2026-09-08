@@ -48,7 +48,9 @@ const task: DecisionKind<Task[], Task> = {
   },
   startOrDueAt: (row) => row.due,
   candidateStatus: () => "accepted",
-  dataClass: () => null,
+  // CONTRACT: the vault classifies every task it serves -- folder default, frontmatter
+  // override (PRD Q9a), decided by `libs/content-item` and never here.
+  dataClass: (row) => row.data_class ?? null,
   processingRoute: () => null,
 };
 

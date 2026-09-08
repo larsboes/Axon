@@ -554,7 +554,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     color: var(--text-tertiary);
     text-transform: uppercase;
@@ -568,7 +568,7 @@
     gap: 0.5rem;
     padding: 0.75rem;
     border-radius: var(--radius-md);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .notice {
@@ -582,7 +582,7 @@
     gap: 0.4rem;
     margin: 0.75rem 0;
     color: var(--success);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .notice a {
@@ -592,7 +592,7 @@
 
   .scan-result {
     margin: 0.75rem 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--text-tertiary);
   }
 
@@ -623,7 +623,7 @@
     background: transparent;
     color: var(--text-secondary);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 500;
     cursor: pointer;
   }
@@ -733,7 +733,7 @@
     padding: 0.2rem 0.35rem;
     background-color: var(--surface);
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     text-align: center;
   }
 
@@ -745,7 +745,7 @@
   .why {
     margin: 0.45rem 0;
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .foot {
@@ -792,7 +792,7 @@
   .calendar-btn {
     gap: 0.3rem;
     padding-inline: 0.55rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .calendar-btn.saved {

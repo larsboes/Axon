@@ -126,7 +126,7 @@
     background: var(--card-bg);
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     overflow-x: auto;
   }
 </style>

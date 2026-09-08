@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { dropped, previousCheapest, railWatchesOf, watchKey } from "./sparpreis-watch.ts";
+import { dropped, portInManifest, previousCheapest, railWatchesOf, watchKey } from "./sparpreis-watch.ts";
 
 describe("railWatchesOf", () => {
   const railItem = {
@@ -81,5 +81,33 @@ describe("watchKey", () => {
     expect(watchKey({ planId: "p", from: "1", to: "2", time: "2026-09-01T08:00:00" })).toBe(
       "1:2:2026-09-01T08:00:00",
     );
+  });
+});
+
+// The port read out of a service.toml is interpolated straight into
+// `http://127.0.0.1:${port}` by this tool and by tools/feed-sweep.ts, and feed-sweep puts
+// the comms bearer token on that request. So the one thing this reader must not return is
+// something that is not a port.
+describe("portInManifest", () => {
+  test("reads the port a manifest declares", () => {
+    expect(portInManifest('name = "comms"\nport = "8099"\n')).toBe("8099");
+  });
+
+  test("refuses a manifest with no port line", () => {
+    expect(() => portInManifest('name = "comms"\n')).toThrow("declares no port");
+  });
+
+  // Measured with bun: new URL("http://127.0.0.1:1@evil.example/x").host === "evil.example".
+  // The last `@` before the path ends the userinfo, so this value moves the host off
+  // loopback and takes the Authorization header with it.
+  test("refuses a port that would move the host off loopback", () => {
+    expect(() => portInManifest('port = "1@evil.example"\n')).toThrow("not a TCP port");
+    expect(new URL(`http://127.0.0.1:1@evil.example/feed`).host).toBe("evil.example");
+  });
+
+  test("refuses a port carrying a path, a space or a scheme", () => {
+    for (const bad of ["8099/../x", "80 99", "https://evil.example", "-1", "80990"]) {
+      expect(() => portInManifest(`port = "${bad}"\n`)).toThrow("not a TCP port");
+    }
   });
 });

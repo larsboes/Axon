@@ -16,6 +16,7 @@
     tone,
     href,
     whyHere,
+    dataClass,
     candidateStatus,
   }: DecisionRowProps<ScoutingOpportunity, OpportunitySource> = $props();
 
@@ -46,7 +47,7 @@
   </span>
   <a class="row-title" {href} target="_blank" rel="noreferrer">{row.title}</a>
 
-  {#snippet meta()}<RowMeta {whyHere} {candidateStatus} />{/snippet}
+  {#snippet meta()}<RowMeta {whyHere} {dataClass} {candidateStatus} />{/snippet}
 
   {#snippet actions()}
     <a class="btn" {href} target="_blank" rel="noreferrer">Open</a>

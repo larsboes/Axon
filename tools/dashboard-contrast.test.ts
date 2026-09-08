@@ -46,6 +46,19 @@ function contrast(a: string, b: string): number {
   return (x + 0.05) / (y + 0.05);
 }
 
+/** `a` painted at `alpha` over `b`, as the browser composites it. */
+function composite(a: string, alpha: number, b: string): string {
+  const parse = (hex: string) => {
+    const h = hex.replace("#", "");
+    const full = h.length === 3 ? [...h].map((c) => c + c).join("") : h;
+    return [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+  };
+  const [fg, bg] = [parse(a), parse(b)];
+  return `#${[0, 1, 2]
+    .map((i) => Math.round(fg[i] * alpha + bg[i] * (1 - alpha)).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
 /** Reads one selector's block out of app.css and returns its hex-valued properties. */
 function theme(selector: string): Record<string, string> {
   const css = readFileSync(APP_CSS, "utf8");
@@ -59,8 +72,19 @@ function theme(selector: string): Record<string, string> {
   return values;
 }
 
+/** The alpha `--primary-soft` is declared with, e.g. `rgb(14 116 144 / 8%)` -> 0.08. */
+function softAlpha(selector: string): number {
+  const css = readFileSync(APP_CSS, "utf8");
+  const start = css.indexOf(`${selector} {`);
+  const block = css.slice(start, css.indexOf("\n}", start));
+  const match = /--primary-soft:\s*rgb\([^)]*\/\s*([\d.]+)%\s*\)/.exec(block);
+  if (!match) throw new Error(`${selector} declares no rgb() --primary-soft`);
+  return Number(match[1]) / 100;
+}
+
 const LIGHT = theme(":root");
 const DARK = { ...LIGHT, ...theme(":root.dark") };
+const SOFT_ALPHA = { light: softAlpha(":root"), dark: softAlpha(":root.dark") };
 
 describe("contrast helper", () => {
   test("agrees with the two reference ratios everyone knows", () => {
@@ -139,5 +163,112 @@ describe("the warning token split is enforced, not described", () => {
     for (const [name, tokens] of [["light", LIGHT], ["dark", DARK]] as const) {
       expect([name, contrast(tokens["--card-bg"], tokens["--warning"]) >= 3]).toEqual([name, true]);
     }
+  });
+});
+
+// A focus indicator a keyboard reader cannot see is the same defect as body text at
+// 2.5:1, and it hides in the same way: the rule looks deliberate, and nothing measures it.
+//
+// Three components drew their focus state as `background: var(--primary-soft)` with
+// `outline: none` beside it, sharing the rule with `:hover`. Measured 2026-09-08: the tint
+// is 1.11:1 against a light card and 1.21:1 against a dark one, where WCAG 1.4.11 asks a
+// non-text indicator for 3:1 — and the `outline: none` removed the browser's own ring,
+// while two of the three sit inside a scrolling container whose overflow clips the shared
+// `--focus-ring` box-shadow away. There was nothing left to see.
+//
+// They now draw `outline: 2px solid var(--primary)` inset by 2px, the idiom
+// `$lib/rail/RailSection.svelte` already used. Both halves are asserted below: the ring's
+// ratio, and the source rule that stops the tint-only form coming back.
+
+describe("focus indicators are visible", () => {
+  const SURFACES = ["--card-bg", "--page-bg", "--surface"] as const;
+
+  describe.each([
+    ["light", LIGHT, SOFT_ALPHA.light],
+    ["dark", DARK, SOFT_ALPHA.dark],
+  ])("%s theme", (name, tokens, alpha) => {
+    test("--primary, which every ring is drawn in, clears 3:1 on each surface", () => {
+      const failures = SURFACES.map(
+        (key) => [key, contrast(tokens[key], tokens["--primary"])] as const,
+      )
+        .filter(([, ratio]) => ratio < 3)
+        .map(([key, ratio]) => `${key} ${ratio.toFixed(2)}:1`);
+      expect([name, failures]).toEqual([name, []]);
+    });
+
+    test("the ring stays visible on a control the same state has tinted", () => {
+      // A focused control wears --primary-soft AND the ring, so the ring's real
+      // background is the tint, not the bare surface.
+      const failures = SURFACES.map((key) => {
+        const tint = composite(tokens["--primary"], alpha, tokens[key]);
+        return [key, contrast(tint, tokens["--primary"])] as const;
+      })
+        .filter(([, ratio]) => ratio < 3)
+        .map(([key, ratio]) => `${key} ${ratio.toFixed(2)}:1`);
+      expect([name, failures]).toEqual([name, []]);
+    });
+
+    test("--primary-soft on its own is nowhere near an indicator", () => {
+      // Recorded as a fact about the token, not a wish. If this ever fails, the tint was
+      // changed and the source rule below can be reconsidered rather than silently kept.
+      for (const key of SURFACES) {
+        const tint = composite(tokens["--primary"], alpha, tokens[key]);
+        expect([name, key, contrast(tint, tokens[key]) < 3]).toEqual([name, key, true]);
+      }
+    });
+  });
+
+  /** Every `selector { … }` rule in a file's stylesheet, comments removed. */
+  function rules(rel: string): { selector: string; body: string }[] {
+    const text = readFileSync(join(SRC, rel), "utf8");
+    const style = rel.endsWith(".css")
+      ? text
+      : (text.match(/<style[^>]*>([\s\S]*?)<\/style>/g) ?? []).join("\n");
+    const bare = style.replace(/\/\*[\s\S]*?\*\//g, "");
+    return [...bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
+      selector: match[1].trim(),
+      body: match[2],
+    }));
+  }
+
+  test("the rule reader finds the shared ring, so a passing run means something", () => {
+    const shared = rules("app.css").filter((rule) => rule.selector.includes(":focus-visible"));
+    expect(shared).toHaveLength(1);
+    expect(shared[0].body).toContain("var(--focus-ring)");
+  });
+
+  /**
+   * True when a block that says `outline: none` still leaves something to see.
+   *
+   * A replacement has to be something a reader can see: the shared ring, or a
+   * component's own box-shadow declared in the same block. `box-shadow: none` is not
+   * one — it cancels the shared ring too, so a block holding both `none`s draws no
+   * indicator at all.
+   */
+  function drawsSomethingInstead(body: string): boolean {
+    return /box-shadow:(?!\s*none\b)/.test(body);
+  }
+
+  test("a block that cancels both the outline and the ring is not a replacement", () => {
+    // The known-bad input this rule exists to reject. Without it the rule below passed
+    // `outline: none; box-shadow: none;` — verified 2026-09-08 by planting exactly that
+    // on `$lib/travel/PlaceField.svelte`'s `button:focus-visible` and watching it go green.
+    expect(drawsSomethingInstead("outline: none; box-shadow: none;")).toBe(false);
+    expect(drawsSomethingInstead("outline: none;")).toBe(false);
+    expect(drawsSomethingInstead("outline: none; box-shadow: var(--focus-ring);")).toBe(true);
+    expect(drawsSomethingInstead("outline: none; box-shadow: 0 0 0 2px var(--primary);")).toBe(true);
+  });
+
+  test("no :focus-visible rule removes the outline without putting one back", () => {
+    const offenders: string[] = [];
+    for (const rel of styleSources()) {
+      for (const { selector, body } of rules(rel)) {
+        if (!selector.includes(":focus-visible")) continue;
+        if (!/outline:\s*none/.test(body)) continue;
+        if (drawsSomethingInstead(body)) continue;
+        offenders.push(`${rel}: ${selector.replace(/\s+/g, " ")}`);
+      }
+    }
+    expect(offenders.sort()).toEqual([]);
   });
 });

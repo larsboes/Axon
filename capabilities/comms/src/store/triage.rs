@@ -1221,7 +1221,7 @@ impl Store {
         let mut conn = self.conn()?;
         // No `FOR UPDATE`: SQLite has no row locks and needs none here. The
         // transaction is the lock, because there is exactly one writer.
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let Some(source_status) = transaction
             .query_row(
                 &format!(
@@ -1293,7 +1293,7 @@ impl Store {
     /// be at the requested location. Replaying a completed job is harmless.
     pub fn complete_gmail_action(&self, job_id: i64) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let Some((id, action, state)) = transaction
             .query_row(
                 &format!(
@@ -1382,7 +1382,7 @@ impl Store {
     ) -> Result<String, Box<dyn std::error::Error>> {
         let bounded_error = error.chars().take(240).collect::<String>();
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         // `LEAST(attempts + 1, 5)` becomes SQLite's two-argument `MIN`, and the
         // whole `now() + interval '1 minute' * n` becomes one `now_offset` with a
         // computed modifier -- so the deadline lands in the canonical format the
@@ -1433,7 +1433,7 @@ impl Store {
         id: &str,
     ) -> Result<GmailActionJob, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let Some(job) = transaction
             .query_row(
                 &format!(
@@ -1490,7 +1490,7 @@ impl Store {
         id: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let canceled = transaction
             .query_row(
                 &format!(
@@ -1620,7 +1620,7 @@ impl Store {
     /// longer apply it. A Trash retention deadline, if present, remains active.
     pub fn observe_gmail_missing(&self, id: &str) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         transaction.execute(
             &format!(
                 "UPDATE {}_gmail_action_jobs SET
@@ -1650,7 +1650,7 @@ impl Store {
     /// own Trash retention; this cleanup is strictly Axon's local copy.
     pub fn purge_expired_trashed(&self) -> Result<u64, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         transaction.execute(
             &format!(
                 "DELETE FROM {prefix}_content_cloud_jobs
@@ -1778,7 +1778,7 @@ impl Store {
         matches: &[RelevanceMatch],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         transaction.execute(
             &format!(
                 "DELETE FROM {}_triage_relevance WHERE triage_id = ?1",
@@ -2020,7 +2020,7 @@ impl Store {
         enforce_tier: bool,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let tier = provenance::ranking_tier(&evaluation.mode);
         let gate = if enforce_tier {
             format!(
