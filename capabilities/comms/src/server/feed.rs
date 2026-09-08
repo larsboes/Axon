@@ -1272,6 +1272,15 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
 /// Database-backed; `db_tests` is the one module name CI's test selector splits
 /// on (CONTRIBUTING.md, "Validate the changed boundary"). Each test opens a
 /// temp SQLite file of its own — never the deployment's.
+///
+/// WHAT THESE TESTS DO NOT COVER. `run_page` drives `PassCursor` and the real
+/// store; it does not drive `relevance_refresh_handler`, which reads its
+/// database path from `Config::load()` and so cannot be pointed at a temp file
+/// from here. They gate the paging RULES, not the handler's wiring to them.
+/// Measured 2026-09-08 by the verifier: replacing the handler's
+/// `cursor.page_offset(requested_offset, ..)` with the original
+/// `requested_offset.unwrap_or(0)` — the exact defect this module was opened
+/// for — leaves all four green. Whoever moves that line has no gate here.
 #[cfg(test)]
 mod db_tests {
     use super::*;
