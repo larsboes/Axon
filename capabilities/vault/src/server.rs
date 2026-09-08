@@ -254,8 +254,21 @@ async fn main() {
         .route("/api/tasks", get(list_tasks))
         .route("/api/people", get(list_people))
         // Permissive CORS, matching every other capability the dashboard reads
-        // directly. This server serves no control surface and no secret — it
-        // serves task titles a human wrote — and the bind is loopback.
+        // directly. This server serves no control surface and no secret, and
+        // the bind is loopback.
+        //
+        // It stopped serving only task titles on 2026-09-08. `/api/people`
+        // answers with 89 real people's names and the dates they were last
+        // named in the Journal — the same names `names.rs` exists to redact
+        // before anything leaves this machine. Loopback is not what holds that
+        // in: `InboundAuth::refuse_without_token` (libs/axon-server/src/auth.rs)
+        // states the rule, that a page open in the operator's own browser is
+        // already inside the loopback boundary. What holds it in is the token
+        // `axon_server::serve_local` resolves through
+        // `InboundAuth::from_deployment()`, and a deployment that declares none
+        // leaves this route readable by any origin. Whether this server should
+        // refuse without a token is an operator ruling and not a comment's to
+        // make, so the comment stops at saying what is true.
         .layer(CorsLayer::permissive())
         .with_state(state);
     axon_server::serve_local("vault-server", port, app).await;

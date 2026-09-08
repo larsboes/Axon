@@ -156,7 +156,14 @@ fn folder_refs(text: &str) -> Vec<(String, bool)> {
 /// could fail to have, which is the only thing this count is for. `note.*` is the third
 /// namespace and the opposite case — it is Obsidian's explicit spelling of a frontmatter key,
 /// so `note.color` is the key `color` and the prefix comes off. `Map.base` is the only Base in
-/// this vault that spells it out, and dropping those two would have hidden two empty columns.
+/// this vault that spells it out.
+///
+/// What that costs today is smaller than it first read, and the smaller number is the honest
+/// one: both of `Map.base`'s `note.` keys are carried — `color` by 11 of the 111 notes in its
+/// scope, `icon` by 12 — so dropping them with `file.` and `formula.` would have hidden two
+/// columns that work, not two empty ones. `declared columns empty` is 106 either way, measured
+/// both ways on the operator's vault 2026-09-08. The rule earns its place because the next
+/// `note.` key a Base declares has no reason to be carried, not because it moved that total.
 fn declared_fields(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut inside = false;
