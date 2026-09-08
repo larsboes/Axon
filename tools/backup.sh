@@ -693,7 +693,32 @@ if [ "$TARGET_KIND" = "local" ]; then
       ;;
   esac
 
+  # An evicted archive is one that a listing still shows and the disk no longer holds.
+  #
+  # This looked only for `.<name>.icloud` placeholder files, and on this machine it had never
+  # found one and never could: CloudDocs stopped writing that form when it moved onto the File
+  # Provider. What it writes now is the SAME name with the kernel's SF_DATALESS flag set and
+  # zero blocks allocated — `ls -lO` prints `dataless`, `find -flags +dataless` lists it, and a
+  # search for `.*.icloud` cannot see it at all. Measured against the live target 2026-09-08:
+  # three of four archives (finance, store, knowledge-base) were dataless and this check
+  # answered 0, which is the same silent-green shape D10 is about.
+  #
+  # Both forms are counted. The `.icloud` one is still what a legacy provider and a
+  # non-CloudDocs one write, so removing it would trade one blind spot for another.
+  #
+  # `-flags` is BSD find only, and eviction is a macOS question, so the dataless half runs on
+  # Darwin and its ABSENCE there is reported rather than counted as zero. A detector that
+  # cannot see the thing it detects must not answer "none".
   EVICTED="$(find "$LOCAL_DIR" -name ".*.icloud" 2>/dev/null | wc -l | tr -d " ")"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if find "$LOCAL_DIR" -maxdepth 0 -flags +dataless >/dev/null 2>&1; then
+      DATALESS="$(find "$LOCAL_DIR" -type f -flags +dataless 2>/dev/null | wc -l | tr -d " ")"
+      EVICTED=$((EVICTED + DATALESS))
+    else
+      echo "  WARNING: this find does not understand -flags, so an evicted archive cannot be seen." >&2
+      echo "  Check the destination by hand: ls -lO $LOCAL_DIR" >&2
+    fi
+  fi
   if [ "$EVICTED" != "0" ]; then
     echo "  WARNING: $EVICTED archive(s) at this destination are evicted placeholders, not files." >&2
     echo "  A restore from them needs network and a full download. In Finder, right-click" >&2

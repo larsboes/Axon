@@ -16,4 +16,9 @@ reason = "Unmaintained paste proc-macro, build-time only, via parquet 59.1.0 <- 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0192"
 ignoreUntil = 2026-11-01
-reason = "Unmaintained ttf-parser, non-optional and runtime-reachable when a user-supplied rail-ticket PDF is parsed, via lopdf 0.42.0 <- pdf-extract 0.12.0 <- transit (scouting inherits the path). No known vulnerability or fixed version. This is the higher-priority of the two because it handles complex untrusted input: if a maintained pdf-extract alternative appears, take it, and keep transit's existing PDF fixtures green across the swap."
+# "user-supplied" was the wrong half of the sentence, and it is corrected below rather than
+# softened. Transit fetches no PDF: `src/hafas.rs` names three JSON endpoints and nothing else
+# reaches the network, so nothing here arrives by a URL. The bytes arrive two ways, and only one
+# of them is the operator's own file. The other is a request body on a port that, until
+# 2026-09-08, answered any web page the operator had open.
+reason = "Unmaintained ttf-parser, non-optional and runtime-reachable, via lopdf 0.42.0 <- pdf-extract 0.12.0 <- transit (`cargo tree -p transit -i ttf-parser`, 2026-09-08). Two callers reach the parser: `transit import <file>`, where the file is the operator's own, and the raw body of `POST /api/tickets/extract`, which is whatever the caller sent. The second is why this is untrusted input, and it is more exposed than a file on disk: that route sat under CorsLayer::permissive() with no origin refusal, and it takes `Bytes` rather than a typed body, so a cross-origin simple POST reached the PDF parser with no preflight to stop it. `refuse_foreign_origins` now bounds its callers to the dashboard, the tailnet and non-browser clients. Scouting links transit for adapters/transit_fare.rs and calls no extractor, so it inherits the crate and not the reach. No known vulnerability, no CVSS, no affected function and no fixed version — this is an unmaintained-crate advisory, so the exception stands to its date: if a maintained pdf-extract alternative appears, take it, and keep transit's existing PDF fixtures green across the swap."

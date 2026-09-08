@@ -1,0 +1,161 @@
+#!/bin/bash
+# tools/cargo-hermetic — cargo, on a machine that is also the deployment.
+#
+# This is the one CI gate this host cannot reproduce by running CI's command. On a runner,
+# `cargo test --workspace --locked` is hermetic by construction: the checkout is disposable,
+# there is no overlay, and nothing else is using the disk. Here, three things are true at
+# once, and each of them has already caused a real loss (PRD §13.1, "Six silent failures"):
+#
+#   1. target/release/<bin> IS the file a running service is executing. On Apple Silicon a
+#      process dies when its own binary is replaced, so a build that writes there kills the
+#      operator's deployment. That is the fourth silent failure, and it happened at 22:24 on
+#      2026-09-03 to a worktree that thought it was isolated.
+#
+#   2. Redirecting the database is NOT isolation. `AXON_DB_PATH` moves the SQLite file and
+#      nothing else; trips, finance, interior and comms each resolve an Obsidian projection
+#      root from the OVERLAY, which that variable does not touch. A trips live check with the
+#      database redirected re-exported thirteen real vault notes and created a fourteenth.
+#      That is the third silent failure, and it is why every projection root is named below
+#      rather than left to a default.
+#
+#   3. An exported AXON_* environment leaks the operator's real overlay into anything that
+#      builds a scratch root. tools/lib/test-support.sh already owns that problem for the
+#      shell suites; this calls the same function rather than writing a second list.
+#
+# So: clear the environment, point every root that can write outside the repository at a
+# throwaway directory, force the target dir somewhere the supervisor is not reading, and
+# refuse --release outright. Then exec cargo, unchanged.
+#
+#   tools/cargo-hermetic test --workspace --locked
+#   tools/cargo-hermetic clippy --workspace --all-targets --all-features --locked -- -D warnings
+#   tools/cargo-hermetic --print-env      # the environment it would use, running nothing
+#
+# The target directory is reused between runs on purpose — a fresh one means a cold build of
+# the whole workspace every time, which is how a safe tool becomes a tool nobody runs. Export
+# CARGO_TARGET_DIR to choose it; anything inside a checkout of this repository is refused.
+#
+# bash 3.2-safe (README.md#portable-shell).
+set -euo pipefail
+
+_here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+REPO="$(cd "$_here/.." && pwd -P)"
+
+# The main checkout, which is where the supervisor reads binaries from even when this runs
+# inside a worktree. `git rev-parse --git-common-dir` points at the shared .git of the whole
+# worktree set, so its parent is that checkout — derived rather than written down, because a
+# path written down here would be one machine's fact in public code.
+MAIN_CHECKOUT=""
+if _common="$(git -C "$REPO" rev-parse --git-common-dir 2>/dev/null)"; then
+  case "$_common" in
+    /*) ;;
+    *) _common="$REPO/$_common" ;;
+  esac
+  MAIN_CHECKOUT="$(cd "$_common/.." 2>/dev/null && pwd -P || true)"
+fi
+
+# shellcheck source=lib/test-support.sh
+. "$_here/lib/test-support.sh"
+
+# --- what this refuses -----------------------------------------------------
+
+die() { echo "cargo-hermetic: $1" >&2; exit 2; }
+
+# `--release` is refused rather than redirected. Redirecting it would still produce a
+# release build under a scratch path, which is fine, but the reason the ban exists is that
+# the operator's supervisor watches target/release and a session that types --release is a
+# session that has stopped thinking about that. A refusal with the reason is the point.
+_release_refusal="a release build writes target/release/<bin>, which on this host is the file a live service is executing; on Apple Silicon replacing it kills the process. Build debug, or stop the service deliberately first."
+_prev=""
+for arg in "$@"; do
+  case "$arg" in
+    --release|-r|--profile=release)
+      die "$arg is refused: $_release_refusal"
+      ;;
+  esac
+  if [ "$_prev" = "--profile" ] && [ "$arg" = "release" ]; then
+    die "--profile release is refused: $_release_refusal"
+  fi
+  _prev="$arg"
+done
+
+# Canonicalise a path that may not exist yet, WITHOUT creating it: walk up to the deepest
+# existing ancestor, resolve that, and re-attach the tail. `mkdir -p` first would create the
+# very directory inside the repository that the next check is about to refuse.
+_canonical() {
+  local path="$1" tail=""
+  case "$path" in
+    /*) ;;
+    *) path="$PWD/$path" ;;
+  esac
+  while [ ! -d "$path" ] && [ "$path" != "/" ]; do
+    tail="$(basename "$path")${tail:+/$tail}"
+    path="$(dirname "$path")"
+  done
+  path="$(cd "$path" && pwd -P)"
+  printf '%s' "${path%/}${tail:+/$tail}"
+}
+
+_inside() {  # _inside <path> <root> -> exit 0 when path is root or below it
+  [ -n "$2" ] || return 1
+  case "$1" in
+    "$2"|"$2"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+TARGET="${CARGO_TARGET_DIR:-}"
+[ -n "$TARGET" ] || TARGET="${TMPDIR:-/tmp}/axon-cargo-hermetic/target"
+TARGET="$(_canonical "$TARGET")"
+for forbidden in "$REPO" "$MAIN_CHECKOUT"; do
+  if _inside "$TARGET" "$forbidden"; then
+    die "CARGO_TARGET_DIR is $TARGET, inside the checkout at $forbidden. That directory holds the binaries the supervisor runs. Point it at scratch, or unset it and take the default."
+  fi
+done
+
+# --- the sandbox -----------------------------------------------------------
+
+# Cleared first, then set: tools/lib/test-support.sh#isolate_axon_env documents this exact
+# order for a caller that wants its sandbox named explicitly.
+isolate_axon_env
+
+SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/axon-cargo-hermetic.XXXXXX")"
+trap 'rm -rf "$SANDBOX"' EXIT
+mkdir -p "$SANDBOX/overlay/config" "$SANDBOX/overlay/data/axon" "$SANDBOX/vault" "$SANDBOX/decisions"
+
+# An empty JSON object, not an absent file: comms resolves $AXON_COMMS_CONFIG first and only
+# then the overlay and then a gitignored dev config next to its source. Pointing it at a file
+# that exists and configures nothing is what closes all three paths at once — an unset
+# variable would fall through to whichever of the other two happens to be on this disk.
+echo '{}' > "$SANDBOX/comms.json"
+
+export CARGO_TARGET_DIR="$TARGET"
+export AXON_PERSONAL_ROOT="$SANDBOX/overlay"
+export AXON_OVERLAY_ROOT="$SANDBOX/overlay"
+export AXON_DB_PATH="$SANDBOX/overlay/data/axon/axon.db"
+export AXON_COMMS_CONFIG="$SANDBOX/comms.json"
+# The projection roots. Each of these is a directory a capability WRITES markdown into, and
+# each resolves independently of AXON_DB_PATH — which is the whole lesson of the third
+# silent failure. Named one by one because a capability that grows a projection has to be
+# added here deliberately; a wildcard would silently cover nothing.
+export AXON_TRIPS_OBSIDIAN_ROOT="$SANDBOX/vault"
+export AXON_FINANCE_OBSIDIAN_ROOT="$SANDBOX/vault"
+export AXON_FINANCE_DECISIONS_ROOT="$SANDBOX/decisions"
+export AXON_INTERIOR_OBSIDIAN_ROOT="$SANDBOX/vault"
+
+if [ "${1:-}" = "--print-env" ]; then
+  # The sandbox is torn down on exit, so these paths are what the run WOULD use, not
+  # somewhere to go and look afterwards. Printed in a stable order for the test.
+  for var in CARGO_TARGET_DIR AXON_PERSONAL_ROOT AXON_OVERLAY_ROOT AXON_DB_PATH \
+             AXON_COMMS_CONFIG AXON_TRIPS_OBSIDIAN_ROOT AXON_FINANCE_OBSIDIAN_ROOT \
+             AXON_FINANCE_DECISIONS_ROOT AXON_INTERIOR_OBSIDIAN_ROOT; do
+    eval "printf '%s=%s\n' \"\$var\" \"\$$var\""
+  done
+  exit 0
+fi
+
+[ "$#" -gt 0 ] || die "needs a cargo subcommand, e.g. 'test --workspace --locked'. Run 'axon help cargo'."
+
+echo "cargo-hermetic: target $CARGO_TARGET_DIR, overlay $AXON_PERSONAL_ROOT" >&2
+# Not exec: the trap has to run so the sandbox goes away, and the exit status has to be
+# cargo's own.
+cargo "$@"

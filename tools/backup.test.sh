@@ -515,8 +515,104 @@ reset_run
 expect_fail_with "a missing declared file is refused" "declared backup path is missing" \
   "$BACKUP" --stream paperwork
 
+# --- a local destination, and the detector that watches it for eviction ---------------------
+# `kind = "local"` is the destination this deployment actually ships to — an iCloud Drive folder
+# — and the whole branch was untested here, including the check that is supposed to notice when
+# the cloud takes an archive back. That check looked for `.<name>.icloud` placeholders and
+# answered 0 against a target holding three evicted archives (measured 2026-09-08): CloudDocs
+# marks an evicted file with SF_DATALESS under its own name and writes no placeholder.
+mkdir -p "$FIXTURE/capabilities/ledger" "$OVERLAY/data/ledger"
+printf 'one line of ledger\n' > "$OVERLAY/data/ledger/book.txt"
+LOCAL_DEST="$SCRATCH/localdest"
+mkdir -p "$LOCAL_DEST"
+cat >> "$OVERLAY/config/systems.local.toml" <<SYSTEMS
+
+[local-target]
+kind = "local"
+path = "$LOCAL_DEST"
+SYSTEMS
+cat > "$FIXTURE/capabilities/ledger/service.toml" <<'MANIFEST'
+name = "ledger"
+backup_paths = ["data/ledger"]
+backup_target = "local-target"
+MANIFEST
+cat > "$OVERLAY/config/machine.toml" <<'MACHINE'
+os = "linux"
+container_runtime = "docker"
+capabilities = ["vaultwarden", "store", "paperwork", "ledger"]
+MACHINE
+
+reset_run
+export MOCK_TIMESTAMP=20260101T000000Z
+local_log="$SCRATCH/ledger-clean.log"
+"$BACKUP" ledger > "$local_log" 2>&1 || fail "a local destination should accept a backup"
+[ -f "$LOCAL_DEST/ledger/ledger-20260101T000000Z.tar.gz" ] \
+  || fail "the archive did not land at the local destination under its final name"
+grep -q 'evicted placeholders' "$local_log" \
+  && fail "a destination holding only real files reported eviction"
+
+# A legacy provider's placeholder — the one form the old check could see. Kept, so the fix does
+# not trade one blind spot for another.
+: > "$LOCAL_DEST/ledger/.ledger-20251231T235959Z.tar.gz.icloud"
+reset_run
+export MOCK_TIMESTAMP=20260101T000100Z
+local_log="$SCRATCH/ledger-stub.log"
+"$BACKUP" ledger > "$local_log" 2>&1 || fail "a local destination should accept a backup"
+grep -q '1 archive(s) at this destination are evicted placeholders' "$local_log" \
+  || fail "the .icloud placeholder form stopped being detected"
+rm -f "$LOCAL_DEST/ledger/.ledger-20251231T235959Z.tar.gz.icloud"
+
+# The form that actually occurs, and the reason this section exists. SF_DATALESS is set by the
+# file provider and cannot be planted: `chflags dataless <file>` exits 0 and sets nothing
+# (measured 2026-09-08 on macOS 26). So `find` is stood in for, with `uname` forced to Darwin so
+# both assertions below run identically on a Linux runner and a Mac. The mocks live in their own
+# directory and are prepended for one invocation only — backup.sh calls `find` and `uname`
+# nowhere else, and a mock on the shared PATH would follow every earlier case in this file.
+BLIND_BIN="$SCRATCH/blind-bin"
+mkdir -p "$BLIND_BIN"
+cat > "$BLIND_BIN/uname" <<'UNAME'
+#!/bin/bash
+[ "${1:-}" = "-s" ] && { echo Darwin; exit 0; }
+exec /usr/bin/uname "$@"
+UNAME
+# Answers the support probe (-maxdepth 0) yes and the listing with one dataless archive.
+cat > "$BLIND_BIN/find" <<'FINDSEEING'
+#!/bin/bash
+case " $* " in
+  *" -maxdepth 0 "*) exit 0 ;;
+  *" -flags "*) echo "$2/ledger/ledger-19700101T000000Z.tar.gz"; exit 0 ;;
+esac
+exec /usr/bin/find "$@"
+FINDSEEING
+# A find with no -flags primary at all: the detector must SAY it cannot see, never count zero.
+cat > "$BLIND_BIN/find.blind" <<'FINDBLIND'
+#!/bin/bash
+for a in "$@"; do
+  [ "$a" = "-flags" ] && { echo "find: -flags: unknown primary or operator" >&2; exit 1; }
+done
+exec /usr/bin/find "$@"
+FINDBLIND
+chmod +x "$BLIND_BIN/uname" "$BLIND_BIN/find" "$BLIND_BIN/find.blind"
+
+reset_run
+export MOCK_TIMESTAMP=20260101T000200Z
+local_log="$SCRATCH/ledger-dataless.log"
+PATH="$BLIND_BIN:$PATH" "$BACKUP" ledger > "$local_log" 2>&1 \
+  || fail "a local destination should accept a backup"
+grep -q '1 archive(s) at this destination are evicted placeholders' "$local_log" \
+  || fail "a dataless archive at the destination was not counted as evicted"
+
+mv "$BLIND_BIN/find.blind" "$BLIND_BIN/find"
+reset_run
+export MOCK_TIMESTAMP=20260101T000300Z
+local_log="$SCRATCH/ledger-blind.log"
+PATH="$BLIND_BIN:$PATH" "$BACKUP" ledger > "$local_log" 2>&1 \
+  || fail "a local destination should accept a backup"
+grep -q 'does not understand -flags' "$local_log" \
+  || fail "a find that cannot see dataless files reported nothing instead of saying so"
+
 if [ "$fails" -gt 0 ]; then
   echo "backup tests: $fails failure(s)"
   exit 1
 fi
-echo "backup tests: stream, coherent hold, live copy, file paths, no-prune, retention, and resume failures passed"
+echo "backup tests: stream, coherent hold, live copy, file paths, no-prune, retention, resume failures, and local-destination eviction passed"

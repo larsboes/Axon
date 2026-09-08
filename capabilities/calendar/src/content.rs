@@ -127,7 +127,12 @@ fn iso_utc(unix_seconds: &str) -> String {
 /// The operator's own schedule is personal by construction — a public concert
 /// still says the flat is empty that evening. Stated as a rationale rather than
 /// a bare enum so the reader can show *why* it is treated this way.
-fn classification() -> DataClass {
+///
+/// `pub` since 2026-09-08 (B50): the entry LIST states the same class, and it
+/// states it by calling this rather than by repeating the literal. One
+/// declaration, two readers — a second `"c1"` in `server.rs` would be a second
+/// place deciding what a calendar entry is worth, which is what §6.1 forbids.
+pub fn classification() -> DataClass {
     DataClass::personal_source_default(
         "Where the operator is and when is personal, whatever the event itself is.",
     )

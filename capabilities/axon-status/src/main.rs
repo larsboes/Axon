@@ -104,6 +104,47 @@ async fn main() {
         shell.route_count()
     );
 
+    // This process can start and stop the machine's capabilities, so it answers to
+    // this machine only (axon_server binds loopback).
+    axon_server::serve_local("axon-status", port, build_router(shell)).await;
+}
+
+/// This capability's name, for the origin guard's env var
+/// (`AXON_AXON_STATUS_ALLOWED_ORIGIN_HOSTS` -- the doubling is what the derivation
+/// produces, and `libs/axon-server/src/origin.rs` asserts exactly this string).
+const CAPABILITY: &str = "axon-status";
+
+/// The wired router, so a test can drive the real thing rather than a handler.
+///
+/// ## What the missing CORS layer did not do
+///
+/// The comment that used to sit above `serve_local` said this surface carries no
+/// CORS layer, unlike the data-serving siblings, because a permissive header
+/// would let any website's JS drive start/stop from the operator's own browser.
+/// The reasoning is right about CORS and wrong about the threat, and the
+/// difference is the whole of this change.
+///
+/// `start_handler`, `stop_handler` and `backup_handler` each take `Path(name)`
+/// and nothing else. A POST with no custom header and no JSON content type is a
+/// CORS *simple* request: the browser sends it without a preflight and withholds
+/// only the response. Withholding the response from a page that wanted to stop
+/// comms is no defence at all -- comms is already stopped. Absent CORS headers
+/// stop a cross-origin READ; they have never stopped a cross-origin WRITE.
+///
+/// So the guard refuses the request. It is the same one places, trips and the six
+/// capabilities of the B48 fan-out carry, which is the point: "who may talk to
+/// this capability from a browser" is one predicate in `libs/axon-server`, not a
+/// per-capability opinion.
+///
+/// ## Where the layer sits
+///
+/// On the inner router, below the fallback, so it covers the proxy too. axum
+/// applies `Router::layer` to every route AND to the fallback registered before
+/// it (axum 0.7 `src/docs/routing/layer.md`), and `proxy::fallback` is how every
+/// capability behind this shell is reached from a browser -- an unguarded
+/// fallback would leave `/finance/api/dashboard` open on this port after B48
+/// closed it on finance's own.
+fn build_router(shell: proxy::Proxy) -> Router {
     let app = Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health_handler))
@@ -133,6 +174,11 @@ async fn main() {
         // `proxy_extra = ["/api"]`, and that prefix evaluated before routing would swallow this
         // surface's own `/api/axon-status/*`.
         .fallback(proxy::fallback)
+        // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the origin guard.
+        .layer(axum::middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
         .with_state(shell);
 
     // The self-prefix rewrite, wrapped AROUND the router above rather than layered onto it.
@@ -146,16 +192,12 @@ async fn main() {
     // not predicted, and it is the same swallowing the module docs warn about arriving by a
     // different door.
     //
+    // The origin guard above is layered rather than wrapped for the opposite reason: it reads
+    // one request header and never the path, so it does not care which router already chose.
+    //
     // An empty outer router sends everything to `fallback_service`, so the rewrite runs before
     // any routing at all and the inner router then decides on the path the client meant.
-    let app = Router::new()
-        .fallback_service(axum::middleware::from_fn(proxy::strip_self_prefix).layer(app));
-
-    // This process can start and stop the machine's capabilities, so it answers to
-    // this machine only (axon_server binds loopback) -- and deliberately carries no
-    // CORS layer, unlike the data-serving siblings: a permissive header here would
-    // let any website's JS drive start/stop from the operator's own browser.
-    axon_server::serve_local("axon-status", port, app).await;
+    Router::new().fallback_service(axum::middleware::from_fn(proxy::strip_self_prefix).layer(app))
 }
 
 #[cfg(test)]
@@ -494,6 +536,39 @@ mod backup_tests {
             );
         }
     }
+
+    /// One panic under the run ledger's guard used to end the backup surface for
+    /// the life of the process: `backup_runs().lock().unwrap()` on a poisoned
+    /// lock is a second panic, in `backups_handler` and in both writers.
+    ///
+    /// This poisons the real process-wide ledger deliberately. Every other test
+    /// in this binary that touches it keeps passing afterwards, which is the
+    /// assertion underneath the explicit ones.
+    #[test]
+    fn a_poisoned_run_ledger_is_still_readable_and_writable() {
+        let poisoning = std::thread::spawn(|| {
+            let _guard = backup_runs();
+            panic!("something panicked while holding the run ledger");
+        })
+        .join();
+        assert!(poisoning.is_err(), "the helper thread must actually panic");
+
+        backup_runs().insert(
+            "poison-probe".into(),
+            BackupRun {
+                state: "running",
+                started_at: 1,
+                finished_at: None,
+                detail: String::new(),
+            },
+        );
+        assert_eq!(
+            backup_runs().get("poison-probe").map(|run| run.state),
+            Some("running"),
+            "a recovered lock must still answer the read backups_handler does"
+        );
+        backup_runs().remove("poison-probe");
+    }
 }
 
 #[cfg(test)]
@@ -505,5 +580,99 @@ mod route_manifest_tests {
     fn the_manifest_covers_every_served_route() {
         let missing = route_manifest::undeclared_routes(include_str!("main.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
+}
+
+/// The router-level proof that no predicate test can give: the guard has to be
+/// wired below the routes AND below the fallback, and a `Router` that forgot
+/// either still passes every test in `libs/axon-server/src/origin.rs`.
+///
+/// The capability name in every POST here is deliberately one this machine does
+/// not have. `lifecycle` looks the name up in the registry and answers 404
+/// before it runs `tools/service-runner.sh`, so removing the guard to watch
+/// these tests fail cannot start or stop anything. A test of a control surface
+/// has to be safe to run with the control surface unlocked, or it is a test
+/// nobody will run twice.
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// No services, so the proxy table is empty and the fallback serves pages.
+    /// The guard runs before either, which is what these tests are about.
+    fn router() -> Router {
+        build_router(proxy::Proxy::new(&[], "8082", "dashboard/dist".into()))
+    }
+
+    async fn answer(method: &str, path: &str, origin: Option<&str>) -> StatusCode {
+        let mut request = Request::builder().method(method).uri(path);
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        router()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers")
+            .status()
+    }
+
+    /// Each of these three takes `Path(name)` and no body, so a hostile page
+    /// can send it as a CORS *simple* request: no preflight, and the absence of
+    /// an `Access-Control-Allow-Origin` header withholds only the reply. The
+    /// capability is stopped either way. That is why the request is refused.
+    #[tokio::test]
+    async fn a_foreign_origin_cannot_start_stop_or_back_up_a_capability() {
+        for path in [
+            "/api/axon-status/capabilities/not-a-capability/start",
+            "/api/axon-status/capabilities/not-a-capability/stop",
+            "/api/axon-status/capabilities/not-a-capability/backup",
+        ] {
+            assert_eq!(
+                answer("POST", path, Some("https://evil.example")).await,
+                StatusCode::FORBIDDEN,
+                "{path} answered a foreign origin — it is registered below the guard layer"
+            );
+        }
+    }
+
+    /// The read side, and the proxy with it. `/finance/api/dashboard` goes to
+    /// the FALLBACK rather than to a route, so it is the case a guard layered
+    /// above the fallback would miss — and it is every capability the B48 fan-out
+    /// just closed, reachable again through this port if it were missed.
+    #[tokio::test]
+    async fn a_foreign_origin_reaches_neither_the_status_reads_nor_the_proxy() {
+        for path in [
+            "/api/axon-status/capabilities",
+            "/api/axon-status/self",
+            "/api/axon-status/repos",
+            "/finance/api/dashboard",
+            "/axon-status/api/axon-status/capabilities",
+        ] {
+            assert_eq!(
+                answer("GET", path, Some("https://evil.example")).await,
+                StatusCode::FORBIDDEN,
+                "{path} answered a foreign origin"
+            );
+        }
+    }
+
+    /// The other half. Without it this file would pass just as well against a
+    /// server that refuses everyone. 200 from `/routes` is a handler answering.
+    #[tokio::test]
+    async fn the_dashboard_and_a_non_browser_caller_still_reach_the_handler() {
+        for origin in [
+            None,
+            Some("http://localhost:47117"),
+            Some("http://127.0.0.1:8082"),
+            Some("https://mac.tailnet.ts.net"),
+        ] {
+            assert_eq!(
+                answer("GET", "/routes", origin).await,
+                StatusCode::OK,
+                "the guard refused a caller it must admit: {origin:?}"
+            );
+        }
     }
 }

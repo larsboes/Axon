@@ -129,9 +129,29 @@ impl Jobs {
     }
 }
 
-pub fn jobs() -> &'static Mutex<Jobs> {
+/// The job map, locked, with a poisoned lock recovered rather than propagated.
+///
+/// It hands back the guard rather than the `Mutex`, because four call sites each wrote
+/// `.lock().expect("job map")` and a poisoning decision repeated four times is one the fifth
+/// call site will get wrong. This is now the only place that locks it.
+///
+/// **Recover, not fatal.** The argument is already in `start` below, which wraps `work` in
+/// `catch_unwind` precisely so that a panicking search still writes its outcome: a job stuck
+/// in `Running` holds a slot `open` will not evict, and ten of them answer every later search
+/// 503 until a restart. `expect` on a poisoned lock threw that away by a shorter route — a
+/// panic while any guard was held would make `open`, `finish` and `read` all panic for the
+/// life of the process, so `POST /api/plan-search` and `GET /api/plan-search/:id` both die
+/// and a running search's result becomes unreachable.
+///
+/// Nothing under this lock is a durable invariant: `Jobs` is a `BTreeMap` of numbers to
+/// in-process states, safe Rust cannot leave it half written, and its worst case after a
+/// panic is one entry that says `Running` for a job whose thread is gone — which is exactly
+/// the state a timed-out job already has, and which `open` already knows how to refuse.
+pub fn jobs() -> std::sync::MutexGuard<'static, Jobs> {
     static JOBS: OnceLock<Mutex<Jobs>> = OnceLock::new();
     JOBS.get_or_init(|| Mutex::new(Jobs::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Start a search in the background and hand back its number immediately.
@@ -143,12 +163,8 @@ pub fn start<F>(work: F) -> Result<u64, String>
 where
     F: FnOnce(Instant) -> Result<PlanSearchResult, String> + Send + 'static,
 {
-    let id = jobs().lock().expect("job map").open()?;
-    let started = jobs()
-        .lock()
-        .expect("job map")
-        .started_at(id)
-        .unwrap_or_else(Instant::now);
+    let id = jobs().open()?;
+    let started = jobs().started_at(id).unwrap_or_else(Instant::now);
     tokio::task::spawn_blocking(move || {
         // A panic inside `work` must still finish the entry. `open` refuses to
         // evict a job that is still `Running` — deliberately, because a running
@@ -159,13 +175,13 @@ where
         // outcome is discarded.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(started)))
             .unwrap_or_else(|_| Err(JOB_PANICKED.to_string()));
-        jobs().lock().expect("job map").finish(id, outcome);
+        jobs().finish(id, outcome);
     });
     Ok(id)
 }
 
 pub fn read(id: u64) -> Option<JobState> {
-    jobs().lock().expect("job map").read(id)
+    jobs().read(id)
 }
 
 #[cfg(test)]
@@ -237,5 +253,35 @@ mod tests {
         let mut jobs = Jobs::default();
         assert_eq!(jobs.open().unwrap(), 1);
         assert_eq!(jobs.open().unwrap(), 2);
+    }
+
+    /// The other half of the panic story, and the one `catch_unwind` above cannot
+    /// reach: a panic while the MAP ITSELF is locked.
+    ///
+    /// `start` catches a panic inside `work`, which happens outside the guard, so
+    /// that path never poisons anything. This one does — and until this commit
+    /// `.lock().expect("job map")` turned it into a second panic on every later
+    /// call, so `POST /api/plan-search` and `GET /api/plan-search/:id` were both
+    /// dead for the life of the process after one unlucky unwind.
+    ///
+    /// This poisons the real process-wide map on purpose. Every other test in this
+    /// binary that touches it keeps passing afterwards, which is the assertion
+    /// underneath the explicit ones.
+    #[test]
+    fn a_poisoned_job_map_still_opens_reads_and_finishes() {
+        let poisoning = std::thread::spawn(|| {
+            let _guard = jobs();
+            panic!("something panicked while holding the job map");
+        })
+        .join();
+        assert!(poisoning.is_err(), "the helper thread must actually panic");
+
+        let id = jobs().open().expect("the map still opens a job");
+        assert!(matches!(read(id), Some(JobState::Running { .. })));
+        jobs().finish(id, done());
+        assert!(
+            matches!(read(id), Some(JobState::Failed { .. })),
+            "a recovered lock must still record an outcome"
+        );
     }
 }

@@ -372,13 +372,13 @@
     <table>
       <thead>
         <tr>
-          <th></th>
-          <th>Unit</th>
-          <th>Kind</th>
-          <th class="num">Files</th>
-          <th class="num">Port</th>
-          <th>Runtime dependencies</th>
-          <th class="num">Couplings</th>
+          <th scope="col"></th>
+          <th scope="col">Unit</th>
+          <th scope="col">Kind</th>
+          <th class="num" scope="col">Files</th>
+          <th class="num" scope="col">Port</th>
+          <th scope="col">Runtime dependencies</th>
+          <th class="num" scope="col">Couplings</th>
         </tr>
       </thead>
       <tbody>

@@ -342,7 +342,7 @@
     padding: 0.45rem 0.65rem;
     border-radius: var(--radius-md);
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 600;
   }
 
@@ -380,7 +380,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     color: var(--text-tertiary);
     text-transform: uppercase;
@@ -418,7 +418,7 @@
     border-radius: var(--radius-md);
     background-color: var(--danger-soft);
     color: var(--danger);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .tabs {
@@ -437,7 +437,7 @@
     border-bottom: 2px solid transparent;
     background: none;
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 600;
     letter-spacing: 0.02em;
     color: var(--text-secondary);
@@ -460,7 +460,7 @@
     margin: 0;
     padding: 2rem;
     text-align: center;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--text-tertiary);
   }
 
@@ -495,7 +495,7 @@
     align-items: baseline;
     gap: 0.4rem;
     margin: 0 0 0.5rem;
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
@@ -505,7 +505,7 @@
   }
 
   .dur {
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 500;
     color: var(--text-tertiary);
   }
@@ -514,7 +514,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-secondary);
   }
 
@@ -577,13 +577,13 @@
 
   h2 {
     margin: 0;
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     font-weight: 600;
   }
 
   .sub {
     margin: 0.15rem 0 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
   }
 
@@ -644,19 +644,19 @@
 
   .seg-route {
     margin: 0.3rem 0 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 500;
   }
 
   .seg-meta {
     margin: 0.2rem 0 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--text-tertiary);
   }
 
   .seg-match {
     margin: 0.35rem 0 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--text-tertiary);
   }
 
@@ -668,7 +668,7 @@
 
   .chain-warn {
     margin: 0 0 0.75rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
     color: var(--text-secondary);
   }

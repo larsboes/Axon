@@ -205,7 +205,7 @@
     display: grid;
     place-items: center;
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
   }
 
@@ -252,7 +252,7 @@
     border-radius: var(--radius-sm);
     padding: 0.6rem 0.75rem;
     font-family: var(--font-sans);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
     color: #18181b;
   }

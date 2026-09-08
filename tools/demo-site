@@ -43,6 +43,14 @@ if [ ! -f "$FIXTURES/index.json" ]; then
   exit 1
 fi
 
+# Before the bundle is built, not after: this is the last moment a manifest/recording mismatch
+# is cheap. Past here it is bytes in site/, and past THAT it is a 501 on the published page
+# read by a visitor. Both halves — no path may name a route its capability does not serve, and
+# every declared path must be in the recording being copied, which is the half that catches a
+# fixture set older than the manifest beside it (AXON_DEMO_FIXTURES makes that reachable).
+echo "demo-site: demo.toml against $FIXTURES"
+"$_here/demo-check-paths" --fixtures "$FIXTURES"
+
 rm -rf "$OUT"
 mkdir -p "$OUT"
 

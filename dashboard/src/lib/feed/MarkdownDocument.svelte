@@ -203,7 +203,7 @@
       <div class="table-wrap">
         <table>
           <thead>
-            <tr>{#each block.headers as cell}<th>{@render inline(cell)}</th>{/each}</tr>
+            <tr>{#each block.headers as cell}<th scope="col">{@render inline(cell)}</th>{/each}</tr>
           </thead>
           <tbody>
             {#each block.rows as row}

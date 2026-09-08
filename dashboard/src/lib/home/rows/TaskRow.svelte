@@ -6,7 +6,7 @@
   import { dateLabel, metaParts } from "../format";
   import type { DecisionRowProps } from "../decisions";
 
-  let { row, id, current, tone, href, whyHere }: DecisionRowProps<Task> = $props();
+  let { row, id, current, tone, href, whyHere, dataClass }: DecisionRowProps<Task> = $props();
 
 
 
@@ -29,7 +29,7 @@
   <a class="row-title" {href}>{row.title}</a>
   {#if row.summary}<p class="row-text">{row.summary}</p>{/if}
 
-  {#snippet meta()}<RowMeta {whyHere} candidateStatus="accepted" />{/snippet}
+  {#snippet meta()}<RowMeta {whyHere} {dataClass} candidateStatus="accepted" />{/snippet}
 
   {#snippet actions()}
     <a class="btn btn-soft" {href}>Open note</a>

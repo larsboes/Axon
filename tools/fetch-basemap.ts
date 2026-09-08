@@ -34,7 +34,7 @@
 // dashboard/static/fonts/OFL.txt already sets for vendored type.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const AXON_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -87,8 +87,29 @@ async function getBytes(url: string): Promise<Uint8Array> {
   return new Uint8Array(await (await get(url)).arrayBuffer());
 }
 
+/**
+ * Where a vendored asset goes, refusing any path that leaves `OUT_DIR`.
+ *
+ * Not every `relativePath` here is a literal. The glyph writes name a fontstack read
+ * out of the upstream style JSON (`text-font`, whatever that document says), so a
+ * fontstack called `../../../../src/routes` would have put a downloaded PBF into the
+ * dashboard's source tree. `join` resolves the `..` and says nothing. CodeQL
+ * js/http-to-file-access, alert 69: the file write and the path both come from the
+ * network, and the path is the half that matters.
+ *
+ * Exported so the refusal can be tested. The containment test is on the RESOLVED
+ * path, not on the string, because `fonts/x/../../..` has no `..` prefix to look for.
+ */
+export function vendoredTarget(relativePath: string): string {
+  const target = resolve(OUT_DIR, relativePath);
+  if (target !== OUT_DIR && !target.startsWith(OUT_DIR + sep)) {
+    throw new Error(`refusing to write outside the vendored basemap directory: ${relativePath}`);
+  }
+  return target;
+}
+
 function write(relativePath: string, bytes: Uint8Array | string): void {
-  const target = join(OUT_DIR, relativePath);
+  const target = vendoredTarget(relativePath);
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, bytes);
 }
@@ -232,14 +253,19 @@ function check(): number {
   return 0;
 }
 
-if (process.argv.includes("--check")) {
-  process.exit(check());
-} else {
-  // Only the generated subtrees, so a fontstack upstream stops naming leaves rather than
-  // lingering. LICENSE.md lives in the same directory and is written by hand, not here.
-  for (const generated of ["fonts", "sprite"]) {
-    const path = join(OUT_DIR, generated);
-    if (existsSync(path)) rmSync(path, { recursive: true });
+// Guarded, so tools/dashboard-basemap.test.ts can import `vendoredTarget` without a
+// bare import deleting fonts/ and re-fetching the planet. The precedent is
+// tools/doctor.ts, whose own test does the same thing.
+if (import.meta.main) {
+  if (process.argv.includes("--check")) {
+    process.exit(check());
+  } else {
+    // Only the generated subtrees, so a fontstack upstream stops naming leaves rather than
+    // lingering. LICENSE.md lives in the same directory and is written by hand, not here.
+    for (const generated of ["fonts", "sprite"]) {
+      const path = join(OUT_DIR, generated);
+      if (existsSync(path)) rmSync(path, { recursive: true });
+    }
+    await refresh();
   }
-  await refresh();
 }

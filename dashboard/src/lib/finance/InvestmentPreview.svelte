@@ -190,7 +190,7 @@
     </div>
     {#if result.holdings.length > 0}
       <table>
-        <thead><tr><th>Instrument</th><th class="num">Quantity</th><th class="num">Latest activity price</th></tr></thead>
+        <thead><tr><th scope="col">Instrument</th><th class="num" scope="col">Quantity</th><th class="num" scope="col">Latest activity price</th></tr></thead>
         <tbody>
           {#each result.holdings as holding (holding.instrument)}
             <tr>

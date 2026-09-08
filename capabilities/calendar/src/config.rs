@@ -142,12 +142,17 @@ pub fn config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("calendar.config.json")
 }
 
-fn load_file_config() -> FileConfig {
-    let path = config_path();
+/// Read one config file. Absent, unreadable and unparseable all answer with
+/// the defaults — a capability that needs no file is the common case, and a
+/// typo in one is reported on stderr rather than by refusing to start.
+///
+/// Takes the path rather than resolving it, so a test can name a file without
+/// writing `$AXON_CALENDAR_CONFIG`. See `Config::from_file`.
+fn read_file_config(path: &std::path::Path) -> FileConfig {
     if !path.is_file() {
         return FileConfig::default();
     }
-    match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(path) {
         Ok(body) => serde_json::from_str(&body).unwrap_or_else(|error| {
             eprintln!("warning: could not parse {path:?}: {error} — using defaults");
             FileConfig::default()
@@ -158,7 +163,30 @@ fn load_file_config() -> FileConfig {
 
 impl Config {
     pub fn load() -> Self {
-        let file = load_file_config();
+        Self::from_file(read_file_config(&config_path()))
+    }
+
+    /// The resolution rules with the file already in hand.
+    ///
+    /// Split from `load` so a test can supply the file directly instead of
+    /// pointing `$AXON_CALENDAR_CONFIG` at one. The environment is process-wide
+    /// and Rust runs a crate's tests as threads of one process, so two tests
+    /// that both resolved through that variable read each other's writes: one
+    /// removed it while the other held it set, and whichever was inside
+    /// `config_path()` at that moment got the wrong file. That is the second
+    /// half of PRD silent failure #3 — "a test run is not isolated either".
+    ///
+    /// The window is microseconds wide and has not been observed to open on its
+    /// own: 400 consecutive runs of these tests before the fix failed 0 times,
+    /// and no CI run, register row or commit records it firing. What is
+    /// measured here is the mechanism, not a symptom. With a 200 ms sleep in
+    /// front of `config_path()` and nothing else changed,
+    /// `the_home_timezone_has_no_default` failed on every run, resolving
+    /// `Europe/Berlin` out of the other test's file.
+    ///
+    /// `--test-threads=1` would have hidden it instead: the tests would then
+    /// pass while the defect they race on stayed exactly where it was.
+    fn from_file(file: FileConfig) -> Self {
         Self {
             database_path: database_path(),
             port: resolve_port(Some("AXON_CALENDAR_PORT"), file.port, 8087),
@@ -197,25 +225,59 @@ impl Config {
 mod tests {
     use super::*;
 
-    /// Restores an env var on drop. Rust runs a crate's tests as threads of
-    /// one process, so an unrestored `remove_var` leaks into every later test
-    /// — the trap comms' config tests documented after it cost them eight
-    /// failures against a healthy database.
-    struct EnvGuard(&'static str, Option<String>);
+    /// Serializes every test in this module whose answer depends on the process
+    /// environment — the ones that write it AND the ones that only read it.
+    ///
+    /// Restoring a variable on drop is not enough on its own: `set_var` and
+    /// `remove_var` are process-wide and a crate's tests are threads of one
+    /// process, so a test resolving a path while another holds a variable set
+    /// reads the other test's value. Only one test may be inside the
+    /// environment at a time, and this is what says so.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    impl EnvGuard {
-        fn take(key: &'static str) -> Self {
-            let previous = std::env::var(key).ok();
+    /// The environment, changed for the length of one test and restored after
+    /// it, with [`ENV_LOCK`] held throughout.
+    ///
+    /// One scope per test — it takes the lock in `new` and holds it until it
+    /// drops, so a second scope inside the same test would wait for itself.
+    /// Poisoning is stepped over deliberately: a test that panicked while
+    /// holding the lock has already been reported, and refusing the lock
+    /// afterwards would turn one failure into every later one.
+    struct EnvScope {
+        restore: Vec<(&'static str, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvScope {
+        fn new() -> Self {
+            Self {
+                restore: Vec::new(),
+                _lock: ENV_LOCK.lock().unwrap_or_else(|held| held.into_inner()),
+            }
+        }
+
+        fn set(mut self, key: &'static str, value: &str) -> Self {
+            self.restore.push((key, std::env::var(key).ok()));
+            std::env::set_var(key, value);
+            self
+        }
+
+        fn unset(mut self, key: &'static str) -> Self {
+            self.restore.push((key, std::env::var(key).ok()));
             std::env::remove_var(key);
-            Self(key, previous)
+            self
         }
     }
 
-    impl Drop for EnvGuard {
+    impl Drop for EnvScope {
         fn drop(&mut self) {
-            match self.1.take() {
-                Some(value) => std::env::set_var(self.0, value),
-                None => std::env::remove_var(self.0),
+            // Reverse order: a key set twice in one scope is restored to what
+            // it held before the scope, not to what it held mid-scope.
+            for (key, previous) in self.restore.drain(..).rev() {
+                match previous {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
             }
         }
     }
@@ -238,11 +300,19 @@ mod tests {
         assert_eq!(google.env_path(), PathBuf::from("/etc/axon/creds.env"));
     }
 
+    /// No file: `from_file` is the resolution `load` runs once the file is
+    /// read, so the question is asked without `$AXON_CALENDAR_CONFIG` and
+    /// therefore without the race that made this flaky.
+    ///
+    /// The overlay still has to be moved out of the way, and that is not
+    /// cosmetic: `axon_config::deployment_home_timezone` reads
+    /// `<overlay>/config/deployment.env`, and a deployment that declares a zone
+    /// there answers this question with it. Writing the environment means
+    /// taking the lock.
     #[test]
     fn the_home_timezone_has_no_default() {
-        let _config = EnvGuard::take("AXON_CALENDAR_CONFIG");
-        let _overlay = EnvGuard::take("AXON_PERSONAL_ROOT");
-        let config = Config::load();
+        let _env = EnvScope::new().unset("AXON_PERSONAL_ROOT");
+        let config = Config::from_file(FileConfig::default());
         assert!(
             config.home_timezone.is_none(),
             "guessing a zone writes every import silently off by an hour"
@@ -252,7 +322,11 @@ mod tests {
 
     #[test]
     fn a_file_supplies_the_personal_values() {
-        let dir = std::env::temp_dir().join(format!("calendar-config-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "calendar-config-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("calendar.json");
         std::fs::write(
@@ -261,13 +335,14 @@ mod tests {
         )
         .unwrap();
 
-        let previous = std::env::var("AXON_CALENDAR_CONFIG").ok();
-        std::env::set_var("AXON_CALENDAR_CONFIG", &path);
-        let config = Config::load();
-        match previous {
-            Some(value) => std::env::set_var("AXON_CALENDAR_CONFIG", value),
-            None => std::env::remove_var("AXON_CALENDAR_CONFIG"),
-        }
+        // Named, not exported. This used to point `$AXON_CALENDAR_CONFIG` at
+        // the file, which is what `the_home_timezone_has_no_default` was
+        // reading when it failed. The overlay is still moved aside: a
+        // deployment that declares a different zone in `deployment.env` makes
+        // the capability value a CONFLICT rather than a winner, and the file's
+        // value would vanish for a reason that has nothing to do with parsing.
+        let _env = EnvScope::new().unset("AXON_PERSONAL_ROOT");
+        let config = Config::from_file(read_file_config(&path));
         let _ = std::fs::remove_dir_all(&dir);
 
         assert_eq!(config.home_timezone.as_deref(), Some("Europe/Berlin"));
@@ -277,5 +352,49 @@ mod tests {
             config.google.import_days_back, 7,
             "an unspecified field keeps its default"
         );
+    }
+
+    /// The resolution order the module doc states, which the other two tests
+    /// used to cover as a side effect of pointing at their fixtures. It is now
+    /// the only test here that writes the environment, and it holds `ENV_LOCK`
+    /// while it does.
+    #[test]
+    fn the_config_path_prefers_the_explicit_override_to_the_overlay() {
+        let named = std::env::temp_dir().join("calendar-explicit.json");
+        let scope = EnvScope::new()
+            .set("AXON_CALENDAR_CONFIG", &named.to_string_lossy())
+            .set("AXON_PERSONAL_ROOT", "/nonexistent/overlay");
+        assert_eq!(
+            config_path(),
+            named,
+            "an explicitly named file outranks the overlay"
+        );
+
+        let scope = scope.unset("AXON_CALENDAR_CONFIG");
+        assert_eq!(
+            config_path(),
+            PathBuf::from("/nonexistent/overlay/config/calendar.json"),
+            "with no override the overlay names the file"
+        );
+        drop(scope);
+    }
+
+    /// A file that is not there, and a file that is not JSON, both answer with
+    /// the defaults rather than a panic — the path `read_file_config` takes on
+    /// every deployment that has never written one.
+    #[test]
+    fn an_absent_or_broken_file_reads_as_defaults() {
+        let missing = std::env::temp_dir().join("calendar-does-not-exist.json");
+        let _ = std::fs::remove_file(&missing);
+        assert!(read_file_config(&missing).home_timezone.is_none());
+
+        let broken = std::env::temp_dir().join(format!(
+            "calendar-broken-{}-{:?}.json",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&broken, "{ not json").unwrap();
+        assert!(read_file_config(&broken).home_timezone.is_none());
+        let _ = std::fs::remove_file(&broken);
     }
 }

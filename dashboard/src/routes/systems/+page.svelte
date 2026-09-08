@@ -250,7 +250,7 @@
   }
 
   .err-hint {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-secondary);
     margin: 0 0 0.15rem;
   }
@@ -280,7 +280,7 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -320,7 +320,7 @@
   }
 
   .temp-label {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
     text-transform: uppercase;
     font-weight: 500;
@@ -357,7 +357,7 @@
   }
 
   .usage-label {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
     text-transform: uppercase;
     font-weight: 500;
@@ -414,11 +414,11 @@
   .mem-row {
     display: flex;
     justify-content: space-between;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .mem-row.swap {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
     margin-top: 0.2rem;
   }
@@ -453,7 +453,7 @@
     justify-content: space-between;
     align-items: baseline;
     gap: 0.5rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     margin-bottom: 0.5rem;
     padding-bottom: 0.4rem;
     border-bottom: 1px solid var(--card-border);
@@ -530,7 +530,7 @@
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--text-tertiary);
     margin: 0 0 1.5rem;
   }

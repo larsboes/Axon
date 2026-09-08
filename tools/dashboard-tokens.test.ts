@@ -115,3 +115,123 @@ describe("every custom property a component reads is declared somewhere it can s
     expect(local.has("--overlay-width")).toBe(true);
   });
 });
+
+// The same rule in the other direction: no primitive is declared that nothing uses.
+//
+// The suite above catches a component reading a property nobody declared. This catches the
+// mirror image, and it had four on 2026-09-08: `.card-interactive`, `.glass`, `.glass-lit`
+// and `.tnum` — all documented in `dashboard/README.md` and in app.css's own header, all
+// with zero consumers across 96 components. Dead CSS is cheap to ship and expensive to
+// read: the next person budgets for a glass system that no surface uses, and the README
+// tells them it is there.
+//
+// A class counts as used when a component names it in a `class` attribute or a `class:`
+// directive. A component's own `<style>` mentioning `.card` does not count — that is a
+// scoped rule of its own that happens to share the name.
+//
+// The match is on the whole class token, not on a word boundary. `\bcard\b` also matches
+// `card-interactive`, and `\btable\b` also matches `table-wrap` — which is the one hole
+// that mattered here, because every primitive in this file is the prefix of a longer name
+// somebody really does write. Verified 2026-09-08 by declaring `.zz` in app.css, writing
+// `class="zz-decoration"` in one component, and watching the rule below stay green.
+
+describe("no primitive is declared that nothing uses", () => {
+  /** Class names app.css declares, read from selector positions only. */
+  function declaredClasses(): string[] {
+    const css = readFileSync(APP_CSS, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      // The grain SVG carries `www.w3.org` and the @font-face srcs carry `.woff2`.
+      // Both read as class selectors to a regex and are neither.
+      .replace(/url\([^)]*\)/g, "");
+    const names = new Set<string>();
+    // Every run of text that ends at a `{` is a selector — including one nested inside an
+    // @media or @supports block, which a split on `}` would have skipped.
+    for (const match of css.matchAll(/([^{}]*)\{/g)) {
+      for (const found of match[1].matchAll(/\.([a-z][a-z0-9-]*)/gi)) names.add(found[1]);
+    }
+    // `.dark` is set on <html> by the theme toggle, never written in a component's markup.
+    names.delete("dark");
+    return [...names].sort();
+  }
+
+  /**
+   * True when `text` writes `name` as a WHOLE class token.
+   *
+   * `(?<![\w-])name(?![\w-])`, not `\bname\b`: a hyphen is a word boundary to a regex and
+   * is not one to CSS, so `\btable\b` counted `class="table-wrap"` as a use of `.table`.
+   */
+  function namesClass(text: string, name: string): boolean {
+    const token = `(?<![\\w-])${name}(?![\\w-])`;
+    return new RegExp(`class="[^"]*${token}|class=\\{[^}]*${token}|class:${name}(?![\\w-])`).test(
+      text,
+    );
+  }
+
+  /** The components that put `name` in a class attribute or a `class:` directive. */
+  function consumers(name: string): string[] {
+    return sources(SRC)
+      .filter((file) => file.endsWith(".svelte") && namesClass(readFileSync(file, "utf8"), name))
+      .map(relative);
+  }
+
+  /**
+   * The escape list, one entry, with what was measured.
+   *
+   * `.table` and its five descendant rules are declared in app.css, documented in
+   * `dashboard/README.md` as one of the five surviving primitives, and written by no
+   * component: `grep -rn 'class="table"' dashboard/src` returns nothing, and the seven
+   * hits for `\btable\b` are `table-wrap`, `chart-table`, `forecast-table` and
+   * `subscription-table`. It is the same defect as the four classes deleted on
+   * 2026-09-08 and it survived the sweep because of the word-boundary hole above.
+   *
+   * Left rather than deleted because the choice is not this file's to make: the fourteen
+   * hand-rolled tables either adopt `.table` or the class and its README line go. Whoever
+   * decides also owns `.table .num`, which is the only declaration of `.num` and matches
+   * nothing today — all four components that write `class="num"` restyle it themselves.
+   */
+  const KNOWN: Record<string, string> = {
+    table: "0 consumers, documented as a primitive (verifier, 2026-09-08)",
+  };
+
+  test("the reader finds the primitives and not the font URLs", () => {
+    const declared = declaredClasses();
+    for (const name of ["card", "btn", "btn-primary", "tag", "input", "table", "mono", "num"]) {
+      expect([name, declared.includes(name)]).toEqual([name, true]);
+    }
+    for (const name of ["org", "w3", "woff2"]) {
+      expect([name, declared.includes(name)]).toEqual([name, false]);
+    }
+  });
+
+  test("a longer class that merely starts with the name is not a use of it", () => {
+    // The hole this closes, as four assertions rather than as a claim in a comment.
+    expect(namesClass('<div class="card">', "card")).toBe(true);
+    expect(namesClass('<div class="a card b">', "card")).toBe(true);
+    expect(namesClass('<div class="card-interactive">', "card")).toBe(false);
+    expect(namesClass('<div class="table-wrap">', "table")).toBe(false);
+    expect(namesClass("<div class:card-lit>", "card")).toBe(false);
+    expect(namesClass("<div class:card>", "card")).toBe(true);
+  });
+
+  test("every class app.css declares is named by at least one component", () => {
+    const unused = declaredClasses()
+      .filter((name) => consumers(name).length === 0)
+      .map((name) => (KNOWN[name] ? `${name} [known: ${KNOWN[name]}]` : name));
+    expect(unused.filter((line) => !line.includes("[known:"))).toEqual([]);
+  });
+
+  test("the escape list stays exactly one entry, so it cannot grow quietly", () => {
+    expect(Object.keys(KNOWN)).toEqual(["table"]);
+    // And the entry is a live fact, not a leftover: if somebody adopts `.table`, this
+    // fails and the escape goes with the same commit.
+    expect(consumers("table")).toEqual([]);
+  });
+
+  test("the consumer count is real, so a passing run means something", () => {
+    // Without this, a reader that matched nothing would pass the test above by measuring
+    // nothing at all — which is how a dead-code gate goes green on a dead codebase.
+    expect(consumers("card").length).toBeGreaterThan(10);
+    expect(consumers("btn").length).toBeGreaterThan(10);
+    expect(consumers("a-name-nothing-uses")).toEqual([]);
+  });
+});
