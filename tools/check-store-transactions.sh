@@ -33,6 +33,15 @@
 # prove the red path instead of asserting it.
 set -e
 
+# A nested checkout is not part of the tree being checked. `.claude/worktrees/`
+# holds full copies of this repository while a fleet of agents is working in it,
+# and each copy carries its own `libs/axon-store/src/lib.rs`. CI never sees them
+# — it checks out clean — so this gate passed there and failed here, which is the
+# wrong way round for a gate whose whole value is being fast enough to run
+# locally. Found on 2026-09-08 by running it against a tree with 15 live
+# worktrees in it.
+PRUNE='-name .claude -o -name node_modules -o -name target -o -name .git'
+
 # The owner of the primitive. Everything else is a caller.
 OWNER="libs/axon-store/"
 
@@ -43,7 +52,7 @@ hits=0
 while IFS= read -r f; do
   rel="${f#./}"
   case "$rel" in
-    "$OWNER"*) continue ;;       # the library that defines the safe form
+    "$OWNER"*|*/"$OWNER"*) continue ;;  # the library that defines the safe form
     */target/*|target/*) continue ;;
   esac
 
@@ -64,7 +73,7 @@ while IFS= read -r f; do
     hits=$((hits + 1))
     fail=1
   fi
-done < <(find . -name '*.rs' -not -path './target/*' | sort)
+done < <(find . \( $PRUNE \) -prune -o -name '*.rs' -print | sort)
 
 if [ "$scanned" -eq 0 ]; then
   echo "FAIL: no *.rs files scanned — the find is broken, not the tree" >&2

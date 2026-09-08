@@ -6,8 +6,19 @@
 # wraps tools/backup-all.sh without carrying a line of its own. What was missing was an
 # owner for the state, and that is the one question a data manifest answers.
 #
-# The state is four ledgers under ~/.local/state/axon/pack-deployments/ (claude.json,
-# codex.json, pi.json, opencode-packs.json). Each records, per deployed unit, the source
+# The state is one ledger per harness under ~/.local/state/axon/pack-deployments/. Four
+# paths are declared, one per adapter — claude.json, codex.json, pi.json and
+# opencode-packs.json — and a file appears only once that harness has had something
+# deployed: `readState` treats an absent file as an empty ledger, so nothing writes one
+# ahead of a deployment. Three exist on the machine this was written on (2026-09-08);
+# opencode has never had a deployment here. This line said "four ledgers" and named all four
+# as though they were files, which is a claim about a directory that has never been true.
+#
+# The set on disk is a record of what was ever deployed, not of what is installed:
+# codex.json is here and `tools/harnesses list` reports codex absent. `backup_paths` is the
+# directory rather than a file list precisely so the count does not matter to a restore.
+#
+# Each ledger records, per deployed unit, the source
 # path inside Axon and the digest that was installed. Nothing backed them up. Losing one
 # does not lose a skill — the copies stay on disk — it loses the PROOF that Axon put them
 # there, so every deployed skill reads as an unowned collision and each Pack has to be

@@ -180,7 +180,7 @@
 
   .err-card { padding: 0.85rem 1rem; margin: 0 0 1rem; }
   .err { display: flex; align-items: center; gap: 0.45rem; font-size: 0.85rem; margin: 0 0 0.3rem; color: var(--warning-ink); }
-  .err-hint { font-size: 0.75rem; color: var(--text-secondary); margin: 0 0 0.15rem; }
+  .err-hint { font-size: var(--text-xs); color: var(--text-secondary); margin: 0 0 0.15rem; }
   .err-detail { font-size: 0.7rem; color: var(--text-tertiary); margin: 0; }
 
   /* ── Harness cards ──────────────────────────────────────────── */

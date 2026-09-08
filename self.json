@@ -47,7 +47,7 @@
       "kind": "lib",
       "code": {
         "files": 4,
-        "nodes": 45
+        "nodes": 58
       }
     },
     {
@@ -68,7 +68,7 @@
       },
       "code": {
         "files": 13,
-        "nodes": 130
+        "nodes": 137
       }
     },
     {
@@ -76,7 +76,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 41
+        "nodes": 43
       }
     },
     {
@@ -88,7 +88,7 @@
       },
       "code": {
         "files": 1,
-        "nodes": 3
+        "nodes": 4
       }
     },
     {
@@ -101,7 +101,7 @@
       },
       "code": {
         "files": 25,
-        "nodes": 568
+        "nodes": 583
       }
     },
     {
@@ -138,7 +138,7 @@
       },
       "code": {
         "files": 90,
-        "nodes": 1568
+        "nodes": 1577
       }
     },
     {
@@ -180,8 +180,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 159,
-        "nodes": 992
+        "files": 160,
+        "nodes": 1001
       }
     },
     {
@@ -220,7 +220,7 @@
       },
       "code": {
         "files": 24,
-        "nodes": 827
+        "nodes": 839
       }
     },
     {
@@ -337,7 +337,7 @@
       },
       "code": {
         "files": 33,
-        "nodes": 588
+        "nodes": 593
       }
     },
     {
@@ -499,7 +499,7 @@
       },
       "code": {
         "files": 30,
-        "nodes": 526
+        "nodes": 535
       }
     },
     {
@@ -528,7 +528,7 @@
       },
       "code": {
         "files": 19,
-        "nodes": 277
+        "nodes": 282
       }
     },
     {
@@ -574,8 +574,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 159,
-        "nodes": 1258
+        "files": 183,
+        "nodes": 1433
       }
     },
     {
@@ -588,7 +588,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 298
+        "nodes": 304
       }
     },
     {
@@ -609,7 +609,7 @@
       },
       "code": {
         "files": 22,
-        "nodes": 524
+        "nodes": 536
       }
     },
     {
@@ -629,8 +629,8 @@
         "port": "8094"
       },
       "code": {
-        "files": 12,
-        "nodes": 116
+        "files": 14,
+        "nodes": 169
       }
     },
     {
@@ -1209,6 +1209,16 @@
     {
       "from": "scouting",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/scouting/Cargo.toml"
+      ]
+    },
+    {
+      "from": "scouting",
+      "to": "content-item",
       "kinds": [
         "cargo-dep"
       ],
@@ -1903,7 +1913,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 13710,
+    "nodes": 13909,
     "external": 11,
     "stale": [],
     "unmatched": [

@@ -54,6 +54,33 @@ impl Note {
 /// as a problem rather than skipped. A lint that silently drops what it cannot
 /// parse reports a cleaner vault than the one on disk.
 pub fn load_all(root: &MarkdownRoot) -> Result<(Vec<Note>, Vec<String>), String> {
+    load_scoped(root, "")
+}
+
+/// Every note under one folder of the vault, carrying vault-relative ids.
+///
+/// The same move `tasks::projects_root` makes and for the same reason: reading
+/// every note to answer for a folder's worth of them is a per-request cost a
+/// server pays on every call. Measured 2026-09-08 on the operator's vault,
+/// warm, debug build: `Atlas/People/` and `Journal/` together are **442 notes
+/// in 20 ms** against **2,757 notes in 155 ms** for the whole vault, and 433 ms
+/// on the cold first read.
+///
+/// The ids stay vault-relative — `Atlas/People/Erika.md`, not `Erika.md` —
+/// because every consumer keys on the identity that survives a machine, and a
+/// note whose id changes with the walk that found it is two different notes.
+///
+/// A folder that is not there is an error and not an empty list. `people` reads
+/// `Journal/` to compute a mention count, and a missing `Journal/` would answer
+/// zero for all 89 people — which is exactly the reading `people.rs` refuses,
+/// because it cannot be told apart from a producer that never ran.
+pub fn load_under(vault: &MarkdownRoot, folder: &str) -> Result<(Vec<Note>, Vec<String>), String> {
+    let nested = MarkdownRoot::declare(vault.path().join(folder))
+        .map_err(|e| format!("{folder}/ under the vault root: {e}"))?;
+    load_scoped(&nested, folder)
+}
+
+fn load_scoped(root: &MarkdownRoot, prefix: &str) -> Result<(Vec<Note>, Vec<String>), String> {
     let files = root
         .markdown_files_recursive()
         .map_err(|e| format!("walking the vault: {e}"))?;
@@ -64,6 +91,13 @@ pub fn load_all(root: &MarkdownRoot) -> Result<(Vec<Note>, Vec<String>), String>
     for path in files {
         let id = root
             .relative_id(&path)
+            .map(|id| {
+                if prefix.is_empty() {
+                    id
+                } else {
+                    format!("{prefix}/{id}")
+                }
+            })
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
 
         let text = match std::fs::read_to_string(&path) {

@@ -10,9 +10,15 @@
  * than the framework slate, a small radius scale instead of pill-shaped everything,
  * system fonts, and motion that respects prefers-reduced-motion.
  *
- * Primitives: .card / .card-interactive, .tag, .btn (+ -primary, -outline, -danger),
- * .input, .table. Components: ListRow, RowMeta, StateLine, FactorBars, PageTabs,
- * PageHeader — a component owns anything a class cannot express once.
+ * Primitives: .card, .tag, .btn (+ -primary, -soft, -outline, -danger), .input, .table.
+ * Components: ListRow, RowMeta, StateLine, FactorBars, PageTabs, PageHeader — a component
+ * owns anything a class cannot express once. Behaviour that is neither is an action:
+ * $lib/modal.ts.
+ *
+ * Every class declared here has a consumer, and `tools/dashboard-tokens.test.ts` keeps it
+ * that way in both directions — nothing reads a property that is not declared, and nothing
+ * is declared that nothing reads. Four classes were removed on 2026-09-08 for failing the
+ * second half; each deletion says why where it stood.
  *
  * BREAKPOINTS are documented constants, not custom properties: no shipping browser
  * resolves `var()` inside a media CONDITION. A property redeclared inside a media
@@ -165,12 +171,22 @@
 
   /* GLASS. A pane with something behind it, which is why it is four tokens and not a
    * class sprinkled on cards: a card has nothing behind it, so frosting one is
-   * decoration. These belong to the header, the sticky rail, Overlay and the dock --
-   * the surfaces that actually float over the sheet.
+   * decoration. These belong to the surfaces that actually float over the sheet — today
+   * the header bar and Home's reading pane and rail.
    *
    * `saturate` is the half that makes it read as glass rather than as fog: blur alone
    * washes the colour out of what is behind, and pushing saturation back up is what a
-   * real pane does to the light through it. */
+   * real pane does to the light through it.
+   *
+   * A consumer owes two things these tokens cannot carry. `-webkit-backdrop-filter`
+   * first, because Safari is the browser this surface is read in — on the Mac and over
+   * the tailnet on the phone — and still needs the prefix. And an `@supports not
+   * ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)))` fallback to
+   * an opaque background, naming BOTH spellings: with the blur unavailable, a 62%
+   * background is a translucent panel with text showing through it, which is unreadable
+   * rather than merely plainer — and a condition naming only the unprefixed property
+   * would run that fallback in Safari, painting the pane opaque over a blur that was
+   * working. */
   --glass-bg: rgb(255 255 255 / 62%);
   --glass-blur: blur(28px) saturate(190%);
   --glass-border: rgb(255 255 255 / 70%);
@@ -382,9 +398,11 @@ body {
   color: var(--text-primary);
   font-family: var(--font-sans);
 
-  /* 0.9375rem, not 15px: the same 15/16 ratio body copy has always had, now expressed
-   * against the root so it rides the type scale above instead of pinning itself. */
-  font-size: 0.9375rem;
+  /* --text-base is 0.9375rem: the same 15/16 ratio body copy has always had, expressed
+   * against the root so it rides the type scale above instead of pinning itself. It was
+   * the literal until 2026-09-08 — the scale's own base, written as a number, in the
+   * declaration the scale was built around. */
+  font-size: var(--text-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -400,23 +418,24 @@ a {
   text-decoration: none;
 }
 
+/* The mono, and the argument for shipping one.
+ *
+ * Home's date column reads `15 Sep / 16 Sep / 18 Sep / 7 Oct`, and under proportional
+ * digits the `1`s are narrower than the `7`, so the column does not align.
+ * `font-variant-numeric: tabular-nums` fixes the alignment without the mono's width,
+ * which is the better answer wherever the numbers sit inside prose; `.mono` is for the
+ * cases that want the face too.
+ *
+ * Not a small-label style. A monospace face used to make labels look technical is the
+ * generated-page tell; used to align a column of figures it is doing arithmetic.
+ *
+ * There was a `.tnum` class here for the tabular-figures half. It had zero consumers on
+ * 2026-09-08 while 77 declarations set `font-variant-numeric` directly, so the class was
+ * not the mechanism this codebase reaches for and was removed rather than adopted.
+ * `.table .num` below is the one place the rule is worth stating once. */
 code,
 .mono {
   font-family: var(--font-mono);
-}
-
-/* Lining tabular figures, for a column of numbers that has to stack.
- *
- * This is the whole argument for shipping a mono: Home's date column reads
- * `15 Sep / 16 Sep / 18 Sep / 7 Oct`, and under proportional digits the `1`s are
- * narrower than the `7`, so the column does not align. `font-variant-numeric` fixes the
- * alignment without the mono's width, which is the better answer wherever the numbers
- * sit inside prose; `.mono` stays for the cases that want the face too.
- *
- * Not a small-label style. A monospace face used to make labels look technical is the
- * generated-page tell; used to align a column of figures it is doing arithmetic. */
-.tnum {
-  font-variant-numeric: tabular-nums lining;
 }
 
 /* Keyboard focus, everywhere, at specificity 0.
@@ -429,46 +448,24 @@ code,
   box-shadow: var(--focus-ring);
 }
 
-/* The primitives. Anything more specific belongs in the component that needs it. */
-
-/* A pane that floats over the sheet.
+/* The primitives. Anything more specific belongs in the component that needs it.
  *
- * Deliberately NOT a variant of .card. A card sits on the page and has nothing behind
- * it, so blurring one frosts a solid colour and costs a compositor layer to do it --
- * that is the decoration this class exists to keep OUT of the content. .glass is for the
- * four surfaces something actually passes under: the header bar, the sticky rail,
- * Overlay and the dock.
+ * There were `.glass` and `.glass-lit` classes here, and on 2026-09-08 both had zero
+ * consumers — while the `--glass-*` tokens they were built from had twelve references.
+ * The class could not be adopted by any of the four surfaces its own comment named, and
+ * each refusal is a fact about the surface rather than about the class:
  *
- * `-webkit-` first because Safari is the browser this surface is read in, on the Mac and
- * over the tailnet on the phone, and it still needs the prefix.
+ *   the header       uses --header-bg, not --glass-bg, and has no radius and no
+ *                    glass shadow. It is a different recipe that shares the blur.
+ *   the sticky rail  is glass only above the 50rem step (routes/+page.svelte). A class
+ *                    in the markup applies at every width; the media query is the point.
+ *   Overlay          is opaque --card-bg with its own shadow. It is not glass at all.
+ *   the dock         draws no background of its own.
  *
- * The `@supports` fallback is not politeness: with backdrop-filter unavailable a 72%
- * background is a translucent panel with text showing through it, which is unreadable
- * rather than merely plainer. The fallback goes opaque. */
-.glass {
-  background-color: var(--glass-bg);
-  border: 1px solid var(--card-border);
-  border-top-color: var(--glass-border);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--glass-shadow);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-}
-
-/* The lit top edge. A pane catches light on the edge facing it, and one hairline does
-   more for the illusion than any amount of extra blur. */
-.glass-lit {
-  border-top-color: var(--glass-border);
-}
-
-/* Both spellings. Safari implements the prefixed property, and a condition that names
-   only the unprefixed one would run this fallback on the browser this surface is read
-   in — painting the pane opaque on top of a blur that was working. */
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .glass {
-    background-color: var(--card-bg);
-  }
-}
+ * So the shared thing here was always the four tokens, and the ruling they carry moved up
+ * to their declaration in `:root`. A pane that wants glass writes the six declarations
+ * beside its own media query and its own `@supports` fallback, which is what both real
+ * consumers already did. */
 
 .card {
   background-color: var(--card-bg);
@@ -480,21 +477,17 @@ code,
 
 /* A card is a surface, not a control. Lifting every one of roughly seventy of them on
  * hover promised an affordance most of them do not have — the generic default, and the
- * commonest tell of a templated admin page. A card that IS clickable opts in below. */
+ * commonest tell of a templated admin page.
+ *
+ * There was a `.card-interactive` opt-in for the clickable case. It had zero consumers on
+ * 2026-09-08, and so did the case: not one `.card` in the tree is an anchor, a button or
+ * carries a click handler — all 48 of them, across 18 components, are a div, section, li,
+ * form, aside, p or ul. An escape hatch with no user and no candidate is a claim about the
+ * app that is not true, so it went. The ruling above is the part that was doing work, and
+ * it stays. (The 51 this comment first said was a count of components whose markup held
+ * `card` as a substring — `card-header` and the like — not of `.card` elements.) */
 .card:hover {
   border-color: var(--card-border-hover);
-}
-
-.card-interactive {
-  cursor: pointer;
-  transition:
-    border-color var(--motion-base) ease,
-    box-shadow var(--motion-base) ease;
-}
-
-.card-interactive:hover {
-  border-color: var(--card-border-hover);
-  box-shadow: var(--card-shadow-hover);
 }
 
 /* Tabular data, once. Fourteen routes hand-rolled a table and arrived at fourteen
@@ -574,7 +567,7 @@ a.row-title:hover {
   display: inline-flex;
   align-items: center;
   padding: 0.125rem 0.5rem;
-  font-size: 0.6875rem;
+  font-size: var(--text-2xs);
   font-weight: 600;
   border-radius: var(--radius-sm);
   line-height: 1.4;
@@ -588,7 +581,7 @@ a.row-title:hover {
   justify-content: center;
   gap: 0.375rem;
   font: inherit;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   padding: 0.4rem 0.75rem;
   border: 0;

@@ -21,6 +21,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { undeclaredPaths } from "./demo-check-paths.ts";
 import {
   absentPrefixes,
   AXON_ROOT,
@@ -104,6 +105,16 @@ async function main(): Promise<void> {
   const outIdx = args.indexOf("--out");
   const manifest = loadManifest();
   const outDir = outIdx >= 0 ? args[outIdx + 1] : join(AXON_ROOT, manifest.fixturesDir);
+
+  // Before the first request, because the alternative is what happened to
+  // `/api/axon-status/upstreams`: a path no capability serves resolves to a real port, hits
+  // that capability's proxy fallback, and comes back as a 404 from a THIRD capability with
+  // nothing in the message pointing at demo.toml. Reading the route manifests answers it
+  // here, in one sentence, with the stack already up and nothing recorded yet.
+  const undeclared = undeclaredPaths(manifest);
+  if (undeclared.length > 0) {
+    throw new Error(`demo.toml declares paths nothing serves:\n  ${undeclared.join("\n  ")}`);
+  }
 
   const table = routes();
   const recorded: Recorded[] = [];

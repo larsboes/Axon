@@ -306,7 +306,7 @@
   input, select { min-width: 0; border: 1px solid var(--border, #333); border-radius: 5px; padding: .35rem .45rem; font: inherit; font-size: .78rem; background: transparent; color: inherit; }
   .mapping .profile, .mapping .account { grid-column: span 2; }
   .mapping button { align-self: end; justify-content: center; }
-  .preview { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; margin: -.4rem 0 1rem; padding: .65rem .8rem; border: 1px solid var(--border, #333); border-radius: 7px; font-size: .75rem; }
+  .preview { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; margin: -.4rem 0 1rem; padding: .65rem .8rem; border: 1px solid var(--border, #333); border-radius: 7px; font-size: var(--text-xs); }
   .preview button { margin-left: auto; }
   .candidate-list { display: grid; gap: .4rem; margin-top: 1rem; min-width: 0; }
   article { display: flex; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; min-width: 0; box-sizing: border-box; padding: .65rem .75rem; border: 1px solid var(--border, #333); border-radius: 7px; }

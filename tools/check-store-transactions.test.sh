@@ -108,6 +108,28 @@ RS
 expect_fail_with "a path that merely starts like the owner is not exempt" "$root" \
   "libs/axon-store-extras/src/lib.rs"
 
+# --- a nested checkout is not part of this tree ----------------------------
+#
+# The failure this guards was live on 2026-09-08: a fleet of agents left full
+# copies of the repository under .claude/worktrees/, each carrying its own
+# libs/axon-store/src/lib.rs, and the gate reported eight failures against files
+# that were not the tree it was asked about. CI never saw it, because CI checks
+# out clean.
+
+root=$(tree nested-checkout-pruned)
+mkdir -p "$root/.claude/worktrees/wf-1/libs/axon-store/src" "$root/capabilities/x/src"
+echo "let t = conn.transaction()?;" > "$root/.claude/worktrees/wf-1/libs/axon-store/src/lib.rs"
+mkdir -p "$root/.claude/worktrees/wf-1/capabilities/y/src"
+echo "let t = conn.transaction()?;" > "$root/.claude/worktrees/wf-1/capabilities/y/src/lib.rs"
+echo "fn ok() {}" > "$root/capabilities/x/src/lib.rs"
+expect_pass "a checkout nested under .claude/ is somebody else's tree" "$root"
+
+root=$(tree node-modules-pruned)
+mkdir -p "$root/dashboard/node_modules/pkg" "$root/capabilities/x/src"
+echo "let t = conn.transaction()?;" > "$root/dashboard/node_modules/pkg/vendored.rs"
+echo "fn ok() {}" > "$root/capabilities/x/src/lib.rs"
+expect_pass "a dependency's vendored source is not this repository's code" "$root"
+
 # --- the gate must not report green over an empty sweep --------------------
 #
 # The failure this guards is the one the sibling gate already hit: a broken

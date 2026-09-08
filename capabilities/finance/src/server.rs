@@ -172,6 +172,11 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r(
         "GET",
+        "/__axon/freshness",
+        "When data last arrived, for the freshness contract. No parameters.",
+    ),
+    r(
+        "GET",
         "/api/decisions",
         "The decision ledger. Optional ?status=open|accepted|rejected|superseded|all, default open.",
     ),
@@ -2005,6 +2010,48 @@ async fn prices_status(State(state): State<AppState>) -> ApiResponse {
     }
 }
 
+/// `GET /__axon/freshness` — when this capability last took delivery of data.
+///
+/// The shared shape behind `freshness_advise_hours` / `freshness_stale_hours` in
+/// `capabilities/finance/service.toml`, and the same one
+/// `capabilities/comms/src/server/source_handlers.rs` serves: one integer,
+/// `last_arrival_at`, epoch seconds, or `null` if nothing has ever arrived.
+/// `tools/doctor` compares it against the two declared hours; anything else this
+/// endpoint might usefully say belongs to `GET /api/prices/status`, which is the
+/// surface a person reads.
+///
+/// ARRIVAL, not the newest observation date. A market that was shut on Friday is
+/// quiet, not broken, and a contract keyed on `observed_on` would call a long
+/// weekend a fault and teach the reader to skim past it. What this exists to
+/// catch is a producer that stopped — `capabilities/finance-prices`, whose 24h
+/// schedule is the only unattended caller of `finance-cli prices fetch`.
+///
+/// A parse failure is a 500 and never a `null`. `null` is the specific claim
+/// "nothing has ever arrived", which doctor reports as a fault, and a stamp this
+/// process could not read is a different thing entirely — one is the machine's
+/// state, the other is this code's bug.
+async fn freshness(State(state): State<AppState>) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    match tokio::task::spawn_blocking(move || -> Result<Option<i64>, String> {
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
+        let Some(stamp) = store
+            .newest_price_arrival()
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        finance::clock::epoch_seconds(&stamp)
+            .map(Some)
+            .ok_or_else(|| format!("stored fetch stamp is not a timestamp: {stamp}"))
+    })
+    .await
+    {
+        Ok(Ok(last)) => response(StatusCode::OK, json!({ "last_arrival_at": last })),
+        Ok(Err(error)) => failed(error),
+        Err(error) => failed(error.to_string()),
+    }
+}
+
 async fn list_decisions(
     State(state): State<AppState>,
     Query(query): Query<StatusQuery>,
@@ -2411,7 +2458,16 @@ async fn trip_spending(State(state): State<AppState>, Path(id): Path<String>) ->
 #[tokio::main]
 async fn main() {
     let config = Config::load();
-    let state = AppState {
+    let port = config.port;
+    axon_server::serve_local("finance-server", port, build_router(state_from(config))).await;
+}
+
+/// This capability's name, for the origin guard's env var
+/// (`AXON_FINANCE_ALLOWED_ORIGIN_HOSTS`).
+const CAPABILITY: &str = "finance";
+
+fn state_from(config: Config) -> AppState {
+    AppState {
         database_path: Arc::new(config.database_path),
         obsidian: config.obsidian,
         journal: config.journal,
@@ -2428,8 +2484,26 @@ async fn main() {
         targets: config.targets.map(Arc::new),
         comms_base_url: Arc::new(config.comms_base_url),
         overlay_root: config.decisions_root.map(Arc::new),
-    };
-    let app = Router::new()
+    }
+}
+
+/// The wired router, so a test can drive the real thing rather than a handler.
+///
+/// `GET /api/dashboard` and `GET /api/portfolio` are the operator's money —
+/// balances, holdings, every transaction the ledger carries — and
+/// `CorsLayer::permissive()` made them readable by any page open in their
+/// browser. Four writes here take no request body (`/api/ledger/rebuild`,
+/// `/api/import/obsidian`, `/api/writeback`, and `/api/decisions/run`, whose
+/// `Option<Json<_>>` accepts a missing one), so a cross-site *simple* POST
+/// reaches them with no preflight for CORS to refuse. Refusing the request,
+/// which is what this guard does, is what closes that.
+///
+/// The origin guard sits below every route on purpose: axum wraps only the
+/// routes registered BEFORE a `.layer()` call (axum 0.7
+/// `src/docs/routing/layer.md`), so a route appended under it would silently
+/// lose the refusal.
+fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -2477,13 +2551,18 @@ async fn main() {
         .route("/api/dashboard", get(dashboard_projection))
         .route("/api/portfolio", get(portfolio))
         .route("/api/prices/status", get(prices_status))
+        .route("/__axon/freshness", get(freshness))
         .route("/api/decisions", get(list_decisions))
         .route("/api/decisions/run", post(run_decisions))
         .route("/api/decisions/:id/verdict", post(record_verdict))
         .route("/api/trips/:id/spending", get(trip_spending))
+        // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the origin guard.
+        .layer(axum::middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
         .layer(CorsLayer::permissive())
-        .with_state(state);
-    axon_server::serve_local("finance-server", config.port, app).await;
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -2931,5 +3010,71 @@ mod tests {
 
         let (status, _) = confirm_investments(State(state), Json(request)).await;
         assert_eq!(status, StatusCode::CONFLICT);
+    }
+}
+
+/// The router-level proof that `libs/axon-server`'s predicate tests cannot give:
+/// a route registered BELOW the `.layer()` call passes every test of
+/// `origin_allowed_by` and still answers a hostile page.
+///
+/// `/routes` is the control rather than `/api/dashboard`, because every data
+/// handler here opens the deployment's SQLite file and a test must not. The
+/// refusal is asserted on the data routes, where the guard answers before the
+/// handler runs and nothing is opened.
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn answer(method: &str, path: &str, origin: Option<&str>) -> StatusCode {
+        let mut request = Request::builder().method(method).uri(path);
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        build_router(state_from(Config::load()))
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers")
+            .status()
+    }
+
+    /// The three POSTs in this list take no request body, so a hostile page can
+    /// send them as *simple* requests — no preflight, nothing for a CORS policy
+    /// to refuse. They are the reason the guard refuses the request rather than
+    /// merely withholding a response header.
+    #[tokio::test]
+    async fn a_foreign_origin_can_neither_read_the_ledger_nor_drive_a_write() {
+        for (method, path) in [
+            ("GET", "/api/dashboard"),
+            ("GET", "/api/portfolio"),
+            ("GET", "/api/subscriptions"),
+            ("POST", "/api/ledger/rebuild"),
+            ("POST", "/api/writeback"),
+            ("POST", "/api/import/obsidian"),
+        ] {
+            assert_eq!(
+                answer(method, path, Some("https://evil.example")).await,
+                StatusCode::FORBIDDEN,
+                "{method} {path} answered a foreign origin — it is registered below the guard layer"
+            );
+        }
+    }
+
+    /// The other half. 200 from `/routes` is a handler answering.
+    #[tokio::test]
+    async fn the_dashboard_and_a_non_browser_caller_still_reach_the_handler() {
+        for origin in [
+            None,
+            Some("http://localhost:47117"),
+            Some("https://mac.tailnet.ts.net"),
+        ] {
+            assert_eq!(
+                answer("GET", "/routes", origin).await,
+                StatusCode::OK,
+                "the guard refused a caller it must admit: {origin:?}"
+            );
+        }
     }
 }

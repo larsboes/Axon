@@ -50,9 +50,10 @@ const feed: DecisionKind<FeedEntry[], FeedEntry> = {
   },
   startOrDueAt: (entry) => entry.created_at,
   candidateStatus: () => "proposed",
-  // FeedEntry carries no class field; the ContentItem detail shape does. Until comms
-  // publishes one on the list contract there is nothing here that is not a guess.
-  dataClass: () => null,
+  // CONTRACT: read, never computed. `GET /comms/feed` states a class for every row it
+  // serves — an item nobody classified reads back as c1, the undeclared default — so the
+  // only `null` here is a row that reached the ladder without passing through the list.
+  dataClass: (entry) => entry.data_class ?? null,
   processingRoute: () => null,
   scoreFactors: (entry) =>
     (entry.evaluation?.factors ?? []).map((factor) => ({

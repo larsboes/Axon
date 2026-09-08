@@ -303,12 +303,12 @@
     border-radius: var(--radius-md);
     background-color: var(--warning-soft);
     color: var(--warning-ink);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .note {
     margin-top: 1rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
   }
 </style>

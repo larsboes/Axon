@@ -40,7 +40,7 @@
     padding: 0.55rem 0;
     border-bottom: 2px solid transparent;
     color: var(--text-tertiary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 550;
     text-decoration: none;
   }
