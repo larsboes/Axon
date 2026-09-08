@@ -47,14 +47,16 @@ cat > "$SCRATCH/stale-graph.json" <<'JSON'
 ]}
 JSON
 
-before="$(shasum "$ROOT/self.json" | awk '{print $1}')"
+# A copy, compared with cmp, rather than a hash: `shasum` is macOS's spelling and
+# `sha1sum` is the GNU one, and this suite runs in both places.
+cp "$ROOT/self.json" "$SCRATCH/self.json.before"
 out=$(AXON_SELF_GRAPH="$SCRATCH/stale-graph.json" "$SELF" generate 2>&1); status=$?
 [ "$status" -eq 1 ] || note_fail "a stale graph must make generate refuse, got exit $status"
 says "2 path(s) this tree does not have" || note_fail "the refusal does not count the stale paths"
 says "dashboard/src/lib/feed/list-cursor.ts" || note_fail "the refusal does not name a stale path"
 says "graphify update ." || note_fail "the refusal does not say how to fix it"
-after="$(shasum "$ROOT/self.json" | awk '{print $1}')"
-[ "$before" = "$after" ] || note_fail "generate refused and wrote self.json anyway ($before -> $after)"
+cmp -s "$SCRATCH/self.json.before" "$ROOT/self.json" ||
+  note_fail "generate refused and wrote self.json anyway"
 
 # The other direction — a graph with nothing stale in it must NOT trip this refusal — is
 # asserted in tools/self.test.ts against generateWouldBakeStaleGraph, and deliberately not
