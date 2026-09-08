@@ -564,9 +564,13 @@
                       </button>
                       {#if openGroup === group.description}
                         <div class="assign">
+                          <!-- The placeholder is not the name. It disappears the moment a
+                               character is typed, and a screen reader reaching this field
+                               after that is told only "search". -->
                           <input
                             class="input assign-input"
                             type="search"
+                            aria-label="Search places to assign this merchant to"
                             placeholder="Search places…"
                             autocomplete="off"
                             bind:value={searchText}

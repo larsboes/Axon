@@ -1123,6 +1123,7 @@
   <input
     class="input"
     type="url"
+    aria-label="Link to ingest"
     bind:value={pasted}
     placeholder="Add a link — YouTube, GitHub, arXiv, Reddit, article"
     disabled={ingesting}

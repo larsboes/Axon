@@ -7,7 +7,7 @@
 </script>
 
 <div class="table-wrap"><table>
-  <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Category</th><th>Purpose</th><th class="num">Your amount</th></tr></thead>
+  <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">Account</th><th scope="col">Category</th><th scope="col">Purpose</th><th class="num" scope="col">Your amount</th></tr></thead>
   <tbody>
     {#each rows as row (row.id)}
       <tr>

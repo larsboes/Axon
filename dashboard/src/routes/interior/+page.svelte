@@ -969,7 +969,7 @@
             {planNew ? "Cancel" : "+ New plan"}
           </button>
           {#if planNew}
-            <input placeholder="bett-an-der-ostwand" bind:value={newId} />
+            <input aria-label="Id for the new plan" placeholder="bett-an-der-ostwand" bind:value={newId} />
             <label>
               <input type="checkbox" bind:checked={newCopy} disabled={selected === null} />
               start from {selected ?? "an empty room"}
@@ -1072,7 +1072,7 @@
             <button class="ghost" disabled={!dirty || savingPlan} onclick={savePlan}>
               {savingPlan ? "Saving…" : "Save into this layout"}
             </button>
-            <input placeholder="save as new id…" bind:value={saveAs} />
+            <input aria-label="Id to save this layout as" placeholder="save as new id…" bind:value={saveAs} />
             <button class="ghost" disabled={!saveAs.trim() || savingPlan} onclick={savePlanAs}>
               Save as
             </button>

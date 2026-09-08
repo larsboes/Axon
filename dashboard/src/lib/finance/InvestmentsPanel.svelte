@@ -57,11 +57,11 @@
       <table>
         <thead>
           <tr>
-            <th>Position</th>
-            <th>Price</th>
-            <th>Value</th>
-            <th>Share</th>
-            <th>Drift</th>
+            <th scope="col">Position</th>
+            <th scope="col">Price</th>
+            <th scope="col">Value</th>
+            <th scope="col">Share</th>
+            <th scope="col">Drift</th>
           </tr>
         </thead>
         <tbody>
@@ -119,7 +119,7 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Asset class</th><th>Value</th><th>Share</th><th>Drift</th></tr>
+          <tr><th scope="col">Asset class</th><th scope="col">Value</th><th scope="col">Share</th><th scope="col">Drift</th></tr>
         </thead>
         <tbody>
           {#each portfolio.asset_classes as row (row.asset_class)}

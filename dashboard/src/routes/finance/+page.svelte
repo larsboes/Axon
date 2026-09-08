@@ -511,11 +511,11 @@
   <table>
     <thead>
       <tr>
-        <th>Subscription</th>
-        <th>State</th>
-        <th class="num">Monthly</th>
-        <th class="num">Value</th>
-        <th>Category</th>
+        <th scope="col">Subscription</th>
+        <th scope="col">State</th>
+        <th class="num" scope="col">Monthly</th>
+        <th class="num" scope="col">Value</th>
+        <th scope="col">Category</th>
       </tr>
     </thead>
     <tbody>

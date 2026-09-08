@@ -327,7 +327,7 @@
             <span>Receivable <strong>{money(Math.max(0, selectedReview.totalCents - (personalCents() ?? 0)), selectedReview.candidate.currency)}</strong></span>
           </div>
         {/if}
-        <button class="save" disabled={busy || !shareIsValid() || (purpose === "trip" && !tripId)}>
+        <button type="submit" class="save" disabled={busy || !shareIsValid() || (purpose === "trip" && !tripId)}>
           Save purpose and share
         </button>
       {:else}
@@ -374,7 +374,7 @@
         {:else if selectedInflow && selectedTarget && selectedInflow.amount_cents > selectedTarget.outstanding_cents}
           <p class="error">This inflow is larger than the selected outstanding receivable.</p>
         {/if}
-        <button disabled={busy || !selectedInflow || !selectedTarget || selectedInflow.currency !== selectedTarget.currency || selectedInflow.amount_cents > selectedTarget.outstanding_cents}>
+        <button type="submit" disabled={busy || !selectedInflow || !selectedTarget || selectedInflow.currency !== selectedTarget.currency || selectedInflow.amount_cents > selectedTarget.outstanding_cents}>
           Link repayment
         </button>
       </form>
