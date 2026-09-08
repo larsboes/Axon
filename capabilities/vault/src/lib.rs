@@ -16,4 +16,5 @@ pub mod graph;
 pub mod lint;
 pub mod names;
 pub mod note;
+pub mod people;
 pub mod tasks;
