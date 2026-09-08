@@ -403,6 +403,19 @@ export function collectWhyBlocks(
 // cited it, and during the 2026-07-28 curation that step was missed three batches running --
 // partly because the generator *emits* decision paths into ARCHITECTURE.md, so a sweep that
 // excluded the generated file could not see them. Cheap to check, invisible when skipped.
+//
+// A REPO path, not an HTTP one. Measured 2026-09-05: the finance capability's route for
+// recomputing investment proposals matched this pattern and failed the gate in four files at
+// once, in Rust, TypeScript and Markdown.
+//
+// The exclusion is on what an HTTP ROUTE looks like, not on any preceding slash. Excluding
+// every match that follows a slash would also silence `docs/decisions/<slug>`,
+// `./decisions/<slug>` and `Knowledge-Base/decisions/<slug>` -- real citations of a dissolved
+// entry that happen to carry a directory in front of them, which is exactly what this sweep
+// exists to catch. So the three route shapes this repository writes are named instead: a path
+// under `api/`, a path built on a base-URL template, and an absolute http(s) URL.
+const ROUTE_PREFIX = /(api\/|\$\{[^}]*\}\/|https?:\/\/[^\s"'`]*\/)$/;
+
 export function findDanglingDecisionRefs(
   files: Array<{ path: string; text: string }>,
   slugExists: (slug: string) => boolean,
@@ -411,6 +424,7 @@ export function findDanglingDecisionRefs(
   const seen = new Set<string>();
   for (const { path, text } of files) {
     for (const m of text.matchAll(/decisions\/([a-z0-9][a-z0-9-]*)/g)) {
+      if (ROUTE_PREFIX.test(text.slice(Math.max(0, (m.index ?? 0) - 64), m.index ?? 0))) continue;
       const slug = m[1];
       const key = `${path}::${slug}`;
       if (seen.has(key) || slugExists(slug)) continue;
@@ -1558,6 +1572,71 @@ const CHECKS: Check[] = [
     },
   },
 
+  // Tailnet identity gate. `AXON_TAILNET_OPERATOR` says "admit this login from the
+  // tailnet", and the thing that makes that statement true is not in this repository:
+  // it is the shape of `tailscale serve`. An HTTPS web handler authenticates the peer
+  // and injects `Tailscale-User-Login`, overwriting whatever the client sent (measured
+  // against tailscale 1.102.3, 2026-09-06). A raw TCP forward injects nothing.
+  //
+  // So a serve config switched from web to TCP turns every tailnet request into
+  // something the gate cannot distinguish from a loopback one, and libs/axon-server
+  // falls through to the token rule — which on this deployment is no rule at all. The
+  // gate would stop gating, silently, with every process still healthy and every test
+  // still green. That is the exact failure shape PRD §13 records four times over, so
+  // the declaration gets a checker rather than a sentence.
+  {
+    name: "Tailnet identity gate (AXON_TAILNET_OPERATOR)",
+    run(ctx) {
+      if (!ctx.overlayPath || !existsSync(ctx.overlayPath)) return ctx.warn("no overlay — cannot read deployment.env");
+      const envPath = join(ctx.overlayPath, "config", "deployment.env");
+      if (!existsSync(envPath)) return ctx.ok("no deployment.env — no tailnet gate declared");
+      const declared = readFileSync(envPath, "utf8")
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l.startsWith("AXON_TAILNET_OPERATOR="))
+        ?.slice("AXON_TAILNET_OPERATOR=".length)
+        .trim();
+      if (!declared) {
+        // Not a failure. The undeclared deployment is the one that predates this gate,
+        // and libs/axon-server ignores the identity header entirely in that state.
+        return ctx.ok("no operator declared — the identity header is ignored, not trusted");
+      }
+
+      const serve = Bun.spawnSync({ cmd: ["tailscale", "serve", "status", "--json"], stdout: "pipe", stderr: "pipe" });
+      if (!serve.success) return ctx.bad(`operator declared but 'tailscale serve status' failed — the gate depends on a proxy this machine cannot describe`);
+      let config: any;
+      try {
+        config = JSON.parse(serve.stdout.toString() || "{}");
+      } catch {
+        return ctx.bad("operator declared but 'tailscale serve status --json' did not parse");
+      }
+
+      // A TCP forward is the dangerous shape: it proxies bytes and injects no identity,
+      // so the gate sees every tailnet caller as a local one.
+      const tcp = Object.entries(config.TCP ?? {}).filter(([, v]: any) => !v?.HTTPS);
+      const webHandlers = Object.values(config.Web ?? {}).flatMap((host: any) => Object.entries(host?.Handlers ?? {}));
+      const proxied = webHandlers.filter(([, h]: any) => typeof h?.Proxy === "string");
+
+      if (proxied.length === 0) {
+        return ctx.bad(`operator '${declared}' is declared but 'tailscale serve' publishes no HTTPS web handler — nothing injects an identity header, so the gate admits every tailnet caller as loopback`);
+      }
+      for (const [port] of tcp) {
+        ctx.bad(`'tailscale serve' forwards raw TCP on ${port} — a TCP forward injects no identity header, so the gate cannot see who is calling`);
+      }
+      if (tcp.length === 0) {
+        ctx.ok(`operator '${declared}', ${proxied.length} HTTPS web handler(s) — identity is injected and overwritten by the proxy`);
+      }
+
+      // Funnel is the internet, which PRD N3 refuses outright. Serve's own status
+      // distinguishes them, and this is the one place that reads it.
+      const funnel = Bun.spawnSync({ cmd: ["tailscale", "funnel", "status"], stdout: "pipe", stderr: "pipe" });
+      const funnelText = funnel.stdout.toString();
+      if (funnelText.includes("Funnel on")) {
+        ctx.bad("'tailscale funnel' is on — PRD N3 refuses internet exposure; the identity gate covers the tailnet, not the public internet");
+      }
+    },
+  },
+
   // Data freshness — the check that would have caught a nine-day outage (PRD D13).
   //
   // Every other check here verifies a DECLARATION: the manifest is well formed, the unit matches
@@ -1566,6 +1645,107 @@ const CHECKS: Check[] = [
   // doctor reported a clean machine. `feed-sweep` had been deleted; comms stayed up, healthy, and
   // empty.
   //
+  // A stored path into the vault is a claim that a file exists. Nothing checked those claims
+  // until 2026-09-07, and on that day three separate sets of them were found broken at once:
+  // `trips` named ten `Atlas/Events/` notes its own migration had deleted, all seven
+  // `finance_subscriptions.source_path` values pointed into a folder that no longer existed —
+  // which silently kept finance on pattern B when Q31 says prefer C — and `scouting` carries a
+  // `vault_link` column plus a whole `scouting_links` table that have never held a row.
+  //
+  // None of them broke a service, which is exactly why none of them surfaced. A pointer into a
+  // human's notes rots without an exception: the vault is reorganised by hand, and no foreign key
+  // reaches across the boundary the direction rule (PRD §5.5) deliberately keeps one-way.
+  //
+  // `warn`, not `bad`: every instance found so far was inert at the moment it was found. The
+  // cost is a wrong branch or a dead link, not a stopped capability.
+  //
+  // The column list below is TYPED, and that is a known weakness worth stating rather than
+  // hiding: nothing in the repo declares "this column holds a vault-relative path", so a new one
+  // is invisible here until somebody adds a line. The alternative — sniffing every TEXT column
+  // for something that looks like a path — would report a false positive on the first note title
+  // containing a slash.
+  {
+    name: "Vault pointers (stored paths that must resolve)",
+    run(ctx) {
+      const envPath = (process.env.AXON_DB_PATH ?? "").trim();
+      const dbPath = envPath ? expandHome(envPath) : join(ctx.overlayPath, "data", "axon", "axon.db");
+      if (!existsSync(dbPath)) return ctx.warn("no database — nothing to resolve");
+
+      // The vault root is a per-capability declaration, and they are allowed to differ. Read
+      // each one rather than assuming a single vault: a machine that points comms at one root
+      // and trips at another is legal, and a check that assumed otherwise would blame the wrong
+      // capability for a path that resolves perfectly well against its own root.
+      const rootFor = (config: string, key: string): string | null => {
+        const file = join(ctx.overlayPath, "config", config);
+        if (!existsSync(file)) return null;
+        try {
+          const parsed = JSON.parse(readFileSync(file, "utf8"));
+          const root = parsed?.obsidian?.[key];
+          return typeof root === "string" && root.trim() !== "" ? expandHome(root) : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const sources = [
+        { cap: "trips", config: "trips.json", table: "trips_plans", label: "source_ref", column: "source_ref", where: "source_kind = 'obsidian'" },
+        // `json_extract(payload,'$.vault_path')` and NOT `external_id`, which this check itself
+        // proved is overloaded: `item_type = 'note'` holds ten Obsidian imports whose external_id
+        // IS a vault path, and two sparpreis fare-drop notes whose external_id is a synthetic key
+        // (`sparpreis-drop:8000044:...`). Keying on the field that literally means "a vault path"
+        // is the rule that cannot acquire a third meaning behind our backs.
+        { cap: "trips", config: "trips.json", table: "trips_plan_items", label: "payload.vault_path", column: "json_extract(payload,'$.vault_path')", where: "item_type = 'note'" },
+        { cap: "finance", config: "finance.json", table: "finance_subscriptions", label: "source_path", column: "source_path", where: "1=1" },
+        { cap: "scouting", config: "scouting.json", table: "scouting_opportunities", label: "vault_link", column: "vault_link", where: "1=1" },
+        { cap: "scouting", config: "scouting.json", table: "scouting_links", label: "vault_path", column: "vault_path", where: "1=1" },
+      ];
+
+      let checked = 0;
+      let dangling = 0;
+      let skipped = 0;
+
+      for (const src of sources) {
+        const root = rootFor(src.config, "root");
+        if (!root) {
+          skipped += 1;
+          continue;
+        }
+        const proc = Bun.spawnSync({
+          cmd: [
+            "sqlite3",
+            `file:${dbPath}?mode=ro`,
+            `SELECT DISTINCT ${src.column} FROM ${src.table} WHERE ${src.where} AND ${src.column} IS NOT NULL AND TRIM(${src.column}) <> '';`,
+          ],
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        // A table this machine's capability set never created is not a finding. sqlite3 says
+        // "no such table" and that is the honest answer for a host that does not run trips.
+        if (proc.exitCode !== 0) continue;
+
+        const missing: string[] = [];
+        for (const line of proc.stdout.toString().split("\n")) {
+          const rel = line.trim();
+          if (rel === "") continue;
+          checked += 1;
+          if (!existsSync(join(root, rel))) missing.push(rel);
+        }
+        if (missing.length > 0) {
+          dangling += missing.length;
+          // Three names, then a count. The whole list belongs in the capability's own tooling;
+          // what doctor owes is enough to recognise WHICH set is broken.
+          const shown = missing.slice(0, 3).map((m) => `'${m}'`).join(", ");
+          const rest = missing.length > 3 ? ` (+${missing.length - 3} more)` : "";
+          ctx.warn(`${src.cap}: ${missing.length} of ${src.table}.${src.label} point at nothing — ${shown}${rest}`);
+        }
+      }
+
+      if (skipped === sources.length) return ctx.warn("no capability declares a vault root — nothing to resolve");
+      if (checked === 0) ctx.ok("no stored vault pointers on this machine");
+      else if (dangling === 0) ctx.ok(`${checked} stored vault pointer(s) resolve`);
+    },
+  },
+
   // Asks the capability, rather than reading its data. `GET /__axon/freshness` answers
   // `{"last_arrival_at": <epoch>}` and nothing else, so this stays a check about liveness of a
   // FLOW and never becomes a second reader of anyone's tables.
@@ -2047,6 +2227,79 @@ const CHECKS: Check[] = [
         ctx.ok(`checked ${Math.round(ageH)}h ago — no enabled capability declares an image`);
       } else if (ageH <= 48) {
         ctx.ok(`images refreshed ${Math.round(ageH)}h ago${r.ran ? ` (recreated:${r.ran})` : ", none moved"}`);
+      }
+    },
+  },
+
+  // Build artifacts — PRD §9's R6, the resource rule §9 had no check for until now. Q53
+  // (2026-08-28) ratified it and named tools/doctor as the checker; it stayed unimplemented
+  // until 2026-09-03, when tools/storage grew the `target` verb that can answer it.
+  //
+  // Delegated, not reimplemented, exactly as the toolchain check above is: axon-storage
+  // owns the walk, the buckets, the ratio and the toolchain comparison, and doctor reads
+  // its verdict. A warn rather than a bad, for the reason Q53 itself gives about gates that
+  // fire when nothing is wrong: a checkout mid-refactor legitimately carries a debug tree
+  // that no release build matches, and the tool reports the unit counts that show it.
+  //
+  // The binary is used only if it is already built. Building it here would make the fast
+  // local sweep pay for a release compile, which is the same reason the UI section below
+  // runs discovery and never the checks.
+  {
+    name: "Build artifacts (PRD §9 R6)",
+    run(ctx) {
+      const launcher = join(ctx.root, "tools", "storage", "storage");
+      if (!existsSync(launcher)) {
+        ctx.warn(`missing ${launcher}`);
+        return;
+      }
+      const targetDir = process.env.CARGO_TARGET_DIR || join(ctx.root, "target");
+      const bin = join(targetDir, "release", "axon-storage");
+      if (!existsSync(bin)) {
+        ctx.warn("axon-storage not built — run `axon storage target` to check R6");
+        return;
+      }
+      const proc = Bun.spawnSync({ cmd: [bin, "target", "--json"], stdout: "pipe", stderr: "pipe" });
+      let data: any;
+      try {
+        data = JSON.parse(proc.stdout.toString());
+      } catch {
+        ctx.warn("axon-storage target did not emit JSON — run `axon storage target` for detail");
+        return;
+      }
+      const gb = (b: number) => `${(b / 1024 ** 3).toFixed(1)} GB`;
+      const units = (name: string) =>
+        (data.profiles ?? []).find((p: any) => p.name === name)?.units ?? 0;
+
+      if (data.ratio === null || data.ratio === undefined) {
+        ctx.warn(`${gb(data.bytes ?? 0)} in ${data.target_dir} — no release build, so R6 has no control`);
+      } else if (data.r6 === "over") {
+        // Say the unit counts in the same line as the ratio. R6's control is "same crates,
+        // same machine, same moment" (Q53), and a mismatch there is the difference between
+        // a real finding and two builds that were never comparable.
+        ctx.warn(
+          `target/debug is ${data.ratio.toFixed(1)}× target/release, over R6's ${data.r6_max_ratio}× ` +
+            `(${units("debug")} vs ${units("release")} units) — axon storage prune --incremental, or ` +
+            `build both profiles and re-check`,
+        );
+      } else {
+        ctx.ok(`target/debug is ${data.ratio.toFixed(1)}× target/release, within R6's ${data.r6_max_ratio}× (${gb(data.bytes ?? 0)} total)`);
+      }
+
+      // The rot no ratio detects: both profiles carry it equally. On 2026-09-03 this
+      // workspace's target dir held 21 GB, most of it output from rustc versions no longer
+      // installed, and a clean rebuild of the same tree was 4.7 GB.
+      const tc = data.toolchain ?? {};
+      if (tc.matches === false) {
+        ctx.warn(
+          `target/.rustc_info.json records rustc ${String(tc.recorded).slice(0, 9)} but this machine runs ` +
+            `${String(tc.current).slice(0, 9)} — ${gb(tc.stale_candidate_bytes ?? 0)} of deps and fingerprints ` +
+            `was built by a compiler that is gone; axon storage prune --target`,
+        );
+      } else if (tc.recorded) {
+        // "last recorded", not "clean": cargo rewrites .rustc_info.json on its first run
+        // under a new compiler and leaves the older generation's output in deps/, so a
+        // match means cargo has run since the last roll and nothing stronger.
+        ctx.ok(`cargo last recorded rustc ${String(tc.recorded).slice(0, 9)}, which is the one installed`);
       }
     },
   },

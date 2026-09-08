@@ -31,17 +31,63 @@ from the private overlay at runtime.
 
 ### Mail classification today
 
-Mail triage is deterministic and local. It does not call an LLM, embedding
-model, or cloud AI service, and it does not produce an importance score. The
-classifier considers only the sender header, subject header, and whether a
-`List-Unsubscribe` header exists. The fetched snippet, Gmail labels, internal
-date, message body, and attachments do not affect the category.
+Mail triage has two rungs, and everything it does stays on this machine. No
+cloud model, no embedding service, no message body, no attachment.
 
-Rules use first-match-wins order: personal rules from the private overlay,
-then generic public heuristics, then the conservative `aktiv` fallback. Every
-proposal stores the rationale, method, and classifier revision. A category
-changed in the dashboard becomes a `human` override and later sweeps preserve
-it. Category ordering in the dashboard is an attention aid, not a hidden score.
+**Rung 1 is deterministic.** It reads the sender header, the subject header and
+whether a `List-Unsubscribe` header exists, and nothing else. First match wins:
+personal rules from the private overlay, then generic public heuristics, then
+the conservative `aktiv` fallback. Every proposal stores its rationale, its
+method, its classifier revision — and, since the model rung exists, which of
+those three rungs actually fired, because that fact cannot be re-derived later.
+
+**Rung 2 is a local model, and it looks only at what rung 1 did not decide**
+(PRD Q85, 2026-09-05). It runs on the threads that reached the `aktiv` fallback,
+never on a thread a rule matched. Measured on a copy of the live store 2026-09-05:
+102 of 237 proposals sat at that fallback, all 102 carrying the fallback rationale
+verbatim, and the `issue` column the dashboard labels *Action* held zero rows —
+*does this mail ask something of me* is not a substring, which is the justification
+for climbing at all. It reads the sender's **domain** (never the address), the stored
+subject and the stored preview — both already carrying
+`deterministic-entity-redaction-v3` output, because intake redacts before it
+writes. It answers with a category, a self-reported confidence and an urgency
+score, each with a one-line rationale. Four things bound it:
+
+- a `c3` **Secret** mail is refused before a prompt is built and before any
+  model is woken, and the refusal is stored rather than left as an absence;
+- only the light local model may answer. A thread too long for its window is a
+  stored verdict, not a handoff to a bigger model;
+- every call is loopback-only, and a non-loopback endpoint is refused outright;
+- it is **shadow by default**. It writes verdicts to its own table and moves no
+  category until the overlay declares `mail_model.apply` *and* a
+  `mail_model.min_confidence_bp` above zero — a floor of zero would write every
+  disagreement at any self-reported confidence, so the operator names the floor
+  in the same edit that turns writing on. Even then it refuses any proposal that
+  would raise the mail's data class — those are held for a person, because the
+  class change and the redaction that follows it cannot be undone.
+
+The rung is explicit: two routes and a CLI verb, no timer. Run it with
+`comms mail classify --shadow`, read `comms mail classify --report`, then set
+the two overlay keys and run `comms mail classify --apply`. Apply does not ask
+the model again: a stored shadow verdict already carries the answer, so the
+apply pass reads it and writes the category. Undo a bad batch with
+`--revert-all` (`--revert` needs a thread id and refuses to stand in for it),
+which restores the deterministic verdict on the category axis and says in its
+own output what it cannot restore.
+
+A category changed in the dashboard becomes a `human` override and every later
+sweep preserves it, model pass included. A model row survives a deterministic
+resweep, but a rule that actually **fires** takes the row back — so a new
+overlay rule can still correct the model, which a bare method rank would have
+made impossible. Category ordering in the dashboard is an attention aid, not a
+hidden score, and **the urgency score ranks nothing yet**: it is stored, published
+and displayed, and the evaluator's reserved urgency factor reads it through
+`mail_evaluation::urgency_from_verdict` behind one gate,
+`mail_evaluation::URGENCY_VALIDATED`. That constant stays `false` until the frozen
+corpus in `eval/README.md` carries a measured urgency-band error, so turning it on
+is a source edit a reviewer sees rather than an overlay value that reorders the
+ladder silently. A stored `urgency_bp` with no rationale beside it counts as absent:
+a weighted bar the reader cannot check is what this evaluator exists not to render.
 
 Every shared content item also carries one inspectable trust class (Q27).
 `c0` (shown as **Public**) may use local processing and is eligible for
@@ -76,7 +122,30 @@ a proposal reviewable when its subject cannot be read. Both sweep entry points �
 the CLI and the HTTP API — go through one intake path, because a gate only one
 of them uses is a gate over half the traffic. `POST /triage/redact` applies the
 same pass to rows stored before this existed; it is idempotent and reports what
-kind of thing it removed, never the value.
+kind of thing it removed, never the value. It reaches the model rung's stored
+sentences as well: a verdict is redacted against the class its thread held when
+it was written, so a thread that rises to `c2` later has its verdict narrowed by
+whichever path raised it, this route included.
+
+**A reduced call says so in words** (PRD Q9b, 2026-08-23). Every cloud
+derivative that removed anything carries `redaction_receipt`, one sentence
+built from the findings already on the object: *"Reduced 4 details before this
+call: 2 mentions of people, 1 email address and 1 link."* `null` when nothing
+was removed — a receipt on an untouched call trains the reader to stop reading
+the ones that matter. It is composed in `cloud_derivative.rs` rather than by
+each surface, so the CLI, the dashboard and anything later say the same thing
+about the same call, and the dashboard renders it above the per-kind ledger it
+already had.
+
+Two things about the wording, because both are constraints and not choices.
+The sentence counts **occurrences, not people**: findings aggregate by
+`entity_type`, so `person: 5` means five mentions were replaced and says nothing
+about how many distinct people they were — the detector never learns that,
+because knowing it would mean keeping the names. Q9b's own example reads *"3
+facts about 2 people"*, and the second number is not in the data. And a kind the
+phrase table does not know is named by its raw literal instead of being dropped,
+because the leading total sums every finding: a receipt whose breakdown does not
+add up to its own number is worse than no receipt.
 
 A later sweep cannot undo that. Classification runs the named-person rule
 against the people registry, so a pass with the overlay unmounted answers `c1`
@@ -256,11 +325,136 @@ that backend is unavailable, both sides use the same deterministic lexical vecto
 stored match is labelled `lexical`. Scores are raw ranking signals, not calibrated probabilities.
 
 The Feed's displayed rank is a separate deterministic evaluation, not an LLM judgment.
-`feed-evaluator-v2-travel` combines the strongest TELOS match (45%), an explicit upcoming-trip
-match (25%), age since first ingest (20%) and the stored content basis — title, author, summary
-and source text (10%). Travel matching compares item text with destination names and the plan's
+`feed-evaluator-v6-feedback` combines the strongest TELOS match (45%), an explicit upcoming-trip
+match (25%), age since first ingest (20%), the stored content basis — title, author, summary and
+source text (10%) — and, when it has earned the right to count, a fifth factor learned from the
+operator's own decisions (15%, with the four base weights scaling to 0.3825/0.2125/0.17/0.085 so
+the sum stays 1.0). Travel matching compares item text with destination names and the plan's
 declared interests; the winning factor carries the Trip ID, label, dates and matched terms so
 the UI never has to reverse-engineer a prose explanation.
+
+One rule governs every factor whose producer has not run: **it carries weight 0 and the others
+scale so the sum stays 1.0.** That is how an inert learned factor, or an urgency the model rung
+has not published, leaves the arithmetic whole instead of dumping the item to the bottom of its
+band by a zero it never earned.
+
+**A class refusal is not that case, and is never rescaled.** The refused share is withheld, not
+handed to the survivors, so a refused item's weights sum to less than 1.0 on purpose. Rescaling
+it promoted exactly what the class ladder forbids: measured on a copy of the live database, a
+refused mail kept only `category` (a constant 1.0 on the `aktiv` band) and `age`, so all eleven
+c3 threads scored 0.863-0.990 while the best mail anybody had actually read reached 0.702. A
+refusal is missing evidence, not a free pass, and a refused row can never outrank a scored row
+whose other factors are identical.
+
+**Nothing the class ladder refuses is scored, by either path.** `score_items` asks
+`content_item::local_prompt_allowed` before it builds the embedding batch, and a refused item
+is excluded from the lexical fallback too — one rule instead of two, because a lexical score is
+still a content-derived number rendered in a rationale on a surface. A refused item is stored
+as a refusal: an evaluation at `mode = 'unscored'` with a zero-weight interest factor reading
+"Not scored: c3 is never read by a model", and its stored matches deleted. Both writes go past
+the tier gate, because a refusal is a withdrawal rather than a weaker producer: the refusal's
+`unscored` mode ranks `deterministic`, so escalating an already-scored item to c3 otherwise left
+its model-derived score, its rationale and its matches exactly where they were while the pass
+reported the refusal. This is not
+hypothetical for mail: the triage scoring path built a synthetic `FeedItem` and never copied
+the triage row's class, so `FeedItem::new` stamped the undeclared default — literally `c1` —
+and every c3 mail was embedded, sender address included.
+
+**What must be re-embedded and what must merely be re-ranked are two different questions.**
+The *relevance revision* (lens fingerprints plus the embedding and reranking producers) decides
+what has to go back through a model; the *context revision* (those plus the travel snapshot)
+decides only what has to be re-evaluated, from matches already stored. Before the split every
+term in the context revision was an embedding trigger, so a trip starting re-embedded the whole
+window for a factor weighted 0.10. A stored `lexical` row is also stale while an embedding role
+is reachable, which drains rows written during an outage over ordinary passes rather than
+needing a force flag.
+
+**A pass records a receipt, and the receipt is not a delivery** (PRD Q90, 2026-09-05).
+`POST /feed/relevance/refresh` writes a `relevance-pass` row into `comms_source_state` with
+the mode that actually answered,
+the counters and an error class — and never `last_success_at`, because that column is the whole
+body of `GET /__axon/freshness`, which answers "is data still reaching this capability".
+`local-inference` is excluded from that query for the same reason: a machine whose collectors
+have all stopped must not be held green by a local model answering a drain.
+
+`comms relevance backfill [--days N=3650] [--batch N=100] [--max N] [--force]` pages that route
+until every item in the window has been seen, printing the mode each page answered in. Only a
+chain that ran the full 3650-day window marks the corpus complete at the current relevance
+revision: a narrower pass reaches the end of its own window after a handful of rows, and stamping
+the corpus done from there left every row it never saw reading as current forever. It is an HTTP
+client against the running server, never a second opener of the database: `Store::open` runs the
+whole migration on every call and two openers deadlock.
+
+**The fifth factor learns from the ledger, and is inert until that is worth doing**
+(PRD Q88, 2026-09-05). L2-regularised logistic regression over an explicit ~50-slot feature
+vector — kind, source, top TELOS lens, lens scores, content_status, freshness bucket, hashed
+author, hour bucket. **No slot
+carries text**: the author is one of sixteen hash buckets and everything else is a categorical id
+or a number, so a feature vector cannot reconstruct a title. Training obeys the same ladder as a
+prompt: an item that fails `content_item::local_prompt_allowed` contributes no label and no
+feature vector. A full deterministic refit, never an incremental update — identical inputs give
+identical weights, which is what lets the revision be a cache key — stored as a second
+`context_kind = 'feedback-model'` row in the existing `comms_feed_context_snapshots`, with its
+`feature_names` beside its weights: a new lens or a new source changes the vocabulary, and a
+model whose stored names differ from the ones computed now is stale by definition.
+
+The factor renders at **weight 0 with the rationale "not yet learned"** until three measured
+conditions hold — ≥50 labels, ≥10 of the smaller class, held-out AUC ≥0.65 on a time-ordered 30%
+split — and while it is inert its revision is the literal `none`, so accumulating labels does not
+restale cached evaluations for a factor that counts for nothing. What obliges the gate: of the
+19 live labels the keepers are github, youtube and article, and **zero of the 185 stored arXiv
+items has ever been kept**. A model fitted on that learns "arXiv is never kept" and buries the
+largest source in the feed. `POST /feed/model/train` refits and reports the gate; `dry_run`
+reports it without writing. It is gated against a frozen synthetic corpus whose judgement rule
+was written before the trainer ran (`eval/feedback-corpus.json`). Active, the factor names its
+two strongest signed contributions — it may re-rank and must explain itself, and it may never
+write a status.
+
+**Mail has its own evaluator, and it publishes one number with one writer**
+(PRD Q89, 2026-09-05). `comms_triage_evaluations` and `comms_triage_evaluation_factors`
+mirror the feed's pair column for column — same currency check, same tier gate, same
+normalized factor table — with mail-shaped factors: TELOS interest 0.55 from the rows
+`POST /triage/relevance/refresh` already stores, category 0.30 from the `rules` stream,
+age 0.15 reusing the Feed's own freshness curve,
+and a reserved **urgency 0.25** the LLM model rung fills through
+`mail_evaluation::urgency_from_verdict`. It stays at weight 0 while
+`URGENCY_VALIDATED` is false, and the other three scale to 1.0 — except on a class refusal,
+which is never rescaled, so a refused mail caps at 0.45 and cannot outrank a mail that was
+read. A refusal passes no urgency whatever the rung once stored: a c3 mail reached no model,
+and a refusal exists to withdraw a model-derived number rather than to carry one forward.
+
+There is **no correspondent factor**: `is_known_person` compares one whitespace-free token,
+so it is false for every address, and Q72 rule 2 already settled that the registry is asked
+per token of subject and snippet, never over the sender. Said plainly: on the `aktiv` band
+the category factor is a constant, so ordering there is carried by interest, age and — when
+it exists — urgency.
+
+`TriageOut` gains `score_bp`, the evaluator's `overall_score` in basis points (0..=10000, the
+unit the companion register uses per Q73), and `evaluated_at`. **One writer**: this evaluator.
+The model rung's urgency is not a competing number on the same field — it arrives as the
+`urgency` factor's input, so it moves the score *through* the evaluator and keeps its rationale
+beside the other three. `null` means no stored evaluation, which is not the same as 0. The full
+breakdown rides the existing reader contract at `GET /content/mail/:id`, whose `evaluation` was
+hardcoded `None` until now.
+
+**A rationale never quotes a stored mail field.** `intake` redacts subject and snippet for c2
+and c3 and deliberately keeps the sender unredacted, so no address, subject or snippet appears
+in a rationale, a log or a receipt — only the lens label, the category and the age.
+
+**Every decision is now recorded, with its time.** `comms_feed_interactions` is append-only:
+`(feed_id, event, surface, occurred_at)`, where `event` is one of `opened`, `kept`, `dismissed`,
+`reopened`, `unkept` or `shared`. An item's label is its most recent decisive event, retracted
+by a later `unkept`. **One writer per verb**: `set_feed_status` writes `kept`, `dismissed` and
+`unkept` inside the same transaction as the UPDATE, and `POST /feed/:id/interactions` refuses
+those three with a 400 naming the status route, accepting only `opened` and `reopened`. Two
+paths writing one decision would double every count in a table whose whole justification is
+that it can be read by hand — and so would one path writing a decision that never happened, so
+one row means one status *change*: `set_feed_status` reads the stored status inside the same
+transaction and writes nothing when the press does not move it. `GET /feed/evaluation/status`
+reports the ledger's own counters as `interactions`, which is where `opened` and `reopened` —
+verbs no training label reads — reach a surface. `shared` ships with no writer on purpose: SQLite has no alterable
+constraint, so widening that CHECK later costs a table rebuild, and declaring the value now is
+free. A row carries ids and verbs — no content, no text.
 
 Trips remains the owner. Comms reads `GET /api/plans`, retains a bounded snapshot containing
 only upcoming plan identity, title, destinations, date window, interests and revision, and
@@ -354,9 +548,12 @@ summaries run 484–1,293 characters, and a paragraph that size in a YAML scalar
 note. `data_class`, `stream`, `content_status` and the provenance columns have no vault
 reader and stay in the store.
 
-**Known gap.** The store records no time at which a link was saved — `set_feed_status` writes
-no timestamp — so `created` is the day the item was ingested, which is earlier than the save
-and sometimes by weeks. Fixing it is a column and a migration, not a rendering change.
+**The saved date exists now, and this note still does not render it.** `set_feed_status`
+writes a `kept` row into `comms_feed_interactions` in the same transaction as the status
+change, so the moment a link was saved is kept — it was not before. What the frontmatter
+should carry is a separate decision about the note: `created` is still the day the item was
+ingested, which is earlier than the save and sometimes by weeks. The fact is now available to
+whoever takes that decision; it is no longer a column and a migration.
 
 **No `Resources/Sources/` Base exists yet.** `Media.base` still filters
 `file.inFolder("Atlas/Media")`, so these notes are queryable only by folder until the
@@ -682,7 +879,15 @@ continues to cross `spawn_blocking` inside the owning workflow.
 
 Routes:
 
-- `GET /feed?stream=&days=&include_dismissed=` → feed items (no `transcript`)
+- `GET /feed?stream=&days=&include_dismissed=` → feed items (no `transcript`). Each item
+  states its `data_class` since 2026-09-06, because the one consumer that needs it reads the
+  LIST: finance's `item_is_quotable` fails closed and drops every item whose class is
+  unstated, so its decision inbox carried no feed evidence at all until this field existed.
+  A row nobody classified answers `c1`, the undeclared default, never an absence. The test
+  asserts the SERIALIZED key, since a rename here would break nothing in finance — it would
+  silently empty the evidence again. The LIST only: `FeedFullItem`, which `GET /feed/:id` and
+  `POST /ingest` answer with, still states no class, so a caller that builds a list row from
+  an ingest response has none to carry (`dashboard/README.md`).
 - `GET /feed/:id` → one reader item incl. `transcript`, every stored TELOS relevance match,
   the factorized evaluation and Vault provenance
 - `GET /content/:source/:id` where source is `feed` or `mail` → the shared versioned

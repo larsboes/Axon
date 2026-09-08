@@ -10,18 +10,142 @@ own, exposes its own HTTP surface, and this only reads.
 
 ## Stack
 
-Svelte 5 (runes) + SvelteKit 2 + Vite, per
-[`this file`](../this file).
-Bun for packages. No CSS framework and no component library: Svelte scopes a component's
-own styles at compile time, so what is worth sharing is a token layer plus four
-primitives, and `src/app.css` is that whole design system. Icons are inline SVG in
-`src/lib/Icon.svelte` rather than a dependency.
+Svelte 5 (runes) + SvelteKit 2 + Vite, ruled below under *Why this shape: Svelte 5 is the
+single frontend standard*. Bun for packages. No CSS framework and no component library:
+Svelte scopes a component's own styles at compile time, so what is worth sharing is a token
+layer plus a handful of primitives, and `src/app.css` is that whole design system. It
+declares a named type scale, a spacing rhythm, three breakpoints and one focus ring, and the
+classes `.card` / `.card-interactive`, `.tag`, `.btn`, `.input` and `.table`. What a class
+cannot express once is a component: `ListRow`, `RowMeta`, `StateLine`, `FactorBars`,
+`PageTabs` and `PageHeader`. `src/lib/feed/FeedItemRow.svelte` is the feed triage row built
+on them; Home's reading lane renders it today and the `/feed` list is meant to adopt the same
+component rather than keep a second one. Icons are inline SVG in `src/lib/Icon.svelte`,
+quarried from Lucide (ISC), rather than a dependency.
 
-The travel workspace keeps MapLibre and its stylesheet in a separate async bundle. A map
-loads only when it approaches the viewport or the reader explicitly selects **Karte
-laden**; the trip list remains the complete fallback when map loading fails. OpenFreeMap
-supplies the basemap. Destination images come from Wikimedia's free-license page-image
-surface and stay validated inert data.
+### The token layer
+
+PRD Q87 (2026-09-05) grew it, and the measurement is why. `app.css` was 289 lines and about
+forty tokens, while `src/` held 786 `font-size` declarations over 72 distinct values, 222
+distinct `padding` values, 80 distinct `gap` values and 32 distinct `@media` conditions —
+including near-duplicates at 620, 640, 650, 680, 700, 720 and 760 px. 62 custom properties
+were referenced and 35 declared; `--radius-lg` was referenced at four call sites and declared
+at none, so two Home cards rendered square. There was no `:focus-visible` rule anywhere and
+`.input:focus` removed the ring outright.
+
+Most of that spread is legitimate — a component declaring its own map height is the right use
+of the mechanism — so the gate accepts a property declared in the component that uses it,
+which is the difference between a gate and a nuisance (`tools/dashboard-tokens.test.ts`).
+Contrast is the other gate. `--text-tertiary` carries the meta line on every decision row and
+failed WCAG AA in both themes at 2.56:1 on a light card, 2.33:1 on the light page and 3.67:1
+on a dark card; it is now `#6b6b76` light and `#8a8a94` dark, measured after at 5.26:1 card
+and 4.79:1 page in light, 5.18:1 and 5.82:1 in dark (`tools/dashboard-contrast.test.ts`).
+
+Three breakpoints are named in the file — phone 38 rem, tablet 48 rem, rail 64 rem — as
+documented constants rather than custom properties, because no shipping browser resolves
+`var()` inside a media *condition*. A property redeclared inside a media *block* does resolve,
+which is how one `--header-h` covers a bar that is 3.5 rem at desktop and 3.25 rem on a phone.
+The ladder's four band tones collapse thirteen bands, and **no band is identified by colour
+alone**: the break above each band carries its name in words.
+
+**Two debts, recorded rather than closed** (PRD B50). `--warning` still fails AA as a text
+colour at 3.19:1 on white, in the fourteen files that pass was not allowed to touch;
+`--warning-ink` at 5.02:1 exists and everything written for the refresh uses it, and the
+contrast gate deliberately does not assert on `--warning`, so the gate is green while the debt
+is real. And `PinnedLinks.svelte` still renders an all-caps eyebrow, the last
+`text-transform: uppercase` label after the nav sections dropped theirs. Not verified at all:
+no browser was driven at the accessibility assertions — the VoiceOver announcement of a focused
+row, the sticky rail at both bar heights and the ten-rows-above-the-fold target are unverified.
+
+### Home's decision ladder
+
+A registry (PRD Q86, 2026-09-05): a kind is one file under `src/lib/home/kinds/` and its row
+one file under `src/lib/home/rows/`, discovered by `import.meta.glob` and joined on the kind's
+`view` string — a name rather than an import, so a kind stays readable by plain `bun test`
+outside Vite. `src/lib/home/decisions.ts` is the contract and imports nothing at runtime. Ten
+kinds ship; adding one no longer touches a discriminated union, a seven-slot fan-out, the
+briefing, the open handler and a 210-line snippet.
+
+Rank is `score(band, urgency) = band × BAND_STRIDE + min(MAX_URGENCY, max(0, urgency))`, with
+`BAND_STRIDE = 1000` and `MAX_URGENCY = 999`. **The clamp is what makes the band decisive, not
+the size of the stride** — once urgency cannot reach the stride, every band gap of one or more
+holds, so `tools/dashboard-home-bands.test.ts` asserts the clamp for strides of 1, 10, 100 and
+1000 rather than asserting the number. Bands are not unique: PRD §8.1 already puts two kinds on
+640, so a band is a rank and not a slot. Order inside a band is urgency, then earliest
+start-or-due, then stable id — except in the reading lane, whose start-or-due is a creation
+date and which breaks ties **newest**-first, because unscored feed items all land on one
+priority and the oldest unread article is not the one to show first. A band §8.1 does not name
+is declared in the kind's own file as `BAND <band> EXTENDS PRD <section and row>`, carrying the
+same number the kind sets, and a kind at an undeclared band fails the gate.
+
+Each kind writes its own slice on arrival and the ladder is derived over that. One
+`Promise.allSettled` over seven reads used to hold `loading` true until the slowest capability
+settled, so the flagship page rendered its heading and nothing else. The cold-start path is
+memoised rather than flagged: `createStarter` in `registry.ts` keeps a `Map` of in-flight start
+promises, so a second kind awaits the same POST the first one issued. A kind naming a row
+component that does not exist returns null and warns once, so Home degrades to a blank row
+rather than a blank page and the build gate names the owner. **The empty-state rule is applied,
+not reargued:** a page still answering renders the loading line, which is a state and not an
+empty state, and there is no "nothing is waiting" block — §8.1 already rules that a dashboard
+blank on a quiet day is working correctly.
+
+A capability-supplied destination on a scheme outside `https?|obsidian` is refused with a
+stated error instead of being handed to `location.assign`, which closes the path from a hostile
+feed link to script in the origin that renders the mail snippets. The keyboard handler is bound
+only while the ladder is on screen, so Enter on another view cannot navigate to a row nobody
+can see.
+
+**Data class is shown only where a capability publishes one.** Mail publishes one, and
+`GET /comms/feed` began publishing one on 2026-09-06 (`capabilities/comms/README.md`); the
+calendar entry, the task, the trip plan and the scouting opportunity still do not, and this
+shell will not invent a class it does not own. `FeedEntry.data_class` in `src/lib/api.ts` is
+therefore typed **optional**, and the `?` records a contract gap rather than caution: comms'
+detail contract carries no class, so `toListEntry` in `routes/feed/+page.svelte` builds a list
+row out of an ingest response that has none. A reader must treat `undefined` as *not stated*
+and fail closed. The field stops being optional the day the detail contract states one too.
+
+### One map surface, and a basemap that is half local
+
+Every map in this shell is `src/lib/map/MapSurface.svelte` over `src/lib/map/surface.ts`.
+The component owns the frame and the deferred / loading / failed states; the module owns the
+MapLibre instance, keeps it in a small pool, and hands it out on lease. A view brings its own
+sources and layer specs and nothing else — `/map`'s spend, travel and people layers are
+written in `routes/map/+page.svelte`, `/travel`'s three trip layers in
+`src/lib/travel/trip-layers.ts`. What a view stops owning is WebGL.
+
+The pool is what makes a route change cheap. Leaving `/map` for `/travel` detaches the map's
+container and parks the instance rather than calling `remove()`, so the next view re-parents
+it and swaps data: the parsed library, the parsed style, the decoded sprite and the uploaded
+tiles all survive. It is a pool and not a singleton because `/travel` can legitimately show
+two maps at once.
+
+MapLibre and its stylesheet stay in a separate async bundle — `vite.config.ts`'s `bundleGuard`
+fails the build if either reaches the eager import graph, **and if MapLibre's worker asset is
+not emitted**. That second assertion exists because its absence is silent: MapLibre asks for its
+worker through a template literal Rollup cannot follow, so no asset was built, the request fell
+through axon-status' SPA fallback as `200 text/html`, `new Worker` was handed the app shell and
+died — and every map on the served bundle rendered a blank canvas and sat on "Loading map…"
+forever, with no error and no failed request. `surface.ts` hands MapLibre a Vite-built worker
+through `setWorkerUrl` instead. A map loads when it approaches the
+viewport, or immediately where the map *is* the page (`eager`), or on the reader's explicit
+**Load map**; the list beside it is the complete fallback when loading fails.
+
+OpenFreeMap supplies the basemap, and its fixed half is vendored under `static/basemap` by
+`tools/fetch-basemap` — the style, the sprite and the Latin glyph ranges, with provenance and
+the licence obligations in that directory's `LICENSE.md`. That removes four serialized
+transatlantic round trips from the critical path (measured 2026-09-06: 0.23 s style, 0.19 s
+TileJSON, 0.31 s sprite, ~0.2 s per glyph range) and replaces them with ~1 ms loopback reads.
+The **vector tiles and the Natural Earth raster stay remote**; they are the large half, and
+self-hosting them is an open decision in `capabilities/places/ISA.md`.
+
+Labels are Latin-script only. Liberty renders `name:latin` concatenated with `name:nonlatin`, so
+a European overview asked for Greek, Cyrillic, Arabic, Devanagari and more — measured at **29
+glyph requests across 19 ranges** on the default view. `name:latin` already carries the romanised
+form of every place, so dropping the second line closes the question instead of vendoring 4.5 MB:
+four Latin ranges are vendored and **no glyph request leaves the machine**. A range outside the
+set still falls back upstream, so getting it wrong costs a slow label, not a missing one.
+
+Destination images come from Wikimedia's free-license page-image surface and stay validated
+inert data.
 
 `adapter-static` with an SPA fallback. Nothing here is true at build time, so nothing is
 prerendered; the build is a static bundle any server can hand out, which is what makes
@@ -111,13 +235,43 @@ instead of embedding it, so each SvelteKit site owns its own navigation and stor
 
 ## Client
 
-All access goes through `src/lib/api.ts` (`transit`, `trips`, `scouting`, `wikimedia`,
-`axonStatus`, `comms`). Components must not call `fetch` directly: the
-client is the one place that knows upstream shapes.
+One client module per domain, and no component calls `fetch`. `src/lib/api.ts` holds the
+shared clients (`transit`, `trips`, `scouting`, `wikimedia`, `axonStatus`, `comms`); a domain
+that needs calls of its own puts them in `src/lib/<domain>/api.ts` — `src/lib/feed/api.ts` is
+the first. The rule that matters is unchanged: a component never knows an upstream shape, and
+a client module is the only place that does.
 
-That includes error shapes. Every capability server answers a failure as
+The split is a merge rule, not a taste. `src/lib/api.ts` was 3,530 lines on 2026-09-06 and is
+appended to by several concurrent branches, so a domain adding two calls adds a file instead
+of a hunk in the middle of everyone else's. `src/lib/travel/api.ts` is the second such module.
+
+Error shaping stays central wherever the module lives. A domain module imports `ApiError` and
+`describeFailure` from `$lib/api` rather than re-deriving them, so a reader gets the same
+sentence whichever module made the call. Every capability server answers a failure as
 `{"error": "..."}`, so `request()` unwraps that field before throwing; without it the feed's
 paste box showed a reader the raw JSON on a 404, and so would every other call site.
+
+What does **not** move with a domain is the contract: `request`, `jsonInit` and `ApiError`
+stay in `src/lib/api.ts` and are imported, never copied — copying `request` would copy the
+200-with-`{"error": …}` unwrap above, which is the half of this rule that has a bug behind it.
+
+### Two list cursors, and the consolidation they owe
+
+Two modules implement J/K/Enter over a list, and both ship:
+
+| Module | Reader | What it owns |
+|---|---|---|
+| `src/lib/feed/list-cursor.ts` | the `/feed` inbox | pure arithmetic over `header`/`item` rows; a plain module with no runes, so bare `bun test` can exercise it (`tools/dashboard-list-cursor.test.ts`) |
+| `src/lib/list-cursor.svelte.ts` | Home's ladder | the same keystrokes plus **real DOM focus** — `elFor(index)?.focus()`, so a screen reader is told the selection moved, which a `.selected` class never does |
+
+They landed on two branches for two pages and this pass merged the branches, not the
+modules. The constraint that keeps a naive merge from working is recorded so the next
+attempt starts from it: `bunfig.toml` declares no Svelte plugin for the test runner, so a
+`.svelte.ts` importing `$state` fails at module evaluation inside a bare `bun test`. So the
+consolidation owed is the arithmetic moving down into a rune-free module that the focus-aware
+one wraps — one behaviour, one test surface — rather than either page adopting the other's
+file wholesale. Until that happens, a keyboard fix has to be made twice, and this paragraph
+is the only thing that says so.
 
 ## Daily information surfaces
 
@@ -125,9 +279,15 @@ The main navigation separates stages of work rather than domains that never meet
 
 | Surface | Reader's job | Domain owner |
 |---|---|---|
+| `/` | Answer the decisions that are waiting, ranked by PRD §8.1's bands | every capability that ships a kind; the shell only ranks |
 | `/feed` | One information workspace with an **Eingang** for incoming observations and **Entdecken** for active opportunity discovery | `comms` owns feed persistence; `scouting` owns opportunity search and ranking |
 | `/feed/[id]` | Read one dynamic, provenance-aware entry with its summary, safe plain-text source body and TELOS relevance explanation | `comms`; the route stores nothing itself |
-| `/travel` | Turn selected places, connections, events and activities into durable trip plans | `trips`, composed with `transit` and `scouting` |
+| `/travel` | Turn selected places, connections, events and activities into durable trip plans | `trips`, composed with `transit` and `scouting`; the Companions rail is read-only and links to `/map` to decide |
+| `/finance` | Overview, Planning, Transactions, Investments, Subscriptions. Investments opens on the decision inbox, then the position table | `finance`; the money on this page is decisions and never a ledger view |
+
+`nav.ts` is the authoritative list and holds more entries than this table; these are the
+surfaces whose reader's job needs a sentence.
+
 
 Feed is not a Scouting inbox. Scouting is one possible specialist path for a feed item, and a
 Scouting result may appear in Feed as a typed observation. The UI should connect those cases

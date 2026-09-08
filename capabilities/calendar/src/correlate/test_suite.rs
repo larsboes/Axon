@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn an_all_day_twin_still_matches_the_timed_original() {
         let mut all_day = entry("event", "2026-08-15", "2026-08-16");
-        all_day.title = "DevFest Hamburg 2026".into();
+        all_day.title = "Beispiel Summit 2026".into();
 
         let mut timed = entry_at(
             "event",
@@ -554,7 +554,7 @@ mod tests {
             "2026-08-15T09:00",
             "2026-08-15T18:00",
         );
-        timed.title = "DevFest Hamburg 2026".into();
+        timed.title = "Beispiel Summit 2026".into();
 
         assert!(is_same_event(&timed, &all_day).unwrap());
     }
@@ -749,20 +749,20 @@ mod cluster_tests {
 
     /// The live 2026-08-04 miss: two committed days at the operator's own
     /// employer, in the city they live in, proposed as a journey — because the
-    /// entries say `Telekom, Bonn` and home says `Bonn`.
+    /// entries say `Nordwerk, Bonn` and home says `Bonn`.
     #[test]
     fn a_venue_in_the_home_city_is_still_home() {
         let entries = [
             event(
                 "a",
-                "Telekom, Bonn",
+                "Nordwerk, Bonn",
                 "2026-09-15",
                 "2026-09-16",
                 Commitment::Committed,
             ),
             event(
                 "b",
-                "Telekom, Bonn",
+                "Nordwerk, Bonn",
                 "2026-09-16",
                 "2026-09-17",
                 Commitment::Committed,
@@ -813,15 +813,15 @@ mod cluster_tests {
     #[test]
     fn only_a_leading_postal_code_is_dropped_never_a_house_number() {
         assert_eq!(without_postal_code(" 20097 Hamburg "), "Hamburg");
-        assert_eq!(without_postal_code("Grüner Deich 15"), "Grüner Deich 15");
+        assert_eq!(without_postal_code("Musterdeich 15"), "Musterdeich 15");
         assert_eq!(without_postal_code("Bonn"), "Bonn");
         // A street is not a city, whatever the home city is called.
         assert!(!is_home(
-            "Sparkassen Innovation Hub, Grüner Deich 15, 20097 Hamburg",
+            "Beispiel Innovation Hub, Musterdeich 15, 20097 Hamburg",
             "Bonn"
         ));
         assert!(is_home(
-            "Sparkassen Innovation Hub, Grüner Deich 15, 20097 Hamburg",
+            "Beispiel Innovation Hub, Musterdeich 15, 20097 Hamburg",
             "Hamburg"
         ));
         // An empty home means every place clusters, as documented.
@@ -889,7 +889,7 @@ mod cluster_tests {
             Commitment::Committed,
         );
         hub.payload = json!({});
-        hub.location = Some("Sparkassen Innovation Hub, Grüner Deich 15, 20097 Hamburg".into());
+        hub.location = Some("Beispiel Innovation Hub, Musterdeich 15, 20097 Hamburg".into());
 
         let mut elsewhere = event(
             "b",
@@ -914,9 +914,9 @@ mod cluster_tests {
 
     #[test]
     fn a_city_is_derived_from_whatever_shape_the_source_wrote() {
-        assert_eq!(city_of("Telekom, Bonn"), "Bonn");
+        assert_eq!(city_of("Nordwerk, Bonn"), "Bonn");
         assert_eq!(
-            city_of("Sparkassen Innovation Hub, Grüner Deich 15, 20097 Hamburg"),
+            city_of("Beispiel Innovation Hub, Musterdeich 15, 20097 Hamburg"),
             "Hamburg"
         );
         assert_eq!(
@@ -946,7 +946,7 @@ mod cluster_tests {
             Commitment::Possible,
         );
         hamburg.payload = json!({});
-        hamburg.location = Some("Grüner Deich 15, 20097 Hamburg".into());
+        hamburg.location = Some("Musterdeich 15, 20097 Hamburg".into());
 
         let mut koeln = event(
             "b",

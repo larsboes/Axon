@@ -7,6 +7,7 @@
 //!   comms keep <id> | dismiss <id>            set feed item status
 //!   comms summarize --pending                 retry missing summaries
 //!   comms export-sources [--dry-run]          reconcile the feed library with the vault
+//!   comms mail classify [--shadow|--apply]    the local model classification rung
 //!   comms --help
 //!
 //! `sweep` is strictly read-only against Gmail either way -- `--dry-run` only
@@ -16,6 +17,7 @@
 use std::collections::BTreeMap;
 
 use comms::config::Config;
+use comms::mail_model::{self, Mode};
 use comms::store::Store;
 use comms::{google, intake, media, normalize};
 
@@ -59,6 +61,32 @@ fn print_help() {
     println!("       [--dry-run]                CURRENT feed source declarations. Lowering a");
     println!("                                  class is a human act, so the rationale is");
     println!("                                  required and is stored on every row it changes.");
+    println!("  mail classify [--shadow]        run the local model rung over the mail the");
+    println!("       [--apply] [--limit N]      deterministic rules did not decide. Shadow by");
+    println!("       [--report]                 default: it writes verdicts and moves no");
+    println!("       [--revert <id>]            category. --apply needs mail_model.apply and a");
+    println!("       [--revert-all]             non-zero min_confidence_bp in the overlay, and");
+    println!("                                  never raises a data class. It writes the stored");
+    println!("                                  shadow verdicts rather than asking again.");
+    println!("                                  --limit defaults to mail_model.limit, else 200.");
+    println!("  mail corpus --out <path>        write the labelling skeleton for the frozen");
+    println!("       [--force]                  mail-classification corpus: one fixture per");
+    println!("                                  fallback row, `label` and `urgency_band` EMPTY.");
+    println!("                                  Fill both by hand BEFORE reading any model");
+    println!("                                  output. Refuses to overwrite without --force.");
+    println!("  digest corpus --out <path>      write the judgement skeleton for the frozen");
+    println!("       [--per-producer N]         digest-quality corpus: N generated digests per");
+    println!("       [--force]                  rung, `faithful` and `useful_band` EMPTY. The");
+    println!("                                  gate is the unfaithful rate; usefulness is");
+    println!("                                  reported and does not gate (PRD D16).");
+    println!("  relevance backfill              re-score stored feed items through the running");
+    println!("       [--days N=3650]            server, page by page, until every item in the");
+    println!("       [--batch N=100] [--max N]  window has been seen. Drains rows that were");
+    println!("       [--force]                  written lexical while the embedding role was");
+    println!("                                  down. Only the full 3650-day window can mark");
+    println!("                                  the corpus complete. Needs comms-server up: it");
+    println!("                                  is an HTTP client, not a second opener of the");
+    println!("                                  database.");
     println!("  --help, -h                      show this help");
     println!("\nThis CLI's Gmail sweep is READ-ONLY. Archive, Trash and the Waiting label require an explicit authenticated dashboard action.");
 }
@@ -83,6 +111,9 @@ fn main() {
         "normalize" => cmd_normalize(&args, &cfg),
         "export-sources" => cmd_export_sources(&args, &cfg),
         "reclassify-feed" => cmd_reclassify_feed(&args, &cfg),
+        "mail" => cmd_mail(&args, &cfg),
+        "digest" => cmd_digest(&args, &cfg),
+        "relevance" => cmd_relevance(&args, &cfg),
         other => {
             eprintln!("error: unknown command '{other}'\n");
             print_help();
@@ -145,7 +176,7 @@ fn cmd_sweep(args: &[String], cfg: &Config) {
         redacted += usize::from(intake.redaction_count() > 0);
 
         if let Some(st) = &store {
-            match st.upsert_triage(&intake.item) {
+            match st.upsert_triage_with_rules(&intake.item, &intake.verdict()) {
                 Ok(true) => persisted_new += 1,
                 Ok(false) => {}
                 Err(e) => eprintln!("  warning: could not persist {id}: {e}"),
@@ -313,7 +344,7 @@ fn cmd_set_status(args: &[String], cfg: &Config, status: &str) {
     // staying in it. That is the outcome the comms doctrine exists to prevent
     // — the Information lane of the comms doctrine: a kept mail becomes a distilled statement in
     // the system that owns it, never a second copy of the mail.
-    match store.set_feed_status(id, status) {
+    match store.set_feed_status(id, status, "cli") {
         Ok(true) => {
             println!("{id} -> {status}");
             if status == "keeper" {
@@ -732,4 +763,566 @@ fn cmd_export_sources(args: &[String], cfg: &Config) {
     for path in &report.refused {
         println!("  refused, this file is not comms' to write: {path}");
     }
+}
+
+// -- mail classify -------------------------------------------------------
+
+/// `comms digest corpus` — the judgement skeleton for the digest-quality corpus (D16).
+///
+/// Balanced across producers on purpose: the question the corpus exists to answer is whether
+/// the 4B rung is as good as the 9B was and whether a public-tier provider is better than
+/// either, and a sample drawn from the whole table would be whatever the ladder happened to
+/// route most. `--per-producer` caps each rung, and the first N of each in the store's own
+/// stable order — never a random draw, so a re-export from an unchanged database is the same
+/// file.
+///
+/// Judgements are `null` here, and `comms-digest-eval` refuses a corpus that still has one.
+fn cmd_digest(args: &[String], cfg: &Config) {
+    if args.get(2).map(String::as_str) != Some("corpus") {
+        eprintln!("error: usage: comms digest corpus --out <path> [--per-producer N] [--force]\n");
+        std::process::exit(2);
+    }
+    let Some(out) = arg_after(args, "--out") else {
+        eprintln!("error: usage: comms digest corpus --out <path> [--per-producer N] [--force]");
+        std::process::exit(2);
+    };
+    let path = std::path::Path::new(out);
+    if path.exists() && !args.iter().any(|a| a == "--force") {
+        eprintln!("error: {out} exists. Refusing to overwrite hand-written judgements — pass --force if that is what you mean.");
+        std::process::exit(2);
+    }
+    let per_producer: usize = arg_after(args, "--per-producer")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20);
+
+    let store = open_store(cfg);
+    let digests = match store.generated_digests() {
+        Ok(digests) => digests,
+        Err(error) => {
+            eprintln!("error: could not read the digests: {error}");
+            std::process::exit(2);
+        }
+    };
+
+    let mut per: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut fixtures: Vec<serde_json::Value> = Vec::new();
+    for digest in &digests {
+        let taken = per.entry(digest.producer.clone()).or_default();
+        if *taken >= per_producer {
+            continue;
+        }
+        *taken += 1;
+        fixtures.push(serde_json::json!({
+            "source": digest.source,
+            "item_id": digest.item_id,
+            "producer": digest.producer,
+            "shape": digest.shape,
+            "source_chars": digest.source_chars,
+            "generated_at": digest.generated_at,
+            // The judgement is made against the SOURCE, so the fixture carries where to read
+            // it rather than an excerpt: faithfulness judged against the first 500 characters
+            // of an article is not faithfulness.
+            "read_the_source_at": match digest.source.as_str() {
+                "feed" => format!("/feed/{}", digest.item_id),
+                "mail" => format!("/feed?view=mail#{}", digest.item_id),
+                other => format!("{other}:{}", digest.item_id),
+            },
+            "digest_text": digest.text.clone().unwrap_or_default(),
+            "faithful": serde_json::Value::Null,
+            "useful_band": serde_json::Value::Null,
+            "note": ""
+        }));
+    }
+
+    let corpus = serde_json::json!({
+        "_doc": "The frozen digest-quality corpus (PRD D16). It quotes real articles and real \
+                 mail: this file belongs in the private overlay and never in the repository. \
+                 Read by comms-digest-eval, which makes zero model calls.",
+        "_method": "Written by `comms digest corpus`, balanced across producers. For each row, \
+                    read the SOURCE at read_the_source_at, then write `faithful` — does every \
+                    claim in the digest follow from it — and `useful_band` 0-3, where 0 says \
+                    nothing the title did not and 3 means the source was not needed. Judge \
+                    before comparing rungs: knowing which model wrote a digest is exactly the \
+                    thing that makes a judgement unusable.",
+        "_gate": "The unfaithful rate, and only that. A digest that asserts what its source does \
+                  not support is read instead of the article and nothing downstream can catch \
+                  it. Usefulness is reported per producer and never gates: thin but true is a \
+                  preference, confident and false is a defect.",
+        "acceptance": {
+            "_why": "max_unfaithful_percent is a policy judgement and carries a value from the \
+                     first run, like max_false_eviction_percent in the mail corpus. \
+                     minimum_useful_percent is null until the first run has been read.",
+            "max_unfaithful_percent": 2.0,
+            "minimum_useful_percent": serde_json::Value::Null
+        },
+        "fixtures": fixtures
+    });
+
+    let body = match serde_json::to_string_pretty(&corpus) {
+        Ok(body) => body,
+        Err(error) => {
+            eprintln!("error: could not serialise the corpus: {error}");
+            std::process::exit(2);
+        }
+    };
+    if let Err(error) = std::fs::write(path, body + "\n") {
+        eprintln!("error: could not write {out}: {error}");
+        std::process::exit(2);
+    }
+    println!(
+        "{} fixture(s) written to {out}, from {} generated digest(s) across {} rung(s)",
+        fixtures_len(&corpus),
+        digests.len(),
+        per.len()
+    );
+    for (producer, taken) in &per {
+        println!("  {taken}\t{producer}");
+    }
+    println!("faithful and useful_band are null. comms-digest-eval REFUSES a corpus with an");
+    println!("unjudged row, so a half-filled file cannot be read as a pass.");
+}
+
+/// The fixture count of a built corpus value. A helper rather than a second `len()` on the
+/// vector, because the vector is moved into the JSON above and the printed number must be the
+/// number that was written.
+fn fixtures_len(corpus: &serde_json::Value) -> usize {
+    corpus
+        .get("fixtures")
+        .and_then(|value| value.as_array())
+        .map(Vec::len)
+        .unwrap_or_default()
+}
+
+/// `comms mail corpus` — the labelling skeleton for the frozen corpus (B49).
+///
+/// Writes one fixture per fallback row with `label` and `urgency_band` EMPTY, because the
+/// order is the whole discipline: both labels are written by hand, in one pass, BEFORE any
+/// model output is read. A skeleton pre-filled from a verdict would be a corpus that agrees
+/// with the model by construction.
+///
+/// Both labels in one pass for a cheaper reason: re-reading 102 threads to add the second
+/// one costs the same 102 threads twice.
+///
+/// It writes into the OVERLAY, never into this repository. The rows carry real subjects and
+/// snippets — already redacted for c2 and c3 at intake, which is why they may be written at
+/// all — and `capabilities/comms/eval/README.md` names the destination.
+fn cmd_mail_corpus(args: &[String], cfg: &Config) {
+    let Some(out) = arg_after(args, "--out") else {
+        eprintln!("error: usage: comms mail corpus --out <path> [--force]");
+        eprintln!(
+            "       the path belongs in the overlay, e.g. \
+                   \"$AXON_PERSONAL_ROOT/config/comms-mail-stream-shadow.json\""
+        );
+        std::process::exit(2);
+    };
+    let path = std::path::Path::new(out);
+    if path.exists() && !args.iter().any(|a| a == "--force") {
+        // Refused rather than merged: the labels in an existing file are hand-written work,
+        // and there is no rule by which this command could decide which of two answers wins.
+        eprintln!("error: {out} exists. Refusing to overwrite hand-written labels — pass --force if that is what you mean.");
+        std::process::exit(2);
+    }
+
+    let store = open_store(cfg);
+    let candidates = match store.model_rung_candidates() {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            eprintln!("error: could not read the fallback rows: {error}");
+            std::process::exit(2);
+        }
+    };
+
+    let fixtures: Vec<serde_json::Value> = candidates
+        .iter()
+        .map(|candidate| {
+            serde_json::json!({
+                "id": candidate.id,
+                "language": guessed_language(candidate),
+                "data_class": candidate.data_class,
+                "sender_domain": sender_domain(candidate.from_addr.as_deref()),
+                "subject": candidate.subject.clone().unwrap_or_default(),
+                "snippet": candidate.snippet.clone().unwrap_or_default(),
+                "rule_stream": candidate.rule_stream,
+                "label": "",
+                "urgency_band": serde_json::Value::Null,
+                "label_note": ""
+            })
+        })
+        .collect();
+
+    let corpus = serde_json::json!({
+        "_doc": "The frozen mail-classification corpus (PRD B49). Real mail: this file belongs \
+                 in the private overlay and never in the repository. Read by comms-mail-model-eval, \
+                 which makes zero model calls.",
+        "_method": "Written by `comms mail corpus`, one fixture per fallback row. Fill `label` \
+                    (a stream from rules::STREAMS) and `urgency_band` (0-3) by hand, both in one \
+                    pass, BEFORE running `comms mail classify --shadow` or reading any verdict. \
+                    `language` is a MECHANICAL GUESS from the subject and snippet and is meant to \
+                    be corrected; nothing else here is guessed. Then run the shadow pass, then \
+                    `comms-mail-model-eval <this path>`.",
+        "_scope": "The fallback rows only. A thread a config rule or a heuristic decided is not \
+                   this rung's question, and scoring it here would measure the rules.",
+        "acceptance": {
+            "_why": "Three thresholds are null until the first run has been read — a threshold \
+                     invented before the measurement is a number chosen to be met. \
+                     max_false_eviction_percent is a stated policy judgement, not a measurement.",
+            "minimum_agreement_percent": serde_json::Value::Null,
+            "max_false_eviction_percent": 2.0,
+            "max_urgency_band_error": serde_json::Value::Null,
+            "max_urgency_overstatement_percent": serde_json::Value::Null
+        },
+        "fixtures": fixtures
+    });
+
+    let body = match serde_json::to_string_pretty(&corpus) {
+        Ok(body) => body,
+        Err(error) => {
+            eprintln!("error: could not serialise the corpus: {error}");
+            std::process::exit(2);
+        }
+    };
+    if let Err(error) = std::fs::write(path, body + "\n") {
+        eprintln!("error: could not write {out}: {error}");
+        std::process::exit(2);
+    }
+    println!("{} fixture(s) written to {out}", candidates.len());
+    println!("label and urgency_band are empty. The eval REFUSES a corpus with an empty label,");
+    println!("so a half-filled file cannot be mistaken for a low score.");
+}
+
+/// The domain of a sender address, or an empty string. Never the local part: the corpus is
+/// about what kind of mail this is, and the mailbox name is a person.
+fn sender_domain(from_addr: Option<&str>) -> String {
+    from_addr
+        .and_then(|address| address.rsplit_once('@'))
+        .map(|(_, domain)| domain.trim_end_matches('>').trim().to_lowercase())
+        .unwrap_or_default()
+}
+
+/// `de` or `en`, guessed from the subject and snippet.
+///
+/// A guess, said so in the corpus's own `_method`, and the only guessed field in the file.
+/// The split by language is what makes one English prompt over a mixed mailbox measurable,
+/// so the field has to be filled somehow; leaving 102 blanks for it would cost the labeller
+/// a judgement they can make faster by correcting one.
+fn guessed_language(candidate: &comms::store::ModelCandidate) -> &'static str {
+    let text = format!(
+        "{} {}",
+        candidate.subject.clone().unwrap_or_default(),
+        candidate.snippet.clone().unwrap_or_default()
+    )
+    .to_lowercase();
+    const GERMAN: [&str; 12] = [
+        " der ", " die ", " das ", " und ", " ist ", " nicht ", " mit ", " für ", " sie ",
+        " ihre ", " wir ", " werden ",
+    ];
+    if text.contains('ä') || text.contains('ö') || text.contains('ü') || text.contains('ß') {
+        return "de";
+    }
+    let padded = format!(" {text} ");
+    if GERMAN.iter().any(|word| padded.contains(word)) {
+        "de"
+    } else {
+        "en"
+    }
+}
+
+/// `comms mail classify` — the model rung's operator surface.
+///
+/// Explicit only. There is no timer: an unattended local-model drain is what
+/// made this machine hot once already, and the category axis writes a decision
+/// rather than a derived field.
+fn cmd_mail(args: &[String], cfg: &Config) {
+    match args.get(2).map(String::as_str) {
+        Some("classify") => {}
+        Some("corpus") => return cmd_mail_corpus(args, cfg),
+        _ => {
+            eprintln!("error: usage: comms mail classify [--shadow|--apply] [--limit N] [--report] [--revert <id>|--revert-all]");
+            eprintln!("              comms mail corpus --out <path> [--force]\n");
+            std::process::exit(2);
+        }
+    }
+    let store = open_store(cfg);
+
+    // `--revert` with nothing after it used to fall through to `None`, which is
+    // the argument that reverts EVERY model-written row — the same shape the
+    // HTTP route refuses with a 400. The two surfaces answer alike now (review,
+    // 2026-09-05).
+    if args.iter().any(|a| a == "--revert") && arg_after(args, "--revert").is_none() {
+        eprintln!("error: --revert needs a thread id. To revert every model-written row, say --revert-all.");
+        std::process::exit(2);
+    }
+    if args.iter().any(|a| a == "--revert-all") || args.iter().any(|a| a == "--revert") {
+        let ids: Option<Vec<String>> = arg_after(args, "--revert").map(|id| vec![id.clone()]);
+        match store.revert_model_streams(ids.as_deref()) {
+            Ok((reverted, not_model, no_rules)) => {
+                println!("reverted {reverted} row(s) to their deterministic verdict");
+                println!("skipped: {not_model} not model-written, {no_rules} with no rules row");
+                println!(
+                    "the data class and any narrowing this rung caused are NOT restored — \
+                     the class update is escalation-only and the narrowing is not a delete"
+                );
+            }
+            Err(error) => {
+                eprintln!("error: could not revert: {error}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
+    if args.iter().any(|a| a == "--report") {
+        print_classify_report(cfg, &store);
+        return;
+    }
+
+    let requested = if args.iter().any(|a| a == "--apply") {
+        Mode::Apply
+    } else {
+        Mode::Shadow
+    };
+    let mode = match mail_model::apply_allowed(cfg.mail_model.as_ref(), requested) {
+        Ok(mode) => mode,
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(2);
+        }
+    };
+    // The overlay's `mail_model.limit` is the default when `--limit` is absent.
+    let limit = mail_model::pass_limit(
+        cfg.mail_model.as_ref(),
+        arg_after(args, "--limit").and_then(|value| value.parse().ok()),
+    );
+    let min_confidence_bp = cfg
+        .mail_model
+        .as_ref()
+        .map_or(0, |section| i64::from(section.min_confidence_bp));
+
+    println!(
+        "comms mail classify — {} mode, limit {limit}, producer {}",
+        mode.as_str(),
+        mail_model::producer(cfg)
+    );
+    let started = std::time::Instant::now();
+    let receipt = match mail_model::run_pass(cfg, &store, mode, limit, min_confidence_bp) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            eprintln!("error: the pass failed: {error}");
+            std::process::exit(2);
+        }
+    };
+    println!(
+        "\nreviewed {} · eligible {} · prompted {} · refused as Secret {} · over window {}",
+        receipt.reviewed,
+        receipt.eligible,
+        receipt.prompted,
+        receipt.refused_c3,
+        receipt.over_window
+    );
+    println!(
+        "unparseable {} · outside the vocabulary {} · other errors {}",
+        receipt.unparseable, receipt.invalid_stream, receipt.errors
+    );
+    println!(
+        "agreed (nothing written) {} · disagreed {} · applied {} · held as class-raising {} · below confidence {}",
+        receipt.agreed_no_write,
+        receipt.disagreed,
+        receipt.applied,
+        receipt.held_class_escalation,
+        receipt.below_confidence
+    );
+    if receipt.awaiting_apply > 0 {
+        // Counted before this pass acted, so in apply mode it is the total this
+        // pass found rather than what it left behind.
+        println!(
+            "{} stored disagreement(s) had no category write yet; this pass applied {}",
+            receipt.awaiting_apply, receipt.applied
+        );
+    }
+    println!("wall time {:.1}s", started.elapsed().as_secs_f64());
+    print_classify_report(cfg, &store);
+}
+
+/// The agreement table, the state counts and the receipt line.
+///
+/// Built from `model_verdict_summaries`, whose SELECT list cannot carry a
+/// subject, a snippet or a rationale — so this output is safe to paste.
+fn print_classify_report(cfg: &Config, store: &Store) {
+    let summaries = match store.model_verdict_summaries(None) {
+        Ok(summaries) => summaries,
+        Err(error) => {
+            eprintln!("error: could not read the verdicts: {error}");
+            std::process::exit(2);
+        }
+    };
+    if summaries.is_empty() {
+        println!("\nno verdicts stored yet — run `comms mail classify --shadow` first");
+        return;
+    }
+
+    println!("\nrule stream\tn\tagree\tagree%\tmodel proposed");
+    for (rule_stream, n, agree, model_streams) in mail_model::agreement(&summaries) {
+        let mut streams: Vec<(String, usize)> = model_streams.into_iter().collect();
+        streams.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        let rendered: Vec<String> = streams
+            .iter()
+            .map(|(stream, count)| format!("{stream} {count}"))
+            .collect();
+        println!(
+            "{rule_stream}\t{n}\t{agree}\t{:.1}%\t{}",
+            agree as f64 * 100.0 / n as f64,
+            rendered.join(", ")
+        );
+    }
+
+    let mut states: BTreeMap<String, usize> = BTreeMap::new();
+    let mut classes: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut held: BTreeMap<String, usize> = BTreeMap::new();
+    for summary in &summaries {
+        *states.entry(summary.state.clone()).or_default() += 1;
+        let entry = classes.entry(summary.data_class.clone()).or_default();
+        entry.0 += 1;
+        if summary.model_stream.is_some() {
+            entry.1 += 1;
+        }
+        if let Some(reason) = &summary.held_reason {
+            *held.entry(reason.clone()).or_default() += 1;
+        }
+    }
+    println!("\nstate\tn");
+    for (state, n) in &states {
+        println!("{state}\t{n}");
+    }
+    println!("\ndata class\tverdicts\tanswered");
+    for (class, (n, answered)) in &classes {
+        println!("{class}\t{n}\t{answered}");
+    }
+    if !held.is_empty() {
+        println!("\nheld for a human\tn");
+        for (reason, n) in &held {
+            println!("{reason}\t{n}");
+        }
+    }
+    println!(
+        "\nproducer {} · prompt {} · classifier {} · cloud calls 0",
+        mail_model::producer(cfg),
+        mail_model::MAIL_MODEL_PROMPT_REVISION,
+        mail_model::MAIL_MODEL_VERSION
+    );
+}
+
+// -- relevance -----------------------------------------------------------
+
+/// Re-score the stored feed through the running server, page by page.
+///
+/// An HTTP client, deliberately not a store opener. `Store::open` runs the
+/// whole migration on every call and two openers on one SQLite file deadlock —
+/// `tools/feed-sweep.ts` records that reason, and comms is `autostart = true`,
+/// so a server answering is the expected state rather than a precondition this
+/// verb has to arrange.
+fn cmd_relevance(args: &[String], cfg: &Config) {
+    let Some(verb) = args.get(2).filter(|value| !value.starts_with("--")) else {
+        eprintln!(
+            "error: usage: comms relevance backfill [--days N] [--batch N] [--max N] [--force]"
+        );
+        std::process::exit(1);
+    };
+    if verb != "backfill" {
+        eprintln!("error: unknown relevance verb '{verb}' -- the only verb is `backfill`");
+        std::process::exit(1);
+    }
+    // Ten years, not one. The route's window is the corpus-completion test:
+    // `POST /feed/relevance/refresh` only marks the relevance revision complete
+    // for a pass that asked for the widest window (server/feed.rs
+    // `FULL_WINDOW_DAYS`), and a bare `backfill` that asked for 365 both left
+    // older rows unreachable and could not finish the chain. The design
+    // (/tmp/axon-night/designs/feed-personalization.md) specifies 3650.
+    let days: i32 = arg_after(args, "--days")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3650);
+    let batch: usize = arg_after(args, "--batch")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 500);
+    let max: Option<usize> = arg_after(args, "--max").and_then(|value| value.parse().ok());
+    let force = args.iter().any(|value| value == "--force");
+
+    let base = format!("http://127.0.0.1:{}", cfg.port);
+    let client = match axon_http::client(
+        axon_http::Purpose::new("comms-cli"),
+        std::time::Duration::from_secs(600),
+    ) {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("error: could not build an HTTP client: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut offset = 0usize;
+    let mut considered = 0usize;
+    let mut rescored = 0usize;
+    let mut reused = 0usize;
+    let mut refused = 0usize;
+    let mut last_mode;
+    loop {
+        let mut request =
+            client
+                .post(format!("{base}/feed/relevance/refresh"))
+                .json(&serde_json::json!({
+                    "days": days,
+                    "limit": batch,
+                    "offset": offset,
+                    "force": force,
+                }));
+        if let Some(secret) = cfg.api_secret.as_deref() {
+            request = request.header("X-Axon-Token", secret);
+        }
+        let response = match request.send() {
+            Ok(response) => response,
+            Err(error) => {
+                eprintln!("error: comms is not answering on {base} ({error})");
+                eprintln!("       start it first -- this verb re-scores through the server.");
+                std::process::exit(1);
+            }
+        };
+        if !response.status().is_success() {
+            eprintln!("error: {base} answered HTTP {}", response.status());
+            std::process::exit(1);
+        }
+        let page: serde_json::Value = match response.json() {
+            Ok(page) => page,
+            Err(error) => {
+                eprintln!("error: could not read the page ({error})");
+                std::process::exit(1);
+            }
+        };
+        let count = |key: &str| page[key].as_u64().unwrap_or(0) as usize;
+        considered += count("considered");
+        rescored += count("rescored");
+        reused += count("reused_relevance");
+        refused += count("refused_class");
+        last_mode = page["embedding"]["mode"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        println!(
+            "  offset {offset:>5}: considered {}, re-scored {}, re-evaluated {}, refused {}, mode {last_mode}",
+            count("considered"),
+            count("rescored"),
+            count("reused_relevance"),
+            count("refused_class"),
+        );
+        if let Some(class) = page["embedding"]["error_class"].as_str() {
+            println!("               embedding fell back: {class}");
+        }
+        let has_more = page["has_more"].as_bool().unwrap_or(false);
+        offset += batch;
+        if !has_more || max.is_some_and(|cap| considered >= cap) {
+            break;
+        }
+    }
+    println!(
+        "backfill finished: {considered} considered, {rescored} re-scored, {reused} re-evaluated from stored matches, {refused} refused by class; last mode {last_mode}"
+    );
 }

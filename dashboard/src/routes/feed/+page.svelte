@@ -4,9 +4,22 @@
   import DiscoverView from "$lib/feed/DiscoverView.svelte";
   import EvaluationBreakdown from "$lib/feed/EvaluationBreakdown.svelte";
   import FeedNav from "$lib/feed/FeedNav.svelte";
+  import KeyboardLegend from "$lib/feed/KeyboardLegend.svelte";
   import ModelStatus from "$lib/feed/ModelStatus.svelte";
+  import ClassifierPanel from "$lib/mail/ClassifierPanel.svelte";
+  import ModelProposal from "$lib/mail/ModelProposal.svelte";
+  import { mailClassificationReport, type TriageClassifyReport } from "$lib/mail/api";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
+  import { feedPersonalization, type FeedStatusExtras } from "$lib/feed/api";
+  import FeedItemRow from "$lib/feed/FeedItemRow.svelte";
+  import {
+    clampToSelectable,
+    shouldIgnoreKey,
+    nextSelectable as nextRow,
+    prevSelectable as prevRow,
+    type CursorRow,
+  } from "$lib/list-cursor.svelte";
   import {
     axonStatus,
     comms,
@@ -36,16 +49,6 @@
     { value: "media", label: "Media" },
   ];
   const RANGES = [7, 30, 90];
-  const KIND_LABEL: Record<string, string> = {
-    youtube: "YouTube",
-    instagram: "Instagram",
-    podcast: "Podcast",
-    article: "Article",
-    mail: "Mail",
-    github: "GitHub",
-    arxiv: "arXiv",
-    reddit: "Reddit",
-  };
   const MAIL_CATEGORY_LABEL: Record<MailCategory, string> = {
     aktiv: "Active",
     issue: "Action",
@@ -77,7 +80,6 @@
 
   let entries = $state<FeedEntry[]>([]);
   let runs = $state<FeedRun[]>([]);
-  let expandedRuns = $state<Set<string>>(new Set());
   let triage = $state<TriageItem[]>([]);
   let mailCategory = $state<"all" | MailCategory>("all");
   let mailStatus = $state<MailStatusFilter>("pending");
@@ -87,8 +89,9 @@
   let mailBusy = $state<string | null>(null);
   let mailJobBusy = $state<string | null>(null);
   let mailActionError = $state<string | null>(null);
-  let confirmingBulkAction = $state<GmailAction | null>(null);
+  let confirmingBulkAction = $state<GmailAction | "categorize" | null>(null);
   let bulkCategory = $state<MailCategory>("aktiv");
+  let classifyReport = $state<TriageClassifyReport | null>(null);
   let bulkDataClass = $state<DataClass>("c1");
   let syncingMail = $state(false);
   let reconcilingMail = $state(false);
@@ -101,13 +104,27 @@
   let scoringNotice = $state<string | null>(null);
   let classifyingMailData = $state(false);
   let dataClassNotice = $state<string | null>(null);
+  let redactionNotice = $state<string | null>(null);
+  /** The two categories that raise a mail's data class by name alone, so
+   *  setting one also permanently redacts the stored subject and preview.
+   *  `content_item::mail_others_reason` is what rules it in comms. */
+  const CLASS_RAISING_CATEGORIES: MailCategory[] = ["belege", "steuern"];
   let loading = $state(true);
   let offline = $state(false);
   let busy = $state<string | null>(null);
   let ready = $state(false);
   let relevanceBusy = $state(false);
   let relevanceNotice = $state<string | null>(null);
-  let modelStatus = $state<CommsEvaluationStatus | null>(null);
+  let modelStatus = $state<(CommsEvaluationStatus & Partial<FeedStatusExtras>) | null>(null);
+  // Keyboard triage state. The cursor is an index into `flatRows`; the page owns
+  // it, and `$lib/list-cursor.svelte` owns the arithmetic, shared with Home.
+  let cursorIndex = $state(-1);
+  let legendOpen = $state(true);
+  // A decided row is greyed in place and leaves on the next load. Removing it
+  // under the cursor is survivable for a click and wrong for a key: the cursor
+  // jumps and the next keystroke lands on an item the operator never saw.
+  let decided = $state<Map<string, FeedStatus>>(new Map());
+  let expandedEvaluations = $state<Set<string>>(new Set());
   let vaultOpen = $state(false);
   let vaultBusy = $state(false);
   let vaultLinks = $state<VaultLinkCandidate[]>([]);
@@ -200,45 +217,160 @@
   // decides only how they are shown.
   const runOf = $derived(new Map(runs.map((r) => [r.feed_id, r])));
 
-  type Row =
-    | { kind: "single"; id: string; entry: FeedEntry }
-    | { kind: "run"; id: string; label: string; entries: FeedEntry[] };
+  type FlatRow =
+    | { kind: "header"; id: string; label: string; count: number; tone: "day" | "run" }
+    | { kind: "item"; id: string; entry: FeedEntry };
 
-  // A run of one is just an item: collapsing it would hide a row behind a click
-  // and tell the reader nothing they could not already see.
-  function rowsFor(items: FeedEntry[]): Row[] {
-    const groups = new Map<string, FeedEntry[]>();
-    for (const e of items) {
-      const key = runOf.get(e.id)?.run_key;
-      if (!key) continue;
-      const list = groups.get(key);
-      if (list) list.push(e);
-      else groups.set(key, [e]);
-    }
-
-    const rows: Row[] = [];
-    const grouped = new Set<string>();
-    for (const [key, group] of groups) {
-      if (group.length < 2) continue;
-      for (const e of group) grouped.add(e.id);
-      const run = runOf.get(group[0].id);
+  /**
+   * One flat list of rows across every day group, so the cursor and the DOM
+   * cannot disagree about what is on screen.
+   *
+   * A collector run is now a LABEL, not a container. Collapsing a run of two or
+   * more into one clickable line turned 185 arXiv papers and 147 GitHub
+   * repositories into a handful of rows, so the daily triage surface showed
+   * almost nothing to triage. The run still reads as one arrival — it keeps its
+   * header and its count — but every item it brought is a row the operator can
+   * reach with one keystroke.
+   */
+  const flatRows = $derived.by<FlatRow[]>(() => {
+    const rows: FlatRow[] = [];
+    for (const [day, items] of grouped) {
       rows.push({
-        kind: "run",
-        id: key,
-        label: run?.label ?? run?.source_id ?? "Collection run",
-        entries: group,
+        kind: "header",
+        id: `day:${day}`,
+        label: dayLabel(day),
+        count: items.length,
+        tone: "day",
       });
-    }
-    for (const e of items) {
-      if (!grouped.has(e.id)) rows.push({ kind: "single", id: e.id, entry: e });
+      // Ranked order is one sequence by definition: regrouping it by arrival
+      // would put the run's order back on top of the ranking.
+      if (order === "relevance") {
+        for (const entry of items) rows.push({ kind: "item", id: entry.id, entry });
+        continue;
+      }
+      const runs = new Map<string, FeedEntry[]>();
+      const loose: FeedEntry[] = [];
+      for (const entry of items) {
+        const key = runOf.get(entry.id)?.run_key;
+        if (!key) {
+          loose.push(entry);
+          continue;
+        }
+        const list = runs.get(key);
+        if (list) list.push(entry);
+        else runs.set(key, [entry]);
+      }
+      for (const [key, group] of runs) {
+        // A run of one is just an item; a header over it would say nothing.
+        if (group.length < 2) {
+          loose.push(...group);
+          continue;
+        }
+        const run = runOf.get(group[0].id);
+        rows.push({
+          kind: "header",
+          // The day is part of the key. A run is derived per source with a
+          // 30-minute gap (comms store.rs `RUN_GAP_MINUTES`) while `day` is
+          // stamped in UTC at ingest, so a scan straddling UTC midnight puts one
+          // run_key into two day buckets -- and Svelte 5 throws on a duplicate
+          // key in production as well as in dev, which would blank the Inbox.
+          id: `run:${day}:${key}`,
+          label: run?.label ?? run?.source_id ?? "Collection run",
+          count: group.length,
+          tone: "run",
+        });
+        for (const entry of group) rows.push({ kind: "item", id: entry.id, entry });
+      }
+      for (const entry of loose) rows.push({ kind: "item", id: entry.id, entry });
     }
     return rows;
+  });
+
+  const cursorRows = $derived<CursorRow[]>(
+    flatRows.map((row) => ({ kind: row.kind, id: row.id })),
+  );
+  const cursorId = $derived(
+    cursorIndex >= 0 && flatRows[cursorIndex]?.kind === "item" ? flatRows[cursorIndex].id : null,
+  );
+
+  // The list changed under the cursor -- a reload, a filter, a decided row
+  // leaving. Without this the cursor lands on a header or past the end and the
+  // next keystroke does nothing.
+  $effect(() => {
+    const clamped = clampToSelectable(cursorRows, cursorIndex < 0 ? 0 : cursorIndex);
+    if (cursorIndex >= 0 && clamped !== cursorIndex) cursorIndex = clamped;
+  });
+
+  function rowDomId(id: string): string {
+    return `feed-row-${id}`;
   }
 
-  function toggleRun(key: string): void {
-    const next = new Set(expandedRuns);
-    if (!next.delete(key)) next.add(key);
-    expandedRuns = next;
+  function moveCursor(to: number): void {
+    if (to < 0) return;
+    cursorIndex = to;
+    const row = flatRows[to];
+    if (!row) return;
+    // After the frame that paints the selection, so the element exists.
+    queueMicrotask(() => {
+      document.getElementById(rowDomId(row.id))?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  function toggleEvaluation(id: string): void {
+    const open = new Set(expandedEvaluations);
+    if (!open.delete(id)) open.add(id);
+    expandedEvaluations = open;
+  }
+
+  /**
+   * Keyboard triage.
+   *
+   * `j`/`k` move, because Home already owns that pair as movement and two pages
+   * disagreeing about `k` is worse than one letter moving. `s` keeps, `d`
+   * dismisses, `o` opens, `e` explains, `u` undoes. The typing guard is
+   * `shouldIgnoreKey`, the shared module's own, so the paste box and the mail
+   * search still take letters and Home cannot drift from this page.
+   */
+  function onKeydown(event: KeyboardEvent): void {
+    if (view !== "inbox" || shouldIgnoreKey(event)) return;
+    if (event.key === "?") {
+      legendOpen = !legendOpen;
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "j") {
+      moveCursor(nextRow(cursorRows, cursorIndex));
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "k") {
+      moveCursor(prevRow(cursorRows, cursorIndex));
+      event.preventDefault();
+      return;
+    }
+    const id = cursorId;
+    if (!id) return;
+    if (event.key === "s") {
+      void setStatus(id, decided.get(id) === "keeper" ? "new" : "keeper", "inbox");
+      event.preventDefault();
+    } else if (event.key === "d") {
+      void setStatus(id, "dismissed", "inbox");
+      event.preventDefault();
+    } else if (event.key === "u") {
+      void setStatus(id, "new", "inbox");
+      event.preventDefault();
+    } else if (event.key === "e") {
+      toggleEvaluation(id);
+      event.preventDefault();
+    } else if (event.key === "o") {
+      // Click the row's own link rather than calling goto: `link()` stays the
+      // single place a Feed href is built, and the router handles the rest.
+      const anchor = document
+        .getElementById(rowDomId(id))
+        ?.querySelector<HTMLAnchorElement>("a.title");
+      anchor?.click();
+      event.preventDefault();
+    }
   }
 
   async function load(): Promise<void> {
@@ -247,12 +379,16 @@
       if (view === "mail") {
         // Freshness is allowed to fail on its own: an older comms without the
         // status route should still show the board, not an offline page.
-        const [proposals, status] = await Promise.all([
+        // The classification report fails on its own, like the freshness call
+        // above it: an older comms without the route must still show the board.
+        const [proposals, status, report] = await Promise.all([
           comms.triage(),
           comms.triageSweepStatus().catch(() => null),
+          mailClassificationReport().catch(() => null),
         ]);
         triage = proposals;
         sweepStatus = status;
+        classifyReport = report;
         offline = false;
         return;
       }
@@ -276,7 +412,10 @@
   }
 
   async function loadModelStatus(): Promise<void> {
-    modelStatus = await comms.evaluationStatus().catch(() => null);
+    // Through `$lib/feed/api`, which declares the two blocks this stream added
+    // to the endpoint. `$lib/api.ts` is not edited: it is 3472 lines and the
+    // file several streams append to at once.
+    modelStatus = await feedPersonalization.evaluationStatus().catch(() => null);
   }
 
   $effect(() => {
@@ -334,7 +473,12 @@
     relevanceBusy = true;
     relevanceNotice = null;
     try {
-      const result = await comms.refreshRelevance(Math.max(days, 90));
+      // The Feed's own client, not `$lib/api`'s one-argument helper: this is
+      // the call that can name a window, a page and a force flag, and the
+      // button is the only surface the route has.
+      const result = await feedPersonalization.refreshRelevance({
+        days: Math.max(days, 90),
+      });
       const method =
         result.mode === "reranked"
           ? "reranked"
@@ -451,14 +595,40 @@
     }
   }
 
-  async function setStatus(id: string, status: FeedStatus): Promise<void> {
+  /**
+   * Keep, dismiss or retract, and leave the row where it is.
+   *
+   * The row is greyed in place and reads "kept · u to undo"; it leaves on the
+   * next `load()`. The write is the ledger's only writer of a decisive verb, so
+   * `surface` travels with it and the store records one row per decision.
+   */
+  async function setStatus(id: string, status: FeedStatus, surface: "inbox" | "reader"): Promise<void> {
     busy = id;
     try {
-      await comms.setStatus(id, status);
-      entries = entries.filter((entry) => entry.id !== id);
+      await feedPersonalization.setStatus(id, status, surface);
+      const marked = new Map(decided);
+      if (status === "new") marked.delete(id);
+      else marked.set(id, status);
+      decided = marked;
     } finally {
       busy = null;
     }
+  }
+
+  /// What "For you" is ranking on right now. The learned factor is inert until
+  /// it clears its gate, and a surface that offers a personalised sort without
+  /// saying that is claiming something it cannot do yet.
+  const forYouHint = $derived.by(() => {
+    const model = modelStatus?.feedback_model;
+    if (!model) return "Ranked by the evaluator's TELOS, travel, freshness and evidence factors.";
+    if (model.active) {
+      return `Ranked by the evaluator, including what your ${model.samples.total} past decisions imply (held-out AUC ${model.holdout.auc.toFixed(2)}).`;
+    }
+    return `Ranked by the evaluator's TELOS, travel, freshness and evidence factors. The learned factor is still inert: ${model.gate_reason}.`;
+  });
+
+  function decidedLabel(status: FeedStatus): string {
+    return status === "keeper" ? "kept · u to undo" : "dismissed · u to undo";
   }
 
   function dayLabel(day: string): string {
@@ -642,6 +812,13 @@
         [...selectedMail].filter((id) => !succeeded.has(id)),
       );
       confirmingBulkAction = null;
+      // The half of this write that cannot be undone. The capability counts it;
+      // saying nothing here left a permanent redaction invisible at the button
+      // that caused it.
+      redactionNotice =
+        result.narrowed > 0
+          ? `${result.narrowed} stored subject(s) and preview(s) were permanently redacted, because the class this set does not admit them.`
+          : null;
       if (result.failures.length > 0) {
         mailActionError = `${result.succeeded.length} updated; ${result.failures.length} failed.`;
       }
@@ -652,6 +829,10 @@
     }
   }
 </script>
+
+<!-- Window-level, like Home's own handler: the queue is never focused, so a
+     keydown on the page is what a shortcut has to be. -->
+<svelte:window onkeydown={onKeydown} />
 
 <PageHeader
   badge="Feed"
@@ -745,6 +926,7 @@
     {#if reconcileNotice}<p class="context-note mail-notice">{reconcileNotice}</p>{/if}
     {#if scoringNotice}<p class="context-note mail-notice">{scoringNotice}</p>{/if}
     {#if dataClassNotice}<p class="context-note mail-notice">{dataClassNotice}</p>{/if}
+    {#if redactionNotice}<p class="context-note mail-notice">{redactionNotice}</p>{/if}
 
     {#if selectedMail.size > 0}
       <section class="bulk-bar card" aria-label="Bulk mail actions">
@@ -755,7 +937,18 @@
               <option value={category}>{mailCategoryLabel(category)}</option>
             {/each}
           </select>
-          <button class="btn" disabled={mailBusy === "bulk"} onclick={() => applyBulkMailAction("categorize")}>Apply category</button>
+          <!-- A confirm step for the two categories that raise the data class:
+               that write also redacts the stored subject and preview, and a
+               resweep cannot put them back. Archive and Trash confirm because
+               they move a thread; this one confirms because it destroys text. -->
+          <button
+            class="btn"
+            disabled={mailBusy === "bulk"}
+            onclick={() =>
+              CLASS_RAISING_CATEGORIES.includes(bulkCategory)
+                ? (confirmingBulkAction = "categorize")
+                : applyBulkMailAction("categorize")}
+          >Apply category</button>
         </div>
         <div class="bulk-category">
           <select bind:value={bulkDataClass} aria-label="Bulk data class">
@@ -778,9 +971,15 @@
         {#if confirmingBulkAction}
           <div class="bulk-confirm" role="alert">
             <span>
-              {confirmingBulkAction === "trash"
-                ? `Move ${selectedMail.size} selected threads to Gmail Trash?`
-                : `Archive ${selectedMail.size} selected threads in Axon and Gmail?`}
+              {#if confirmingBulkAction === "categorize"}
+                Set {mailCategoryLabel(bulkCategory)} on {selectedMail.size} selected threads? That
+                raises them to Others and permanently redacts the stored subject and preview. A
+                later sweep cannot put them back.
+              {:else if confirmingBulkAction === "trash"}
+                Move {selectedMail.size} selected threads to Gmail Trash?
+              {:else}
+                Archive {selectedMail.size} selected threads in Axon and Gmail?
+              {/if}
             </span>
             <button class="btn" onclick={() => (confirmingBulkAction = null)}>Cancel</button>
             <button
@@ -797,22 +996,7 @@
     {/if}
 
     {#if classifierOpen}
-      <aside class="classifier card" aria-label="Mail classification method">
-        <div>
-          <p class="eyebrow mono">Current method</p>
-          <h2>Deterministic rules · local · no AI</h2>
-        </div>
-        <dl>
-          <div><dt>Category inputs</dt><dd>Sender, subject, and whether List-Unsubscribe exists.</dd></div>
-          <div><dt>Category method</dt><dd>Private rules first, generic heuristics second, then Active as the safe fallback.</dd></div>
-          <div><dt>Relevance inputs</dt><dd>Sender, subject, and Gmail snippet compared with configured TELOS lenses.</dd></div>
-          <div><dt>Relevance method</dt><dd>Loopback embedding and reranking only; unavailable local models fall back to labelled lexical similarity.</dd></div>
-          <div><dt>Never sent</dt><dd>Message bodies and attachments are not fetched. Mail scoring rejects non-loopback model endpoints.</dd></div>
-          <div><dt>TELOS boundary</dt><dd>Scoring reads TELOS. Categories and bulk decisions never rewrite TELOS files.</dd></div>
-          <div><dt>Corrections</dt><dd>A category you set here becomes a human override and survives later sweeps.</dd></div>
-          <div><dt>Data classes</dt><dd>Public may use approved cloud roles; Mine needs a reviewed pseudonymized derivative; Others and Secret never reach a cloud model, refused by the derivative builder, the tier check, the dispatch re-check against the row's current class, and the database constraint alike. Secret is refused local prompts too, by the same gate the labels are derived from — nothing summarizes, diagrams or charts it.</dd></div>
-        </dl>
-      </aside>
+      <ClassifierPanel report={classifyReport} />
     {/if}
 
     {#if visibleMail.length === 0}
@@ -894,6 +1078,11 @@
                       {/if}
                     </a>
                   </div>
+                  <ModelProposal
+                    item={proposal}
+                    label={(category) => MAIL_CATEGORY_LABEL[category]}
+                    onaccept={() => void load()}
+                  />
                   {#if proposal.gmail_sync_status === "attention"}
                     <div class="mail-job-actions" aria-label="Gmail action recovery">
                       <span>Automatic retries stopped after five attempts.</span>
@@ -959,8 +1148,15 @@
   </div>
   <div class="segmented">
     <button class:active={order === "recent"} onclick={() => (order = "recent")}>New</button>
-    <button class:active={order === "relevance"} onclick={() => (order = "relevance")}>
+    <button
+      class:active={order === "relevance"}
+      onclick={() => (order = "relevance")}
+      title={forYouHint}
+    >
       For you
+      {#if modelStatus?.feedback_model && !modelStatus.feedback_model.active}
+        <span class="learning mono">learning</span>
+      {/if}
     </button>
   </div>
   <button class="btn" onclick={refreshRelevance} disabled={relevanceBusy}>
@@ -1083,98 +1279,61 @@
 {:else if grouped.length === 0}
   <p class="notice muted">Nothing in this period.</p>
 {:else}
-  {#each grouped as [day, items] (day)}
-    <section class="day">
-      <h2>{dayLabel(day)} <span class="count mono">{items.length}</span></h2>
-      <ul>
-        {#each rowsFor(items) as row (row.id)}
-          {#if row.kind === "run"}
-            <li class="card run" class:open={expandedRuns.has(row.id)}>
-              <button
-                class="run-head"
-                onclick={() => toggleRun(row.id)}
-                aria-expanded={expandedRuns.has(row.id)}
-              >
-                <span class="chevron"><Icon name="arrow-right" size={13} /></span>
-                <span class="text">{row.label}</span>
-                <span class="count mono">{row.entries.length}</span>
-              </button>
-              {#if expandedRuns.has(row.id)}
-                <ul class="run-items">
-                  {#each row.entries as e (e.id)}
-                    {@render entryCard(e)}
-                  {/each}
-                </ul>
-              {/if}
-            </li>
-          {:else}
-            {@render entryCard(row.entry)}
-          {/if}
-        {/each}
-      </ul>
-    </section>
-  {/each}
+  <KeyboardLegend open={legendOpen} ontoggle={() => (legendOpen = !legendOpen)} />
+  <ul class="rows" role="list">
+    {#each flatRows as row (row.id)}
+      {#if row.kind === "header"}
+        <li class="group-head" class:run={row.tone === "run"}>
+          <span class="text">{row.label}</span>
+          <span class="count mono">{row.count}</span>
+        </li>
+      {:else}
+        {@render entryCard(row.entry, row.id === cursorId)}
+      {/if}
+    {/each}
+  </ul>
 {/if}
 
-{#snippet entryCard(e: FeedEntry)}
-          <li class="card entry">
-            <div class="row">
-              <a class="title" href={link(`/feed/${e.id}`)}>
-                <span class="kind tag mono">{KIND_LABEL[e.kind] ?? e.kind}</span>
-                <span class="text">{e.title ?? e.url}</span>
-              </a>
-              <div class="acts">
-                <a class="btn" href={e.url} target="_blank" rel="noreferrer" aria-label="Original">
-                  <Icon name="external" size={13} />
-                </a>
-                {#if busy === e.id}
-                  <span class="btn"><Icon name="loader" size={13} /></span>
-                {:else}
-                  <button
-                    class="btn"
-                    class:kept={e.status === "keeper"}
-                    onclick={() => setStatus(e.id, e.status === "keeper" ? "new" : "keeper")}
-                    aria-label="Keep"
-                  >
-                    <Icon name="check" size={13} />
-                  </button>
-                  <button
-                    class="btn"
-                    onclick={() => setStatus(e.id, "dismissed")}
-                    aria-label="Dismiss"
-                  >
-                    <Icon name="close" size={13} />
-                  </button>
-                {/if}
-              </div>
-            </div>
-
-            {#if e.author}<p class="meta mono">{e.author}</p>{/if}
-            {#if e.evaluation}
-              <div class="evaluation-compact">
-                <EvaluationBreakdown evaluation={e.evaluation} compact />
-              </div>
-            {:else if e.relevance}
-              <p class="relevance">
-                <span>{e.relevance.profile_label}</span>
-                <span class="mono">{e.relevance.score.toFixed(2)}</span>
-                <span class="method">{e.relevance.mode}</span>
-              </p>
-            {/if}
-            {#if e.summary}
-              <p class="preview">{e.summary}</p>
-            {:else if e.digest_preview}
-              <!-- No summary of its own: past the on-device window, so the enrichment drain left
-                   it and the digest drain took it through the cloud instead. Showing the digest's
-                   opening rather than an empty card, labelled so the two are not confused. -->
-              <p class="preview">{e.digest_preview}</p>
-              <p class="muted from-digest">from the digest</p>
-            {:else if ingested === e.id}
-              <p class="muted pending">
-                <Icon name="loader" size={12} /> Summary is running — it will appear after the next load.
-              </p>
-            {/if}
-          </li>
+{#snippet entryCard(e: FeedEntry, selected: boolean)}
+  <FeedItemRow
+    entry={e}
+    id={rowDomId(e.id)}
+    current={selected}
+    tone="none"
+    busy={busy === e.id}
+    decided={decided.get(e.id) === "keeper"
+      ? "keeper"
+      : decided.has(e.id)
+        ? "dismissed"
+        : null}
+    undoHint="u to undo"
+    onkeep={() => setStatus(e.id, e.status === "keeper" ? "new" : "keeper", "inbox")}
+    ondismiss={() => setStatus(e.id, "dismissed", "inbox")}
+    onundo={() => setStatus(e.id, "new", "inbox")}
+    onexternal={() => feedPersonalization.recordInteraction(e.id, "opened", "inbox")}
+  >
+    {#snippet detail()}
+      {#if e.evaluation}
+        <div class="evaluation-compact">
+          <EvaluationBreakdown
+            evaluation={e.evaluation}
+            compact={!expandedEvaluations.has(e.id)}
+          />
+        </div>
+      {:else if e.relevance}
+        <p class="relevance">
+          <span>{e.relevance.profile_label}</span>
+          <span class="mono">{e.relevance.score.toFixed(2)}</span>
+          <span class="method">{e.relevance.mode}</span>
+        </p>
+      {/if}
+      {#if ingested === e.id && !e.summary && !e.digest_preview}
+        <p class="muted pending">
+          <Icon name="loader" size={12} /> Summary is running — it will appear after the next load.
+        </p>
+      {/if}
+    {/snippet}
+  </FeedItemRow>
 {/snippet}
 
 {/if}
@@ -1318,10 +1477,6 @@
     box-shadow: var(--card-shadow);
   }
 
-  .day {
-    margin-bottom: 1.75rem;
-  }
-
   h2 {
     display: flex;
     align-items: center;
@@ -1344,10 +1499,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-  }
-
-  .entry {
-    padding: 0.75rem;
   }
 
   .mail-toolbar {
@@ -1454,38 +1605,6 @@
     flex: 1;
   }
 
-  .classifier {
-    padding: 1rem;
-    margin-bottom: 1rem;
-  }
-
-  .classifier h2 {
-    margin: 0.15rem 0 0.85rem;
-    color: var(--text-primary);
-    font-size: 0.9rem;
-  }
-
-  .classifier dl {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
-    gap: 0.85rem 1.25rem;
-    margin: 0;
-  }
-
-  .classifier dt {
-    color: var(--text-tertiary);
-    font-family: var(--font-mono);
-    font-size: 0.625rem;
-    text-transform: uppercase;
-  }
-
-  .classifier dd {
-    margin: 0.2rem 0 0;
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    line-height: 1.45;
-  }
-
   .mail-board {
     display: grid;
     grid-auto-flow: column;
@@ -1570,11 +1689,6 @@
   .card-select input {
     margin: 0;
     accent-color: var(--primary);
-  }
-
-  .from-digest {
-    font-size: 0.75rem;
-    margin-top: 0.15rem;
   }
 
   .proposal-summary {
@@ -1672,7 +1786,7 @@
      cloud=never restrictions (Q27); both keep its warning colour. */
   .mail-data-class[data-class="c2"],
   .mail-data-class[data-class="c3"] {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   /* Its own colour rather than the data-class pill's grey: a Waiting thread is a
@@ -1692,7 +1806,7 @@
   .mail-purge {
     display: block;
     margin-top: 0.4rem;
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.625rem;
   }
 
@@ -1707,7 +1821,7 @@
   .mail-sync {
     display: block;
     margin-top: 0.35rem;
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.625rem;
   }
 
@@ -1781,103 +1895,44 @@
     border: 0;
   }
 
-  /* A collector run, collapsed to one row until asked to open. */
-  .run {
-    padding: 0;
-    overflow: hidden;
-  }
-
-  .run-head {
+  /* A day or a collector run: a label over the rows it brought, and nothing to
+     click. The disclosure it replaces hid twelve papers behind one line. */
+  .group-head {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 0.5rem;
-    width: 100%;
-    padding: 0.625rem 0.75rem;
-    background: none;
-    border: 0;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
+    margin: 0.75rem 0 0.1rem;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
 
-  .run-head:hover {
-    background: var(--surface-hover, rgba(127, 127, 127, 0.08));
+  .group-head:first-child {
+    margin-top: 0;
   }
 
-  .run-head .text {
-    flex: 1;
+  .group-head.run {
+    padding-left: 0.25rem;
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+    font-weight: 500;
+  }
+
+  .group-head .text {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .chevron {
-    display: flex;
-    color: var(--text-tertiary);
-    transition: transform 120ms ease;
+  .rows {
+    gap: 0.35rem;
   }
 
-  .run.open .chevron {
-    transform: rotate(90deg);
-  }
-
-  .run-items {
-    padding: 0 0.5rem 0.5rem;
-  }
-
-  .row {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem;
-  }
-
-  .title {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    flex: 1;
-    min-width: 0;
-    padding: 0;
-    border: 0;
-    background: none;
-    font: inherit;
-    text-align: left;
-    color: inherit;
-    cursor: pointer;
-    text-decoration: none;
-  }
-
-  .title:hover .text {
-    color: var(--primary);
-  }
-
-  .title .text {
-    font-size: 0.875rem;
-    font-weight: 500;
-  }
-
-  .kind {
-    flex-shrink: 0;
+  .learning {
+    margin-left: 0.3rem;
     font-size: 0.5625rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  .acts {
-    display: flex;
-    gap: 0.15rem;
-    flex-shrink: 0;
-  }
-
-  .acts .btn {
-    padding: 0.3rem;
-  }
-
-  .acts .kept {
-    color: var(--success);
+    color: var(--text-tertiary);
   }
 
   .meta {
@@ -1906,18 +1961,6 @@
     color: var(--text-tertiary);
   }
 
-  .preview {
-    display: -webkit-box;
-    overflow: hidden;
-    margin: 0.45rem 0 0;
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    line-height: 1.45;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-  }
-
   .lead {
     margin: 0;
     font-size: 0.875rem;
@@ -1944,7 +1987,7 @@
     padding: 0.75rem;
     border-radius: var(--radius-md);
     background-color: var(--warning-soft);
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.8125rem;
   }
 

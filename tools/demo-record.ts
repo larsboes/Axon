@@ -51,8 +51,17 @@ function countRows(body: unknown): number | null {
   return null;
 }
 
+/** The comms API secret, when tools/demo-up generated one. Sent to every capability: an
+ *  unauthenticated one ignores an unknown header, and comms (which has api_secret_file since
+ *  B6) answers 401 without it — the Pages build hit exactly that on 2026-09-02. Same shape as
+ *  tools/demo-seed.ts authHeaders. */
+function authHeaders(): Record<string, string> {
+  const token = process.env.AXON_DEMO_COMMS_TOKEN;
+  return token ? { "X-Axon-Token": token } : {};
+}
+
 async function fetchJson(url: string): Promise<unknown> {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   const text = await res.text();
   if (!res.ok) throw new Error(`GET ${url} → ${res.status}: ${text.slice(0, 300)}`);
   if (!text) return null;

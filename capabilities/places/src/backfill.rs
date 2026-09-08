@@ -825,9 +825,10 @@ pub fn stations(store: &PlacesStore, today: &str) -> Fallible<()> {
     let mut existing = 0_usize;
     let mut unresolved: Vec<String> = Vec::new();
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()?;
+    let client = axon_http::client(
+        axon_http::Purpose::new("places-backfill"),
+        std::time::Duration::from_secs(15),
+    )?;
     let suggest_base = transit_url();
 
     for (eva, station) in &by_eva {

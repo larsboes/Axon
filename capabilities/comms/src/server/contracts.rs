@@ -158,6 +158,20 @@ pub(super) struct FeedListItem {
     pub(super) day: String,
     pub(super) created_at: String,
     pub(super) status: String,
+    /// What this item is worth protecting: `c0`, `c1`, `c2` or `c3`.
+    ///
+    /// On the LIST, not only on the reader, because the one consumer that needs
+    /// it reads the list: finance's `item_is_quotable`
+    /// (`capabilities/finance/src/server.rs`) copies a feed item's title and URL
+    /// into a `c1` decision row only when comms states a class no stricter than
+    /// that row's own, and it fails CLOSED. While this field was absent, every
+    /// item was dropped and a decision shipped with no reading attached. The
+    /// alternative -- finance guessing a class -- is the defect the guard exists
+    /// to prevent.
+    ///
+    /// Never absent: the store reads back `c1`/`legacy` for an item nobody
+    /// classified, so this states a class for every row.
+    pub(super) data_class: String,
     pub(super) relevance: Option<RelevanceOut>,
     pub(super) evaluation: Option<EvaluationOut>,
 }
@@ -193,6 +207,7 @@ impl FeedListItem {
             day: item.day,
             created_at: item.created_at,
             status: item.status,
+            data_class: item.data_class,
             relevance: relevance.map(RelevanceOut::from),
             evaluation: evaluation.map(EvaluationOut::from),
         }
@@ -284,13 +299,86 @@ pub(super) struct TriageOut {
     /// "I replied and I'm blocked" indistinguishable from "Axon dismissed it".
     pub(super) waiting: bool,
     pub(super) waiting_since: Option<String>,
+    /// The mail evaluator's `overall_score` in basis points, 0..=10000 — the
+    /// unit `places_person_places.confidence_bp` already uses (PRD Q73).
+    ///
+    /// ONE writer, one meaning: `mail_evaluation::overall_bp` and nothing else.
+    /// The model rung's urgency is not a second number on this field; it arrives
+    /// as the `urgency` factor's input and moves the score THROUGH the
+    /// evaluator, so the explanation stays whole. `null` means the mail has no
+    /// stored evaluation yet, which is deliberately not the same as 0.
+    ///
+    /// Placed here, next to `waiting_since`, and not at the end of the struct:
+    /// the mail-llm-rung stream appends its own field after `relevance`, and the
+    /// two designs agreed on this placement so both additions merge.
+    pub(super) score_bp: Option<i32>,
+    pub(super) evaluated_at: Option<String>,
     pub(super) first_seen: String,
     pub(super) last_seen: String,
     pub(super) relevance: Vec<RelevanceOut>,
+    /// The local model rung's verdict, when one has been stored. `None` for a
+    /// thread the rules decided, for a thread no pass has reached yet, and for
+    /// every row while the rung is unconfigured.
+    ///
+    /// Appended after `relevance` deliberately: the feed-personalization stream
+    /// adds its own field after `waiting_since`, so the two additions are
+    /// non-adjacent and git merges both.
+    pub(super) model: Option<TriageModelOut>,
+}
+
+/// One stored verdict, as the review page reads it.
+///
+/// `urgency_validated` is what the dashboard reads to decide whether urgency
+/// may rank anything. It is false until the frozen corpus carries a measured
+/// urgency band error, because a number that reorders the operator's ladder
+/// passes the same door the stream does.
+#[derive(Debug, Serialize)]
+pub(super) struct TriageModelOut {
+    pub(super) mode: String,
+    pub(super) state: String,
+    pub(super) rule_stream: String,
+    pub(super) model_stream: Option<String>,
+    pub(super) confidence_bp: Option<i64>,
+    pub(super) urgency_bp: Option<i64>,
+    pub(super) urgency_validated: bool,
+    pub(super) rationale: Option<String>,
+    pub(super) urgency_rationale: Option<String>,
+    pub(super) data_class: String,
+    pub(super) held_reason: Option<String>,
+    pub(super) classification_version: String,
+    pub(super) applied_at: Option<String>,
+}
+
+impl From<ModelVerdict> for TriageModelOut {
+    fn from(verdict: ModelVerdict) -> Self {
+        Self {
+            mode: verdict.mode,
+            state: verdict.state,
+            rule_stream: verdict.rule_stream,
+            model_stream: verdict.model_stream,
+            confidence_bp: verdict.confidence_bp,
+            urgency_bp: verdict.urgency_bp,
+            // One writer for this answer, shared with the evaluator's own gate
+            // (`mail_evaluation::urgency_from_verdict`). Not a config key:
+            // flipping it is a measurement, and the measurement is the corpus.
+            urgency_validated: mail_evaluation::URGENCY_VALIDATED,
+            rationale: verdict.rationale,
+            urgency_rationale: verdict.urgency_rationale,
+            data_class: verdict.data_class,
+            held_reason: verdict.held_reason,
+            classification_version: verdict.classification_version,
+            applied_at: verdict.applied_at,
+        }
+    }
 }
 
 impl TriageOut {
-    pub(super) fn from_store(item: TriageItem, relevance: Vec<RelevanceMatch>) -> Self {
+    pub(super) fn from_store(
+        item: TriageItem,
+        relevance: Vec<RelevanceMatch>,
+        score: Option<(f64, String)>,
+        model: Option<ModelVerdict>,
+    ) -> Self {
         Self {
             id: item.id,
             from_addr: item.from_addr,
@@ -316,9 +404,14 @@ impl TriageOut {
             gmail_sync_error: item.gmail_sync_error,
             waiting: item.waiting,
             waiting_since: item.waiting_since,
+            score_bp: score
+                .as_ref()
+                .map(|(overall, _)| mail_evaluation::overall_bp(*overall)),
+            evaluated_at: score.map(|(_, at)| at),
             first_seen: item.first_seen,
             last_seen: item.last_seen,
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
+            model: model.map(TriageModelOut::from),
         }
     }
 }
@@ -429,7 +522,11 @@ impl ContentItemOut {
         }
     }
 
-    pub(super) fn from_mail(item: TriageItem, relevance: Vec<RelevanceMatch>) -> Self {
+    pub(super) fn from_mail(
+        item: TriageItem,
+        relevance: Vec<RelevanceMatch>,
+        evaluation: Option<FeedEvaluation>,
+    ) -> Self {
         let created_at = item
             .internal_date_text
             .clone()
@@ -471,7 +568,10 @@ impl ContentItemOut {
             processing_policy,
             cloud_processing: CloudDerivativeState::not_prepared(),
             relevance: relevance.into_iter().map(RelevanceOut::from).collect(),
-            evaluation: None,
+            // No longer hardcoded None. A mail now carries the same factor
+            // breakdown the feed does, including the zero-weight refusal factor
+            // that says a c3 row was not read by a model.
+            evaluation: evaluation.map(EvaluationOut::from),
             processing: Vec::new(),
             origins: Vec::new(),
             digest: None,

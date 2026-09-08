@@ -46,11 +46,5 @@ pub trait SourceAdapter: Send + Sync {
 
     fn rate_limit_per_min(&self) -> u32;
 
-    fn user_agent(&self) -> &str {
-        // Update once Axon goes public (no public GitHub remote yet, see
-        // PROJECTS.md) -- this is the intended future URL, not a live one.
-        "Axon-Scouting/0.1 (+https://github.com/larsboes/Axon)"
-    }
-
     fn search(&self, query: &SearchQuery) -> Result<Vec<Opportunity>, SourceError>;
 }

@@ -333,6 +333,214 @@ impl Store {
                 ON {prefix}_content_cloud_derivatives(approved_at DESC);
             CREATE INDEX IF NOT EXISTS idx_{prefix}_content_cloud_jobs_queued
                 ON {prefix}_content_cloud_jobs(queued_at ASC) WHERE status = 'queued';
+
+            -- mail-llm-rung 2026-09-03 ---------------------------------------
+            -- Appended as one delimited block at the END of the batch: the feed
+            -- personalization stream edits the same function on the same night.
+
+            -- Which deterministic rung decided one thread's stream, and what it
+            -- decided. `decided_by`, not `rung`: `crate::quiet::Rung` already
+            -- owns that word in this crate for the inference ladder.
+            --
+            -- A table rather than a column on {prefix}_triage_items, because
+            -- CREATE TABLE IF NOT EXISTS is a no-op against the installed table
+            -- and a new column would need the swap_in_rebuilt_table dance below.
+            -- ON DELETE CASCADE covers the Trash purge with no new retention
+            -- mechanism (`PRAGMA foreign_keys = ON` is set per connection in
+            -- libs/axon-store).
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_rules (
+                triage_id TEXT PRIMARY KEY
+                    REFERENCES {prefix}_triage_items(id) ON DELETE CASCADE,
+                decided_by TEXT NOT NULL
+                    CHECK (decided_by IN ('config_rule','heuristic','fallback')),
+                stream TEXT NOT NULL
+                    CHECK (stream IN ('aktiv','issue','feed','werbung','belege','steuern','sonstiges')),
+                rationale TEXT NOT NULL,
+                rules_version TEXT NOT NULL DEFAULT 'mail-rules-v1',
+                decided_at TEXT NOT NULL DEFAULT ({now})
+            );
+
+            -- One backfill, deliberately, against this file's own rule that the
+            -- backfills are gone (see run_migration's doc comment). That rule
+            -- says every backfill described rows written before a COLUMN
+            -- existed, and there are none. These rows were written before this
+            -- TABLE existed, and the rationale literals partition them exactly:
+            -- measured on a copy of the live file 2026-09-05, fallback 102,
+            -- heuristic 111, config_rule 24, total 237. The four heuristic
+            -- literals are `rules::classify`'s own, and
+            -- `the_backfill_literals_match_the_classifier` asserts the two lists
+            -- still agree. INSERT OR IGNORE makes a re-run free.
+            INSERT OR IGNORE INTO {prefix}_triage_rules
+                (triage_id, decided_by, stream, rationale)
+            SELECT id,
+                   CASE
+                     WHEN rationale = 'No rule matched; kept active as the conservative default.'
+                       THEN 'fallback'
+                     WHEN rationale IN (
+                       'List-Unsubscribe plus a shopping signal in the subject; classified as advertising.',
+                       'List-Unsubscribe plus a development or technology signal in the subject; classified as a Feed newsletter.',
+                       'A no-reply sender plus a receipt or invoice signal in the subject; classified as a receipt.',
+                       'List-Unsubscribe is present, but no specific rule matched; classified as other.'
+                     ) THEN 'heuristic'
+                     ELSE 'config_rule'
+                   END,
+                   stream, rationale
+              FROM {prefix}_triage_items
+             WHERE classification_method = 'deterministic';
+
+            -- UNLIKE {prefix}_gmail_action_jobs, which states that no message
+            -- content is copied into it, this table DOES hold message-derived
+            -- text: `rationale` and `urgency_rationale` are a model's sentences
+            -- about a subject and a snippet, and `last_error` can carry a word
+            -- the model invented or a message the local server returned. All
+            -- three are redacted before insert against `redaction_class` = the
+            -- higher of the row's class and the class the PROPOSED stream
+            -- implies, so an escalation at confirm time cannot leave them
+            -- under-redacted; `last_error` is capped harder still, because
+            -- nothing reads it for content (mail_model::stored_error).
+            --
+            -- An escalation that arrives LATER — a human moving the row to
+            -- belege, a resweep the people registry escalates — is remediated
+            -- by `narrow_model_verdict`, which every path that narrows the
+            -- item's own review fields now also runs.
+            --
+            -- `agree` is deliberately NOT a column: it is rule_stream =
+            -- model_stream, derived in the report, and a stored copy would be a
+            -- second place for it to be wrong.
+            --
+            -- `state` carries no CHECK, following {prefix}_content_digests. The
+            -- vocabulary is enumerated by
+            -- `mail_model::tests::every_stored_state_is_in_the_documented_set`
+            -- instead, because it is the union of `summarize::Outcome::state()`
+            -- and four states this rung owns, and a CHECK here would drift from
+            -- that enum silently.
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_model_verdicts (
+                triage_id TEXT PRIMARY KEY
+                    REFERENCES {prefix}_triage_items(id) ON DELETE CASCADE,
+                mode TEXT NOT NULL CHECK (mode IN ('shadow','applied','held')),
+                state TEXT NOT NULL,
+                rule_decided_by TEXT NOT NULL
+                    CHECK (rule_decided_by IN ('config_rule','heuristic','fallback')),
+                rule_stream TEXT NOT NULL
+                    CHECK (rule_stream IN ('aktiv','issue','feed','werbung','belege','steuern','sonstiges')),
+                model_stream TEXT
+                    CHECK (model_stream IS NULL OR model_stream IN ('aktiv','issue','feed','werbung','belege','steuern','sonstiges')),
+                confidence_bp INTEGER
+                    CHECK (confidence_bp IS NULL OR confidence_bp BETWEEN 0 AND 10000),
+                urgency_bp INTEGER
+                    CHECK (urgency_bp IS NULL OR urgency_bp BETWEEN 0 AND 10000),
+                rationale TEXT,
+                urgency_rationale TEXT,
+                redactions INTEGER NOT NULL DEFAULT 0 CHECK (redactions >= 0),
+                data_class TEXT NOT NULL CHECK (data_class IN ('c0','c1','c2','c3')),
+                redaction_class TEXT NOT NULL CHECK (redaction_class IN ('c0','c1','c2','c3')),
+                producer TEXT NOT NULL,
+                item_revision TEXT NOT NULL,
+                prompt_revision TEXT NOT NULL DEFAULT 'mail-stream-v1-english',
+                classification_version TEXT NOT NULL DEFAULT 'mail-model-v1',
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                last_error TEXT,
+                next_attempt TEXT,
+                held_reason TEXT,
+                applied_at TEXT,
+                decided_at TEXT NOT NULL DEFAULT ({now})
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_triage_model_state
+                ON {prefix}_triage_model_verdicts(state);
+            -- end mail-llm-rung 2026-09-03 -----------------------------------
+
+            -- feed-personalization 2026-09-03 ---------------------------------
+            -- Appended as one block at the end of the batch rather than beside
+            -- the tables it belongs with: a second stream edits this same file
+            -- tonight, and one delimited region is one merge conflict instead
+            -- of three. Order still holds -- every table referenced here is
+            -- declared above.
+
+            -- What the operator did with a feed item, and when. The status
+            -- column it complements is a mutable enum with no history, which
+            -- is why the vault projection cannot render a saved date
+            -- (projection.rs) and why nothing learned could ever decay.
+            --
+            -- One writer per verb. `kept`, `dismissed` and `unkept` are
+            -- written only by `set_feed_status`, in the same transaction as
+            -- the UPDATE, so a decision can neither be lost nor counted twice.
+            -- `POST /feed/:id/interactions` refuses those three with 400 and
+            -- accepts `opened` and `reopened` only. One row per status CHANGE:
+            -- `set_feed_status` reads the stored status inside the same
+            -- transaction and writes nothing when the press does not move it,
+            -- because an UPDATE to the value a column already holds still
+            -- reports one row affected.
+            --
+            -- Reading the label: an item's label is its most recent row whose
+            -- event is in ('kept','dismissed'), retracted by a later `unkept`.
+            --
+            -- `shared` ships with no writer on purpose, and `home` has none
+            -- until the Home surface passes its own name to
+            -- `POST /feed/:id/status` (the route already takes `surface`).
+            -- SQLite has no alterable constraint, so widening this CHECK later
+            -- costs the table-rebuild dance this file documents below;
+            -- declaring a value now is free.
+            CREATE TABLE IF NOT EXISTS {prefix}_feed_interactions (
+                interaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                feed_id TEXT NOT NULL REFERENCES {prefix}_feed_items(id) ON DELETE CASCADE,
+                event TEXT NOT NULL
+                    CHECK (event IN ('opened','kept','dismissed','reopened','unkept','shared')),
+                -- Where the press happened. No content and no text: ids and
+                -- verbs only, which is what keeps this row c1 and keeps it
+                -- trainable.
+                surface TEXT NOT NULL DEFAULT 'api'
+                    CHECK (surface IN ('inbox','reader','library','home','cli','api')),
+                occurred_at TEXT NOT NULL DEFAULT ({now})
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_feed_interactions_item
+                ON {prefix}_feed_interactions(feed_id, occurred_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_feed_interactions_time
+                ON {prefix}_feed_interactions(occurred_at DESC);
+
+            -- Mail's own evaluation, deliberately the same nine columns as
+            -- {prefix}_feed_evaluations. Same currency check, same tier gate,
+            -- same contract type, against a different table -- because the feed
+            -- evaluator reads a FeedItem and a trip snapshot, and a triage row
+            -- has neither.
+            --
+            -- `mode = 'unscored'` is the c3 refusal state, and it is why the
+            -- refusal cannot live on {prefix}_triage_relevance: that table's
+            -- mode CHECK admits only reranked, semantic and lexical.
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_evaluations (
+                triage_id TEXT PRIMARY KEY REFERENCES {prefix}_triage_items(id) ON DELETE CASCADE,
+                overall_score REAL NOT NULL CHECK (overall_score BETWEEN 0 AND 1),
+                explanation TEXT NOT NULL,
+                mode TEXT NOT NULL CHECK (mode IN ('reranked','semantic','lexical','unscored')),
+                item_revision TEXT NOT NULL,
+                context_revision TEXT NOT NULL,
+                evaluator_revision TEXT NOT NULL,
+                tier TEXT NOT NULL DEFAULT 'legacy'
+                    CHECK (tier IN ('legacy','deterministic','model','human')),
+                evaluated_at TEXT NOT NULL DEFAULT ({now})
+            );
+
+            -- Mail-shaped factors: interest, category, age, and a reserved
+            -- urgency slot the model rung fills. There is no correspondent
+            -- factor, and that is a ruling rather than an omission -- the people
+            -- registry is asked per token of subject and snippet, never over the
+            -- sender field (PRD Q72 rule 2).
+            CREATE TABLE IF NOT EXISTS {prefix}_triage_evaluation_factors (
+                triage_id TEXT NOT NULL
+                    REFERENCES {prefix}_triage_evaluations(triage_id) ON DELETE CASCADE,
+                factor_key TEXT NOT NULL,
+                label TEXT NOT NULL,
+                score REAL NOT NULL CHECK (score BETWEEN 0 AND 1),
+                weight REAL NOT NULL CHECK (weight BETWEEN 0 AND 1),
+                rationale TEXT NOT NULL,
+                context_json TEXT,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (triage_id, factor_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_triage_evaluations_score
+                ON {prefix}_triage_evaluations(overall_score DESC);
+            -- end feed-personalization 2026-09-03 -----------------------------
             ",
             prefix = prefix,
             now = axon_store::NOW,

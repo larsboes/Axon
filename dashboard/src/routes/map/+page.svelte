@@ -2,8 +2,19 @@
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
-  import MapView, { type MapFeatureCollection, type MapLayerSpec } from "$lib/map/MapView.svelte";
-  import { PHASE_PAST, PHASE_UPCOMING_LINE, PHASE_UPCOMING_POINT } from "$lib/map/style";
+  import MapSurface from "$lib/map/MapSurface.svelte";
+  import type { MapFeatureCollection, MapLayerSpec } from "$lib/map/surface";
+  import {
+    MARK_ACCENT,
+    MARK_HALO,
+    MARK_INK,
+    PHASE_PAST,
+    PHASE_UPCOMING_LINE,
+    PHASE_UPCOMING_POINT,
+    PRESENCE_COLOR,
+    SPEND_COLOR,
+    STATION_COLOR,
+  } from "$lib/map/style";
   import {
     places,
     type GeocodeResult,
@@ -20,13 +31,9 @@
     type UnplacedGroup,
   } from "$lib/api";
 
-  // Fixed hex rather than app.css tokens: marks sit on the basemap, which does not
-  // follow the app theme. Spend wears the light-theme primary; people wear the
-  // accent; travel wears TripMap's phase colors ($lib/map/style.ts).
-  const SPEND_COLOR = "#0e7490";
-  const PEOPLE_COLOR = "#d97706";
-  const STATION_COLOR = "#3f3f46";
-  const PRESENCE_COLOR = "#a1a1aa";
+  // Every mark colour is $lib/map/style.ts now, shared with /travel: one palette for the
+  // two surfaces rather than a copy per route. People pins wear the accent.
+  const PEOPLE_COLOR = MARK_ACCENT;
 
   let spend = $state<SpendLayer | null>(null);
   let travel = $state<TravelLayer | null>(null);
@@ -58,7 +65,7 @@
   let showTravel = $state(true);
   let showPeople = $state(true);
   let panelOpen = $state(false);
-  let mapView: MapView | undefined = $state();
+  let mapView: MapSurface | undefined = $state();
 
   const EMPTY: MapFeatureCollection = { type: "FeatureCollection", features: [] };
 
@@ -151,7 +158,7 @@
         "circle-radius": venueRadius,
         "circle-color": SPEND_COLOR,
         "circle-opacity": 0.78,
-        "circle-stroke-color": "#ffffff",
+        "circle-stroke-color": MARK_HALO,
         "circle-stroke-width": 1.5,
       },
     },
@@ -169,7 +176,7 @@
           PHASE_UPCOMING_POINT,
         ],
         "circle-opacity": ["match", ["get", "kind"], "spend-presence", 0.45, 0.9],
-        "circle-stroke-color": "#ffffff",
+        "circle-stroke-color": MARK_HALO,
         "circle-stroke-width": ["match", ["get", "kind"], "spend-presence", 0, "station", 1, 2],
       },
     },
@@ -180,7 +187,7 @@
       paint: {
         "circle-radius": 7,
         "circle-color": PEOPLE_COLOR,
-        "circle-stroke-color": "#ffffff",
+        "circle-stroke-color": MARK_HALO,
         "circle-stroke-width": 2,
       },
     },
@@ -195,8 +202,8 @@
         "text-anchor": "top",
       },
       paint: {
-        "text-color": "#18181b",
-        "text-halo-color": "#ffffff",
+        "text-color": MARK_INK,
+        "text-halo-color": MARK_HALO,
         "text-halo-width": 1.5,
       },
     },
@@ -746,12 +753,13 @@
   {/if}
 
   <div class="map-area">
-    <MapView
+    <MapSurface
       bind:this={mapView}
       {sources}
       {layers}
       interactive={["people-pins", "travel-points", "spend-venues", "spend-cities"]}
       {popupHtml}
+      eager
       deferredLabel={`${featureCount} ${featureCount === 1 ? "place" : "places"} on the map`}
     />
   </div>

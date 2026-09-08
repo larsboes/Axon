@@ -24,12 +24,6 @@ type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
 /// `nominatim_url()`, which honours the test/stub override.
 pub const NOMINATIM_URL: &str = "https://nominatim.openstreetmap.org/search";
 
-/// Identifying User-Agent, required by the Nominatim usage policy. The
-/// self-identifying shape, not a spoofed browser: this endpoint is documented
-/// and its policy asks for exactly this (contrast transit's hafas.rs, which
-/// records why it does the opposite for an undocumented one).
-pub const USER_AGENT: &str = "axon-places/0.1 (+https://larsboes.github.io/Axon)";
-
 const PROVIDER: &str = "nominatim";
 const MIN_REQUEST_SPACING: Duration = Duration::from_secs(1);
 
@@ -206,10 +200,14 @@ impl<'a> Geocoder<'a> {
         }
 
         throttle();
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(Duration::from_secs(20))
-            .build()?;
+        // The Nominatim usage policy requires an identifying User-Agent, and
+        // axon_http's is exactly the shape it asks for: a product name and a
+        // contact URL, not a spoofed browser. (Contrast transit's hafas.rs,
+        // which records why it does the opposite for an undocumented endpoint.)
+        let client = axon_http::client(
+            axon_http::Purpose::new("places-geocode"),
+            Duration::from_secs(20),
+        )?;
         let url = match query {
             GeocodeQuery::Reverse { .. } => reverse_endpoint(&self.url),
             _ => self.url.clone(),

@@ -205,12 +205,13 @@ enum Want {
 /// POSTs `/lookup`, in chunks, answering `None` only when the service could not be
 /// reached at all. Absence of a cell is an inner `None` and stays distinguishable.
 fn lookup(stops: Vec<StopQuery>) -> Option<Vec<Option<StopStats>>> {
-    let client = reqwest::blocking::Client::builder()
-        // Short on purpose: this is an enhancement on a localhost service. Waiting on
-        // it would make a journey search slower than not having the number at all.
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-        .ok()?;
+    // Short on purpose: this is an enhancement on a localhost service. Waiting on
+    // it would make a journey search slower than not having the number at all.
+    let client = axon_http::client(
+        axon_http::Purpose::new("transit-punctuality"),
+        std::time::Duration::from_secs(3),
+    )
+    .ok()?;
     let url = format!("{}/lookup", base_url());
     let mut out = Vec::with_capacity(stops.len());
     for chunk in stops.chunks(MAX_STOPS_PER_LOOKUP) {

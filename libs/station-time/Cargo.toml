@@ -20,5 +20,5 @@ path = "src/lib.rs"
 # stop's OWN local zone (verified live 2026-08-12, Köln->London: wall-clock
 # subtraction was short by exactly the zone offset), so cross-zone arithmetic
 # needs real zone rules, not offset guesses.
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+chrono.workspace = true
 chrono-tz = "0.10"

@@ -43,6 +43,7 @@
     type FeedStatus,
     type MailCategory,
   } from "$lib/api";
+  import { feedPersonalization } from "$lib/feed/api";
 
   type GmailAction = "archive" | "trash" | "restore";
 
@@ -63,6 +64,7 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
   let mailCategory = $state<MailCategory>("aktiv");
+  let redactionNotice = $state<string | null>(null);
   let selectedDataClass = $state<DataClass>("c1");
   let confirmingGmailAction = $state<GmailAction | null>(null);
   let cloudPreview = $state<CloudDerivativePreview | null>(null);
@@ -494,6 +496,22 @@
         void loadGoogleExportState(entry.id);
       }
       whenProblem = null;
+      // After the entry resolves, and only for a feed item. The same route
+      // serves mail and calendar, so an ungated POST would send a triage id to
+      // /feed/:id/interactions and swallow a 404 on every mail open. An entry
+      // the operator already decided on is a REOPEN: coming back to something
+      // filed is a different signal from a first read.
+      //
+      // In-app entry-to-entry navigation records nothing, and that is stated
+      // rather than silently missed: `loadEntry` has two callers and does not
+      // re-run on a parameter change, so this page never observes one.
+      if (entry.source === "feed") {
+        void feedPersonalization.recordInteraction(
+          entry.id,
+          entry.status === "new" ? "opened" : "reopened",
+          "reader",
+        );
+      }
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -537,7 +555,7 @@
     if (!entry || entry.source !== "feed" || busy) return;
     busy = true;
     try {
-      await comms.setStatus(entry.id, status);
+      await feedPersonalization.setStatus(entry.id, status, "reader");
       entry.status = status;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -546,12 +564,38 @@
     }
   }
 
+  /** The two categories that raise a mail's data class by name alone, so
+   *  setting one also permanently redacts the stored subject and preview.
+   *  `content_item::mail_others_reason` is what rules it in comms. */
+  const CLASS_RAISING_CATEGORIES: MailCategory[] = ["belege", "steuern"];
+
   async function setMailCategory(category: MailCategory): Promise<void> {
     if (!entry?.mail || entry.source !== "mail" || busy || category === entry.mail.category) return;
+    // Asked before the write, because the write cannot be undone: moving a mail
+    // to Tax or Receipts raises it to Others, and the stored subject and preview
+    // are redacted in the same transaction.
+    if (
+      CLASS_RAISING_CATEGORIES.includes(category) &&
+      !window.confirm(
+        "Tax and Receipts are Others: this also raises the data class and permanently redacts the stored subject and preview. A later sweep cannot put them back. Continue?",
+      )
+    ) {
+      mailCategory = entry.mail.category;
+      return;
+    }
     busy = true;
     error = null;
+    redactionNotice = null;
     try {
-      await comms.setTriageCategory(entry.id, category);
+      const write = await comms.setTriageCategory(entry.id, category);
+      if (write.narrowed) {
+        redactionNotice =
+          "The stored subject and preview were permanently redacted: the class this category sets does not admit them.";
+        // Reloaded rather than patched, because the row on screen still holds
+        // the text the write just removed.
+        await loadEntry();
+        return;
+      }
       entry.mail.category = category;
       entry.mail.rationale = "Category set manually in Axon.";
       entry.mail.classification_method = "human";
@@ -994,6 +1038,7 @@
                human writes in Obsidian. The mail keeps its own lane — category,
                archive, trash — and the hand-off to an action is a note, not a
                row this page can create. -->
+          {#if redactionNotice}<p class="mail-redaction-notice">{redactionNotice}</p>{/if}
           <label class="mail-category">
             <span>Category</span>
             <select
@@ -1674,6 +1719,13 @@
           <span>{cloudPreview.truncated ? "Bounded at 16,000 characters" : "Complete bounded document"}</span>
         </div>
 
+        <!-- PRD Q9b: a reduced call says so in words, above the per-kind ledger.
+             The count line in preview-facts is a number; this is the sentence,
+             and a gate nobody can see is indistinguishable from one that is off. -->
+        {#if cloudPreview.redaction_receipt}
+          <p class="redaction-receipt">{cloudPreview.redaction_receipt}</p>
+        {/if}
+
         {#if cloudPreview.redactions.length > 0}
           <div class="redaction-ledger" aria-label="Local entity redactions">
             <span class="section-label">Detected locally</span>
@@ -1986,6 +2038,12 @@
     opacity: 0.75;
   }
 
+  .mail-redaction-notice {
+    margin: 0 0 0.5rem;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+  }
+
   .mail-category {
     display: flex;
     align-items: center;
@@ -2110,7 +2168,7 @@
   }
 
   .digest-redactions {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .digest-provenance {
@@ -2275,7 +2333,7 @@
 
   .cloud-job-error {
     margin: 0.65rem 0 0;
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.6875rem;
     line-height: 1.45;
   }
@@ -2649,6 +2707,15 @@
     font-size: 0.6875rem;
   }
 
+  .redaction-receipt {
+    margin: 0.75rem 0 0;
+    padding: 0.5rem 0.65rem;
+    border-left: 3px solid var(--warning);
+    background: var(--warning-soft);
+    color: var(--text-primary);
+    font-size: 0.78rem;
+  }
+
   .redaction-ledger {
     display: flex;
     flex-wrap: wrap;
@@ -2729,7 +2796,7 @@
 
   .error,
   .inline-error {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .inline-error {
