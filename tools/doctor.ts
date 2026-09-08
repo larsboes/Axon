@@ -643,6 +643,15 @@ export function classifyScheduledProducer(p: ScheduledProducer): { level: "ok" |
     return { level: "ok", message: `${p.name} — no unit installed; the boot-persistence check above owns that` };
   }
   if (!p.loaded) {
+    // Verifier, 2026-09-08: this one IS counted twice, unlike the branch above. The
+    // boot-persistence check has its own `installed-not-loaded` state — service-runner.sh's
+    // status_persistence asks launchctl the same question, and doctor warns on it
+    // (the `case "installed-not-loaded"` arm of the Boot persistence check). Measured from the
+    // main checkout: `tools/service-runner.sh persistence` returns
+    // `host-patch  installed-not-loaded  the unit exists but the supervisor is not running it`.
+    // It does not show up in a run taken from a git worktree because every unit reads `stale`
+    // there — the generated unit embeds the runner's absolute path — and `stale` short-circuits
+    // before the load state is asked for. So a worktree run cannot see the overlap.
     return {
       level: "warn",
       message: `${p.name} — its unit is installed and launchd has not loaded it, so the timer cannot fire (${seen})`,
@@ -2279,8 +2288,18 @@ const CHECKS: Check[] = [
         }
         // BSD st_flags, the only place SF_DATALESS is visible. `stat -f` is BSD-only and Node's
         // Stats does not carry st_flags at all, so this is a shell-out on Darwin and an empty
-        // string everywhere else — which classifyArchiveAtTarget reads as "not asked", not as
-        // "not evicted".
+        // string everywhere else.
+        //
+        // Verifier, 2026-09-08: an earlier version of this comment said the empty string reads
+        // as "not asked" rather than "not evicted". It does not. classifyArchiveAtTarget has no
+        // such branch — `flags = ""` and `flags = "-"` both fall through to the same
+        // `✓ <n> bytes, present at the destination`. So on Darwin, a `stat` that fails for any
+        // reason reports an evicted archive as present, which is the silent green this whole
+        // section exists to remove; the `kind != local` row above gets this right and says
+        // "archive not verified" out loud. Left as it stands rather than fixed here: the fix
+        // needs a fourth input on the classifier, and the branch could then only be watched
+        // failing on macOS, which tools/lib/test-support.sh's skippable() refuses in CI. See
+        // the verifier's report.
         let flags = "";
         if (exists && process.platform === "darwin") {
           const st = Bun.spawnSync({ cmd: ["stat", "-f", "%Sf", archive], stdout: "pipe", stderr: "pipe" });
