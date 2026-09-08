@@ -30,6 +30,9 @@ axon-config = { path = "../../libs/axon-config" }
 axon-inference = { path = "../../libs/inference" }
 axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }
+# The data-class vocabulary and its fail-closed default. Named here rather than
+# spelled out: a second crate deciding what `c1` means is what §6.1 forbids.
+content-item = { path = "../../libs/content-item" }
 markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }
 serde = { workspace = true, features = ["derive"] }

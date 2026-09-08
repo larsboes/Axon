@@ -101,14 +101,22 @@ feed link to script in the origin that renders the mail snippets. The keyboard h
 only while the ladder is on screen, so Enter on another view cannot navigate to a row nobody
 can see.
 
-**Data class is shown only where a capability publishes one.** Mail publishes one, and
-`GET /comms/feed` began publishing one on 2026-09-06 (`capabilities/comms/README.md`); the
-calendar entry, the task, the trip plan and the scouting opportunity still do not, and this
-shell will not invent a class it does not own. `FeedEntry.data_class` in `src/lib/api.ts` is
-therefore typed **optional**, and the `?` records a contract gap rather than caution: comms'
-detail contract carries no class, so `toListEntry` in `routes/feed/+page.svelte` builds a list
-row out of an ingest response that has none. A reader must treat `undefined` as *not stated*
-and fail closed. The field stops being optional the day the detail contract states one too.
+**Data class is shown only where a capability publishes one.** Mail and finance publish one,
+`GET /comms/feed` began publishing one on 2026-09-06 (`capabilities/comms/README.md`), and on
+2026-09-08 the calendar entry lists, `GET /vault/api/tasks` and `GET /scouting/opportunities`
+joined them (B50). **The trip plan is the one list left**, and it stays silent on purpose: what
+a plan naming its travellers is worth is an open operator question, not the shell's to answer,
+and this shell will not invent a class it does not own. `tools/dashboard-home-data-class.test.ts`
+holds the trip and trip-retrospective kinds on the silent list so that filling one in is a test
+failure rather than a guess.
+
+`FeedEntry.data_class` in `src/lib/api.ts` is typed **optional**, and the `?` records a contract
+gap rather than caution: comms' detail contract carries no class, so `toListEntry` in
+`routes/feed/+page.svelte` builds a list row out of an ingest response that has none. A reader
+must treat `undefined` as *not stated* and fail closed. The field stops being optional the day
+the detail contract states one too. `CalendarEntry.data_class` carries the same `?` for the same
+kind of reason: the three entry lists state a class, while `GET /api/entries/:id`, the create and
+the patch answer with the bare row.
 
 ### One map surface, and a basemap that is half local
 

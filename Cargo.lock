@@ -4435,6 +4435,7 @@ dependencies = [
  "axon-server",
  "axon-store",
  "axum",
+ "content-item",
  "markdown-root",
  "reqwest",
  "route-manifest",

@@ -18,7 +18,7 @@ use calendar::date;
 use calendar::google_sync::{self, HttpCalendarApi, Settings};
 use calendar::markdown_import;
 use calendar::model::{
-    Commitment, NewContext, NewEntry, NewRhythm, UpdateContext, UpdateEntry, UpdateRhythm,
+    Commitment, Entry, NewContext, NewEntry, NewRhythm, UpdateContext, UpdateEntry, UpdateRhythm,
 };
 use calendar::store::CalendarStore;
 
@@ -257,6 +257,46 @@ struct ProposalsQuery {
     to: String,
 }
 
+/// One entry as a LIST states it: the row, and what it is worth protecting.
+///
+/// `content.rs` has declared a class for this whole source since it was written
+/// — `classification()`, "where the operator is and when is personal, whatever
+/// the event itself is" — and it reached exactly one surface: the per-entry
+/// content projection at `GET /content/calendar/:id`. Nothing that reads a
+/// LIST ever saw it, so the dashboard's ladder answered `null` for a calendar
+/// row while the capability had an answer the whole time (B50, PRD §13.1).
+///
+/// A wrapper rather than a field on `Entry`: the class is a property of the
+/// source, not a column, and putting it on the model would make fifteen struct
+/// literals — most of them tests — carry a value none of them decides.
+///
+/// The VALUE only, matching comms' feed list
+/// (`capabilities/comms/src/server/contracts.rs:174`). The rationale and the
+/// method are not repeated on every row of a window that routinely holds
+/// hundreds; they are one fetch away on `GET /content/calendar/:id`, which
+/// serves the whole `DataClass`.
+#[derive(serde::Serialize)]
+struct EntryListItem {
+    #[serde(flatten)]
+    entry: Entry,
+    data_class: String,
+}
+
+impl EntryListItem {
+    /// Classified once per request, not once per row: the declaration takes no
+    /// argument, so a per-row call would allocate the same string N times.
+    fn all(entries: Vec<Entry>) -> Vec<Self> {
+        let data_class = content::classification().value;
+        entries
+            .into_iter()
+            .map(|entry| Self {
+                entry,
+                data_class: data_class.clone(),
+            })
+            .collect()
+    }
+}
+
 async fn list_entries(
     State(state): State<AppState>,
     Query(query): Query<EntriesQuery>,
@@ -278,7 +318,7 @@ async fn list_entries(
     })
     .await
     {
-        Ok(Ok(entries)) => response(StatusCode::OK, entries),
+        Ok(Ok(entries)) => response(StatusCode::OK, EntryListItem::all(entries)),
         Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
         Err(error) => response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -299,7 +339,7 @@ async fn list_google_drafts(
     })
     .await
     {
-        Ok(Ok(entries)) => response(StatusCode::OK, entries),
+        Ok(Ok(entries)) => response(StatusCode::OK, EntryListItem::all(entries)),
         Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
         Err(error) => response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -320,7 +360,7 @@ async fn list_external_proposals(
     })
     .await
     {
-        Ok(Ok(entries)) => response(StatusCode::OK, entries),
+        Ok(Ok(entries)) => response(StatusCode::OK, EntryListItem::all(entries)),
         Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
         Err(error) => response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1581,6 +1621,75 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .with_state(state);
     axon_server::serve_local("calendar-server", port, app).await;
+}
+
+#[cfg(test)]
+mod entry_list_class_tests {
+    use super::*;
+
+    fn entry() -> Entry {
+        Entry {
+            id: "evt-1".into(),
+            kind: "event".into(),
+            commitment: Commitment::Possible,
+            title: "Rust meetup".into(),
+            starts_at: "2026-09-10T19:00:00".into(),
+            ends_at: "2026-09-10T21:00:00".into(),
+            all_day: false,
+            location: Some("Bonn".into()),
+            notes: None,
+            source: "web".into(),
+            external_id: None,
+            rhythm_id: None,
+            payload: json!({}),
+            created_at: "1788000000".into(),
+            updated_at: "1788000000".into(),
+        }
+    }
+
+    /// The class on the list is the one `content.rs` declares, read from it.
+    ///
+    /// Both assertions are load-bearing. The first says the list did not invent
+    /// a class; the second says the declaration itself is still c1, so a change
+    /// to `classification()` cannot slide past a test that only compares the
+    /// list against it.
+    #[test]
+    fn the_list_states_the_class_the_source_declares() {
+        let body = serde_json::to_value(EntryListItem::all(vec![entry()]))
+            .expect("an entry list serializes");
+
+        assert_eq!(body[0]["data_class"], content::classification().value);
+        assert_eq!(body[0]["data_class"], "c1");
+        // The row itself is untouched: `flatten` adds a key, it does not nest.
+        assert_eq!(body[0]["id"], "evt-1");
+        assert_eq!(body[0]["title"], "Rust meetup");
+    }
+
+    /// A handler that serves entries and states no class.
+    ///
+    /// The three that exist — entries, drafts, external proposals — share one
+    /// line, and the failure this guards is a fourth that does not:
+    /// `GET /api/entries` publishing a class while `/api/proposals` did not
+    /// would be the same contract gap B50 found, one endpoint further along.
+    ///
+    /// The needle is composed at runtime on purpose. This module is inside
+    /// `server.rs`, so `include_str!` reads the test's own source too, and a
+    /// literal needle would match itself and pass forever.
+    #[test]
+    fn no_handler_serves_a_list_of_entries_without_a_class() {
+        let bare = format!("response(StatusCode::OK, {}", "entries)");
+        let wrapped = format!("EntryListItem::all({}", "entries)");
+        let source = include_str!("server.rs");
+        assert!(
+            !source.contains(&bare),
+            "a list handler answers with bare entries; wrap it in EntryListItem::all"
+        );
+        assert_eq!(
+            source.matches(&wrapped).count(),
+            3,
+            "entries, drafts and external proposals are the three entry lists"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@
   "_comment_embedding_backend": "Nothing about embedding lives in this file. Interest-profile vectors come from the 'embedding' role in the overlay's inference.json (backend, model, query/document prefixes), read through libs/inference; a machine that declares no such role falls back to hash embedding. See libs/inference/README.md and src/embed.rs.",
 
   "_comment_sources": "Declared opportunity sources (supersedes events_dir/interest_profile_dir). Each entry declares an adapter type and location. The pipeline runs all enabled sources when no --adapter flag is given. See capabilities/scouting/README.md.",
+  "_comment_data_class": "data_class declares what a source's opportunities are worth protecting: c0 public, c1 mine, c2 others, c3 secret (PRD Axon.md §6.1). GET /opportunities publishes it on every row and GET /sources publishes each declaration. OMITTING IT IS SAFE AND MEANS c1: the class is never guessed, and c0 is reachable only by saying so — the same rule comms applies to its feed sources. A value outside c0..c3 is refused down to c1 and reported at load, because a typo must not be more permissive than silence. Every hardcoded adapter (luma, meetup, cfp, euro_hackathons, transit_fare) has no entry here and is therefore c1.",
   "_comment_profile_path": "profiles_glob resolves under 'path' by default — the form every entry used before 'profile_path' existed, still working unchanged. Declare 'profile_path' when the matching profile does not belong in the store the opportunities come from: a profile is a consumer input, your own predicate about what is worth surfacing, and the two systems have separate sync lifecycles. Either way the read stays bounded by whichever root declared it; a glob climbing out with '..' is refused rather than followed.",
   "sources": [
     {
@@ -50,12 +51,15 @@
       "id": "arcteryx-community",
       "adapter": "splash-hub",
       "url": "community-events.arcteryx.com/142966",
+      "data_class": "c0",
       "enabled": false
     },
     {
+      "_comment_data_class": "A public event hub, fetched anonymously: no session of the operator's decides what it returns, which is the argument comms already makes for the GitHub Trending page. The obsidian-markdown entries above deliberately declare nothing — a note in a knowledge store is the operator's, and c1 is what silence already means.",
       "id": "claude-community",
       "adapter": "luma-calendar",
       "url": "cal-TOpA5LAFfuDeFpu",
+      "data_class": "c0",
       "enabled": false
     }
   ],
