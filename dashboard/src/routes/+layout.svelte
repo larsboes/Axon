@@ -5,7 +5,9 @@
   import "../app.css";
   import Icon from "$lib/Icon.svelte";
   import { capabilities } from "$lib/capabilities.svelte";
-  import { PRIMARY_NAV, UTILITY_NAV, withoutCapabilities, link } from "$lib/nav";
+  import { PRIMARY_NAV, UTILITY_NAV, capabilityForPath, withoutCapabilities, link } from "$lib/nav";
+  import { createShellStarter } from "$lib/shell-start";
+  import { axonStatus } from "$lib/api";
   import SoundscapeDock from "$lib/SoundscapeDock.svelte";
 
   let { children, data } = $props();
@@ -14,6 +16,29 @@
   let menuOpen = $state(false);
   let moreOpen = $state(false);
   let now = $state(new Date());
+  let moreEl: HTMLDetailsElement | undefined = $state();
+  let drawerEl: HTMLElement | undefined = $state();
+
+  /**
+   * Capabilities this shell has already tried to start, for the lifetime of the tab.
+   *
+   * The guard itself lives in `$lib/shell-start` so that the test can run the real thing:
+   * a set defined here and a copy of it in the test file left the regression it names
+   * unfalsifiable. See shell-start.ts for why the set is written before the POST and never
+   * cleared.
+   */
+  const claimStarts = createShellStarter();
+
+  /**
+   * Bumped once, when a start POST has actually brought a capability up.
+   *
+   * Starting the capability is not enough on its own: the page below has already run its
+   * own `onMount` fetch against a service that was still down, and it holds the error
+   * string it got. Re-keying the page subtree on this counter renders it again against the
+   * capability that is now running. It never changes on a machine where everything is
+   * already up, and `attemptedStarts` caps it at one bump per capability per tab.
+   */
+  let startedCount = $state(0);
 
   // `data.demo` is null outside a demo build, so both lists below are the untouched arrays
   // and the banner never renders. In a demo build the index names the capabilities the
@@ -21,6 +46,16 @@
   // rather than left to render a page of error cards (#168).
   const demo = $derived(data?.demo ?? null);
   const missing = $derived(new Set(Object.keys(demo?.absent ?? {})));
+  // Pointing at a map route is enough intent to start its ~1 MB library and the vendored
+  // style. Fire-and-forget, idempotent, and a miss costs a download the user did not make —
+  // which is why it hangs off hover and focus rather than off page load.
+  let mapWarmed = false;
+  function warmMap(item: { warmsMap?: true }): void {
+    if (!item.warmsMap || mapWarmed) return;
+    mapWarmed = true;
+    void import("$lib/map/surface").then((surface) => surface.warm());
+  }
+
   const primary = $derived(withoutCapabilities(PRIMARY_NAV, missing));
   const utility = $derived(withoutCapabilities(UTILITY_NAV, missing));
 
@@ -41,9 +76,76 @@
   $effect(() => {
     document.documentElement.classList.toggle("dark", dark);
   });
+
+  /**
+   * Start what this page needs, in the shell, once per capability.
+   *
+   * /finance and /map were the only two primary destinations that started nothing, so on a
+   * machine where those capabilities were stopped both rendered an error card and the
+   * operator had to visit /capabilities. Home already solved this per kind; this is the
+   * same fix one level up, so a page added tomorrow inherits it.
+   *
+   * The ONLY tracked read is `page.url.pathname`. Everything after the first `await` is
+   * untracked, which is what keeps the fifteen-second capability poll from re-running this.
+   */
+  $effect(() => {
+    const pathname = page.url.pathname;
+    // A demo build has no start route: /map ships in the published nav with no fixture,
+    // and posting to it answers 501 and logs an error a visitor cannot act on.
+    if (data?.demo) return;
+    const wanted = capabilityForPath(pathname);
+    if (wanted.length === 0) return;
+
+    void (async () => {
+      await capabilities.refresh();
+      const worthStarting = (name: string): boolean => {
+        const capability = capabilities.byName(name);
+        return Boolean(capability) && capability?.up !== true;
+      };
+      for (const name of claimStarts(wanted, worthStarting)) {
+        const started = await axonStatus.start(name).then(
+          (result) => result.up === true,
+          // Swallowed: the page itself reports what it could not read, and a failed start
+          // is not a second thing to tell the reader about.
+          () => false,
+        );
+        if (started) startedCount += 1;
+      }
+      await capabilities.refresh();
+    })();
+  });
+
+  function closeMore(event: MouseEvent): void {
+    if (moreOpen && moreEl && !moreEl.contains(event.target as Node)) moreOpen = false;
+  }
+
+  function handleShellKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      moreOpen = false;
+      menuOpen = false;
+      return;
+    }
+    // A drawer that lets Tab walk out behind its own scrim is a drawer to a mouse only.
+    if (event.key !== "Tab" || !menuOpen || !drawerEl) return;
+    const stops = [...drawerEl.querySelectorAll<HTMLElement>("a[href], button:not([disabled])")];
+    if (stops.length === 0) return;
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 </script>
 
+<svelte:window onkeydown={handleShellKeydown} onclick={closeMore} />
+
 <div class="shell">
+  <!-- Every page is one Tab away from its own content, rather than fourteen nav links. -->
+  <a class="skip" href="#main">Skip to content</a>
   <header>
     <div class="bar">
       <a class="brand" href={link("/")}>
@@ -73,14 +175,21 @@
     <div class="desktop-wrap">
       <nav class="desktop" aria-label="Main navigation">
         {#each primary as item (item.href)}
-          <a class="nav-link" class:active={isActive(item.href)} href={link(item.href)}>
+          <a
+            class="nav-link"
+            class:active={isActive(item.href)}
+            href={link(item.href)}
+            aria-current={isActive(item.href) ? "page" : undefined}
+            onmouseenter={() => warmMap(item)}
+            onfocus={() => warmMap(item)}
+          >
             <Icon name={item.icon as never} size={14} />
             {item.label}
           </a>
         {/each}
       </nav>
 
-      <details class="more" bind:open={moreOpen}>
+      <details class="more" bind:this={moreEl} bind:open={moreOpen}>
         <summary class="nav-link" class:active={utilityActive}>
           <Icon name="boxes" size={14} />
           More
@@ -91,6 +200,7 @@
               class="nav-link"
               class:active={isActive(item.href)}
               href={link(item.href)}
+              aria-current={isActive(item.href) ? "page" : undefined}
               onclick={() => (moreOpen = false)}
             >
               <Icon name={item.icon as never} size={14} />
@@ -123,13 +233,16 @@
   {#if menuOpen}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="scrim" onclick={() => (menuOpen = false)}></div>
-    <nav class="mobile" aria-label="Mobile navigation">
+    <nav class="mobile" bind:this={drawerEl} aria-label="Mobile navigation">
       <span class="nav-section">Work</span>
       {#each primary as item (item.href)}
         <a
           class="nav-link"
           class:active={isActive(item.href)}
           href={link(item.href)}
+          aria-current={isActive(item.href) ? "page" : undefined}
+          onmouseenter={() => warmMap(item)}
+          onfocus={() => warmMap(item)}
           onclick={() => (menuOpen = false)}
         >
           <Icon name={item.icon as never} />
@@ -142,6 +255,9 @@
           class="nav-link"
           class:active={isActive(item.href)}
           href={link(item.href)}
+          aria-current={isActive(item.href) ? "page" : undefined}
+          onmouseenter={() => warmMap(item)}
+          onfocus={() => warmMap(item)}
           onclick={() => (menuOpen = false)}
         >
           <Icon name={item.icon as never} />
@@ -151,8 +267,10 @@
     </nav>
   {/if}
 
-  <main>
-    {@render children()}
+  <main id="main">
+    {#key startedCount}
+      {@render children()}
+    {/key}
   </main>
 
   <footer>
@@ -174,13 +292,27 @@
     padding-bottom: var(--soundscape-dock-height, 0px);
   }
 
+  /* The one surface the whole page passes under, so it is the one that most has to read
+   * as glass. Was `blur(12px)` with no saturation and no prefix: Safari is the browser
+   * this is read in and needed the prefix, and blur without saturate desaturates whatever
+   * scrolls behind it into fog. */
   header {
     position: sticky;
     top: 0;
     z-index: 50;
     background-color: var(--header-bg);
-    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border-bottom: 1px solid var(--header-border);
+  }
+
+  /* Translucent only while there is something behind it to see. At the top of the page
+     the bar sits on flat background and the blur has nothing to do, so it goes opaque and
+     loses its border — the rule appears as the page starts moving under it. */
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    header {
+      background-color: var(--card-bg);
+    }
   }
 
   /* `min(100%, …)` rather than a bare cap: below --shell-max the shell IS the viewport,
@@ -198,8 +330,8 @@
   }
 
   .bar {
-    height: 3.5rem;
-    padding-inline: 1.5rem;
+    height: var(--header-h);
+    padding-inline: var(--space-6);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -307,7 +439,7 @@
 
   .demo-banner {
     position: sticky;
-    top: 3.5rem;
+    top: var(--header-h);
     z-index: 45;
     display: flex;
     flex-wrap: wrap;
@@ -339,16 +471,16 @@
 
   .scrim {
     position: fixed;
-    inset: 3.5rem 0 0;
+    inset: var(--header-h) 0 0;
     z-index: 40;
     background-color: rgb(0 0 0 / 40%);
   }
 
   nav.mobile {
     position: fixed;
-    inset: 3.5rem 0 auto auto;
+    inset: var(--header-h) 0 auto auto;
     z-index: 41;
-    height: calc(100vh - 3.5rem);
+    height: calc(100vh - var(--header-h));
     width: 16rem;
     padding: 1rem;
     display: flex;
@@ -363,13 +495,13 @@
     font-size: 0.875rem;
   }
 
+  /* Sentence case. A tracked-out all-caps label over each half of the drawer is template
+     chrome; these are two short headings, and they read as headings without it. */
   .nav-section {
-    padding: 0.35rem 1rem 0.2rem;
+    padding: var(--space-2) var(--space-5) var(--space-1);
     color: var(--text-tertiary);
-    font-size: 0.625rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    font-size: var(--text-2xs);
+    font-weight: 600;
   }
 
   .nav-section.second {
@@ -378,9 +510,29 @@
     border-top: 1px solid var(--card-border);
   }
 
+  /* Denser by a step at the top end: 2rem rather than 2.5rem of gutter on a wide display,
+     which is where the old value read as an airy admin template. */
   main {
     flex-grow: 1;
-    padding: clamp(1.25rem, 2.5vw, 2.5rem);
+    padding: clamp(var(--space-5), 1.6vw, var(--space-7));
+  }
+
+  .skip {
+    position: absolute;
+    left: var(--space-3);
+    top: calc(var(--header-h) * -2);
+    z-index: 60;
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    background: var(--card-bg);
+    color: var(--primary);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    transition: top var(--motion-fast) ease;
+  }
+
+  .skip:focus-visible {
+    top: var(--space-3);
   }
 
   footer {
@@ -406,10 +558,11 @@
     }
   }
 
+  /* The bar's own height comes from --header-h, which app.css redeclares as 3.25rem
+     inside this same breakpoint. All six offsets above follow it without being restated. */
   @media (width < 38rem) {
     .bar {
-      height: 3.25rem;
-      padding-inline: 1rem;
+      padding-inline: var(--space-5);
     }
 
     .meta {
@@ -422,18 +575,12 @@
       padding: 0.5rem;
     }
 
-    .scrim {
-      inset-block-start: 3.25rem;
-    }
-
     nav.mobile {
-      inset-block-start: 3.25rem;
       width: min(19rem, 100%);
-      height: calc(100vh - 3.25rem);
     }
 
     main {
-      padding: 1rem;
+      padding: var(--space-5);
     }
 
     footer {

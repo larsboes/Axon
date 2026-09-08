@@ -363,8 +363,16 @@ pub trait LocalGate: Send + Sync {
 /// tier. It is not a general permission and does not travel with the text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reach {
-    /// Loopback endpoints only. A non-loopback target is refused outright —
+    /// Hardware the operator controls, and nothing else. A target that is
+    /// neither loopback nor a declared trusted peer is refused outright —
     /// [`Outcome::RemoteRefused`], never a quiet downgrade to a local model.
+    ///
+    /// The name says `Loopback` because until PRD Q39 (2026-08-25) those were
+    /// the same set. They are not any more: a trusted peer is the operator's own
+    /// machine reached over the tailnet, and this verdict admits it. The variant
+    /// is not renamed because 27 call sites spell it and the name is not the
+    /// defect — [`Target::operator_owned`] is where the question is actually
+    /// asked, and it is named for the question.
     LoopbackOnly,
     /// The caller's cloud gate admitted this payload for this endpoint.
     CloudCleared,
@@ -372,7 +380,7 @@ pub enum Reach {
 
 impl Reach {
     fn admits(self, target: &Target) -> bool {
-        target.loopback || self == Self::CloudCleared
+        target.operator_owned || self == Self::CloudCleared
     }
 }
 
@@ -384,15 +392,26 @@ pub struct Target {
     pub endpoint: String,
     pub model: String,
     pub api_key: Option<String>,
-    /// Whether the endpoint is loopback. Mail digests must refuse anything else
-    /// — see [`digest`].
+    /// Whether the endpoint shares THIS machine's GPU. Only the admission gate
+    /// below asks this; it is not a permission.
+    ///
+    /// Split from [`Self::operator_owned`] by PRD Q39 (2026-08-25). One `bool`
+    /// answered both questions while loopback and trusted-hardware were the same
+    /// set, and a trusted peer is the first target for which they differ: it may
+    /// see any class, and it must NOT queue behind this host's gate, because it
+    /// has its own GPU.
     pub loopback: bool,
-    /// Admission control for loopback targets. `None` means unbounded, which is
-    /// what every caller did before this existed.
+    /// Whether the endpoint runs on hardware the operator controls — loopback,
+    /// or a peer they declared as their own (PRD Q39). This is the permission
+    /// question [`Reach::LoopbackOnly`] asks.
+    pub operator_owned: bool,
+    /// Admission control for targets on this machine. `None` means unbounded,
+    /// which is what every caller did before this existed.
     ///
     /// Only consulted when `loopback` is true. A hosted provider does its own
     /// queueing and has no shared GPU to protect, so serialising against it
-    /// would buy nothing and cost latency.
+    /// would buy nothing and cost latency — and a trusted peer is a hosted
+    /// provider in exactly that respect, whatever it is allowed to see.
     pub gate: Option<std::sync::Arc<dyn LocalGate>>,
 }
 
@@ -405,6 +424,7 @@ impl std::fmt::Debug for Target {
             .field("model", &self.model)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("loopback", &self.loopback)
+            .field("operator_owned", &self.operator_owned)
             .field("gate", &self.gate.as_ref().map(|_| "<gate>"))
             .finish()
     }
@@ -547,6 +567,42 @@ pub fn digest(target: Option<&Target>, text: &str, directive: &Directive, reach:
     complete(target, &prompt, shape.max_tokens())
 }
 
+/// Put one prompt to a resolved target and hand back what came back.
+///
+/// The caller owns the words and the budget; this owns the wire. It exists so
+/// that a capability with a prompt of its own does not reimplement
+/// [`complete`] — which is where the [`LocalGate`] is acquired and where the
+/// per-backend admission lives — and so that [`Reach`] is checked in the same
+/// one place [`digest`] checks it. A policy enforced by each caller separately
+/// is a policy with as many holes as there are callers.
+///
+/// What it deliberately does NOT do: size the prompt against the model's
+/// context window. [`digest`] truncates to `INPUT_CAP` and derives its reply
+/// ceiling from a [`Shape`], but the *window* is a property of the resolved
+/// role, and [`Target`] is deliberately plain data — this lib never learns what
+/// an `InferenceConfig` is. So the budget check lives one frame up, in the
+/// caller that resolved the role, and it is mandatory there: a caller that
+/// reaches `ask` without having asked [`fits_window`] first will be told by the
+/// server, as an error it then has to remember not to count.
+///
+/// `capabilities/comms` reaches this only through `quiet::Rung::Light`, which
+/// `quiet::rung` returns only when `fits_window` said yes, and
+/// `mail_model::tests::ask_is_only_reached_through_a_light_rung` pins it.
+pub fn ask(target: Option<&Target>, prompt: &str, reply_tokens: u32, reach: Reach) -> Outcome {
+    // Same reason `digest` refuses an empty source: a model asked about nothing
+    // answers with confident invention, and the answer would be stored.
+    if prompt.trim().is_empty() {
+        return Outcome::SkippedShort;
+    }
+    let Some(target) = target else {
+        return Outcome::Unconfigured;
+    };
+    if !reach.admits(target) {
+        return Outcome::RemoteRefused;
+    }
+    complete(target, prompt, reply_tokens)
+}
+
 /// The diagram headers a renderer can actually draw. A model asked for "a
 /// diagram" will happily answer with prose, and prose stored in a diagram
 /// column is a render error at the reader rather than a failure here.
@@ -647,10 +703,10 @@ pub(crate) fn complete(target: &Target, prompt: &str, max_tokens: u32) -> Outcom
         },
         _ => None,
     };
-    let http = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-    {
+    let http = match axon_http::client(
+        axon_http::Purpose::new("summarize"),
+        Duration::from_secs(120),
+    ) {
         Ok(client) => client,
         Err(error) => return Outcome::HttpError(error.to_string()),
     };
@@ -933,6 +989,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: false,
+            operator_owned: false,
             gate: None,
         };
         let text = "x".repeat(1_000);
@@ -953,6 +1010,38 @@ mod tests {
             chart::chart(Some(&cloud), &text, Reach::LoopbackOnly),
             Outcome::RemoteRefused
         );
+        assert_eq!(
+            ask(Some(&cloud), "classify this", 256, Reach::LoopbackOnly),
+            Outcome::RemoteRefused,
+            "`ask` shares digest's refusal, which is the reason it exists here"
+        );
+    }
+
+    /// `ask` refuses the two things it can decide without a request, and stops
+    /// there. The window is the caller's, and its doc comment says so — a test
+    /// that pinned a budget check here would be pinning a check this function
+    /// deliberately does not have.
+    #[test]
+    fn ask_refuses_an_empty_prompt_and_an_absent_target() {
+        assert_eq!(
+            ask(None, "classify this", 256, Reach::LoopbackOnly),
+            Outcome::Unconfigured
+        );
+        let local = Target {
+            endpoint: "http://127.0.0.1:9/v1/chat/completions".into(),
+            model: "m".into(),
+            api_key: None,
+            loopback: true,
+            operator_owned: true,
+            gate: None,
+        };
+        for empty in ["", "   ", "\n\t "] {
+            assert_eq!(
+                ask(Some(&local), empty, 256, Reach::LoopbackOnly),
+                Outcome::SkippedShort,
+                "an empty prompt must not reach the wire"
+            );
+        }
     }
 
     /// A loopback target is reachable whatever the verdict says: `Reach` is
@@ -966,6 +1055,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: true,
+            operator_owned: true,
             gate: None,
         };
         assert!(Reach::LoopbackOnly.admits(&local));
@@ -1086,6 +1176,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: true,
+            operator_owned: true,
             gate: Some(std::sync::Arc::new(AlwaysBusy)),
         };
         assert_eq!(
@@ -1115,6 +1206,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: false,
+            operator_owned: false,
             gate: Some(std::sync::Arc::new(NeverCalled)),
         };
         // Refused for its data class before any gate question arises, which is
@@ -1169,6 +1261,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: true,
+            operator_owned: true,
             gate: Some(std::sync::Arc::new(Arc::clone(&counting))),
         };
         // Fails at the socket, which is the point: the release must happen on

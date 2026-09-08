@@ -53,7 +53,10 @@
                 class:planned={entry.commitment !== "committed"}
               ></i>
               <strong>{entry.title}</strong>
-              <small>{entry.location ? `${entryTime(entry)} · ${entry.location}` : entryTime(entry)}</small>
+              <small>
+                <span class="when">{entryTime(entry)}</span>
+                {#if entry.location}<span class="where">{entry.location}</span>{/if}
+              </small>
             </a>
           </li>
         {/each}
@@ -65,9 +68,9 @@
         {#each contexts as context, index (context.id)}
           <a href={contextLink(context)} title={context.details || context.title}>
             {context.title}<span>{span(context)}</span>
-          </a>{#if index < contexts.length - 1}<i aria-hidden="true">·</i>{/if}
+          </a>
         {/each}
-        <a class="edit" href={link("/calendar")}>Calendar <Icon name="arrow-right" size={11} /></a>
+        <a class="edit" href={link("/calendar")}>Calendar</a>
       </p>
     {/if}
   </section>
@@ -134,9 +137,16 @@
     white-space: nowrap;
   }
 
-  /* A venue line runs to a full street address, so it truncates rather than
+  /* Two facts, separated by space rather than by a middle dot. "all day · Telekom,
+     Bonn" made the reader parse a punctuation mark to find the boundary the layout can
+     state outright — and the same dot was doing that job in 166 places across the app.
+     The time is the fixed-width half, so it gets the tabular figures.
+
+     A venue line runs to a full street address, so it truncates rather than
      stretching the title column it sits beside. */
   .entries small {
+    display: flex;
+    gap: var(--space-4);
     overflow: hidden;
     max-width: 22rem;
     color: var(--text-tertiary);
@@ -148,11 +158,13 @@
 
   /* Contexts are ambient, not scheduled — so one wrapped line of quiet text
      under the schedule, never a row of cards competing with it. */
+  /* The gap separates them. A middle dot between each pair made the reader parse
+     punctuation to find a boundary a wider gap states outright. */
   .contexts {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: 0.4rem;
+    gap: var(--space-3) var(--space-6);
     margin: 0.7rem 0 0;
     padding-top: 0.55rem;
     border-top: 1px solid var(--card-border);
@@ -170,11 +182,6 @@
   .contexts a span {
     margin-left: 0.3rem;
     color: var(--text-tertiary);
-  }
-
-  .contexts i {
-    color: var(--card-border-hover, var(--text-tertiary));
-    font-style: normal;
   }
 
   .contexts .edit {

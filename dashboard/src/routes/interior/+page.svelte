@@ -1907,7 +1907,7 @@
     gap: 0.35rem;
   }
   .newplan .bad {
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.72rem;
     margin: 0;
   }
@@ -1934,13 +1934,13 @@
   }
   /* What the piece states it needs, in the vocabulary the file uses for it (PRD Q61). */
   .piece .needs {
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.72rem;
   }
 
   .planbar button.armed {
     border-color: var(--warning);
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .plan .svg :global(svg) {
@@ -2081,7 +2081,7 @@
   }
 
   .planbar .moved {
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.75rem;
     margin-right: 0.2rem;
   }
@@ -2236,7 +2236,7 @@
   }
 
   .impact .rules {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .history {
@@ -2280,7 +2280,7 @@
   .caveat,
   .unchecked {
     align-items: center;
-    color: var(--warning);
+    color: var(--warning-ink);
     display: flex;
     font-size: 0.75rem;
     gap: 0.35rem;
@@ -2371,10 +2371,10 @@
     font-size: 0.8125rem;
   }
   .unpriced {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
   .guess {
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.75rem;
   }
   .target {
@@ -2430,7 +2430,7 @@
     margin: 0.85rem 0 0;
   }
   .reserve.tight {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
   .reserve strong {
     color: var(--text-primary);
@@ -2441,7 +2441,7 @@
     font-size: 0.75rem;
   }
   .holds.tight {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .reserves {
@@ -2460,7 +2460,7 @@
   }
   .reserves tr.tight th,
   .reserves tr.tight td {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .movein {

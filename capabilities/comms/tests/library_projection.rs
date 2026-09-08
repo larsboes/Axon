@@ -31,7 +31,9 @@ fn saved_item(store: &Store, url: &str, kind: &str, title: &str, summary: &str) 
     item.summary = Some(summary.to_string());
     store.upsert_feed(&item).expect("upsert");
     assert!(
-        store.set_feed_status(&item.id, "keeper").expect("keep"),
+        store
+            .set_feed_status(&item.id, "keeper", "api")
+            .expect("keep"),
         "the item must exist to be saved"
     );
     item.id
@@ -107,7 +109,7 @@ fn saving_writes_a_note_unsaving_removes_it_and_a_human_note_survives_both() {
 
     // Unsaving: the row leaves the library, so the note goes with it.
     assert!(store
-        .set_feed_status(&ladybird, "dismissed")
+        .set_feed_status(&ladybird, "dismissed", "api")
         .expect("dismiss"));
     let library = store.feed_library().expect("the library");
     assert_eq!(library.len(), 1);
@@ -142,7 +144,9 @@ fn saving_writes_a_note_unsaving_removes_it_and_a_human_note_survives_both() {
     );
 
     // Unsaving that item does not delete the human's note either.
-    assert!(store.set_feed_status(&sqlite, "new").expect("unsave"));
+    assert!(store
+        .set_feed_status(&sqlite, "new", "api")
+        .expect("unsave"));
     let library = store.feed_library().expect("the library");
     assert!(library.is_empty());
     let fifth = comms::projection::export_all(&root, &library).expect("export");

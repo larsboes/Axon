@@ -660,7 +660,14 @@ fn parse_quantity(value: &str, decimal_separator: char) -> ImportResult<Quantity
     parse_decimal(value, decimal_separator, "quantity")
 }
 
-fn parse_decimal(value: &str, decimal_separator: char, kind: &str) -> ImportResult<Quantity> {
+/// `pub(crate)` so `price.rs` parses a provider's decimal with the reader that
+/// already handles both decimal marks, grouping separators and a trailing minus,
+/// rather than a second parser that would disagree at the edges.
+pub(crate) fn parse_decimal(
+    value: &str,
+    decimal_separator: char,
+    kind: &str,
+) -> ImportResult<Quantity> {
     let mut value = value.trim().replace(['\u{a0}', ' '], "");
     if value.ends_with('-') {
         value.pop();
@@ -750,6 +757,51 @@ fn add_values(left: &DecimalValue, right: &DecimalValue) -> ImportResult<Decimal
         })
         .ok_or_else(|| ImportError("portfolio value is outside the supported range".into()))?;
     Ok(normalize_value(DecimalValue { mantissa, scale }))
+}
+
+/// One position's value: quantity times unit price, exactly.
+///
+/// The public door onto `multiply`, so `portfolio.rs` can value a position
+/// against a market price without `multiply` and `add_values` becoming public
+/// arithmetic anyone may reach for.
+pub fn position_value(quantity: &Quantity, unit_price: &Quantity) -> ImportResult<DecimalValue> {
+    multiply(quantity, unit_price)
+}
+
+/// Two values added at the wider of their two scales.
+pub fn add_decimal_values(left: &DecimalValue, right: &DecimalValue) -> ImportResult<DecimalValue> {
+    add_values(left, right)
+}
+
+/// A value in minor units (cents), truncated toward zero.
+///
+/// Truncation rather than rounding, and it is stated rather than assumed: the
+/// only readers are the share and drift figures, both of which are reported in
+/// basis points over a total that was truncated the same way, so the error is
+/// bounded by one cent per position and never accumulates into the comparison.
+/// Nothing in the journal is derived from this.
+pub fn to_minor_units(value: &DecimalValue) -> ImportResult<i128> {
+    if value.scale <= 2 {
+        let factor = 10_i128
+            .checked_pow(2 - value.scale)
+            .ok_or_else(|| ImportError("portfolio value is outside the supported range".into()))?;
+        return value
+            .mantissa
+            .checked_mul(factor)
+            .ok_or_else(|| ImportError("portfolio value is outside the supported range".into()));
+    }
+    let factor = 10_i128
+        .checked_pow(value.scale - 2)
+        .ok_or_else(|| ImportError("portfolio value is outside the supported range".into()))?;
+    Ok(value.mantissa / factor)
+}
+
+/// A minor-unit amount back as an exact decimal at scale 2.
+pub fn from_minor_units(cents: i128) -> DecimalValue {
+    normalize_value(DecimalValue {
+        mantissa: cents,
+        scale: 2,
+    })
 }
 
 fn normalize_value(mut value: DecimalValue) -> DecimalValue {

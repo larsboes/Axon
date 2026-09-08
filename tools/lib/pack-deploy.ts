@@ -21,17 +21,21 @@
 
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmdirSync,
   rmSync,
+  statSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -144,6 +148,106 @@ export function readState(config: DeployConfig): DeploymentState {
     throw new Error(`state file belongs to ${state.destination}, not ${config.destination}${hint}`);
   }
   return state;
+}
+
+/**
+ * Hold the ledger for the length of one mutating operation.
+ *
+ * writeState is atomic — a temp file and a rename, so no reader ever sees half a
+ * ledger. That is not the race. Every mutator reads the whole state ONCE, mutates
+ * the in-memory copy, and writes the whole file back one or more times
+ * (deployPack: read at the top, write inside the per-unit loop). Two processes
+ * that overlap therefore each hold a snapshot taken before the other's writes, and
+ * the one that finishes last silently erases the other's entries. A skill would
+ * still be on disk with no ledger row: reported as an unowned collision, and
+ * un-syncable until somebody adopts it by hand.
+ *
+ * Nothing had overlapped yet, because every run was a human at a terminal. The
+ * lock is the precondition for anything unattended — a scheduled check, a hook, a
+ * second session — and this repository is already running two sessions at once.
+ *
+ * Re-entrant on purpose: activateProfile calls removePack and deployPack, which
+ * are themselves mutators, and a lock that deadlocked on its own caller would be
+ * a worse bug than the one it fixes.
+ */
+let lockDepth = 0;
+let heldLockPath: string | null = null;
+
+const LOCK_STALE_MS = 30_000;
+/** How long to wait for another process to finish before refusing. Env-overridable
+ *  so a test does not have to spend the real wait, and so an operator on a slow
+ *  filesystem can raise it without a rebuild. */
+const LOCK_WAIT_MS = Number(process.env.AXON_PACK_LOCK_WAIT_MS ?? 4_000);
+
+function lockPathFor(config: DeployConfig): string {
+  return `${config.stateFile}.lock`;
+}
+
+/** Alive as far as this user can tell. A pid we cannot signal is treated as alive. */
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+export function withStateLock<T>(config: DeployConfig, run: () => T): T {
+  const path = lockPathFor(config);
+  if (lockDepth > 0 && heldLockPath === path) {
+    lockDepth += 1;
+    try {
+      return run();
+    } finally {
+      lockDepth -= 1;
+    }
+  }
+
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      const handle = openSync(path, "wx", 0o600);
+      writeSync(handle, `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
+      closeSync(handle);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Someone holds it. Steal only from a holder that is provably gone, or from a
+      // lock old enough that a crashed holder is the only explanation — a stale lock
+      // that never expires turns one killed process into a permanently broken tool.
+      let holder = -1;
+      let ageMs = Number.POSITIVE_INFINITY;
+      try {
+        holder = (JSON.parse(readFileSync(path, "utf8")) as { pid?: number }).pid ?? -1;
+        ageMs = Date.now() - statSync(path).mtimeMs;
+      } catch {
+        ageMs = Number.POSITIVE_INFINITY; // unreadable lock: treat as stale
+      }
+      if (!pidIsAlive(holder) || ageMs > LOCK_STALE_MS) {
+        rmSync(path, { force: true });
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          `${config.adapter} ledger is locked by pid ${holder} (${path}); it has been held for ${Math.round(ageMs / 1000)}s. Wait for that run to finish, or remove the lock file if that process is gone`,
+        );
+      }
+      Bun.sleepSync(50);
+    }
+  }
+
+  lockDepth = 1;
+  heldLockPath = path;
+  try {
+    return run();
+  } finally {
+    lockDepth = 0;
+    heldLockPath = null;
+    rmSync(path, { force: true });
+  }
 }
 
 function writeState(config: DeployConfig, state: DeploymentState): void {
@@ -423,9 +527,22 @@ function materializeStage(config: DeployConfig, pack: string, unit: Unit): { sta
   }
 }
 
-function ownerOf(state: DeploymentState, unitKey: string): string | null {
+/**
+ * The Pack that already occupies this unit's destination, if any.
+ *
+ * Ownership is a claim on a PATH, not on a name. For a skill the two coincide —
+ * its ledger key IS its destination basename — but a tree unit's key is the
+ * source directory (`agents/`) while its destination carries the pack name. Two
+ * Packs each carrying an agents/ tree therefore share a key and collide in no
+ * other way, and comparing keys made the second one permanently unclaimable:
+ * `agents/: already owned by Pack '<the first one>'`, with nothing wrong at the
+ * destination. Compare the resolved destinations instead.
+ */
+function ownerOf(config: DeployConfig, state: DeploymentState, unit: Unit): string | null {
   for (const [pack, record] of Object.entries(state.packs)) {
-    if (record.skills[unitKey]) return pack;
+    for (const unitKey of Object.keys(record.skills)) {
+      if (recordedDestination(config, pack, unitKey) === unit.destination) return pack;
+    }
   }
   return null;
 }
@@ -470,7 +587,7 @@ function installOne(
   mode: "deploy" | "sync",
 ): string {
   const destination = unit.destination;
-  const owner = ownerOf(state, unit.key);
+  const owner = ownerOf(config, state, unit);
   const existingRecord = state.packs[pack]?.skills[unit.key];
   if (owner && owner !== pack) throw new Error(`${unit.key}: already owned by Pack '${owner}'`);
   if (existsSync(destination) && !existingRecord) {
@@ -508,39 +625,41 @@ function installOne(
 }
 
 export function deployPack(config: DeployConfig, pack: string): string[] {
-  const units = packUnits(config, pack);
-  const state = readState(config);
-  // Validate every source and collision before the first write so a bad unit
-  // cannot leave a normally-failing Pack only partially deployed.
-  for (const unit of units) {
-    const files = desiredFiles(config, pack, unit);
-    validateUnit(config, files, unit, `${pack}/${unit.key}`);
-    const record = state.packs[pack]?.skills[unit.key];
-    const owner = ownerOf(state, unit.key);
-    if (owner && owner !== pack) throw new Error(`${unit.key}: already owned by Pack '${owner}'`);
-    if (existsSync(unit.destination) && !record) {
-      throw new Error(`${unit.key}: ${unit.destination} exists and is not owned by this Axon deployment`);
-    }
-    if (record && existsSync(unit.destination)) {
-      try {
-        adoptDigestPolicyIfSafe(config, record, unit.destination, unit.key);
-      } catch (error) {
-        throw new Error(`${(error as Error).message}; refusing to redeploy`);
+  return withStateLock(config, () => {
+    const units = packUnits(config, pack);
+    const state = readState(config);
+    // Validate every source and collision before the first write so a bad unit
+    // cannot leave a normally-failing Pack only partially deployed.
+    for (const unit of units) {
+      const files = desiredFiles(config, pack, unit);
+      validateUnit(config, files, unit, `${pack}/${unit.key}`);
+      const record = state.packs[pack]?.skills[unit.key];
+      const owner = ownerOf(config, state, unit);
+      if (owner && owner !== pack) throw new Error(`${unit.key}: already owned by Pack '${owner}'`);
+      if (existsSync(unit.destination) && !record) {
+        throw new Error(`${unit.key}: ${unit.destination} exists and is not owned by this Axon deployment`);
+      }
+      if (record && existsSync(unit.destination)) {
+        try {
+          adoptDigestPolicyIfSafe(config, record, unit.destination, unit.key);
+        } catch (error) {
+          throw new Error(`${(error as Error).message}; refusing to redeploy`);
+        }
       }
     }
-  }
-  const messages: string[] = [];
-  const failures: string[] = [];
-  for (const unit of units) {
-    try {
-      messages.push(installOne(config, state, pack, unit, "deploy"));
-      writeState(config, state);
-    } catch (error) {
-      failures.push((error as Error).message);
+    const messages: string[] = [];
+    const failures: string[] = [];
+    for (const unit of units) {
+      try {
+        messages.push(installOne(config, state, pack, unit, "deploy"));
+        writeState(config, state);
+      } catch (error) {
+        failures.push((error as Error).message);
+      }
     }
-  }
-  if (failures.length) throw new Error(failures.join("\n"));
-  return messages;
+    if (failures.length) throw new Error(failures.join("\n"));
+    return messages;
+  });
 }
 
 /**
@@ -556,29 +675,66 @@ export function deployPack(config: DeployConfig, pack: string): string[] {
  * or a stale deployment and both need a human, not a ledger entry.
  */
 export function adoptPack(config: DeployConfig, pack: string): string[] {
-  const units = packUnits(config, pack);
-  const state = readState(config);
-  const messages: string[] = [];
-  const failures: string[] = [];
-  for (const unit of units) {
-    const owner = ownerOf(state, unit.key);
-    if (owner === pack) { messages.push(`= ${unit.key} (already owned)`); continue; }
-    if (owner) { failures.push(`${unit.key}: already owned by Pack '${owner}'`); continue; }
-    if (!existsSync(unit.destination)) { messages.push(`= ${unit.key} (not deployed; nothing to adopt)`); continue; }
+  return withStateLock(config, () => {
+    const units = packUnits(config, pack);
+    const state = readState(config);
+    const messages: string[] = [];
+    const failures: string[] = [];
+    for (const unit of units) {
+      const owner = ownerOf(config, state, unit);
+      if (owner === pack) { messages.push(`= ${unit.key} (already owned)`); continue; }
+      if (owner) { failures.push(`${unit.key}: already owned by Pack '${owner}'`); continue; }
+      if (!existsSync(unit.destination)) { messages.push(`= ${unit.key} (not deployed; nothing to adopt)`); continue; }
+      const files = desiredFiles(config, pack, unit);
+      validateUnit(config, files, unit, `${pack}/${unit.key}`);
+      const wanted = digestFiles(files);
+      const actual = digestTree(config, unit.destination);
+      if (wanted !== actual) {
+        failures.push(`${unit.key}: ${unit.destination} differs from the Pack source; refusing to adopt`);
+        continue;
+      }
+      recordUnit(config, state, pack, unit, wanted);
+      writeState(config, state);
+      messages.push(`✓ ${unit.key} adopted`);
+    }
+    if (failures.length) throw new Error(failures.join("\n"));
+    return messages;
+  });
+}
+
+/**
+ * Re-record a unit whose destination is byte-identical to its source.
+ *
+ * The case: an operator edited a deployed copy, the edit was worth keeping, and
+ * the source has just been updated FROM the destination. Source and destination
+ * now agree, but the ledger still holds the old digest and reports drift that no
+ * longer exists. `deploy` would copy (pointlessly) and `sync` refuses outright,
+ * because it sees a destination that differs from the digest it recorded.
+ *
+ * Refuses unless the two really are identical, so this can never be used to make
+ * a ledger claim something the disk does not support.
+ */
+export function reconcileUnit(config: DeployConfig, pack: string, unit: Unit): string {
+  return withStateLock(config, () => {
+    const state = readState(config);
+    const record = state.packs[pack]?.skills[unit.key];
+    if (!record) throw new Error(`${unit.key}: not owned by Pack '${pack}'`);
+    if (!existsSync(unit.destination)) throw new Error(`${unit.key}: ${unit.destination} does not exist`);
     const files = desiredFiles(config, pack, unit);
+    // Validate before recording. An edit accepted from a destination can have
+    // broken the frontmatter, and a ledger that records a broken skill as current
+    // is worse than one that reports drift.
     validateUnit(config, files, unit, `${pack}/${unit.key}`);
     const wanted = digestFiles(files);
-    const actual = digestTree(config, unit.destination);
-    if (wanted !== actual) {
-      failures.push(`${unit.key}: ${unit.destination} differs from the Pack source; refusing to adopt`);
-      continue;
+    const installed = digestTree(config, unit.destination);
+    if (wanted !== installed) {
+      throw new Error(`${unit.key}: destination still differs from the Pack source; refusing to re-record`);
     }
+    if (record.installedDigest === wanted && record.desiredDigest === wanted) return `= ${unit.key} (already recorded)`;
     recordUnit(config, state, pack, unit, wanted);
     writeState(config, state);
-    messages.push(`✓ ${unit.key} adopted`);
-  }
-  if (failures.length) throw new Error(failures.join("\n"));
-  return messages;
+    return `✓ ${unit.key} re-recorded`;
+  });
 }
 
 /**
@@ -614,79 +770,83 @@ function removeOwnedUnit(
 }
 
 export function syncPack(config: DeployConfig, pack: string): string[] {
-  const units = packUnits(config, pack);
-  const state = readState(config);
-  if (!state.packs[pack]) throw new Error(`${pack}: not deployed; deploy it first`);
-  const desired = new Set(units.map((unit) => unit.key));
-  const messages: string[] = [];
-  const failures: string[] = [];
+  return withStateLock(config, () => {
+    const units = packUnits(config, pack);
+    const state = readState(config);
+    if (!state.packs[pack]) throw new Error(`${pack}: not deployed; deploy it first`);
+    const desired = new Set(units.map((unit) => unit.key));
+    const messages: string[] = [];
+    const failures: string[] = [];
 
-  // Preflight both stale removals and desired updates before mutating either.
-  for (const [unitKey, record] of Object.entries(state.packs[pack].skills)) {
-    const destination = recordedDestination(config, pack, unitKey);
-    if (existsSync(destination)) {
-      try {
-        adoptDigestPolicyIfSafe(config, record, destination, unitKey);
-      } catch (error) {
-        throw new Error(`${(error as Error).message}; refusing to sync`);
+    // Preflight both stale removals and desired updates before mutating either.
+    for (const [unitKey, record] of Object.entries(state.packs[pack].skills)) {
+      const destination = recordedDestination(config, pack, unitKey);
+      if (existsSync(destination)) {
+        try {
+          adoptDigestPolicyIfSafe(config, record, destination, unitKey);
+        } catch (error) {
+          throw new Error(`${(error as Error).message}; refusing to sync`);
+        }
       }
     }
-  }
-  for (const unit of units) {
-    const files = desiredFiles(config, pack, unit);
-    validateUnit(config, files, unit, `${pack}/${unit.key}`);
-    const owner = ownerOf(state, unit.key);
-    if (owner && owner !== pack) throw new Error(`${unit.key}: already owned by Pack '${owner}'`);
-    if (existsSync(unit.destination) && !state.packs[pack].skills[unit.key]) {
-      throw new Error(`${unit.key}: ${unit.destination} exists and is not owned by this Axon deployment`);
+    for (const unit of units) {
+      const files = desiredFiles(config, pack, unit);
+      validateUnit(config, files, unit, `${pack}/${unit.key}`);
+      const owner = ownerOf(config, state, unit);
+      if (owner && owner !== pack) throw new Error(`${unit.key}: already owned by Pack '${owner}'`);
+      if (existsSync(unit.destination) && !state.packs[pack].skills[unit.key]) {
+        throw new Error(`${unit.key}: ${unit.destination} exists and is not owned by this Axon deployment`);
+      }
     }
-  }
 
-  for (const stale of Object.keys(state.packs[pack].skills).filter((key) => !desired.has(key))) {
-    try {
-      messages.push(removeOwnedUnit(config, state, pack, stale));
-      writeState(config, state);
-    } catch (error) {
-      failures.push((error as Error).message);
+    for (const stale of Object.keys(state.packs[pack].skills).filter((key) => !desired.has(key))) {
+      try {
+        messages.push(removeOwnedUnit(config, state, pack, stale));
+        writeState(config, state);
+      } catch (error) {
+        failures.push((error as Error).message);
+      }
     }
-  }
-  for (const unit of units) {
-    try {
-      messages.push(installOne(config, state, pack, unit, "sync"));
-      writeState(config, state);
-    } catch (error) {
-      failures.push((error as Error).message);
+    for (const unit of units) {
+      try {
+        messages.push(installOne(config, state, pack, unit, "sync"));
+        writeState(config, state);
+      } catch (error) {
+        failures.push((error as Error).message);
+      }
     }
-  }
-  if (failures.length) throw new Error(failures.join("\n"));
-  return messages;
+    if (failures.length) throw new Error(failures.join("\n"));
+    return messages;
+  });
 }
 
 export function removePack(config: DeployConfig, pack: string): string[] {
-  const state = readState(config);
-  if (!state.packs[pack]) throw new Error(`${pack}: not deployed`);
-  for (const [unitKey, record] of Object.entries(state.packs[pack].skills)) {
-    const destination = recordedDestination(config, pack, unitKey);
-    if (existsSync(destination)) {
-      try {
-        adoptDigestPolicyIfSafe(config, record, destination, unitKey);
-      } catch (error) {
-        throw new Error(`${(error as Error).message}; refusing to remove`);
+  return withStateLock(config, () => {
+    const state = readState(config);
+    if (!state.packs[pack]) throw new Error(`${pack}: not deployed`);
+    for (const [unitKey, record] of Object.entries(state.packs[pack].skills)) {
+      const destination = recordedDestination(config, pack, unitKey);
+      if (existsSync(destination)) {
+        try {
+          adoptDigestPolicyIfSafe(config, record, destination, unitKey);
+        } catch (error) {
+          throw new Error(`${(error as Error).message}; refusing to remove`);
+        }
       }
     }
-  }
-  const messages: string[] = [];
-  const failures: string[] = [];
-  for (const unitKey of Object.keys(state.packs[pack].skills)) {
-    try {
-      messages.push(removeOwnedUnit(config, state, pack, unitKey));
-      writeState(config, state);
-    } catch (error) {
-      failures.push((error as Error).message);
+    const messages: string[] = [];
+    const failures: string[] = [];
+    for (const unitKey of Object.keys(state.packs[pack].skills)) {
+      try {
+        messages.push(removeOwnedUnit(config, state, pack, unitKey));
+        writeState(config, state);
+      } catch (error) {
+        failures.push((error as Error).message);
+      }
     }
-  }
-  if (failures.length) throw new Error(failures.join("\n"));
-  return messages;
+    if (failures.length) throw new Error(failures.join("\n"));
+    return messages;
+  });
 }
 
 export function migrateGeneratedArtifacts(
@@ -763,52 +923,54 @@ export function resolveProfilePacks(config: DeployConfig, profile: Profile): str
 }
 
 export function activateProfile(config: DeployConfig, profile: Profile): string[] {
-  const targetPackNames = new Set(resolveProfilePacks(config, profile));
-  const state = readState(config);
-  const messages: string[] = [];
+  return withStateLock(config, () => {
+    const targetPackNames = new Set(resolveProfilePacks(config, profile));
+    const state = readState(config);
+    const messages: string[] = [];
 
-  messages.push(`Activating profile '${profile.name}' — ${profile.description}`);
+    messages.push(`Activating profile '${profile.name}' — ${profile.description}`);
 
-  const currentPacks = Object.keys(state.packs).sort();
-  const targetPacks = [...targetPackNames].sort();
+    const currentPacks = Object.keys(state.packs).sort();
+    const targetPacks = [...targetPackNames].sort();
 
-  const toRemove = currentPacks.filter((p) => !targetPackNames.has(p));
-  const toDeploy = targetPacks.filter((p) => {
-    if (!state.packs[p]) return true;
-    // Re-deploy if any owned destination is missing from disk
-    return Object.keys(state.packs[p].skills).some(
-      (unitKey) => !existsSync(recordedDestination(config, p, unitKey)),
-    );
-  });
+    const toRemove = currentPacks.filter((p) => !targetPackNames.has(p));
+    const toDeploy = targetPacks.filter((p) => {
+      if (!state.packs[p]) return true;
+      // Re-deploy if any owned destination is missing from disk
+      return Object.keys(state.packs[p].skills).some(
+        (unitKey) => !existsSync(recordedDestination(config, p, unitKey)),
+      );
+    });
 
-  if (toRemove.length === 0 && toDeploy.length === 0) {
-    messages.push("  → already current");
+    if (toRemove.length === 0 && toDeploy.length === 0) {
+      messages.push("  → already current");
+      return messages;
+    }
+
+    if (toRemove.length > 0) {
+      messages.push("", `Removing ${toRemove.length} pack(s) not in profile:`);
+      for (const pack of toRemove) {
+        try {
+          messages.push(...removePack(config, pack).map((l) => `  ${l}`));
+        } catch (error) {
+          messages.push(`  ✗ ${pack}: ${(error as Error).message}`);
+        }
+      }
+    }
+
+    if (toDeploy.length > 0) {
+      messages.push("", `Deploying ${toDeploy.length} pack(s):`);
+      for (const pack of toDeploy) {
+        try {
+          messages.push(...deployPack(config, pack).map((l) => `  ${l}`));
+        } catch (error) {
+          messages.push(`  ✗ ${pack}: ${(error as Error).message}`);
+        }
+      }
+    }
+
     return messages;
-  }
-
-  if (toRemove.length > 0) {
-    messages.push("", `Removing ${toRemove.length} pack(s) not in profile:`);
-    for (const pack of toRemove) {
-      try {
-        messages.push(...removePack(config, pack).map((l) => `  ${l}`));
-      } catch (error) {
-        messages.push(`  ✗ ${pack}: ${(error as Error).message}`);
-      }
-    }
-  }
-
-  if (toDeploy.length > 0) {
-    messages.push("", `Deploying ${toDeploy.length} pack(s):`);
-    for (const pack of toDeploy) {
-      try {
-        messages.push(...deployPack(config, pack).map((l) => `  ${l}`));
-      } catch (error) {
-        messages.push(`  ✗ ${pack}: ${(error as Error).message}`);
-      }
-    }
-  }
-
-  return messages;
+  });
 }
 
 export function profileActivePacks(config: DeployConfig, profile: Profile): string[] {

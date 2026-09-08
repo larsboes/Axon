@@ -14,7 +14,7 @@
     | "refresh" | "sun" | "moon" | "menu" | "close" | "clock" | "alert" | "wifi-off"
     | "check" | "loader" | "plus" | "search" | "swap" | "calendar" | "ticket"
     | "git-branch" | "thermometer" | "cpu" | "activity" | "chevron" | "mail" | "globe"
-    | "layout";
+    | "layout" | "wallet" | "history";
 
   let { name, size = 16 }: { name: Name; size?: number } = $props();
 
@@ -23,7 +23,11 @@
     // Vier Felder statt eines Hauses: die Seite zeigt einen Grundriss, und /"/" ist schon home.
     "layout": "M3 3h7v9H3z M14 3h7v5h-7z M14 12h7v9h-7z M3 16h7v5H3z",
     "feed": "M4 11a9 9 0 0 1 9 9 M4 4a16 16 0 0 1 16 16 M5 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2",
-    "boxes": "M7 16.5 3 14v-4l4-2.5L11 10v4z M17 16.5 13 14v-4l4-2.5L21 10v4z M12 8.5 8 6V2l4-2.5",
+    // Three isometric cubes, all three CLOSED and all three inside the 24x24 box. The
+    // third subpath used to read `M12 8.5 8 6V2l4-2.5`, which walks to y = -0.5 and never
+    // closes — so the More menu and the Capabilities nav item drew an open top box with a
+    // stroke leaving the viewBox.
+    "boxes": "M7 16.5 3 14v-4l4-2.5L11 10v4z M17 16.5 13 14v-4l4-2.5L21 10v4z M12 10.5 8 8V4l4-2.5L16 4v4z",
     "graduation": "M22 10 12 5 2 10l10 5z M6 12v5c3 3 9 3 12 0v-5",
     "server": "M4 4h16v6H4z M4 14h16v6H4z M8 7h.01 M8 17h.01",
     "compass": "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M16.2 7.8l-2.9 6.9-6.9 2.9 2.9-6.9z",
@@ -55,6 +59,8 @@
     "cpu": "M9 5v-2 M15 5v-2 M9 21v-2 M15 21v-2 M5 9h-2 M5 15h-2 M21 9h-2 M21 15h-2 M7 7h10v10H7z",
     "activity": "M22 12h-4l-3 9L9 3l-3 9H2",
     "chevron": "M9 18l6-6-6-6",
+    "wallet": "M20 9V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-2 M22 9h-5a3 3 0 0 0 0 6h5z",
+    "history": "M3 12a9 9 0 1 0 3-6.7L3 8 M3 3v5h5 M12 7v5l4 2",
     "globe": "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20 M2 12h20",
   };
 </script>

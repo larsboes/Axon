@@ -2,6 +2,19 @@
 
 use super::*;
 
+/// Rows in `{prefix}_source_state` that are receipts rather than collectors.
+///
+/// The freshness contract answers for arrivals, not for passes. `relevance-pass`
+/// takes delivery of nothing, and `local-inference` is a model drain writing
+/// `last_success_at` through `capacity::record_success` — so either of them
+/// could hold `GET /__axon/freshness` green with every collector dead, which is
+/// the nine-days-of-an-empty-Inbox failure the endpoint exists to catch.
+/// Two names, one const, one `NOT IN`.
+pub(crate) const PSEUDO_SOURCES: [&str; 2] = ["local-inference", "relevance-pass"];
+
+/// The row a relevance pass writes its receipt into.
+pub(crate) const RELEVANCE_PASS_SOURCE: &str = "relevance-pass";
+
 impl Store {
     // -- source_state ----------------------------------------------------
 
@@ -70,17 +83,85 @@ impl Store {
     ///
     /// `None` when no source has ever succeeded, which reads downstream as "never" rather than
     /// as "fresh" — the same way a missing backup receipt does.
+    ///
+    /// [`PSEUDO_SOURCES`] are excluded by name. The freshness contract answers for arrivals, not
+    /// for passes: a relevance pass and a local-model drain both write into this table and
+    /// neither one takes delivery of anything, so either could answer "yes, data is still
+    /// reaching this capability" for a machine whose collectors have all stopped.
     pub fn newest_source_success(&self) -> Result<Option<i64>, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
+        let excluded = PSEUDO_SOURCES
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(",");
         Ok(conn.query_row(
             &format!(
                 "SELECT MAX(CAST(last_success_at AS INTEGER)) FROM {}_source_state
-                 WHERE last_success_at IS NOT NULL AND last_success_at <> ''",
+                 WHERE last_success_at IS NOT NULL AND last_success_at <> ''
+                   AND source_name NOT IN ({excluded})",
                 self.prefix
             ),
             [],
             |r| r.get::<_, Option<i64>>(0),
         )?)
+    }
+
+    /// Record what a relevance pass did, WITHOUT `last_success_at`.
+    ///
+    /// Deliberately not `record_sweep_success`. That method writes
+    /// `last_success_at`, which is the whole body of `GET /__axon/freshness`,
+    /// and a pass that re-scores stored rows has collected nothing. What it
+    /// writes instead: when it ran, the mode that answered plus the relevance
+    /// revision (the cursor), the counters, and — when a chunk fell back — a
+    /// failure time, an error class and the streak.
+    /// `cursor` is `<mode>|<completed relevance revision>|<in-progress>`, built
+    /// by the caller because only the caller knows whether the page it just ran
+    /// completed a sweep.
+    pub fn record_relevance_pass(
+        &self,
+        cursor: &str,
+        considered: i64,
+        written: i64,
+        error_class: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = epoch_now();
+        let conn = self.conn()?;
+        conn.execute(
+            &format!(
+                "INSERT INTO {prefix}_source_state
+                     (source_name, last_run_at, cursor, considered_count, new_count,
+                      last_failure_at, last_error, consecutive_failures)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (source_name) DO UPDATE SET
+                     last_run_at = excluded.last_run_at,
+                     cursor = excluded.cursor,
+                     considered_count = excluded.considered_count,
+                     new_count = excluded.new_count,
+                     last_failure_at = COALESCE(excluded.last_failure_at,
+                                                {prefix}_source_state.last_failure_at),
+                     last_error = excluded.last_error,
+                     consecutive_failures = CASE WHEN excluded.last_error IS NULL THEN 0
+                         ELSE {prefix}_source_state.consecutive_failures + 1 END",
+                prefix = self.prefix
+            ),
+            params![
+                &RELEVANCE_PASS_SOURCE,
+                &now,
+                &cursor,
+                considered,
+                written,
+                &error_class.map(|_| now.clone()),
+                &error_class,
+                i32::from(error_class.is_some()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The last relevance pass's receipt, for `GET /feed/evaluation/status`.
+    pub fn relevance_pass(&self) -> Result<Option<SourceState>, Box<dyn std::error::Error>> {
+        self.get_source_state(RELEVANCE_PASS_SOURCE)
     }
 
     /// Record a completed pass. Success clears the failure streak; the counts
@@ -170,5 +251,71 @@ impl Store {
         } else {
             hour >= start || hour < end
         })
+    }
+}
+
+#[cfg(test)]
+mod db_tests {
+    use crate::store::db_tests::open_test_store;
+
+    /// The D13 regression guard.
+    ///
+    /// `newest_source_success` is the entire body of `GET /__axon/freshness`, and
+    /// doctor compares its answer against comms' `freshness_stale_hours`. A pass
+    /// that takes delivery of nothing must not be able to answer it — and neither
+    /// must the local-model drain, which writes `last_success_at` today.
+    #[test]
+    fn a_relevance_pass_does_not_move_freshness() {
+        let store = open_test_store("freshness_pseudo_sources");
+        store
+            .record_sweep_success("github-trending-daily", 10, 3)
+            .expect("a collector succeeds");
+        let collected = store.newest_source_success().expect("a freshness answer");
+        assert!(collected.is_some(), "a real collector answers the contract");
+
+        store
+            .record_relevance_pass("semantic|relevance-revision|:0", 372, 12, None)
+            .expect("the receipt writes");
+        assert_eq!(
+            store.newest_source_success().expect("a freshness answer"),
+            collected,
+            "a relevance pass takes delivery of nothing and must not answer for arrivals"
+        );
+
+        store
+            .record_sweep_success(crate::capacity::LOCAL_INFERENCE_SOURCE, 0, 0)
+            .expect("the local model drain succeeds");
+        assert_eq!(
+            store.newest_source_success().expect("a freshness answer"),
+            collected,
+            "a machine talking to itself cannot satisfy its own health contract"
+        );
+
+        let receipt = store.relevance_pass().expect("read back").expect("a row");
+        assert!(
+            receipt.last_success_at.is_none(),
+            "the receipt must never write last_success_at"
+        );
+        assert_eq!(
+            receipt.cursor.as_deref(),
+            Some("semantic|relevance-revision|:0")
+        );
+        assert_eq!(receipt.consecutive_failures, 0);
+
+        store
+            .record_relevance_pass(
+                "lexical|relevance-revision|:0",
+                372,
+                0,
+                Some("embedding-unreachable"),
+            )
+            .expect("a degraded pass writes too");
+        let degraded = store.relevance_pass().expect("read back").expect("a row");
+        assert_eq!(
+            degraded.last_error.as_deref(),
+            Some("embedding-unreachable")
+        );
+        assert_eq!(degraded.consecutive_failures, 1);
+        assert!(degraded.last_success_at.is_none());
     }
 }

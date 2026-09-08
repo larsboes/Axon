@@ -19,7 +19,10 @@
     "source",
     "created_at",
     "updated_at",
-    "items"
+    "items",
+    "budget_cents",
+    "currency",
+    "retrospective"
   ],
   "properties": {
     "id": {
@@ -107,6 +110,31 @@
       "items": {
         "$ref": "#/$defs/planItem"
       }
+    },
+    "budget_cents": {
+      "description": "What the trip is MEANT to cost, integer minor units, denominated in `currency`. Finance keeps every actual cent and already tags postings with an axon-trip-id; the intention had no home at all, so the two halves of \"did I overspend\" were an HTTP call apart and never compared.",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "currency": {
+      "description": "ISO 4217, e.g. EUR. Load-bearing twice: it denominates `budget_cents`, and a retrospective may not record a cost against a plan that carries none, because a number with no unit is not a cost.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "retrospective": {
+      "description": "The plan's close-out record, or null. Exactly the three fields PRD 8.2 rules. Top-level rather than nested because the served object is flat.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/retrospectivePayload"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "$defs": {
@@ -446,7 +474,7 @@
           "minLength": 1
         },
         "fare_name": {
-          "description": "The fare as the provider names it \u2014 Sparpreis, Flexpreis, a fare class. Kept verbatim rather than normalised, because the name is what the conditions attach to.",
+          "description": "The fare as the provider names it — Sparpreis, Flexpreis, a fare class. Kept verbatim rather than normalised, because the name is what the conditions attach to.",
           "type": [
             "string",
             "null"
@@ -494,6 +522,13 @@
           ]
         },
         "booked_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stage_id": {
+          "description": "The `id` of the stage this price belongs to, when it is known. Optional: nothing produces one yet, so this makes attribution possible going forward and retrofits nothing. A stage id is NOT durable -- generated_stages mints ids from the sequence and remints them on a real route change -- so a consumer treats a missing match as unattributed rather than as an error.",
           "type": [
             "string",
             "null"
@@ -569,6 +604,13 @@
             "number",
             "null"
           ]
+        },
+        "stage_id": {
+          "description": "The `id` of the stage this price belongs to, when it is known. Optional: nothing produces one yet, so this makes attribution possible going forward and retrofits nothing. A stage id is NOT durable -- generated_stages mints ids from the sequence and remints them on a real route change -- so a consumer treats a missing match as unattributed rather than as an error.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
@@ -589,17 +631,45 @@
           "properties": {
             "from": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "The origin as one string (a place name, or an IATA code for a flight search)."
             },
             "to": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "The single destination a search asked about. A multi-destination plan search writes the declared literal \"(multiple)\" here and puts every place in destinations[]; the literal is declared so it is not a magic value invented at a call site."
             },
             "time": {
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "destinations": {
+              "description": "Every destination a multi-destination search ranked. Absent for a single-destination option set.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/placeRef"
+              }
+            },
+            "budget_cents": {
+              "description": "What the search was told to stay under, in integer minor units.",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "currency": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "modes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/transportMode"
+              }
             }
           }
         },
@@ -616,6 +686,7 @@
                 "minLength": 1
               },
               "total_price": {
+                "description": "The older float form, in units of `currency`. tools/sparpreis-watch.ts writes it every 12 hours (capabilities/sparpreis-watch/service.toml) and rows in that shape already exist; plan search writes estimated_cost_cents in integer minor units instead. A reader has to accept both.",
                 "type": [
                   "number",
                   "null"
@@ -629,6 +700,73 @@
               },
               "chosen": {
                 "type": "boolean"
+              },
+              "estimated_cost_cents": {
+                "description": "What this option was expected to cost, in integer minor units of `currency`. Null when no fare source could price it.",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "destination": {
+                "$ref": "#/$defs/placeRef"
+              },
+              "window": {
+                "description": "The feasible window this option was priced for. Dates and a calendar verdict only: no calendar entry title crosses this boundary.",
+                "type": "object",
+                "properties": {
+                  "starts_on": {
+                    "type": "string"
+                  },
+                  "ends_before": {
+                    "type": "string"
+                  },
+                  "verdict": {
+                    "type": "string"
+                  }
+                }
+              },
+              "score": {
+                "description": "0..1, the weighted sum of `factors`.",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "factors": {
+                "description": "The visible reasons behind `score`. Same shape as the feed evaluator's factors (capabilities/comms/src/evaluation.rs); weights sum to 1 across the factors that could be measured.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "key",
+                    "score",
+                    "weight"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "score": {
+                      "type": "number"
+                    },
+                    "weight": {
+                      "type": "number"
+                    },
+                    "rationale": {
+                      "type": "string"
+                    }
+                  }
+                }
               }
             }
           }
@@ -639,6 +777,65 @@
             "string",
             "null"
           ]
+        },
+        "revision": {
+          "description": "The scoring revision that produced these scores (capabilities/trips/src/plan_search.rs, PLAN_SEARCH_REVISION). Two option sets are comparable only at the same revision. Optional, not required: the plan-search writer always sets it, and the option_set rows that predate it -- every one tools/sparpreis-watch.ts has written -- carry none.",
+          "type": "string",
+          "minLength": 1
+        },
+        "degraded": {
+          "description": "Every input the search could not measure. A score computed with a factor missing is comparable inside one option set and not across two with different degraded sets.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "retrospectivePayload": {
+      "description": "One retrospective per plan, written by POST /api/plans/{id}/retrospective. Exactly three fields, ruled and closed by PRD 8.2: what it cost, would I do it again, what would I change. Deliberately different from the `outcome` item, which measures one stage against the option it was chosen under -- per-stage measurement against per-plan judgement.",
+      "type": "object",
+      "required": [
+        "plan_id",
+        "again",
+        "filled_at"
+      ],
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cost_cents": {
+          "description": "Integer minor units, denominated in the PLAN's `currency`. The retrospective carries no currency of its own, so the money is named exactly once and a second field cannot disagree with it.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "currency": {
+          "description": "Echoed from the plan for the reader's convenience; never stored on the retrospective row.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "again": {
+          "description": "Would I do this trip again. A closed vocabulary, and the database enforces it with a CHECK -- one of the two reasons this is a table rather than a JSON payload.",
+          "type": "string",
+          "enum": [
+            "yes",
+            "no",
+            "maybe"
+          ]
+        },
+        "change_note": {
+          "description": "What I would change, in the traveller's own words. An only-copy human sentence, which is why the vault projection carries it verbatim (Principle 8).",
+          "type": "string"
+        },
+        "filled_at": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }

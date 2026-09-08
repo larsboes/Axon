@@ -18,6 +18,15 @@ use crate::source::SourceError;
 /// error page, short enough not to dump an HTML document into a log line.
 const SNIPPET_CHARS: usize = 200;
 
+/// How long any scouting fetch waits before it gives up.
+///
+/// One value for the whole capability, because the adapters all do the same
+/// thing: one GET of one page from a public events site. 30 seconds is what
+/// `sources/rss.rs` already used and the only timeout any of them carried --
+/// the other five built a client with none, so one unresponsive host could hold
+/// a scouting run open for as long as the socket stayed alive.
+pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Decide what a completed response means. Pure: no I/O, no clock.
 pub fn classify(
     url: &str,
@@ -54,8 +63,10 @@ pub fn send_checked(
 
 /// Plain checked GET, for adapters that need no special headers.
 pub fn get_checked(url: &str) -> Result<String, SourceError> {
-    let client = reqwest::blocking::Client::builder()
-        .build()
+    // 30s, the timeout src/sources/rss.rs already used for the same job. This
+    // built a client with no timeout at all, so one unresponsive host held a
+    // scouting run open indefinitely.
+    let client = axon_http::client(axon_http::Purpose::new("scouting-fetch"), TIMEOUT)
         .map_err(|e| SourceError::Fetch(format!("client build: {e}")))?;
     send_checked(url, client.get(url))
 }

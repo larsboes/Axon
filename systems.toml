@@ -25,6 +25,19 @@
 #   local = "yes" | "no"        # runs on my LAN / device vs. hosted elsewhere
 #   why   = one line: what it's for and why it's in the setup
 #
+# One more key, and it lives ONLY in the overlay entry because it is a trust decision about
+# a specific deployment (PRD Q39, 2026-08-25):
+#
+#   owner = "self"              # this host is hardware I own
+#
+# It is what lets `libs/inference` treat a tailnet peer exactly as it treats loopback: no data
+# class is withheld from it, and it is not classified as a cloud provider needing a reviewed
+# policy. `local = "yes"` is NOT that statement — it says something is on my LAN, which a
+# borrowed or shared node also is. Nor is presence in systems.local.toml: [nvidia-nim] is in
+# that file and is a cloud provider. The declaration is explicit, and it is an intersection —
+# a backend in inference.json must also name the id in `provided_by`, so naming a host and
+# trusting it are two separate acts. `tools/lib/external-ref.sh` resolves the pair.
+#
 # `tools/doctor --online` probes every http(s) `url` here for reachability and reports the system
 # id, the outcome and the HTTP status. It never prints a URL, so a private endpoint resolved from
 # the overlay stays private in a report you paste somewhere. Two keys steer it, and both live in

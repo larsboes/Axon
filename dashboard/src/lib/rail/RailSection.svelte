@@ -6,6 +6,7 @@
     label,
     count = null,
     open = $bindable(false),
+    action,
     children,
   }: {
     label: string;
@@ -14,6 +15,11 @@
      * broken rail, and you can no longer tell "nothing waiting" from "not loaded". */
     count?: number | null;
     open?: boolean;
+    /** One control belonging to the section rather than to a row in it — an "All" link,
+     * usually. It renders inside the summary, so a control that must not also toggle the
+     * section stops the event itself: the handler belongs on the interactive element the
+     * caller owns, not on a wrapper this component would have to give a role to. */
+    action?: Snippet;
     children: Snippet;
   } = $props();
 </script>
@@ -22,6 +28,7 @@
   <summary>
     <span class="chevron"><Icon name="chevron" size={12} /></span>
     <span class="label">{label}</span>
+    {#if action}<span class="action">{@render action()}</span>{/if}
     {#if count !== null}
       <span class="count">{count === 0 ? "·" : count}</span>
     {/if}
@@ -105,5 +112,10 @@
 
   .body {
     padding: 0.15rem 0.25rem 0.85rem;
+  }
+
+  .action {
+    display: flex;
+    flex-shrink: 0;
   }
 </style>

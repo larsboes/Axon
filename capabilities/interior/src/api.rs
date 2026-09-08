@@ -194,6 +194,11 @@ const ROUTES: &[route_manifest::Route] = &[
         "Ein Stueck aendern. Nimmt die Item-Form, die /api/inventory liefert.",
     ),
     r(
+        "POST",
+        "/api/vault/writeback",
+        "Jeden Slot als Notiz im Vault fuehren: einmal saeen, danach nur die Axon-Region.",
+    ),
+    r(
         "PUT",
         "/api/placements/:flat/:item",
         "Ein Stueck in dieser Wohnung platzieren. Body: {x, y, rot}.",
@@ -309,6 +314,33 @@ async fn api_inventory() -> Result<impl IntoResponse, (StatusCode, String)> {
         )
         .collect();
     Ok(Json(out))
+}
+
+/// Jeden Slot in den Vault schreiben.
+///
+/// Antwortet 200 auch dann, wenn ein Konflikt aufgetreten ist: ein Konflikt heisst, dass ein
+/// Mensch die Region angefasst hat, und das ist ein Zustand des Vaults, kein Fehler dieses
+/// Aufrufs. Er steht namentlich im Ergebnis, damit der Aufrufer ihn sieht, ohne im Log zu suchen.
+///
+/// 501 statt 500, wenn keine Vault-Wurzel erklaert ist: ein Host ohne Vault hat nichts falsch
+/// gemacht, er kann diesen Weg nur nicht gehen.
+async fn api_vault_writeback() -> Result<impl IntoResponse, (StatusCode, String)> {
+    let rows = store()?.catalogue().map_err(boom)?;
+    let Some(ergebnis) = crate::obsidian::writeback(&rows) else {
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "keine Vault-Wurzel erklaert: obsidian.root in <overlay>/config/interior.json setzen"
+                .to_string(),
+        ));
+    };
+    let report = ergebnis.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "ok": report.conflicts.is_empty(),
+        "seeded": report.seeded,
+        "written": report.written,
+        "unchanged": report.unchanged,
+        "conflicts": report.conflicts,
+    })))
 }
 
 /// Der offene Bedarf, und was er in Monatssalden kostet — die Naht zwischen `interior` und
@@ -650,18 +682,26 @@ async fn api_put_layout(
 /// `service.toml` nennt diese Trennung als den Grund, aus dem die Capability oeffentlich stehen
 /// darf: das Bundle enthaelt kein Foto, die Dateien liegen im Overlay, und geliefert wird erst
 /// auf Anfrage.
+///
+/// Jeder Dateizugriff hier laeuft ueber `tokio::fs`, nicht ueber `std::fs`. Das ist der einzige
+/// Handler im Repo, der ein ganzes Bild liest, und ein `std::fs::read` in einem `async fn` haelt
+/// einen Worker-Thread der Laufzeit an, statt nur diese eine Anfrage warten zu lassen. Die
+/// Pfadpruefung bleibt davon unberuehrt: `canonicalize` und `starts_with` sagen dasselbe.
 async fn api_media(Path(pfad): Path<String>) -> Result<impl IntoResponse, (StatusCode, String)> {
     let wurzel = crate::model::data_dir()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .join("media");
-    let wurzel = wurzel
-        .canonicalize()
+    let wurzel = tokio::fs::canonicalize(&wurzel)
+        .await
         .map_err(|_| (StatusCode::NOT_FOUND, "kein media-Verzeichnis".to_string()))?;
-    let ziel = wurzel
-        .join(&pfad)
-        .canonicalize()
+    let ziel = tokio::fs::canonicalize(wurzel.join(&pfad))
+        .await
         .map_err(|_| (StatusCode::NOT_FOUND, format!("kein Medium `{pfad}`")))?;
-    if !ziel.starts_with(&wurzel) || !ziel.is_file() {
+    let ist_datei = tokio::fs::metadata(&ziel)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false);
+    if !ziel.starts_with(&wurzel) || !ist_datei {
         return Err((
             StatusCode::FORBIDDEN,
             format!("`{pfad}` liegt nicht unter media/"),
@@ -680,7 +720,7 @@ async fn api_media(Path(pfad): Path<String>) -> Result<impl IntoResponse, (Statu
         // Kein Standardtyp: was hier unbekannt ist, wird nicht geraten und nicht geliefert.
         _ => return Err((StatusCode::UNSUPPORTED_MEDIA_TYPE, "kein Bildformat".into())),
     };
-    let bytes = std::fs::read(&ziel).map_err(boom)?;
+    let bytes = tokio::fs::read(&ziel).await.map_err(boom)?;
     Ok(([(axum::http::header::CONTENT_TYPE, typ)], bytes))
 }
 
@@ -902,6 +942,7 @@ pub async fn serve(flat: &str, port: u16) {
         .route("/api/wishlist", get(api_wishlist))
         .route("/api/placements/:flat", get(api_placements))
         .route("/api/items", post(api_post_item))
+        .route("/api/vault/writeback", post(api_vault_writeback))
         .route("/api/items/:id", put(api_put_item).patch(api_patch_item))
         .route(
             "/api/items/:id/state",
