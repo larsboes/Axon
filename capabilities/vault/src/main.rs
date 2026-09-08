@@ -6,6 +6,7 @@
 //! vault links [--root PATH] [--json] [--dead] [--inbound FOLDER]
 //! vault lint  [--root PATH] [--json] [--carrying KEY]
 //! vault class [--root PATH] [--json] [--only c2] [--list]
+//! vault people [--root PATH] [--json]
 //! ```
 //!
 //! ## Why this exists as a binary rather than a skill
@@ -29,7 +30,7 @@
 
 // The modules live in the library beside this binary, so `vault-server` reads
 // notes through the same loader rather than a second copy of it.
-use vault::{class, graph, lint, names, note};
+use vault::{class, graph, lint, names, note, people};
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
@@ -58,7 +59,8 @@ fn main() {
                vault links [--root PATH] [--json] [--dead] [--inbound FOLDER]\n  \
                vault lint  [--root PATH] [--json] [--carrying KEY]\n  \
                vault names [--root PATH] [--json] [--folder Atlas/People]\n  \
-               vault class [--root PATH] [--json] [--only c2] [--list]\n\
+               vault class [--root PATH] [--json] [--only c2] [--list]
+  vault people [--root PATH] [--json]\n\
              \n\
              The root comes from the overlay's config/knowledge.toml unless --root says otherwise."
         );
@@ -94,7 +96,20 @@ fn main() {
                 return;
             }
 
-            let rep = graph::report(&notes, has(&args, "--dead"));
+            // The vault's non-note files, so a link to a PDF, an image or a Base resolves
+            // instead of reading as dead. Ids, not paths, because that is what a wikilink in
+            // path form carries.
+            let attachments: Vec<String> = root
+                .files_recursive()
+                .map(|files| {
+                    files
+                        .iter()
+                        .filter(|path| path.extension().and_then(|e| e.to_str()) != Some("md"))
+                        .filter_map(|path| root.relative_id(path))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let rep = graph::report(&notes, &attachments, has(&args, "--dead"));
             if json {
                 println!("{}", serde_json::to_string_pretty(&rep).unwrap_or_default());
             } else {
@@ -103,6 +118,7 @@ fn main() {
                 println!("  in frontmatter       {}", rep.links_in_frontmatter);
                 println!("  in body              {}", rep.links_in_body);
                 println!("  resolved             {}", rep.links_resolved);
+                println!("    to a non-note file {}", rep.links_to_files);
                 println!("  dead                 {}", rep.links_dead);
                 println!("  dead, note-shaped    {}", rep.dead_note_shaped);
                 println!("  distinct dead targets {}", rep.distinct_dead_targets);
@@ -180,6 +196,38 @@ fn main() {
                     for p in &rep.problems {
                         println!("  {p}");
                     }
+                }
+            }
+        }
+
+        // D2: the three People keys that have no producer, computed from the Journal so the
+        // claim that they are derivable is measured rather than repeated. Read-only, and the
+        // reason is D3 — machine-owned frontmatter has no protection, so a writer could not
+        // tell its own value from a human's correction.
+        "people" => {
+            let rep = people::report(&notes);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rep).unwrap_or_default());
+            } else {
+                println!("people notes           {}", rep.people);
+                println!("  named in the Journal {}", rep.with_mentions);
+                println!("  carrying a key       {}", rep.carrying_any);
+                println!("  stored value differs {}", rep.disagreeing);
+                println!();
+                println!("mentions  last        first       name");
+                for facts in &rep.facts {
+                    println!(
+                        "{:>8}  {:<10}  {:<10}  {}{}",
+                        facts.mention_count,
+                        facts.last_contact.as_deref().unwrap_or("-"),
+                        facts.met_at.as_deref().unwrap_or("-"),
+                        facts.name,
+                        if facts.disagrees.is_empty() {
+                            String::new()
+                        } else {
+                            format!("   [stored differs: {}]", facts.disagrees.join(", "))
+                        }
+                    );
                 }
             }
         }

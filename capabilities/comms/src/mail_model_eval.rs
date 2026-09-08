@@ -286,6 +286,22 @@ pub fn evaluate_file(path: &Path, store: &Store) -> Result<Report> {
         .map_err(|e| CommsError::Config(format!("{}: {e}", path.display())))?;
     let corpus: Corpus = serde_json::from_str(&body)
         .map_err(|e| CommsError::Config(format!("{}: {e}", path.display())))?;
+    // An unlabelled row is refused, not scored. `comms mail corpus` writes the skeleton with
+    // every `label` empty, and an empty label scored as a stream name disagrees with every
+    // verdict — a corpus half filled in would report a low agreement that looks like a
+    // measurement of the model. The all-skipped corpus is already a FAIL for the same reason.
+    let unlabelled = corpus
+        .fixtures
+        .iter()
+        .filter(|fixture| fixture.label.trim().is_empty())
+        .count();
+    if unlabelled > 0 {
+        return Err(CommsError::Config(format!(
+            "{}: {unlabelled} of {} fixture(s) carry no label. Fill them in before scoring —              an empty label is not a disagreement, it is an unwritten judgement.",
+            path.display(),
+            corpus.fixtures.len()
+        )));
+    }
     let verdicts = store
         .model_verdicts()
         .map_err(|e| CommsError::Other(e.to_string()))?;

@@ -21,6 +21,7 @@ pub mod cloud_dispatch;
 pub mod cloud_run;
 pub mod config;
 pub mod digest;
+pub mod digest_eval;
 pub mod evaluation;
 pub mod extraction_eval;
 pub mod feedback;
