@@ -555,6 +555,133 @@ export function classifyArchiveAtTarget(input: {
   return { level: "ok", detail: `${input.receiptBytes} bytes, present at the destination` };
 }
 
+// --- scheduled producers ----------------------------------------------------------------------
+//
+// A capability that declares `schedule` has no supervisor watching it. It is started, it runs, it
+// exits, and the only thing that brings it back is the timer. So there is nothing to be "down":
+// it stops producing and every surface keeps saying fine. Six units on this machine are in that
+// shape and one of them is the backup.
+//
+// The boot-persistence check above asks whether the unit MATCHES THE DECLARATION. This asks the
+// different question that nothing asked: did it actually run.
+
+/// One row of `launchctl list`: `PID \t Status \t Label`, where Status is the job's last exit
+/// status and either column may be `-` for "no answer". A label that is absent from this output
+/// is not loaded, which for a timer means it will never fire.
+export function parseLaunchdJobs(text: string): Map<string, { pid: number | null; lastExit: number | null }> {
+  const jobs = new Map<string, { pid: number | null; lastExit: number | null }>();
+  for (const line of text.split("\n")) {
+    const cols = line.split("\t");
+    if (cols.length < 3) continue;
+    const label = cols[2].trim();
+    if (!label || label === "Label") continue;
+    const num = (c: string) => (/^-?\d+$/.test(c.trim()) ? Number(c.trim()) : null);
+    jobs.set(label, { pid: num(cols[0]), lastExit: num(cols[1]) });
+  }
+  return jobs;
+}
+
+/// The three facts a scheduled LaunchAgent carries about its own running: how often, and where its
+/// two output streams go.
+///
+/// Read out of the INSTALLED unit rather than recomputed from the manifest. The unit's interval is
+/// the one launchd obeys, and the log paths are the files launchd truly appends to — a second copy
+/// of `/tmp/axon-<cap>-schedule.log` in this file would be a literal to keep in step with
+/// tools/service-runner.sh, and the drift would be silent (doctor would watch a file nothing
+/// writes and report "no run has ever produced output"). Where the unit and the manifest disagree
+/// about the interval, that is the boot-persistence check's `stale` state, not this one's.
+export function parseLaunchdSchedule(plist: string): {
+  intervalSeconds: number | null;
+  stdoutPath: string | null;
+  stderrPath: string | null;
+} {
+  const str = (key: string) =>
+    new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`).exec(plist)?.[1] ?? null;
+  const interval = /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(plist);
+  return {
+    intervalSeconds: interval ? Number(interval[1]) : null,
+    stdoutPath: str("StandardOutPath"),
+    stderrPath: str("StandardErrorPath"),
+  };
+}
+
+export function formatAge(seconds: number): string {
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 172_800) return `${(seconds / 3600).toFixed(1)}h`;
+  return `${(seconds / 86_400).toFixed(1)}d`;
+}
+
+export type ScheduledProducer = {
+  name: string;
+  unitInstalled: boolean;
+  loaded: boolean;
+  /// The job's last exit status as launchd remembers it; null when it has none to report.
+  lastExit: number | null;
+  intervalSeconds: number | null;
+  /// Age of the newest of the unit's two output files, or null when neither exists.
+  lastOutputAgeSeconds: number | null;
+};
+
+/// Did this producer run, and recently enough that its interval is being honoured?
+///
+/// The thresholds are one interval to warn and three to fail, and the third one is not arbitrary.
+/// launchd's `StartInterval` does not fire while the machine sleeps; it fires once on wake. On a
+/// laptop that is closed overnight, an hourly job legitimately shows an age of several intervals
+/// with nothing wrong. Two is inside the ordinary range of "the lid was shut". Three means either
+/// the producer stopped or the machine was off long enough that the report should say so anyway —
+/// and for the daily contracts that matters most it is three days, against the twenty-seven that
+/// D10 took to notice.
+///
+/// A non-zero exit outranks age: it is the more specific finding, and a job that fails fast still
+/// touches its log, so its age can look perfectly healthy.
+export function classifyScheduledProducer(p: ScheduledProducer): { level: "ok" | "warn" | "bad"; message: string } {
+  const seen = p.lastOutputAgeSeconds === null ? "no output on record" : `last output ${formatAge(p.lastOutputAgeSeconds)} ago`;
+  if (!p.unitInstalled) {
+    // Reported, never passed over — but the boot-persistence check owns this finding and already
+    // fails on it, and one condition counted twice reads as two problems.
+    return { level: "ok", message: `${p.name} — no unit installed; the boot-persistence check above owns that` };
+  }
+  if (!p.loaded) {
+    return {
+      level: "warn",
+      message: `${p.name} — its unit is installed and launchd has not loaded it, so the timer cannot fire (${seen})`,
+    };
+  }
+  if (p.lastExit !== null && p.lastExit !== 0) {
+    return {
+      level: "bad",
+      message: `${p.name} — its last scheduled run exited ${p.lastExit} (${seen})`,
+    };
+  }
+  if (p.intervalSeconds === null) {
+    return {
+      level: "warn",
+      message: `${p.name} — its unit declares no StartInterval, so there is no cadence to judge it against (${seen})`,
+    };
+  }
+  const every = formatAge(p.intervalSeconds);
+  if (p.lastOutputAgeSeconds === null) {
+    // Not the same as "never ran". macOS clears /tmp of entries untouched for three days at boot,
+    // and a run that prints nothing does not move an mtime either.
+    return {
+      level: "warn",
+      message: `${p.name} — runs every ${every} and has written no output this machine still holds`,
+    };
+  }
+  const age = formatAge(p.lastOutputAgeSeconds);
+  if (p.lastOutputAgeSeconds >= p.intervalSeconds * 3) {
+    return {
+      level: "bad",
+      message: `${p.name} — runs every ${every} and has produced nothing for ${age}; it has missed at least two runs`,
+    };
+  }
+  if (p.lastOutputAgeSeconds >= p.intervalSeconds) {
+    return { level: "warn", message: `${p.name} — runs every ${every}, last produced ${age} ago` };
+  }
+  return { level: "ok", message: `${p.name} — runs every ${every}, produced ${age} ago` };
+}
+
 // How long a single reachability probe may take, absent an overlay saying otherwise. Public Axon
 // ships the default; a deployment that knows one of its endpoints is legitimately slow raises it
 // for that entry via `probe_timeout_ms` rather than muting the check or raising it for everything.
@@ -1263,6 +1390,90 @@ const CHECKS: Check[] = [
 
       if (owed === 0 && orphans.length === 0 && lines.length > 0) {
         ctx.ok(`${lines.length} enabled capabilities checked, persistence matches the declaration`);
+      }
+    },
+  },
+
+  // Did the scheduled producers actually run?
+  //
+  // The check above compares the installed unit to the declaration. That is a different question,
+  // and a unit can match its declaration perfectly while the job behind it has not produced
+  // anything for a week. Nothing asked the second question, for any of them: a `schedule`
+  // capability has no supervisor, so it cannot be "down" — it simply stops, and every surface
+  // stays green. This is D10's shape with six subjects instead of one.
+  {
+    name: "Scheduled producers (did they run)",
+    async run(ctx) {
+      const os = ctx.machineToml?.os;
+      if (os !== "macos") {
+        // systemd records a timer's last elapse in `systemctl show --property=LastTriggerUSec`,
+        // which is a better source than a log mtime and a different implementation. Reported as a
+        // skip with its reason rather than passed over: this machine's producers are the subject,
+        // and a Linux host's are simply not covered yet.
+        return ctx.ok(`skipped — os = ${os ?? "unknown"}; this reads launchd units, and systemd timers are not covered yet`);
+      }
+      const proc = Bun.spawnSync({
+        cmd: [join(ctx.root, "tools/capability.sh"), "registry"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (proc.exitCode !== 0) return ctx.warn("capability.sh registry failed — skipping");
+      let registry: Array<Record<string, string>>;
+      try {
+        registry = JSON.parse(proc.stdout.toString());
+      } catch {
+        return ctx.warn("capability.sh registry did not return JSON — skipping");
+      }
+      const enabled = new Set<string>(
+        Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : [],
+      );
+      const scheduled = registry.filter(
+        (s) => s.schedule && s.schedule.trim() !== "" && (enabled.size === 0 || enabled.has(s.name)),
+      );
+      if (scheduled.length === 0) return ctx.ok("no capability on this machine declares a schedule");
+
+      // One call, not one per unit. An absent label is the answer for "not loaded", so the whole
+      // table has to be in hand before any of them is judged.
+      const list = Bun.spawnSync({ cmd: ["launchctl", "list"], stdout: "pipe", stderr: "pipe" });
+      if (list.exitCode !== 0) return ctx.warn("launchctl list failed — scheduled producers unverified");
+      const jobs = parseLaunchdJobs(list.stdout.toString());
+
+      const unitDir = join(process.env.HOME ?? "", "Library", "LaunchAgents");
+      const now = Date.now() / 1000;
+      for (const service of scheduled) {
+        const unitPath = join(unitDir, `com.axon.${service.name}.plist`);
+        const unitInstalled = existsSync(unitPath);
+        const unit = unitInstalled
+          ? parseLaunchdSchedule(readFileSync(unitPath, "utf8"))
+          : { intervalSeconds: null, stdoutPath: null, stderrPath: null };
+        // The newest of the two streams. A job that fails writes only to stderr and a job that
+        // succeeds may write only to stdout, so taking one of them would make half the runs
+        // invisible.
+        let newest: number | null = null;
+        for (const p of [unit.stdoutPath, unit.stderrPath]) {
+          if (!p) continue;
+          try {
+            const mtime = statSync(p).mtimeMs / 1000;
+            if (newest === null || mtime > newest) newest = mtime;
+          } catch {
+            // absent, which is not the same as never ran — classifyScheduledProducer says so.
+          }
+        }
+        const job = jobs.get(`com.axon.${service.name}`);
+        const verdict = classifyScheduledProducer({
+          name: service.name,
+          unitInstalled,
+          loaded: job !== undefined,
+          lastExit: job?.lastExit ?? null,
+          intervalSeconds: unit.intervalSeconds,
+          lastOutputAgeSeconds: newest === null ? null : Math.max(0, now - newest),
+        });
+        // Every producer gets a line, including the healthy ones. A section that printed only its
+        // problems would let a producer that quietly left the set — dropped from the registry,
+        // renamed — read exactly like a producer that is fine.
+        if (verdict.level === "bad") ctx.bad(verdict.message);
+        else if (verdict.level === "warn") ctx.warn(verdict.message);
+        else ctx.ok(verdict.message);
       }
     },
   },
