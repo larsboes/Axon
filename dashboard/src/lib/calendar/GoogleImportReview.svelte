@@ -256,7 +256,7 @@
   .success { color: var(--success); background-color: var(--success-soft); }
   .summary { margin-top: 14px; flex-wrap: wrap; color: var(--text-secondary); font-size: .8rem; }
   .summary span { padding: 4px 7px; border-radius: 999px; background: var(--surface); }
-  .summary .warning { color: var(--warning); background-color: var(--warning-soft); }
+  .summary .warning { color: var(--warning-ink); background-color: var(--warning-soft); }
   .review-actions { margin: 14px 0 8px; flex-wrap: wrap; }
   .filters { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
   .search { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: .82rem; }
@@ -273,7 +273,7 @@
   .details p { margin: 3px 0 0; color: var(--text-secondary); font-size: .8rem; }
   .status, .recurring { padding: 2px 6px; border-radius: 999px; font-size: .7rem; background: var(--surface); color: var(--text-secondary); }
   .status.importable { color: var(--success); background-color: var(--success-soft); }
-  .status.likely-duplicate { color: var(--warning); background-color: var(--warning-soft); }
+  .status.likely-duplicate { color: var(--warning-ink); background-color: var(--warning-soft); }
   .status.invalid, .status.cancelled { color: var(--danger); background-color: var(--danger-soft); }
   .recurring { color: var(--primary); background-color: var(--primary-soft); }
   .candidate a { color: var(--primary); font-size: .78rem; white-space: nowrap; }

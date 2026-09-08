@@ -106,6 +106,19 @@ pub struct CreatePlan {
     pub source: Option<PlanSource>,
 }
 
+/// Present-and-null becomes `Some(None)`; an absent key stays `None`.
+///
+/// Copied from `capabilities/calendar/src/model.rs:162-168`, which needed the
+/// same distinction for the same reason: a PATCH that cannot express "clear it"
+/// makes a field write-once by accident.
+fn present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct UpdatePlan {
     pub title: Option<String>,
@@ -122,8 +135,28 @@ pub struct UpdatePlan {
     /// What the trip is meant to cost, in minor units. Finance keeps every
     /// actual cent and already tags postings with an `axon-trip-id`; this is the
     /// intention those actuals get compared against, which had no home at all.
-    pub budget_cents: Option<i64>,
-    pub currency: Option<String>,
+    ///
+    /// `Option<Option<_>>` so an omitted key ("leave it alone") and an explicit
+    /// JSON null ("clear it") are different edits: with a plain `Option` a
+    /// budget could be set and never removed, and the editor sends null for an
+    /// empty field. Same shape and same reason as `UpdateEntry.location`
+    /// (capabilities/calendar/src/model.rs:183-190).
+    #[serde(
+        default,
+        deserialize_with = "present_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub budget_cents: Option<Option<i64>>,
+    /// Clearable for the same reason, and it matters more: `currency` gates
+    /// whether a retrospective may record a cost at all
+    /// (`put_retrospective`), so a wrong one that cannot be removed is a
+    /// wrong unit on every cost that follows.
+    #[serde(
+        default,
+        deserialize_with = "present_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub currency: Option<Option<String>>,
     /// The `updated_at` the caller believes it is editing. Omitted keeps the old
     /// last-write-wins behaviour, so nothing that already works breaks.
     ///
@@ -204,11 +237,54 @@ pub struct PlanItem {
     pub created_at: String,
 }
 
+/// One plan's close-out record: exactly the three fields PRD §8.2 rules, plus
+/// the plan key and the stamp.
+///
+/// `currency` is ECHOED from `trips_plans.currency` and is not a column here.
+/// `cost_cents` is denominated in the plan's own currency, so the money is named
+/// once and a second column cannot disagree with it; a plan with no currency
+/// refuses a cost with a message naming the fix.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Retrospective {
+    pub plan_id: String,
+    pub cost_cents: Option<i64>,
+    pub currency: Option<String>,
+    pub again: String,
+    pub change_note: String,
+    pub filled_at: String,
+}
+
+/// A closed trip the ladder should raise today. Carries what a row needs to
+/// render and nothing more — no traveler, which is what keeps this the same
+/// exposure `GET /api/plans` already has.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PendingRetrospective {
+    pub plan_id: String,
+    pub title: String,
+    pub destinations: Vec<String>,
+    pub date_start: String,
+    pub date_end: String,
+    pub days_since_close: i64,
+}
+
+/// How long after a trip closes the ladder keeps asking.
+///
+/// The rule lives here and nowhere else. A retrospective filled from a memory
+/// that is gone is a fabrication, so the prompt expires; the travel page still
+/// offers the form for any past plan without one, because navigating to a plan
+/// is not the same as being prompted.
+pub const RETROSPECTIVE_WINDOW_DAYS: i64 = 45;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PlanDetails {
     #[serde(flatten)]
     pub plan: TripPlan,
     pub items: Vec<PlanItem>,
+    /// One more TOP-LEVEL key, because `plan` is flattened: the wire shape stays
+    /// the flat object `schemas/trip-plan.schema.json` and
+    /// `dashboard/src/lib/api.ts`'s `PlanDetails extends TripPlan` both encode.
+    #[serde(default)]
+    pub retrospective: Option<Retrospective>,
 }
 
 pub struct TripsStore {
@@ -227,6 +303,16 @@ fn generated_id(prefix: &str) -> String {
         .as_nanos();
     let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}:{nanos:x}{sequence:04x}")
+}
+
+/// [`generated_id`] for the sibling module. One id minter per capability.
+pub fn new_id(prefix: &str) -> String {
+    generated_id(prefix)
+}
+
+/// [`now_text`] for the sibling module.
+pub fn stamp() -> String {
+    now_text()
 }
 
 fn now_text() -> String {
@@ -383,10 +469,54 @@ impl TripsStore {
             CREATE UNIQUE INDEX IF NOT EXISTS {prefix}_idx_plan_source
                 ON {prefix}_plans(source_kind, source_ref)
                 WHERE source_kind IS NOT NULL AND source_ref IS NOT NULL;
+
+            -- One retrospective per plan (PRD 8.2: cost, again?, change?).
+            --
+            -- A table rather than a twelfth plan item, for two reasons that
+            -- stand on their own. The summary groups by destination ACROSS
+            -- plans, which is a query with an index rather than a json_extract
+            -- scan of every item row. And the three fields are ruled and closed,
+            -- so `again` earns a CHECK and `cost_cents` earns INTEGER -- neither
+            -- of which a JSON payload carries. The outcome payload next door is
+            -- deliberately open because nobody knew its fields yet; here the PRD
+            -- already knows them.
+            --
+            -- No `currency` column: `cost_cents` is denominated in the plan's own
+            -- `currency`, so the money is named exactly once and a second column
+            -- cannot disagree with it. plan_id as PRIMARY KEY is the whole
+            -- idempotency story -- a second POST is a correction, not a row.
+            CREATE TABLE IF NOT EXISTS {prefix}_retrospectives (
+                plan_id TEXT PRIMARY KEY
+                    REFERENCES {prefix}_plans(id) ON DELETE CASCADE,
+                cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents >= 0),
+                again TEXT NOT NULL CHECK (again IN ('yes','no','maybe')),
+                change_note TEXT NOT NULL DEFAULT '',
+                filled_at TEXT NOT NULL
+            );
             ",
             prefix = prefix
         ))?;
+        // --- pack lists (own block, appended; see src/pack.rs) -------------
+        // Its own statement rather than more text inside the batch above, so
+        // two streams editing this file touch two hunks that merge cleanly.
+        conn.execute_batch(&crate::pack::DDL.replace("{prefix}", prefix))?;
         Ok(())
+    }
+
+    /// The table prefix, for the sibling module that owns its own tables.
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    /// A pooled connection for `crate::pack`.
+    ///
+    /// The same escape hatch `capabilities/interior`'s store exposes as
+    /// `borrow_connection`, for the same reason: the tables belong to this
+    /// capability, and the queries belong beside the shape that reads them.
+    pub fn borrow_connection(
+        &self,
+    ) -> Result<axon_store::PooledClient, Box<dyn std::error::Error>> {
+        self.conn()
     }
 
     pub fn create_plan(&self, input: &CreatePlan) -> Result<TripPlan, Box<dyn std::error::Error>> {
@@ -475,6 +605,9 @@ impl TripsStore {
             [],
             row_to_plan,
         )?;
+        // Read once for the whole export rather than once per plan: the
+        // projection is a safety copy of every plan, archived ones included.
+        let filled = self.retrospectives()?;
         let mut out = Vec::with_capacity(plans.len());
         for plan in plans {
             let items = conn.query_all(
@@ -487,7 +620,12 @@ impl TripsStore {
                 params![&plan.id],
                 row_to_item,
             )?;
-            out.push(PlanDetails { plan, items });
+            let retrospective = filled.iter().find(|row| row.plan_id == plan.id).cloned();
+            out.push(PlanDetails {
+                plan,
+                items,
+                retrospective,
+            });
         }
         Ok(out)
     }
@@ -517,7 +655,163 @@ impl TripsStore {
             params![&id],
             row_to_item,
         )?;
-        Ok(Some(PlanDetails { plan, items }))
+        let retrospective = self.retrospective(id)?;
+        Ok(Some(PlanDetails {
+            plan,
+            items,
+            retrospective,
+        }))
+    }
+
+    /// The retrospective for one plan, with the plan's own currency echoed onto
+    /// it. One keyed read; `get_plan` calls it for the top-level key.
+    pub fn retrospective(
+        &self,
+        plan_id: &str,
+    ) -> Result<Option<Retrospective>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT r.plan_id, r.cost_cents, p.currency, r.again, r.change_note,
+                            r.filled_at
+                     FROM {prefix}_retrospectives r
+                     JOIN {prefix}_plans p ON p.id = r.plan_id
+                     WHERE r.plan_id = ?1",
+                    prefix = self.prefix
+                ),
+                params![&plan_id],
+                row_to_retrospective,
+            )
+            .optional()?)
+    }
+
+    /// Every recorded retrospective. The summary's input; bounded by the number
+    /// of trips a person takes, which is why it needs no page.
+    pub fn retrospectives(&self) -> Result<Vec<Retrospective>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        Ok(conn.query_all(
+            &format!(
+                "SELECT r.plan_id, r.cost_cents, p.currency, r.again, r.change_note, r.filled_at
+                 FROM {prefix}_retrospectives r
+                 JOIN {prefix}_plans p ON p.id = r.plan_id
+                 ORDER BY r.filled_at DESC, r.plan_id",
+                prefix = self.prefix
+            ),
+            [],
+            row_to_retrospective,
+        )?)
+    }
+
+    /// Write or correct one plan's retrospective. Returns the row and whether it
+    /// was created, because a second POST is a correction and answers 200.
+    ///
+    /// `Ok(None)` means the plan does not exist, which the handler turns into a
+    /// 404; every other refusal is an `Err` naming the fix.
+    pub fn put_retrospective(
+        &self,
+        plan_id: &str,
+        cost_cents: Option<i64>,
+        again: &str,
+        change_note: &str,
+    ) -> Result<Option<(Retrospective, bool)>, Box<dyn std::error::Error>> {
+        if crate::retrospective::Again::parse(again).is_none() {
+            return Err("again must be one of yes, no, maybe".into());
+        }
+        if cost_cents.is_some_and(|cents| cents < 0) {
+            return Err("cost_cents must not be negative".into());
+        }
+        let Some(plan) = self.get_plan(plan_id)?.map(|details| details.plan) else {
+            return Ok(None);
+        };
+        // The money is denominated exactly once, on the plan. Without a currency
+        // there is no unit for this number, and a number with no unit is the
+        // thing this design refuses to store.
+        if cost_cents.is_some() && plan.currency.is_none() {
+            return Err(
+                "cost_cents needs the plan to carry a currency; set it on the plan first".into(),
+            );
+        }
+        let existed = self.retrospective(plan_id)?.is_some();
+        let now = now_text();
+        let conn = self.conn()?;
+        conn.execute(
+            &format!(
+                "INSERT INTO {prefix}_retrospectives
+                    (plan_id, cost_cents, again, change_note, filled_at)
+                 VALUES (?1,?2,?3,?4,?5)
+                 ON CONFLICT (plan_id) DO UPDATE SET
+                    cost_cents = excluded.cost_cents,
+                    again = excluded.again,
+                    change_note = excluded.change_note,
+                    filled_at = excluded.filled_at",
+                prefix = self.prefix
+            ),
+            params![&plan_id, &cost_cents, &again, &change_note.trim(), &now],
+        )?;
+        let row = self
+            .retrospective(plan_id)?
+            .ok_or("the retrospective vanished between write and read")?;
+        Ok(Some((row, !existed)))
+    }
+
+    /// What the ladder should raise today: plans that closed inside the window
+    /// and carry no retrospective.
+    ///
+    /// Four clauses, all of them deliberate. `date_end < today` because the trip
+    /// is over. `date_end >= today - RETROSPECTIVE_WINDOW_DAYS` because a
+    /// retrospective filled from a memory that is gone is a fabrication.
+    /// `status != 'archived'` because archiving is the operator's explicit "I am
+    /// done with this". And no existing row, because a filled one is not pending.
+    pub fn pending_retrospectives(
+        &self,
+        today: &str,
+    ) -> Result<Vec<PendingRetrospective>, Box<dyn std::error::Error>> {
+        let Some(today_day) = crate::windows::day_number(today) else {
+            return Err(format!("today must be ISO, got {today:?}").into());
+        };
+        let earliest = crate::windows::iso_of_day_number(today_day - RETROSPECTIVE_WINDOW_DAYS);
+        let conn = self.conn()?;
+        let rows: Vec<(String, String, String, String, String)> = conn.query_all(
+            &format!(
+                "SELECT p.id, p.title, p.destinations, p.date_start, p.date_end
+                 FROM {prefix}_plans p
+                 LEFT JOIN {prefix}_retrospectives r ON r.plan_id = p.id
+                 WHERE p.date_end < ?1 AND p.date_end >= ?2
+                   AND p.status != 'archived' AND r.plan_id IS NULL
+                 ORDER BY p.date_end DESC",
+                prefix = self.prefix
+            ),
+            params![&today, &earliest],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(plan_id, title, destinations, date_start, date_end)| PendingRetrospective {
+                    destinations: serde_json::from_str::<Vec<PlaceRef>>(&destinations)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|place| place.name)
+                        .collect(),
+                    days_since_close: crate::windows::day_number(&date_end)
+                        .map(|closed| today_day - closed)
+                        .unwrap_or_default(),
+                    plan_id,
+                    title,
+                    date_start,
+                    date_end,
+                },
+            )
+            .collect())
     }
 
     pub fn update_plan(
@@ -530,6 +824,13 @@ impl TripsStore {
         };
         let current = details.plan;
         check_expected_revision(input.expected_updated_at.as_deref(), &current.updated_at)?;
+        // Held before the `unwrap_or` moves each field out of `current`, because
+        // "changed" is a comparison against what is stored, not a test of what
+        // was sent.
+        let origin_before = current.origin.clone();
+        let destinations_before = current.destinations.clone();
+        let date_start_before = current.date_start.clone();
+        let previous_stages = current.stages.clone();
         let title = input.title.clone().unwrap_or(current.title);
         let origin = input.origin.clone().unwrap_or(current.origin);
         let destinations = input.destinations.clone().unwrap_or(current.destinations);
@@ -543,23 +844,41 @@ impl TripsStore {
             .transport_modes
             .clone()
             .unwrap_or(current.transport_modes);
-        let route_changed =
-            input.origin.is_some() || input.destinations.is_some() || input.date_start.is_some();
+        // Compare VALUES, not presence. PlanEditor sends origin, destinations and
+        // date_start on every save, so a presence test made editing a title
+        // regenerate every stage from scratch -- discarding `selected_option_id`
+        // and the `booked` status of each one. That is the most plausible reason
+        // no outcome has ever been recorded against a stage.
+        let route_changed = input
+            .origin
+            .as_ref()
+            .is_some_and(|value| *value != origin_before)
+            || input
+                .destinations
+                .as_ref()
+                .is_some_and(|value| *value != destinations_before)
+            || input
+                .date_start
+                .as_ref()
+                .is_some_and(|value| *value != date_start_before);
         let stages = input.stages.clone().unwrap_or_else(|| {
             if route_changed {
-                generated_stages(&CreatePlan {
-                    title: title.clone(),
-                    origin: origin.clone(),
-                    destinations: destinations.clone(),
-                    date_start: date_start.clone(),
-                    date_end: date_end.clone(),
-                    interests: interests.clone(),
-                    travelers: travelers.clone(),
-                    transport_modes: transport_modes.clone(),
-                    stages: Vec::new(),
-                    cover_image_url: current.cover_image_url.clone(),
-                    source: current.source.clone(),
-                })
+                preserve_stage_state(
+                    &previous_stages,
+                    generated_stages(&CreatePlan {
+                        title: title.clone(),
+                        origin: origin.clone(),
+                        destinations: destinations.clone(),
+                        date_start: date_start.clone(),
+                        date_end: date_end.clone(),
+                        interests: interests.clone(),
+                        travelers: travelers.clone(),
+                        transport_modes: transport_modes.clone(),
+                        stages: Vec::new(),
+                        cover_image_url: current.cover_image_url.clone(),
+                        source: current.source.clone(),
+                    }),
+                )
             } else if input.transport_modes.is_some() {
                 propagate_default_transport_modes(
                     current.stages,
@@ -571,8 +890,10 @@ impl TripsStore {
             }
         });
         let cover_image_url = input.cover_image_url.clone().or(current.cover_image_url);
-        let budget_cents = input.budget_cents.or(current.budget_cents);
-        let currency = input.currency.clone().or(current.currency);
+        // `unwrap_or`, not `or`: the outer Some is "the caller said something",
+        // and what it said may be null.
+        let budget_cents = input.budget_cents.unwrap_or(current.budget_cents);
+        let currency = input.currency.clone().unwrap_or(current.currency);
         if budget_cents.is_some_and(|cents| cents < 0) {
             return Err("budget_cents must not be negative".into());
         }
@@ -870,9 +1191,16 @@ impl TripsStore {
             ],
             row_to_item,
         )?;
+        // Adding an item promotes a draft to saved, but it must not resurrect an
+        // archived plan: archiving is the operator's explicit "I am done with
+        // this", and an item write is not a request to undo it. Recording a
+        // retrospective against a closed trip depends on this.
         conn.execute(
             &format!(
-                "UPDATE {prefix}_plans SET updated_at = ?1, status = 'saved' WHERE id = ?2",
+                "UPDATE {prefix}_plans
+                    SET updated_at = ?1,
+                        status = CASE WHEN status = 'archived' THEN 'archived' ELSE 'saved' END
+                  WHERE id = ?2",
                 prefix = self.prefix
             ),
             params![&now, &plan_id],
@@ -907,6 +1235,20 @@ impl TripsStore {
         )?;
         Ok(count > 0)
     }
+}
+
+/// Read back positionally by the two statements above, whose select list is the
+/// contract: `plan_id, cost_cents, currency, again, change_note, filled_at`, and
+/// the currency comes from the JOINed plan rather than from a column of its own.
+fn row_to_retrospective(row: &Row) -> rusqlite::Result<Retrospective> {
+    Ok(Retrospective {
+        plan_id: row.get(0)?,
+        cost_cents: row.get(1)?,
+        currency: row.get(2)?,
+        again: row.get(3)?,
+        change_note: row.get(4)?,
+        filled_at: row.get(5)?,
+    })
 }
 
 /// Read back positionally by `row_to_plan`, so the order is the contract. One
@@ -1002,7 +1344,7 @@ fn validate_payload(
 /// Case- and whitespace-insensitive, and nothing more. Stripping punctuation or
 /// folding umlauts would collapse places that really are different, and this
 /// reports collisions for a human to judge rather than merging them itself.
-fn normalize_place_name(name: &str) -> String {
+pub(crate) fn normalize_place_name(name: &str) -> String {
     name.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -1011,6 +1353,39 @@ fn normalize_place_name(name: &str) -> String {
 
 fn json_value(name: &str, ids: &[String]) -> Value {
     serde_json::json!({ "normalized_name": name, "ids": ids })
+}
+
+/// Carry `status` and `selected_option_id` across a stage regeneration, for each
+/// origin→destination pair that survives the route change.
+///
+/// Only those two fields, and only onto the first unconsumed previous stage with
+/// the same pair. Everything else about a regenerated stage is derived from the
+/// new plan and must stay derived; a booked connection between two places that
+/// are both still on the itinerary is a fact about the world that the edit did
+/// not change.
+///
+/// This does NOT make a stage id durable. `generated_stages` numbers ids from
+/// the sequence and mints them fresh on every real route change, so anything
+/// storing a stage id inherits that; the decision to give a stage a stable
+/// identity is deliberately not taken here.
+fn preserve_stage_state(previous: &[TripStage], regenerated: Vec<TripStage>) -> Vec<TripStage> {
+    let mut consumed = vec![false; previous.len()];
+    regenerated
+        .into_iter()
+        .map(|mut stage| {
+            let matched = previous.iter().enumerate().find(|(index, candidate)| {
+                !consumed[*index]
+                    && candidate.origin.name == stage.origin.name
+                    && candidate.destination.name == stage.destination.name
+            });
+            if let Some((index, candidate)) = matched {
+                consumed[index] = true;
+                stage.status = candidate.status.clone();
+                stage.selected_option_id = candidate.selected_option_id.clone();
+            }
+            stage
+        })
+        .collect()
 }
 
 fn propagate_default_transport_modes(
@@ -1393,8 +1768,8 @@ mod db_tests {
                 &plan.id,
                 &UpdatePlan {
                     title: Some("Renamed".into()),
-                    budget_cents: Some(120_000),
-                    currency: Some("EUR".into()),
+                    budget_cents: Some(Some(120_000)),
+                    currency: Some(Some("EUR".into())),
                     expected_updated_at: Some(plan.updated_at.clone()),
                     ..Default::default()
                 },
@@ -1404,6 +1779,75 @@ mod db_tests {
         assert_eq!(updated.title, "Renamed");
         assert_eq!(updated.budget_cents, Some(120_000));
         assert_eq!(updated.currency.as_deref(), Some("EUR"));
+    }
+
+    /// A budget that can be set and never removed is a defect the editor can
+    /// reach in two clicks: the form sends `null` for an empty field. Omitting
+    /// the key still leaves the stored value alone, which is the other half of
+    /// the same contract.
+    #[test]
+    fn a_budget_and_a_currency_can_be_cleared_and_an_omitted_key_leaves_them() {
+        let store = open_test_store("budget_clear");
+        let plan = store.create_plan(&a_plan()).unwrap();
+
+        let set = store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    budget_cents: Some(Some(120_000)),
+                    currency: Some(Some("EUR".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .expect("the plan exists");
+        assert_eq!(set.budget_cents, Some(120_000));
+
+        // An unrelated edit must not touch either field.
+        let renamed = store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    title: Some("Renamed".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .expect("the plan exists");
+        assert_eq!(renamed.budget_cents, Some(120_000));
+        assert_eq!(renamed.currency.as_deref(), Some("EUR"));
+
+        // A present null clears. This is what an emptied field sends.
+        let cleared = store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    budget_cents: Some(None),
+                    currency: Some(None),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .expect("the plan exists");
+        assert_eq!(cleared.budget_cents, None);
+        assert_eq!(cleared.currency, None);
+    }
+
+    /// Present-and-null and absent are different edits on the wire too, not only
+    /// in Rust: the handler reads this shape straight off the request body.
+    #[test]
+    fn an_omitted_budget_and_a_null_budget_deserialize_differently() {
+        let omitted: UpdatePlan = serde_json::from_str(r#"{"title":"x"}"#).unwrap();
+        assert_eq!(omitted.budget_cents, None);
+        assert_eq!(omitted.currency, None);
+
+        let cleared: UpdatePlan =
+            serde_json::from_str(r#"{"budget_cents":null,"currency":null}"#).unwrap();
+        assert_eq!(cleared.budget_cents, Some(None));
+        assert_eq!(cleared.currency, Some(None));
+
+        let set: UpdatePlan = serde_json::from_str(r#"{"budget_cents":9900}"#).unwrap();
+        assert_eq!(set.budget_cents, Some(Some(9_900)));
     }
 
     /// `ON CONFLICT (plan_id,item_type,external_id)` — the same item saved
@@ -1503,5 +1947,302 @@ mod db_tests {
         store.create_plan(&a_plan()).unwrap();
         store.create_plan(&a_plan()).unwrap();
         assert_eq!(store.list_plans().unwrap().len(), 3);
+    }
+
+    /// Marks a stage as booked against a chosen option, the state every one of
+    /// the next three tests is about not losing.
+    fn book_the_first_stage(store: &TripsStore, plan: &TripPlan) -> TripPlan {
+        let mut stages = plan.stages.clone();
+        stages[0].status = StageStatus::Booked;
+        stages[0].selected_option_id = Some("option:chosen".into());
+        store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    stages: Some(stages),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .expect("the plan exists")
+    }
+
+    /// The defect: `route_changed` tested whether a field was PRESENT, and
+    /// PlanEditor sends origin, destinations and date_start on every save. So
+    /// renaming a trip regenerated every stage from scratch and discarded the
+    /// booking. It compares values now.
+    #[test]
+    fn a_title_edit_keeps_a_booked_stage() {
+        let store = open_test_store("title_edit");
+        let plan = store.create_plan(&a_plan()).unwrap();
+        let booked = book_the_first_stage(&store, &plan);
+
+        // Exactly what the editor sends: the route fields unchanged, beside a
+        // new title.
+        let renamed = store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    title: Some("Renamed but the same trip".into()),
+                    origin: Some(booked.origin.clone()),
+                    destinations: Some(booked.destinations.clone()),
+                    date_start: Some(booked.date_start.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .expect("the plan exists");
+
+        assert_eq!(renamed.title, "Renamed but the same trip");
+        assert_eq!(
+            renamed.stages, booked.stages,
+            "a title edit must leave the stages byte-identical"
+        );
+        assert_eq!(renamed.stages[0].status, StageStatus::Booked);
+        assert_eq!(
+            renamed.stages[0].selected_option_id.as_deref(),
+            Some("option:chosen")
+        );
+    }
+
+    /// A real route change does regenerate the stages — and a surviving
+    /// origin-to-destination pair keeps its state across the regeneration.
+    #[test]
+    fn a_route_change_carries_the_booked_state_of_a_surviving_stage() {
+        let store = open_test_store("route_change");
+        let mut input = a_plan();
+        input.destinations = vec![place("valencia"), place("madrid")];
+        let plan = store.create_plan(&input).unwrap();
+        let booked = book_the_first_stage(&store, &plan);
+        assert_eq!(booked.stages.len(), 2);
+
+        // Moving the start date is a real route change: the stages regenerate.
+        let moved = store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    date_start: Some("2026-09-03".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .expect("the plan exists");
+
+        assert_eq!(moved.stages[0].date.as_deref(), Some("2026-09-03"));
+        assert_eq!(
+            moved.stages[0].status,
+            StageStatus::Booked,
+            "bonn to valencia still exists, so its booking survives"
+        );
+        assert_eq!(
+            moved.stages[0].selected_option_id.as_deref(),
+            Some("option:chosen")
+        );
+        assert_eq!(
+            moved.stages[1].status,
+            StageStatus::Planning,
+            "the unbooked stage stays unbooked"
+        );
+    }
+
+    /// The defect: `add_item` ended with an unconditional `status = 'saved'`, so
+    /// writing anything to an archived plan resurrected it. Recording a
+    /// retrospective against a closed trip depends on this fix.
+    #[test]
+    fn adding_an_item_to_an_archived_plan_leaves_it_archived() {
+        let store = open_test_store("archived_item");
+        let plan = store.create_plan(&a_plan()).unwrap();
+        store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    status: Some("archived".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        store
+            .add_item(
+                &plan.id,
+                &CreatePlanItem {
+                    item_type: "note".into(),
+                    day: None,
+                    external_id: "note:1".into(),
+                    title: "A thought after the fact".into(),
+                    payload: json!({}),
+                },
+            )
+            .unwrap();
+
+        let after = store.get_plan(&plan.id).unwrap().expect("still there");
+        assert_eq!(
+            after.plan.status, "archived",
+            "archiving is the operator's explicit 'I am done'; an item write is not a request to undo it"
+        );
+
+        // The control: a draft still gets promoted.
+        let draft = store.create_plan(&a_plan()).unwrap();
+        store
+            .add_item(
+                &draft.id,
+                &CreatePlanItem {
+                    item_type: "note".into(),
+                    day: None,
+                    external_id: "note:1".into(),
+                    title: "A plan taking shape".into(),
+                    payload: json!({}),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store.get_plan(&draft.id).unwrap().unwrap().plan.status,
+            "saved"
+        );
+    }
+
+    /// One row per plan: a second POST is a correction, not a second record.
+    #[test]
+    fn a_second_retrospective_corrects_the_first() {
+        let store = open_test_store("retro_correct");
+        let plan = store.create_plan(&a_plan()).unwrap();
+
+        let (first, created) = store
+            .put_retrospective(&plan.id, None, "maybe", "too rushed")
+            .unwrap()
+            .expect("the plan exists");
+        assert!(created, "the first write is a creation");
+        assert_eq!(first.again, "maybe");
+
+        let (second, created) = store
+            .put_retrospective(&plan.id, None, "yes", "go back in autumn")
+            .unwrap()
+            .expect("the plan exists");
+        assert!(!created, "a second write is a correction and answers 200");
+        assert_eq!(second.again, "yes");
+        assert_eq!(second.change_note, "go back in autumn");
+        assert_eq!(
+            store.retrospectives().unwrap().len(),
+            1,
+            "one row, corrected"
+        );
+
+        // And it reaches the plan as a top-level key.
+        let details = store.get_plan(&plan.id).unwrap().unwrap();
+        assert_eq!(
+            details.retrospective.map(|row| row.again),
+            Some("yes".into())
+        );
+
+        // A plan that does not exist is not an error, it is a 404 upstream.
+        assert!(store
+            .put_retrospective("trip:plan:missing", None, "yes", "")
+            .unwrap()
+            .is_none());
+    }
+
+    /// The money is denominated exactly once, on the plan. A number with no unit
+    /// is the thing this design refuses to store.
+    #[test]
+    fn a_cost_needs_the_plan_to_carry_a_currency() {
+        let store = open_test_store("retro_currency");
+        let plan = store.create_plan(&a_plan()).unwrap();
+        assert_eq!(plan.currency, None, "a new plan carries no currency");
+
+        let refused = store
+            .put_retrospective(&plan.id, Some(42_000), "yes", "")
+            .expect_err("a cost with no unit must be refused")
+            .to_string();
+        assert!(
+            refused.contains("currency"),
+            "the 400 names the fix: {refused}"
+        );
+
+        // The same POST without a cost succeeds.
+        assert!(store
+            .put_retrospective(&plan.id, None, "yes", "")
+            .unwrap()
+            .is_some());
+
+        // With a currency on the plan, the cost lands and echoes the unit.
+        store
+            .update_plan(
+                &plan.id,
+                &UpdatePlan {
+                    currency: Some(Some("EUR".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let (row, _) = store
+            .put_retrospective(&plan.id, Some(42_000), "yes", "")
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.cost_cents, Some(42_000));
+        assert_eq!(row.currency.as_deref(), Some("EUR"));
+
+        // The closed vocabulary and the non-negative cost, at the store level.
+        assert!(store.put_retrospective(&plan.id, None, "sure", "").is_err());
+        assert!(store
+            .put_retrospective(&plan.id, Some(-1), "yes", "")
+            .is_err());
+    }
+
+    /// The 45-day window lives in `pending_retrospectives` and nowhere else.
+    #[test]
+    fn the_pending_list_holds_a_closed_plan_drops_it_once_filled_and_forgets_it_after_45_days() {
+        let store = open_test_store("retro_pending");
+        let closed = |start: &str, end: &str| CreatePlan {
+            date_start: start.into(),
+            date_end: end.into(),
+            ..a_plan()
+        };
+        let recent = store
+            .create_plan(&closed("2026-08-25", "2026-09-02"))
+            .unwrap();
+        let filled = store
+            .create_plan(&closed("2026-08-25", "2026-09-02"))
+            .unwrap();
+        let old = store
+            .create_plan(&closed("2026-07-01", "2026-07-07"))
+            .unwrap();
+        let upcoming = store
+            .create_plan(&closed("2026-09-20", "2026-09-27"))
+            .unwrap();
+        store
+            .put_retrospective(&filled.id, None, "yes", "")
+            .unwrap()
+            .unwrap();
+
+        let pending = store.pending_retrospectives("2026-09-05").unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|row| row.plan_id.clone())
+                .collect::<Vec<_>>(),
+            vec![recent.id.clone()],
+            "closed 60 days ago ({}) is forgotten, filled ({}) is not pending, \
+             and a trip still ahead ({}) has not happened",
+            old.id,
+            filled.id,
+            upcoming.id
+        );
+        assert_eq!(pending[0].days_since_close, 3);
+        assert_eq!(pending[0].destinations, vec!["valencia".to_string()]);
+
+        // Archiving is the operator's explicit "I am done with this".
+        store
+            .update_plan(
+                &recent.id,
+                &UpdatePlan {
+                    status: Some("archived".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(store
+            .pending_retrospectives("2026-09-05")
+            .unwrap()
+            .is_empty());
     }
 }

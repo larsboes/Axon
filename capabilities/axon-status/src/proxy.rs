@@ -278,13 +278,41 @@ pub(crate) async fn fallback(State(proxy): State<Proxy>, req: Request) -> Respon
     }
 }
 
+/// SvelteKit's build-output root. Every URL under it is generated and content-hashed by the
+/// build; none of it is a page a person can navigate to.
+const BUILD_OUTPUT_PREFIX: &str = "/_app/";
+
+/// Whether a miss on this path must be a 404 rather than the SPA shell.
+///
+/// The SPA fallback is right for a page: `adapter-static` emits one entry point and routes
+/// client-side, so an unknown *route* is a route. It is wrong for a build artifact, and the cost
+/// of getting that wrong is not a confusing 200 -- it is a silent, undebuggable failure.
+///
+/// Measured 2026-09-06. `dashboard/vite.config.ts` never emitted MapLibre's worker, because
+/// MapLibre asks for it through a template literal Rollup cannot follow. The browser requested
+/// `/_app/immutable/chunks/maplibre-gl-worker.mjs`, this function's caller answered **200
+/// `text/html`** with the app shell, and `new Worker` was handed HTML and died. MapLibre reports
+/// nothing in that case, so every map in the dashboard rendered a blank canvas and sat on
+/// "Loading map…" forever -- with no error, and no failed request in the network log to find.
+/// It shipped that way for a month. A 404 would have named it in seconds.
+///
+/// Narrow on purpose. The rule is not "anything with a file extension", which would break a
+/// client-side route that happens to contain a dot; it is one directory the build owns outright.
+fn is_build_output(path: &str) -> bool {
+    path.starts_with(BUILD_OUTPUT_PREFIX)
+}
+
 async fn serve_ui(dir: &str, req: Request) -> Response {
-    let index = format!("{dir}/index.html");
-    match ServeDir::new(dir)
-        .fallback(ServeFile::new(index))
-        .oneshot(req)
-        .await
-    {
+    let served = if is_build_output(req.uri().path()) {
+        // No fallback: a missing build artifact is a 404, and the caller finds out.
+        ServeDir::new(dir).oneshot(req).await
+    } else {
+        ServeDir::new(dir)
+            .fallback(ServeFile::new(format!("{dir}/index.html")))
+            .oneshot(req)
+            .await
+    };
+    match served {
         Ok(res) => res.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("static: {e}")).into_response(),
     }
@@ -388,6 +416,40 @@ mod tests {
 
     fn path_of(uri: &str) -> &str {
         uri.split_once('?').map(|(p, _)| p).unwrap_or(uri)
+    }
+
+    /// The rule that turns a missing build artifact into a 404 instead of the app shell.
+    /// A silent `new Worker(html)` cost a month of dead maps; see `is_build_output`.
+    #[test]
+    fn a_missing_build_artifact_is_not_answered_with_the_page_shell() {
+        assert!(is_build_output(
+            "/_app/immutable/chunks/maplibre-gl-worker.mjs"
+        ));
+        assert!(is_build_output(
+            "/_app/immutable/workers/maplibre-gl-worker-B6z8KlkX.js"
+        ));
+        assert!(is_build_output("/_app/immutable/entry/app.hash.js"));
+        assert!(is_build_output("/_app/version.json"));
+    }
+
+    /// A page still gets the shell, which is the whole point of an SPA fallback. These are the
+    /// dashboard's real routes, including one carrying a dot -- the reason the rule names one
+    /// directory rather than testing for a file extension.
+    #[test]
+    fn a_page_still_reaches_the_client_router() {
+        for path in [
+            "/",
+            "/map",
+            "/travel",
+            "/feed/abc",
+            "/projects/some.name",
+            "/basemap/style.json",
+        ] {
+            assert!(
+                !is_build_output(path),
+                "{path} must still reach the SPA shell"
+            );
+        }
     }
 
     #[test]

@@ -11,10 +11,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, Request, State},
-    http::{header, StatusCode},
-    middleware::{self, Next},
-    response::{IntoResponse, Json, Response},
+    extract::{Path, Query, State},
+    http::StatusCode,
+    middleware,
+    response::Json,
     routing::{get, post},
     Router,
 };
@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use places::config::Config;
 use places::geocode::{GeocodeQuery, Geocoder, StructuredQuery};
-use places::store::{PlacesStore, Review};
+use places::store::{PlacesStore, Review, ReviewOutcome, PRESENCE_RADIUS_KM};
 use places::{layers, today};
 
 const ROUTES: &[route_manifest::Route] = &[
@@ -83,6 +83,24 @@ const ROUTES: &[route_manifest::Route] = &[
         "POST",
         "/api/people/proposals/:id/dismiss",
         "Dismiss one register proposal.",
+    ),
+    r(
+        "GET",
+        "/api/people/presence",
+        "How many known companions are near a coordinate in a window, and for how many days. \
+         Query: latitude, longitude, from, to (YYYY-MM-DD, from <= to) — all four required. \
+         There is NO radius parameter: places owns it (50 km) and echoes it. Confirmed rows \
+         only, and the reply carries no person, no place name, no row id and no confidence.",
+    ),
+    r(
+        "GET",
+        "/api/places/:id/climate",
+        "Twelve months of climate normals for one registered place, folded from ten complete calendar years. Optional ?from=YYYY-MM-DD&to=YYYY-MM-DD marks the months a plan window covers. Empty months with fetched_at null means the place has none yet — run `places-server climate fetch`.",
+    ),
+    r(
+        "GET",
+        "/api/climate",
+        "Climate normals for up to 8 places at once. Exactly one of ?place_ids=<id>,<id> or ?at=<lat>,<lon>;<lat>,<lon> (semicolon between pairs, comma inside a pair — NOT a repeated key). Optional ?from=&to=. One result per requested key, in request order.",
     ),
 ];
 
@@ -252,6 +270,241 @@ async fn geocode(
         Ok(Err(error)) => failed(error),
         Err(_) => failed("task panicked".into()),
     }
+}
+
+// ─── Climate normals (README D5, ISA F4) ─────────────────────────────────────
+
+/// Optional plan window. Only the month numbers it covers are used, so a
+/// request cannot narrow the normals themselves — a normal is the whole month
+/// or it is nothing.
+#[derive(Debug, Deserialize)]
+struct ClimateWindow {
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// The month numbers a `from`..`to` window touches, capped at twelve. A window
+/// longer than a year covers every month, which is the honest answer rather than
+/// an error.
+fn window_months(from: Option<&str>, to: Option<&str>) -> Vec<u32> {
+    let index = |value: &str| -> Option<i64> {
+        let year: i64 = value.get(..4)?.parse().ok()?;
+        let month: i64 = value.get(5..7)?.parse().ok()?;
+        (1..=12).contains(&month).then_some(year * 12 + month - 1)
+    };
+    let (Some(first), Some(last)) = (from.and_then(index), to.and_then(index)) else {
+        return Vec::new();
+    };
+    if last < first {
+        return Vec::new();
+    }
+    (first..=last.min(first + 11))
+        .map(|slot| (slot.rem_euclid(12) + 1) as u32)
+        .collect()
+}
+
+/// One place's stored normals as the wire carries them. `months: []` with
+/// `fetched_at: null` is the never-fetched state, which the UI turns into "run
+/// the fetch verb" rather than into an empty grid.
+fn climate_body(store: &PlacesStore, place_id: &str, in_window: &[u32]) -> Result<Value, String> {
+    let months = store.climate_get(place_id).map_err(|e| e.to_string())?;
+    let meta = store.climate_meta(place_id).map_err(|e| e.to_string())?;
+    let best = places::climate::best_months(&months);
+    let rendered: Vec<Value> = months
+        .iter()
+        .map(|month| {
+            json!({
+                "month": month.month,
+                "t_max_mean": month.t_max_mean,
+                "t_min_mean": month.t_min_mean,
+                "rain_days_mean": month.rain_days_mean,
+                "precipitation_mm_mean": month.precipitation_mm_mean,
+                "daylight_hours_mean": month.daylight_hours_mean,
+                "sunshine_hours_mean": month.sunshine_hours_mean,
+                "days_observed": month.days_observed,
+                "best_month": best.contains(&month.month),
+                "in_window": in_window.contains(&month.month),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "source": meta.as_ref().map(|meta| meta.source.clone()),
+        "period": meta.as_ref().map(|meta| json!({
+            "start": meta.period_start,
+            "end": meta.period_end,
+            "years": meta.years_covered,
+        })),
+        "fetched_at": meta.as_ref().map(|meta| meta.fetched_at.clone()),
+        "months": rendered,
+    }))
+}
+
+fn place_summary(place: &places::store::Place, distance_km: Option<f64>) -> Value {
+    json!({
+        "id": place.id,
+        "name": place.name,
+        "kind": place.kind,
+        "latitude": place.latitude,
+        "longitude": place.longitude,
+        "distance_km": distance_km,
+    })
+}
+
+async fn place_climate(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(window): Query<ClimateWindow>,
+) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    let in_window = window_months(window.from.as_deref(), window.to.as_deref());
+    match tokio::task::spawn_blocking(move || -> Result<Option<Value>, String> {
+        let store = PlacesStore::open(&database_path).map_err(|e| e.to_string())?;
+        let Some(place) = store.place(&id).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let mut body = climate_body(&store, &place.id, &in_window)?;
+        let object = body.as_object_mut().expect("climate_body builds an object");
+        object.insert("place".into(), place_summary(&place, None));
+        object.insert(
+            "best_months_rule".into(),
+            json!(places::climate::BEST_MONTHS_RULE),
+        );
+        object.insert("attribution".into(), json!(places::climate::ATTRIBUTION));
+        Ok(Some(body))
+    })
+    .await
+    {
+        Ok(Ok(Some(body))) => respond(StatusCode::OK, body),
+        Ok(Ok(None)) => respond(StatusCode::NOT_FOUND, json!({ "error": "no such place" })),
+        Ok(Err(error)) => failed(error),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ClimateBatch {
+    place_ids: Option<String>,
+    /// Semicolon between pairs, comma inside a pair. NOT a repeated `at=` key:
+    /// axum's `Query` deserializes through serde_urlencoded, which cannot fill a
+    /// sequence from repeated keys, so `?at=..&at=..` would answer 400 for every
+    /// multi-destination request. Both delimiters are safe because every value
+    /// here is a number, and comma-splitting is this file's own precedent.
+    at: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// At most eight keys per request. A bound rather than a limit anybody will hit:
+/// a plan has a handful of destinations, and an unbounded batch would turn one
+/// request into an unbounded scan of the registry per key.
+const MAX_CLIMATE_KEYS: usize = 8;
+
+async fn climate(State(state): State<AppState>, Query(query): Query<ClimateBatch>) -> ApiResponse {
+    let selectors = (query.place_ids.as_deref(), query.at.as_deref());
+    let keys: Vec<String> = match selectors {
+        (Some(ids), None) => ids.split(',').map(|id| id.trim().to_string()).collect(),
+        (None, Some(at)) => at.split(';').map(|pair| pair.trim().to_string()).collect(),
+        _ => {
+            return respond(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "send exactly one of place_ids=<id>,<id> or at=<lat>,<lon>;<lat>,<lon>" }),
+            )
+        }
+    };
+    let keys: Vec<String> = keys.into_iter().filter(|key| !key.is_empty()).collect();
+    if keys.is_empty() || keys.len() > MAX_CLIMATE_KEYS {
+        return respond(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": format!("send 1 to {MAX_CLIMATE_KEYS} keys") }),
+        );
+    }
+    let by_id = query.place_ids.is_some();
+    let database_path = state.database_path.clone();
+    let in_window = window_months(query.from.as_deref(), query.to.as_deref());
+
+    match tokio::task::spawn_blocking(move || -> Result<Vec<Value>, String> {
+        let store = PlacesStore::open(&database_path).map_err(|e| e.to_string())?;
+        // Loaded once for the whole batch, not once per key.
+        let registry = if by_id {
+            Vec::new()
+        } else {
+            store.places_with_climate().map_err(|e| e.to_string())?
+        };
+        let mut results = Vec::with_capacity(keys.len());
+        for key in &keys {
+            // Err carries the reason this key has no place, and every reason is
+            // about what the caller actually sent: an unparsable pair is told so
+            // rather than being told the registry is empty near a coordinate it
+            // never sent.
+            let resolution: Result<(&str, places::store::Place, Option<f64>), String> = if by_id {
+                match store.place(key).map_err(|e| e.to_string())? {
+                    Some(place) => Ok(("id", place, None)),
+                    None => Err("no place with that id".to_string()),
+                }
+            } else {
+                match parse_pair(key) {
+                    None => Err("not a lat,lon pair".to_string()),
+                    Some((latitude, longitude)) => {
+                        match places::climate::resolve_at(&registry, latitude, longitude) {
+                            places::climate::Resolution::Registry { place, distance_km } => {
+                                Ok(("registry", place, Some(distance_km)))
+                            }
+                            places::climate::Resolution::Nearest { place, distance_km } => {
+                                Ok(("nearest", place, Some(distance_km)))
+                            }
+                            // The refusal is built where the radius is, so the
+                            // sentence and the constant cannot drift.
+                            places::climate::Resolution::Unmatched { reason } => Err(reason),
+                        }
+                    }
+                }
+            };
+            let entry = match resolution {
+                Ok((resolved_by, place, distance_km)) => {
+                    let mut body = climate_body(&store, &place.id, &in_window)?;
+                    let object = body.as_object_mut().expect("an object");
+                    object.insert("key".into(), json!(key));
+                    object.insert("resolved_by".into(), json!(resolved_by));
+                    object.insert("matched_place".into(), place_summary(&place, distance_km));
+                    object.insert("reason".into(), Value::Null);
+                    body
+                }
+                Err(reason) => json!({
+                    "key": key,
+                    "resolved_by": Value::Null,
+                    "matched_place": Value::Null,
+                    "reason": reason,
+                    "source": Value::Null,
+                    "period": Value::Null,
+                    "fetched_at": Value::Null,
+                    "months": [],
+                }),
+            };
+            results.push(entry);
+        }
+        Ok(results)
+    })
+    .await
+    {
+        Ok(Ok(results)) => respond(
+            StatusCode::OK,
+            json!({
+                "best_months_rule": places::climate::BEST_MONTHS_RULE,
+                "attribution": places::climate::ATTRIBUTION,
+                "results": results,
+            }),
+        ),
+        Ok(Err(error)) => failed(error),
+        Err(_) => failed("task panicked".into()),
+    }
+}
+
+fn parse_pair(pair: &str) -> Option<(f64, f64)> {
+    let (latitude, longitude) = pair.split_once(',')?;
+    Some((
+        latitude.trim().parse().ok()?,
+        longitude.trim().parse().ok()?,
+    ))
 }
 
 async fn spend_layer(State(state): State<AppState>) -> ApiResponse {
@@ -432,98 +685,93 @@ async fn review(state: AppState, id: String, decision: Review) -> ApiResponse {
     })
     .await
     {
-        Ok(Ok(true)) => respond(
+        Ok(Ok(ReviewOutcome::Applied)) => respond(
             StatusCode::OK,
             json!({ "ok": true, "state": decision.as_str() }),
         ),
-        Ok(Ok(false)) => respond(
+        Ok(Ok(ReviewOutcome::NoSuchRow)) => respond(
             StatusCode::NOT_FOUND,
             json!({ "error": "no register row with that id" }),
+        ),
+        // 409, never 404: the row exists, and telling a caller it does not
+        // would be a second wrong answer on top of the refused write. The state
+        // found is named so the surface can say which one.
+        Ok(Ok(ReviewOutcome::Refused { state })) => respond(
+            StatusCode::CONFLICT,
+            json!({ "error": "that proposal was already reviewed", "state": state }),
         ),
         Ok(Err(error)) => failed(error),
         Err(_) => failed("task panicked".into()),
     }
 }
 
-/// Is this browser origin allowed to talk to places at all?
-///
-/// The register is C2 (README D4), so places refuses cross-origin browser
-/// access instead of inheriting the siblings' permissive CORS. Refusing the
-/// request — not merely omitting CORS headers — is what also stops a hostile
-/// page's "simple" cross-site POST to the confirm route, which a browser sends
-/// before it ever reads a response header (ISA PLC-7).
-///
-/// A request with no `Origin` header is not a browser cross-origin call
-/// (curl, the vite proxy's own health probes, same-origin GETs) and passes.
-/// With one, the allowed set mirrors how the dashboard itself is reached
-/// (`dashboard/vite.config.ts`, `allowedHosts`): the loopback dev origin, or a
-/// tailnet name.
-///
-/// The tailnet check is a bare `.ts.net` suffix by default, because the
-/// machine's MagicDNS name is a house fact and this repo is public (the same
-/// trade-off vite.config.ts records). Known gap: the suffix also admits
-/// Tailscale Funnel sites — public pages on other people's tailnets, which do
-/// NOT authenticate at this tailnet's layer. Set
-/// `AXON_PLACES_ALLOWED_ORIGIN_HOSTS` (comma-separated exact hosts, from the
-/// overlay) to replace the suffix with the deployment's own names and close
-/// that gap without naming the machine in public code.
-fn origin_allowed(origin: Option<&str>) -> bool {
-    let allowed_hosts = std::env::var("AXON_PLACES_ALLOWED_ORIGIN_HOSTS").ok();
-    origin_allowed_by(origin, allowed_hosts.as_deref())
+#[derive(Deserialize)]
+struct PresenceQuery {
+    latitude: f64,
+    longitude: f64,
+    from: String,
+    to: String,
 }
 
-fn origin_allowed_by(origin: Option<&str>, allowed_hosts: Option<&str>) -> bool {
-    let Some(origin) = origin else { return true };
-    let Some(rest) = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-    else {
-        return false; // "null", file://, extensions — nothing places serves
-    };
-    let authority = rest.split('/').next().unwrap_or(rest);
-    let host = authority
-        .rsplit_once(':')
-        .map_or(authority, |(host, port)| {
-            if port.chars().all(|c| c.is_ascii_digit()) {
-                host
-            } else {
-                authority // no port; the colon was IPv6's
-            }
-        });
-    if matches!(host, "localhost" | "127.0.0.1" | "[::1]") {
-        return true;
-    }
-    match allowed_hosts.map(str::trim).filter(|list| !list.is_empty()) {
-        Some(list) => list
-            .split(',')
-            .map(str::trim)
-            .filter(|allowed| !allowed.is_empty())
-            .any(|allowed| allowed == host),
-        None => host.ends_with(".ts.net"),
-    }
-}
-
-async fn refuse_foreign_origins(request: Request, next: Next) -> Response {
-    let origin = request
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok());
-    if !origin_allowed(origin) {
+/// A count and an overlap. See `PlacesStore::confirmed_presence` for the whole
+/// argument; the short version is that this is the only shape in which the C2
+/// register reaches a planner, and it carries no identity at all.
+///
+/// Registered ABOVE the `.layer()` call in `build_router`, because axum wraps
+/// only the routes added before it.
+async fn people_presence(
+    State(state): State<AppState>,
+    Query(query): Query<PresenceQuery>,
+) -> ApiResponse {
+    if query.from > query.to {
         return respond(
-            StatusCode::FORBIDDEN,
-            json!({ "error": "cross-origin access to places is not allowed" }),
-        )
-        .into_response();
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "from must be on or before to" }),
+        );
     }
-    next.run(request).await
+    let database_path = state.database_path.clone();
+    let (from, to) = (query.from.clone(), query.to.clone());
+    match tokio::task::spawn_blocking(move || {
+        PlacesStore::open(&database_path)
+            .and_then(|store| {
+                store.confirmed_presence(query.latitude, query.longitude, &query.from, &query.to)
+            })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(presence)) => respond(
+            StatusCode::OK,
+            json!({
+                "radius_km": PRESENCE_RADIUS_KM,
+                "from": from,
+                "to": to,
+                "known_companions": presence.known_companions,
+                "overlap_days": presence.overlap_days,
+            }),
+        ),
+        Ok(Err(error)) => respond(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(_) => failed("task panicked".into()),
+    }
 }
 
-pub async fn serve() {
-    let config = Config::load();
-    let state = AppState {
-        database_path: Arc::new(config.database_path),
-    };
-    let app = Router::new()
+/// Which routes the origin guard covers, and the rule that decides it.
+///
+/// The predicate and its doc block live in `libs/axon-server/src/origin.rs`
+/// now, because `trips` needs the same refusal for the plan-search body and a
+/// second copy of a security predicate is drift. What stays here is the wiring
+/// and the reason it is wired this way.
+///
+/// axum applies `Router::layer` only to routes registered BEFORE it (axum 0.7
+/// `src/docs/routing/layer.md`: "Additional routes added after `layer` is
+/// called will not have the middleware added"). Every route this capability
+/// serves must therefore sit above the `.layer()` call in [`build_router`], and
+/// `a_foreign_origin_cannot_read_people_presence` drives the wired router to
+/// prove it — a test of the predicate alone passes with the route unguarded.
+const CAPABILITY: &str = "places";
+
+fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -537,14 +785,41 @@ pub async fn serve() {
         .route("/api/people/proposals", get(list_proposals))
         .route("/api/people/proposals/:id/confirm", post(confirm_proposal))
         .route("/api/people/proposals/:id/dismiss", post(dismiss_proposal))
-        .layer(middleware::from_fn(refuse_foreign_origins))
-        .with_state(state);
-    axon_server::serve_local("places-server", config.port, app).await;
+        .route("/api/people/presence", get(people_presence))
+        .route("/api/places/:id/climate", get(place_climate))
+        .route("/api/climate", get(climate))
+        // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the C2 guard.
+        .layer(middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
+        .with_state(state)
+}
+
+pub async fn serve() {
+    let config = Config::load();
+    let state = AppState {
+        database_path: Arc::new(config.database_path),
+    };
+    axon_server::serve_local("places-server", config.port, build_router(state)).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scratch database file this process owns. `store::db_tests` has the same
+    /// helper, but it is `#[cfg(test)]` inside the library and this file is the
+    /// binary, so it cannot be reached from here.
+    fn scratch_database(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("places-server-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a writable temp directory");
+        let path = dir.join(format!("{name}.db"));
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
+        }
+        path
+    }
 
     /// The manifest is data a caller reads to learn the surface; a served route
     /// missing from it is invisible. `undeclared_routes` reads this file's own
@@ -558,64 +833,199 @@ mod tests {
         );
     }
 
+    /// The defect this test exists for: axum 0.7's `Query` deserializes through
+    /// serde_urlencoded, which cannot fill a `Vec` from a repeated key, so a
+    /// `?at=..&at=..` extractor would have answered 400 for every
+    /// multi-destination request. A pure resolver test cannot fail on a
+    /// query-string shape, so the assertion is made here, through the extractor.
+    #[tokio::test]
+    async fn two_coordinates_in_one_at_parameter_answer_two_results_in_request_order() {
+        let path = scratch_database("climate-handler");
+        let store = PlacesStore::open(&path).unwrap();
+        for (id, name, latitude, longitude) in [
+            ("place_first", "First", 52.52, 13.40),
+            ("place_second", "Second", 41.90, 12.50),
+        ] {
+            store
+                .upsert_place(
+                    &places::store::Place {
+                        id: id.into(),
+                        name: name.into(),
+                        kind: "city".into(),
+                        address: None,
+                        city: None,
+                        country_code: None,
+                        latitude: Some(latitude),
+                        longitude: Some(longitude),
+                        source: "test".into(),
+                        external_ref: Some(format!("test:{id}")),
+                    },
+                    "2026-09-05",
+                )
+                .unwrap();
+        }
+
+        let state = AppState {
+            database_path: Arc::new(path),
+        };
+        let query = ClimateBatch {
+            place_ids: None,
+            at: Some("52.52,13.40;41.90,12.50".into()),
+            from: None,
+            to: None,
+        };
+        let (status, Json(body)) = climate(State(state), Query(query)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let results = body["results"].as_array().expect("results is an array");
+        assert_eq!(results.len(), 2, "one result per requested key");
+        assert_eq!(results[0]["key"], "52.52,13.40", "request order is kept");
+        assert_eq!(results[1]["key"], "41.90,12.50");
+        assert_eq!(results[0]["resolved_by"], "registry");
+        assert_eq!(results[0]["matched_place"]["id"], "place_first");
+        assert_eq!(results[1]["matched_place"]["id"], "place_second");
+        // Registered but never fetched: an honest empty, with the stamp null so
+        // the UI says "run the fetch verb" instead of drawing an empty grid.
+        assert_eq!(results[0]["fetched_at"], Value::Null);
+        assert_eq!(results[0]["months"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_climate_batch_needs_exactly_one_selector() {
+        let state = AppState {
+            database_path: Arc::new(scratch_database("climate-selector")),
+        };
+        for (place_ids, at) in [
+            (None, None),
+            (Some("place_a".to_string()), Some("52.5,13.4".to_string())),
+        ] {
+            let (status, Json(body)) = climate(
+                State(state.clone()),
+                Query(ClimateBatch {
+                    place_ids,
+                    at,
+                    from: None,
+                    to: None,
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(
+                body["error"].as_str().unwrap_or_default().contains("at="),
+                "the 400 names both forms: {body}"
+            );
+        }
+    }
+
+    /// A key that never parsed is not a key with no match nearby. Telling a
+    /// caller "no registered place with normals within 60 km" about a typo sends
+    /// it looking for the wrong bug.
+    #[tokio::test]
+    async fn a_malformed_pair_is_told_it_is_malformed() {
+        let state = AppState {
+            database_path: Arc::new(scratch_database("climate-malformed")),
+        };
+        let (status, Json(body)) = climate(
+            State(state),
+            Query(ClimateBatch {
+                place_ids: None,
+                at: Some("abc;52.52,13.40".into()),
+                from: None,
+                to: None,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["results"][0]["key"], "abc");
+        assert_eq!(body["results"][0]["reason"], "not a lat,lon pair");
+        // The second key parses, and answers on its own terms.
+        assert_eq!(body["results"][1]["key"], "52.52,13.40");
+        assert!(
+            body["results"][1]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("60 km"),
+            "an empty registry still answers with the distance sentence: {body}"
+        );
+    }
+
+    #[test]
+    fn a_plan_window_marks_the_months_it_covers() {
+        assert_eq!(
+            window_months(Some("2026-06-10"), Some("2026-08-02")),
+            vec![6, 7, 8]
+        );
+        // Across a year boundary.
+        assert_eq!(
+            window_months(Some("2026-12-20"), Some("2027-01-04")),
+            vec![12, 1]
+        );
+        // Longer than a year: every month, not an error.
+        assert_eq!(
+            window_months(Some("2026-03-01"), Some("2030-03-01")).len(),
+            12
+        );
+        // No window is no marks, never all of them.
+        assert!(window_months(None, Some("2026-08-02")).is_empty());
+        assert!(window_months(Some("2026-08-02"), Some("2026-06-10")).is_empty());
+    }
+
     #[test]
     fn only_the_two_review_decisions_exist() {
         assert_eq!(Review::Confirmed.as_str(), "confirmed");
         assert_eq!(Review::Dismissed.as_str(), "dismissed");
     }
 
-    /// The C2 guard (README D4): non-browser callers and the origins the
-    /// dashboard itself is served from pass; every other web origin is refused,
-    /// so a hostile page can neither read the register nor drive the confirm
-    /// route cross-site. Exercised through `origin_allowed_by` so the tests
-    /// never touch process env (the explicit-parameter pattern geocode's
-    /// db_tests use for URLs).
-    #[test]
-    fn foreign_browser_origins_are_refused() {
-        // No Origin header: curl, the runner, same-origin GETs.
-        assert!(origin_allowed_by(None, None));
-        // The dashboard's own origins (dashboard/vite.config.ts allowedHosts).
-        assert!(origin_allowed_by(Some("http://localhost:47117"), None));
-        assert!(origin_allowed_by(Some("http://127.0.0.1:47117"), None));
-        assert!(origin_allowed_by(Some("http://[::1]:47117"), None));
-        assert!(origin_allowed_by(Some("http://localhost"), None));
-        assert!(origin_allowed_by(Some("https://mac.tailnet.ts.net"), None));
-        // Everyone else.
-        assert!(!origin_allowed_by(Some("https://evil.example"), None));
-        assert!(!origin_allowed_by(Some("https://evilts.net"), None));
-        assert!(!origin_allowed_by(
-            Some("https://mac.ts.net.evil.example"),
-            None
-        ));
-        assert!(!origin_allowed_by(
-            Some("http://localhost.evil.example"),
-            None
-        ));
-        assert!(!origin_allowed_by(Some("null"), None));
-        assert!(!origin_allowed_by(Some("file:///tmp/page.html"), None));
-    }
+    /// The router-level proof the two predicate tests (now in
+    /// `libs/axon-server/src/origin.rs`) could not give: a foreign `Origin`
+    /// gets 403 from the WIRED router, so a route registered below the
+    /// `.layer()` call fails here rather than shipping unguarded.
+    ///
+    /// Driven over a real loopback listener rather than through
+    /// `tower::ServiceExt`, which is the pattern `libs/axon-server`'s own
+    /// `http_tests` already use and which needs no new dependency.
+    #[tokio::test]
+    async fn a_foreign_origin_cannot_read_people_presence() {
+        let state = AppState {
+            database_path: Arc::new(std::env::temp_dir().join("places-origin-test.db")),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, build_router(state)).await;
+        });
+        let client = reqwest::Client::new();
 
-    /// With AXON_PLACES_ALLOWED_ORIGIN_HOSTS set, only the named tailnet hosts
-    /// pass: a Funnel page on someone else's tailnet no longer does, which is
-    /// the gap the bare `.ts.net` suffix leaves open.
-    #[test]
-    fn an_explicit_host_list_replaces_the_tailnet_suffix() {
-        let list = Some("mac.tailnet.ts.net, phone.tailnet.ts.net");
-        assert!(origin_allowed_by(Some("https://mac.tailnet.ts.net"), list));
-        assert!(origin_allowed_by(
-            Some("https://phone.tailnet.ts.net"),
-            list
-        ));
-        assert!(!origin_allowed_by(
-            Some("https://evil.other-tailnet.ts.net"),
-            list
-        ));
-        // Loopback stays allowed whatever the list says.
-        assert!(origin_allowed_by(Some("http://localhost:47117"), list));
-        // A blank value means unset, not "allow nothing".
-        assert!(origin_allowed_by(
-            Some("https://mac.tailnet.ts.net"),
-            Some("  ")
-        ));
+        // Every C2 surface, including the one added tonight. The database does
+        // not have to exist: the guard runs before the handler.
+        for path in [
+            "/api/people/presence?latitude=50.0&longitude=8.0&from=2026-10-01&to=2026-10-08",
+            "/api/people/proposals",
+            "/api/layers/people",
+        ] {
+            let response = client
+                .get(format!("{base}{path}"))
+                .header("Origin", "https://evil.example")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                403,
+                "{path} answered a foreign origin — it is registered below the guard layer"
+            );
+        }
+
+        // The control: no Origin header is not a browser cross-origin call, so
+        // the request reaches the handler (which then fails on the database).
+        let allowed = client
+            .get(format!("{base}/api/people/proposals"))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(
+            allowed.status(),
+            403,
+            "a server-to-server caller must not be refused"
+        );
     }
 }

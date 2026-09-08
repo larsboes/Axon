@@ -505,6 +505,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: false,
+            operator_owned: false,
             gate: None,
         };
         assert_eq!(

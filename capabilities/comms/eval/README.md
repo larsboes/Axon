@@ -167,3 +167,104 @@ exposes no `/v1/rerank`, and Ollama is what holds the local roles now.
 backend is oMLX, and its record stands as the evidence it was. That record also carries why the
 question was reopened at all: the configured oMLX backend is absent from the host, so ranking had
 been falling back to the deterministic `lexical` control.
+
+## Mail stream classification (the local model rung)
+
+`comms-mail-model-eval` decides whether the local model rung may move a category
+at all. **It makes no model call.** It joins a frozen corpus of hand-written
+labels to the verdicts a shadow pass already stored, keyed by triage id, so
+re-scoring is free and the number is the same every run. All the model time
+lives in the pass, which has its own receipt and its own bounded retry; the
+scoring stays pure, and drift between the two is impossible because the runner
+builds no prompt. That is the same property that makes the redaction gate above
+a gate rather than a report.
+
+The corpus is **not in this repository**. It holds real mail, so it lives in the
+private overlay at `config/comms-mail-stream-shadow.json` beside
+`comms-redaction-shadow.json`, with the companion
+`comms-mail-stream-shadow.md` holding the write-up — the same `.json` + `.md`
+pair the redaction and relevance corpora already use. The shape, with synthetic
+fixtures only, is `schemas/comms-mail-stream-shadow.example.json`. The runner
+takes the corpus path as `argv[1]`; the in-repo default path deliberately does
+not exist.
+
+```sh
+comms mail corpus --out "$AXON_PERSONAL_ROOT/config/comms-mail-stream-shadow.json"
+#   one fixture per fallback row, `label` and `urgency_band` EMPTY. Fill both by hand,
+#   in one pass, BEFORE the next line runs. Refuses to overwrite without --force.
+comms mail classify --shadow          # fill the verdict table, ~2s per thread
+cargo run --bin comms-mail-model-eval -- "$AXON_PERSONAL_ROOT/config/comms-mail-stream-shadow.json"
+```
+
+`comms mail corpus` writes the skeleton and nothing else — no verdict is read while it runs,
+so a labeller cannot be shown the answer they are meant to write. The one field it guesses is
+`language`, from an umlaut or a German function word, and the corpus's own `_method` says so;
+the split by language is what makes one English prompt over a mixed mailbox measurable, and
+121 blank language fields would cost the labeller a judgement they can make faster by
+correcting one. `evaluate_file` **refuses** a corpus with any empty `label`, naming the
+count: an empty label scored as a stream name disagrees with every verdict, and a half-filled
+corpus would report a low agreement that reads like a measurement of the model.
+
+**What it measures.** Model agreement against the labels, split by language,
+because one English prompt over a mixed mailbox is exactly the assumption that
+deserves a number. The **control** needs no model either: every fixture the rung
+sees is a fallback row, so the deterministic classifier answered `aktiv` for all
+of them, and its agreement is simply the share of labels reading `aktiv` —
+computable from the corpus before anything runs. Then the **false eviction rate**
+from `aktiv`, which is the one failure here that costs a decision: every applied
+write is an eviction, and a correctly-`aktiv` mail moved out of `aktiv`
+disappears from the operator's ladder. Then the **urgency band error**, mapping
+the model's continuous 0–10000 self-report onto the corpus's four ordinal bands.
+
+**What the first run's job is.** To find out what the number IS. Three of the
+four acceptance thresholds ship `null`, and they stay null until the first run
+has been read — a threshold invented before the measurement is a number chosen
+to be met, the same discipline that set the redaction corpus's
+`minimum_recall_percent` after its second measurement. `max_false_eviction_percent`
+is different in kind and carries a value from the start, because it is a stated
+policy judgement rather than a measurement. The flip from shadow to live also
+needs model agreement at least ten points above the control; the ten is a
+judgement, recorded and reversible.
+
+A fixture whose stored verdict is missing, or was reached against a different
+subject, sender domain, class or prompt, is **skipped with a named reason**
+rather than scored — an all-skipped corpus is a FAIL, never a perfect score. The
+output prints fixture ids, stream names and counts, and never a subject, a
+preview or a rationale: unlike the redaction runner, whose leaked value IS the
+finding, the finding here is a category.
+
+## Digest quality (the summarize ladder)
+
+`comms-digest-eval` is the gate `libs/summarize` did not have. PRD D16 recorded what its
+absence cost: on 2026-08-30 the strong local rung became a 4B where it had been a 9B, and
+Cohere entered the roster as a third public-tier provider, and **neither quality change could
+be measured**. Both were taken on availability and cost alone, and a ladder whose steps are
+unmeasured is an ordering nobody has checked.
+
+Built on the redaction shadow's shape, the third of these corpora to use it:
+
+```sh
+comms digest corpus --out "$AXON_PERSONAL_ROOT/config/comms-digest-quality.json"
+#   N generated digests per rung (default 20), `faithful` and `useful_band` null.
+#   Read the SOURCE for each row, then judge. Refuses to overwrite without --force.
+cargo run --bin comms-digest-eval -- "$AXON_PERSONAL_ROOT/config/comms-digest-quality.json"
+```
+
+**One metric decides: the unfaithful rate.** A digest asserting what its source does not
+support is read instead of the article, and nothing downstream can catch it.
+`max_unfaithful_percent` carries 2.0 from the start because it is a policy judgement rather
+than a measurement — the same distinction `max_false_eviction_percent` carries in the mail
+corpus. `minimum_useful_percent` is null until the first run has been read.
+
+**Usefulness is reported per producer and never gates.** Thin but true is a preference;
+confident and false is a defect. A `useful_band` nobody wrote is absent from the mean rather
+than counted as a zero.
+
+The sample is **balanced across producers**, not drawn from the whole table: the question is
+which rung is better, and an unbalanced sample answers which rung ran most. The rows come in
+the store's own stable order, so a re-export from an unchanged database is the same file.
+
+A fixture is **skipped with a named reason** when the store holds no digest for it, when the
+text changed since it was judged, or when a different rung wrote it — and an all-skipped
+corpus prints `FAIL — nothing was scored`, never a 0%. The runner refuses a corpus with any
+unjudged row.

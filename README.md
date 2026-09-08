@@ -56,9 +56,11 @@ contract, install, or review decision.
 4. **Evidence before automation.** Every surfaced claim keeps its source, evidence boundary and
    decision state. Agents rank and explain; anything irreversible still goes through the
    capability contract, and leaves a trace.
-5. **Security is continuous observation.** Pinned dependencies and audit gates are only the
-   start. Egress, access and agent touches stay observable after install; their logs live
-   privately.
+5. **Security is continuous observation.** An audit gate is a start, never the property itself.
+   Nothing here is held at a version any more: Q74 and Q77 (2026-09-02) removed the adoption
+   cooldown and every `pin`, so a fix lands the day it exists and reporting stands where the
+   hold stood ([Patch first](#patch-first)). Egress, access and agent touches stay observable
+   after install; their logs live privately.
 6. **Replaceable edges, stable contracts.** Agent harnesses, model providers, visual renderers
    and deployment substrates are adapters. Adopt first and record why. Re-open the call when
    its stated flip condition comes true.
@@ -84,17 +86,30 @@ extractors do not define the feed's future scope. Its first bounded recurring co
 GitHub Trending and configurable arXiv queries. A new source belongs in the general feed when
 its first job is awareness or reading.
 
+Mail triage has a second classification rung: a local model, run explicitly, over exactly the
+threads the deterministic rules left at the conservative fallback (PRD Q85, 2026-09-05). It reads
+the sender's domain, the already-redacted subject and the already-redacted preview, refuses a
+Secret mail before a prompt is built, and never leaves the machine. It ships in shadow: it stores
+a verdict beside the rule's and moves no category until a frozen labelled corpus has been
+measured and the overlay declares it. Even then it never raises a mail's data class, because
+that write is irreversible on two axes, so a proposal that would raise it is held for a person.
+
 Personal relevance is a Feed annotation, not a new ownership boundary. Comms scores an item
 against explicitly configured TELOS focus notes, stores the matches separately from the item
 and labels whether the comparison was semantic or a lexical fallback. The dashboard can sort
-by a revisioned deterministic evaluation whose visible factors currently cover TELOS fit,
-freshness and content basis. Only missing or changed item/profile/evaluator revisions are
-recomputed. `/feed/[id]` remains one dynamic reader for every item instead of generating one
-application page per link.
+by a revisioned deterministic evaluation whose visible factors cover TELOS fit, upcoming
+travel, freshness, content basis, and — once it has enough evidence to be worth anything — what
+the operator's own keeps and dismissals imply (PRD Q88, 2026-09-05). That fifth factor is learned
+from an append-only interaction ledger, is capped at fifteen points of a hundred, and never
+writes a decision of its own. What must be re-embedded and what must merely be re-ranked are two
+separate revisions, so a changed ranking input re-evaluates from stored matches instead of
+calling a model again. Mail is evaluated the same way, on its own factors, and publishes one
+score (PRD Q89). `/feed/[id]` remains one dynamic reader for every item instead of generating
+one application page per link.
 
-The dashboard presents passive intake and active discovery as two views of the same `/feed`
-workspace: **Inbox** reads Comms, while **Discover** starts and reads Scouting. This is a UI
-integration, not a database merge; the capabilities retain separate contracts and provenance.
+The dashboard shows passive intake and active discovery as two views of one `/feed` workspace.
+That is a UI integration and never a database merge: each capability keeps its own contract and
+provenance, and `dashboard/README.md` owns which view calls which.
 
 Narrower by design, `scouting` searches for and scores opportunities such as
 scholarships, hackathons, events, calls for papers or travel deals against an interest
@@ -106,28 +121,15 @@ Obsidian is an external personal writing surface, not a second Axon-wide databas
 capability owns its own explicit vault contract: `comms` can discover links only in configured
 exact notes or headings and can export a distilled keeper, `scouting` can read typed
 opportunity notes and link matches, and `trips` can import or later synchronize trip plans.
-The Comms scan is metadata-only; fetching a candidate still needs an import action, and a
-missing requested heading produces no candidates rather than a whole-note fallback. These
-integrations may share schemas and source references, but one must never scan or rewrite
-another capability's notes by implication.
+Each capability's README states what its own scan reads and what it refuses. These integrations
+may share schemas and source references, but one must never scan or rewrite another
+capability's notes by implication.
 
 The harness-swappable, public-core-plus-private-overlay shape isn't invented from nothing. It
 descends from Daniel Miessler's [LifeOS](https://github.com/danielmiessler/LifeOS), the upstream
 AI-operator project. Axon carried a reviewed delta against a LifeOS installation until
 2026-08-25, when that delta and its sync tooling were deleted; the shape it taught stayed. See
 `upstreams.toml`'s `[lifeos]` entry for what was consumed and why it stopped.
-
-Two orthogonal decisions, kept separate on purpose:
-
-- **base + plugin** is the architecture: the core defines contracts, extensions implement them.
-- **topology** is integrate-first: personal projects converge into Axon (+ the overlay for
-  their private halves). A project keeps its own repo only for a hard reason: independent
-  product identity, a device-sync lifecycle of its own (e.g. a mobile-synced vault),
-  collaboration, or being the private overlay itself. Separate projects integrate via
-  contracts and are registered as state mounts, never left untracked. The overlay relationship
-  recurses: a capability with more than one non-interchangeable deployment still gets exactly
-  one shared pattern in Axon. Each deployment selects an overlay; several hosts may consume that
-  same overlay when they form one operational trust boundary.
 
 ## Architecture and ownership
 
@@ -177,7 +179,9 @@ not present is reported and skipped.
 A personal or self-authored project folds into Axon by default. It stays separate only when it has
 an independent product identity, a device-sync lifecycle of its own, collaborators, or is itself
 an overlay. Separate projects integrate through declared contracts and state mounts. They are
-never left as invisible local dependencies.
+never left as invisible local dependencies. The overlay relationship recurses: a capability with
+more than one non-interchangeable deployment still gets exactly one shared pattern in Axon, and
+several hosts may consume one overlay when they form one operational trust boundary.
 
 Base-plus-plugin and repository topology are separate decisions. The base defines contracts and
 extensions implement them; integrate-first decides where a project lives. Neither implies the
@@ -227,10 +231,23 @@ bundles. Generated-architecture freshness is a script gate, `tools/check-archite
 not a build-graph target. PRD Q44 (2026-08-25) decided this and retired the Bazel graph that held
 the same jobs before it.
 
+A tool may be a Cargo member too. `tools/storage` is one: generalized operator tooling is built
+in Rust before shell, before Python, before TypeScript, and the placement guide already sends
+operator machinery to `tools/`. Its launcher builds the release binary on demand, the same
+on-demand build `tools/service-runner.sh` does from a service manifest.
+
 Any build layer above those two is argued per case, never assumed. Name what it buys and what
 toolchain cost it adds. `tools/doctor` stays an interpreted command because wrapping it would add
 machinery without improving correctness. The dashboard build was deliberately reopened when
 production began consuming capability-owned UI bundles; its README records that trigger.
+
+Build artifacts are not state. `axon storage target` measures `target/` per profile and per
+bucket and checks PRD §9's R6 — `target/debug` may not exceed `target/release` by more than 3× —
+and `tools/doctor` reports the verdict. `axon storage prune` gives the space back:
+`--incremental` for the cache that always regrows, `--target` for a `cargo clean`, and
+`--node-modules` for every ignored `node_modules`, `.svelte-kit` and `dist` in the checkout. The
+`[profile.dev.package."*"]` stanza in the root `Cargo.toml` is the measurement that produced the
+rule; its comment states what it trades.
 
 ### Implementation languages and intelligence
 
@@ -456,6 +473,11 @@ prompt-builders that read stored text ask it before they build a prompt —
 (`summarize`) — and `processing_policy(..).local_processing` is derived from the same function. A
 refused item gets a `local_refused` row that says so, not a missing one. Embed and rerank
 (`libs/inference`) stay class-blind and loopback-or-nothing.
+
+A refusal is missing evidence, never a free pass. A ranker that redistributes a refused factor's
+weight over the surviving factors promotes exactly what the gate refused, so the refused share is
+withheld instead and the weights sum below 1.0 on purpose (PRD Q89, 2026-09-05; measured on the
+mail band in `capabilities/comms/README.md`).
 
 Data may select an allow-listed behavior but may not become executable code.
 
@@ -767,7 +789,7 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 | `dashboard/` | the spine's shell — discovers installed capabilities via their manifests and mounts their panels (installer, doctor UI, service dashboards); owns no domain, no data |
 | `libs/<name>/` | spine-owned shared code with no domain of its own — statically linked into capability binaries at compile time, own crate in the Cargo workspace from day one |
 | `schemas/` | shared contracts; import, never redefine |
-| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks + osv-scanner behind one verb), host-patch (the daily host upgrade job), container-refresh (the daily image pull + recreate), generate-architecture, graphify, agent-integrations (each upstream's own harness integration, at its latest release), mini-tools |
+| `tools/` | install (bootstrap + capability selection), capability (enable/disable, requires-resolution), update (interactive maintainer), doctor (health + version), audit (gitleaks + osv-scanner behind one verb), host-patch (the daily host upgrade job), container-refresh (the daily image pull + recreate), storage (disk classes from the overlay policy, plus `target` for PRD §9's R6 and `prune` for the checkout — a Cargo member, see `tools/storage/README.md`), generate-architecture, graphify, agent-integrations (each upstream's own harness integration, at its latest release), mini-tools |
 
 `ARCHITECTURE.md`'s tables and its Mermaid dependency graph (Packs → capabilities they drive →
 the upstream image each declares) are derived straight from

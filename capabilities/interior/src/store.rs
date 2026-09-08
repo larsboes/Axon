@@ -28,6 +28,62 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Jede Spalte von `{prefix}_item`, in der Reihenfolge, in der `widen_kind_check` sie neu
+/// anlegt. Ausgeschrieben, damit ein spaeteres Feld beim Umbau auffaellt: `SELECT *` haette
+/// die Zeilen still in die falschen Spalten kopiert, sobald sich eine Reihenfolge aendert.
+const ITEM_COLUMNS: [&str; 50] = [
+    "id",
+    "kind",
+    "label",
+    "b",
+    "t",
+    "h",
+    "h_min",
+    "b_aufgeklappt",
+    "t_ausgeklappt",
+    "laenge",
+    "anzahl",
+    "zustaende",
+    "unsicher",
+    "platzbedarf_zone",
+    "platzbedarf_block",
+    "preis_cent",
+    "kosten_min_cent",
+    "kosten_max_cent",
+    "link",
+    "artikelnummer",
+    "quelle",
+    "gemessen_am",
+    "mitnahme",
+    "prioritaet",
+    "basiert_auf",
+    "ersetzt",
+    "varianten",
+    "ziel",
+    "hinweis",
+    "begruendung",
+    "entscheidung_offen",
+    "opens",
+    "open_clear",
+    "wall_ok",
+    "expands_dir",
+    "expands_to",
+    "access_sides",
+    "access_clear",
+    "raumtrenner",
+    "zerlegbar",
+    "bild",
+    "weight_g",
+    "category",
+    "packable",
+    "waterproof",
+    "quick_dry",
+    "pack_location",
+    "trip_types",
+    "created_at",
+    "updated_at",
+];
+
 /// Alles, was ein Ding ausmacht — ob es schon da ist oder erst gewuenscht.
 ///
 /// Die Feldnamen folgen den TOML-Dateien, aus denen die Zeilen stammen, statt sie zu
@@ -155,6 +211,34 @@ pub struct Item {
     /// Das ist die vorsichtige Richtung — eine falsche Warnung kostet ein Nachdenken, eine
     /// fehlende kostet den Schrank.
     pub zerlegbar: Option<bool>,
+
+    // --- Ausruestung (PRD Q92 / B51) ---
+    //
+    // Sieben Felder, die nur ein `kind = "gear"` je fuellt. Sie stehen hier und nicht in einer
+    // zweiten Tabelle, weil Q58 genau diese Frage schon entschieden hat: eine Gegenstandstabelle
+    // fuer Moebel UND Ausruestung. Die Packliste in `trips` bindet gegen diese Spalten; ohne sie
+    // wurde jedes Gewicht als null mit einem Grund ausgeliefert, und die Haelfte wurde vor dem
+    // Merge zurueckgenommen (815750c) statt eine halbe Form in die Datei zu schreiben.
+    //
+    // Englisch benannt wie `opens`, `wall_ok` und `access_sides`: es ist das Vokabular, in dem
+    // die Entscheidung getroffen wurde, und ein zweites fuer dieselbe Sache ist der teure Fehler,
+    // vor dem der Kopf dieser Datei warnt.
+    /// Gewicht in Gramm. Gramm und nicht Kilo, aus demselben Grund, aus dem Preise in Cent
+    /// stehen: eine Packliste addiert, und eine Kommazahl addiert sich falsch.
+    pub weight_g: Option<i64>,
+    /// Wozu das Stueck gehoert — `schlafen`, `kochen`, `kleidung`, `elektronik`. Frei, weil die
+    /// Liste aus den Notizen kommt und keine Regel darauf laeuft.
+    pub category: Option<String>,
+    /// Laesst sich klein zusammenlegen. Eine Aussage ueber das Stueck, keine ueber die Reise.
+    pub packable: Option<bool>,
+    pub waterproof: Option<bool>,
+    pub quick_dry: Option<bool>,
+    /// Wo es im Gepaeck liegt — `rucksack`, `koffer`, `am koerper`. Ordnet die gedruckte Liste.
+    pub pack_location: Option<String>,
+    /// Fuer welche Reisearten es in Frage kommt, z. B. `["hiking", "city"]`. Leer heisst: fuer
+    /// jede. Liste und keine Tabelle, aus demselben Grund wie `ersetzt` daneben.
+    #[serde(default)]
+    pub trip_types: Vec<String>,
 }
 
 impl Item {
@@ -172,6 +256,9 @@ pub enum Kind {
     #[default]
     Piece,
     Slot,
+    /// Ausruestung: was mitreist statt zu stehen. Dieselbe Tabelle nach Q58, weil ein Zelt und
+    /// ein Regal dieselben Fragen beantworten — was ist es, wie schwer, wem gehoert es.
+    Gear,
 }
 
 impl Kind {
@@ -179,13 +266,16 @@ impl Kind {
         match self {
             Kind::Piece => "piece",
             Kind::Slot => "slot",
+            Kind::Gear => "gear",
         }
     }
     fn parse(s: &str) -> Kind {
-        if s == "slot" {
-            Kind::Slot
-        } else {
-            Kind::Piece
+        match s {
+            "slot" => Kind::Slot,
+            "gear" => Kind::Gear,
+            // Alles andere ist ein Stueck. Ein unbekanntes Wort still zu Ausruestung zu machen
+            // waere die teurere Vermutung: es faellt dann aus jeder Moebelpruefung heraus.
+            _ => Kind::Piece,
         }
     }
 }
@@ -288,7 +378,7 @@ impl Store {
             "
             CREATE TABLE IF NOT EXISTS {prefix}_item (
                 id                 TEXT PRIMARY KEY,
-                kind               TEXT NOT NULL CHECK (kind IN ('piece','slot')),
+                kind               TEXT NOT NULL CHECK (kind IN ('piece','slot','gear')),
                 label              TEXT NOT NULL,
                 b                  INTEGER,
                 t                  INTEGER,
@@ -328,6 +418,13 @@ impl Store {
                 raumtrenner        INTEGER,
                 zerlegbar          INTEGER,
                 bild               TEXT,
+                weight_g           INTEGER,
+                category           TEXT,
+                packable           INTEGER,
+                waterproof         INTEGER,
+                quick_dry          INTEGER,
+                pack_location      TEXT,
+                trip_types         TEXT NOT NULL DEFAULT '[]',
                 created_at         TEXT NOT NULL,
                 updated_at         TEXT NOT NULL
             );
@@ -358,6 +455,16 @@ impl Store {
         Self::add_column_if_missing(conn, prefix, "raumtrenner", "INTEGER")?;
         Self::add_column_if_missing(conn, prefix, "zerlegbar", "INTEGER")?;
         Self::add_column_if_missing(conn, prefix, "bild", "TEXT")?;
+        // Ausruestung (B51). Die sieben Spalten zuerst, dann der CHECK — der Umbau kopiert sie
+        // mit, also muessen sie vorher da sein.
+        Self::add_column_if_missing(conn, prefix, "weight_g", "INTEGER")?;
+        Self::add_column_if_missing(conn, prefix, "category", "TEXT")?;
+        Self::add_column_if_missing(conn, prefix, "packable", "INTEGER")?;
+        Self::add_column_if_missing(conn, prefix, "waterproof", "INTEGER")?;
+        Self::add_column_if_missing(conn, prefix, "quick_dry", "INTEGER")?;
+        Self::add_column_if_missing(conn, prefix, "pack_location", "TEXT")?;
+        Self::add_column_if_missing(conn, prefix, "trip_types", "TEXT NOT NULL DEFAULT '[]'")?;
+        Self::widen_kind_check(conn, prefix)?;
         Ok(())
     }
 
@@ -391,6 +498,105 @@ impl Store {
         Ok(())
     }
 
+    /// Den `kind`-CHECK auf `gear` erweitern, indem die Tabelle neu gebaut wird.
+    ///
+    /// SQLite haelt einen CHECK im gespeicherten DDL-Text; `ALTER TABLE` kann ihn nicht
+    /// anfassen. Der Zwoelf-Schritte-Weg aus der SQLite-Dokumentation ist der einzige: neue
+    /// Tabelle, Zeilen kopieren, alte fallen lassen, umbenennen. Er laeuft nur, wenn der
+    /// gespeicherte Text `gear` noch nicht nennt — eine leere oder frische Datei hat den
+    /// weiten CHECK schon aus `CREATE TABLE` oben, und ein zweiter Lauf faende nichts zu tun.
+    ///
+    /// **Die Kinder werden gesichert und zurueckgeschrieben, und das ist der Kern.**
+    /// `{prefix}_item_state` und `{prefix}_placement` zeigen mit `ON DELETE CASCADE` auf
+    /// `{prefix}_item(id)`; ein DROP der Elterntabelle loescht sie deshalb mit. Der uebliche
+    /// Ausweg — `PRAGMA foreign_keys = off` vor dem `BEGIN` — steht hier nicht offen: dieser
+    /// Code laeuft in der Transaktion, die `axon_store::migrate_once` schon geoeffnet hat, und
+    /// die Pragma ist innerhalb einer Transaktion wirkungslos (libs/axon-store/src/lib.rs:328).
+    /// Also werden beide Tabellen vorher kopiert und hinterher wieder gefuellt, im selben
+    /// Umlauf: faellt irgendetwas davon aus, nimmt der Rollback alles mit.
+    ///
+    /// Die Spaltenliste ist ausgeschrieben und nicht `SELECT *`, damit ein spaeteres Feld hier
+    /// auffaellt statt still in der falschen Spalte zu landen.
+    fn widen_kind_check(conn: &Connection, prefix: &str) -> Result<(), Fehler> {
+        let ddl: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![format!("{prefix}_item")],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(ddl) = ddl else { return Ok(()) };
+        if ddl.contains("'gear'") {
+            return Ok(());
+        }
+        let columns = ITEM_COLUMNS.join(", ");
+        conn.execute_batch(&format!(
+            "CREATE TABLE {prefix}_item_neu (
+                id                 TEXT PRIMARY KEY,
+                kind               TEXT NOT NULL CHECK (kind IN ('piece','slot','gear')),
+                label              TEXT NOT NULL,
+                b                  INTEGER,
+                t                  INTEGER,
+                h                  INTEGER,
+                h_min              INTEGER,
+                b_aufgeklappt      INTEGER,
+                t_ausgeklappt      INTEGER,
+                laenge             INTEGER,
+                anzahl             INTEGER,
+                zustaende          TEXT NOT NULL DEFAULT '[]',
+                unsicher           TEXT NOT NULL DEFAULT '[]',
+                platzbedarf_zone   INTEGER,
+                platzbedarf_block  INTEGER,
+                preis_cent         INTEGER,
+                kosten_min_cent    INTEGER,
+                kosten_max_cent    INTEGER,
+                link               TEXT,
+                artikelnummer      TEXT,
+                quelle             TEXT,
+                gemessen_am        TEXT,
+                mitnahme           TEXT,
+                prioritaet         TEXT,
+                basiert_auf        TEXT,
+                ersetzt            TEXT NOT NULL DEFAULT '[]',
+                varianten          TEXT NOT NULL DEFAULT '[]',
+                ziel               TEXT,
+                hinweis            TEXT,
+                begruendung        TEXT,
+                entscheidung_offen TEXT,
+                opens              TEXT,
+                open_clear         INTEGER,
+                wall_ok            INTEGER,
+                expands_dir        TEXT,
+                expands_to         INTEGER,
+                access_sides       INTEGER,
+                access_clear       INTEGER,
+                raumtrenner        INTEGER,
+                zerlegbar          INTEGER,
+                bild               TEXT,
+                weight_g           INTEGER,
+                category           TEXT,
+                packable           INTEGER,
+                waterproof         INTEGER,
+                quick_dry          INTEGER,
+                pack_location      TEXT,
+                trip_types         TEXT NOT NULL DEFAULT '[]',
+                created_at         TEXT NOT NULL,
+                updated_at         TEXT NOT NULL
+             );
+             INSERT INTO {prefix}_item_neu ({columns})
+                 SELECT {columns} FROM {prefix}_item;
+             CREATE TABLE {prefix}_state_sicherung AS SELECT * FROM {prefix}_item_state;
+             CREATE TABLE {prefix}_placement_sicherung AS SELECT * FROM {prefix}_placement;
+             DROP TABLE {prefix}_item;
+             ALTER TABLE {prefix}_item_neu RENAME TO {prefix}_item;
+             INSERT INTO {prefix}_item_state SELECT * FROM {prefix}_state_sicherung;
+             INSERT INTO {prefix}_placement SELECT * FROM {prefix}_placement_sicherung;
+             DROP TABLE {prefix}_state_sicherung;
+             DROP TABLE {prefix}_placement_sicherung;"
+        ))?;
+        Ok(())
+    }
+
     pub fn ping(&self) -> Result<(), Fehler> {
         let conn = self.conn()?;
         conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
@@ -412,6 +618,8 @@ impl Store {
                     varianten, ziel, hinweis, begruendung, entscheidung_offen,
                     opens, open_clear, wall_ok, expands_dir, expands_to,
                     access_sides, access_clear, raumtrenner, bild, zerlegbar,
+                    weight_g, category, packable, waterproof, quick_dry, pack_location,
+                    trip_types,
                     created_at, updated_at
                  ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
@@ -419,7 +627,8 @@ impl Store {
                     ?16, ?17, ?18, ?19, ?20,
                     ?21, ?22, ?23, ?24, ?25, ?26,
                     ?27, ?28, ?29, ?30, ?31,
-                    ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, {now}, {now}
+                    ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41,
+                    ?42, ?43, ?44, ?45, ?46, ?47, ?48, {now}, {now}
                  )
                  ON CONFLICT(id) DO UPDATE SET
                     kind=excluded.kind, label=excluded.label, b=excluded.b, t=excluded.t,
@@ -446,6 +655,10 @@ impl Store {
                     access_clear=excluded.access_clear,
                     raumtrenner=excluded.raumtrenner, bild=excluded.bild,
                     zerlegbar=excluded.zerlegbar,
+                    weight_g=excluded.weight_g, category=excluded.category,
+                    packable=excluded.packable, waterproof=excluded.waterproof,
+                    quick_dry=excluded.quick_dry, pack_location=excluded.pack_location,
+                    trip_types=excluded.trip_types,
                     updated_at={now}",
                 p = p,
                 now = axon_store::now_offset("'+0 seconds'")
@@ -492,6 +705,13 @@ impl Store {
                 it.raumtrenner,
                 it.bild,
                 it.zerlegbar,
+                it.weight_g,
+                it.category,
+                it.packable,
+                it.waterproof,
+                it.quick_dry,
+                it.pack_location,
+                serde_json::to_string(&it.trip_types)?,
             ],
         )?;
         Ok(())
@@ -631,6 +851,8 @@ impl Store {
                     i.hinweis, i.begruendung, i.entscheidung_offen,
                     i.opens, i.open_clear, i.wall_ok, i.expands_dir, i.expands_to,
                     i.access_sides, i.access_clear, i.raumtrenner, i.bild, i.zerlegbar,
+                    i.weight_g, i.category, i.packable, i.waterproof, i.quick_dry,
+                    i.pack_location, i.trip_types,
                     (SELECT s.state FROM {p}_item_state s
                       WHERE s.item_id = i.id ORDER BY s.since DESC, s.id DESC LIMIT 1)
              FROM {p}_item i ORDER BY i.id"
@@ -643,7 +865,7 @@ impl Store {
                     .as_deref()
                     .and_then(Seite::parse))
             };
-            let state: Option<String> = row.get(41)?;
+            let state: Option<String> = row.get(48)?;
             Ok((
                 Item {
                     id: row.get(0)?,
@@ -687,6 +909,13 @@ impl Store {
                     raumtrenner: row.get(38)?,
                     bild: row.get(39)?,
                     zerlegbar: row.get(40)?,
+                    weight_g: row.get(41)?,
+                    category: row.get(42)?,
+                    packable: row.get(43)?,
+                    waterproof: row.get(44)?,
+                    quick_dry: row.get(45)?,
+                    pack_location: row.get(46)?,
+                    trip_types: axon_store::json_column(row, 47)?,
                 },
                 state.as_deref().and_then(State::parse),
             ))

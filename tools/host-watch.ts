@@ -38,15 +38,23 @@
 //
 // Knows no fact about this machine. Every budget, threshold and allowlisted process
 // comes from the overlay's config/host-watch-policy.toml, the same split
-// tools/storage.ts already uses (README.md#generic-in-axon-specific-in-the-overlay).
+// tools/storage already uses (README.md#generic-in-axon-specific-in-the-overlay).
 // The pure functions below are exported for tools/host-watch.test.ts.
 
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { fmt } from "./storage.ts";
 import { axonRoot, overlayRoot } from "./lib/overlay.ts";
+
+// One finding title needs a byte count in the same units storage prints. This used to be
+// imported from tools/storage.ts; storage became a Rust crate on 2026-09-03, so the four
+// lines are here rather than in a TypeScript shim kept alive to export them. The
+// definition storage owns is `fmt_bytes` in tools/storage/src/measure.rs, and the unit
+// switch at 1 GB is the part that has to agree.
+const GB = 1024 ** 3;
+const fmt = (b: number) =>
+  b >= GB ? `${(b / GB).toFixed(1)} GB` : `${Math.round(b / 1024 ** 2)} MB`;
 
 const HELP = `tools/host-watch — notice a runaway process or a filling disk, once per run.
 
@@ -308,13 +316,17 @@ async function runPs(): Promise<Proc[]> {
 }
 
 /**
- * storage.ts is invoked rather than imported: it owns the policy file, the du/df
+ * storage is invoked rather than reimplemented: it owns the policy file, the du/df
  * arithmetic and the exit code, and re-deriving any of that here would be the second
  * source of truth its own header argues against. A non-zero exit is NOT a failure — it
  * is how storage reports free space below critical, which is the loudest thing it can say.
+ *
+ * The launcher, not the binary: it sources tools/lib/paths.sh, which is what resolves the
+ * overlay, and it builds the release binary if this is the first run after a checkout.
+ * The `--json` shape it returns is unchanged from the TypeScript tool this replaced.
  */
 async function runStorage(): Promise<StorageReport | null> {
-  const proc = Bun.spawn(["bun", "run", join(axonRoot(), "tools", "storage.ts"), "--json"], {
+  const proc = Bun.spawn([join(axonRoot(), "tools", "storage", "storage"), "report", "--json"], {
     stdout: "pipe",
     stderr: "pipe",
   });

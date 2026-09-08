@@ -184,7 +184,7 @@
   .draft-topline strong { font-size: 0.8125rem; font-weight: 600; }
   .draft p { margin: 0.15rem 0 0; color: var(--text-secondary); font-size: 0.72rem; }
   .commitment { padding: 0.1rem 0.35rem; border-radius: var(--radius-sm); background-color: var(--surface); color: var(--text-secondary); font-size: 0.65rem; white-space: nowrap; }
-  .commitment.planned { color: var(--warning); background-color: var(--warning-soft); }
+  .commitment.planned { color: var(--warning-ink); background-color: var(--warning-soft); }
   .commitment.committed { color: var(--success); background-color: var(--success-soft); }
   ul { margin: 0.35rem 0 0; padding-left: 1rem; color: var(--text-secondary); font-size: 0.72rem; }
   li + li { margin-top: 0.15rem; }

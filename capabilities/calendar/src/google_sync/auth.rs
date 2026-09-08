@@ -122,11 +122,16 @@ pub(super) fn read_env_key(env_path: &Path, key: &str) -> SyncResult<String> {
 }
 
 pub(super) fn http_client() -> SyncResult<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .user_agent(concat!("AxonCalendar/", env!("CARGO_PKG_VERSION")))
-        .gzip(true)
-        .build()
-        .map_err(|error| format!("could not build an HTTP client: {error}"))
+    // 20s, matching calendar's other outbound calls. It carried no timeout at
+    // all until axon_http made one an argument, so a hung Google token endpoint
+    // hung the sync thread with it.
+    axon_http::builder(
+        axon_http::Purpose::new("calendar-google-auth"),
+        std::time::Duration::from_secs(20),
+    )
+    .gzip(true)
+    .build()
+    .map_err(|error| format!("could not build an HTTP client: {error}"))
 }
 
 #[derive(Deserialize)]

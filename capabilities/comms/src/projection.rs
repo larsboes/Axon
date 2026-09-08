@@ -208,10 +208,13 @@ pub fn render(item: &FeedItem) -> String {
         push_field(&mut out, "author", author);
     }
     push_field(&mut out, "url", &item.url);
-    // The day the item entered the feed, which is the closest thing the store has to a
-    // saved date: `Store::set_feed_status` records no timestamp, so the moment a link
-    // was saved is not kept anywhere. `created` rather than a new `saved` key because
-    // the ten Clippings notes merging into this folder already name this fact.
+    // The day the item entered the feed. The saved date now EXISTS -- a keep
+    // writes a `kept` row into `comms_feed_interactions` in the same transaction
+    // as the status change -- but this note still renders the ingest day, because
+    // what the frontmatter should say is a separate decision about the note and
+    // not one this projection gets to take on its own. `created` rather than a
+    // new `saved` key because the ten Clippings notes merging into this folder
+    // already name this fact.
     if !item.day.trim().is_empty() {
         push_field(&mut out, "created", &item.day);
     }

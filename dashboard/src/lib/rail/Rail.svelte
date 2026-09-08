@@ -23,11 +23,12 @@
     min-width: 0;
 
     /* Sticky so triage stays reachable while the page scrolls; it scrolls on its own
-     * once expanded sections outgrow the viewport. `4.75rem` clears the sticky header
-     * (bar + nav row). */
+     * once expanded sections outgrow the viewport. The offset follows --header-stack
+     * (bar + nav row) rather than a hand-copied 4.75rem, so it still clears the header
+     * on a phone, where the bar is 3.25rem and the old constant left it drifting under. */
     position: sticky;
-    top: 4.75rem;
-    max-height: calc(100vh - 6rem);
+    top: calc(var(--header-stack) + var(--space-3));
+    max-height: calc(100vh - var(--header-stack) - var(--space-6));
     overflow-y: auto;
   }
 

@@ -25,20 +25,58 @@ source "$TOOLS_DIR/lib/paths.sh"
 # `while read`, not `mapfile`: macOS ships bash 3.2 and this repo stays 3.2-safe, which
 # tools/backup.sh states at its own head. mapfile is a bash 4 builtin and fails with
 # "command not found" — quietly enough that the loop below would simply have run zero times.
-CAPS=()
-while IFS= read -r line; do
-  [ -n "$line" ] && CAPS+=("$line")
-done < <(
-  "$TOOLS_DIR/capability.sh" registry 2>/dev/null \
-    | "${AXON_BUN:-bun}" -e '
+# Resolve bun BEFORE deriving anything, and fail by name when it is missing.
+#
+# Why (2026-09-06): this reported success while backing up nothing for 8.3 days. launchd hands a
+# supervised job a minimal environment whose PATH has no /opt/homebrew/bin, `bun` was not found,
+# the derivation below printed nothing, and the empty-set branch read that as "no capability
+# declares a contract" and exited 0. Three backup contracts went unrun and every signal said
+# fine. It is the same launchd-PATH defect service-runner.sh documents at resolve_runtime — and
+# the same fix: name the missing binary instead of letting bash's `command not found` vanish
+# into a log nobody reads.
+#
+# AXON_BUN is how a machine whose supervisor cannot see the login PATH states the real path,
+# declared in the overlay's machine.toml under `[capability.backup] env` — the seam
+# persistence_env_block exists for, rather than a hand-edit of the generated unit.
+BUN="${AXON_BUN:-bun}"
+case "$BUN" in
+  /*)
+    [ -x "$BUN" ] || {
+      echo "backup-all.sh: AXON_BUN='$BUN' is not an executable file" >&2
+      exit 1
+    }
+    ;;
+  *)
+    command -v "$BUN" >/dev/null 2>&1 || {
+      echo "backup-all.sh: '$BUN' not found on PATH (PATH=$PATH)." >&2
+      echo "backup-all.sh: set AXON_BUN to its absolute path in the overlay's machine.toml, [capability.backup] env." >&2
+      exit 1
+    }
+    ;;
+esac
+
+# Derived through a file rather than a process substitution, because `< <(...)` throws the
+# pipeline's exit status away: a registry that failed and a machine with no contracts both
+# arrive here as zero lines. They mean opposite things, so they must not share a branch.
+DERIVED="$(mktemp -t axon-backup-caps)" || exit 1
+trap 'rm -f "$DERIVED"' EXIT
+if ! "$TOOLS_DIR/capability.sh" registry 2>/dev/null \
+    | "$BUN" -e '
         const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
         for (const r of rows) {
           if (r.scope === "external") continue;
           if (!r.backup_target) continue;
           console.log(r.name);
         }
-      '
-)
+      ' > "$DERIVED"; then
+  echo "backup-all.sh: could not derive the backup set from the capability registry — refusing to report success" >&2
+  exit 1
+fi
+
+CAPS=()
+while IFS= read -r line; do
+  [ -n "$line" ] && CAPS+=("$line")
+done < "$DERIVED"
 
 if [ "${#CAPS[@]}" -eq 0 ]; then
   echo "backup-all.sh: no capability declares a backup contract on this machine — nothing to do."

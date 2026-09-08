@@ -44,7 +44,12 @@
         <div class="track" aria-hidden="true">
           <span style:width={`${Math.round(factor.score * 100)}%`}></span>
         </div>
-        {#if !compact}
+        {#if compact}
+          <!-- The weight, in compact mode too. A bar whose share of the score is
+               invisible cannot be argued with, and the share is now the thing
+               that moves: a refused or inert factor sits at zero. -->
+          <span class="compact-weight mono">{Math.round(factor.weight * 100)}%</span>
+        {:else}
           <p>{factor.rationale} · Weight {Math.round(factor.weight * 100)}%</p>
           {#if factor.context?.kind === "trip"}
             <a class="factor-context" href={link("/travel")}>
@@ -53,6 +58,10 @@
                 · {factor.context.matched_terms.join(", ")}
               {/if}
             </a>
+          {:else if factor.context?.kind === "urgency"}
+            <!-- The model rung's own judgement, not a link: nothing else
+                 renders one mail's urgency. -->
+            <span class="factor-context">{factor.context.label}</span>
           {/if}
         {/if}
       </div>
@@ -181,9 +190,19 @@
     font-size: 0.5rem;
   }
 
+  /* Factor-count agnostic. `repeat(4, …)` against a loop that renders however
+     many factors the evaluator produced made a fifth factor wrap ragged the
+     moment one arrived. */
   .compact .factors {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(4.5rem, 1fr));
     gap: 0.4rem;
+  }
+
+  .compact-weight {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: 0.5rem;
+    color: var(--text-tertiary);
   }
 
   .compact .factor-label {

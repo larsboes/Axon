@@ -27,7 +27,8 @@ This implements it.
 Two levels. Callers only ever touch the second.
 
 - A **backend** is a server: an API shape (`openai` or `ollama`), a base URL, optionally a
-  file to read a bearer key out of. Declared once.
+  file to read a bearer key out of, and optionally the id of the host that serves it
+  (`provided_by`). Declared once.
 - A **role** is a job: `embedding`, `reranking`, `summarization`, `ocr`, or an explicitly named
   `cloud_*` task. It names a backend, the model on it, that model's input conventions, and
   optionally what the same job is called on another local runtime (`on_backend`).
@@ -38,6 +39,45 @@ cleared the frozen DE/EN corpus at `libs/extraction/eval/` — the same gate tha
 `multilingual-e5-base-mlx` and `bge-reranker-v2-m3-mlx` and rejected
 `multilingual-e5-small-mlx`. Declaring it early would point a real dispatch at an unmeasured
 model.
+
+## Three tiers, not two (PRD Q39, 2026-08-25)
+
+An endpoint used to be loopback or cloud, and `is_cloud_endpoint` was literally *https and
+not loopback*. `upstreams.toml` chose Tailscale over NetBird for `tailscale cert` — so the
+moment a peer gets a real certificate, **the operator's own MacBook reads as a cloud
+provider** and demands a reviewed `providers.toml` entry. Getting the transport security
+right made the classification wrong.
+
+| Tier | Predicate | May see any class | Shares this GPU |
+|---|---|---|---|
+| Loopback | `is_loopback()` | yes | yes |
+| Trusted peer | `is_trusted_peer()` | yes | **no** |
+| Cloud | `is_cloud_endpoint()` | only through a reviewed policy | no |
+
+**Declared, never inferred.** Trust is an intersection of two facts in two files, which is
+the pattern `tools/lib/external-ref.sh` already owns for a capability this machine consumes
+but does not run:
+
+```
+<overlay>/config/systems.local.toml   [lars-mac]  owner = "self"
+<overlay>/config/inference.json       backends.peer.provided_by = "lars-mac"
+```
+
+An address is not a permission and neither is a name. Being reachable on the tailnet is not
+either — a shared node is reachable. And presence in `systems.local.toml` cannot be the
+test: `[nvidia-nim]` is in that file and is a cloud provider.
+
+The resolver is the shell's, not this crate's. `external-ref.sh` reads the pair and
+`tools/service-runner.sh` exports the answer as `AXON_INFERENCE_TRUSTED_PEERS`, the same way
+it already exports `[inference] backend` — Q39 says extend that resolver rather than invent
+a second one. **Unset means no trusted peers**, which is a single-host deployment's normal
+state and is byte-for-byte the behaviour that shipped before Q39.
+
+**Ask `trusted_for_every_class()`, not `is_loopback()`, at a data-class gate.** One
+predicate carried both questions while loopback and trusted-hardware were the same set. A
+trusted peer is the first endpoint for which they differ: it may see any class, and it must
+*not* queue behind this host's GPU admission gate, because it has its own. `libs/summarize`
+carries the same split as `Target { loopback, operator_owned }`.
 
 ```rust
 let role = InferenceConfig::load(overlay_config).role("embedding");

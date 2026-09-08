@@ -157,6 +157,10 @@ pub struct CloudDerivativePreview {
     pub document: String,
     pub redaction_count: usize,
     pub redactions: Vec<RedactionFinding>,
+    /// Q9b's receipt, or `None` on a call nothing was removed from. Carried on
+    /// the object rather than composed by each reader, so the CLI, the dashboard
+    /// and any later surface state the same thing about the same call.
+    pub redaction_receipt: Option<String>,
     pub entity_detection: &'static str,
     pub truncated: bool,
     pub approval_required: bool,
@@ -277,6 +281,7 @@ pub fn prepare(input: &CloudDocumentInput) -> Result<CloudDerivativePreview, Loc
         transformation,
         document,
         redaction_count: redactions.iter().map(|finding| finding.count).sum(),
+        redaction_receipt: redaction_receipt(&redactions),
         redactions,
         entity_detection: if needs_redaction {
             "local-deterministic-v3"
@@ -307,6 +312,90 @@ pub fn redact_review_field(
         return Some(value.to_string());
     }
     Some(transform_text(value, true, redactions))
+}
+
+/// The sentence a human reads on a call that was reduced (PRD Q9b, answered
+/// 2026-08-23: *every reduced call leaves a visible receipt*).
+///
+/// `None` when nothing was removed. A receipt on an untouched call is noise,
+/// and worse, it trains the reader to stop reading the ones that matter.
+///
+/// **What this can honestly say, and what Q9b's example sentence could not.**
+/// The ruling's wording is *"reduced 3 facts about 2 people before this call"*.
+/// The second number is not in the data: [`record_redaction`] aggregates by
+/// `entity_type`, so `person: 5` means five mentions were replaced and says
+/// nothing about how many distinct people they were — the detector never learns
+/// that, because knowing it would mean keeping the names. Counting occurrences
+/// and calling them occurrences is the honest version, and it costs the sentence
+/// nothing a reader needs.
+///
+/// Kinds are named in a fixed order rather than by descending count, so two
+/// consecutive calls that removed the same things read the same way and a
+/// difference in the sentence is a difference in what was removed. A kind the
+/// table does not know is named by its own literal instead of being dropped:
+/// the leading total sums every finding, so an omission would produce a receipt
+/// whose breakdown does not add up to its own number.
+pub fn redaction_receipt(findings: &[RedactionFinding]) -> Option<String> {
+    let total: usize = findings.iter().map(|finding| finding.count).sum();
+    if total == 0 {
+        return None;
+    }
+
+    // Every entity_type transform_text and stage_identity can record, in the
+    // order a reader cares about: who, then how to reach them, then what
+    // unlocks something. A kind missing from this table would be dropped from
+    // the sentence silently, so the test below asserts the table is complete.
+    const KINDS: [(&str, &str, &str); 8] = [
+        ("person", "mention of a person", "mentions of people"),
+        ("identity", "identity", "identities"),
+        ("email", "email address", "email addresses"),
+        ("phone_number", "phone number", "phone numbers"),
+        ("financial_identifier", "account number", "account numbers"),
+        ("secret_token", "token-like secret", "token-like secrets"),
+        ("long_number", "long number", "long numbers"),
+        ("link", "link", "links"),
+    ];
+
+    let mut parts: Vec<String> = Vec::new();
+    for (kind, one, many) in KINDS {
+        let count: usize = findings
+            .iter()
+            .filter(|finding| finding.entity_type == kind)
+            .map(|finding| finding.count)
+            .sum();
+        match count {
+            0 => {}
+            1 => parts.push(format!("1 {one}")),
+            n => parts.push(format!("{n} {many}")),
+        }
+    }
+
+    // A kind this table does not know is named by its own literal rather than
+    // dropped. The count at the front of the sentence is the sum over ALL
+    // findings, so a silently omitted kind would make the total disagree with
+    // the breakdown — a receipt that does not add up is worse than none.
+    for finding in findings {
+        if KINDS
+            .iter()
+            .any(|(kind, _, _)| *kind == finding.entity_type)
+        {
+            continue;
+        }
+        parts.push(format!("{} {}", finding.count, finding.entity_type));
+    }
+
+    let detail = match parts.len() {
+        0 => return None,
+        1 => parts.remove(0),
+        _ => {
+            let last = parts.pop().unwrap_or_default();
+            format!("{} and {last}", parts.join(", "))
+        }
+    };
+    let noun = if total == 1 { "detail" } else { "details" };
+    Some(format!(
+        "Reduced {total} {noun} before this call: {detail}."
+    ))
 }
 
 /// Stable identifier for what a redaction pass did, without carrying any of
@@ -563,6 +652,120 @@ fn digest(parts: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    // ── Q9b: every reduced call leaves a visible receipt ───────────────
+
+    fn finding(entity_type: &'static str, count: usize) -> RedactionFinding {
+        RedactionFinding {
+            entity_type,
+            marker: "[x]",
+            count,
+        }
+    }
+
+    #[test]
+    fn an_untouched_call_gets_no_receipt() {
+        assert_eq!(redaction_receipt(&[]), None);
+        assert_eq!(redaction_receipt(&[finding("person", 0)]), None);
+    }
+
+    #[test]
+    fn the_receipt_counts_occurrences_and_says_so() {
+        // Q9b's own wording is "3 facts about 2 people". The second number is
+        // not in the data and cannot be, so the sentence claims occurrences.
+        let one = redaction_receipt(&[finding("person", 1)]).unwrap();
+        assert_eq!(
+            one,
+            "Reduced 1 detail before this call: 1 mention of a person."
+        );
+        let many = redaction_receipt(&[finding("person", 5)]).unwrap();
+        assert_eq!(
+            many,
+            "Reduced 5 details before this call: 5 mentions of people."
+        );
+    }
+
+    #[test]
+    fn kinds_read_in_a_fixed_order_whatever_order_they_were_found_in() {
+        let a = redaction_receipt(&[finding("link", 2), finding("person", 1)]).unwrap();
+        let b = redaction_receipt(&[finding("person", 1), finding("link", 2)]).unwrap();
+        assert_eq!(a, b, "the same removals must read the same way");
+        assert_eq!(
+            a,
+            "Reduced 3 details before this call: 1 mention of a person and 2 links."
+        );
+        let three = redaction_receipt(&[
+            finding("email", 1),
+            finding("person", 2),
+            finding("link", 1),
+        ])
+        .unwrap();
+        assert_eq!(
+            three,
+            "Reduced 4 details before this call: 2 mentions of people, 1 email address and 1 link."
+        );
+    }
+
+    #[test]
+    fn the_breakdown_always_adds_up_to_the_total() {
+        // The failure this rules out: a new entity_type reaching the recorder
+        // and being dropped from the sentence, leaving a receipt whose parts do
+        // not sum to the number in front of them.
+        let receipt =
+            redaction_receipt(&[finding("person", 2), finding("something_new_entirely", 3)])
+                .unwrap();
+        assert!(receipt.starts_with("Reduced 5 details"), "{receipt}");
+        assert!(receipt.contains("something_new_entirely"), "{receipt}");
+    }
+
+    #[test]
+    fn every_kind_the_detector_records_is_named_in_words() {
+        // The left column is every entity_type transform_text and
+        // stage_identity can produce today; the right is the phrase a human
+        // reads. A new kind reaching the recorder without a row here falls
+        // through to its own literal, which the previous test allows and this
+        // one is the reminder to fix.
+        for (kind, phrase) in [
+            ("person", "1 mention of a person"),
+            ("identity", "1 identity"),
+            ("email", "1 email address"),
+            ("phone_number", "1 phone number"),
+            ("financial_identifier", "1 account number"),
+            ("secret_token", "1 token-like secret"),
+            ("long_number", "1 long number"),
+            ("link", "1 link"),
+        ] {
+            let receipt = redaction_receipt(&[finding(kind, 1)]).unwrap();
+            assert_eq!(
+                receipt,
+                format!("Reduced 1 detail before this call: {phrase}."),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reduced_preview_carries_its_receipt_and_a_public_one_does_not() {
+        let input = CloudDocumentInput {
+            source: "mail".into(),
+            id: "1".into(),
+            title: Some("Hi from Herr Müller".into()),
+            author: None,
+            summary: None,
+            content: Some("write to a@b.de".into()),
+            data_class: "c1".into(),
+        };
+        let preview = prepare(&input).expect("c1 has a cloud lane");
+        assert!(
+            preview.redaction_count > 0,
+            "the fixture must redact something"
+        );
+        let receipt = preview
+            .redaction_receipt
+            .as_deref()
+            .expect("a reduced call carries a receipt");
+        assert!(receipt.starts_with("Reduced "), "{receipt}");
+    }
+
     use super::*;
 
     fn input(data_class: &str) -> CloudDocumentInput {

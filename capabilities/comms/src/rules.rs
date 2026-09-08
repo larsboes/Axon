@@ -51,6 +51,107 @@ pub const STREAMS: [&str; 7] = [
     "sonstiges",
 ];
 
+/// The classifier version every deterministic mail row carries.
+///
+/// A bare literal in five Rust places before this existed, next to a
+/// `content_item::MAIL_CLASSIFIER_VERSION` that had a constant for the class
+/// axis. The two DDL DEFAULTs in `store/migrations.rs` stay literal because
+/// they are inside a SQL string.
+pub const MAIL_RULES_VERSION: &str = "mail-rules-v1";
+
+/// One English line per stream, in [`STREAMS`] order.
+///
+/// This is the vocabulary block a prompt is built from (`crate::mail_model`),
+/// and it lives beside `STREAMS` so a stream added to one and not the other
+/// fails a test rather than reaching a model that has never heard of it.
+pub const STREAM_DEFINITIONS: [(&str, &str); 7] = [
+    (
+        "aktiv",
+        "A real message from a person or a service that still concerns the reader, with nothing \
+         specific asked of them yet.",
+    ),
+    (
+        "issue",
+        "The message asks the reader to do something: answer a question, confirm, pay, appear, \
+         or decide by a date.",
+    ),
+    (
+        "feed",
+        "A newsletter, digest or release announcement the reader subscribed to. Reading material, \
+         never an obligation.",
+    ),
+    (
+        "werbung",
+        "Advertising, a promotion, a discount or a sales approach the reader did not ask for.",
+    ),
+    (
+        "belege",
+        "A receipt, an invoice, an order confirmation or a payment record worth keeping.",
+    ),
+    (
+        "steuern",
+        "Tax material: an assessment, a tax office letter, or a document filed with a tax return.",
+    ),
+    (
+        "sonstiges",
+        "None of the six above. A notification with nothing to do and nothing to keep.",
+    ),
+];
+
+/// Which rung of the deterministic ladder decided a thread.
+///
+/// `DecidedBy` rather than `Rung`: `crate::quiet::Rung` already owns that word
+/// in this crate for the inference ladder, and `crate::mail_model` holds both
+/// in scope.
+///
+/// The values are the `CHECK` vocabulary of `{prefix}_triage_rules`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecidedBy {
+    /// A rule from the overlay's `rules` list fired.
+    ConfigRule,
+    /// One of the four built-in heuristics fired.
+    Heuristic,
+    /// Nothing fired and the conservative `aktiv` default was kept. These are
+    /// the rows the model rung is allowed to look at.
+    Fallback,
+}
+
+impl DecidedBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfigRule => "config_rule",
+            Self::Heuristic => "heuristic",
+            Self::Fallback => "fallback",
+        }
+    }
+}
+
+impl std::str::FromStr for DecidedBy {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "config_rule" => Ok(Self::ConfigRule),
+            "heuristic" => Ok(Self::Heuristic),
+            "fallback" => Ok(Self::Fallback),
+            other => Err(format!("unknown decided_by '{other}'")),
+        }
+    }
+}
+
+/// What the deterministic classifier decided, and which rung decided it.
+///
+/// The rung is not derivable afterwards: `classify` reads
+/// `has_list_unsubscribe`, a header no row stores, and string-matching the
+/// fallback rationale breaks the moment an overlay rule declares stream
+/// `aktiv`. So it is returned here and persisted beside the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verdict {
+    pub stream: String,
+    pub rationale: String,
+    pub decided_by: DecidedBy,
+}
+
 const SHOPPING_KEYWORDS: [&str; 6] = ["sale", "rabatt", "%", "deal", "shop", "angebot"];
 const TECH_KEYWORDS: [&str; 6] = [
     "release",
@@ -120,50 +221,68 @@ fn eval_rule(rule: &Rule, f: &MailFacts) -> Option<String> {
     Some(matched.join(" + "))
 }
 
-/// Classify a thread into (stream, rationale). Config rules first (first match
-/// wins), then the built-in heuristics, then the conservative `aktiv` default.
-pub fn classify(f: &MailFacts, rules: &[Rule]) -> (String, String) {
+/// Classify a thread. Config rules first (first match wins), then the built-in
+/// heuristics, then the conservative `aktiv` default.
+///
+/// Returns a [`Verdict`] rather than a `(stream, rationale)` pair because the
+/// rung that fired is a fact only this function holds, and the model rung runs
+/// on exactly the rows where nothing fired.
+pub fn classify(f: &MailFacts, rules: &[Rule]) -> Verdict {
     // 1. Config rules — first match wins.
     for rule in rules {
         if let Some(cond) = eval_rule(rule, f) {
-            return (rule.stream.clone(), format!("{} ({})", rule.note, cond));
+            return Verdict {
+                stream: rule.stream.clone(),
+                rationale: format!("{} ({})", rule.note, cond),
+                decided_by: DecidedBy::ConfigRule,
+            };
         }
     }
 
-    // 2. Built-in heuristics (generic, no personal facts).
+    // 2. Built-in heuristics (generic, no personal facts). The four rationale
+    // literals below are also embedded in the `{prefix}_triage_rules` backfill
+    // in `store/migrations.rs`; `the_backfill_literals_match_the_classifier`
+    // asserts the two lists still agree.
     if f.has_list_unsubscribe && any_contains_static(f.subject, &SHOPPING_KEYWORDS) {
-        return (
-            "werbung".into(),
-            "List-Unsubscribe plus a shopping signal in the subject; classified as advertising."
-                .into(),
-        );
+        return Verdict {
+            stream: "werbung".into(),
+            rationale:
+                "List-Unsubscribe plus a shopping signal in the subject; classified as advertising."
+                    .into(),
+            decided_by: DecidedBy::Heuristic,
+        };
     }
     if f.has_list_unsubscribe && any_contains_static(f.subject, &TECH_KEYWORDS) {
-        return (
-            "feed".into(),
-            "List-Unsubscribe plus a development or technology signal in the subject; classified as a Feed newsletter.".into(),
-        );
+        return Verdict {
+            stream: "feed".into(),
+            rationale: "List-Unsubscribe plus a development or technology signal in the subject; classified as a Feed newsletter.".into(),
+            decided_by: DecidedBy::Heuristic,
+        };
     }
     let noreply = contains_ci(f.from, "noreply") || contains_ci(f.from, "no-reply");
     if noreply && any_contains_static(f.subject, &RECEIPT_KEYWORDS) {
-        return (
-            "belege".into(),
-            "A no-reply sender plus a receipt or invoice signal in the subject; classified as a receipt.".into(),
-        );
+        return Verdict {
+            stream: "belege".into(),
+            rationale: "A no-reply sender plus a receipt or invoice signal in the subject; classified as a receipt.".into(),
+            decided_by: DecidedBy::Heuristic,
+        };
     }
     if f.has_list_unsubscribe {
-        return (
-            "sonstiges".into(),
-            "List-Unsubscribe is present, but no specific rule matched; classified as other."
-                .into(),
-        );
+        return Verdict {
+            stream: "sonstiges".into(),
+            rationale:
+                "List-Unsubscribe is present, but no specific rule matched; classified as other."
+                    .into(),
+            decided_by: DecidedBy::Heuristic,
+        };
     }
 
     // 3. Conservative default.
-    (
-        "aktiv".into(),
-        "No rule matched; kept active as the conservative default.".into(),
-    )
+    Verdict {
+        stream: "aktiv".into(),
+        rationale: "No rule matched; kept active as the conservative default.".into(),
+        decided_by: DecidedBy::Fallback,
+    }
 }
 
 #[cfg(test)]
@@ -180,49 +299,49 @@ mod tests {
 
     #[test]
     fn builtin_shopping_promo_is_werbung() {
-        let (stream, why) = classify(
+        let verdict = classify(
             &facts("news@shop.example", "Winter SALE -50% Rabatt", true),
             &[],
         );
-        assert_eq!(stream, "werbung");
-        assert!(!why.is_empty());
+        assert_eq!(verdict.stream, "werbung");
+        assert!(!verdict.rationale.is_empty());
     }
 
     #[test]
     fn builtin_tech_newsletter_is_feed() {
-        let (stream, _) = classify(
+        let verdict = classify(
             &facts("hello@bytes.dev", "This week in AI: new release", true),
             &[],
         );
-        assert_eq!(stream, "feed");
+        assert_eq!(verdict.stream, "feed");
     }
 
     #[test]
     fn builtin_noreply_invoice_is_belege() {
-        let (stream, _) = classify(
+        let verdict = classify(
             &facts("noreply@vendor.example", "Ihre Rechnung 2026-07", false),
             &[],
         );
-        assert_eq!(stream, "belege");
+        assert_eq!(verdict.stream, "belege");
     }
 
     #[test]
     fn builtin_bare_list_unsubscribe_is_sonstiges() {
-        let (stream, _) = classify(
+        let verdict = classify(
             &facts("info@social.example", "Weekly community update", true),
             &[],
         );
-        assert_eq!(stream, "sonstiges");
+        assert_eq!(verdict.stream, "sonstiges");
     }
 
     #[test]
     fn no_signal_is_conservative_aktiv() {
-        let (stream, why) = classify(
+        let verdict = classify(
             &facts("a.person@gmail.com", "Re: lunch tomorrow?", false),
             &[],
         );
-        assert_eq!(stream, "aktiv");
-        assert!(why.contains("conservative default"));
+        assert_eq!(verdict.stream, "aktiv");
+        assert!(verdict.rationale.contains("conservative default"));
     }
 
     #[test]
@@ -237,10 +356,10 @@ mod tests {
             stream: "feed".into(),
             note: "curated development newsletter".into(),
         }];
-        let (stream, why) = classify(&facts("hello@bytes.dev", "random subject", true), &rules);
-        assert_eq!(stream, "feed");
-        assert!(why.contains("curated development newsletter"));
-        assert!(why.contains("sender"));
+        let verdict = classify(&facts("hello@bytes.dev", "random subject", true), &rules);
+        assert_eq!(verdict.stream, "feed");
+        assert!(verdict.rationale.contains("curated development newsletter"));
+        assert!(verdict.rationale.contains("sender"));
     }
 
     #[test]
@@ -254,11 +373,11 @@ mod tests {
             stream: "steuern".into(),
             note: "steuerrelevant".into(),
         }];
-        let (stream, _) = classify(
+        let verdict = classify(
             &facts("amt@example.gov", "Ihr Steuerbescheid 2025", false),
             &rules,
         );
-        assert_eq!(stream, "steuern");
+        assert_eq!(verdict.stream, "steuern");
     }
 
     #[test]
@@ -268,10 +387,69 @@ mod tests {
             stream: "werbung".into(),
             note: "should never match".into(),
         }];
-        let (stream, _) = classify(&facts("a@b.com", "hello", false), &rules);
+        let verdict = classify(&facts("a@b.com", "hello", false), &rules);
         assert_eq!(
-            stream, "aktiv",
+            verdict.stream, "aktiv",
             "empty match spec must not act as a catch-all"
         );
+    }
+
+    /// Which rung fired is the eligibility rule for the model rung, and it
+    /// replaces the only signal that existed before: a rationale string
+    /// nothing read. One input per value.
+    #[test]
+    fn classify_names_who_decided() {
+        let rules = vec![Rule {
+            r#match: MatchSpec {
+                from_contains: Some(vec!["bytes.dev".into()]),
+                subject_contains: None,
+                has_list_unsubscribe: None,
+            },
+            stream: "feed".into(),
+            note: "curated development newsletter".into(),
+        }];
+        assert_eq!(
+            classify(&facts("hello@bytes.dev", "anything", true), &rules).decided_by,
+            DecidedBy::ConfigRule
+        );
+        assert_eq!(
+            classify(&facts("news@shop.example", "Winter SALE", true), &[]).decided_by,
+            DecidedBy::Heuristic
+        );
+        assert_eq!(
+            classify(&facts("a.person@example.com", "Re: lunch?", false), &[]).decided_by,
+            DecidedBy::Fallback
+        );
+    }
+
+    /// A round trip over the stored vocabulary, because the strings are a
+    /// `CHECK` constraint in `{prefix}_triage_rules` and a mismatch would only
+    /// show up as a write failure against the live file.
+    #[test]
+    fn decided_by_round_trips_through_its_stored_form() {
+        use std::str::FromStr;
+        for value in [
+            DecidedBy::ConfigRule,
+            DecidedBy::Heuristic,
+            DecidedBy::Fallback,
+        ] {
+            assert_eq!(DecidedBy::from_str(value.as_str()), Ok(value));
+        }
+        assert!(DecidedBy::from_str("model").is_err());
+    }
+
+    /// A stream added to the `CHECK` constraint without a prompt definition
+    /// would reach the model as a bare word it has never been told the meaning
+    /// of. It fails here instead.
+    #[test]
+    fn stream_definitions_cover_every_stream() {
+        let named: Vec<&str> = STREAM_DEFINITIONS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(named, STREAMS.to_vec());
+        for (name, definition) in STREAM_DEFINITIONS {
+            assert!(
+                definition.len() > 30,
+                "{name} has no usable one-line definition"
+            );
+        }
     }
 }

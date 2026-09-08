@@ -9,28 +9,51 @@
   import RailGroup from "$lib/rail/RailGroup.svelte";
   import RailSection from "$lib/rail/RailSection.svelte";
   import RelatedTools from "$lib/RelatedTools.svelte";
+  import CompanionRail from "$lib/travel/CompanionRail.svelte";
   import JourneyOption from "$lib/travel/JourneyOption.svelte";
   import PlanEditor from "$lib/travel/PlanEditor.svelte";
+  import PlanSearchPanel from "$lib/travel/PlanSearchPanel.svelte";
   import PlaceField from "$lib/travel/PlaceField.svelte";
-  import TripMap, { type MapPoint } from "$lib/travel/TripMap.svelte";
+  import MapSurface from "$lib/map/MapSurface.svelte";
+  import {
+    TRIP_LAYERS,
+    tripFitKey,
+    tripSources,
+    type MapPoint,
+  } from "$lib/travel/trip-layers";
+  import ClimateStrip from "$lib/travel/ClimateStrip.svelte";
+  import CostCard from "$lib/travel/CostCard.svelte";
+  import RetrospectiveForm from "$lib/travel/RetrospectiveForm.svelte";
+  import {
+    climateFor,
+    planCost,
+    planSearch,
+    type ClimateBatch,
+    type ClimateResult,
+    type PlanCost,
+    type RankedCandidate,
+  } from "$lib/travel/api";
   import {
     loadNearbyPlaces,
     type NearbyPlace,
   } from "$lib/travel/nearby-places";
   import { loadPlaceImage, placeName, type PlaceImage } from "$lib/travel/place-image";
+  import type { Retrospective } from "$lib/api";
   import {
     assessTravelCandidates,
     calendarCandidatesFor,
     type TravelCandidateAssessment,
   } from "$lib/travel/travel-candidates";
+  import { seedFromCandidate } from "$lib/travel/plan-search";
   import {
     axonStatus,
     calendar,
     comms,
-    finance,
+    places,
     scouting,
     transit,
     trips,
+    type PersonPlaceProposal,
     type CalendarEntry,
     type CalendarCandidateVerdict,
     type Journey,
@@ -41,7 +64,6 @@
     type ScoutingOpportunity,
     type TransportMode,
     type TripPlan,
-    type TripSpendingSummary,
   } from "$lib/api";
 
   const EVENT_ADAPTERS = ["luma", "meetup", "euro_hackathons"];
@@ -121,8 +143,13 @@
   let plannerOpen = $state(false);
   let plannerNotice = $state<string | null>(null);
   let openedPlanFromLink = "";
-  let tripSpending = $state<TripSpendingSummary[]>([]);
-  let tripSpendingRequested = false;
+  // Seasonality for the open plan's destinations, keyed by "lat,lon" exactly as
+  // sent so a result never has to be re-associated with its request.
+  let climate = $state<ClimateBatch | null>(null);
+  // The open plan's close-out record. Held beside `activePlan` rather than on
+  // it, because `activePlan` is typed `TripPlan` and widening it would touch a
+  // declaration another stream is also editing tonight.
+  let planRetrospective = $state<Retrospective | null>(null);
 
   const selected = $derived(results.find((result) => result.place.id === selectedId) ?? null);
   const upcomingPlans = $derived(
@@ -136,23 +163,48 @@
       .sort((a, b) => b.date_end.localeCompare(a.date_end)),
   );
   const viewingPast = $derived(activePlan !== null && activePlan.date_end < todayKey);
-  const money = (cents: number, currency: string | null) =>
-    (cents / 100).toLocaleString("en-GB", { style: "currency", currency: currency ?? "EUR" });
-  const tripCostLine = $derived.by(() => {
-    const plan = activePlan;
-    if (!plan) return null;
-    const spend = tripSpending.find((entry) => entry.trip_id === plan.id) ?? null;
-    const parts: string[] = [];
-    if (plan.budget_cents !== null) {
-      parts.push(`Budget ${money(plan.budget_cents, plan.currency)}`);
+  // The one-line placeholder this replaced summed nothing and said nothing when
+  // finance was down. The roll-up is computed by trips and rendered by CostCard,
+  // which is the trips README's rule: the frontend renders, the backend computes.
+  let planCostRollup = $state<PlanCost | null>(null);
+  /**
+   * Machine proposes, human confirms — and a proposal is one NAMED quantity in a
+   * named unit, which is why the form prints which one it got.
+   *
+   * `personal_cents` when finance answered, else the booked total when the
+   * bookings resolved to a single currency, else nothing. The call site used to
+   * pass a literal null, so the form always said "no proposal" and its whole
+   * prefill branch was dead.
+   */
+  const costProposal = $derived.by(() => {
+    const rollup = planCostRollup;
+    if (!rollup) return null;
+    if (rollup.actuals.ok && rollup.actuals.personal_cents !== null) {
+      return { cents: rollup.actuals.personal_cents, label: "actuals" };
     }
-    if (spend) {
-      parts.push(
-        `${parts.length > 0 ? "spent" : "Spent"} ${money(spend.personal_spending_cents, plan.currency)}`,
-      );
+    if (rollup.booked_cents !== null && rollup.booked_cents > 0 && rollup.by_currency.length === 1) {
+      return { cents: rollup.booked_cents, label: "bookings" };
     }
-    return parts.length > 0 ? parts.join(" · ") : null;
+    return null;
   });
+
+  /**
+   * The result this destination's coordinate was sent under, and nothing else.
+   *
+   * `key` is the `lat,lon` pair exactly as sent, published by the route so a
+   * caller never re-associates a result with its request. Matching on the
+   * MATCHED place's name — and falling back to `results[0]` — rendered one
+   * city's twelve months under another city's heading as soon as a plan carried
+   * a second destination, or as soon as a coordinate resolved to a nearby place
+   * with a different name.
+   */
+  function climateResultFor(place: PlaceRef): ClimateResult | null {
+    if (!climate) return null;
+    if (typeof place.latitude !== "number" || typeof place.longitude !== "number") return null;
+    const key = `${place.latitude},${place.longitude}`;
+    return climate.results.find((result) => result.key === key) ?? null;
+  }
+
   const filteredPlans = $derived(
     planFilter === "upcoming" ? upcomingPlans : planFilter === "past" ? pastPlans : [...upcomingPlans, ...pastPlans],
   );
@@ -165,7 +217,57 @@
   const obsidianPendingCount = $derived(
     obsidianCandidates.filter((candidate) => !candidate.imported_plan_id).length,
   );
-  const travelReviewCount = $derived(travelCandidates.length + obsidianPendingCount);
+  // The companion register's waiting decisions, read-only here. `places` is a
+  // capability the published demo does not have, so its own 503 sentence is
+  // carried into the section rather than a 404 body (demo/demo.toml
+  // [absent.places]).
+  let companionProposals = $state<PersonPlaceProposal[]>([]);
+  let companionLoading = $state(true);
+  let companionNotice = $state<string | null>(null);
+  async function loadCompanionProposals(): Promise<void> {
+    companionLoading = true;
+    try {
+      const answer = await places.proposals();
+      companionProposals = answer.proposals;
+      companionNotice = null;
+    } catch (caught) {
+      companionProposals = [];
+      companionNotice = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      companionLoading = false;
+    }
+  }
+
+  /** Which half of the planner overlay is showing. */
+  let plannerTab = $state<"find" | "new">("new");
+
+  /**
+   * Create the plan the operator chose, then record the whole option space on
+   * it. The plan is never rolled back if adopt fails: deleting a durable row to
+   * hide a transient error is the wrong way round, and adopt is idempotent on
+   * (plan_id, item_type, external_id), so a retry is a correction.
+   */
+  async function createPlanFromCandidate(job: number, candidate: RankedCandidate): Promise<string> {
+    if (!origin) throw new Error("Pick an origin first.");
+    const seed = seedFromCandidate(candidate);
+    const plan = await trips.create({
+      title: placeName(candidate.destination),
+      origin,
+      destinations: [candidate.destination],
+      date_start: seed.startDate,
+      date_end: seed.endDate,
+      interests: interests.trim(),
+      travelers: [],
+      transport_modes: [candidate.mode],
+    });
+    plans = [plan, ...plans];
+    await planSearch.adopt(job, plan.id);
+    return plan.id;
+  }
+
+  const travelReviewCount = $derived(
+    travelCandidates.length + obsidianPendingCount + companionProposals.length,
+  );
   const overviewMapPoints = $derived.by<MapPoint[]>(() =>
     filteredPlans.flatMap((plan) =>
       [plan.origin, ...plan.destinations]
@@ -206,6 +308,14 @@
       }));
   });
 
+  // Derived rather than called in the template: both point arrays are rebuilt whenever a row
+  // is hovered, and a fresh object literal per render would hand MapSurface a new `sources`
+  // identity every frame. The fit key is what stops a hover from re-framing the camera.
+  const overviewMapSources = $derived(tripSources(overviewMapPoints));
+  const overviewMapFitKey = $derived(tripFitKey(overviewMapPoints));
+  const tripMapSources = $derived(tripSources(mapPoints));
+  const tripMapFitKey = $derived(tripFitKey(mapPoints));
+
   function planPhase(plan: TripPlan): "In progress" | "Planned" | "Past" {
     if (plan.date_end < todayKey) return "Past";
     if (plan.date_start <= todayKey) return "In progress";
@@ -227,6 +337,7 @@
         plans = [];
       }
       await loadTravelCandidates();
+      await loadCompanionProposals();
     })();
   });
 
@@ -595,6 +706,9 @@
       items = [];
       plannerOpen = false;
       plannerNotice = null;
+      // A new plan inherits nothing from the last one that was open.
+      void loadClimate(plan);
+      void loadPlanCost(plan.id);
       await explorePlan(plan);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -603,25 +717,60 @@
     }
   }
 
-  // One fetch per page life, on the first opened plan. Finance being down must not
-  // break travel: the cost line simply stays absent, so failure is swallowed here.
-  async function loadTripSpending(): Promise<void> {
-    if (tripSpendingRequested) return;
-    tripSpendingRequested = true;
+  /**
+   * The plan's own cost roll-up: intent, committed and actual, per plan.
+   *
+   * This replaces a page-wide `finance.tripSpending()` that downloaded the whole
+   * projection to read one number. `finance.tripSpending()` itself stays defined
+   * in `$lib/api` — the demo has a recorded fixture for it and another consumer
+   * may still want it.
+   *
+   * Finance being down is not a failure of this call: trips answers 200 with
+   * `actuals.ok: false` and a reason, and the card prints it.
+   */
+  async function loadPlanCost(planId: string): Promise<void> {
+    planCostRollup = null;
     try {
-      tripSpending = await finance.tripSpending();
+      planCostRollup = await planCost(planId);
     } catch {
-      // Deliberate empty state — tripSpending stays [].
+      // Deliberate empty state — the card stays absent rather than lying.
+    }
+  }
+
+  /**
+   * Normals for every destination that carries a coordinate, in ONE request.
+   *
+   * Failure is swallowed on purpose: places being down or refusing the origin
+   * must not break the trip view, so the strip simply stays absent. It never
+   * degrades into an empty grid — the route distinguishes "no normals yet" from
+   * "no such place" and the component prints whichever it got.
+   */
+  async function loadClimate(plan: TripPlan): Promise<void> {
+    climate = null;
+    const keys = [...plan.destinations]
+      .filter(
+        (place): place is PlaceRef & { latitude: number; longitude: number } =>
+          typeof place.latitude === "number" && typeof place.longitude === "number",
+      )
+      .map((place) => ({ latitude: place.latitude, longitude: place.longitude }));
+    if (keys.length === 0) return;
+    try {
+      await axonStatus.start("places").catch(() => undefined);
+      climate = await climateFor(keys, { from: plan.date_start, to: plan.date_end });
+    } catch {
+      // Deliberate empty state — the strip stays absent rather than lying.
     }
   }
 
   async function openPlan(plan: TripPlan): Promise<void> {
     error = null;
     editingPlan = false;
-    void loadTripSpending();
+    void loadPlanCost(plan.id);
     try {
       const details = await trips.get(plan.id);
       items = details.items;
+      planRetrospective = details.retrospective;
+      void loadClimate(details);
       if (details.date_end < todayKey) {
         activePlan = details;
         selectedId = details.destinations[0]?.id ?? "";
@@ -751,6 +900,12 @@
       const updated = await trips.update(activePlan.id, patch);
       plans = plans.map((plan) => (plan.id === updated.id ? updated : plan));
       editingPlan = false;
+      // Both reads are about the plan that just changed: the destinations decide
+      // which normals the strip shows, and the budget is edited through exactly
+      // this path. Without these the strip kept the previous destinations and the
+      // card kept the previous budget.
+      void loadClimate(updated);
+      void loadPlanCost(updated.id);
       if (updated.date_end < todayKey) {
         activePlan = updated;
         results = [];
@@ -1108,9 +1263,17 @@
 
           <div class="board-layout">
             <div class="overview-map">
-              <TripMap
-                points={overviewMapPoints}
-                onSelect={(planId) => (highlightedPlanId = planId)}
+              <MapSurface
+                sources={overviewMapSources}
+                layers={TRIP_LAYERS}
+                fitKey={overviewMapFitKey}
+                interactive={["trip-points"]}
+                onFeatureClick={(_, feature) => {
+                  const groupId = feature.properties?.groupId;
+                  if (typeof groupId === "string") highlightedPlanId = groupId;
+                }}
+                deferredLabel="Trips"
+                eager
               />
               <div class="map-legend" aria-label="Map legend">
                 <span><i class="upcoming"></i> upcoming</span>
@@ -1332,6 +1495,14 @@
             {/if}
           </div>
         </RailSection>
+
+        <RailSection label="Companions" count={companionProposals.length}>
+          <CompanionRail
+            proposals={companionProposals}
+            loading={companionLoading}
+            notice={companionNotice}
+          />
+        </RailSection>
       </RailGroup>
     </Rail>
   </div>
@@ -1350,6 +1521,36 @@
         <p class="planner-notice" aria-live="polite">{plannerNotice}</p>
       {/if}
 
+      <div class="planner-tabs" role="tablist" aria-label="How to start a trip">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={plannerTab === "find"}
+          class:active={plannerTab === "find"}
+          onclick={() => (plannerTab = "find")}>Find a trip</button
+        >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={plannerTab === "new"}
+          class:active={plannerTab === "new"}
+          onclick={() => (plannerTab = "new")}>New trip</button
+        >
+      </div>
+
+      {#if plannerTab === "find"}
+        <PlanSearchPanel
+          {origin}
+          modeOptions={MODE_OPTIONS}
+          onChoose={(seed) => {
+            firstDestination = { ...seed.destination, kind: "city" };
+            startDate = seed.startDate;
+            endDate = seed.endDate;
+            plannerTab = "new";
+          }}
+          onAdopt={createPlanFromCandidate}
+        />
+      {:else}
       <form
         class="planner-form"
         onsubmit={(event) => {
@@ -1436,6 +1637,7 @@
         <span><b>02</b> Transport options for each leg</span>
         <span><b>03</b> Activities, events, and itinerary</span>
       </div>
+      {/if}
     </Overlay>
   {/if}
 
@@ -1462,9 +1664,6 @@
         {placeName(activePlan.origin)} · {shortDate(activePlan.date_start)} –
         {shortDate(activePlan.date_end)}
       </p>
-      {#if tripCostLine}
-        <p>{tripCostLine}</p>
-      {/if}
       <div class="trip-meta">
         {#each activePlan.transport_modes as mode (mode)}
           <span>{modeLabel(mode)}</span>
@@ -1555,9 +1754,18 @@
     {/each}
   </section>
 
+  {#if planCostRollup}
+    <CostCard cost={planCostRollup} />
+  {/if}
+
   {#if viewingPast}
     <section class="past-view">
-      <TripMap points={mapPoints} />
+      <MapSurface
+        sources={tripMapSources}
+        layers={TRIP_LAYERS}
+        fitKey={tripMapFitKey}
+        deferredLabel="Trip map"
+      />
       <div class="past-summary card">
         <span class="eyebrow">Trip history</span>
         <h3>{placeName(activePlan.origin)} → {activePlan.destinations.map(placeName).join(" → ")}</h3>
@@ -1566,6 +1774,14 @@
           <p class="past-intent">{activePlan.interests}</p>
         {/if}
       </div>
+
+      <RetrospectiveForm
+        planId={activePlan.id}
+        currency={activePlan.currency}
+        existing={planRetrospective}
+        proposal={costProposal}
+        onSaved={(row) => (planRetrospective = row)}
+      />
 
       <div class="past-timeline">
         <div class="section-heading">
@@ -1646,6 +1862,17 @@
           </div>
         </header>
 
+        {#if climate}
+          {@const found = climateResultFor(selected.place)}
+          {#if found}
+            <ClimateStrip
+              result={found}
+              rule={climate.best_months_rule}
+              attribution={climate.attribution}
+            />
+          {/if}
+        {/if}
+
         {#if selected.anchors.length > 0}
           <section class="calendar-anchors" aria-labelledby="calendar-anchor-heading">
             <header>
@@ -1690,7 +1917,12 @@
 
         {#if mapOpen}
           <div class="detail-map">
-            <TripMap points={mapPoints} />
+            <MapSurface
+        sources={tripMapSources}
+        layers={TRIP_LAYERS}
+        fitKey={tripMapFitKey}
+        deferredLabel="Trip map"
+      />
           </div>
         {/if}
 
@@ -2055,7 +2287,7 @@
 
   .candidate-state.needs_travel_day {
     background: var(--warning-soft);
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .candidate-state.conflicts {
@@ -2385,6 +2617,28 @@
 
   /* The planner is a dialog now — `$lib/Overlay.svelte` carries its frame, so what
    * is left here is the form itself. */
+  .planner-tabs {
+    display: flex;
+    gap: 0.35rem;
+    margin-bottom: 0.9rem;
+  }
+
+  .planner-tabs button {
+    padding: 0.35rem 0.8rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    cursor: pointer;
+  }
+
+  .planner-tabs button.active {
+    border-color: var(--primary);
+    background-color: var(--primary-soft);
+    color: var(--primary);
+  }
+
   .planner-lede {
     margin: -0.5rem 0 1rem;
     color: var(--text-tertiary);
@@ -2541,7 +2795,7 @@
   }
 
   .import-origin.missing p {
-    color: var(--warning);
+    color: var(--warning-ink);
     font-weight: 600;
   }
 
@@ -2583,7 +2837,7 @@
   }
 
   .import-list small {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .import-list button,
@@ -3088,7 +3342,7 @@
   }
 
   .calendar-anchors em.possible {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .calendar-anchors li > button {
@@ -3126,7 +3380,7 @@
 
   .source-notice {
     margin: 0 0 0.75rem;
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.6875rem;
   }
 
