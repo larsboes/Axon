@@ -23,6 +23,8 @@ const KINDS = join(LIB, "home/kinds");
 type Kind = {
   key: string;
   capability: string | null;
+  /** A component filename under `home/rows/`, resolved by `registry.ts`. */
+  view: string;
   dataClass(row: unknown): string | null;
 };
 
@@ -101,6 +103,30 @@ describe("a kind reports the class its capability published, and never one of it
       "trip",
       "trip-retrospective",
     ]);
+  });
+});
+
+describe("a kind that publishes a class has a row that renders it", () => {
+  test("every publishing kind's view hands the class to RowMeta", () => {
+    // The defect this is shaped against is `FinanceRow`'s, found by B50 and fixed on
+    // 2026-09-08: the row declared `dataClass` in its prop type, never destructured it and
+    // rendered nothing, so "honoured on mail and finance" was true of the registry and
+    // false of the pixels. A row may satisfy this in one of two ways — hand `{dataClass}`
+    // to `RowMeta`, or delegate to a component that reads the class off the row itself,
+    // which is what `FeedRow` does through `FeedItemRow`.
+    //
+    // Derived from the kinds rather than from a list, so a kind that starts publishing
+    // fails here until its row catches up, with nobody having to remember this file.
+    const renders = /<RowMeta[^>]*\{dataClass\}/s;
+    const delegates = /data_class|<FeedItemRow/s;
+    const dropped = kinds
+      .filter(({ kind }) => kind.dataClass({ data_class: "c2" } as never) !== null)
+      .filter(({ kind }) => {
+        const view = readFileSync(join(LIB, `home/rows/${kind.view}.svelte`), "utf8");
+        return !renders.test(view) && !delegates.test(view);
+      })
+      .map(({ kind }) => `${kind.key} -> ${kind.view}`);
+    expect(dropped).toEqual([]);
   });
 });
 
