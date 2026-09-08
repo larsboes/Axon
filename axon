@@ -18,6 +18,11 @@ AXON_ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # tools/capability-probe.test.sh drives the rules directly.
 # shellcheck source=tools/lib/capability-probe.sh
 . "$AXON_ROOT/tools/lib/capability-probe.sh"
+# What tools/ holds, for `axon search`. A library for the same reason: `axon search` calls
+# tools/capability.sh registry, which hard-fails without a machine.toml, so the whole verb
+# is unrunnable in CI — but the tools index is testable on any checkout.
+# shellcheck source=tools/lib/tool-index.sh
+. "$AXON_ROOT/tools/lib/tool-index.sh"
 
 usage() {
   cat <<'EOF'
@@ -25,7 +30,7 @@ Usage: axon <command> [arguments]
 
 Discover Axon:
   help [command]                 Show commands or one command's usage
-  search <words...>              Search commands, capabilities, and Packs
+  search <words...>              Search commands, tools, capabilities, and Packs
   doctor                          Check this Axon installation
   context with [capability]      Emit bounded current operating context
   context on [unit-or-path]      Emit bounded current repository context
@@ -290,18 +295,31 @@ pack_command() {
   esac
 }
 
+# Four sections, and a verdict.
+#
+# It printed four headings and nothing under them for a query that matched nothing, and
+# exited 0. A search that cannot say "no" is a search whose silence a caller has to guess at,
+# so this follows grep: exit 1 when nothing matched, and say so on stderr.
 search() {
   [ "$#" -gt 0 ] || { echo "usage: axon search <words...>" >&2; exit 1; }
-  local query="$*" lowered
-  lowered="$(printf '%s' "$query" | tr '[:upper:]' '[:lower:]')"
+  local query="$*" found=0
   echo "Commands:"
-  usage | grep -iF "$query" || true
+  usage | grep -iF -- "$query" && found=1 || true
+  echo
+  echo "Tools:"
+  search_tools "$query" && found=1 || true
   echo
   echo "Capabilities:"
-  "$AXON_ROOT/tools/capability.sh" registry | jq -r '.[] | [.name, (.kind // "")] | @tsv' | grep -iF "$lowered" || true
+  "$AXON_ROOT/tools/capability.sh" registry |
+    jq -r '.[] | [.name, (.kind // "")] | @tsv' | grep -iF -- "$query" && found=1 || true
   echo
   echo "Packs:"
-  bun run "$AXON_ROOT/tools/packs-opencode.ts" list | grep -iF "$lowered" || true
+  bun run "$AXON_ROOT/tools/packs-opencode.ts" list | grep -iF -- "$query" && found=1 || true
+  if [ "$found" -eq 0 ]; then
+    echo
+    echo "axon: nothing matches '$query' in commands, tools, capabilities or Packs." >&2
+    return 1
+  fi
 }
 
 case "${1:-help}" in

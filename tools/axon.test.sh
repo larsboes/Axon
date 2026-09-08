@@ -24,7 +24,11 @@ contains() { case "$1" in *"$2"*) ;; *) fail "expected '$2' in: $1" ;; esac; }
 out="$("$AXON" help)"
 contains "$out" "capability list"
 contains "$out" "pack deploy"
-contains "$out" "search <words...>"
+# tools is in the list because it is indexed. `axon search` itself cannot run here — it
+# calls tools/capability.sh registry, which hard-fails without a machine.toml — so the index
+# is asserted by tools/tool-index.test.sh against the library both use.
+contains "$out" "search <words...>              Search commands, tools, capabilities, and Packs"
+[ -r "$ROOT/tools/lib/tool-index.sh" ] || fail "tools/lib/tool-index.sh is missing"
 contains "$out" "storage <report|apply|target|prune>"
 contains "$out" "gates"
 contains "$out" "test"
