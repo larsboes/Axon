@@ -24,6 +24,7 @@
     type CloudCalendarCandidate,
   } from "$lib/feed/cloud-calendar";
   import Icon from "$lib/Icon.svelte";
+  import { modal } from "$lib/modal";
   import {
     ApiError,
     axonStatus,
@@ -1693,9 +1694,14 @@
     <div class="modal-backdrop">
       <div
         class="preview-modal"
+        use:modal={{
+          onClose: () => (cloudPreview = null),
+          canClose: () => !approvingCloudPreview,
+        }}
         role="dialog"
         aria-modal="true"
         aria-labelledby="cloud-preview-title"
+        tabindex="-1"
       >
         <header class="preview-head">
           <div>

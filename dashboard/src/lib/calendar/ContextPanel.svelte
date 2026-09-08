@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { modal } from "$lib/modal";
   import type {
     CalendarContext,
     CalendarNewContext,
@@ -166,7 +167,14 @@
 {#if showForm}
   <div class="overlay">
     <button class="backdrop" aria-label="Close dialog" onclick={close}></button>
-    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="context-form-title">
+    <div
+      class="sheet"
+      use:modal={{ onClose: close, canClose: () => !saving }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="context-form-title"
+      tabindex="-1"
+    >
       <div class="heading">
         <div>
           <p>Planning context</p>

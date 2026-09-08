@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { modal } from "$lib/modal";
   import { KINDS } from "./types";
   import type { CalendarNewRhythm } from "$lib/api";
 
@@ -22,7 +23,6 @@
   let validUntil = $state("");
   let saving = $state(false);
   let error = $state("");
-  let dialog: HTMLDivElement;
 
   const WEEKDAY_OPTS: Array<{ value: string; label: string }> = [
     { value: "mo", label: "Mo" },
@@ -56,12 +56,7 @@
   onMount(() => {
     if (!validFrom) validFrom = todayString();
     if (!validUntil) validUntil = nextMonthString();
-    dialog.focus();
   });
-
-  function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && !saving) onClose();
-  }
 
   async function save() {
     if (!title.trim()) { error = "Title is required"; return; }
@@ -88,13 +83,11 @@
   }
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
 <div class="overlay">
   <button class="backdrop" aria-label="Close dialog" onclick={onClose}></button>
   <div
     class="sheet"
-    bind:this={dialog}
+    use:modal={{ onClose, canClose: () => !saving }}
     role="dialog"
     aria-modal="true"
     aria-label="New rhythm"

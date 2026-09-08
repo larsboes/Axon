@@ -22,6 +22,13 @@ on them; Home's reading lane renders it today and the `/feed` list is meant to a
 component rather than keep a second one. Icons are inline SVG in `src/lib/Icon.svelte`,
 quarried from Lucide (ISC), rather than a dependency.
 
+Behaviour that is not a class and not a component is an action. `src/lib/modal.ts` is the
+one so far: `use:modal` on the element carrying `role="dialog"` gives it mount focus, a Tab
+trap, Escape with a `canClose` predicate, and a focus restore to whatever opened it. It was
+written inside `Overlay` and moved out on 2026-09-08, when a count found four dialogs, one
+trap and no focus restore at all; `tools/dashboard-modal.test.ts` keeps every
+`role="dialog"` in the tree wired to it.
+
 ### The token layer
 
 PRD Q87 (2026-09-05) grew it, and the measurement is why. `app.css` was 289 lines and about
