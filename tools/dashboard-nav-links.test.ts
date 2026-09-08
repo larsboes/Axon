@@ -34,6 +34,22 @@ const RAW_GOTO = /goto\(\s*["'`]\//g;
 /** A function handing back an app path. These are the sneaky ones: the literal is nowhere
  *  near the `href` that consumes it, so wrapping at the call site misses them. */
 const RAW_RETURN = /return\s+["'`]\/(?!\/)/g;
+/** Navigation by assignment. Invisible to the three patterns above and to review, because
+ *  clicking the same row's anchor works — Home's keyboard path had five of these. */
+const RAW_LOCATION = /location\.href\s*=\s*["'`]\/(?!\/)/g;
+/** An app path in an object literal, consumed by an href somewhere else entirely. */
+const RAW_HREF_FIELD = /href:\s*["'`]\/(?!\/)/g;
+
+/** The two files allowed to carry a raw `href:` literal, each with its reason.
+ *
+ *  A third one fails the build, which is the point. */
+const KNOWN_HREF_FIELD: Record<string, string> = {
+  // The canonical table. These eleven literals are raw by design and every consumer wraps
+  // them with link() in +layout.svelte — flagging the table that defines the fix is wrong.
+  "lib/nav.ts": "PRIMARY_NAV and UTILITY_NAV, wrapped by link() at the render site",
+  // A live #170 escape: declared at :119-121 and consumed raw by <a class="back">.
+  "routes/feed/[id]/+page.svelte": "backHref (owner: feed-personalization)",
+};
 
 const relative = (file: string) => file.slice(SRC.length + 1);
 
@@ -64,6 +80,28 @@ describe("internal links are base-aware", () => {
       .map((file) => [relative(file), [...readFileSync(file, "utf8").matchAll(RAW_RETURN)].length] as const)
       .filter(([, n]) => n > 0);
     expect(offenders.map(([file, n]) => `${file} (${n})`)).toEqual([]);
+  });
+
+  test("no component navigates by assigning a raw absolute path to location.href", () => {
+    const offenders = files
+      .map((file) => [relative(file), [...readFileSync(file, "utf8").matchAll(RAW_LOCATION)].length] as const)
+      .filter(([, n]) => n > 0);
+    expect(offenders.map(([file, n]) => `${file} (${n})`)).toEqual([]);
+  });
+
+  test("only the two known files carry a raw app path in an href field", () => {
+    const offenders = files
+      .map((file) => [relative(file), [...readFileSync(file, "utf8").matchAll(RAW_HREF_FIELD)].length] as const)
+      .filter(([, n]) => n > 0)
+      .filter(([file]) => KNOWN_HREF_FIELD[file] === undefined);
+    expect(offenders.map(([file, n]) => `${file} (${n})`)).toEqual([]);
+  });
+
+  test("the known list stays two entries, so it cannot grow quietly", () => {
+    expect(Object.keys(KNOWN_HREF_FIELD).sort()).toEqual([
+      "lib/nav.ts",
+      "routes/feed/[id]/+page.svelte",
+    ]);
   });
 
   // Both halves of the contract, exercised directly now that nav.ts imports no Vite alias.

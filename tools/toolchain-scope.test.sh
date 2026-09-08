@@ -23,6 +23,17 @@ for _c in "$_dir" "$_dir/tools"; do
 done
 [ -n "$SRC_TOOLS" ] || { echo "toolchain-scope: cannot find toolchain-check next to $_dir" >&2; exit 1; }
 
+# Before the scratch root exists, and it is the whole of defect D7. This suite was excluded from
+# CI on 2026-08-26 as "only ever green inside the Bazel sandbox", on a measurement taken on a
+# machine whose shell exports the AXON_* set — which the overlay's own config/shell does. The
+# sandbox was not hiding a scoping bug; it was scrubbing the environment. Without this line the
+# four capability-field checks read the OPERATOR's machine.toml and the OPERATOR's capabilities
+# directory instead of the fixtures written twenty lines below, so `withdb` is never enabled
+# anywhere and `fixturedb` correctly reads n/a. Cleared, all 30 checks pass; the exclusion in
+# .github/workflows/ci.yml is gone with it (tools/lib/test-support.sh#isolate_axon_env).
+source "$SRC_TOOLS/lib/test-support.sh"
+isolate_axon_env
+
 SCRATCH="$(mktemp -d "/tmp/toolchain-scope.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 ROOT="$SCRATCH/axon"; OVERLAY="$SCRATCH/overlay"; STUB_BIN="$SCRATCH/bin"

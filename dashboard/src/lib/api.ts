@@ -52,7 +52,7 @@ export function describeFailure(status: number, body: string, path: string): str
   return capability ? `${capability}: request failed (${status})` : `Request failed (${status})`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -66,7 +66,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return parsed as T;
 }
 
-const jsonInit = (method: string, body: unknown): RequestInit => ({
+export const jsonInit = (method: string, body: unknown): RequestInit => ({
   method,
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
@@ -151,8 +151,28 @@ export interface PlanItem {
   created_at: string;
 }
 
+/**
+ * One plan's close-out record: exactly the three fields PRD 8.2 rules, plus the
+ * plan key and the stamp. `currency` is echoed from the plan and is not stored
+ * on the row — `cost_cents` is denominated in the plan's own currency, so the
+ * money is named exactly once.
+ *
+ * Declared here rather than imported, because this module deliberately has no
+ * imports at all: the Home decision-kind modules under `dashboard/src/lib/home`
+ * must stay importable under plain `bun test`.
+ */
+export interface Retrospective {
+  plan_id: string;
+  cost_cents: number | null;
+  currency: string | null;
+  again: 'yes' | 'no' | 'maybe';
+  change_note: string;
+  filled_at: string;
+}
+
 export interface PlanDetails extends TripPlan {
   items: PlanItem[];
+  retrospective: Retrospective | null;
 }
 
 export interface ObsidianTripCandidate {
@@ -309,6 +329,8 @@ export const trips = {
         | 'transport_modes'
         | 'stages'
         | 'cover_image_url'
+        | 'budget_cents'
+        | 'currency'
       >
     >,
   ) =>
@@ -1242,6 +1264,42 @@ export interface HostWatchFinding {
   last_seen: string;
 }
 
+/** One Pack skill (or the agents/ tree) as one harness currently holds it. */
+export interface PackUnitView {
+  pack: string;
+  skill: string;
+  /** current · outdated · drifted · missing · collision · invalid · not-deployed · migration-required */
+  status: string;
+  detail?: string;
+}
+
+/** A directory at a harness skill root that no Pack ledger claims. */
+export interface PackStrayView {
+  name: string;
+  /** `copy` is a promote candidate; `external` and `symlink` are owned by another installer. */
+  kind: "copy" | "external" | "symlink";
+  detail?: string;
+}
+
+export interface HarnessView {
+  id: string;
+  label: string;
+  installed: boolean;
+  /** `materialized` copies and can drift; `registry` reads the Pack source in place. */
+  model: "materialized" | "registry";
+  marker: string;
+  destination: string | null;
+  cli: string;
+  units: PackUnitView[];
+  unowned: PackStrayView[];
+}
+
+export interface PacksView {
+  measuredAt: string;
+  harnesses: HarnessView[];
+  unsupported: { id: string; label: string; why: string }[];
+}
+
 export const axonStatus = {
   health: () => request<AxonStatusHealth>('/axon-status/api/axon-status/health'),
   capabilities: () => request<CapabilityView[]>('/axon-status/api/axon-status/capabilities'),
@@ -1265,6 +1323,11 @@ export const axonStatus = {
       '/axon-status/api/axon-status/host-watch',
       signal ? { signal } : undefined,
     ).then((response) => response.findings),
+  /** Every Pack skill against every agent harness. Served here rather than by `packs`
+   *  itself because that capability is `kind = "data"`: it owns the deployment ledgers and
+   *  nothing starts, so it has no port. Same reason as `hostWatch()` above. */
+  packs: (signal?: AbortSignal) =>
+    request<PacksView>('/axon-status/api/axon-status/packs', signal ? { signal } : undefined),
   start: (name: string, signal?: AbortSignal) =>
     request<{ name: string; up: boolean; detail: string }>(
       `/axon-status/api/axon-status/capabilities/${encodeURIComponent(name)}/start`,
@@ -1520,6 +1583,20 @@ interface FeedEntryBase {
 }
 
 export interface FeedEntry extends FeedEntryBase {
+  /** What this item is worth protecting, as `GET /comms/feed` states it since 2026-09-06.
+   *  An unclassified row answers `c1`, the undeclared default, so the LIST never omits it.
+   *
+   *  Optional all the same, and the `?` is the contract gap rather than caution: comms'
+   *  `FeedFullItem` -- what `POST /ingest` and `GET /feed/:id` answer with -- carries no
+   *  class, so `toListEntry` in `routes/feed/+page.svelte` builds a list row from a detail
+   *  that has none. A reader must therefore treat `undefined` as "not stated" and fail
+   *  closed, the way finance's `item_is_quotable` already does. It stops being optional the
+   *  day the detail contract states one too.
+   *
+   *  On `FeedEntry` and not on `FeedEntryBase` for the same reason, and because the shared
+   *  reader (`ContentItemDetail`) carries the richer `ContentDataClass` shape under this
+   *  exact name -- one name for two shapes is how a component comes to read the wrong one. */
+  data_class?: DataClass;
   relevance: FeedRelevance | null;
   evaluation: FeedEvaluation | null;
 }
@@ -1656,6 +1733,10 @@ export interface CloudDerivativePreview {
   document: string;
   redaction_count: number;
   redactions: RedactionFinding[];
+  /** PRD Q9b's receipt: the sentence a human reads on a call that was reduced,
+   *  or null when nothing was removed. Composed by comms, not here, so every
+   *  surface says the same thing about the same call. */
+  redaction_receipt: string | null;
   entity_detection: 'not-required' | 'local-deterministic-v3';
   truncated: boolean;
   approval_required: true;
@@ -1914,6 +1995,38 @@ export interface TriageItem {
   waiting_since: string | null;
   internal_date: string | null;
   relevance: FeedRelevance[];
+  /** The local model rung's verdict, when a shadow pass has stored one. Null for
+   *  a thread the deterministic rules decided, and for every thread until a pass
+   *  has run. Declared here rather than in `lib/mail/api.ts` because TriageItem
+   *  is the reader contract for GET /triage and this file owns it; the client
+   *  FUNCTIONS all live in the stream's own module. */
+  model?: TriageModelVerdict | null;
+}
+
+/** One stored verdict from the local mail classification rung.
+ *
+ *  `urgency_validated` is false until the frozen corpus carries a measured
+ *  urgency band error. While it is false, urgency is shown and ranks nothing:
+ *  a number that would reorder the ladder passes the same door the stream does. */
+export interface TriageModelVerdict {
+  mode: 'shadow' | 'applied' | 'held';
+  /** `generated` when the model answered. `local_refused` when the class refuses
+   *  every prompt, `skipped_over_window` when the source is too long for the
+   *  light local model, and the transport states otherwise. */
+  state: string;
+  rule_stream: MailCategory;
+  model_stream: MailCategory | null;
+  confidence_bp: number | null;
+  urgency_bp: number | null;
+  urgency_validated: boolean;
+  rationale: string | null;
+  urgency_rationale: string | null;
+  data_class: DataClass;
+  /** Set when apply refused this proposal because it would raise the data class.
+   *  Names the class it would raise to. */
+  held_reason: string | null;
+  classification_version: string;
+  applied_at: string | null;
 }
 
 export interface TriageSweepResult {
@@ -1977,6 +2090,10 @@ export interface TriageBulkResult {
   succeeded: string[];
   failures: Array<{ id: string; error: string }>;
   gmail_changed: boolean;
+  /** Rows whose stored subject and snippet this batch permanently redacted,
+   *  because the category it set on them raises the data class. Zero for every
+   *  action except `categorize` into `belege` or `steuern`. */
+  narrowed: number;
 }
 
 export interface GmailMaintenanceResult {
@@ -2497,7 +2614,7 @@ export const comms = {
       jsonInit('POST', { status }),
     ),
   setTriageCategory: (id: string, stream: MailCategory) =>
-    request<void>(
+    request<{ ok: boolean; narrowed: boolean }>(
       `/comms/triage/${encodeURIComponent(id)}/stream`,
       jsonInit('POST', { stream }),
     ),

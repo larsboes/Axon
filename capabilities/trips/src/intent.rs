@@ -93,26 +93,7 @@ pub fn place_slug(name: &str) -> String {
 /// this supplies the shape. A model that returns an EVA code, a price or a plan
 /// id has those fields dropped on the floor, because nothing reads them.
 pub fn draft_from_model_json(sentence: &str, raw: &str) -> Result<IntentDraft, String> {
-    draft_from_model_json_on(sentence, raw, &today())
-}
-
-/// Today as `YYYY-MM-DD`, from the system clock.
-fn today() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let z = secs.div_euclid(86_400) + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = if m <= 2 { y + 1 } else { y };
-    format!("{year:04}-{m:02}-{d:02}")
+    draft_from_model_json_on(sentence, raw, &civil_date::today())
 }
 
 /// A date the model produced is only kept if it could actually be travelled.

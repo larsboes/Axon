@@ -120,3 +120,66 @@ _capability_env_file() {  # <name>
   [ -f "$mf" ] || return 0
   toml_get env_file "$mf"
 }
+
+# ── Trusted peers: hardware this operator owns ────────────────────────────────────────
+#
+# PRD Q39 (2026-08-25) added a third tier to a code that knew two. `libs/inference`
+# classified an endpoint as loopback or cloud, and `is_cloud_endpoint` is literally
+# "https:// and not loopback" — so the moment `tailscale cert` gives a peer a real
+# certificate, the operator's own MacBook reads as a cloud provider and demands a reviewed
+# providers.toml entry. Getting the transport security right made the classification wrong.
+#
+# The rule Q39 set: a tailnet peer the operator owns is trusted exactly as loopback is,
+# because nothing leaves hardware they control — and it is DECLARED, never inferred. An
+# address is not a permission, and neither is being reachable on the tailnet: a shared or
+# borrowed node is reachable too.
+#
+# Two files, the same pair capability_endpoint above already resolves, for the same reason:
+#
+#   <overlay>/config/systems.local.toml   [<id>]  owner = "self"   # this host is mine
+#   <overlay>/config/inference.json       backend.provided_by = "<id>"
+#
+# `owner` sits with the address rather than in inference.json because it is a fact about the
+# HOST, not about one service on it, and a second declaration per service is a second place
+# to forget. `provided_by` in inference.json names WHICH host serves a backend, which is the
+# same word this file already uses for a capability with an external provider.
+#
+# Naming a host is not trusting it. Trust is the INTERSECTION: a backend must name an id and
+# that id must declare itself owned. [nvidia-nim] lives in the same file and is emphatically
+# not this operator's hardware, which is exactly why presence in systems.local.toml cannot be
+# the test.
+
+# systems_owner <id> — the declared owner of a systems entry, empty when it declares none.
+systems_owner() {
+  local systems
+  systems="$(axon_systems_local)"
+  [ -f "$systems" ] || return 0
+  toml_get_in "$1" owner "$systems"
+}
+
+# trusted_peer_ids — every systems id this overlay declares as the operator's own hardware,
+# one per line. The declaration IS the list, for the reason external_capabilities gives: a
+# separate array could disagree with the sections, and the shorter list wins silently.
+trusted_peer_ids() {
+  local systems sec
+  systems="$(axon_systems_local)"
+  [ -f "$systems" ] || return 0
+  for sec in $(toml_sections "$systems"); do
+    [ "$(toml_get_in "$sec" owner "$systems")" = "self" ] || continue
+    echo "$sec"
+  done
+}
+
+# trusted_peers_env — the same list as one comma-separated line, which is the form
+# libs/inference reads as AXON_INFERENCE_TRUSTED_PEERS. Empty output and exit 0 when nothing
+# is declared: no trusted peers is a valid and, until the second host lands, the normal state.
+trusted_peers_env() {
+  local out="" id
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if [ -z "$out" ]; then out="$id"; else out="$out,$id"; fi
+  done <<EOF
+$(trusted_peer_ids)
+EOF
+  echo "$out"
+}

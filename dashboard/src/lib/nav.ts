@@ -43,6 +43,26 @@ export interface NavItem {
    * Absent on /: Home draws from several capabilities and degrades to the ones present.
    */
   capability?: string;
+  /**
+   * The capabilities the shell starts when this destination is opened.
+   *
+   * Defaults to `[capability]`. It is a separate field because the two facts differ:
+   * /travel is pointless without `transit`, which is what `capability` says, but the page
+   * also reads `trips` and neither would start on its own. Before this, /finance and /map
+   * were the only two primary destinations that started nothing at all, so on a cold
+   * machine they rendered an error card until the operator went to /capabilities.
+   */
+  starts?: string[];
+  /**
+   * This destination draws a MapLibre surface, so the shell may start fetching the library
+   * before the click lands. The two map routes cost ~1 MB of already-lazy chunk plus the
+   * vendored style; hovering the link is a strong enough signal to begin, and beginning is
+   * what turns the first frame from a wait into a paint.
+   *
+   * A boolean rather than a function, because this module must stay importable under plain
+   * `bun test` — see the note on `setBase` above. The root layout owns the dynamic import.
+   */
+  warmsMap?: true;
 }
 
 /** Daily work stays visible. Machine administration sits one level deeper. */
@@ -50,8 +70,8 @@ export const PRIMARY_NAV: NavItem[] = [
   { href: "/", label: "Home", icon: "home" },
   { href: "/calendar", label: "Calendar", icon: "calendar", capability: "calendar" },
   { href: "/feed", label: "Feed", icon: "feed", capability: "comms" },
-  { href: "/travel", label: "Travel", icon: "map-pin", capability: "transit" },
-  { href: "/map", label: "Map", icon: "globe", capability: "places" },
+  { href: "/travel", label: "Travel", icon: "map-pin", capability: "transit", starts: ["transit", "trips"], warmsMap: true },
+  { href: "/map", label: "Map", icon: "globe", capability: "places", warmsMap: true },
   { href: "/finance", label: "Finance", icon: "database", capability: "finance" },
   // Ein Ziel in der Shell und nicht nur ein Panel: das ist der Unterschied, den PRD Q59
   // ausdruecklich nennt, und der Grund, aus dem die Capability nach core Axon gezogen ist.
@@ -67,7 +87,25 @@ export const UTILITY_NAV: NavItem[] = [
   { href: "/systems", label: "Systems", icon: "server", capability: "axon-status" },
   { href: "/capabilities", label: "Capabilities", icon: "boxes", capability: "axon-status" },
   { href: "/self", label: "Self-model", icon: "compass", capability: "axon-status" },
+  { href: "/packs", label: "Packs", icon: "boxes", capability: "axon-status" },
 ];
+
+/**
+ * The capabilities a pathname needs running, by longest matching prefix.
+ *
+ * Longest-prefix rather than first-match, and PRIMARY before UTILITY, because `/` would
+ * otherwise claim every path in the app. `/` itself yields nothing: Home reads seven
+ * capabilities and starts each on demand through its own registry, which is a per-kind
+ * decision this table cannot make.
+ */
+export const capabilityForPath = (pathname: string): string[] => {
+  const candidates = [...PRIMARY_NAV, ...UTILITY_NAV].filter(
+    (item) => item.href !== "/" && (pathname === item.href || pathname.startsWith(`${item.href}/`)),
+  );
+  const best = candidates.sort((a, b) => b.href.length - a.href.length)[0];
+  if (!best) return [];
+  return best.starts ?? (best.capability ? [best.capability] : []);
+};
 
 /** Drop the destinations a given set of missing capabilities makes pointless. */
 export const withoutCapabilities = (items: NavItem[], missing: Set<string>): NavItem[] =>

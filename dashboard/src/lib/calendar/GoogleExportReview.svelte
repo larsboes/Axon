@@ -141,7 +141,7 @@
   .preview p { margin: 0 0 8px; color: var(--text-secondary); font-size: .84rem; }
   ul { margin: 0 0 14px; padding-left: 20px; color: var(--text-secondary); font-size: .84rem; }
   li + li { margin-top: 4px; }
-  .skipped { color: var(--warning) !important; }
+  .skipped { color: var(--warning-ink) !important; }
   .empty { margin: 14px 0 0; color: var(--text-secondary); font-size: .86rem; }
   @media (max-width: 640px) { .heading { display: block; } .heading .btn { margin-top: 10px; } }
 </style>

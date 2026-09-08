@@ -108,6 +108,27 @@ capability; that proxy and the panel behind it were deleted on 2026-08-25 with t
 the LifeOS delta (PRD D6). A reader who wants that data again adds it back as an upstream,
 not as a route on this capability.
 
+## The SPA fallback stops at the build's own directory
+
+This capability serves the dashboard bundle, and `adapter-static` emits one entry point that
+routes client-side — so an unknown *path* is a client route, and answering it with `index.html`
+is correct. It is not correct for a **build artifact**, and the difference is not cosmetic.
+
+`/_app/` is SvelteKit's build-output root: every URL under it is generated and content-hashed by
+the build, and none of it is a page. A miss there is now a **404** (`is_build_output` in
+`src/proxy.rs`), because the alternative is a failure nobody can see. Measured 2026-09-06: Vite
+never emitted MapLibre's worker, the browser asked for
+`/_app/immutable/chunks/maplibre-gl-worker.mjs`, this server answered **200 `text/html`** with the
+app shell, and `new Worker` was handed HTML and died silently. Every map in the dashboard rendered
+a blank canvas and sat on "Loading map…" — for a month, with no error and no failed request in the
+network log. A 404 would have named it in seconds.
+
+The rule is deliberately narrow: one directory the build owns outright, not "any path with a file
+extension", which would break a client route containing a dot. A related trap is documented at
+`fallback` in `src/proxy.rs` — a capability path with no route also lands on the shell and answers
+HTML, which is why a capability endpoint returning HTML means "restart axon-status" rather than
+"the endpoint is healthy".
+
 ## Considered and declined
 
 - **A `/*path` catch-all 404 handler** — the shelved first attempt had one

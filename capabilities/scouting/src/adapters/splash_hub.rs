@@ -57,8 +57,6 @@ use crate::localtime::utc_instant_from_epoch;
 use crate::opportunity::{Opportunity, OpportunityType, SourceKind};
 use crate::source::{SearchQuery, SourceAdapter, SourceError};
 
-const USER_AGENT: &str = "Axon-Scouting/0.1 (+https://github.com/larsboes/Axon)";
-
 /// Which slice of the hub to ask for. Always sent — see the module note.
 const FILTER_UPCOMING: &str = "upcoming";
 
@@ -188,20 +186,18 @@ impl SourceAdapter for SplashHubAdapter {
         20
     }
 
-    fn user_agent(&self) -> &str {
-        USER_AGENT
-    }
-
     fn search(&self, query: &SearchQuery) -> Result<Vec<Opportunity>, SourceError> {
         let fetched_at = chrono_now();
         let url = self.url();
-        let client = reqwest::blocking::Client::builder()
-            .build()
-            .map_err(|e| SourceError::Fetch(format!("client build: {e}")))?;
+        let client = axon_http::client(
+            axon_http::Purpose::new("scouting-splash-hub"),
+            crate::http::TIMEOUT,
+        )
+        .map_err(|e| SourceError::Fetch(format!("client build: {e}")))?;
         // Through the checked send, so a changed query contract surfaces as the
         // status it is rather than as "this hub has no events" — the failure
         // mode three sibling adapters shipped with.
-        let body = http::send_checked(&url, client.get(&url).header("User-Agent", USER_AGENT))?;
+        let body = http::send_checked(&url, client.get(&url))?;
 
         let events = Self::parse_response(&body)?;
         Ok(events

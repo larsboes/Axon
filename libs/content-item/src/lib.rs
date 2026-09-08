@@ -285,6 +285,59 @@ impl DataClass {
             MAIL_CLASSIFIER_VERSION,
         )
     }
+
+    /// Classify one vault note from its vault-relative id and whatever its
+    /// frontmatter `class:` key says (PRD Q9a, answered 2026-08-23:
+    /// *folder default, frontmatter override*).
+    ///
+    /// `id` is slash-separated and relative to the vault root, which is the
+    /// identity `vault::note::Note` already carries. The body is deliberately
+    /// not a parameter, for the same reason [`DataClass::classify_mail`] refuses
+    /// one: where a note sits is a fact the filesystem already states, and a
+    /// classifier that has to read a note to place it cannot run on the walk.
+    ///
+    /// Never returns `c0`. Publishing is an act, not a location — §15 decides
+    /// what leaves, and no folder in the vault means "already public".
+    ///
+    /// A declared class that is not one of [`DATA_CLASSES`] is **refused, not
+    /// honoured and not escalated**, and the folder default answers instead. A
+    /// typo is not evidence that a note is more sensitive than its folder, so
+    /// inventing a stricter class from one would be a guess; the rationale names
+    /// the rejected literal so a caller can report it rather than swallow it.
+    pub fn classify_vault_note(id: &str, declared: Option<&str>) -> Self {
+        if let Some(raw) = declared.map(str::trim).filter(|d| !d.is_empty()) {
+            if valid(raw) {
+                return Self::set_by_human(raw, "The note's frontmatter declares this class.");
+            }
+            let mut fallback = Self::vault_folder_default(id);
+            fallback.rationale = format!(
+                "Frontmatter declares `class: {raw}`, which is not one of {}; \
+                 the folder default answers instead.",
+                DATA_CLASSES.join(", ")
+            );
+            return fallback;
+        }
+        Self::vault_folder_default(id)
+    }
+
+    /// The folder half of Q9a, with no frontmatter in play.
+    fn vault_folder_default(id: &str) -> Self {
+        let lowered = id.to_ascii_lowercase();
+        match vault_others_reason(&lowered) {
+            Some(rationale) => Self::new(
+                "c2",
+                rationale,
+                METHOD_DETERMINISTIC,
+                VAULT_CLASSIFIER_VERSION,
+            ),
+            None => Self::new(
+                "c1",
+                "A vault note is Mine unless its folder says it holds someone else's facts.",
+                METHOD_DETERMINISTIC,
+                VAULT_CLASSIFIER_VERSION,
+            ),
+        }
+    }
 }
 
 /// The stored classes, in the order a reader should offer them. The literal is
@@ -299,6 +352,11 @@ pub const MAIL_CLASSIFIER_VERSION: &str = "data-class-rules-v2";
 
 /// Stamped by a collector that declared a class for what it fetches.
 pub const SOURCE_CLASSIFIER_VERSION: &str = "data-class-source-v1";
+
+/// Stamped on every folder-derived vault classification. Bump with any change
+/// to [`vault_others_reason`], the same contract [`MAIL_CLASSIFIER_VERSION`]
+/// carries for the mail rules.
+pub const VAULT_CLASSIFIER_VERSION: &str = "data-class-vault-v1";
 
 /// Stamped on a row nobody ever classified, including every row that predates
 /// the class existing on its table.
@@ -538,6 +596,45 @@ fn mail_others_reason(stream: &str, lowercased_text: &str) -> Option<&'static st
     }
     if contains_any(lowercased_text, &HEALTH) {
         return Some("Health-related metadata is Others.");
+    }
+    None
+}
+
+/// Which vault folders hold other people's facts (PRD Q9a's table, read
+/// against §6.1's definition of C2: *facts about named people — health, money,
+/// relationships, addresses, things told in confidence*).
+///
+/// `lowercased_id` is vault-relative and slash-separated. Matching is on whole
+/// path SEGMENTS, not substrings: `Atlas/People/` is a folder that holds people,
+/// `Knowledge/People-Analytics.md` is an article about a discipline, and a
+/// substring match cannot tell them apart.
+///
+/// `Atlas/Personal/` is deliberately absent. C2 is other people's facts; the
+/// operator's own are C1, which is what Q9a's *everything else* already says.
+fn vault_others_reason(lowercased_id: &str) -> Option<&'static str> {
+    // Health is named by Q9a as a rule of its own rather than a folder, because
+    // `Atlas/Documents/Gesundheit/` is only where it happens to sit today. Both
+    // spellings, because this vault is written in two languages.
+    const HEALTH_SEGMENTS: [&str; 4] = ["gesundheit", "health", "medical", "arzt"];
+
+    let segments: Vec<&str> = lowercased_id.split('/').collect();
+    // The filename is excluded from the segment scan: a folder places a note,
+    // a title describes it, and `Knowledge/Mental Health at Work.md` is an
+    // article rather than somebody's diagnosis.
+    let folders = segments.split_last().map(|(_, f)| f).unwrap_or(&[]);
+
+    if folders.first() == Some(&"atlas") {
+        match folders.get(1) {
+            Some(&"people") => return Some("Atlas/People holds facts about named people."),
+            Some(&"documents") => {
+                return Some("Atlas/Documents holds scans and records about named people.")
+            }
+            Some(&"finance") => return Some("Atlas/Finance holds money, which §6.1 names as C2."),
+            _ => {}
+        }
+    }
+    if folders.iter().any(|f| HEALTH_SEGMENTS.contains(f)) {
+        return Some("A health folder holds facts §6.1 names as C2 wherever it sits.");
     }
     None
 }
@@ -1563,5 +1660,99 @@ mod tests {
         );
         assert!(value["evaluation"].is_null());
         assert!(value["mail"].is_null(), "one extension at a time");
+    }
+
+    // ── Q9a: folder default, frontmatter override ──────────────────────
+
+    #[test]
+    fn the_three_named_folders_are_others() {
+        for id in [
+            "Atlas/People/Some Person.md",
+            "Atlas/Documents/Mietvertrag.md",
+            "Atlas/Finance/Depot.md",
+        ] {
+            let c = DataClass::classify_vault_note(id, None);
+            assert_eq!(c.value, "c2", "{id}");
+            assert_eq!(c.label, "Others");
+            assert_eq!(c.method, METHOD_DETERMINISTIC);
+            assert_eq!(c.version, VAULT_CLASSIFIER_VERSION);
+        }
+    }
+
+    #[test]
+    fn everything_else_is_mine_and_nothing_is_public() {
+        for id in [
+            "Journal/2026-09-07.md",
+            "Projects/Axon/PRD Axon.md",
+            "Atlas/Personal/Ziele.md",
+            "Home.md",
+        ] {
+            let c = DataClass::classify_vault_note(id, None);
+            assert_eq!(c.value, "c1", "{id}");
+        }
+        // c0 is unreachable from a location. Publishing is an act (§15).
+        assert!(!DATA_CLASSES.iter().any(|_| DataClass::classify_vault_note(
+            "Clippings/Public Post.md",
+            None
+        )
+        .value
+            == "c0"));
+    }
+
+    #[test]
+    fn a_health_folder_is_others_wherever_it_sits() {
+        for id in [
+            "Atlas/Documents/Gesundheit/Befund.md",
+            "Projects/Health/Plan.md",
+            "Resources/Medical/Notes.md",
+        ] {
+            assert_eq!(DataClass::classify_vault_note(id, None).value, "c2", "{id}");
+        }
+    }
+
+    #[test]
+    fn a_title_is_not_a_folder() {
+        // The failure this rules out: a substring or filename match sweeping
+        // articles about a subject into the class meant for people's records.
+        for id in [
+            "Knowledge/Mental Health at Work.md",
+            "Knowledge/People Analytics.md",
+            "Knowledge/Personal Finance.md",
+        ] {
+            assert_eq!(DataClass::classify_vault_note(id, None).value, "c1", "{id}");
+        }
+    }
+
+    #[test]
+    fn frontmatter_overrides_in_both_directions() {
+        // Down: a People note the operator says is not about anyone.
+        let down = DataClass::classify_vault_note("Atlas/People/Method.md", Some("c1"));
+        assert_eq!(down.value, "c1");
+        assert_eq!(down.method, METHOD_HUMAN);
+        // Up: an ordinary note that holds a credential.
+        let up = DataClass::classify_vault_note("Journal/2026-09-07.md", Some("c3"));
+        assert_eq!(up.value, "c3");
+        assert_eq!(up.method, METHOD_HUMAN);
+        // Whitespace and an empty key are not declarations.
+        assert_eq!(
+            DataClass::classify_vault_note("Journal/x.md", Some("  ")).method,
+            METHOD_DETERMINISTIC
+        );
+        assert_eq!(
+            DataClass::classify_vault_note("Atlas/People/x.md", Some(" c1 ")).value,
+            "c1"
+        );
+    }
+
+    #[test]
+    fn a_typo_falls_back_to_the_folder_and_says_so() {
+        let c = DataClass::classify_vault_note("Atlas/People/Some Person.md", Some("c22"));
+        assert_eq!(c.value, "c2", "the folder answers, not the typo");
+        assert_eq!(c.method, METHOD_DETERMINISTIC);
+        assert!(c.rationale.contains("c22"), "the rejected literal is named");
+        // And it does not silently loosen a note whose folder is Mine.
+        let loose = DataClass::classify_vault_note("Journal/x.md", Some("public"));
+        assert_eq!(loose.value, "c1");
+        assert!(loose.rationale.contains("public"));
     }
 }

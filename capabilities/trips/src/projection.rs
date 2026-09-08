@@ -30,7 +30,7 @@
 
 use markdown_root::{MarkdownRoot, ProjectionOutcome, RegionSpec, RootError};
 
-use crate::store::{PlaceRef, PlanDetails, PlanItem, TripPlan, TripStage};
+use crate::store::{PlaceRef, PlanDetails, PlanItem, Retrospective, TripPlan, TripStage};
 
 /// The projection marker owner. Stable forever: changing it makes every file already
 /// in the vault look foreign, and `write_projection` then refuses all of them.
@@ -38,7 +38,10 @@ pub const OWNER: &str = "trips";
 
 /// Bumped when the rendered shape changes, so a later generator can recognise output
 /// it no longer knows how to produce.
-pub const VERSION: u32 = 1;
+///
+/// 1 -> 2 on 2026-09-05: the `## Retrospective` section joined the rendered
+/// shape.
+pub const VERSION: u32 = 2;
 
 /// Q31's home for a projection, plus one folder for this capability. Vault-relative
 /// and not configurable: a second declaration of where machine output goes is how two
@@ -211,6 +214,15 @@ pub fn render(details: &PlanDetails) -> String {
         out.push('\n');
     }
 
+    // The change note is a human sentence that exists nowhere else, so Principle 8
+    // ("a database is a rebuildable index, never the only copy") puts it in the
+    // safety copy verbatim. This section is that copy and NOT the retrospective's
+    // vault presence: the PRD routes that to the Journal, "when it earns one",
+    // and this code writes no such note.
+    if let Some(retrospective) = &details.retrospective {
+        out.push_str(&retrospective_block(retrospective, plan));
+    }
+
     // The reason this file exists. Every item's payload verbatim, because it is the
     // only copy: an unchosen fare cannot be re-queried at yesterday's price, and a
     // booking reference summarised in prose does not restore a booking.
@@ -223,6 +235,33 @@ pub fn render(details: &PlanDetails) -> String {
         }
     }
 
+    out
+}
+
+fn retrospective_block(retrospective: &Retrospective, plan: &TripPlan) -> String {
+    let mut out = String::from("## Retrospective\n\n");
+    if let Some(cents) = retrospective.cost_cents {
+        out.push_str(&format!(
+            "- Cost: {} {}\n",
+            minor_units(cents),
+            // Denominated on the plan, echoed here. The store refuses a cost on
+            // a plan with no currency, so this fallback is unreachable in
+            // practice and exists so a hand-edited row cannot panic an export.
+            retrospective
+                .currency
+                .as_deref()
+                .or(plan.currency.as_deref())
+                .unwrap_or("EUR")
+        ));
+    }
+    out.push_str(&format!("- Again: {}\n", retrospective.again));
+    if !retrospective.change_note.trim().is_empty() {
+        out.push_str(&format!(
+            "- Would change: {}\n",
+            retrospective.change_note.trim()
+        ));
+    }
+    out.push('\n');
     out
 }
 
@@ -383,6 +422,7 @@ mod tests {
         PlanDetails {
             plan: plan(id, title),
             items,
+            retrospective: None,
         }
     }
 
@@ -420,6 +460,41 @@ mod tests {
             payload,
             "the fence must parse back to the row's payload, or it is not a safety copy"
         );
+    }
+
+    /// Principle 8 and this file's own version contract in one assertion. The
+    /// change note is a human sentence that exists nowhere else, so it goes into
+    /// the safety copy character for character — and the rendered shape changed,
+    /// so VERSION moved with it.
+    #[test]
+    fn the_projection_carries_the_retrospective_text_verbatim_at_version_2() {
+        let note = "Booked the 06:12 rather than the 09:40 — worth the early start.";
+        let mut with_retrospective = details("trip:plan:1", "Berlin", vec![]);
+        with_retrospective.retrospective = Some(Retrospective {
+            plan_id: "trip:plan:1".into(),
+            cost_cents: Some(42_150),
+            currency: Some("EUR".into()),
+            again: "yes".into(),
+            change_note: note.into(),
+            filled_at: "1786907100".into(),
+        });
+        let rendered = render(&with_retrospective);
+        assert!(rendered.contains("## Retrospective"));
+        assert!(
+            rendered.contains(note),
+            "the change note must survive character for character: {rendered}"
+        );
+        assert!(rendered.contains("- Cost: 421.50 EUR"));
+        assert!(rendered.contains("- Again: yes"));
+        let fields = markdown_root::frontmatter(&rendered).unwrap();
+        assert_eq!(
+            fields.get("axon_projection_version").map(String::as_str),
+            Some("2")
+        );
+
+        // A plan with no retrospective renders no section at all.
+        let bare = render(&details("trip:plan:2", "Berlin", vec![]));
+        assert!(!bare.contains("## Retrospective"));
     }
 
     #[test]

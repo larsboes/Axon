@@ -182,7 +182,7 @@
   .details p { margin: 0.15rem 0 0; color: var(--text-secondary); font-size: 0.72rem; }
   .details .source { color: var(--text-tertiary); }
   .details .analysis-meta { margin-top: 0.35rem; font-weight: 600; text-transform: capitalize; }
-  .details .analysis-meta.high { color: var(--warning); }
+  .details .analysis-meta.high { color: var(--warning-ink); }
   .details .analysis-rationale,
   .details .analysis-evidence { line-height: 1.4; }
   .details .analysis-evidence { color: var(--text-tertiary); }

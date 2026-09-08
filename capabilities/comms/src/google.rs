@@ -53,11 +53,15 @@ fn now_secs() -> u64 {
 }
 
 fn client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .user_agent("AxonComms/0.1")
-        .gzip(true)
-        .build()
-        .map_err(CommsError::from)
+    // 30s, matching comms' other outbound fetches (src/sources.rs, src/media.rs).
+    // This carried no timeout before.
+    axon_http::builder(
+        axon_http::Purpose::new("comms-google"),
+        std::time::Duration::from_secs(30),
+    )
+    .gzip(true)
+    .build()
+    .map_err(CommsError::from)
 }
 
 /// Reads a single `KEY=value` from a plain env file. Values are never logged.

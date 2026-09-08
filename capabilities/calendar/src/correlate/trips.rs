@@ -59,8 +59,8 @@ pub(super) fn place_of(entry: &Entry) -> Option<String> {
 /// Is this place the city the operator lives in, however the source spelled it?
 ///
 /// `home` is a bare city — `Bonn`. What sources actually write into `location`
-/// is a venue line: `Telekom, Bonn`, or `Sparkassen Innovation Hub, Grüner
-/// Deich 15, 20097 Hamburg`. Comparing the whole line therefore never fired for
+/// is a venue line: `Nordwerk, Bonn`, or `Beispiel Innovation Hub,
+/// Musterdeich 15, 20097 Hamburg`. Comparing the whole line therefore never fired for
 /// exactly the entries this exists for, and two committed days at the
 /// operator's own employer, in the city they live in, were proposed as a
 /// journey (found live 2026-08-04).
@@ -79,7 +79,7 @@ pub(super) fn is_home(place: &str, home: &str) -> bool {
 }
 
 /// `20097 Hamburg` is the city Hamburg. Only a *leading* run of digits goes: a
-/// house number trails its street (`Grüner Deich 15`), so a segment ending in
+/// house number trails its street (`Musterdeich 15`), so a segment ending in
 /// digits is an address line and must not be mistaken for a city.
 pub(super) fn without_postal_code(segment: &str) -> &str {
     let segment = segment.trim();
@@ -95,7 +95,7 @@ pub(super) fn without_postal_code(segment: &str) -> &str {
 /// they can be one journey.
 ///
 /// Grouping on the raw string made the venue part of the identity, so a
-/// conference at `Sparkassen Innovation Hub, Grüner Deich 15, 20097 Hamburg`
+/// conference at `Beispiel Innovation Hub, Musterdeich 15, 20097 Hamburg`
 /// and a meetup elsewhere in Hamburg were two places, and neither ever reached
 /// the two-event floor that makes a trip. You do not travel to a venue; you
 /// travel to a city and then walk.
