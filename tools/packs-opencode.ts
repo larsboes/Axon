@@ -33,7 +33,7 @@ function overlayRoot(): string | null {
   return null;
 }
 
-function config(): DeployConfig {
+export function defaultOpencodeDeployConfig(): DeployConfig {
   const roots = [join(AXON_ROOT, "Packs")];
   const overlay = overlayRoot();
   if (overlay && existsSync(join(overlay, "Packs"))) roots.push(join(overlay, "Packs"));
@@ -73,27 +73,33 @@ function usage(): never {
   ].join("\n"));
 }
 
-try {
-  const [command = "status", ...args] = process.argv.slice(2);
-  const deployConfig = config();
-  if (command === "list") {
-    for (const pack of availablePacks(deployConfig, true)) console.log(pack);
-  } else if (command === "status") {
-    printStatuses(deployConfig, args[0] && args[0] !== "--all" ? args[0] : undefined);
-  } else if (command === "deploy") {
-    if (args.length === 0) usage();
-    for (const pack of args) for (const line of deployPack(deployConfig, pack)) console.log(line);
-  } else if (command === "sync") {
-    const target = args[0];
-    if (!target) usage();
-    for (const pack of target === "--all" ? Object.keys(readState(deployConfig).packs).sort() : [target]) {
-      for (const line of syncPack(deployConfig, pack)) console.log(line);
-    }
-  } else if (command === "remove") {
-    if (args.length === 0) usage();
-    for (const pack of args) for (const line of removePack(deployConfig, pack)) console.log(line);
-  } else usage();
-} catch (error) {
-  console.error(`packs-opencode: ${(error as Error).message}`);
-  process.exit(1);
+// Guarded so this module can be imported for its exported DeployConfig without
+// running the CLI — tools/lib/harness-registry.ts does exactly that, and an
+// unguarded top-level block printed a full status listing on import.
+if (import.meta.main) {
+
+  try {
+    const [command = "status", ...args] = process.argv.slice(2);
+    const deployConfig = defaultOpencodeDeployConfig();
+    if (command === "list") {
+      for (const pack of availablePacks(deployConfig, true)) console.log(pack);
+    } else if (command === "status") {
+      printStatuses(deployConfig, args[0] && args[0] !== "--all" ? args[0] : undefined);
+    } else if (command === "deploy") {
+      if (args.length === 0) usage();
+      for (const pack of args) for (const line of deployPack(deployConfig, pack)) console.log(line);
+    } else if (command === "sync") {
+      const target = args[0];
+      if (!target) usage();
+      for (const pack of target === "--all" ? Object.keys(readState(deployConfig).packs).sort() : [target]) {
+        for (const line of syncPack(deployConfig, pack)) console.log(line);
+      }
+    } else if (command === "remove") {
+      if (args.length === 0) usage();
+      for (const pack of args) for (const line of removePack(deployConfig, pack)) console.log(line);
+    } else usage();
+  } catch (error) {
+    console.error(`packs-opencode: ${(error as Error).message}`);
+    process.exit(1);
+  }
 }

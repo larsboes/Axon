@@ -8,6 +8,9 @@
 
   let { row, id, current, tone, href, whyHere }: DecisionRowProps<Task> = $props();
 
+
+
+  const kind = $derived(metaParts("Task", row.due ? `due ${dateLabel(row.due)}` : null, ...row.projects));
   const overdue = $derived(row.due !== null && row.due.slice(0, 10) < new Date().toISOString().slice(0, 10));
 </script>
 
@@ -15,7 +18,7 @@
   {#snippet mark()}<Icon name="check" size={15} />{/snippet}
 
   <span class="row-kind">
-    {#each metaParts("Task", row.due ? `due ${dateLabel(row.due)}` : null, ...row.projects) as part}<span
+    {#each kind as part}<span
       >{part}</span
     >{/each}
     {#if overdue}<span class="overdue">overdue</span>{/if}

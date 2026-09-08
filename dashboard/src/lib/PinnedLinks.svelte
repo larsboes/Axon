@@ -9,6 +9,7 @@
    */
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
+  import RailSection from "$lib/rail/RailSection.svelte";
   import { axonStatus, type PinnedLink } from "$lib/api";
 
   let links = $state<PinnedLink[]>([]);
@@ -24,10 +25,7 @@
 </script>
 
 {#if links.length > 0}
-  <section class="pinned">
-    <div class="head">
-      <h2>Pinned links</h2>
-    </div>
+  <RailSection label="Pinned links" count={links.length} open>
     <ul>
       {#each links as pinned (pinned.url)}
         <li>
@@ -39,28 +37,14 @@
         </li>
       {/each}
     </ul>
-  </section>
+  </RailSection>
 {/if}
 
 <style>
-  /* No box. This sits inside the rail, which is already a pane with a border and a
-     radius of its own, so a bordered card here drew a second frame around a group that
-     was already framed. A rule and the section's own spacing separate it — the same
-     device every other rail section uses. */
-  .pinned {
-    padding-top: var(--space-5);
-    border-top: 1px solid var(--card-border);
-  }
-  .head {
-    display: flex;
-    flex-direction: column;
-    gap: 0.1rem;
-    margin-bottom: 0.5rem;
-  }
-  h2 {
-    font-size: 0.95rem;
-    margin: 0;
-  }
+  /* No box, and no heading of its own. This sits inside the rail, which is already a
+     pane, and the section around it is `RailSection` — the same disclosure, chevron and
+     count every other rail section uses. It kept its own `<h2>` and rule until
+     2026-09-07, which is why the rail had two heading sizes in one column. */
   ul {
     list-style: none;
     margin: 0;

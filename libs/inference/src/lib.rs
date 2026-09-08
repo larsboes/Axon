@@ -77,6 +77,16 @@ pub struct Backend {
     /// Never a key value inline — secrets are references in this repo.
     #[serde(default)]
     pub api_key_file: Option<String>,
+    /// The `systems.local.toml` id of the host that serves this backend, when
+    /// it is not this machine (PRD Q39, 2026-08-25). The same `provided_by`
+    /// vocabulary `tools/lib/external-ref.sh` already owns for a capability
+    /// this machine consumes but does not run.
+    ///
+    /// Naming a host is not trusting it. Trust is the intersection of this id
+    /// and the list in [`TRUSTED_PEERS_ENV`], which the shell resolver writes
+    /// from the overlay — an address is not a permission, and neither is a name.
+    #[serde(default)]
+    pub provided_by: Option<String>,
 }
 
 /// `Default` is for the tests, and it earns its place: adding an optional field to this struct
@@ -292,6 +302,11 @@ pub struct ResolvedRole {
     pub chat_template_kwargs: Option<serde_json::Value>,
     /// See the config field of the same name: extra top-level request fields, merged verbatim.
     pub request_overrides: Option<serde_json::Value>,
+    /// Whether this role's backend runs on hardware the operator declared as
+    /// their own (PRD Q39). Resolved at construction from the backend's
+    /// `provided_by` and [`TRUSTED_PEERS_ENV`], so the environment is read in
+    /// one place and a test can state the answer directly.
+    pub trusted_peer: bool,
 }
 
 fn model_ids_match(configured: &str, installed: &str) -> bool {
@@ -380,6 +395,43 @@ pub const BACKEND_OVERRIDE_ENV: &str = "AXON_INFERENCE_BACKEND";
 
 /// Points at the config file directly. Mainly for tests and one-off runs.
 pub const CONFIG_PATH_ENV: &str = "AXON_INFERENCE_CONFIG";
+
+/// Comma-separated `systems.local.toml` ids the operator has declared to be
+/// their own hardware, written by `tools/service-runner.sh` from the resolver
+/// in `tools/lib/external-ref.sh` (PRD Q39, 2026-08-25).
+///
+/// **Why this arrives as an environment variable rather than being read here.**
+/// The declaration lives in two overlay files — `machine.toml` says who provides
+/// what, `systems.local.toml` holds the address and the ownership — and
+/// `external-ref.sh` is the one resolver for that pair. Q39 says extend it
+/// rather than invent a second one, so this crate receives the answer instead of
+/// re-deriving it, exactly as it already receives the machine's backend choice
+/// through [`BACKEND_OVERRIDE_ENV`].
+///
+/// Unset means no trusted peers, which is this machine's state until the second
+/// host lands (B9) and is byte-for-byte the behaviour that shipped before Q39.
+pub const TRUSTED_PEERS_ENV: &str = "AXON_INFERENCE_TRUSTED_PEERS";
+
+/// Split the declared ids out of the raw variable. Empty entries are dropped,
+/// so a trailing comma or a stray separator cannot declare the empty id — which
+/// a backend with no `provided_by` would otherwise match.
+///
+/// Separate from the read so it can be tested without touching the process
+/// environment. `std::env::set_var` is process-wide and the test binary is
+/// threaded; a suite that mutates it is the failure PRD §13.1 records as the
+/// second half of its third silent failure.
+fn parse_trusted_peers(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The declared ids, read once per resolved role.
+fn declared_trusted_peers() -> Vec<String> {
+    parse_trusted_peers(&std::env::var(TRUSTED_PEERS_ENV).unwrap_or_default())
+}
 
 impl InferenceConfig {
     /// Reads the overlay's `inference.json`, or returns an empty config when
@@ -489,6 +541,12 @@ impl InferenceConfig {
             );
             None
         })?;
+        let trusted_peer = backend
+            .provided_by
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .is_some_and(|id| declared_trusted_peers().iter().any(|peer| peer == id));
         Some(ResolvedRole {
             backend_name,
             backend,
@@ -504,6 +562,7 @@ impl InferenceConfig {
             request_overrides: role.request_overrides.clone(),
             query_prefix: query_prefix.to_string(),
             document_prefix: document_prefix.to_string(),
+            trusted_peer,
         })
     }
 
@@ -619,6 +678,15 @@ impl ResolvedRole {
     }
 
     pub fn provider_label(&self) -> &'static str {
+        // Three tiers, not two. A trusted peer reported as "local" would hide
+        // that the request leaves this machine; reported as "cloud" it would
+        // repeat the misclassification Q39 exists to fix.
+        if self.is_trusted_peer() {
+            return match self.backend.api {
+                Api::OpenAi => "OpenAI-compatible trusted-peer endpoint",
+                Api::Ollama => "Ollama-compatible trusted-peer endpoint",
+            };
+        }
         match (self.backend.api, self.is_loopback()) {
             (Api::OpenAi, true) => "OpenAI-compatible local endpoint",
             (Api::OpenAi, false) => "OpenAI-compatible cloud endpoint",
@@ -627,13 +695,44 @@ impl ResolvedRole {
         }
     }
 
+    /// This machine. Keep this for anything about THIS host's resources — the
+    /// local GPU admission gate is the live example, and a trusted peer must
+    /// not queue behind it, because it does not share the GPU.
     pub fn is_loopback(&self) -> bool {
         is_loopback_url(&self.backend.base_url)
     }
 
-    /// Cloud dispatch is restricted to encrypted, non-loopback endpoints.
+    /// Hardware the operator owns, reached over the tailnet (PRD Q39,
+    /// 2026-08-25). Declared, never inferred: the backend names a host and the
+    /// overlay declares that host to be the operator's.
+    pub fn is_trusted_peer(&self) -> bool {
+        self.trusted_peer
+    }
+
+    /// The question every data-class gate should ask: may this endpoint see
+    /// anything at all?
+    ///
+    /// Loopback and a trusted peer answer the same, because nothing leaves
+    /// hardware the operator controls. `is_loopback` used to carry both this
+    /// question and *"does this share my GPU"*, and Q39 is the point at which
+    /// one predicate could no longer answer both.
+    pub fn trusted_for_every_class(&self) -> bool {
+        self.is_loopback() || self.is_trusted_peer()
+    }
+
+    /// Cloud dispatch is restricted to encrypted endpoints that are neither
+    /// this machine nor a host the operator owns.
+    ///
+    /// **The trap Q39 names, closed here.** `upstreams.toml` chose Tailscale
+    /// over NetBird for `tailscale cert`, so a peer's URL is `https://` and
+    /// non-loopback — and without the third term this function classifies the
+    /// operator's own MacBook as a cloud provider and demands a reviewed
+    /// `providers.toml` entry for it. Getting the transport security right made
+    /// the classification wrong.
     pub fn is_cloud_endpoint(&self) -> bool {
-        self.backend.base_url.trim().starts_with("https://") && !self.is_loopback()
+        self.backend.base_url.trim().starts_with("https://")
+            && !self.is_loopback()
+            && !self.is_trusted_peer()
     }
 
     /// A cloud endpoint is inert until it has a complete reviewed policy.
@@ -1004,6 +1103,104 @@ pub fn api_key_from_file(path: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    // ── Q39: the trusted-peer tier ─────────────────────────────────────
+
+    fn peer_role(base_url: &str, provided_by: Option<&str>, trusted_peer: bool) -> ResolvedRole {
+        ResolvedRole {
+            backend_name: "peer".into(),
+            backend: Backend {
+                api: Api::OpenAi,
+                base_url: base_url.into(),
+                api_key_file: None,
+                provided_by: provided_by.map(str::to_string),
+            },
+            model: "m".into(),
+            provider_name: None,
+            cloud_data_tier: None,
+            billing_mode: None,
+            failover_priority: None,
+            max_requests_per_day: None,
+            max_input_tokens: None,
+            credit_expires_on: None,
+            query_prefix: String::new(),
+            document_prefix: String::new(),
+            chat_template_kwargs: None,
+            request_overrides: None,
+            trusted_peer,
+        }
+    }
+
+    #[test]
+    fn a_tailnet_peer_is_not_a_cloud_provider() {
+        // The trap Q39 names. `tailscale cert` gives the operator's own machine
+        // a real https:// certificate, and without the third term the two-tier
+        // test classifies it as a cloud endpoint and demands a reviewed policy.
+        let url = "https://lars-mac.tail2df5b3.ts.net:11434";
+        let undeclared = peer_role(url, None, false);
+        assert!(
+            undeclared.is_cloud_endpoint(),
+            "an undeclared https host stays a cloud endpoint — that is the safe default"
+        );
+        assert!(!undeclared.trusted_for_every_class());
+
+        let declared = peer_role(url, Some("lars-mac"), true);
+        assert!(
+            !declared.is_cloud_endpoint(),
+            "the operator's own Mac is not a provider"
+        );
+        assert!(
+            declared.trusted_for_every_class(),
+            "trusted exactly as loopback is"
+        );
+        assert!(!declared.is_loopback(), "and it is still not this machine");
+    }
+
+    #[test]
+    fn a_trusted_peer_does_not_share_this_machines_gpu() {
+        // The two questions one predicate used to answer. A trusted peer may see
+        // any class AND must not queue behind this host's admission gate.
+        let peer = peer_role("https://peer.example.ts.net", Some("peer"), true);
+        assert!(peer.trusted_for_every_class());
+        assert!(!peer.is_loopback());
+
+        let here = peer_role("http://127.0.0.1:11434", None, false);
+        assert!(here.trusted_for_every_class());
+        assert!(here.is_loopback());
+    }
+
+    #[test]
+    fn naming_a_host_is_not_trusting_it() {
+        // provided_by alone grants nothing: the intersection with the declared
+        // list is the permission. [nvidia-nim] lives in the same overlay file
+        // and is emphatically not this operator's hardware.
+        let named_only = peer_role("https://api.example.com/v1", Some("nvidia-nim"), false);
+        assert!(named_only.is_cloud_endpoint());
+        assert!(!named_only.trusted_for_every_class());
+    }
+
+    #[test]
+    fn the_third_tier_says_so_in_its_label() {
+        let peer = peer_role("https://peer.example.ts.net", Some("peer"), true);
+        assert_eq!(
+            peer.provider_label(),
+            "OpenAI-compatible trusted-peer endpoint"
+        );
+        // Reported as neither "local" (it is not this machine) nor "cloud"
+        // (which is the misclassification Q39 exists to fix).
+        assert!(!peer.provider_label().contains("local"));
+        assert!(!peer.provider_label().contains("cloud"));
+    }
+
+    #[test]
+    fn an_empty_declaration_trusts_nothing() {
+        assert!(parse_trusted_peers("").is_empty());
+        assert!(parse_trusted_peers("   ").is_empty());
+        // The one that matters: a stray separator must not produce the empty id,
+        // which a backend with no provided_by would match.
+        assert!(parse_trusted_peers(",,").is_empty());
+        assert_eq!(parse_trusted_peers("a, b ,,c"), vec!["a", "b", "c"]);
+    }
+
     use super::*;
 
     const SAMPLE: &str = r#"{
@@ -1068,6 +1265,7 @@ mod tests {
                 api: Api::OpenAi,
                 base_url: "https://api.example.com/v1".into(),
                 api_key_file: Some("/private/key-file".into()),
+                provided_by: None,
             },
         );
         cfg.roles.insert(
@@ -1319,6 +1517,7 @@ mod tests {
                 api: Api::OpenAi,
                 base_url: "https://api.example.com/v1".into(),
                 api_key_file: None,
+                provided_by: None,
             },
         );
         cfg.roles.insert(
@@ -1362,6 +1561,7 @@ mod tests {
                 api: Api::OpenAi,
                 base_url: "https://api.example.com/v1".into(),
                 api_key_file: None,
+                provided_by: None,
             },
         );
         cfg.roles.insert(
@@ -1438,6 +1638,7 @@ mod tests {
                 api: Api::OpenAi,
                 base_url: "https://api.example.com/v1".into(),
                 api_key_file: None,
+                provided_by: None,
             },
         );
         cfg.roles.insert(
@@ -1551,6 +1752,7 @@ mod tests {
                 api: Api::OpenAi,
                 base_url: "https://api.example.com/v1".into(),
                 api_key_file: None,
+                provided_by: None,
             },
         );
         cfg.roles.insert(

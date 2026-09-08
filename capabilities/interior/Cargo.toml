@@ -27,6 +27,9 @@ route-manifest = { path = "../../libs/route-manifest" }
 # Das Inventar sind Zeilen (PRD Q58/B25). Eine Datei fuer alle Capabilities, `interior_`
 # als Praefix — libs/axon-store/README.md hat das Warum.
 axon-store = { path = "../../libs/axon-store" }
+# Die eine Art, eine Datei aus einer erklaerten Vault-Wurzel zu holen, plus die markierte
+# Region. Null Abhaengigkeiten, und die Konflikterkennung liegt in der Datei selbst.
+markdown-root = { path = "../../libs/markdown-root" }
 rusqlite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

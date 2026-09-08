@@ -200,9 +200,9 @@
   .warning {
     margin: 0 0 0.5rem;
     font-size: 0.8rem;
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .failure { color: var(--danger); }
-  .moved { color: var(--warning); }
+  .moved { color: var(--warning-ink); }
 </style>

@@ -250,6 +250,23 @@ if [ -f "$AXON_MACHINE_TOML" ]; then
   unset _inference_backend
 fi
 
+# Which hosts this operator owns (PRD Q39, 2026-08-25). `libs/inference` reads it as
+# AXON_INFERENCE_TRUSTED_PEERS and trusts a backend whose `provided_by` names one of these
+# exactly as it trusts loopback — no data class withheld, and NOT classified as a cloud
+# provider needing a reviewed policy.
+#
+# Resolved here rather than in Rust because the declaration lives in the overlay's
+# systems.local.toml and tools/lib/external-ref.sh is the one resolver for that file. Q39
+# says extend it, not invent a second one; this export is how the answer crosses over, the
+# same way [inference] backend does two lines above.
+#
+# Empty is the normal state on a single-host deployment and produces exactly the behaviour
+# that shipped before Q39: an unset variable declares no peers, and every backend that is
+# not loopback stays a cloud endpoint.
+_trusted_peers="$(trusted_peers_env)"
+if [ -n "$_trusted_peers" ]; then export AXON_INFERENCE_TRUSTED_PEERS="$_trusted_peers"; fi
+unset _trusted_peers
+
 container_init() {  # every container-only manifest field, read only when it applies
 IMAGE="$(toml_get image "$MANIFEST")"
 TAG="$(toml_get tag "$MANIFEST")"

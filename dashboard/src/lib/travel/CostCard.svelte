@@ -247,6 +247,6 @@
   }
 
   footer .failed {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 </style>

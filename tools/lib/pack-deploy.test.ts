@@ -9,12 +9,16 @@
 // Run: bun test tools/lib/pack-deploy.test.ts
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   adoptPack,
   deployPack,
+  reconcileUnit,
+  syncPack,
+  withStateLock,
+  packUnits as unitsOf,
   getStatuses,
   packUnits,
   readState,
@@ -167,5 +171,134 @@ describe("adoptPack", () => {
     mkdirSync(treeDest, { recursive: true });
     writeFileSync(join(treeDest, "reviewer.md"), "# reviewer\n");
     expect(adoptPack(config, "demo")).toEqual(["✓ demo-skill adopted", "✓ agents/ adopted"]);
+  });
+});
+
+describe("ownership is a claim on a destination", () => {
+  // Two Packs each carrying agents/ share the ledger key `agents/` and nothing
+  // else: their destinations differ by pack name. A key-based owner lookup read
+  // that as a collision, so the SECOND pack to ship subagents could never be
+  // deployed — the failure this repository actually hit on 2026-09-07, with
+  // academic-writing installed and deliberation refused.
+  test("two packs may each carry an agents/ tree", () => {
+    writeAgents("demo", "reviewer");
+    writeManifest("second", ["second-skill"]);
+    writeSkill("second", "second-skill");
+    writeAgents("second", "clerk");
+
+    deployPack(config, "demo");
+    expect(deployPack(config, "second")).toEqual(["✓ second-skill deployed", "✓ agents/ deployed"]);
+
+    const treeRoot = config.treeConvention!.destinationRoot;
+    expect(readFileSync(join(treeRoot, "demo", "reviewer.md"), "utf8")).toBe("# reviewer\n");
+    expect(readFileSync(join(treeRoot, "second", "clerk.md"), "utf8")).toBe("# clerk\n");
+    expect(Object.keys(readState(config).packs).sort()).toEqual(["demo", "second"]);
+  });
+
+  test("a second pack claiming the same skill destination is still refused", () => {
+    deployPack(config, "demo");
+    writeManifest("rival", ["demo-skill"]);
+    writeSkill("rival", "demo-skill", "a different body");
+    expect(() => deployPack(config, "rival")).toThrow("already owned by Pack 'demo'");
+  });
+});
+
+describe("reconcileUnit", () => {
+  // The accept path: an edit made to a deployed copy is worth keeping, the source
+  // has just been updated FROM the destination, and the ledger still reports a
+  // drift that no longer exists. sync refuses in that state and deploy would
+  // overwrite the very edit being kept, so re-recording needs its own verb.
+  function trimmedUnit() {
+    return unitsOf(config, "demo").find((u) => u.key === "demo-skill")!;
+  }
+
+  test("re-records when the destination matches the source again", () => {
+    deployPack(config, "demo");
+    const unit = trimmedUnit();
+    const edited = "---\nname: demo-skill\ndescription: does a thing\n---\n\nedited at the destination\n";
+    writeFileSync(join(unit.destination, "SKILL.md"), edited);
+    expect(getStatuses(config, "demo")[0].status).toBe("drifted");
+
+    // What `accept` does: copy the destination back over the source.
+    writeFileSync(join(root, "Axon", "Packs", "demo", "skills", "demo-skill", "SKILL.md"), edited);
+
+    expect(reconcileUnit(config, "demo", unit)).toBe("✓ demo-skill re-recorded");
+    expect(getStatuses(config, "demo")[0].status).toBe("current");
+  });
+
+  test("refuses while the destination still differs", () => {
+    deployPack(config, "demo");
+    const unit = trimmedUnit();
+    writeFileSync(join(unit.destination, "SKILL.md"), "only at the destination\n");
+    expect(() => reconcileUnit(config, "demo", unit)).toThrow("refusing to re-record");
+  });
+
+  test("refuses an accepted edit that broke the skill", () => {
+    deployPack(config, "demo");
+    const unit = trimmedUnit();
+    const broken = "no frontmatter at all\n";
+    writeFileSync(join(unit.destination, "SKILL.md"), broken);
+    writeFileSync(join(root, "Axon", "Packs", "demo", "skills", "demo-skill", "SKILL.md"), broken);
+    expect(() => reconcileUnit(config, "demo", unit)).toThrow();
+  });
+
+  test("refuses a unit this Pack does not own", () => {
+    const unit = trimmedUnit();
+    expect(() => reconcileUnit(config, "demo", unit)).toThrow("not owned by Pack 'demo'");
+  });
+});
+
+describe("the ledger lock", () => {
+  // writeState is atomic, so no reader sees half a file — that was never the race.
+  // Every mutator reads the whole ledger once and writes it back one or more times,
+  // so two overlapping processes each hold a pre-other snapshot and the last writer
+  // erases the other's rows. The skill stays on disk with no ledger entry: an
+  // unowned collision that only a hand-run adopt can repair.
+  function lockPath(): string {
+    return `${config.stateFile}.lock`;
+  }
+
+  test("the lock is released after a successful mutation", () => {
+    deployPack(config, "demo");
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("the lock is released after a failed mutation", () => {
+    expect(() => syncPack(config, "demo")).toThrow("not deployed");
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("a live holder is refused rather than overwritten", () => {
+    mkdirSync(dirname(config.stateFile), { recursive: true });
+    // pid 1 is alive on every POSIX host and is not us; kill(1, 0) answers EPERM,
+    // which the holder check reads as alive on purpose.
+    writeFileSync(lockPath(), JSON.stringify({ pid: 1, at: new Date().toISOString() }));
+    process.env.AXON_PACK_LOCK_WAIT_MS = "10";
+    try {
+      expect(() => deployPack(config, "demo")).toThrow("ledger is locked by pid 1");
+    } finally {
+      delete process.env.AXON_PACK_LOCK_WAIT_MS;
+      rmSync(lockPath(), { force: true });
+    }
+  });
+
+  test("a lock whose holder is gone is stolen, not waited on", () => {
+    mkdirSync(dirname(config.stateFile), { recursive: true });
+    // A pid that cannot exist: the holder crashed and left the file behind. Without
+    // the steal, one killed process would break the tool until somebody found the
+    // lock file by hand.
+    writeFileSync(lockPath(), JSON.stringify({ pid: 2147483646, at: new Date().toISOString() }));
+    expect(deployPack(config, "demo")).toContain("✓ demo-skill deployed");
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("it is re-entrant, because activateProfile calls the mutators it wraps", () => {
+    let inner = "";
+    const outer = withStateLock(config, () => {
+      inner = withStateLock(config, () => "reached");
+      return "done";
+    });
+    expect([outer, inner]).toEqual(["done", "reached"]);
+    expect(existsSync(lockPath())).toBe(false);
   });
 });

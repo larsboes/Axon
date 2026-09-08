@@ -9,6 +9,9 @@
 
   let { row, id, current, tone, whyHere }: DecisionRowProps<HostWatchFinding> = $props();
 
+
+
+  const kind = $derived(metaParts("Host", `first seen ${relativeDate(row.first_seen)}`));
   /// The note's opening line states the condition and the rest is what to run about it.
   /// `whyHere` is that first line, so rendering the whole note below it printed the same
   /// sentence twice on every finding.
@@ -20,7 +23,7 @@
 <ListRow {id} {current} {tone}>
   {#snippet mark()}<span class="alarm"><Icon name="alert" size={15} /></span>{/snippet}
 
-  <span class="row-kind">{#each metaParts("Host", `first seen ${relativeDate(row.first_seen)}`) as part}<span>{part}</span>{/each}</span>
+  <span class="row-kind">{#each kind as part}<span>{part}</span>{/each}</span>
   <span class="row-title">{row.title}</span>
   <!-- Four lines and pre-wrap, not the one-line clamp every other row uses: the note is
        what to run to look at the condition and what to run if it is stuck. It is the

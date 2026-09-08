@@ -555,7 +555,7 @@
 
   .risk.mid {
     background-color: var(--warning-soft);
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .risk.high {

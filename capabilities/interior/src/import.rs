@@ -192,6 +192,16 @@ impl Roh {
             raumtrenner: self.raumtrenner,
             zerlegbar: self.zerlegbar,
             bild: self.bild,
+            // Die sieben Ausruestungsfelder bleiben leer, weil diese Quelle keine haelt:
+            // `inventory/*.toml` beschreibt Moebel. Gepaeck kommt ueber `trips gear import`
+            // herein, gegen dieselbe Tabelle (PRD Q92 / B51).
+            weight_g: None,
+            category: None,
+            packable: None,
+            waterproof: None,
+            quick_dry: None,
+            pack_location: None,
+            trip_types: Vec::new(),
         }
     }
 }
@@ -199,6 +209,7 @@ impl Roh {
 /// Was ein Lauf getan hat. Zahlen, damit ein Import nicht "ok" meldet und nichts geschrieben hat.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Bericht {
+    pub gear: usize,
     pub pieces: usize,
     pub slots: usize,
     pub zustandswechsel: usize,
@@ -248,6 +259,10 @@ pub fn inventory(store: &Store, dir: &Path) -> Result<Bericht, Fehler> {
         match kind {
             Kind::Piece => b.pieces += 1,
             Kind::Slot => b.slots += 1,
+            // Unerreichbar: die Schleife oben kennt nur `Kind::Slot` und `Kind::Piece`. Der
+            // Zweig steht hier, damit ein spaeterer Importweg fuer Ausruestung eine Zahl
+            // bekommt, statt still in `pieces` zu landen.
+            Kind::Gear => b.gear += 1,
         }
     }
     Ok(b)

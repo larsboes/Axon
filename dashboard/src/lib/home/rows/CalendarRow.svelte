@@ -19,6 +19,9 @@
     candidateStatus,
   }: DecisionRowProps<CalendarEntry, CalendarSource> = $props();
 
+
+
+  const kind = $derived(metaParts("Calendar opportunity", dateLabel(row.starts_at), row.location, row.source === "web" && "added deliberately"));
   /// The entry the capability answered with, held between the write and the patch below.
   let planned: CalendarEntry | null = null;
 
@@ -49,7 +52,7 @@
   {#snippet mark()}<span class="event"><Icon name="ticket" size={15} /></span>{/snippet}
 
   <span class="row-kind">
-    {#each metaParts( "Calendar opportunity", dateLabel(row.starts_at), row.location, row.source === "web" && "added deliberately", ) as part}<span
+    {#each kind as part}<span
       >{part}</span
     >{/each}
   </span>

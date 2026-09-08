@@ -3,6 +3,7 @@
   import { goto } from "$app/navigation";
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
+  import { createBandDisclosure } from "$lib/home/band-disclosure.svelte";
   import StateLine from "$lib/StateLine.svelte";
   import {
     axonStatus,
@@ -19,6 +20,7 @@
   } from "$lib/api";
   import { capabilities } from "$lib/capabilities.svelte";
   import { createListCursor } from "$lib/list-cursor.svelte";
+  import RailSection from "$lib/rail/RailSection.svelte";
   import PinnedLinks from "$lib/PinnedLinks.svelte";
   import RepoStatusCard from "$lib/RepoStatusCard.svelte";
   import HomeHorizon from "$lib/home/HomeHorizon.svelte";
@@ -136,9 +138,34 @@
   const reading = $derived(decisions.filter((d) => d.kind.lane === "reading"));
 
   const visibleReading = $derived(showAll ? reading : reading.slice(0, READING_PREVIEW));
-  const visibleDecisions = $derived<Decision[]>(
-    showReading ? [...commitments, ...visibleReading] : commitments,
+
+  /// The ladder, grouped by the band each row already carries. Order is the sort
+  /// order — `commitments` is ranked, so the first group is the most urgent band
+  /// that has anything in it, and that is the one that opens on a first visit.
+  const bands = $derived.by(() => {
+    const groups: { label: string; tone: string; rows: Decision[] }[] = [];
+    for (const decision of commitments) {
+      const label = bandLabel(decision.kind.band);
+      const last = groups[groups.length - 1];
+      if (last?.label === label) last.rows.push(decision);
+      else groups.push({ label, tone: bandTone(decision.kind.band), rows: [decision] });
+    }
+    return groups;
+  });
+
+  const leadingBand = $derived(bands[0]?.label ?? "");
+  const disclosure = createBandDisclosure();
+  const openBands = $derived(
+    bands.filter((band) => disclosure.isOpen(band.label, leadingBand)),
   );
+
+  /// Only rows the reader can actually see. J/K must not walk into a collapsed
+  /// band and move focus to something that is not on screen — the cursor sets real
+  /// DOM focus, so an off-screen target scrolls the page to nothing.
+  const visibleDecisions = $derived<Decision[]>([
+    ...openBands.flatMap((band) => band.rows),
+    ...(showReading ? visibleReading : []),
+  ]);
 
   const readingToday = $derived(
     reading.filter((d) => today.getTime() - new Date(d.startOrDueAt ?? 0).getTime() < 86_400_000)
@@ -362,7 +389,7 @@
       <p class="brief">{brief}</p>
     </div>
     <a class="library-link" href={link("/feed/library")}>
-      Library <Icon name="arrow-right" size={13} />
+      Library
     </a>
   </header>
 
@@ -402,26 +429,45 @@
 
       {#if homeView === "now"}
       {#if visibleDecisions.length > 1}
-        <p class="key-hint"><kbd>J</kbd><kbd>K</kbd> select · <kbd>Enter</kbd> open</p>
+        <p class="key-hint"><kbd>J</kbd><kbd>K</kbd> select<span></span><kbd>Enter</kbd> open</p>
       {/if}
 
       <!-- role="list" and rows as listitems, not a listbox. An option must not contain
            focusable descendants and every row here holds a title link and up to three
            buttons, so the cursor moves real DOM focus onto the row instead — which is
            also what makes the selection audible to a screen reader. -->
-      <ul class="queue" role="list" aria-busy={loading}>
-        {#each commitments as decision, index (decision.key)}
-          {@const previous = commitments[index - 1]}
-          {#if !previous || previous.kind.band !== decision.kind.band}
-            {#if index > 0 || commitments.some((other) => other.kind.band !== decision.kind.band)}
-              <li class="band-break tone-{bandTone(decision.kind.band)}" aria-hidden="true">
-                <span>{bandLabel(decision.kind.band)}</span>
-              </li>
+      <!-- One band open, the rest counted. The band break used to be a decorative
+           `aria-hidden` rule between rows; it is the control now, which is why it is a
+           real <button> with aria-expanded rather than a <li> with a label in it. -->
+      <div class="ladder" aria-busy={loading}>
+        {#each bands as band (band.label)}
+          {@const open = disclosure.isOpen(band.label, leadingBand)}
+          <section class="band tone-{band.tone}">
+            <h3>
+              <button
+                type="button"
+                class="band-summary"
+                aria-expanded={open}
+                aria-controls="band-{band.tone}"
+                onclick={() => disclosure.toggle(band.label, leadingBand)}
+              >
+                <span class="chevron" class:open aria-hidden="true">
+                  <Icon name="chevron" size={12} />
+                </span>
+                <span class="band-name">{band.label}</span>
+                <span class="band-count">{band.rows.length}</span>
+              </button>
+            </h3>
+            {#if open}
+              <ul id="band-{band.tone}" class="queue" role="list">
+                {#each band.rows as decision (decision.key)}
+                  {@render decisionRow(decision)}
+                {/each}
+              </ul>
             {/if}
-          {/if}
-          {@render decisionRow(decision)}
+          </section>
         {/each}
-      </ul>
+      </div>
 
       <!-- Loading is a state, and it is the only one that renders. When every kind has
            settled and nothing is owed, the queue shows nothing at all: PRD §8.1 rules that
@@ -518,12 +564,7 @@
     </section>
 
     <aside>
-      <section class="side-section">
-        <div class="section-head compact">
-          <div>
-            <h2>Quick actions</h2>
-          </div>
-        </div>
+      <RailSection label="Quick actions" open>
         <nav class="quick-list" aria-label="Quick actions">
           <a href={link("/feed")}>
             <Icon name="plus" size={15} />
@@ -541,17 +582,20 @@
             <Icon name="arrow-right" size={13} />
           </a>
         </nav>
-      </section>
+      </RailSection>
 
       {#if capabilities.panels.length > 0}
-        <section class="side-section continue">
-          <div class="section-head compact">
-            <div>
-              <h2>Continue working</h2>
-            </div>
-            <a class="small-link" href={link("/projects")}>All</a>
-          </div>
-          <ul>
+        <RailSection label="Continue working" count={capabilities.panels.length} open>
+          {#snippet action()}
+            <!-- Navigates rather than toggles: without this the press does both, and the
+                 section the reader left open is closed behind them. -->
+            <a
+              class="small-link"
+              href={link("/projects")}
+              onclick={(event) => event.stopPropagation()}>All</a
+            >
+          {/snippet}
+          <ul class="continue">
             {#each capabilities.panels as project (project.name)}
               <li>
                 <span class="project-mark">
@@ -589,7 +633,7 @@
               </li>
             {/each}
           </ul>
-        </section>
+        </RailSection>
       {/if}
 
       <PinnedLinks />
@@ -637,14 +681,14 @@
                 </div>
                 <span class="mc-mem-num mono">{(macmonSample.memory.ram_usage / 1073741824).toFixed(1)} GB</span>
               </div>
-              <a class="mc-detail" href={link("/systems")}>Details <Icon name="arrow-right" size={11} /></a>
+              <a class="mc-detail" href={link("/systems")}>Details</a>
             </div>
           {/if}
 
           <RepoStatusCard />
 
           <a class="capabilities-link" href={link("/capabilities")}>
-            Capabilities <Icon name="arrow-right" size={12} />
+            Capabilities
           </a>
         </div>
       </details>
@@ -775,10 +819,6 @@
     margin-bottom: 0.8rem;
   }
 
-  .section-head.compact {
-    align-items: center;
-  }
-
 
   h2 {
     margin: 0;
@@ -787,10 +827,18 @@
     letter-spacing: -0.015em;
   }
 
+  /* Two hints, separated by space. The empty span is the gap the middle dot used to
+     be — one flex child wide, nothing to read. */
   .key-hint {
-    margin: 0 0 0.5rem;
+    display: flex;
+    align-items: center;
+    margin: 0 0 var(--space-3);
     color: var(--text-tertiary);
-    font-size: 0.625rem;
+    font-size: var(--text-2xs);
+  }
+
+  .key-hint span {
+    width: var(--space-5);
   }
 
   /* The reading band. Deliberately quieter than a decision row: one line with
@@ -880,41 +928,86 @@
    * The spine on each row is two pixels of colour and nothing else; this is what makes it
    * mean something, and it is why no band is ever identified by colour alone. Suppressed
    * when the ladder holds a single band, where a heading over every row says nothing. */
-  .band-break {
+  /* The band summary. It was a decorative rule with a label; it is the control now,
+     so it has to look pressable without becoming a button-shaped object: full-bleed
+     hit area, the tone mark where each row's spine already sits, and the count doing
+     the work a "14 more" link would otherwise do. */
+  .band-summary {
     display: flex;
     align-items: center;
     gap: var(--space-3);
-    padding: var(--space-4) var(--space-4) var(--space-2) 0;
+    width: 100%;
+    padding: var(--space-4) var(--space-2) var(--space-3) 0;
+    border: 0;
+    background: transparent;
     color: var(--text-tertiary);
+    font: inherit;
     font-size: var(--text-2xs);
-    list-style: none;
+    text-align: left;
+    cursor: pointer;
   }
 
-  .band-break::after {
-    content: "";
-    flex: 1;
-    height: 1px;
-    background: var(--rule);
+  .band h3 {
+    margin: 0;
+    font-size: inherit;
+    font-weight: inherit;
   }
 
-  /* The break's mark sits on the queue's own left edge, exactly where each row's spine
-     does, so the two read as one device rather than two. */
-  .band-break span {
+  .band + .band {
+    border-top: 1px solid var(--rule);
+  }
+
+  .band-name {
     position: relative;
+    flex: 1;
     padding-left: var(--space-4);
+    color: var(--text-secondary);
   }
 
-  .band-break span::before {
+  /* The tone mark. Never the only channel — the name is right beside it, which is
+     the rule Q87 set when four tones had to carry thirteen bands. */
+  .band-name::before {
     content: "";
     position: absolute;
     inset: 0.1em auto 0.1em 0;
     width: 2px;
   }
 
-  .band-break.tone-alarm span::before { background: var(--band-alarm); }
-  .band-break.tone-now span::before { background: var(--band-now); }
-  .band-break.tone-owed span::before { background: var(--band-owed); }
-  .band-break.tone-offer span::before { background: var(--band-offer); }
+  .band-summary:hover .band-name,
+  .band-summary:hover .band-count {
+    color: var(--text-primary);
+  }
+
+  .band-count {
+    min-width: 1.5rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums lining;
+    text-align: center;
+  }
+
+  .chevron {
+    display: flex;
+    color: var(--text-tertiary);
+    transition: transform var(--motion-fast) ease;
+  }
+
+  .chevron.open {
+    transform: rotate(90deg);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chevron {
+      transition: none;
+    }
+  }
+
+  .band.tone-alarm .band-name::before { background: var(--band-alarm); }
+  .band.tone-now .band-name::before { background: var(--band-now); }
+  .band.tone-owed .band-name::before { background: var(--band-owed); }
+  .band.tone-offer .band-name::before { background: var(--band-offer); }
 
   .show-all {
     display: flex;
@@ -965,7 +1058,23 @@
     gap: var(--space-6);
   }
 
+  /* Both halves are panes now. The reading column used to sit flat on the page while
+   * the rail floated, so the page read as one finished surface beside one unfinished
+   * one. The content pane does NOT scroll independently and is not sticky — it is the
+   * thing being read, and a reading surface that traps its own scroll is a worse
+   * reading surface. It is glass for the material, not for the behaviour. */
   @media (width >= 50rem) {
+    .next {
+      padding: var(--space-6) var(--space-7);
+      background-color: var(--glass-bg);
+      border: 1px solid var(--card-border);
+      border-top-color: var(--glass-border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--glass-shadow);
+      -webkit-backdrop-filter: var(--glass-blur);
+      backdrop-filter: var(--glass-blur);
+    }
+
     aside {
       position: sticky;
       top: calc(var(--header-stack) + var(--space-3));
@@ -981,16 +1090,15 @@
       backdrop-filter: var(--glass-blur);
     }
 
-    /* Translucency without the blur is text over text. */
-    @supports not (backdrop-filter: blur(1px)) {
+    /* Translucency without the blur is text over text. Both spellings, because Safari
+       implements the prefixed one and a condition naming only the unprefixed property
+       would paint these opaque in the browser this surface is actually read in. */
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+      .next,
       aside {
         background-color: var(--card-bg);
       }
     }
-  }
-
-  .side-section {
-    min-width: 0;
   }
 
   .quick-list {
@@ -1044,14 +1152,14 @@
     white-space: nowrap;
   }
 
-  .continue ul {
+  ul.continue {
     margin: 0;
     padding: 0;
     border-top: 1px solid var(--card-border);
     list-style: none;
   }
 
-  .continue li {
+  ul.continue li {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
@@ -1092,7 +1200,7 @@
   }
 
   .mc-temp.warm {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .mc-temp.hot {

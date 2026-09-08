@@ -16,21 +16,24 @@
     whyHere,
     candidateStatus,
   }: DecisionRowProps<TripPlan> = $props();
-
   const where = $derived(row.destinations.map((place) => place.name).join(" → "));
+
+
+
+  const kind = $derived(metaParts("Travel", dateLabel(row.date_start), where));
 </script>
 
 <ListRow {id} {current} {tone} {href}>
   {#snippet mark()}<Icon name="map-pin" size={15} />{/snippet}
 
-  <span class="row-kind">{#each metaParts("Travel", dateLabel(row.date_start), where) as part}<span>{part}</span>{/each}</span>
+  <span class="row-kind">{#each kind as part}<span>{part}</span>{/each}</span>
   <a class="row-title" {href}>{row.title}</a>
 
   {#snippet meta()}<RowMeta {whyHere} {candidateStatus} />{/snippet}
 
   {#snippet actions()}
     <a class="btn btn-soft" href={link("/travel")}>
-      Continue planning <Icon name="arrow-right" size={13} />
+      Continue planning
     </a>
   {/snippet}
 </ListRow>

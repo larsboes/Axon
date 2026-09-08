@@ -1,5 +1,9 @@
 # See schemas/pack.toml.example for the field reference.
+# Four moves on one decision: make it precise (crystallize), weigh the options (council),
+# attack the one you picked (red-team), explain the failure when it lands anyway (root-cause).
+# agents/ is a Claude-Code-only convention and deliberately absent from this manifest —
+# see README.md#the-agents and schemas/pack.toml.example.
 name        = "deliberation"
-description = "Two ways to test a decision before it is made: a council of subagents that debate the options, and a red-team pass that attacks one proposal."
-skills      = ["council", "red-team"]
+description = "Four ways to work a decision: crystallize an unstructured mess into a precise document, convene a council that debates the options, red-team the proposal that wins, and root-cause the failure when one happens anyway."
+skills      = ["crystallize", "council", "red-team", "root-cause"]
 license     = "MIT"

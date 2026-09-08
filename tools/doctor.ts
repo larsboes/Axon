@@ -1645,6 +1645,107 @@ const CHECKS: Check[] = [
   // doctor reported a clean machine. `feed-sweep` had been deleted; comms stayed up, healthy, and
   // empty.
   //
+  // A stored path into the vault is a claim that a file exists. Nothing checked those claims
+  // until 2026-09-07, and on that day three separate sets of them were found broken at once:
+  // `trips` named ten `Atlas/Events/` notes its own migration had deleted, all seven
+  // `finance_subscriptions.source_path` values pointed into a folder that no longer existed —
+  // which silently kept finance on pattern B when Q31 says prefer C — and `scouting` carries a
+  // `vault_link` column plus a whole `scouting_links` table that have never held a row.
+  //
+  // None of them broke a service, which is exactly why none of them surfaced. A pointer into a
+  // human's notes rots without an exception: the vault is reorganised by hand, and no foreign key
+  // reaches across the boundary the direction rule (PRD §5.5) deliberately keeps one-way.
+  //
+  // `warn`, not `bad`: every instance found so far was inert at the moment it was found. The
+  // cost is a wrong branch or a dead link, not a stopped capability.
+  //
+  // The column list below is TYPED, and that is a known weakness worth stating rather than
+  // hiding: nothing in the repo declares "this column holds a vault-relative path", so a new one
+  // is invisible here until somebody adds a line. The alternative — sniffing every TEXT column
+  // for something that looks like a path — would report a false positive on the first note title
+  // containing a slash.
+  {
+    name: "Vault pointers (stored paths that must resolve)",
+    run(ctx) {
+      const envPath = (process.env.AXON_DB_PATH ?? "").trim();
+      const dbPath = envPath ? expandHome(envPath) : join(ctx.overlayPath, "data", "axon", "axon.db");
+      if (!existsSync(dbPath)) return ctx.warn("no database — nothing to resolve");
+
+      // The vault root is a per-capability declaration, and they are allowed to differ. Read
+      // each one rather than assuming a single vault: a machine that points comms at one root
+      // and trips at another is legal, and a check that assumed otherwise would blame the wrong
+      // capability for a path that resolves perfectly well against its own root.
+      const rootFor = (config: string, key: string): string | null => {
+        const file = join(ctx.overlayPath, "config", config);
+        if (!existsSync(file)) return null;
+        try {
+          const parsed = JSON.parse(readFileSync(file, "utf8"));
+          const root = parsed?.obsidian?.[key];
+          return typeof root === "string" && root.trim() !== "" ? expandHome(root) : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const sources = [
+        { cap: "trips", config: "trips.json", table: "trips_plans", label: "source_ref", column: "source_ref", where: "source_kind = 'obsidian'" },
+        // `json_extract(payload,'$.vault_path')` and NOT `external_id`, which this check itself
+        // proved is overloaded: `item_type = 'note'` holds ten Obsidian imports whose external_id
+        // IS a vault path, and two sparpreis fare-drop notes whose external_id is a synthetic key
+        // (`sparpreis-drop:8000044:...`). Keying on the field that literally means "a vault path"
+        // is the rule that cannot acquire a third meaning behind our backs.
+        { cap: "trips", config: "trips.json", table: "trips_plan_items", label: "payload.vault_path", column: "json_extract(payload,'$.vault_path')", where: "item_type = 'note'" },
+        { cap: "finance", config: "finance.json", table: "finance_subscriptions", label: "source_path", column: "source_path", where: "1=1" },
+        { cap: "scouting", config: "scouting.json", table: "scouting_opportunities", label: "vault_link", column: "vault_link", where: "1=1" },
+        { cap: "scouting", config: "scouting.json", table: "scouting_links", label: "vault_path", column: "vault_path", where: "1=1" },
+      ];
+
+      let checked = 0;
+      let dangling = 0;
+      let skipped = 0;
+
+      for (const src of sources) {
+        const root = rootFor(src.config, "root");
+        if (!root) {
+          skipped += 1;
+          continue;
+        }
+        const proc = Bun.spawnSync({
+          cmd: [
+            "sqlite3",
+            `file:${dbPath}?mode=ro`,
+            `SELECT DISTINCT ${src.column} FROM ${src.table} WHERE ${src.where} AND ${src.column} IS NOT NULL AND TRIM(${src.column}) <> '';`,
+          ],
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        // A table this machine's capability set never created is not a finding. sqlite3 says
+        // "no such table" and that is the honest answer for a host that does not run trips.
+        if (proc.exitCode !== 0) continue;
+
+        const missing: string[] = [];
+        for (const line of proc.stdout.toString().split("\n")) {
+          const rel = line.trim();
+          if (rel === "") continue;
+          checked += 1;
+          if (!existsSync(join(root, rel))) missing.push(rel);
+        }
+        if (missing.length > 0) {
+          dangling += missing.length;
+          // Three names, then a count. The whole list belongs in the capability's own tooling;
+          // what doctor owes is enough to recognise WHICH set is broken.
+          const shown = missing.slice(0, 3).map((m) => `'${m}'`).join(", ");
+          const rest = missing.length > 3 ? ` (+${missing.length - 3} more)` : "";
+          ctx.warn(`${src.cap}: ${missing.length} of ${src.table}.${src.label} point at nothing — ${shown}${rest}`);
+        }
+      }
+
+      if (skipped === sources.length) return ctx.warn("no capability declares a vault root — nothing to resolve");
+      if (checked === 0) ctx.ok("no stored vault pointers on this machine");
+      else if (dangling === 0) ctx.ok(`${checked} stored vault pointer(s) resolve`);
+    },
+  },
+
   // Asks the capability, rather than reading its data. `GET /__axon/freshness` answers
   // `{"last_arrival_at": <epoch>}` and nothing else, so this stays a check about liveness of a
   // FLOW and never becomes a second reader of anyone's tables.

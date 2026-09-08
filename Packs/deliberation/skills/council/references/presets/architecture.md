@@ -36,6 +36,23 @@ Demands a line count for the local alternative and the dependency tree of the up
 deploy path, the health check, the failure mode and the rollback. Demands the command that
 deploys it and the signal that says it is broken.
 
+## Types
+
+Launch each member with its `subagent_type`:
+
+| Member | `subagent_type` |
+|---|---|
+| Sana | `council-owner` |
+| Ove | `council-owner` |
+| Ilva | `council-evidence` |
+| Karl | `council-cost` |
+| Ruth | `council-skeptic` |
+
+Two members may share a type. The type carries the contract — read-only tools, the evidence
+rule, the return shape — and the brief above carries everything that makes them argue
+differently. `general-purpose` marks a member no type fits: paste the contract into its
+prompt (read only, never edit, cite or mark, return the round text alone).
+
 ## Evidence bar
 
 Every factual claim about the repository cites a path and, where the claim is about one

@@ -36,6 +36,23 @@ also hides the traffic. Pushes on how often the current control is bypassed and 
 proposed one costs the person who meets it every day. Demands evidence of the current bypass
 rate, or the admission that nobody measured it.
 
+## Types
+
+Launch each member with its `subagent_type`:
+
+| Member | `subagent_type` |
+|---|---|
+| Vera | `council-skeptic` |
+| Ansel | `council-owner` |
+| Doro | `council-skeptic` |
+| Ike | `council-evidence` |
+| Sol | `council-cost` |
+
+Two members may share a type. The type carries the contract — read-only tools, the evidence
+rule, the return shape — and the brief above carries everything that makes them argue
+differently. `general-purpose` marks a member no type fits: paste the contract into its
+prompt (read only, never edit, cite or mark, return the round text alone).
+
 ## Evidence bar
 
 Reachability, credential scope and data class are cited from configuration, code or a
