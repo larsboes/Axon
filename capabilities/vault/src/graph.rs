@@ -32,6 +32,28 @@
 //! figure moves and nobody can say whether the vault got better. So the report
 //! carries both: every unresolved target, and the subset that actually looks
 //! like a note. A migration is judged on the second and audited on the first.
+//!
+//! ## Why a target is also read relative to the note that carries it
+//!
+//! Obsidian resolves `[[x]]` against three addresses, not one: the path as
+//! written from the vault root, the same path read from the linking note's own
+//! folder, and finally the name alone. This resolver knew the first and the
+//! third, which is why `_attachments/E-Autos-/Image 3.jpg` — written in a note
+//! that has an `_attachments/` folder sitting beside it — read as dead. There is
+//! no `_attachments/` at the vault root, and 35 files in this vault are called
+//! `Image 3.jpg`, so rung one missed and rung three refused to guess. The rung
+//! that would have answered was not there.
+//!
+//! Measured on the operator's vault 2026-09-08: **8,034 dead links before,
+//! 5,211 after, 2,823 of them recovered by this rung alone** — 2,763 attachments
+//! and 60 notes. No file moved. PRD D4 had attributed 2,739 of those to "image
+//! links whose files are not in the vault"; the files are in the vault, one
+//! folder below the note that names them.
+//!
+//! This is not the same act as guessing at an ambiguous basename, and the
+//! difference is why it belongs here while that still does not: a relative path
+//! names exactly one file, so the resolver either finds that file or does not.
+//! Nothing is picked.
 
 use std::collections::HashMap;
 
@@ -67,6 +89,10 @@ pub struct LinkReport {
     /// Reported rather than merged: a reader who sees the resolved count rise wants to know
     /// what started resolving.
     pub links_to_files: usize,
+    /// Of the resolved, how many resolved ONLY because the target was read from the linking
+    /// note's folder. Separate because it is the size of the instrument's old blind spot, and
+    /// a reader watching this number fall is watching the vault adopt root-relative links.
+    pub links_relative: usize,
     pub links_dead: usize,
     /// Dead links whose target looks like a note, excluding block refs, `.base`
     /// embeds and bare numbers. The number a migration is judged on.
@@ -139,6 +165,37 @@ fn key(s: &str) -> String {
     s.to_lowercase()
 }
 
+/// `target` as an address, read from the folder of the note that carries the link.
+///
+/// The middle rung of Obsidian's resolution. `..` and `.` are folded here rather than left to
+/// the filesystem, because this resolver never touches the filesystem — it compares against an
+/// index built once — and because a `..` that would climb above the vault root names nothing
+/// inside the vault. That case returns `None` instead of a path an index could accidentally
+/// match.
+///
+/// A note at the vault root gets the same treatment and the answer is simply the target, which
+/// the root-relative rung has already tried. Kept uniform rather than special-cased: the one
+/// thing it adds is that a root note's `[[Name]]` finds its own sibling before the basename
+/// index calls the name ambiguous.
+fn relative_to(source_id: &str, target: &str) -> Option<String> {
+    let folder = source_id.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let mut parts: Vec<&str> = if folder.is_empty() {
+        Vec::new()
+    } else {
+        folder.split('/').collect()
+    };
+    for segment in target.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
 /// The link report.
 ///
 /// `attachments` are the vault's non-note files as root-relative ids — PDFs, images, `.base`
@@ -185,6 +242,7 @@ pub fn report(notes: &[Note], attachments: &[String], include_dead: bool) -> Lin
     }
 
     let mut links_to_files = 0usize;
+    let mut links_relative = 0usize;
     let mut in_fm = 0usize;
     for n in notes {
         for (target, frontmatter) in targets_in(&n.text, n.body_start) {
@@ -197,25 +255,50 @@ pub fn report(notes: &[Note], attachments: &[String], include_dead: bool) -> Lin
                 path_form_total += 1;
             }
 
-            let hit = if path_form {
+            // Every rung is asked, and none of them short-circuits, because `links_relative`
+            // has to say how many links the middle rung is the ONLY one that sees. A chain
+            // that stops at the first hit cannot answer that.
+            let relative = relative_to(&n.id, &target);
+            let base = target.rsplit('/').next().unwrap_or(&target);
+
+            // Rung 1, the path as written from the vault root. Bare names skip it: a name is
+            // not a path, and `by_id` is keyed on paths.
+            let by_path = if path_form {
                 by_id.get(&key(target.trim_end_matches(".md"))).copied()
             } else {
                 None
-            }
-            .or_else(|| {
-                let base = target.rsplit('/').next().unwrap_or(&target);
-                by_basename
-                    .get(&key(base.trim_end_matches(".md")))
-                    .and_then(|v| (v.len() == 1).then(|| v[0]))
-            });
-
-            let file_hit = hit.is_none() && {
-                let base = target.rsplit('/').next().unwrap_or(&target);
-                attachment_by_path.contains_key(&key(&target))
-                    // An ambiguous basename is not a resolution, the same rule the note index
-                    // above applies: two files with one name mean the link names neither.
-                    || attachment_by_name.get(&key(base)) == Some(&1)
             };
+            // Rung 2, the same text read from the folder of the note that carries the link.
+            let by_relative = relative
+                .as_deref()
+                .and_then(|rel| by_id.get(&key(rel.trim_end_matches(".md"))).copied());
+            // Rung 3, the name alone, and only when one note answers to it.
+            let by_name = by_basename
+                .get(&key(base.trim_end_matches(".md")))
+                .and_then(|v| (v.len() == 1).then(|| v[0]));
+
+            // The same three rungs against the files that are not notes.
+            let file_by_path = attachment_by_path.contains_key(&key(&target));
+            let file_by_relative = relative
+                .as_deref()
+                .is_some_and(|rel| attachment_by_path.contains_key(&key(rel)));
+            // An ambiguous basename is not a resolution, the same rule the note index above
+            // applies: two files with one name mean the link names neither.
+            let file_by_name = attachment_by_name.get(&key(base)) == Some(&1);
+
+            let hit = by_path.or(by_relative).or(by_name);
+            let file_hit = hit.is_none() && (file_by_path || file_by_relative || file_by_name);
+
+            // "Only the relative rung sees this" — which is to say, the set of links that were
+            // dead before the rung existed. Measured 2,823 on the operator's vault.
+            if (by_relative.is_some() || file_by_relative)
+                && by_path.is_none()
+                && by_name.is_none()
+                && !file_by_path
+                && !file_by_name
+            {
+                links_relative += 1;
+            }
 
             match hit {
                 Some(_) => resolved += 1,
@@ -253,6 +336,7 @@ pub fn report(notes: &[Note], attachments: &[String], include_dead: bool) -> Lin
         links_in_body: total - in_fm,
         links_resolved: resolved,
         links_to_files,
+        links_relative,
         links_dead: total - resolved,
         dead_note_shaped,
         path_form_total,
@@ -352,5 +436,104 @@ mod tests {
         let notes = vec![note("A.md", "[[Dokumente]]")];
         let attachments = vec!["Resources/Bases/Dokumente.base".to_string()];
         assert_eq!(report(&notes, &attachments, true).links_dead, 1);
+    }
+
+    /// D4's largest single cause, as a test. The note sits in `.../E-Autos_/`, its images sit
+    /// in `.../E-Autos_/_attachments/E-Autos-/`, and the link names the second from the first.
+    /// There is no `_attachments/` at the vault root, and `Image .jpg` is a name dozens of
+    /// folders use — so before the relative rung existed this was dead twice over. 2,763 of the
+    /// operator's dead links had exactly this shape.
+    #[test]
+    fn an_attachment_beside_the_note_resolves_and_a_global_twin_does_not_make_it_ambiguous() {
+        let notes = vec![note(
+            "Atlas/Personal/Archive/Hobbys/E-Autos_/E-Autos-.md",
+            "![[_attachments/E-Autos-/Image .jpg]]",
+        )];
+        let attachments = vec![
+            "Atlas/Personal/Archive/Hobbys/E-Autos_/_attachments/E-Autos-/Image .jpg".to_string(),
+            // The twin that makes the basename index refuse. It is the reason the middle rung
+            // is needed rather than a nicety on top of one that already worked.
+            "Atlas/Personal/Archive/Schule/Mathe/Mathe 11/_attachments/Image .jpg".to_string(),
+        ];
+        let rep = report(&notes, &attachments, true);
+        assert_eq!(
+            (rep.links_dead, rep.links_to_files, rep.links_relative),
+            (0, 1, 1),
+            "dead: {:?}",
+            rep.dead
+        );
+    }
+
+    /// The same rung, for notes: `Atlas/Events/X.md` naming `../Reflections/Y`. 60 of the
+    /// operator's dead links were notes rather than attachments. The twin in `Knowledge/` is
+    /// what makes this a measurement of the relative rung — with one `Signal-Misreading` in the
+    /// vault the name alone would have found it, and the assertion would prove nothing.
+    #[test]
+    fn a_dot_dot_target_climbs_out_of_the_linking_notes_folder() {
+        let notes = vec![
+            note(
+                "Atlas/Events/Berlin.md",
+                "[[../Reflections/Signal-Misreading]]",
+            ),
+            note("Atlas/Reflections/Signal-Misreading.md", ""),
+            note("Knowledge/Meta/Signal-Misreading.md", ""),
+        ];
+        let rep = report(&notes, &[], true);
+        assert_eq!(
+            (rep.links_dead, rep.links_relative),
+            (0, 1),
+            "dead: {:?}",
+            rep.dead
+        );
+    }
+
+    /// The rung is a lookup and not a search: a relative address that names nothing is still
+    /// dead. Without this the previous two tests would pass against a resolver that simply
+    /// stopped reporting anything.
+    #[test]
+    fn a_relative_target_that_names_nothing_is_still_dead() {
+        let notes = vec![note(
+            "Atlas/Events/Berlin.md",
+            "[[../Reflections/Never Written]] and ![[_attachments/Absent.jpg]]",
+        )];
+        let attachments = vec!["Elsewhere/_attachments/Different.jpg".to_string()];
+        let rep = report(&notes, &attachments, true);
+        assert_eq!((rep.links_dead, rep.links_relative), (2, 0));
+    }
+
+    /// `..` past the vault root names nothing inside the vault. A resolver that folded the
+    /// surplus `..` away would read the tail — `Secret/Elsewhere` — as a root-relative address
+    /// and resolve it, which is the wrong file for the right-looking reason. The basename rung
+    /// is taken out of the way here by a second `Elsewhere`, so this measures the climb and not
+    /// the fallback.
+    #[test]
+    fn a_target_that_climbs_above_the_root_does_not_resolve() {
+        let notes = vec![
+            note("Atlas/Escape.md", "[[../../Secret/Elsewhere]]"),
+            note("Secret/Elsewhere.md", ""),
+            note("Other/Elsewhere.md", ""),
+        ];
+        let rep = report(&notes, &[], true);
+        assert_eq!(
+            (rep.links_dead, rep.links_relative),
+            (1, 0),
+            "dead: {:?}",
+            rep.dead
+        );
+    }
+
+    /// Precedence, stated as a test because the two rungs disagree here on purpose. A path
+    /// written from the vault root means that path, even when a file of the same relative name
+    /// sits beside the linking note — that is the order Obsidian resolves in, and the order
+    /// that makes `links_relative` mean "only the relative rung can see this".
+    #[test]
+    fn the_root_relative_address_wins_and_is_not_counted_as_relative() {
+        let notes = vec![
+            note("Atlas/Events/Berlin.md", "[[Atlas/Events/Notes]]"),
+            note("Atlas/Events/Notes.md", ""),
+            note("Atlas/Events/Atlas/Events/Notes.md", ""),
+        ];
+        let rep = report(&notes, &[], true);
+        assert_eq!((rep.links_dead, rep.links_relative), (0, 0));
     }
 }

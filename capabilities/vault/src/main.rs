@@ -119,6 +119,7 @@ fn main() {
                 println!("  in body              {}", rep.links_in_body);
                 println!("  resolved             {}", rep.links_resolved);
                 println!("    to a non-note file {}", rep.links_to_files);
+                println!("    relative to source {}", rep.links_relative);
                 println!("  dead                 {}", rep.links_dead);
                 println!("  dead, note-shaped    {}", rep.dead_note_shaped);
                 println!("  distinct dead targets {}", rep.distinct_dead_targets);
